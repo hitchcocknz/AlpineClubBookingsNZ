@@ -63,12 +63,13 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     );
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("pg_blocking_pids");
-    for (const race of ["RACE 1:", "RACE 2:", "RACE 3:", "RACE 4:", "RACE 5:"]) expect(suite).toContain(race);
+    for (const race of ["RACE 1:", "RACE 2:", "RACE 3:", "RACE 4:", "RACE 5:", "RACE 6 (the cost):"]) expect(suite).toContain(race);
     const reduction = readFileSync(
       resolve(REPO_ROOT, "src/lib/__tests__/additional-ask-reduction.realdb.test.ts"),
       "utf8",
     );
     expect(reduction).toContain("RACE (#4217): the capture webhook holding the Payment row while the retire starts");
+    expect(reduction).toContain("RACE (#4217 F1): a credit give-back's reduction racing the runner's claim hold");
   });
 
   // #4104: the failed-later refund proof rides the same harness.

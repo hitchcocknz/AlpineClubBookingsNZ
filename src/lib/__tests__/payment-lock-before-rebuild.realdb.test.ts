@@ -28,6 +28,9 @@
  *     `reconcilePaymentAggregates` on the root client) racing an allocation.
  *  5. The Internet Banking settle (#4094) racing a card refund on the same
  *     payment: its refunded total is read under the lock.
+ *  6. The cost (#4217 review): a capture queued past its transaction's 5 s
+ *     limit behind a holder of the Payment row fails with P2028, rolled back
+ *     whole - nothing it would have written is written.
  *
  * In each the payment's refunded total must end equal to the sum of its rows.
  * The sixth race - a price reduction's retire against the capture webhook on
@@ -63,7 +66,10 @@ const INVOICE_ID = "race-4217-invoice";
 const CHECK_IN = new Date("2027-09-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2027-09-02T00:00:00.000Z");
 
-const LOCK_POLL_TIMEOUT_MS = 10_000;
+// Under Prisma's 5 s default for an interactive transaction: a contender on
+// the root client opens one, so a poll that outlived it would read a timeout as
+// a queue (#4217 review, flake guard).
+const LOCK_POLL_TIMEOUT_MS = 3_000;
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 export function assertSafePaymentLockRaceDbUrl(url: string): void {
@@ -198,10 +204,12 @@ let ledgerStartSeconds = 0;
       beforeLock,
       afterQueued,
       contender,
+      holderTimeoutMs = 30_000,
     }: {
       beforeLock?: (tx: Prisma.TransactionClient) => Promise<void>;
       afterQueued: (tx: Prisma.TransactionClient) => Promise<void>;
       contender: () => Promise<T>;
+      holderTimeoutMs?: number;
     }): Promise<{ result: T | undefined; error: unknown; holderError: unknown; queued: number }> {
       const lockHeld = deferred();
       const contenderQueued = deferred();
@@ -218,7 +226,7 @@ let ledgerStartSeconds = 0;
             await contenderQueued.promise;
             await afterQueued(tx);
           },
-          { maxWait: 5_000, timeout: 30_000 },
+          { maxWait: 5_000, timeout: holderTimeoutMs },
         )
         .catch((error: unknown) => {
           holderError = error;
@@ -524,5 +532,30 @@ let ledgerStartSeconds = 0;
       await payments.reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
       expect((await totals()).payment).toMatchObject({ amountCents: 50_000, refundedAmountCents: 20_000 });
     });
+
+    it("RACE 6 (the cost): a capture queued past its 5 s transaction limit behind the Payment row fails P2028 and writes nothing", async () => {
+      await cardPaidWithTopUp();
+      const before = await totals();
+
+      const race = await raceAgainstHeldPayment({
+        // A long holder: the Payment row kept past the capture's limit.
+        afterQueued: () => new Promise((resolve) => setTimeout(resolve, 6_500)),
+        holderTimeoutMs: 30_000,
+        contender: () =>
+          payments.markPaymentIntentTransactionSucceeded({ paymentIntentId: ADDITIONAL_INTENT, amountCents: 5_000 }),
+      });
+
+      expect(race.holderError).toBeUndefined();
+      expect(race.queued).toBeGreaterThanOrEqual(1);
+      expect((race.error as { code?: string } | undefined)?.code, `expected P2028, got ${String(race.error)}`).toBe("P2028");
+      // Rolled back whole: the top-up is still unpaid and the payment unmoved,
+      // so Stripe's retry records it as if it were the first delivery.
+      const additional = await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: ADDITIONAL_ID }, select: { status: true } });
+      expect(additional.status).toBe("PENDING");
+      expect(await totals()).toEqual(before);
+      // And the retry, with the row free, records it.
+      await payments.markPaymentIntentTransactionSucceeded({ paymentIntentId: ADDITIONAL_INTENT, amountCents: 5_000 });
+      expect((await totals()).payment.amountCents).toBe(25_000);
+    }, 30_000);
   },
 );

@@ -12,4 +12,6 @@
   What you may notice: in the rare case that a Stripe notification arrives while
   a long change to the same booking is still saving, it can now be turned away
   and Stripe sends it again a moment later, as it already does for other busy
-  moments. Nothing is lost, and no action is needed.
+  moments. Nothing is lost, and no action is needed. In the same rare case, a
+  member or officer saving a booking change or a payment may see an error;
+  trying again a moment later succeeds.

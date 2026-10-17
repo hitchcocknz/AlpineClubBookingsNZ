@@ -602,7 +602,7 @@ let webhookClient: PrismaClient;
       let queued = 0;
       try {
         const startedAt = process.hrtime.bigint();
-        while (realElapsedMs(startedAt) < 10_000) {
+        while (realElapsedMs(startedAt) < 3_000) {
           const rows = await prisma.$queryRaw<Array<{ count: number }>>`
             SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
             WHERE datname = current_database() AND ${webhookPid}::int = ANY(pg_blocking_pids(pid))

@@ -40,6 +40,7 @@ const minterDb = vi.hoisted(() => {
     completeCount: 1,
     recoveryFindUnique: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
     recoveryUpdateMany: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
+    executeRaw: null as unknown as ReturnType<typeof import("vitest").vi.fn>,
   };
   return db;
 });
@@ -47,9 +48,10 @@ vi.mock("@/lib/prisma", async () => {
   const { vi: hoistedVi } = await import("vitest");
   minterDb.recoveryFindUnique = hoistedVi.fn(async () => minterDb.reissueRecovery);
   minterDb.recoveryUpdateMany = hoistedVi.fn(async () => ({ count: minterDb.completeCount }));
+  minterDb.executeRaw = hoistedVi.fn(async () => 0);
   const prisma = {
     // #4217: the door's write under its recovery locks the Payment row first.
-    $executeRaw: async () => 0,
+    $executeRaw: (...args: unknown[]) => minterDb.executeRaw(...args),
     payment: { findUnique: async () => minterDb.currentPayment },
     paymentTransaction: { findMany: async () => [] },
     paymentRecoveryOperation: {
@@ -638,6 +640,7 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
   // The door wrote the re-issue's recovery in its transaction (round 4).
   const REISSUE_RECOVERY = {
     id: "op_reissue",
+    paymentId: "payment_1",
     status: "PENDING",
     attempts: 0,
     processingStartedAt: null,
@@ -718,6 +721,23 @@ describe("#3954: after commit, the minter cancels what the reduction retired, th
       bookingModificationId: "mod_reduction",
       paymentIntentId: "pi_reissued_3000",
     });
+  });
+
+  // #4217 review (F1): Payment, then the recovery row - the order the runner's
+  // claim hold and a reduction netting this re-issue off take them in.
+  it("MUTATION (#4217): the door's write under its recovery locks the Payment row before it completes the recovery", async () => {
+    const result = await adjust(grownBooking({ creditPaid: true }), -2_000);
+    minterDb.executeRaw.mockClear();
+    await mintAfter(result);
+
+    const lockAt = minterDb.executeRaw.mock.calls.findIndex((call) => {
+      const [strings, ...values] = call as unknown[];
+      const sql = Array.isArray(strings) ? strings.join("?") : String(strings);
+      return sql.includes('FROM "Payment"') && sql.includes("FOR NO KEY UPDATE") && values[0] === "payment_1";
+    });
+    expect(lockAt).toBeGreaterThanOrEqual(0);
+    expect(minterDb.recoveryUpdateMany).toHaveBeenCalled();
+    expect(minterDb.executeRaw.mock.invocationCallOrder[lockAt]!).toBeLessThan(minterDb.recoveryUpdateMany.mock.invocationCallOrder[0]!);
   });
 
   // Final review: whoever moved the recovery decides whether the re-issue is
@@ -1182,6 +1202,21 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
         where: { id: "op_reissue", status: "FAILED", attempts: 1, processingStartedAt: null },
         data: expect.objectContaining({ status: "SUCCEEDED", lastError: WAITING_REISSUE_FOLDED_BY_INCREASE_NOTE }),
       });
+    });
+
+    // #4217 review (F1): Payment, then the recovery it closes.
+    it("MUTATION (#4217): the fold locks the Payment row before it closes the waiting re-issue's recovery", async () => {
+      waitingReissue();
+      await adjust(awaitingRetryBooking(), 1_000);
+
+      const lockAt = executeRaw.mock.calls.findIndex((call) => {
+        const [strings, ...values] = call as unknown[];
+        const sql = Array.isArray(strings) ? strings.join("?") : String(strings);
+        return sql.includes('FROM "Payment"') && sql.includes("FOR NO KEY UPDATE") && values[0] === "payment_1";
+      });
+      expect(lockAt).toBeGreaterThanOrEqual(0);
+      expect(recoveryUpdateMany).toHaveBeenCalledTimes(1);
+      expect(executeRaw.mock.invocationCallOrder[lockAt]!).toBeLessThan(recoveryUpdateMany.mock.invocationCallOrder[0]!);
     });
 
     it("MUTATION (round 6): records what it folded - the re-issue's money, its reducing edit and that edit's own invoice - on the increase's history", async () => {

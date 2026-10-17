@@ -314,7 +314,7 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/lib/payment-transactions", () => ({
   // #4217: the runner's claim hold locks the Payment row before the recovery row.
-  lockPaymentForRefundedTotal: async () => undefined,
+  lockPaymentForRefundedTotal: (...args: unknown[]) => mockLockPaymentForRefundedTotal(...args),
   reconcilePaymentAggregates: (...args: unknown[]) =>
     mockReconcilePaymentAggregates(...args),
   recordStripeRefundsAgainstTransaction: (...args: unknown[]) =>
@@ -358,6 +358,7 @@ vi.mock("@/lib/logger", () => ({
 // file-level beforeEach below) is the house fixture, so every other case reads
 // the format it always did.
 const clubFormatMock = vi.hoisted(() => vi.fn());
+const mockLockPaymentForRefundedTotal = vi.hoisted(() => vi.fn(async (..._args: unknown[]) => undefined));
 // #3567: when the club format last changed, for the stale-queue alert.
 const mockLoadPersistedClubFormat = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/club-format-settings", async (importOriginal) => ({
@@ -3321,6 +3322,26 @@ describe("payment recovery worker", () => {
       expect(
         mockUpsertPaymentIntentTransaction.mock.invocationCallOrder[0],
       ).toBeLessThan(mockPaymentTransactionFindMany.mock.invocationCallOrder[0]);
+    });
+
+    // #4217 review (F1): Payment, then the recovery row - the order a reduction
+    // that gave credit back (and so already wrote the Payment row) closes this
+    // recovery in. The recovery first deadlocks it.
+    it("MUTATION (#4217): the claim hold locks the Payment row before it re-stamps the recovery row", async () => {
+      const operation = additionalIntentOperation();
+      primeQueue(operation);
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      const holdIndex = mockPaymentRecoveryUpdateMany.mock.calls.findIndex(([args]) => {
+        const { where, data } = args as { where: Record<string, unknown>; data: Record<string, unknown> };
+        return where.status === "PROCESSING" && "processingStartedAt" in data && !("status" in data);
+      });
+      expect(holdIndex).toBeGreaterThanOrEqual(0);
+      expect(mockLockPaymentForRefundedTotal).toHaveBeenCalledWith(expect.anything(), operation.paymentId);
+      expect(mockLockPaymentForRefundedTotal.mock.invocationCallOrder[0]!).toBeLessThan(
+        mockPaymentRecoveryUpdateMany.mock.invocationCallOrder[holdIndex]!,
+      );
     });
 
     it("MUTATION (#3954 round 4): writes its row only while it still holds its claim - a reduction that closed it mid-mint gets no row, no supersede, no completion", async () => {

@@ -3043,10 +3043,10 @@ committed after the read matches nothing and the edit rolls back (409); one
 landing after the retire waits, and the committed cancellation hands it to
 `REFUND_SUPERSEDED_PAYMENT`. Since #4217 the capture is no longer autocommit:
 it takes the `Payment` row and then the ask's row in one short transaction. So
-the retire takes the `Payment` row too (`lockPaymentForRefundedTotal`), after
-closing waiting recoveries and before stamping the first row. Stamping first
-and reaching the `Payment` row only at the reconcile would deadlock that
-capture (40P01; proved, and closed, by the #4217 race in
+the retire takes the `Payment` row too (`lockPaymentForRefundedTotal`), first:
+before it closes waiting recoveries and before it stamps the first row.
+Stamping first and reaching the `Payment` row only at the reconcile would
+deadlock that capture (40P01; proved, and closed, by the #4217 race in
 `additional-ask-reduction.realdb.test.ts`). No key or provider call changes.
 Its second counterpart (owner decision 9 Oct 2026) is the lockless recovery
 runner replaying a failed mint (`CREATE_ADDITIONAL_PAYMENT_INTENT`): a waiting
@@ -3066,8 +3066,8 @@ recovery is written in the edit's transaction; the door's own mint completes it
 fenced the same way (`writeReissuedAskUnderRecovery`). An increase folding a
 waiting re-issue in closes it with the same fence. All proven on real Postgres.
 Round 6: the retire closes waiting recoveries before it stamps the rows - the
-runner's own order (its claim hold writes the recovery, then, since #4217, the
-`Payment` row, then its row) - and a
+runner's own order (its claim hold writes the recovery, then its row; since
+#4217 both take the `Payment` row before either) - and a
 deadlock or write conflict there is the same 409; the runner re-checks its
 claim after its Stripe cancels, before queueing any invoice on its intent. The
 billed-offset invoice-correction note is enqueued inside the edit's
@@ -3884,8 +3884,8 @@ allocation): a deadlock, proved and closed by
 `card-refund-mirror-races.realdb.test.ts`. `NO KEY` strength, so a refund
 insert's foreign-key check (`FOR KEY SHARE`) on the same payment is not blocked.
 
-**#4217: every ledger-row writer, and the rebuild, takes the `Payment` row
-first.** Until #4217 this paragraph said the capture webhooks wrote one row per
+**#4217: every ledger-row writer that holds a row while it waits for the
+`Payment` row now takes the `Payment` row first, and so does the rebuild.** Until #4217 this paragraph said the capture webhooks wrote one row per
 autocommit statement and so could not join a cycle. That stopped being enough.
 `reconcilePaymentAggregates` read a payment's rows and reached the `Payment` row
 only at its update. So it could read, queue on that row behind a refund writer,
@@ -3905,9 +3905,14 @@ the pre-#4217 code). Now:
   each in the caller's transaction or a short one of its own
   (`withStoreTransaction`). The two `mark…` writers first learn the payment by a
   pure read (the intent's row, or the `Payment` pointer), then lock it and
-  re-read, so a pre-ledger payment's backfill runs only under the lock; a row
-  that moved payment meanwhile is refused. Mark-failed's "not captured" check is
-  a status-guarded `updateMany`.
+  re-read, so a pre-ledger payment's backfill runs only under the lock.
+  Mark-failed's "not captured" check is a status-guarded `updateMany`.
+- An intent's row never moves payment. The upsert's row write
+  (`writePaymentIntentTransaction`) matches only the locked payment's row and
+  refuses one the intent has on another payment; the saved-card settle and the
+  `mark…` writers' re-read refuse it the same way
+  (`IntentLedgerRowOnAnotherPaymentError`), before any write. A move would
+  change one payment's rows under the other payment's lock.
 - Three writers that write a row before they reach the rebuild take it first
   too: the price reduction's retire (#3954 above), the saved-card attempt's
   settle (`settleSavedCardChargeAttempt`, inside its release transaction), and
@@ -3918,27 +3923,59 @@ the pre-#4217 code). Now:
 - The Internet Banking settle (#4094) takes it after `lock(1)`, the lodge key
   and the member key, and re-reads the payment's figures under it; its rows are
   read under it. Its figure logic (#3979, `INV-PAY-126`) is unchanged.
+- The waiting ask's recovery row comes after the `Payment` row too (#4217
+  review). A reduction that gives credit back has written the `Payment` row
+  before its retire closes the recovery; the runner's claim hold
+  (`holdAdditionalIntentRecoveryClaim`) and the re-issue door
+  (`writeReissuedAskUnderRecovery`) used to take the recovery row and then the
+  `Payment` row, a deadlock. Both now lock the `Payment` row first, the retire
+  locks it before its recovery close, and an increase's fold-close
+  (`foldWaitingReissuedAsks`) before the recoveries it folds. That is also the
+  #4104 order (`Payment` row, then the `PaymentRecoveryOperation`).
 - A writer that reaches only the rebuild, such as the superseded-intent late
   capture in `payment-recovery.ts` (an autocommit row write, then the
   root-client rebuild), is covered by the rebuild's own lock.
+- Some writers need no lock because each of their statements autocommits, so
+  they never hold a row while they wait for another: the superseded-intent
+  marks in `payment-recovery.ts` (`markSupersededTransactionFailed` and
+  `markSupersededTransactionSucceeded`, before their rebuild), the attempt's
+  FAILED and PROCESSING flips in `saved-card-charge-request.ts`, the retired
+  card's ledger clear in `saved-card-charge-failure.ts`, and the invoice stamp
+  in `xero-booking-invoices.ts`. `beginSavedCardChargeAttempt` writes attempt
+  rows inside its claim transaction but never reaches the `Payment` row after
+  them, so it holds rows without waiting on that one.
+- The pre-lock lookups in the webhook handlers (`stripe-webhook-service.ts`)
+  and the confirm-modification-payment route (`findPaymentTransactionByIntentId`
+  on the root client) can still backfill rows outside the lock, but
+  only for a payment from before the ledger existed. A backfill inserts new
+  rows in autocommit statements and holds nothing while it waits. Routing them
+  through the pure lookup would drop the row they read for a legacy payment.
 
 The order is `lock(1)` where held, then the lodge key, then the member
-credit-ledger key, then the `Payment` row, then refund rows, then transaction
-rows (`INV-LOCK-001`, `INV-LOCK-002`). No advisory key and no row-lock statement
+credit-ledger key, then the `Payment` row, then refund rows, recovery rows and
+transaction rows (`INV-LOCK-001`, `INV-LOCK-002`). Every writer that holds two
+of those last rows holds the `Payment` row first, so their order beneath it
+cannot form a cycle: two of them on one payment queue on the `Payment` row. No advisory key and no row-lock statement
 was added: every site calls `lockPaymentForRefundedTotal`. Every holder of the
 `Payment` row was checked for a row it takes after it that a writer above
-already held: the retire and the saved-card settle were the two, and they now
-lock first. Proved by `payment-lock-before-rebuild.realdb.test.ts` (five forced
-interleavings, each failing on the pre-#4217 code) and the reduction race in
-`additional-ask-reduction.realdb.test.ts`; `payment-lock-before-rebuild.test.ts`
-pins the lock as each writer's first statement.
+already held. The retire, the saved-card settle, the claim hold, the re-issue
+door and the fold-close were those writers, and they now lock first.
+`payment-lock-before-rebuild.realdb.test.ts` proves it with five forced
+interleavings, each failing on the pre-#4217 code. Its third race stands in for
+the settle: an upsert under `lock(1)`, the settle's write, not the whole
+`markBookingPaymentSucceeded`. The two reduction races in
+`additional-ask-reduction.realdb.test.ts` cover the capture webhook, and the
+credit give-back against the real runner's claim hold.
+`payment-lock-before-rebuild.test.ts` pins the lock as each writer's first
+statement.
 
 **The cost: P2028 and Stripe's retry.** These writers were autocommit before
 #3640 and #4217, so they now carry Prisma's interactive-transaction limits (2 s
 to start, 5 s to finish). A webhook queued behind a long holder of the `Payment`
 row, such as a paid cancel's claim or an edit's settlement, can time out
-(P2028). It is loud, rolled back whole, answered 500 and retried by Stripe; a
-door's own write that times out is an error its user retries. The trade is
+(P2028). It is loud, rolled back whole (proved by the suite's sixth race: the
+capture writes nothing, and its retry records it), answered 500 and retried by
+Stripe; a door's own write that times out is an error its user retries. The trade is
 deliberate, as on #3640: a loud retry rather than a refunded total that
 silently disagrees with its detail.
 

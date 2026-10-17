@@ -413,7 +413,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   refuses only when headroom is gone, and a capacity race's guarded correction,
   which only lowers a total to its refund rows (`INV-PAY-135`). All take the `Payment` row first
   (`lockPaymentForRefundedTotal`), then refund rows, then transaction rows; so
-  does every ledger-row writer, and the aggregate rebuild before it reads (#4217).
+  does every ledger-row writer that waits while holding a row, and the rebuild (#4217).
 - Two writers set an organiser-settled child's mirror directly, because the
   child has no transaction rows: the pre-#3653 group-settlement path
   (`INV-PAY-031`–`037`) and the organiser child refund executor
