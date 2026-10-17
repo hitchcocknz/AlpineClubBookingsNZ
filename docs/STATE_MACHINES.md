@@ -2028,6 +2028,14 @@ inbound fence records its conflict the same way, under the
 ### Manual refund task lifecycle (#2262)
 
 ```text
+COMPLETED -> OPEN   (#4162, owner 17 Oct 2026: a CANCELLED_BOOKING_HAND_BACK on a
+                     cancelled booking whose bank refund note Xero voided, when
+                     the treasurer confirms "Refund cancelled" on Stuck States:
+                     lock(1), the Payment row, the allocation taken back out and
+                     the BANK_REFUND line reversed, then this status-fenced
+                     claim, clearing completedAt/completedByMemberId. Completed
+                     again, its new BANK_REFUND line takes the chain's next key,
+                     handback:<task>:after:<reversal>)
 OPEN -> COMPLETED   (finance:edit; writes the local refund allocation and a
                      REFUNDED BookingEvent — the ONLY moment the ledger says
                      the money went back)
@@ -3563,7 +3571,8 @@ LISTED -> RE_RECORDED      (Record again: finance:edit, lock(1) then the Payment
   RE_RECORDED, its note voided in turn -> that note is LISTED, flagged
 LISTED -> CONFIRMED_CANCELLED (Confirm, reason "Refund cancelled": same tiers;
                             unwinds the allocation, reverses the BANK_REFUND
-                            line) -> done
+                            line; on a cancelled booking reopens the hand-back
+                            task, COMPLETED -> OPEN) -> done
 LISTED -> CONFIRMED_REPLACED_IN_XERO (Confirm, reason "Replaced by hand in
                             Xero": same tiers; moves nothing) -> done
 ```

@@ -143,16 +143,37 @@ async function recordedRefundNoteFigure(
 ): Promise<number | null> {
   const onLink = readNumber(asRecord(link.metadata)?.[field]);
   if (onLink !== null) return onLink;
-  // Oldest first: the row that raised the note. A later row closed as covered
-  // by it carries its own enqueue figures, not the note's.
-  const create = await db.xeroSyncOperation.findFirst({
-    where: { entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: paymentId, xeroObjectId: link.xeroObjectId },
-    orderBy: { createdAt: "asc" },
-    select: { requestPayload: true },
-  });
+  const create = await readRefundNoteRaisingRow(paymentId, link.xeroObjectId, db);
   const payload = asRecord(create?.requestPayload);
   if (field === "watermarkCents") return readNumber(payload?.watermarkCents);
   return readNumber(payload?.refundAmountCents) ?? providerAmountToCents(asRecord(payload?.allocation)?.amount);
+}
+
+/**
+ * THE ROW THAT RAISED A NOTE: the oldest outbound credit-note create on the
+ * payment naming it. A later row closed as covered by it
+ * (`coveredByExistingNote`) names it too, with its own enqueue figures, so
+ * oldest is the rule. One home (#4162 review, `INV-SSOT-001`): the recorded
+ * figure below, and the voided bank-transfer list's reads of a voided note's
+ * method, task and resolved-in-Xero mark, all ask here.
+ */
+export async function readRefundNoteRaisingRow(
+  paymentId: string,
+  creditNoteId: string,
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+) {
+  return db.xeroSyncOperation.findFirst({
+    where: {
+      direction: "OUTBOUND",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localModel: "Payment",
+      localId: paymentId,
+      xeroObjectId: creditNoteId,
+    },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, requestPayload: true, manuallyResolvedAt: true },
+  });
 }
 
 /**

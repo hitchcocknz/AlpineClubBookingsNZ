@@ -36,6 +36,8 @@ vi.mock("@/lib/stripe-cash-refund-evidence", () => ({
   resolveStripeCashRefundEvidence: mocks.resolveStripeCashRefundEvidence,
 }));
 
+// #4162: the voided bank-transfer refund list reads its own statement; its rules are its own suites'.
+vi.mock("@/lib/bank-refund-void-report", () => ({ buildBankRefundVoidDigestSection: async () => null }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: mocks.transaction,

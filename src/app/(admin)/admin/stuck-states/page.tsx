@@ -205,7 +205,7 @@ export default async function AdminStuckStatesPage() {
   // note was voided, each recorded again or confirmed here - finance:view to
   // list (they name bookings and money), finance:edit to answer.
   const [dashboard, deadCardRefunds, cardRefundsPaidTwice, bankRefundVoids] = await Promise.all([
-    getStuckStateDashboard({ viewerCanViewMembership }),
+    getStuckStateDashboard({ viewerCanViewMembership, viewerCanViewFinance }),
     viewerCanViewFinance ? listDeadCardRefunds() : Promise.resolve([]),
     viewerCanViewFinance ? listCardRefundsPaidTwice() : Promise.resolve([]),
     viewerCanViewFinance ? listBankRefundVoids() : Promise.resolve([]),

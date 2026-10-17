@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   linkFindFirst: vi.fn(),
   blocking: vi.fn(),
   coverage: vi.fn(),
+  queryRaw: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
@@ -27,6 +28,7 @@ vi.mock("@/lib/xero-refund-note-link-repair", () => ({
 }));
 vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
   sumRefundCreditNoteCoverageOfRowsCents: mocks.coverage,
+  isCoveredByExistingNoteRow: () => false,
 }));
 
 import { bankRefundVoidGraceThreshold, listBankRefundVoids } from "@/lib/bank-refund-void-report";
@@ -53,6 +55,7 @@ function link(overrides: Record<string, unknown> = {}) {
 }
 
 const db = {
+  $queryRaw: mocks.queryRaw,
   xeroObjectLink: { findMany: mocks.linkFindMany, findFirst: mocks.linkFindFirst },
   payment: { findMany: mocks.paymentFindMany },
   bankRefundVoidResolution: { findMany: mocks.resolutionFindMany, findFirst: mocks.resolutionFindFirst },
@@ -61,6 +64,7 @@ const db = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.queryRaw.mockResolvedValue([{ id: "link-v" }]);
   mocks.linkFindMany.mockImplementation(async (args: { where: { active?: boolean } }) =>
     args.where.active === true ? [] : [link()],
   );
@@ -75,27 +79,27 @@ beforeEach(() => {
 });
 
 describe("which voided notes the list reads", () => {
-  it("asks only for inactive refund-note links recorded VOIDED or DELETED, past the grace window", async () => {
+  it("asks one statement for inactive refund-note links on bank transfers, recorded VOIDED or DELETED in any case, past the grace window", async () => {
     await listBankRefundVoids({ now: NOW, db });
 
-    const where = mocks.linkFindMany.mock.calls[0]![0].where;
-    expect(where).toEqual({
-      localModel: "Payment",
-      xeroObjectType: "CREDIT_NOTE",
-      role: "REFUND_CREDIT_NOTE",
-      active: false,
-      updatedAt: { lt: bankRefundVoidGraceThreshold(NOW) },
-      OR: [{ metadata: { path: ["status"], equals: "VOIDED" } }, { metadata: { path: ["status"], equals: "DELETED" } }],
-    });
+    const [strings, ...values] = mocks.queryRaw.mock.calls[0]! as [TemplateStringsArray, ...unknown[]];
+    const sql = strings.join("?");
+    expect(sql).toContain(`l."role" = 'REFUND_CREDIT_NOTE'`);
+    expect(sql).toContain(`l."active" = false`);
+    expect(sql).toContain(`upper(btrim(l."metadata"->>'status'))`);
+    expect(sql).toContain(`p."source" = 'INTERNET_BANKING'`);
+    expect(values[0]).toEqual(bankRefundVoidGraceThreshold(NOW));
     expect(bankRefundVoidGraceThreshold(NOW)).toEqual(new Date("2026-06-30T00:00:00.000Z"));
+    expect(mocks.linkFindMany.mock.calls[0]![0].where).toEqual({ id: { in: ["link-v"] } });
   });
 
-  it("keeps only bank-transfer payments", async () => {
+  it("keeps only bank-transfer payments, again in code", async () => {
     await listBankRefundVoids({ now: NOW, db });
     expect(mocks.paymentFindMany.mock.calls[0]![0].where).toEqual({ id: { in: ["pay-1"] }, source: "INTERNET_BANKING" });
   });
 
   it("MUTATION: re-checks each row's role, activity, status and age in code, so a looser query cannot widen the list", async () => {
+    mocks.queryRaw.mockResolvedValue(["mod", "request", "active", "live", "fresh", "listed"].map((id) => ({ id })));
     mocks.linkFindMany.mockImplementation(async (args: { where: { active?: boolean } }) =>
       args.where.active === true
         ? []

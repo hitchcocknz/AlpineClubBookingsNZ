@@ -213,10 +213,16 @@ already disagree with Xero it can raise less. The row then comes back on the
 list, marked as not reaching Xero for the full amount, and its **Retry** sends
 only the rest.
 
-**What to do.** Until cutover completes and the old colour's outbox has
-drained, tell your treasurer not to use **Record again** or **Retry**.
-**Confirm**, with either reason, is safe at any time. After cutover, a row
-marked as not reaching Xero in full can be retried from the same list.
+The same window touches **Refund cancelled** on a cancelled booking: it puts
+the original refund task back on the refund list, and if the old colour then
+completes that task, it posts no booking-ledger line for the payment (its key
+is already taken), which the ledger check reports.
+
+**What to do.** Until cutover completes and the old colour has drained, tell
+your treasurer not to use **Record again**, **Retry**, or **Confirm** with
+"Refund cancelled". **Confirm** with "Replaced by hand in Xero" is safe at any
+time. After cutover, a row marked as not reaching Xero in full can be retried
+from the same list.
 
 ### Do not mark an edit's refund task paid back until cutover completes (#3827)
 

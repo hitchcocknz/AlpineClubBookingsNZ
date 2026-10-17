@@ -65,8 +65,8 @@ import {
   BankRefundVoidResolutionError,
   confirmBankTransferRefundCancelled,
   reRecordBankTransferRefund,
-  retryBankTransferRefundReRecord,
 } from "@/lib/bank-refund-void-resolution";
+import { retryBankTransferRefundReRecord } from "@/lib/bank-refund-void-retry";
 
 const input = { linkId: "link-1", expectedAmountCents: 20_000, note: "Paid by bank", actingMemberId: "officer-1" };
 

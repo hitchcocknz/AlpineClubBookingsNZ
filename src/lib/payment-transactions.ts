@@ -1634,8 +1634,11 @@ export class RefundUnwindExceedsAllocatedError extends Error {
  * treasurer confirmed it was cancelled - its Xero note was voided and the
  * member was never paid. The inverse of `applyLocalRefundAllocation`: the
  * Payment row first (`lockPaymentForRefundedTotal`), then each transaction that
- * records a refund, newest first, each lowered through the shared
- * compare-and-set and never below nothing, its refund status re-derived.
+ * records a refund in the REVERSE of the fill's order (#4162 review F2) - the
+ * fill places newest first, so this takes back oldest first - each lowered
+ * through the shared compare-and-set, its refund status re-derived, and never
+ * below the card refunds Stripe recorded against it (its counted
+ * `PaymentRefund` rows): money that went back by card is never "unwound".
  *
  * It does NOT re-derive the payment's refunded total
  * (`reconcilePaymentAggregates`): on a bank transfer the inbound sync already
@@ -1662,10 +1665,20 @@ export async function unwindLocalRefundAllocation({
     if (!payment) {
       throw new Error("Payment not found");
     }
+    const cardFloorCents = new Map<string, number>();
+    for (const refund of await db.paymentRefund.findMany({
+      where: { paymentId, paymentTransactionId: { not: null } },
+      select: { paymentTransactionId: true, amountCents: true, status: true },
+    })) {
+      if (!refund.paymentTransactionId || !isRecordedRefundStatus(refund.status)) continue;
+      cardFloorCents.set(refund.paymentTransactionId, (cardFloorCents.get(refund.paymentTransactionId) ?? 0) + Math.max(0, refund.amountCents));
+    }
+    const unwindable = (row: { id: string; refundedAmountCents: number }) =>
+      Math.max(0, row.refundedAmountCents - (cardFloorCents.get(row.id) ?? 0));
     const refundedTransactions = [...payment.transactions]
-      .filter((transaction) => transaction.refundedAmountCents > 0)
-      .sort(compareLedgerRowsNewestFirst);
-    const allocatedCents = refundedTransactions.reduce((sum, transaction) => sum + transaction.refundedAmountCents, 0);
+      .filter((transaction) => unwindable(transaction) > 0)
+      .sort((a, b) => compareLedgerRowsNewestFirst(b, a));
+    const allocatedCents = refundedTransactions.reduce((sum, transaction) => sum + unwindable(transaction), 0);
     if (amountCents > allocatedCents) {
       throw new RefundUnwindExceedsAllocatedError();
     }
@@ -1676,10 +1689,11 @@ export async function unwindLocalRefundAllocation({
         break;
       }
       const take = remainingAmountCents;
+      const floorCents = cardFloorCents.get(transaction.id) ?? 0;
       const { previousCents, nextCents } = await compareAndSetRefundedAmount(
         db,
         transaction.id,
-        (row) => row.refundedAmountCents - Math.min(Math.max(row.refundedAmountCents, 0), take),
+        (row) => row.refundedAmountCents - Math.min(Math.max(row.refundedAmountCents - floorCents, 0), take),
         { writeStatus: true }
       );
       remainingAmountCents -= previousCents - nextCents;

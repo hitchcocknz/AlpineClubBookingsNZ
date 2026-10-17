@@ -43,6 +43,8 @@ vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
   }),
 }));
 
+// #4162: the voided bank-transfer refund list reads its own statement; its rules are its own suites'.
+vi.mock("@/lib/bank-refund-void-report", () => ({ countBankRefundVoids: async () => 0 }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findMany: mocks.bookingFindMany },

@@ -2695,6 +2695,32 @@ describe("processQueuedXeroOutboxOperations", () => {
     }));
   });
 
+  it("MUTATION (#4162): dispatches a record-again's note with its record, so it is sized and keyed on it", async () => {
+    mocks.findManyOperations.mockResolvedValue([
+      {
+        id: "op_rerecord_1",
+        localId: "payment_1",
+        localModel: "Payment",
+        createdByMemberId: "admin_1",
+        requestPayload: {
+          queueType: "REFUND_CREDIT_NOTE",
+          refundAmountCents: 2000,
+          watermarkCents: 2000,
+          refundMethod: "internet-banking",
+          reRecordId: "res_1",
+        },
+      },
+    ]);
+    mocks.createXeroCreditNote.mockResolvedValue("cn_rerecord_1");
+
+    await processQueuedXeroOutboxOperations({ limit: 5 });
+
+    expect(mocks.createXeroCreditNote).toHaveBeenCalledWith("payment_1", 2000, expect.objectContaining({
+      syncOperationId: "op_rerecord_1",
+      reRecordId: "res_1",
+    }));
+  });
+
   it("MUTATION (#3880): a refund-note row whose payment has another note mid-raise goes back to PENDING, reason kept, never FAILED", async () => {
     mocks.findManyOperations.mockResolvedValue([
       {

@@ -3,12 +3,10 @@ import "server-only";
 import { Prisma, type PaymentStatus } from "@prisma/client";
 
 import { createAuditLog } from "@/lib/audit";
-import { reRecordNoteRowsWhere } from "@/lib/bank-refund-re-record-note";
 import {
   readBankRefundVoidPaymentId,
   readBankRefundVoidUnderLock,
-  readReRecordNoteState,
-  readVoidedNoteCreateRow,
+  readReRecordResolutionOfNote,
   type BankRefundVoidUnderLock,
 } from "@/lib/bank-refund-void-report";
 import {
@@ -18,7 +16,7 @@ import {
   type BankRefundVoidConfirmReason,
 } from "@/lib/bank-refund-void-copy";
 import { liveLines } from "@/lib/booking-ledger-modification-posting";
-import { handBackKey } from "@/lib/booking-ledger-posting-keys";
+import { findPostedSettlementLines } from "@/lib/booking-ledger-read";
 import { settlementLineReversal, type PostedSettlementLine } from "@/lib/booking-ledger-settlement-posting";
 import { buildBookingLedgerRows, writeBookingLedgerRows } from "@/lib/booking-ledger-write";
 import { bookingOwner } from "@/lib/booking-owner";
@@ -36,7 +34,12 @@ import { getNextRefundedPaymentStatus } from "@/lib/xero-inbound/amounts";
 import { asRecord, readString } from "@/lib/xero-json";
 import { enqueueXeroRefundCreditNoteOperation, kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
-import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
+import {
+  isRefundCreditNoteLinkCancelledInXero,
+  readRefundNoteRaisingRow,
+  recordedRefundNoteAmountCents,
+} from "@/lib/xero-refund-note-status";
+import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } from "@/lib/xero-resolved-in-xero-fences";
 
 /**
  * #4162 (owner decisions 16 and 17 Oct 2026, `INV-ADDPAY-042`): THE
@@ -73,7 +76,7 @@ import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-
  *   leaves the list. The reason is the outcome (`CONFIRMED_CANCELLED` or
  *   `CONFIRMED_REPLACED_IN_XERO`, owner 17 Oct 2026), never words in the note;
  *   no Xero call and no member email.
- * - RETRY (`retryBankTransferRefundReRecord`, owner 17 Oct 2026): a
+ * - RETRY (`retryBankTransferRefundReRecord`, `bank-refund-void-retry.ts`, owner 17 Oct 2026): a
  *   record-again whose own note failed or landed short is queued again under
  *   the SAME resolution, so the note's Xero key (`re-record:<id>:<own cover>`)
  *   is the one the failed attempt used and Xero hands back any note that
@@ -164,7 +167,7 @@ async function readUnansweredVoidUnderLocks(
 }
 
 /** The payment's figures both answers read under the locks: its refunded total and what its transactions record. */
-async function readPaymentFigures(tx: Prisma.TransactionClient, paymentId: string) {
+export async function readPaymentFigures(tx: Prisma.TransactionClient, paymentId: string) {
   const payment = await tx.payment.findUnique({
     where: { id: paymentId },
     select: { id: true, bookingId: true, amountCents: true, refundedAmountCents: true, status: true },
@@ -176,7 +179,7 @@ async function readPaymentFigures(tx: Prisma.TransactionClient, paymentId: strin
   });
   const booking = await tx.booking.findUnique({
     where: { id: payment.bookingId },
-    select: { id: true, lodgeId: true, memberId: true },
+    select: { id: true, lodgeId: true, memberId: true, status: true },
   });
   if (!booking) throw new BankRefundVoidResolutionError("Voided refund note not found.", 404);
   return { payment, booking, allocatedCents: Math.max(0, allocated._sum.refundedAmountCents ?? 0) };
@@ -233,9 +236,13 @@ export interface ReRecordBankTransferRefundResult {
   noteOperationId: string;
 }
 
-/** V's own create row's method, wording and credited invoice, which its replacement copies (`INV-PAY-101`). */
-async function voidedNoteDocument(tx: Prisma.TransactionClient, paymentId: string, creditNoteId: string) {
-  const create = await readVoidedNoteCreateRow(tx, paymentId, creditNoteId);
+/**
+ * V's raising row's method, wording and credited invoice, which its
+ * replacement copies (`INV-PAY-101`), and the late capture it answered with the
+ * day it is dated (#4162 review F7), so a late capture's notes still count it.
+ */
+export async function voidedNoteDocument(tx: Prisma.TransactionClient, paymentId: string, creditNoteId: string) {
+  const create = await readRefundNoteRaisingRow(paymentId, creditNoteId, tx);
   const recorded = create ? parsePaymentCreditNoteRetryInput(create) : null;
   const creditsInvoiceId =
     recorded?.creditsInvoiceId ?? readString(asRecord(asRecord(create?.requestPayload)?.allocation)?.invoiceId) ?? undefined;
@@ -246,8 +253,59 @@ async function voidedNoteDocument(tx: Prisma.TransactionClient, paymentId: strin
           refundMethod: "internet-banking" as const,
           ...(recorded?.noteWording ? { noteWording: recorded.noteWording } : {}),
         };
-  return { ...method, ...(creditsInvoiceId ? { creditsInvoiceId } : {}) };
+  return {
+    ...method,
+    ...(creditsInvoiceId ? { creditsInvoiceId } : {}),
+    ...(recorded?.paymentIntentId ? { paymentIntentId: recorded.paymentIntentId } : {}),
+    ...(recorded?.documentDate ? { documentDate: recorded.documentDate } : {}),
+  };
 }
+
+/** The other voided refund notes on this payment nobody has answered: what else the void recounts took out of the total. */
+async function otherUnansweredVoidCents(
+  tx: Prisma.TransactionClient,
+  paymentId: string,
+  voidedCreditNoteId: string,
+): Promise<number | null> {
+  const links =
+    (await tx.xeroObjectLink.findMany({
+      where: { localModel: "Payment", localId: paymentId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE", active: false, xeroObjectId: { not: voidedCreditNoteId } },
+      select: { xeroObjectId: true, metadata: true },
+    })) ?? [];
+  const answered = new Set(
+    ((await tx.bankRefundVoidResolution.findMany({ where: { paymentId }, select: { voidedCreditNoteId: true } })) ?? []).map(
+      (row) => row.voidedCreditNoteId,
+    ),
+  );
+  let cents = 0;
+  for (const link of links) {
+    if (!isRefundCreditNoteLinkCancelledInXero(link.metadata) || answered.has(link.xeroObjectId)) continue;
+    const amount = await recordedRefundNoteAmountCents(paymentId, link, tx);
+    if (amount === null) return null;
+    cents += amount;
+  }
+  return cents;
+}
+
+/**
+ * #4162 review (money F1): what the payment's LIVE refund notes already credit
+ * in Xero - its active links plus the notes resolved by hand
+ * (`sumRefundCreditNoteCoverageCents`), refused when one cannot be read.
+ */
+async function liveRefundNoteCoverageCents(tx: Prisma.TransactionClient, paymentId: string): Promise<number> {
+  const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, tx);
+  if (resolved.unreadableOperationIds.length > 0) {
+    throw new BankRefundVoidResolutionError(
+      "A refund credit note on this payment was resolved by hand in Xero and its amount cannot be read. Ask a developer to reconcile it.",
+      409,
+    );
+  }
+  return sumRefundCreditNoteCoverageCents(paymentId, resolved, tx);
+}
+
+/** Where both money answers point when Xero already holds a note for this refund. */
+const ALREADY_NOTED_MESSAGE =
+  "Xero already has a live credit note covering this refund. If you replaced the voided note by hand, use Confirm with \"Replaced by hand in Xero\".";
 
 /** Record a voided bank-transfer refund again. See the module comment. */
 export async function reRecordBankTransferRefund(
@@ -273,10 +331,17 @@ export async function reRecordBankTransferRefund(
         409,
       );
     }
-    const restoredCents = Math.min(amountCents, Math.max(0, allocatedCents - payment.refundedAmountCents));
-    if (restoredCents !== 0 && restoredCents !== amountCents) {
+    // #4162 review (money F1): never a second note for money Xero already credits.
+    if ((await liveRefundNoteCoverageCents(tx, payment.id)) + amountCents > allocatedCents) {
+      throw new BankRefundVoidResolutionError(ALREADY_NOTED_MESSAGE, 409);
+    }
+    // Review F6: the recount took out every unanswered void, not only this one.
+    const othersCents = await otherUnansweredVoidCents(tx, payment.id, voided.link.xeroObjectId);
+    const gapForThisCents = allocatedCents - payment.refundedAmountCents - (othersCents ?? 0);
+    const restoredCents = Math.min(amountCents, Math.max(0, gapForThisCents));
+    if (othersCents === null || (restoredCents !== 0 && restoredCents !== amountCents)) {
       throw new BankRefundVoidResolutionError(
-        "This payment's refunded total does not match its refund records, so it cannot be recorded again here. Ask a developer to reconcile it.",
+        "This payment's refunded total does not match its refund records yet. Answer the other voided notes on this payment first, then try again.",
         409,
       );
     }
@@ -372,69 +437,84 @@ export interface ConfirmBankTransferRefundCancelledResult {
   unwoundCents: number;
   /** The `BANK_REFUND` line reversed, or null when there was none to reverse. */
   reversedLedgerLineId: string | null;
+  /** On a cancelled booking, the hand-back task put back on the refund list. */
+  reopenedTaskId: string | null;
 }
 
 /** The voided note's `BANK_REFUND` line: one live line for exactly its amount, or none. */
 type LedgerLineMatch = { kind: "line"; line: PostedSettlementLine } | { kind: "none" } | { kind: "ambiguous" };
 
 /**
- * Which live `BANK_REFUND` line records V's refund. A note raised for a task
- * (a review's or a close's: `reviewTaskId`, `paidAnotherWayTaskId` on its
- * create row) names it by key (`handBackKey`); the payment's one canonical
- * note does not, so it is the one live hand-back line of V's amount on one of
- * the payment's completed tasks. More than one candidate, or one for another
- * amount, is ambiguous and refused; none is a refund the ledger never posted.
+ * The hand-back task a note answers: its raising row's (`reviewTaskId`,
+ * `paidAnotherWayTaskId`), or - for a note a record-again raised - that of the
+ * voided note it re-recorded, followed back (#4162 review F3). Null for the
+ * payment's one canonical note, which names none.
+ */
+async function noteHandBackTaskId(tx: Prisma.TransactionClient, paymentId: string, creditNoteId: string): Promise<string | null> {
+  const seen = new Set<string>();
+  for (let noteId: string | null = creditNoteId; noteId !== null && !seen.has(noteId); ) {
+    seen.add(noteId);
+    const payload = asRecord((await readRefundNoteRaisingRow(paymentId, noteId, tx))?.requestPayload);
+    const taskId = readString(payload?.reviewTaskId) ?? readString(payload?.paidAnotherWayTaskId);
+    if (taskId) return taskId;
+    noteId = (await readReRecordResolutionOfNote(tx, paymentId, noteId))?.voidedCreditNoteId ?? null;
+  }
+  return null;
+}
+
+/**
+ * Which live `BANK_REFUND` line records V's refund (#4162 review F3). A note
+ * that names its task (directly, or through the note it re-recorded) takes
+ * that task's line; the payment's one canonical note takes the one live
+ * hand-back line of V's amount on the payment's completed tasks. Ambiguous
+ * whenever live hand-back lines exist and none matches exactly once; none only
+ * when the booking holds no live `BANK_REFUND` line at all.
  */
 async function findVoidedRefundLedgerLine(
   tx: Prisma.TransactionClient,
   input: { bookingId: string; paymentId: string; creditNoteId: string; amountCents: number },
 ): Promise<LedgerLineMatch> {
-  const lines = liveLines(
-    (await tx.bookingLedgerLine.findMany({
-      where: { bookingId: input.bookingId, kind: "BANK_REFUND" },
-      select: {
-        id: true,
-        postingKey: true,
-        reversesLineId: true,
-        kind: true,
-        sign: true,
-        quantity: true,
-        unitCents: true,
-        amountCents: true,
-        anchorKind: true,
-        anchorId: true,
-        settlementMethod: true,
-        narration: true,
-      },
-    })) ?? [],
-  );
-  const create = await readVoidedNoteCreateRow(tx, input.paymentId, input.creditNoteId);
-  const payload = asRecord(create?.requestPayload);
-  const taskId = readString(payload?.reviewTaskId) ?? readString(payload?.paidAnotherWayTaskId);
-  const toPosted = (line: (typeof lines)[number]): PostedSettlementLine => ({
-    ...line,
-    kind: line.kind as PostedSettlementLine["kind"],
-    sign: line.sign === 1 ? 1 : -1,
-    anchorKind: line.anchorKind as PostedSettlementLine["anchorKind"],
-    settlementMethod: line.settlementMethod as PostedSettlementLine["settlementMethod"],
-  });
-  if (taskId) {
-    const own = lines.find((line) => line.postingKey === handBackKey(taskId));
-    if (!own) return { kind: "none" };
-    return own.amountCents === -input.amountCents ? { kind: "line", line: toPosted(own) } : { kind: "ambiguous" };
+  const lines = liveLines(await findPostedSettlementLines(tx, input.bookingId, { kind: "BANK_REFUND" }));
+  if (lines.length === 0) return { kind: "none" };
+  const isV = (line: PostedSettlementLine) => line.sign * line.unitCents * line.quantity === -input.amountCents;
+  const taskId = await noteHandBackTaskId(tx, input.paymentId, input.creditNoteId);
+  const taskIds = taskId
+    ? new Set([taskId])
+    : new Set(
+        ((await tx.manualRefundTask.findMany({ where: { paymentId: input.paymentId, status: "COMPLETED" }, select: { id: true } })) ?? []).map(
+          (task) => task.id,
+        ),
+      );
+  const exact = lines.filter((line) => line.anchorKind === "REVIEW_TASK" && taskIds.has(line.anchorId) && isV(line));
+  // A named task's own line; the canonical note's only when no other live line has its amount.
+  const unique = exact.length === 1 && (taskId !== null || lines.filter(isV).length === 1);
+  return unique ? { kind: "line", line: exact[0]! } : { kind: "ambiguous" };
+}
+
+/**
+ * #4162 (owner decision 17 Oct 2026, comment 6228770888): on a CANCELLED
+ * booking a cancelled refund is still owed - the cancellation promised it - so
+ * the original bank hand-back task goes back to OPEN, to be paid or written off
+ * on the treasurer's refund list; the census then reads it as an open
+ * hand-back (`IN_FLIGHT_HAND_BACK`). Status-guarded, as a reopen is; its
+ * completion fields describe a closure it no longer has. Only a cancellation's
+ * hand-back: an edit review's would re-run its closure if completed again.
+ */
+async function reopenCancelledBookingHandBack(tx: Prisma.TransactionClient, taskId: string): Promise<void> {
+  const task = await tx.manualRefundTask.findUnique({ where: { id: taskId }, select: { kind: true, status: true } });
+  if (task?.kind !== "CANCELLED_BOOKING_HAND_BACK" || task.status !== "COMPLETED") {
+    throw new BankRefundVoidResolutionError(
+      "This refund did not come from the booking's cancellation hand-back, so it cannot be put back on the refund list here. Ask a developer to reconcile it.",
+      409,
+    );
   }
-  const taskIds = new Set(
-    (
-      (await tx.manualRefundTask.findMany({
-        where: { paymentId: input.paymentId, status: "COMPLETED" },
-        select: { id: true },
-      })) ?? []
-    ).map((task) => task.id),
-  );
-  const sameAmount = lines.filter((line) => line.amountCents === -input.amountCents);
-  const onTasks = sameAmount.filter((line) => line.anchorKind === "REVIEW_TASK" && taskIds.has(line.anchorId));
-  if (onTasks.length === 1 && sameAmount.length === 1) return { kind: "line", line: toPosted(onTasks[0]!) };
-  return sameAmount.length === 0 ? { kind: "none" } : { kind: "ambiguous" };
+  const claimed = await tx.manualRefundTask.updateMany({
+    where: { id: taskId, status: "COMPLETED" },
+    data: { status: "OPEN", completedAt: null, completedByMemberId: null },
+  });
+  if (claimed.count !== 1) {
+    throw new BankRefundVoidResolutionError("This refund's hand-back changed while you were answering - refresh and try again.", 409);
+  }
 }
 
 /** Confirm a voided bank-transfer refund note cancelled, or replaced by hand in Xero. See the module comment. */
@@ -455,6 +535,7 @@ export async function confirmBankTransferRefundCancelled(
 
     let unwoundCents = 0;
     let reversedLedgerLineId: string | null = null;
+    let reopenedTaskId: string | null = null;
     if (input.reason === "cancelled") {
       // Q2: the detail follows the total. V's amount comes out of the
       // transactions and its line is reversed; the total never stays above
@@ -466,13 +547,18 @@ export async function confirmBankTransferRefundCancelled(
           409,
         );
       }
+      // #4162 review (money F1): never take back money a live Xero note still credits.
+      if ((await liveRefundNoteCoverageCents(tx, payment.id)) > allocatedCents - amountCents) {
+        throw new BankRefundVoidResolutionError(ALREADY_NOTED_MESSAGE, 409);
+      }
       const match = await findVoidedRefundLedgerLine(tx, {
         bookingId: booking.id,
         paymentId: payment.id,
         creditNoteId: voided.link.xeroObjectId,
         amountCents,
       });
-      if (match.kind === "ambiguous") {
+      const cancelledBooking = booking.status === "CANCELLED";
+      if (match.kind === "ambiguous" || (cancelledBooking && match.kind !== "line")) {
         throw new BankRefundVoidResolutionError(
           "The booking ledger has no single line for this refund, so it cannot be taken back here. Ask a developer to reconcile it.",
           409,
@@ -507,6 +593,17 @@ export async function confirmBankTransferRefundCancelled(
           );
         }
         reversedLedgerLineId = match.line.id;
+        // The cancellation still owes it: back on the refund list (owner, 17 Oct 2026).
+        if (cancelledBooking) {
+          if (match.line.anchorKind !== "REVIEW_TASK") {
+            throw new BankRefundVoidResolutionError(
+              "This refund did not come from the booking's cancellation hand-back, so it cannot be put back on the refund list here. Ask a developer to reconcile it.",
+              409,
+            );
+          }
+          await reopenCancelledBookingHandBack(tx, match.line.anchorId);
+          reopenedTaskId = match.line.anchorId;
+        }
       }
     }
 
@@ -544,6 +641,7 @@ export async function confirmBankTransferRefundCancelled(
           amountCents,
           unwoundCents,
           reversedLedgerLineId,
+          reopenedTaskId,
         },
       },
       tx,
@@ -557,131 +655,7 @@ export async function confirmBankTransferRefundCancelled(
       reason: input.reason,
       unwoundCents,
       reversedLedgerLineId,
+      reopenedTaskId,
     };
   });
-}
-
-export interface RetryBankTransferRefundReRecordInput {
-  /** The voided note's link id (`BankRefundVoidItem.linkId`). */
-  linkId: string;
-  /** An optional note for the audit row. */
-  note?: string | null;
-  actingMemberId: string;
-}
-
-export interface RetryBankTransferRefundReRecordResult {
-  resolutionId: string;
-  paymentId: string;
-  bookingId: string;
-  /** The record-again's own failed attempts retired in favour of the new row. */
-  retiredOperationIds: string[];
-  noteOperationId: string;
-}
-
-/** Why a retry is refused, by the state its record-again's note is in. */
-const RETRY_STATE_REFUSALS = {
-  landed: "This record-again's credit note already reached Xero, so there is nothing to retry.",
-  "on-its-way": "This record-again's credit note is already on its way to Xero. Wait for it, then refresh.",
-  "voided-again": "Xero voided this record-again's credit note too. Answer that note on its own row instead.",
-} as const;
-
-/** Retry a record-again whose own note failed or landed short. See the module comment. */
-export async function retryBankTransferRefundReRecord(
-  input: RetryBankTransferRefundReRecordInput,
-): Promise<RetryBankTransferRefundReRecordResult> {
-  const auditNote = normaliseManualPaymentNote(input.note);
-  const now = new Date();
-
-  const result = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    const paymentId = await readBankRefundVoidPaymentId(tx, input.linkId);
-    if (!paymentId) throw new BankRefundVoidResolutionError("Voided refund note not found.", 404);
-    // `lock(1)` is held; the Payment row before anything about it is read.
-    await lockPaymentForRefundedTotal(tx, paymentId);
-    const voided = await readBankRefundVoidUnderLock(tx, input.linkId, now);
-    if (!voided || voided.paymentId !== paymentId) {
-      throw new BankRefundVoidResolutionError("This is not a voided bank-transfer refund note. The list has been refreshed.", 404);
-    }
-    const resolution = await tx.bankRefundVoidResolution.findUnique({
-      where: { paymentId_voidedCreditNoteId: { paymentId, voidedCreditNoteId: voided.link.xeroObjectId } },
-      select: { id: true, outcome: true, amountCents: true, noteOperationId: true },
-    });
-    if (!resolution || resolution.outcome !== "RE_RECORDED") {
-      throw new BankRefundVoidResolutionError("Only a refund recorded again can be retried.", 409);
-    }
-    const state = await readReRecordNoteState(tx, paymentId, resolution);
-    if (state !== "failed") throw new BankRefundVoidResolutionError(RETRY_STATE_REFUSALS[state], 409);
-
-    // The claim: the record-again's own failed attempts stop being replayable,
-    // status-guarded on what was read, so only the row queued below can mint.
-    const rowsWhere = reRecordNoteRowsWhere(paymentId, resolution.id, resolution.noteOperationId);
-    const retired =
-      (await tx.xeroSyncOperation.findMany({
-        where: { AND: [rowsWhere, { status: { in: ["FAILED", "PARTIAL"] }, replayable: true }] },
-        select: { id: true },
-      })) ?? [];
-    if (retired.length > 0) {
-      const claimed = await tx.xeroSyncOperation.updateMany({
-        where: { id: { in: retired.map((row) => row.id) }, status: { in: ["FAILED", "PARTIAL"] }, replayable: true },
-        data: { replayable: false },
-      });
-      if (claimed.count !== retired.length) {
-        throw new BankRefundVoidResolutionError("This record-again's credit note changed while you were retrying it - refresh and try again.", 409);
-      }
-    }
-    // Nothing else may mint a refund note on this payment meanwhile (#3880).
-    if (await findBlockingRefundCreditNoteOperationId(paymentId, tx)) {
-      throw new BankRefundVoidResolutionError(RE_RECORD_REFUSAL_MESSAGES["note-in-flight"], 409);
-    }
-
-    const { booking } = await readPaymentFigures(tx, paymentId);
-    // The same record, so the same key: sized from it less its own notes.
-    const document = await voidedNoteDocument(tx, paymentId, voided.link.xeroObjectId);
-    const queued = await enqueueXeroRefundCreditNoteOperation(paymentId, resolution.amountCents, {
-      ...document,
-      createdByMemberId: input.actingMemberId,
-      reRecordId: resolution.id,
-      store: tx,
-    });
-    if (!queued.queueOperationId) {
-      throw new BankRefundVoidResolutionError(`No refund credit note could be queued: ${queued.message}`, 409);
-    }
-
-    await createAuditLog(
-      {
-        action: "booking-payment.bank-refund.re-record-retried",
-        memberId: input.actingMemberId,
-        actorMemberId: input.actingMemberId,
-        subjectMemberId: bookingOwner(booking).memberId,
-        targetId: booking.id,
-        entityType: "BankRefundVoidResolution",
-        entityId: resolution.id,
-        category: "payment",
-        severity: "important",
-        outcome: "success",
-        summary: `Recorded-again bank-transfer refund on booking ${formatBookingReference(booking.id)}: its credit note queued again under the same record`,
-        ...(auditNote ? { details: auditNote } : {}),
-        metadata: {
-          paymentId,
-          voidedCreditNoteId: voided.link.xeroObjectId,
-          retiredOperationIds: retired.map((row) => row.id),
-          noteOperationId: queued.queueOperationId,
-        },
-      },
-      tx,
-    );
-
-    return {
-      resolutionId: resolution.id,
-      paymentId,
-      bookingId: booking.id,
-      retiredOperationIds: retired.map((row) => row.id),
-      noteOperationId: queued.queueOperationId,
-    };
-  });
-
-  await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((error: unknown) =>
-    logger.error({ err: error, resolutionId: result.resolutionId }, "Failed to kick the Xero outbox after a record-again retry"),
-  );
-  return result;
 }

@@ -32,11 +32,17 @@
  *
  * Build in pure code, caught and logged; write unwrapped (#3590's review). The
  * key is the task id, and a task completes at most once, so a replay of the
- * same completion posts nothing (`INV-MONEY-033`).
+ * same completion posts nothing (`INV-MONEY-033`). #4162: a task can complete
+ * again after a voided bank-transfer refund's cancellation reversed its line
+ * and put it back on the refund list; its new line then takes the chain's next
+ * key (`settlementChainWalker`, `afterReversalKey`), and a live line already
+ * there means the completion is a replay and posts nothing.
  */
 import type { PaymentSource, Prisma } from "@prisma/client";
 
 import { planHandBackLine } from "@/lib/booking-ledger-credit-posting";
+import { handBackKey } from "@/lib/booking-ledger-posting-keys";
+import { settlementChainWalker } from "@/lib/booking-ledger-settlement-posting";
 import { buildBookingLedgerRows, writeBookingLedgerRows } from "@/lib/booking-ledger-write";
 import logger from "@/lib/logger";
 import type { RefundMethod } from "@/lib/xero-refund-method";
@@ -66,6 +72,13 @@ export async function postHandBackLedgerLine({
   store: Pick<Prisma.TransactionClient, "bookingLedgerLine">;
 }): Promise<void> {
   if (paymentSource === "STRIPE" && !cardShortfall) return;
+  const chain = settlementChainWalker(
+    (await store.bookingLedgerLine.findMany({
+      where: { bookingId, anchorKind: "REVIEW_TASK", anchorId: manualRefundTaskId },
+      select: { id: true, postingKey: true, reversesLineId: true },
+    })) ?? [],
+  )(handBackKey(manualRefundTaskId));
+  if (chain.live) return;
   let rows: ReturnType<typeof buildBookingLedgerRows> = [];
   try {
     // Money handed back by hand is a bank transfer and nothing else: a card
@@ -82,6 +95,7 @@ export async function postHandBackLedgerLine({
         amountCents,
         settlementMethod: "INTERNET_BANKING",
         officerMemberId,
+        postingKey: chain.nextKey,
       }),
     ]);
   } catch (error) {

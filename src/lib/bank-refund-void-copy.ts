@@ -13,7 +13,7 @@ export const RE_RECORD_REFUSAL_MESSAGES: Record<ReRecordRefusal, string> = {
   "amount-unknown":
     "The voided note's amount cannot be read, so it cannot be recorded again or confirmed here. Ask a developer to reconcile it.",
   "note-in-flight":
-    "Another refund credit note on this payment is still on its way to Xero. Wait for it to finish, then try again.",
+    "Another refund credit note on this payment is queued, or failed and waiting for a retry. Finish or retry it on the Xero screen, then try again.",
   "resolved-in-xero":
     "This note was marked resolved by hand in Xero, so recording it again could credit the member twice. Raise any further note in Xero by hand, then confirm it here.",
 };

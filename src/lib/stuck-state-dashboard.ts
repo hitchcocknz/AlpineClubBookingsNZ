@@ -360,7 +360,7 @@ function buildPaymentItems(items: StuckStateItem[], counts: {
   });
 }
 
-function addXeroItems(items: StuckStateItem[], snapshot: XeroAdminHealthSnapshot) {
+function addXeroItems(items: StuckStateItem[], snapshot: XeroAdminHealthSnapshot, viewerCanViewFinance: boolean) {
   addItem(items, {
     id: "xero-failed-operations",
     domain: "xero",
@@ -434,11 +434,13 @@ function addXeroItems(items: StuckStateItem[], snapshot: XeroAdminHealthSnapshot
     severity: "warning",
     owner: "Finance",
     count: snapshot.bankRefundsMissingCreditNotes.count,
-    href: "/admin/stuck-states#bank-refund-voids",
+    // The list is finance information (#4162 review, UX F6): a viewer without
+    // finance:view is sent to the Xero screen, not to a panel they cannot see.
+    href: viewerCanViewFinance ? "/admin/stuck-states#bank-refund-voids" : "/admin/xero",
     summary: `${snapshot.bankRefundsMissingCreditNotes.count} bank-transfer ${plural(
       snapshot.bankRefundsMissingCreditNotes.count,
       "refund",
-    )} had ${snapshot.bankRefundsMissingCreditNotes.count === 1 ? "its" : "their"} Xero credit note voided more than ${snapshot.bankRefundsMissingCreditNotes.graceHours} hours ago. Record each again or confirm it was cancelled.`,
+    )} had ${snapshot.bankRefundsMissingCreditNotes.count === 1 ? "its" : "their"} credit note voided in Xero more than ${snapshot.bankRefundsMissingCreditNotes.graceHours} hours ago. Record each again, or confirm it was cancelled or replaced in Xero.`,
   });
   addItem(items, {
     id: "xero-contact-link-mismatches",
@@ -962,6 +964,12 @@ export async function getStuckStateDashboard(input?: {
    * names rather than leaking the membership roll.
    */
   viewerCanViewMembership?: boolean;
+  /**
+   * #4162: whether the caller holds `{ area: "finance", level: "view" }`, which
+   * the voided bank-transfer refund list on this page needs. False sends that
+   * signal's link to the Xero screen instead. Defaults to false (fail closed).
+   */
+  viewerCanViewFinance?: boolean;
 }): Promise<StuckStateDashboard> {
   const deps = {
     ...defaultDependencies,
@@ -1130,7 +1138,7 @@ export async function getStuckStateDashboard(input?: {
   await addEmailItems(items, deps, viewerCanViewMembership);
 
   if (isModuleEnabled(modules, "xeroIntegration")) {
-    addXeroItems(items, await deps.getXeroAdminHealthSnapshot());
+    addXeroItems(items, await deps.getXeroAdminHealthSnapshot(), input?.viewerCanViewFinance ?? false);
   }
 
   if (isModuleEnabled(modules, "waitlist")) {

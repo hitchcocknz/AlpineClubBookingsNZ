@@ -23,10 +23,12 @@ vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
 }));
+vi.mock("@/lib/bank-refund-void-retry", () => ({
+  retryBankTransferRefundReRecord: mocks.retryBankTransferRefundReRecord,
+}));
 vi.mock("@/lib/bank-refund-void-resolution", () => ({
   reRecordBankTransferRefund: mocks.reRecordBankTransferRefund,
   confirmBankTransferRefundCancelled: mocks.confirmBankTransferRefundCancelled,
-  retryBankTransferRefundReRecord: mocks.retryBankTransferRefundReRecord,
   BankRefundVoidResolutionError: class BankRefundVoidResolutionError extends Error {
     status: number;
     constructor(message: string, status: number) {

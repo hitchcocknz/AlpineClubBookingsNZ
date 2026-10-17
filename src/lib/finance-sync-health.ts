@@ -304,7 +304,7 @@ function classifyXeroOperations(
       id: "bank-refunds-missing-credit-notes",
       label: "Bank-transfer refunds with a voided credit note",
       value: String(health.bankRefundsMissingCreditNotes.count),
-      detail: `After a ${health.bankRefundsMissingCreditNotes.graceHours}h grace window. Record each again or confirm it was cancelled.`,
+      detail: `After a ${health.bankRefundsMissingCreditNotes.graceHours}h grace window. Record each again, or confirm it was cancelled or replaced in Xero.`,
       tone: health.bankRefundsMissingCreditNotes.count > 0 ? "amber" : "green",
       href: STUCK_STATES_HREF,
       linkLabel: "Open Stuck States",

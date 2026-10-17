@@ -26,6 +26,7 @@
  * fixtures.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -66,6 +67,7 @@ function assertSafeRaceDbUrl(url: string): void {
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let resolution: typeof import("@/lib/bank-refund-void-resolution");
 let report: typeof import("@/lib/bank-refund-void-report");
+let retry: typeof import("@/lib/bank-refund-void-retry");
 
 (RUN ? describe : describe.skip)(
   "a voided bank-transfer refund note is recorded again or confirmed cancelled - real PostgreSQL (#4162)",
@@ -79,6 +81,7 @@ let report: typeof import("@/lib/bank-refund-void-report");
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.memberCredit.deleteMany({ where: { sourceBookingId: BOOKING_ID } });
+      await prisma.paymentRefund.deleteMany({ where: { paymentId: PAYMENT_ID } });
       await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
       await prisma.payment.deleteMany({ where: { id: PAYMENT_ID } });
     }
@@ -198,7 +201,7 @@ let report: typeof import("@/lib/bank-refund-void-report");
      * `asOlderWorker` runs it as the previous release would: that worker knows
      * no `reRecordId`, so it is not passed. Returns the Xero keys and amounts.
      */
-    async function raiseQueuedNote(operationId: string, options?: { asOlderWorker?: boolean; noteId?: string }) {
+    async function raiseQueuedNote(operationId: string, options?: { asOlderWorker?: boolean; noteId?: string; viaOutbox?: boolean }) {
       const sent: Array<{ key: string; amount: number }> = [];
       const noteId = options?.noteId ?? "cn-race-4162-fresh";
       const xero = {
@@ -225,6 +228,12 @@ let report: typeof import("@/lib/bank-refund-void-report");
         vi.spyOn(invoicePayments, "resolveRefundSettlement").mockResolvedValue({ kind: "unsettled", reason: "race-4162" }),
       ];
       try {
+        if (options?.viaOutbox) {
+          // The outbox worker itself: its claim and its dispatch of the payload.
+          const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
+          await processQueuedXeroOutboxOperations({ limit: 10 });
+          return sent;
+        }
         const row = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { requestPayload: true } });
         const payload = row.requestPayload as { refundAmountCents: number; watermarkCents: number; reRecordId?: string; creditsInvoiceId?: string };
         await createXeroCreditNote(PAYMENT_ID, payload.refundAmountCents, {
@@ -249,6 +258,7 @@ let report: typeof import("@/lib/bank-refund-void-report");
       ({ prisma } = await import("@/lib/prisma"));
       resolution = await import("@/lib/bank-refund-void-resolution");
       report = await import("@/lib/bank-refund-void-report");
+      retry = await import("@/lib/bank-refund-void-retry");
 
       await deleteFixtures();
       for (const [id, role] of [[MEMBER_ID, "USER"], [OFFICER_ID, "ADMIN"]] as const) {
@@ -321,6 +331,18 @@ let report: typeof import("@/lib/bank-refund-void-report");
       expect(await report.countBankRefundVoids()).toBeGreaterThanOrEqual(1);
     });
 
+    it("reads a status stored in another case or with spaces as the link reader does", async () => {
+      await paidBankTransfer();
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn-race-4162-lower", role: "REFUND_CREDIT_NOTE",
+          active: false, metadata: { status: " voided ", amountCents: PAID_CENTS },
+        },
+      });
+      await prisma.$executeRaw`UPDATE "XeroObjectLink" SET "updatedAt" = ${VOIDED_LONG_AGO} WHERE "xeroObjectId" = 'cn-race-4162-lower'`;
+      expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID).map((item) => item.voidedCreditNoteId)).toEqual(["cn-race-4162-lower"]);
+    });
+
     it("never lists a card payment's voided note: the card report and its self-heal own those", async () => {
       await paidBankTransfer("STRIPE");
       await prisma.xeroObjectLink.create({
@@ -368,9 +390,10 @@ let report: typeof import("@/lib/bank-refund-void-report");
       // On its way: not listed.
       expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
 
-      const sent = await raiseQueuedNote(result.noteOperationId);
+      const sent = await raiseQueuedNote(result.noteOperationId, { viaOutbox: true });
 
       expect(sent).toEqual([{ key: `payment:${PAYMENT_ID}:refund-credit-note:re-record:${result.resolutionId}:0:v3`, amount: PAID_CENTS / 100 }]);
+      expect(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: result.noteOperationId }, select: { status: true } })).toEqual({ status: "SUCCEEDED" });
       expect(await prisma.xeroObjectLink.findFirst({ where: { localId: PAYMENT_ID, xeroObjectId: "cn-race-4162-fresh" }, select: { active: true } })).toEqual({ active: true });
       // Landed: still not listed.
       expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
@@ -429,7 +452,11 @@ let report: typeof import("@/lib/bank-refund-void-report");
         linkId: await linkIdOf("cn-race-4162-v"), reason: "cancelled", expectedAmountCents: PAID_CENTS, note: "Member kept the stay credit", actingMemberId: OFFICER_ID,
       });
 
-      expect(result).toMatchObject({ unwoundCents: PAID_CENTS, reason: "cancelled" });
+      expect(result).toMatchObject({ unwoundCents: PAID_CENTS, reason: "cancelled", reopenedTaskId: taskId });
+      // A cancelled booking: the hand-back is owed again, back on the refund list (owner, 17 Oct 2026).
+      expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId }, select: { status: true, completedAt: true, completedByMemberId: true } })).toEqual({
+        status: "OPEN", completedAt: null, completedByMemberId: null,
+      });
       const after = await money();
       expect(after.payment).toEqual({ refundedAmountCents: 0, status: "SUCCEEDED" });
       expect(after.txn).toEqual({ refundedAmountCents: 0, status: "SUCCEEDED" });
@@ -480,6 +507,182 @@ let report: typeof import("@/lib/bank-refund-void-report");
       });
     });
 
+    /** The booking's confirmation and cancellation charge lines, as a fully refunded cancelled booking holds them. */
+    async function chargedAndCancelled() {
+      const { postBookingLedgerLines } = await import("@/lib/booking-ledger-write");
+      const { confirmationPromotionKey, reversalKey } = await import("@/lib/booking-ledger-posting-keys");
+      const charge = {
+        bookingId: BOOKING_ID, lodgeId: LODGE_ID, side: "CHARGE" as const, kind: "PROMOTION" as const, sign: 1 as const, quantity: 1,
+        unitCents: PAID_CENTS, anchorKind: "CONFIRMATION" as const, anchorId: BOOKING_ID, narration: "race-4162 charge",
+        postingKey: confirmationPromotionKey(BOOKING_ID),
+      };
+      await prisma.$transaction((tx) => postBookingLedgerLines(tx, [charge]));
+      const line = await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: BOOKING_ID, postingKey: charge.postingKey }, select: { id: true } });
+      await prisma.$transaction((tx) =>
+        postBookingLedgerLines(tx, [{ ...charge, sign: -1, anchorKind: "CANCELLATION", narration: "Reversed: race-4162 charge", reversesLineId: line.id, postingKey: reversalKey(line.id) }]),
+      );
+    }
+
+    async function census() {
+      const { readBookingLedgerCensusRow } = await import("@/lib/booking-ledger-projection-census-store");
+      const { evaluateBookingLedgerIdentities } = await import("@/lib/booking-ledger-projection-census");
+      return evaluateBookingLedgerIdentities((await readBookingLedgerCensusRow(prisma, BOOKING_ID))!);
+    }
+
+    it("MUTATION: on a cancelled booking, confirm cancelled reopens the hand-back, and the census reads it as an open hand-back", async () => {
+      await paidBankTransfer();
+      await chargedAndCancelled();
+      const taskId = await handBackNoted("cn-race-4162-v", PAID_CENTS);
+      await voidLongAgo("cn-race-4162-v", PAID_CENTS);
+      expect((await census()).identities.find((identity) => identity.identity === "PRICE")).toMatchObject({ status: "AGREE", ledgerCents: 0 });
+
+      await resolution.confirmBankTransferRefundCancelled({
+        linkId: await linkIdOf("cn-race-4162-v"), reason: "cancelled", expectedAmountCents: PAID_CENTS, note: "Never sent", actingMemberId: OFFICER_ID,
+      });
+
+      expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId }, select: { status: true } })).toEqual({ status: "OPEN" });
+      const evaluation = await census();
+      expect(evaluation.integrity).toEqual([]);
+      // The club holds the money again, and the open hand-back says it is still owed.
+      expect(evaluation.identities.find((identity) => identity.identity === "PRICE")).toMatchObject({
+        status: "CLASSIFIED",
+        explainedBy: [expect.objectContaining({ name: "IN_FLIGHT_HAND_BACK", cents: PAID_CENTS })],
+      });
+    });
+
+    it("a hand-back completed again after its line was reversed posts a fresh line under the chain's next key", async () => {
+      await paidBankTransfer();
+      const taskId = await handBackNoted("cn-race-4162-v", PAID_CENTS);
+      await voidLongAgo("cn-race-4162-v", PAID_CENTS);
+      const confirmed = await resolution.confirmBankTransferRefundCancelled({
+        linkId: await linkIdOf("cn-race-4162-v"), reason: "cancelled", expectedAmountCents: PAID_CENTS, note: "Never sent", actingMemberId: OFFICER_ID,
+      });
+      const { postHandBackLedgerLine } = await import("@/lib/booking-ledger-hand-back");
+      const { afterReversalKey, reversalKey } = await import("@/lib/booking-ledger-posting-keys");
+      const post = () =>
+        prisma.$transaction((tx) =>
+          postHandBackLedgerLine({
+            bookingId: BOOKING_ID, lodgeId: LODGE_ID, manualRefundTaskId: taskId, amountCents: PAID_CENTS, refundMethod: "internet-banking",
+            paymentSource: "INTERNET_BANKING", officerMemberId: OFFICER_ID, store: tx,
+          }),
+        );
+      await post();
+      await post();
+      const reversal = await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: BOOKING_ID, postingKey: reversalKey(confirmed.reversedLedgerLineId!) }, select: { id: true } });
+      const lines = await prisma.bookingLedgerLine.findMany({ where: { bookingId: BOOKING_ID, kind: "BANK_REFUND", reversesLineId: null }, select: { postingKey: true } });
+      expect(lines.map((line) => line.postingKey).sort()).toEqual([`handback:${taskId}`, afterReversalKey(`handback:${taskId}`, reversal.id)].sort());
+    });
+
+    it("MUTATION: never a second note for money a live note credits - record again and cancelled are refused", async () => {
+      await paidBankTransfer();
+      await handBackNoted("cn-race-4162-o", PAID_CENTS);
+      // A second live note D for the same hand-back, raised by hand in Xero, then voided.
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn-race-4162-d", xeroObjectNumber: "CN-D",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: PAID_CENTS, status: "AUTHORISED", total: PAID_CENTS / 100, perDelta: true },
+        },
+      });
+      await voidLongAgo("cn-race-4162-d", PAID_CENTS);
+      const linkId = await linkIdOf("cn-race-4162-d");
+
+      await expect(reRecord(linkId)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("Replaced by hand in Xero") });
+      await expect(
+        resolution.confirmBankTransferRefundCancelled({ linkId, reason: "cancelled", expectedAmountCents: PAID_CENTS, note: "x", actingMemberId: OFFICER_ID }),
+      ).rejects.toMatchObject({ status: 409, message: expect.stringContaining("Replaced by hand in Xero") });
+      expect(await prisma.bankRefundVoidResolution.count({ where: { paymentId: PAYMENT_ID } })).toBe(0);
+      await resolution.confirmBankTransferRefundCancelled({ linkId, reason: "replaced-in-xero", expectedAmountCents: PAID_CENTS, note: "O stands", actingMemberId: OFFICER_ID });
+    });
+
+    it("MUTATION: a voided re-recorded note's cancellation follows its record back to the hand-back task", async () => {
+      await paidBankTransfer();
+      const taskA = await handBackNoted("cn-race-4162-v", 10_000, { taskId: "race-4162-task-a" });
+      await handBackNoted("cn-race-4162-o", 10_000, { perDelta: true });
+      await voidLongAgo("cn-race-4162-v", 10_000);
+      const recorded = await reRecord(await linkIdOf("cn-race-4162-v"), 10_000);
+      await raiseQueuedNote(recorded.noteOperationId, { noteId: "cn-race-4162-w" });
+      await voidLongAgo("cn-race-4162-w", 10_000);
+
+      const confirmed = await resolution.confirmBankTransferRefundCancelled({
+        linkId: await linkIdOf("cn-race-4162-w"), reason: "cancelled", expectedAmountCents: 10_000, note: "Never sent", actingMemberId: OFFICER_ID,
+      });
+
+      // Two lines of the same amount: only the record's trail says which is W's.
+      expect(confirmed.reopenedTaskId).toBe(taskA);
+      expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskA }, select: { status: true } })).toEqual({ status: "OPEN" });
+    });
+
+    it("MUTATION: a record-again an older worker completed as covered by another note stays flagged, and Retry raises its note", async () => {
+      await paidBankTransfer();
+      await handBackNoted("cn-race-4162-l", 10_000, { perDelta: true });
+      await handBackNoted("cn-race-4162-v", 10_000);
+      await voidLongAgo("cn-race-4162-v", 10_000);
+      const linkId = await linkIdOf("cn-race-4162-v");
+      const recorded = await reRecord(linkId, 10_000);
+      // A recount before it runs: the payment-wide gap is now nothing.
+      await inbound({ creditNoteID: "cn-race-4162-l", creditNoteNumber: "CN-l", status: "AUTHORISED", total: 100, appliedAmount: 0, remainingCredit: 100, allocations: [], payments: [] });
+      expect(await raiseQueuedNote(recorded.noteOperationId, { asOlderWorker: true })).toEqual([]);
+      expect(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: recorded.noteOperationId }, select: { xeroObjectId: true } })).toEqual({ xeroObjectId: "cn-race-4162-l" });
+
+      expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([
+        expect.objectContaining({ voidedCreditNoteId: "cn-race-4162-v", flag: "note-failed", retryable: true }),
+      ]);
+      const retried = await retry.retryBankTransferRefundReRecord({ linkId, actingMemberId: OFFICER_ID });
+      expect(await raiseQueuedNote(retried.noteOperationId, { noteId: "cn-race-4162-n" })).toEqual([
+        { key: `payment:${PAYMENT_ID}:refund-credit-note:re-record:${recorded.resolutionId}:0:v3`, amount: 100 },
+      ]);
+      expect((await report.listBankRefundVoids()).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
+    });
+
+    /** A second capture row on the payment, and card refunds Stripe recorded against one. */
+    async function twoCaptureRows(second: "INTERNET_BANKING" | "STRIPE") {
+      await prisma.payment.create({
+        data: { id: PAYMENT_ID, bookingId: BOOKING_ID, amountCents: PAID_CENTS, source: "INTERNET_BANKING", status: "SUCCEEDED", xeroInvoiceId: INVOICE_ID },
+      });
+      await prisma.paymentTransaction.create({
+        data: { id: TXN_ID, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: 10_000, status: "SUCCEEDED", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+      });
+      await prisma.paymentTransaction.create({
+        data: {
+          id: `${TXN_ID}-2`, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: second, amountCents: 10_000, status: "SUCCEEDED", createdAt: new Date("2026-06-02T00:00:00.000Z"),
+          ...(second === "STRIPE" ? { stripePaymentIntentId: "pi_race_4162" } : {}),
+        },
+      });
+    }
+
+    async function rowRefunds() {
+      const rows = await prisma.paymentTransaction.findMany({ where: { paymentId: PAYMENT_ID }, select: { id: true, refundedAmountCents: true } });
+      return Object.fromEntries(rows.map((row) => [row.id, row.refundedAmountCents]));
+    }
+
+    it("MUTATION: the unwind takes back in the reverse of the fill's order (bank and bank)", async () => {
+      await twoCaptureRows("INTERNET_BANKING");
+      const { applyLocalRefundAllocation, unwindLocalRefundAllocation } = await import("@/lib/payment-transactions");
+      await applyLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 5_000 });
+      await applyLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 10_000 });
+      expect(await rowRefunds()).toEqual({ [TXN_ID]: 5_000, [`${TXN_ID}-2`]: 10_000 });
+
+      await unwindLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 10_000 });
+
+      // The second hand-back filled the newer row, then the older: taken back older first.
+      expect(await rowRefunds()).toEqual({ [TXN_ID]: 0, [`${TXN_ID}-2`]: 5_000 });
+    });
+
+    it("MUTATION: the unwind never takes a card row below the refunds Stripe recorded against it", async () => {
+      await twoCaptureRows("STRIPE");
+      await prisma.paymentRefund.create({
+        data: { paymentId: PAYMENT_ID, paymentTransactionId: `${TXN_ID}-2`, stripeRefundId: "re_race_4162", stripePaymentIntentId: "pi_race_4162", amountCents: 4_000, currency: "nzd", status: "succeeded" },
+      });
+      await prisma.paymentTransaction.update({ where: { id: `${TXN_ID}-2` }, data: { refundedAmountCents: 4_000, status: "PARTIALLY_REFUNDED" } });
+      const { applyLocalRefundAllocation, unwindLocalRefundAllocation } = await import("@/lib/payment-transactions");
+      await applyLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 12_000 });
+      expect(await rowRefunds()).toEqual({ [TXN_ID]: 6_000, [`${TXN_ID}-2`]: 10_000 });
+
+      await unwindLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: 12_000 });
+
+      expect(await rowRefunds()).toEqual({ [TXN_ID]: 0, [`${TXN_ID}-2`]: 4_000 });
+    });
+
     it("confirm replaced in Xero moves nothing: the item leaves the list with the reason", async () => {
       await paidBankTransfer();
       await handBackNoted("cn-race-4162-v", PAID_CENTS);
@@ -524,6 +727,50 @@ let report: typeof import("@/lib/bank-refund-void-report");
       // The fresh note's own inbound sync counts it, and the total is whole again.
       await inbound({ creditNoteID: "cn-race-4162-fresh", creditNoteNumber: "CN-cn-race-4162-fresh", status: "AUTHORISED", total: 100, appliedAmount: 0, remainingCredit: 100, allocations: [], payments: [] });
       expect((await money()).payment.refundedAmountCents).toBe(PAID_CENTS);
+    });
+
+    it("a recount racing an uncommitted record-again loses its compare-and-set, recounts from what committed, and leaves the link-derived total", async () => {
+      await paidBankTransfer();
+      await handBackNoted("cn-race-4162-live", 10_000, { perDelta: true });
+      await handBackNoted("cn-race-4162-v", 10_000);
+      await voidLongAgo("cn-race-4162-v", 10_000);
+
+      // Hold the record-again inside its transaction, after its total write.
+      const outbox = await import("@/lib/xero-operation-outbox");
+      const realEnqueue = outbox.enqueueXeroRefundCreditNoteOperation;
+      let release!: () => void;
+      const mayFinish = new Promise<void>((resolve) => (release = resolve));
+      let markHeld!: () => void;
+      const held = new Promise<void>((resolve) => (markHeld = resolve));
+      vi.spyOn(outbox, "enqueueXeroRefundCreditNoteOperation").mockImplementation((async (...args: Parameters<typeof realEnqueue>) => {
+        markHeld();
+        await mayFinish;
+        return realEnqueue(...args);
+      }) as never);
+      const claims: number[] = [];
+      const realUpdateMany = prisma.payment.updateMany.bind(prisma.payment);
+      vi.spyOn(prisma.payment, "updateMany").mockImplementation((async (args: Parameters<typeof realUpdateMany>[0]) => {
+        const result = await realUpdateMany(args);
+        if ((args.where as { updatedAt?: unknown } | undefined)?.updatedAt !== undefined) claims.push(result.count);
+        return result;
+      }) as never);
+
+      const recording = reRecord(await linkIdOf("cn-race-4162-v"), 10_000);
+      await held;
+      // Xero now reports the live note at $50: the recount reads the committed
+      // total ($100) and computes $50, then waits on the record-again's row.
+      const recount = inbound({ creditNoteID: "cn-race-4162-live", creditNoteNumber: "CN-live", status: "AUTHORISED", total: 50, appliedAmount: 0, remainingCredit: 50, allocations: [], payments: [] });
+      // Long enough for the recount to reach its write and queue on the row.
+      const startedNs = process.hrtime.bigint();
+      while (realElapsedMs(startedNs) < 1_500) await new Promise((resolve) => setTimeout(resolve, 50));
+      release();
+      await recording;
+      await recount;
+      vi.restoreAllMocks();
+
+      // Lost once to the record-again's write, then re-ran from what committed.
+      expect(claims).toEqual([0, 1]);
+      expect((await money()).payment.refundedAmountCents).toBe(5_000);
     });
 
     it("#4161's heal defers while a record-again holds the Payment row, and the list shows a healed note only", async () => {
@@ -600,7 +847,7 @@ let report: typeof import("@/lib/bank-refund-void-report");
       await raiseQueuedNote(result.noteOperationId);
       await voidLongAgo("cn-race-4162-fresh", PAID_CENTS);
       expect(await listed()).toEqual([
-        expect.objectContaining({ voidedCreditNoteId: "cn-race-4162-fresh", flag: "voided-again", reRecordOf: "cn-race-4162-v", answerable: true }),
+        expect.objectContaining({ voidedCreditNoteId: "cn-race-4162-fresh", flag: "voided-again", reRecordOf: "CN-cn-race-4162-v", answerable: true }),
       ]);
     });
 
@@ -655,12 +902,12 @@ let report: typeof import("@/lib/bank-refund-void-report");
         expect.objectContaining({ flag: "note-failed", retryable: true }),
       ]);
 
-      const retried = await resolution.retryBankTransferRefundReRecord({ linkId, note: "Xero was down", actingMemberId: OFFICER_ID });
+      const retried = await retry.retryBankTransferRefundReRecord({ linkId, note: "Xero was down", actingMemberId: OFFICER_ID });
       expect(retried.retiredOperationIds).toEqual([recorded.noteOperationId]);
       // The failed attempt can no longer run: only the new row can mint.
       expect(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: recorded.noteOperationId }, select: { replayable: true } })).toEqual({ replayable: false });
       // A double click: the second reads the note on its way and queues nothing.
-      await expect(resolution.retryBankTransferRefundReRecord({ linkId, actingMemberId: OFFICER_ID })).rejects.toMatchObject({ status: 409 });
+      await expect(retry.retryBankTransferRefundReRecord({ linkId, actingMemberId: OFFICER_ID })).rejects.toMatchObject({ status: 409 });
       await run(retried.noteOperationId);
 
       // MUTATION: the same resolution key, so Xero handed back the note the lost attempt raised.

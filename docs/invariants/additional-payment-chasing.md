@@ -1625,7 +1625,9 @@ decision and would need its own owner decision.
 - **Confirm** (`confirmBankTransferRefundCancelled`) records one of two reasons
   as the outcome. `CONFIRMED_CANCELLED` takes the amount back out of the
   payment's transactions and reverses its `BANK_REFUND` line, so no later
-  reconcile restores it; `CONFIRMED_REPLACED_IN_XERO` moves nothing.
+  reconcile restores it; on a cancelled booking it reopens the hand-back task.
+  `CONFIRMED_REPLACED_IN_XERO` moves nothing. Both money answers refuse when
+  live notes already credit the money.
 - All take `lock(1)`, then the Payment row (`INV-LOCK-001`). Pinned by
   `bank-refund-void-resolution.realdb.test.ts` and its unit, report, route and
   panel tests.

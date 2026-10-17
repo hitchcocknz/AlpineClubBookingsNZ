@@ -362,6 +362,16 @@ export const UNRECONCILED_BOOKING_ID = "e2e-unreconciled-booking";
 export const UNRECONCILED_BOOKING_WINDOW = relWindow(340, 1);
 export const ADDITIONAL_OWED_AMOUNT_CENTS = 21_000;
 
+// --- Voided bank-transfer refund notes (#4162) -----------------------------
+// Three cancelled bookings, each paid by internet banking, each with one refund
+// credit note Xero voided days ago, so Stuck States lists them for the
+// treasurer. e2e/bank-refund-voids.spec.ts answers ONE per attempt
+// (`testInfo.retry` picks it), because an answer is final and the suite seeds
+// once per run: a retry must never meet the row its earlier attempt cleared.
+// The ids' first eight characters differ, so each booking reference does.
+export const BANK_REFUND_VOID_BOOKING_IDS = ["e2ebrv0-booking", "e2ebrv1-booking", "e2ebrv2-booking"] as const;
+export const BANK_REFUND_VOID_WINDOWS = [relWindow(360, 1), relWindow(362, 1), relWindow(364, 1)] as const;
+
 // --- Finished-stay free-text change request (#4030) -----------------------
 // A COMPLETED two-night stay of Heidi's, paid in full by internet banking
 // against an issued invoice, carrying one REQUESTED locked-period change

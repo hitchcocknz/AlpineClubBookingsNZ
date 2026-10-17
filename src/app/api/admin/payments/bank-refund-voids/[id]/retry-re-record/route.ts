@@ -4,10 +4,8 @@ import { z } from "zod";
 import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
 import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-payment-note";
-import {
-  BankRefundVoidResolutionError,
-  retryBankTransferRefundReRecord,
-} from "@/lib/bank-refund-void-resolution";
+import { BankRefundVoidResolutionError } from "@/lib/bank-refund-void-resolution";
+import { retryBankTransferRefundReRecord } from "@/lib/bank-refund-void-retry";
 
 /** Explicit confirmation, and an optional note for the audit row. */
 const bodySchema = z

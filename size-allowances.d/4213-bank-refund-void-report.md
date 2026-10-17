@@ -6,7 +6,7 @@ The list, both writers and the record-again note's sizing live in new modules
 below gains is the one place it already owns being told about a record-again.
 
 file: src/lib/payment-transactions.ts
-lines: 1691
+lines: 1705
 reason: `unwindLocalRefundAllocation` is the inverse of
   `applyLocalRefundAllocation` and has to share its private compare-and-set
   (`compareAndSetRefundedAmount`), its backfill and the Payment-row-first lock
@@ -14,7 +14,7 @@ reason: `unwindLocalRefundAllocation` is the inverse of
   compare-and-set or copy it.
 
 file: src/lib/xero-credit-notes.ts
-lines: 1411
+lines: 1419
 reason: the refund-note executor sizes and keys a record-again's note from its
   record, beside the paid-another-way close's branch it mirrors, in the one
   function that mints refund notes (`createXeroCreditNote`); the sizing itself
@@ -33,7 +33,7 @@ reason: an operator retry of a record-again's note must carry `reRecordId`, or
   it would be re-sized from the payment-wide gap (two lines beside the close's).
 
 file: src/lib/stuck-state-dashboard.ts
-lines: 1154
+lines: 1162
 reason: one more Xero signal in the one aggregator of stuck-state items, the
   same shape as the card refund signal beside it.
 

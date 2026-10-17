@@ -682,6 +682,30 @@ describe("retryXeroSyncOperation", () => {
     });
   });
 
+  it("MUTATION (#4162): an operator retry of a record-again's note carries its record", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        entityType: "CREDIT_NOTE",
+        localId: "pay_9",
+        queueType: "REFUND_CREDIT_NOTE",
+        requestPayload: {
+          queueType: "REFUND_CREDIT_NOTE",
+          refundAmountCents: 3000,
+          watermarkCents: 3000,
+          refundMethod: "internet-banking",
+          reRecordId: "res_9",
+        },
+      })
+    );
+
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+    expect(mocks.createXeroCreditNote).toHaveBeenCalledWith("pay_9", 3000, expect.objectContaining({
+      watermarkCents: 3000,
+      reRecordId: "res_9",
+    }));
+  });
+
   it("carries a queued refund method into the replay (INV-PAY-101)", async () => {
     mocks.findUniqueOperation.mockResolvedValue(
       makeOperation({

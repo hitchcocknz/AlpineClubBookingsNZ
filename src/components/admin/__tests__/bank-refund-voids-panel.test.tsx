@@ -82,7 +82,7 @@ describe("the voided bank-transfer refund panel", () => {
 
     expect(screen.getByText("Bank-transfer refunds with a voided credit note")).toBeInTheDocument();
     expect(screen.getByText(/\$200\.00 refund/)).toBeInTheDocument();
-    expect(screen.getByText(/Xero voided credit note CN-0042/)).toBeInTheDocument();
+    expect(screen.getByText(/This refund's credit note CN-0042 was voided in Xero \(last updated/)).toBeInTheDocument();
     expect(screen.getByText("Live refund credit notes on this payment: CN-0099 ($200.00).")).toBeInTheDocument();
   });
 

@@ -153,9 +153,13 @@ export async function sumRefundCreditNoteCoverageOfRowsCents(
       localId: paymentId,
       AND: [rowsWhere],
     },
-    select: { xeroObjectId: true },
+    select: { xeroObjectId: true, responsePayload: true },
   });
-  const noteIds = [...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId ? [row.xeroObjectId] : [])))];
+  // #4162 review (money F5): only notes these rows MINTED. A row that completed
+  // as covered by a note already there (`coveredByExistingNote`, the
+  // payment-wide sizing an older worker can run) names that other note, which
+  // answers some other refund; counting it would read this refund as covered.
+  const noteIds = [...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId && !isCoveredByExistingNoteRow(row) ? [row.xeroObjectId] : [])))];
   const linkedCents = await sumCoveredRefundCreditNoteCents(paymentId, db, noteIds);
   const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, db, rowsWhere);
   return linkedCents + resolved.coveredCents;
@@ -215,4 +219,15 @@ export async function findResolvedSiblingSince(
     select: { id: true, manuallyResolvedAt: true },
   });
   return toResolved(row);
+}
+
+/**
+ * #4162 review (money F5): an outbound refund-note create that raised nothing -
+ * it completed as covered by a note already on the payment
+ * (`createXeroCreditNote`'s `coveredByExistingNote` answer). The note it names
+ * is not its own.
+ */
+export function isCoveredByExistingNoteRow(row: { responsePayload: unknown }): boolean {
+  const payload = row.responsePayload;
+  return typeof payload === "object" && payload !== null && (payload as Record<string, unknown>).coveredByExistingNote === true;
 }

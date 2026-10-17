@@ -324,7 +324,11 @@ describe("getStuckStateDashboard", () => {
     const dashboard = await getStuckStateDashboard({
       deps,
       now: new Date("2026-06-22T00:00:00.000Z"),
+      viewerCanViewFinance: true,
     });
+    // #4162 (UX F6): without finance:view the voided bank-transfer signal links to the Xero screen.
+    const withoutFinance = await getStuckStateDashboard({ deps, now: new Date("2026-06-22T00:00:00.000Z") });
+    expect(withoutFinance.items.find((item) => item.id === "xero-bank-refund-voided-credit-notes")?.href).toBe("/admin/xero");
 
     expect(dashboard.items).toEqual(
       expect.arrayContaining([

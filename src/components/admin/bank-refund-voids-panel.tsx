@@ -220,8 +220,8 @@ export function BankRefundVoidsPanel({
         <div className="space-y-3">
           <AdminViewOnlySectionBanner canEdit={canEdit} />
           <p className="text-sm text-muted-foreground">
-            Xero voided the credit note of each of these bank-transfer refunds, so the club&apos;s records no longer
-            count the refund, and the app will not raise the note again by itself. If the member was paid back,
+            Each of these bank-transfer refunds had its credit note voided in Xero, so the club&apos;s records no
+            longer count the refund, and the app will not raise the note again by itself. If the member was paid back,
             record the refund again: one fresh credit note is raised for the voided note&apos;s amount. If the
             refund was cancelled, or you already replaced the note by hand in Xero, confirm it instead. The member
             is not told either way.
@@ -252,7 +252,8 @@ export function BankRefundVoidsPanel({
                     {row.amountCents === null ? "amount unknown" : `${formatCents(row.amountCents, format)} refund`}
                   </div>
                   <div className="text-xs text-muted-foreground">
-                    Xero voided credit note {noteName(row)}; recorded {clubTime.instantDate(new Date(row.voidedAt))}
+                    This refund&apos;s credit note {noteName(row)} was voided in Xero (last updated{" "}
+                    {clubTime.instantDate(new Date(row.voidedAt))})
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {row.liveNotes.length === 0

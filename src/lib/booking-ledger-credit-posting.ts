@@ -165,6 +165,8 @@ export function planHandBackLine(input: {
   amountCents: number;
   settlementMethod: NonNullable<BookingLedgerPosting["settlementMethod"]>;
   officerMemberId: string;
+  /** #4162: the chain's next key when the task's earlier line was reversed (`afterReversalKey`); its own key otherwise. */
+  postingKey?: string;
 }): BookingLedgerPosting {
   return {
     bookingId: input.bookingId,
@@ -179,6 +181,6 @@ export function planHandBackLine(input: {
     settlementMethod: input.settlementMethod,
     narration: "Refund handed back by an officer",
     postedByMemberId: input.officerMemberId,
-    postingKey: handBackKey(input.manualRefundTaskId),
+    postingKey: input.postingKey ?? handBackKey(input.manualRefundTaskId),
   };
 }

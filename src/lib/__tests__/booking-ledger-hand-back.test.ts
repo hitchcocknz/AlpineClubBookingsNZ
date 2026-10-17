@@ -10,8 +10,11 @@ vi.mock("@/lib/logger", () => ({ default: log }));
 
 import { postHandBackLedgerLine } from "@/lib/booking-ledger-hand-back";
 
-function args(over: Partial<Parameters<typeof postHandBackLedgerLine>[0]> = {}) {
+type Posted = { id: string; postingKey: string | null; reversesLineId: string | null };
+
+function args(over: Partial<Parameters<typeof postHandBackLedgerLine>[0]> = {}, posted: Posted[] = []) {
   const createMany = vi.fn(async ({ data }: { data: unknown[] }) => ({ count: data.length }));
+  const findMany = vi.fn(async () => posted);
   return {
     createMany,
     input: {
@@ -22,7 +25,7 @@ function args(over: Partial<Parameters<typeof postHandBackLedgerLine>[0]> = {}) 
       refundMethod: "internet-banking" as const,
       paymentSource: "INTERNET_BANKING" as const,
       officerMemberId: "officer-1",
-      store: { bookingLedgerLine: { createMany } } as never,
+      store: { bookingLedgerLine: { createMany, findMany } } as never,
       ...over,
     },
   };
@@ -58,5 +61,22 @@ describe("postHandBackLedgerLine", () => {
     await expect(postHandBackLedgerLine(input)).resolves.toBeUndefined();
     expect(createMany).not.toHaveBeenCalled();
     expect(log.error).toHaveBeenCalledTimes(1);
+  });
+
+  it("MUTATION (#4162): a task completed again after its line was reversed posts under the chain's next key", async () => {
+    const { input, createMany } = args({}, [
+      { id: "line-1", postingKey: "handback:t1", reversesLineId: null },
+      { id: "rev-1", postingKey: "reversal:line-1", reversesLineId: "line-1" },
+    ]);
+    await postHandBackLedgerLine(input);
+    expect(createMany.mock.calls[0]?.[0]).toMatchObject({
+      data: [expect.objectContaining({ kind: "BANK_REFUND", amountCents: -3_500, postingKey: "handback:t1:after:rev-1" })],
+    });
+  });
+
+  it("(#4162) a task whose line still stands posts nothing more: a replay", async () => {
+    const { input, createMany } = args({}, [{ id: "line-1", postingKey: "handback:t1", reversesLineId: null }]);
+    await postHandBackLedgerLine(input);
+    expect(createMany).not.toHaveBeenCalled();
   });
 });

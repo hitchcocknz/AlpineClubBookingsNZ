@@ -298,25 +298,27 @@ Answer each one with Finance edit:
 2. **Confirm**, choosing one of two reasons. The choice is required, and each
    does something different:
    - **Refund cancelled** - the member was never paid. The refund is taken back
-     out of the payment's records and its booking ledger line is reversed.
+     out of the payment's records and its booking ledger line is reversed. On a
+     cancelled booking the cancellation still owes the member that money, so
+     the original refund task goes back on the refund list (Payments, **Money to
+     settle**): pay it there, or write it off there with a reason.
    - **Replaced by hand in Xero** - the member was paid and a credit note you
      made in Xero records it. Nothing in the club's records changes.
 
 A reason is required either way, and goes in the audit log. Each voided note
 can be answered once.
 
-**Refund cancelled means the club keeps the money.** Afterwards the booking is
-cancelled but still holds what the member paid, and nothing lists that money as
-owed to them. Only choose it when that is right - for example the member agreed
-to forfeit it. If the member is still owed the money, pay them and use **Record
-again** instead.
-
 **Retry.** If a recorded-again note does not reach Xero for the full amount, the
 row comes back marked so, with a **Retry** button. Retry sends the same note
 again under the same key: if the first attempt did reach Xero after all, Xero
 hands that note back rather than raising a second one. A note for this payment
-that is still on its way to Xero has to finish first. If Xero voids the fresh
-note too, that note is listed in its turn.
+that is still queued, or failed and waiting for a retry, has to be finished or
+retried on the Xero screen first. If Xero voids the fresh note too, that note
+is listed in its turn.
+
+Both money answers are refused when Xero already has a live credit note for
+the refund - for example one you made by hand before answering. Use **Confirm**
+with "Replaced by hand in Xero" for those.
 
 ### A booking change's card request that stopped on its first refusal
 
@@ -387,7 +389,10 @@ without widening who can read the membership roll.
 | **Paid another way** says the late card charge's Xero record "changed while you were closing it" | An officer resolved or withdrew the charge's record in Xero while you were closing the refund | Reload the page. The dialog then says what will be recorded in Xero now |
 | **Exhausted recovery operations** counts a booking change's card request that stopped on its first refusal, and the email says its card request is "already recorded for another change to the same booking" | Two changes to one booking ended up with one card request, recorded for the other change; a retry would be refused the same way, so the app stopped at once | The money is still owed. See [A booking change's card request that stopped on its first refusal](#a-booking-changes-card-request-that-stopped-on-its-first-refusal) |
 | **Mark resolved** says Stripe's refund to the card changed | Stripe refunded the card again since you opened the dialog | Check the new amount with the member before marking it resolved |
-| **Record again** is greyed out, saying another refund credit note is "still on its way to Xero" | Another refund note on the same payment has not finished | Wait for it, then reload the page |
+| **Record again** is greyed out, saying another refund credit note is "queued, or failed and waiting for a retry" | Another refund note on the same payment has not finished, or failed and can still be retried | Finish or retry it on the Xero screen, then reload the page |
+| **Record again** or **Refund cancelled** says Xero "already has a live credit note covering this refund" | A live note in Xero already credits this money | Use **Confirm** with "Replaced by hand in Xero" |
+| **Record again** says to "answer the other voided notes on this payment first" | Several notes on the payment were voided, and the figures cannot yet tell which refund this one was | Answer the other voided notes on the payment, then this one |
+| **Refund cancelled** says the refund "did not come from the booking's cancellation hand-back" | The refund on a cancelled booking came from somewhere the app cannot put back on the refund list | Ask a developer to reconcile it |
 | **Record again** is greyed out, saying the note "was marked resolved by hand in Xero" | An officer resolved the voided note's original create in Xero, so a fresh note could credit the member twice | Raise any further note by hand in Xero, then **Confirm** with "Replaced by hand in Xero" |
 | A voided bank-transfer refund row says "amount unknown", with both answers greyed out | The voided note's amount was never recorded | Ask a developer to reconcile it |
 | **Record again** or **Confirm** says the amount or the payment's refunds changed | Something moved on the payment since the page loaded | Reload the page and check before answering again |

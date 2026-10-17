@@ -809,7 +809,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   "src/lib/member-lodge-roster.ts:112",
   "src/lib/payment-link.ts:81",
   "src/lib/payment-reconciliation.ts:99",
-  "src/lib/stuck-state-dashboard.ts:630",
+  "src/lib/stuck-state-dashboard.ts:632",
   "src/lib/xero-booking-repair-types.ts:219",
   "src/lib/xero-inbound/settlement-conflicts.ts:154",
 ];

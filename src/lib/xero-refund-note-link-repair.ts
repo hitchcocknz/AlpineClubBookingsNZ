@@ -490,7 +490,7 @@ const REFUND_NOTE_LINK_WHERE = (paymentId: string) =>
  * drain claims and runs these REGARDLESS of `replayable` (it never reads the
  * column), so they block unconditionally.
  */
-const EXECUTOR_LIFECYCLE_CREATE_STATUSES = [
+export const EXECUTOR_LIFECYCLE_CREATE_STATUSES = [
   "PENDING",
   "RUNNING",
   "WAITING_PAYMENT",

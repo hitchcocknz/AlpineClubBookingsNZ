@@ -5255,7 +5255,9 @@ note Xero voided on a bank-transfer payment. Both are settlement-money
 transitions (`INV-LOCK-001`): the first puts the payment's `refundedAmountCents`
 back and queues its note; the second takes the refund back out of the
 payment's `PaymentTransaction` allocation, reverses its `BANK_REFUND` line and
-keeps the refunded total no higher than that detail. Every edit, acceptance,
+keeps the refunded total no higher than that detail; on a cancelled booking it
+also puts the hand-back task back to OPEN (a status-fenced claim on the task
+row, last, under both keys). Every edit, acceptance,
 paid cancel and refund appeal reads those figures to size a refund, so each
 takes global `lock(1)` FIRST, then the Payment row
 (`lockPaymentForRefundedTotal`) BEFORE it reads the payment, then re-reads the
@@ -5268,7 +5270,7 @@ click queues on `lock(1)` and the second reads the row answered and writes
 nothing (`bank-refund-void-resolution.realdb.test.ts`). Registered as
 `reRecordBankTransferRefund#1` and `confirmBankTransferRefundCancelled#1`.
 
-**Retry** (`retryBankTransferRefundReRecord#1`, owner 17 Oct 2026) answers a
+**Retry** (`retryBankTransferRefundReRecord#1`, `src/lib/bank-refund-void-retry.ts`, owner 17 Oct 2026) answers a
 record-again whose own note failed or landed short, in the same tiers: `lock(1)`,
 the Payment row, then the resolution and its note's state re-read. Its claim is
 the status-guarded retirement of the record-again's own failed attempts
@@ -5285,11 +5287,15 @@ from its own record and keyed on it (`re-record:<id>`); the worker is kicked
 after the commit, so no provider call runs under either lock. Its counterparts:
 
 - **The inbound void's recount** (`repairRefundedPaymentBusinessState`) takes
-  no lock: its compare-and-set on the Payment row as it read it loses to the
-  record-again's write and recounts. A recount before the fresh note is linked
-  lowers the total again; the note is still raised in full (it is sized from
-  its record), and the total comes back when the note's own inbound sync counts
-  it. Proven against real PostgreSQL.
+  no lock. One that read the payment before a record-again committed and
+  computes a change waits on the record-again's row, loses its compare-and-set
+  on `updatedAt`, and recounts from what committed; one that computes no change
+  writes nothing. Either way it never writes a figure derived from before the
+  record-again over it. A recount after the commit but before the fresh note is
+  linked lowers the total again; the note is still raised in full (it is sized
+  from its record), and the total comes back when the note's own inbound sync
+  counts it. Both proven against real PostgreSQL (the race held inside the
+  record-again's transaction).
 - **#4161's heal** takes the link and the Payment row `NOWAIT`, so while either
   answer holds the row it defers and heals on a later run; it also defers while
   the record-again's note row could still mint. Proven against real

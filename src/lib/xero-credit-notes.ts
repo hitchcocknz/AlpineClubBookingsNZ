@@ -262,7 +262,8 @@ export async function createXeroCreditNote(
     typeof watermarkCents === "number" && Number.isFinite(watermarkCents);
   // #3880: a review's non-Stripe delta note is one of several (`isPerDeltaRefundNoteLink`).
   // #3924 round 7: so is a paid-another-way close's note (`paidAnotherWayTaskId`).
-  // #4162: a record-again's note is sized from its record, read once here.
+  // #4162: a record-again's record, read here for whether it is per-refund;
+  // its coverage is read again after the in-flight claim below.
   const reRecordShare =
     isDeltaMode && options?.reRecordId ? await readReRecordShare(prisma, paymentId, options.reRecordId) : null;
   if (isDeltaMode && options?.reRecordId && !reRecordShare) {
@@ -400,13 +401,20 @@ export async function createXeroCreditNote(
       uncoveredCents = share.uncoveredCents;
       closeCoveredCents = share.coveredCents;
       evidenceLog = { paidAnotherWayTaskId, closeAmountCents: share.amountCents, closeCoveredCents: share.coveredCents };
-    } else if (reRecordShare) {
+    } else if (reRecordShare && options?.reRecordId) {
       // #4162 (`INV-ADDPAY-042`): a record-again's note is sized by its record -
       // the voided note's amount less what its OWN notes cover, the figure the
-      // enqueue used - never by the payment-wide gap.
-      uncoveredCents = reRecordShare.uncoveredCents;
-      reRecordCoveredCents = reRecordShare.coveredCents;
-      evidenceLog = { reRecordId: options?.reRecordId, reRecordAmountCents: reRecordShare.amountCents, reRecordCoveredCents };
+      // enqueue used - never by the payment-wide gap. Read again here, after
+      // this run's in-flight claim (review F4), as a close's share is.
+      const share = await readReRecordShare(prisma, paymentId, options.reRecordId);
+      if (!share) {
+        throw new Error(
+          `Refusing to create a record-again Xero refund credit note for payment ${paymentId}: its record ${options.reRecordId} is not on this payment`
+        );
+      }
+      uncoveredCents = share.uncoveredCents;
+      reRecordCoveredCents = share.coveredCents;
+      evidenceLog = { reRecordId: options.reRecordId, reRecordAmountCents: share.amountCents, reRecordCoveredCents };
     } else {
       // #3635 round-3 R1: the cash a note may answer, the figure the enqueue
       // capped against, never refunds of late captures Xero never received.

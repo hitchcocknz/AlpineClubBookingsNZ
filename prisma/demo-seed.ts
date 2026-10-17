@@ -65,6 +65,8 @@ import {
   PAID_PROMO_BOOKING_ID,
   UNRECONCILED_BOOKING_ID,
   UNRECONCILED_BOOKING_WINDOW,
+  BANK_REFUND_VOID_BOOKING_IDS,
+  BANK_REFUND_VOID_WINDOWS,
   LOCKED_OUT_MEMBER,
   PAID_CANCEL_BOOKING_ID,
   PAID_CANCEL_WINDOW,
@@ -1282,6 +1284,45 @@ async function main() {
     UNRECONCILED_BOOKING_WINDOW.checkOut,
     NIGHTLY + 100,
   );
+
+  // #4162: three cancelled internet-banking bookings, each with one refund
+  // credit note Xero voided days ago, for the Stuck States list of voided
+  // bank-transfer refund notes (e2e/bank-refund-voids.spec.ts answers one per
+  // attempt). The link's last write is set three days before the seed, past
+  // the 24-hour grace the list waits.
+  const voidRecordedAt = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
+  for (const [index, bookingId] of BANK_REFUND_VOID_BOOKING_IDS.entries()) {
+    const window = BANK_REFUND_VOID_WINDOWS[index]!;
+    await prisma.booking.create({
+      data: {
+        id: bookingId,
+        memberId: nadia.id,
+        status: "CANCELLED",
+        totalPriceCents: NIGHTLY,
+        finalPriceCents: NIGHTLY,
+        ...seededBookingDates(window.checkIn, window.checkOut),
+      },
+    });
+    const payment = await prisma.payment.create({
+      data: { bookingId, amountCents: NIGHTLY, source: "INTERNET_BANKING", status: "SUCCEEDED", xeroInvoiceId: `${bookingId}-invoice` },
+    });
+    await prisma.paymentTransaction.create({
+      data: { paymentId: payment.id, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: NIGHTLY, status: "SUCCEEDED", xeroInvoiceId: `${bookingId}-invoice` },
+    });
+    const link = await prisma.xeroObjectLink.create({
+      data: {
+        localModel: "Payment",
+        localId: payment.id,
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: `${bookingId}-note`,
+        xeroObjectNumber: `CN-E2E-${index}`,
+        role: "REFUND_CREDIT_NOTE",
+        active: false,
+        metadata: { amountCents: NIGHTLY, status: "VOIDED", total: NIGHTLY / 100 },
+      },
+    });
+    await prisma.$executeRaw`UPDATE "XeroObjectLink" SET "updatedAt" = ${voidRecordedAt} WHERE "id" = ${link.id}`;
+  }
 
   // Outstanding additional payment spec (#2350): a PAID booking whose price was
   // pushed up after payment, with the extra still uncollected. Seeded directly
