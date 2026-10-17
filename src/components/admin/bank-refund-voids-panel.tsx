@@ -211,7 +211,7 @@ export function BankRefundVoidsPanel({
   return (
     <Card id="bank-refund-voids">
       <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-lg">
+        <CardTitle headingLevel={2} className="flex items-center gap-2 text-lg">
           <Landmark className="h-5 w-5 text-muted-foreground" />
           Bank-transfer refunds with a voided credit note
         </CardTitle>

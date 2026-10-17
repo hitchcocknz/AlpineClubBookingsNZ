@@ -80,6 +80,11 @@ const RAW_READ_INVENTORY: Record<string, number> = {
   // reported as information beside the gate (#3583). Its row is schema-decoded
   // through `decodeRawRows`.
   "src/lib/booking-ledger-projection-census-store.ts": 1,
+  // #4162: the voided bank-transfer refund list's candidate ids - a status read
+  // the way the link reader reads it (trimmed, any case) joined to the payment's
+  // source, which no Prisma JSON filter expresses. Its rows are schema-decoded
+  // through `decodeRawRows`.
+  "src/lib/bank-refund-void-report.ts": 1,
   // The non-blocking adult-hosting policy-set lock reads the one boolean
   // returned by `pg_try_advisory_xact_lock`; the row is schema-decoded before
   // the worker decides whether it may proceed.

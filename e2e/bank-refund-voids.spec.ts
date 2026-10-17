@@ -25,7 +25,9 @@ test("a treasurer confirms a voided bank-transfer refund note replaced in Xero, 
   await page.goto("/admin/stuck-states");
   const panel = page.locator("#bank-refund-voids");
   await expect(panel.getByRole("heading", { name: "Bank-transfer refunds with a voided credit note" })).toBeVisible();
-  const confirm = panel.getByRole("button", { name: `Confirm the voided refund note for booking ${reference}` });
+  const row = panel.getByRole("listitem").filter({ hasText: `Booking ${reference}` });
+  await expect(row).toHaveCount(1);
+  const confirm = row.getByRole("button", { name: "Confirm the voided refund note" });
   await expect(confirm).toBeEnabled();
 
   await confirm.click();
@@ -36,5 +38,5 @@ test("a treasurer confirms a voided bank-transfer refund note replaced in Xero, 
   await dialog.getByRole("button", { name: "Confirm" }).click();
 
   await expect(panel.getByRole("status").filter({ hasText: `booking ${reference} was cleared` })).toBeVisible();
-  await expect(confirm).toHaveCount(0);
+  await expect(row).toHaveCount(0);
 });
