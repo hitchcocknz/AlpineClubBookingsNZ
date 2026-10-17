@@ -119,12 +119,12 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   bank cash is new. The bank receipt is recorded and nothing else moves. One
   admin-only marker per invoice is written IN that transaction, so it commits
   with the receipt; the unmuteable alert follows the commit, and the marker
-  records it sent, so a crash in between re-sends it once on the retry. Not
+  records it sent, so a crash in between re-sends it once. Not
   second instruments: an ADDITIONAL card row, a capture the #1992 refund owns
   (`INV-PAY-043`), and — on a settled booking — #1765 refund history, a card
-  row refunded before the booking moved to Internet Banking, or a capture a
-  superseded-intent refund, a later re-send (#4221) or in-flight cancel holds
-  for the member (#4177).
+  row refunded before the switch, or a capture a superseded-intent refund,
+  in-flight cancel (#4177) or, beside a superseded refund, open row owing a
+  failed-later refund (#4221) holds for the member.
 - **A replay on a settled booking changes nothing.** COMPLETED takes the
   already-paid arm like PAID.
 - Pinned by `switch-to-internet-banking-route.test.ts`,
@@ -1417,10 +1417,10 @@ short).
     check for open ones after the old colour drains.
   - **The settling capture is the oldest-inserted qualifying one** (#4177). A
     duplicate-capture refund's is never superseded-owned; a non-card one names
-    no card. Xero's conflict (#4163) skips duplicate-refunded captures. When
-    paid, the Xero conflict also skips a capture a superseded refund, a later
-    re-send (#4221) or in-flight cancel holds, and #1765 refund history
-    (ranked last when cancelled).
+    no card. Xero's conflict (#4163) skips duplicate-refunded captures and,
+    when paid, #1765 refund history (ranked last when cancelled) and a capture
+    a superseded refund, in-flight cancel or, beside one, open row owing a
+    failed-later refund (#4221) holds.
   - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, `settled-capture-order.realdb.test.ts`
     and the migration's fixture; the settling capture by
