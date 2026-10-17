@@ -1,5 +1,6 @@
 import { recordedCreditGiveBack } from "@/lib/booking-credit-give-back-marker";
 import {
+  recordedBilledOffsetOwnNoteExpected,
   recordedReissuedAskInvoiceUnsureCents,
   recordedUnpaidAskBilledOffsetCents,
   recordedUnpaidAskBilledOffsetUnsureCents,
@@ -72,6 +73,11 @@ export type ScopedSideNote<O> = {
   kind: "give-back" | "billed-offset";
   cents: number;
   operations: O[];
+  /**
+   * #4049, a billed-offset note only: whether the edit expected an own note
+   * beside it, as its history row records it; null on a row written before #4049.
+   */
+  recordedOwnNoteExpected?: boolean | null;
 };
 
 function isNoteCreate(operation: { entityType: string; operationType: string }): boolean {
@@ -119,6 +125,7 @@ export function scopedBilledOffsetNote<O extends { entityType: string; operation
     kind: "billed-offset",
     cents,
     operations: operations.filter((operation) => isNoteCreate(operation) && isBilledOffsetScoped(operation)),
+    recordedOwnNoteExpected: recordedBilledOffsetOwnNoteExpected(newData),
   };
 }
 
@@ -159,7 +166,6 @@ export function addScopedSideNoteFindings({
   modificationId,
   note,
   edit,
-  recordedOwnNoteExpected = null,
   ownNoteDue = false,
   actionMap,
   findings,
@@ -169,11 +175,6 @@ export function addScopedSideNoteFindings({
   note: ScopedSideNote<XeroOperationRecord>;
   /** The edit's own operations and links, for whether its own note exists (round 7). */
   edit: { operations: readonly XeroOperationRecord[]; links: readonly XeroObjectLinkRecord[] };
-  /**
-   * #4049: the edit's own answer, as its history row records it
-   * (`recordedBilledOffsetOwnNoteExpected`); null on a row written before #4049.
-   */
-  recordedOwnNoteExpected?: boolean | null;
   /**
    * Round 8, for a row written before #4049 only: the repair pass's own
    * reading that the edit owes an own note (the reduction left something
@@ -219,7 +220,7 @@ export function addScopedSideNoteFindings({
         bookingModificationId: modificationId,
         refundAmountCents: note.cents,
         ...repair.payload,
-        ...(note.kind === "billed-offset" && repairOwnNoteExpected(note.operations, recordedOwnNoteExpected, ownNoteDue)
+        ...(note.kind === "billed-offset" && repairOwnNoteExpected(note.operations, note.recordedOwnNoteExpected ?? null, ownNoteDue)
           ? { [OWN_NOTE_EXPECTED_KEY]: true }
           : {}),
       },

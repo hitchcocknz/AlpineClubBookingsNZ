@@ -916,11 +916,7 @@ export async function completeXeroSyncOperation(
     const status = completion.status ?? "SUCCEEDED";
     const data = {
       status,
-      // #4049: a row that succeeded no longer carries the code or message of
-      // an earlier wait or failure (a billed-offset note's
-      // `BILLED_OFFSET_AWAITING_OWN_NOTE`, an operator-retried failure), which
-      // the operations panel would show in red. Nothing reads either field on
-      // a SUCCEEDED row; a PARTIAL completion keeps them.
+      // #4049: no earlier wait's or failure's error stays on a SUCCEEDED row (PARTIAL keeps it).
       ...(status === "SUCCEEDED" ? { lastErrorCode: null, lastErrorMessage: null } : {}),
       responsePayload: sanitizeForJson(completion.responsePayload),
       xeroObjectType: completion.xeroObjectType ?? null,

@@ -75,7 +75,6 @@ import {
   isAskRetiredByReductionOperation,
   isFoldedReissueAccountedFor,
   isReissueRetiredByLaterReduction,
-  recordedBilledOffsetOwnNoteExpected,
   recordedReissuedAskInvoiceCents,
   recordedUnpaidAskOffsetCents,
   REISSUED_ASK_INVOICE_MISSING_SUMMARY,
@@ -927,18 +926,8 @@ export function classifyBookingContext(
     });
     const billedOffsetNote = scopedBilledOffsetNote({ newData: modification.newData, operations: modificationOperations });
     if (billedOffsetNote && primaryInvoice) {
-      // Round 8, #4049: a note queued here waits for the edit's own exactly
-      // when the edit recorded that it expected one (`repairOwnNoteExpected`).
-      addScopedSideNoteFindings({
-        bookingId: booking.id,
-        modificationId: modification.id,
-        note: billedOffsetNote,
-        edit: { operations: modificationOperations, links: modificationLinks },
-        recordedOwnNoteExpected: recordedBilledOffsetOwnNoteExpected(modification.newData),
-        ownNoteDue: reductionNoteDueCents > 0,
-        actionMap,
-        findings,
-      });
+      // Round 8, #4049: a note queued here waits as the edit recorded (`repairOwnNoteExpected`).
+      addScopedSideNoteFindings({ bookingId: booking.id, modificationId: modification.id, note: billedOffsetNote, edit: { operations: modificationOperations, links: modificationLinks }, ownNoteDue: reductionNoteDueCents > 0, actionMap, findings });
     }
     // Round 6/7: what the edit could not establish of the offset's billing, or
     // of the re-issue's invoice, it acted on not at all; a person decides.
