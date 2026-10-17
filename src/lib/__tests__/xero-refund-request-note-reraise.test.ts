@@ -57,6 +57,7 @@ vi.mock("@/lib/prisma", () => {
         return state.operations.filter((row) => matches(row, where));
       }),
       findFirst: vi.fn(async ({ where }: { where: Row }) => state.operations.find((row) => matches(row, where)) ?? null),
+      count: vi.fn(async ({ where }: { where: Row }) => state.operations.filter((row) => matches(row, where)).length),
     },
     xeroObjectLink: {
       findMany: vi.fn(async ({ where }: { where: Row }) => {
@@ -83,12 +84,17 @@ vi.mock("@/lib/session-guards", async () => ({
 }));
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), info: vi.fn(), warn: vi.fn(), debug: vi.fn() } }));
 vi.mock("@/lib/xero-operation-outbox", () => ({ kickQueuedXeroOutboxOperationsIfConnected: mocks.kick }));
+vi.mock("@/lib/xero-link-short-code", () => ({ getXeroOrgShortCode: vi.fn(async () => null) }));
+vi.mock("@/lib/club-time/server", () => ({ clubTimeZone: vi.fn(async () => "Pacific/Auckland") }));
+vi.mock("@/lib/xero-admin-failures", () => ({ resolveFailedXeroOperationStates: vi.fn(async () => new Map()) }));
 vi.mock("@/lib/xero-sync", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/xero-sync")),
   startXeroSyncOperation: mocks.startXeroSyncOperation,
 }));
 
 import { GET as listRoute } from "@/app/api/admin/xero/operations/voided-request-notes/route";
+import { GET as listOperations } from "@/app/api/admin/xero/operations/route";
+import { VOIDED_REQUEST_NOTE_RETRY_REASON } from "@/lib/xero-refund-note-status";
 import { POST as reraiseRoute } from "@/app/api/admin/xero/operations/voided-request-notes/reraise/route";
 import {
   listVoidedRefundRequestNotes,
@@ -259,6 +265,19 @@ describe("listVoidedRefundRequestNotes and the per-row reason (#4214)", () => {
     expect((await listVoidedRefundRequestNotes())[0]!.activeOperationId).toBe("queue_1");
     state.links.push(noteLink({ xeroObjectId: "cn_200", active: true, metadata: { amountCents: 5000, refundRequestId: "rr_1" } }));
     expect(await listVoidedRefundRequestNotes()).toEqual([]);
+  });
+
+  it("MUTATION: the operations list gives the request's row the reason, never a Retry, and points at the action", async () => {
+    state.operations.push(requestRow({ id: "op_failed", status: "FAILED", createdAt: new Date("2026-06-01T00:00:00Z") }));
+    state.operations.push(requestRow({ id: "op_other", localId: "pay_2", status: "FAILED", createdAt: new Date("2026-06-01T00:00:00Z") }));
+    const response = await listOperations(new NextRequest("http://localhost/api/admin/xero/operations"));
+    const rows = (await response.json()).data as Array<{ id: string; supported: boolean; reason: string | null; voidedRequestNote: boolean }>;
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    for (const id of ["op_raised", "op_failed"]) {
+      expect(byId.get(id)).toMatchObject({ supported: false, reason: VOIDED_REQUEST_NOTE_RETRY_REASON, voidedRequestNote: true });
+    }
+    expect(VOIDED_REQUEST_NOTE_RETRY_REASON).toContain("Raise a fresh credit note");
+    expect(byId.get("op_other")).toMatchObject({ voidedRequestNote: false });
   });
 
   it("marks the request's note rows, and only them, as voided with no live note", async () => {
