@@ -371,12 +371,16 @@ export async function findSecondInstrumentSettlement(
       ? await listSupersededIntentIdsOwningCaptures(tx, paymentId)
       : []
   );
-  const settledBy = candidates.find(
-    (transaction) =>
-      !transaction.stripePaymentIntentId ||
-      (!ownedBySupersededMachinery.has(transaction.stripePaymentIntentId) &&
-        !ownedByDuplicateRefund.has(transaction.stripePaymentIntentId))
-  );
+  const unowned = (transaction: (typeof candidates)[number]) =>
+    !transaction.stripePaymentIntentId ||
+    (!ownedBySupersededMachinery.has(transaction.stripePaymentIntentId) &&
+      !ownedByDuplicateRefund.has(transaction.stripePaymentIntentId));
+  // #4211 (`INV-PAY-043`): the settlement the PAID claim recorded, when it is a
+  // candidate here; otherwise (not recorded, or the bank receipt) the rule above.
+  const recorded = await tx.payment.findUnique({ where: { id: paymentId }, select: { settledByTransactionId: true } });
+  const settledBy =
+    candidates.find((transaction) => transaction.id === recorded?.settledByTransactionId && unowned(transaction)) ??
+    candidates.find(unowned);
   if (!settledBy) return null;
   return {
     source: settledBy.source,

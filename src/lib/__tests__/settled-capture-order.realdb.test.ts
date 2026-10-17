@@ -140,7 +140,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       // meets the later capture first: the answer the unordered read gave.
       // Apart, an index on `createdAt` may return the first, so the premise is
       // asserted only here.
-      const { otherSettledCaptureWhere } = await import("@/lib/payment-reconciliation");
+      const { otherSettledCaptureWhere } = await import("@/lib/duplicate-capture-guard");
       const { listLiveSupersededIntentIds } = await import("@/lib/superseded-intent-ownership");
       const { listDuplicateCaptureRefundIntentIds } = await import("@/lib/duplicate-capture-ownership");
       const unordered = await prisma.paymentTransaction.findFirst({

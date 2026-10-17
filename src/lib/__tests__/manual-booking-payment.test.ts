@@ -28,6 +28,7 @@ import { parseDateOnly } from "@/lib/date-only";
 
 const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
+  paymentUpdate: vi.fn(async () => ({})),
   executeRaw: vi.fn(),
   bookingFindUnique: vi.fn(),
   bookingUpdateMany: vi.fn(),
@@ -190,6 +191,8 @@ const tx = {
     findUnique: (...args: unknown[]) => mocks.paymentFindUnique(...args),
     upsert: (...args: unknown[]) => mocks.paymentUpsert(...args),
     updateMany: (...args: unknown[]) => mocks.paymentUpdateMany(...args),
+    // #4211: the PAID claim records which row settled the booking.
+    update: (...args: unknown[]) => mocks.paymentUpdate(...args),
   },
   paymentRefund: {
     count: (...args: unknown[]) => mocks.paymentRefundCount(...args),
@@ -421,6 +424,17 @@ describe("#2262 guard 1 — the manual settlement runs the ONE settlement body",
     expect(mocks.reconcileBedAllocationsForBooking).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: "booking-1", db: tx })
     );
+  });
+
+  it("#4211 — the PAID claim records the cash row it minted as the booking's settler", async () => {
+    mocks.paymentTransactionFindMany.mockImplementation(async (args: { where?: { source?: unknown } }) =>
+      args.where?.source === "INTERNET_BANKING" ? [{ id: "txn-manual" }] : [],
+    );
+    await settle();
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "payment-1" },
+      data: { settledByTransactionId: "txn-manual" },
+    });
   });
 
   it("#3581 — posts the settled cash to the booking ledger as CASH_RECORDED, naming the acting admin", async () => {
@@ -841,6 +855,17 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       note: null,
     });
   }
+
+  it("#4211 — clears the recorded settler with the provenance, behind the same fence", async () => {
+    primeReversal();
+    await reverse();
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "payment-1", manuallyMarkedPaidAt: { not: null } }),
+        data: expect.objectContaining({ settledByTransactionId: null, manuallyMarkedPaidAt: null }),
+      }),
+    );
+  });
 
   it("#3581 — posts the booking ledger's reversal of the officer's cash line, copying it", async () => {
     primeReversal();

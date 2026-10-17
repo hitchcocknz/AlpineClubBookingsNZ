@@ -573,6 +573,20 @@ describe("not a second instrument (#3638)", () => {
     expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();
   });
 
+  it("#4211: the bank receipt that settles the booking is recorded as its settler", async () => {
+    primePayment(switchedPayment(BookingStatus.CONFIRMED));
+    mocks.paymentTransactionFindMany.mockImplementation(async (args: { where?: { source?: unknown } }) =>
+      args.where?.source === PaymentSource.INTERNET_BANKING ? [{ id: "bank-row" }] : [],
+    );
+
+    await sync();
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "payment-1" },
+      data: { settledByTransactionId: "bank-row" },
+    });
+  });
+
   it("a booking still awaiting payment never runs the test", async () => {
     primePayment(switchedPayment(BookingStatus.CONFIRMED));
     mocks.paymentFindUnique.mockResolvedValue(
@@ -581,7 +595,13 @@ describe("not a second instrument (#3638)", () => {
 
     await sync();
 
-    expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
+    // #4211: the settle reads its own bank receipt's row to record it as the
+    // settler; the second-instrument read (any non-bank row) never runs.
+    expect(
+      mocks.paymentTransactionFindMany.mock.calls.filter(
+        ([args]) => (args as { where?: { source?: unknown } }).where?.source !== PaymentSource.INTERNET_BANKING,
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -968,6 +988,20 @@ describe("the settling capture follows the shared ledger order (#4163)", () => {
     ).toMatchObject({
       cardPaymentIntentId: "pi_first_4163",
       cardHeldCents: 27000,
+    });
+  });
+
+  it("#4211: names the settler the card's PAID claim recorded, over an older capture", async () => {
+    primePayment(switchedPayment(BookingStatus.PAID, { settledByTransactionId: "second-capture" }));
+    answerLikeTheDatabase([SECOND_CAPTURE, FIRST_CAPTURE]);
+
+    await sync();
+
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({
+      cardPaymentIntentId: "pi_second_4163",
+      cardHeldCents: 31000,
     });
   });
 

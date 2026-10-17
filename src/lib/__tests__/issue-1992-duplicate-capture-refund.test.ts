@@ -65,6 +65,7 @@ const mocks = vi.hoisted(() => ({
   // #4103: the refusal's re-plan of the pre-persisted row, outside the transaction.
   recoveryUpdateMany: vi.fn(),
   recoveryFindUnique: vi.fn(),
+  claimAlertCooldownFailOpen: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -107,6 +108,12 @@ vi.mock("@/lib/payment-recovery", () => ({
 vi.mock("@/lib/duplicate-capture-ownership", () => ({
   listDuplicateCaptureRefundIntentIds: (...args: unknown[]) =>
     mocks.listDuplicateCaptureRefundIntentIds(...args),
+}));
+
+// #4211: the kept-capture alert's once-a-day window.
+vi.mock("@/lib/alert-cooldown-fail-open", () => ({
+  SETTLEMENT_MONEY_ALERT_REPEAT_MS: 24 * 60 * 60 * 1000,
+  claimAlertCooldownFailOpen: (...args: unknown[]) => mocks.claimAlertCooldownFailOpen(...args),
 }));
 
 vi.mock("@/lib/member-credit", () => ({
@@ -273,7 +280,12 @@ let reachedSibling = false;
  * inserted match, with no `orderBy` the first match in heap order (#4177), and
  * any other `orderBy` throws rather than being ignored.
  */
-function primeLedger(physicalOrder: LedgerRow[]) {
+function primeLedger(
+  physicalOrder: LedgerRow[],
+  /** #4211: the row the PAID claim recorded as the settler; null = paid before the record existed. */
+  { settledBy = null }: { settledBy?: string | null } = {},
+) {
+  mocks.paymentUpsert.mockResolvedValue({ id: "payment-1", settledByTransactionId: settledBy });
   const transactions = physicalOrder.map((row, index) => ({
     ...row,
     createdAt: row.createdAt ?? TIED_AT,
@@ -290,6 +302,7 @@ function primeLedger(physicalOrder: LedgerRow[]) {
     async (args: {
       orderBy?: unknown;
       where: {
+        id?: string;
         kind: PaymentTransactionKind;
         status: { in: PaymentStatus[] };
         OR: Array<{
@@ -339,6 +352,7 @@ function primeLedger(physicalOrder: LedgerRow[]) {
       const match =
         candidates.find(
           (transaction) =>
+            (where.id === undefined || transaction.id === where.id) &&
             transaction.kind === where.kind &&
             where.status.in.includes(transaction.status) &&
             where.OR.some((arm) => matchesArm(transaction, arm))
@@ -465,6 +479,7 @@ beforeEach(() => {
   });
   mocks.recoveryUpdateMany.mockResolvedValue({ count: 1 });
   mocks.recoveryFindUnique.mockResolvedValue(null);
+  mocks.claimAlertCooldownFailOpen.mockResolvedValue(true);
 });
 
 // The settled auto-charge capture and the arriving in-flight link capture.
@@ -487,7 +502,7 @@ function primeDuplicateCaptureLedger(
       status: PaymentStatus.PROCESSING,
       amountCents: duplicateAmountCents,
     }),
-  ]);
+  ], { settledBy: "txn-settled" });
 }
 
 describe("#1992 duplicate-capture auto-refund", () => {
@@ -694,6 +709,8 @@ describe("#1992 duplicate-capture auto-refund", () => {
     expect(mocks.paymentTransactionFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: {
+          // #4211: asked of the recorded settler, under the same predicate.
+          id: "txn-settled",
           paymentId: "payment-1",
           kind: PaymentTransactionKind.PRIMARY,
           status: {
@@ -749,7 +766,7 @@ describe("#1992 duplicate-capture auto-refund", () => {
         stripePaymentIntentId: DUPLICATE_PI,
         status: PaymentStatus.PROCESSING,
       }),
-    ]);
+    ], { settledBy: "txn-settled" });
 
     const result = await markBookingPaymentSucceeded({
       format: CLUB_FORMAT_TEST,
@@ -762,7 +779,9 @@ describe("#1992 duplicate-capture auto-refund", () => {
     expect(result.outcome).toBe("duplicate_capture_refunded");
   });
 
-  describe("#4177 several captures qualify: the OLDEST-INSERTED is the settled one, whatever order the rows come back in (INV-PAY-133)", () => {
+  // #4211: only a booking with NO recorded settler still asks which capture is
+  // the settlement, and only to tell the admins: it keeps the arriving capture.
+  describe("#4177 no recorded settler, several captures qualify: the alert names the OLDEST-INSERTED, whatever order the rows come back in (INV-PAY-133)", () => {
     const OLDER_PI = "pi_settled_first";
     const NEWER_PI = "pi_settled_later";
 
@@ -777,17 +796,24 @@ describe("#1992 duplicate-capture auto-refund", () => {
     }
 
     function expectSettledBy(settledPaymentIntentId: string | null) {
-      expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentIntentId: DUPLICATE_PI, settledPaymentIntentId }),
+      expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
+      expect(mocks.sendAdminDuplicateCaptureRefundAlert).not.toHaveBeenCalled();
+      expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          paymentIntentId: DUPLICATE_PI,
+          errorMessage: expect.stringContaining(
+            settledPaymentIntentId ? `card payment ${settledPaymentIntentId} on it` : "a cash or bank payment on it",
+          ),
+        }),
         CLUB_FORMAT_TEST,
-      );
-      expect(mocks.recordDuplicateCaptureRefundEvent).toHaveBeenCalledWith(
-        expect.objectContaining({ duplicatePaymentIntentId: DUPLICATE_PI, settledPaymentIntentId }),
       );
     }
 
     it("reads the candidate in the shared ledger order, oldest first", async () => {
-      primeDuplicateCaptureLedger();
+      primeLedger([
+        ledgerRow({ id: "txn-settled", stripePaymentIntentId: SETTLED_PI }),
+        ledgerRow({ id: "txn-duplicate", stripePaymentIntentId: DUPLICATE_PI }),
+      ]);
 
       await settleDuplicate();
 
@@ -810,19 +836,13 @@ describe("#1992 duplicate-capture auto-refund", () => {
 
       const result = await settleDuplicate();
 
-      expect(result.outcome).toBe("duplicate_capture_refunded");
+      expect(result.outcome).toBe("already_paid");
       expectSettledBy(OLDER_PI);
       // (c′) re-checks the chosen settlement, never the later capture.
       const recheckedIntents = mocks.paymentRecoveryOperationFindFirst.mock.calls.map(
         ([args]) => (args as { where: { paymentIntentId: string } }).where.paymentIntentId,
       );
       expect(recheckedIntents).toEqual([OLDER_PI]);
-      // Only the arriving duplicate is refunded.
-      expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
-        expect.objectContaining({
-          allocationPlan: [{ paymentTransactionId: "txn-duplicate", amountCents: 10000 }],
-        }),
-      );
     });
 
     it("createdAt outranks insertionSeq: the earlier-created capture is the settled one even with the higher sequence", async () => {
@@ -867,7 +887,7 @@ describe("#1992 duplicate-capture auto-refund", () => {
 
         const result = await settleDuplicate();
 
-        expect(result.outcome).toBe("duplicate_capture_refunded");
+        expect(result.outcome).toBe("already_paid");
         expectSettledBy(settledBy);
       },
     );
@@ -1211,7 +1231,14 @@ describe("#1992 duplicate-capture auto-refund", () => {
       });
 
       expect(reachedSibling).toBe(true);
-      expect(result.outcome).toBe("duplicate_capture_refunded");
+      // #4211: nothing recorded which capture settled this booking, so the
+      // match is reported to the admins and nothing is refunded automatically.
+      expect(result.outcome).toBe("already_paid");
+      expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: SETTLEMENT_PI }),
+        CLUB_FORMAT_TEST,
+      );
+      expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
     });
   });
 
@@ -1361,7 +1388,7 @@ describe("#4211 every capture beyond the settling one is refunded, a third inclu
         status: PaymentStatus.PROCESSING,
         insertionSeq: 3,
       }),
-    ]);
+    ], { settledBy: "txn-settling" });
     mocks.listDuplicateCaptureRefundIntentIds.mockResolvedValue([SECOND_PI]);
 
     const result = await arrive(THIRD_PI);
@@ -1433,7 +1460,7 @@ describe("#4211 every capture beyond the settling one is refunded, a third inclu
       ledgerRow({ id: "txn-settling", stripePaymentIntentId: SETTLING_PI }),
       ledgerRow({ id: "txn-second", stripePaymentIntentId: SECOND_PI, status: PaymentStatus.PROCESSING }),
       ledgerRow({ id: "txn-third", stripePaymentIntentId: THIRD_PI, status: PaymentStatus.PROCESSING }),
-    ]);
+    ], { settledBy: "txn-settling" });
     const owned = new Set<string>();
     const enqueued: string[] = [];
     const refunded: string[] = [];
@@ -1521,6 +1548,157 @@ describe("#4211 every capture beyond the settling one is refunded, a third inclu
       expect.objectContaining({ idempotencyKeyPrefix: `duplicate_capture_refund_booking-1_${SECOND_PI}` }),
     );
     expect(rows.find((row) => row.id === "txn-settling")!.status).toBe(PaymentStatus.SUCCEEDED);
+  });
+});
+
+// #4211 (owner decision 17 Oct 2026, "Record the settler"): the PAID claim
+// records which row settled the booking. Its replay is kept whatever else holds
+// money; with no record, nothing is refunded automatically and the admins check.
+describe("#4211 the recorded settler is never refunded; with no record the admins check by hand", () => {
+  const SETTLING_PI = "pi_settling_y";
+  const THIRD_PI = "pi_kept_third_z";
+  const SUPERSEDED_PI = "pi_superseded_x";
+
+  const arrive = (paymentIntentId: string) =>
+    markBookingPaymentSucceeded({
+      format: CLUB_FORMAT_TEST,
+      bookingId: "booking-1",
+      paymentIntentId,
+      amountCents: 10000,
+      paymentMethodId: "pm_1",
+    });
+
+  function expectNothingRefunded() {
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).not.toHaveBeenCalled();
+  }
+
+  it("the PAID claim records the arriving capture's own row as the settler", async () => {
+    mocks.bookingFindUnique.mockResolvedValue({ ...makePaidBooking(), status: BookingStatus.PENDING });
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI, status: PaymentStatus.PENDING })]);
+
+    expect((await arrive(SETTLING_PI)).outcome).toBe("paid");
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "payment-1" },
+      data: { settledByTransactionId: "txn-y" },
+    });
+  });
+
+  it.each([
+    {
+      case: "(a) a third capture the old guard kept",
+      other: ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI }),
+      superseded: [] as RecoveryOperationRow[],
+    },
+    {
+      case: "(b) a Xero bank receipt recorded after the card paid",
+      other: ledgerRow({ id: "txn-bank", source: PaymentSource.INTERNET_BANKING }),
+      superseded: [] as RecoveryOperationRow[],
+    },
+    {
+      case: "(c) a superseded capture whose refund failed later (#4227)",
+      other: ledgerRow({ id: "txn-x", stripePaymentIntentId: SUPERSEDED_PI }),
+      // Its superseded refund completed, then failed at Stripe: no live operation.
+      superseded: [
+        {
+          id: "op-x",
+          type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+          status: PaymentRecoveryOperationStatus.SUCCEEDED,
+          paymentId: "payment-1",
+          paymentIntentId: SUPERSEDED_PI,
+        },
+      ],
+    },
+  ])("$case holds money beside the recorded settler: the settler's replay is kept and nothing is refunded", async ({ other, superseded }) => {
+    primeLedger([other, ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI })], { settledBy: "txn-y" });
+    primeRecoveryOperations(superseded);
+
+    expect(await arrive(SETTLING_PI)).toEqual({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
+    expectNothingRefunded();
+    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    // Rule 1 answers before the ledger is asked anything.
+    expect(mocks.paymentTransactionFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("(a) the kept third capture's own replay is refunded against the recorded settler", async () => {
+    primeLedger(
+      [ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })],
+      { settledBy: "txn-y" },
+    );
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_refunded");
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ allocationPlan: [{ paymentTransactionId: "txn-z", amountCents: 10000 }] }),
+    );
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: THIRD_PI, settledPaymentIntentId: SETTLING_PI }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("a recorded cash or bank settlement refunds any card capture that arrives, naming no card", async () => {
+    primeLedger(
+      [ledgerRow({ id: "txn-bank", source: PaymentSource.INTERNET_BANKING }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })],
+      { settledBy: "txn-bank" },
+    );
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_refunded");
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: THIRD_PI, settledPaymentIntentId: null }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("with no record, a capture arriving beside another holding money is kept and the admins are told, once a day", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })]);
+
+    expect(await arrive(THIRD_PI)).toEqual({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
+    expectNothingRefunded();
+    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paymentIntentId: THIRD_PI,
+        amountCents: 10000,
+        errorMessage: expect.stringContaining(`card payment ${SETTLING_PI} on it still holds money`),
+      }),
+      CLUB_FORMAT_TEST,
+    );
+    expect(mocks.claimAlertCooldownFailOpen).toHaveBeenCalledWith(
+      expect.objectContaining({ key: `duplicate-capture-unrecorded-settler:booking-1:${THIRD_PI}`, windowMs: 24 * 60 * 60 * 1000 }),
+    );
+
+    // A redelivery inside the window re-checks and keeps, but does not re-mail.
+    mocks.claimAlertCooldownFailOpen.mockResolvedValueOnce(false);
+    expect((await arrive(THIRD_PI)).outcome).toBe("already_paid");
+    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+    expectNothingRefunded();
+  });
+
+  it("with no record, a capture a duplicate-capture refund already owns still re-sends its own refund", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })]);
+    mocks.listDuplicateCaptureRefundIntentIds.mockResolvedValue([THIRD_PI]);
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_refunded");
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: THIRD_PI }),
+    );
+    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it("a recorded settler that no longer holds money is no record: the arriving capture is kept and the admins told", async () => {
+    primeLedger(
+      [
+        ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI, status: PaymentStatus.REFUNDED, refundedAmountCents: 10000 }),
+        ledgerRow({ id: "txn-w", stripePaymentIntentId: "pi_other_w" }),
+        ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI }),
+      ],
+      { settledBy: "txn-y" },
+    );
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("already_paid");
+    expectNothingRefunded();
+    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
   });
 });
 
