@@ -791,6 +791,21 @@ validator reads these three only from the deploy shell's environment, never from
 thing: the app's lasting #3413 acknowledgement, described in
 `docs/PRODUCTION_UPGRADE_RUNBOOK.md`, and it never satisfies this check.
 
+Immediately before step 13 migrates the app database, the deploy checks every
+`app`, `app_blue` and `app_green` replica is stopped or absent, then requires
+zero other app-database client backends, including idle/admin/external clients.
+Paused-running containers, failed commands, invalid results and nonzero counts
+refuse before migration or new app startup. A failed pending-migration read is
+also refused, rather than interpreted as nothing pending (#4071). Ordinary
+non-windowed deployments skip these drain probes.
+
+These checks are snapshots. Keep the offline window until the new runtime is
+ready: the deploy neither stops containers nor terminates sessions or prevents
+clients reconnecting. The earlier shadow-database replay remains separate.
+See the [migration policy](docs/BLUE_GREEN_MIGRATION_POLICY.md#a-windowed-migration-moves-the-rollback-boundary)
+and [windowed upgrade sequence](docs/PRODUCTION_UPGRADE_RUNBOOK.md#24-windowed-migration-deploy-sequence)
+for the drain and recovery requirements.
+
 ### Expand then contract (multi-lodge)
 
 Some features ship as a two-step expand/contract pair: an expand release adds

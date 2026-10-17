@@ -2373,32 +2373,67 @@ verify_prisma_migration_status() {
 list_pending_migration_sql_files() {
   local applied_migrations_file
   local migration_table_exists
-  local migration_dir
+  local migration_sql_paths
   local migration_name
   local migration_sql_path
+  local applied_status
 
-  applied_migrations_file="$(mktemp)"
-  migration_table_exists="$(
+  if ! applied_migrations_file="$(mktemp)"; then
+    echo "INV-OPS-002: Could not prepare pending migration discovery; refusing deploy." >&2
+    return 1
+  fi
+  if ! migration_table_exists="$(
     docker compose exec -T "$POSTGRES_SERVICE" \
       psql -U tac -d tacbookings -Atqc \
-      "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '_prisma_migrations')"
-  )"
-
-  if [ "$migration_table_exists" = "t" ]; then
-    docker compose exec -T "$POSTGRES_SERVICE" \
-      psql -U tac -d tacbookings -Atqc \
-      "SELECT migration_name FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL ORDER BY finished_at" \
-      >"$applied_migrations_file"
+      "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '_prisma_migrations')" 2>/dev/null
+  )"; then
+    rm -f "$applied_migrations_file"
+    echo "INV-OPS-002: Could not read migration table existence; restore database access before retrying." >&2
+    return 1
   fi
 
+  case "$migration_table_exists" in
+    t)
+      if ! docker compose exec -T "$POSTGRES_SERVICE" \
+        psql -U tac -d tacbookings -Atqc \
+        "SELECT migration_name FROM \"_prisma_migrations\" WHERE finished_at IS NOT NULL ORDER BY finished_at" \
+        >"$applied_migrations_file" 2>/dev/null; then
+        rm -f "$applied_migrations_file"
+        echo "INV-OPS-002: Could not read applied migrations; restore database access before retrying." >&2
+        return 1
+      fi
+      ;;
+    f) ;;
+    *)
+      rm -f "$applied_migrations_file"
+      echo "INV-OPS-002: Invalid migration table existence result; refusing unknown pending migrations." >&2
+      return 1
+      ;;
+  esac
+
+  # Capture and check the producer BEFORE parsing: process substitution hides
+  # its exit status, even when mapfile/read succeeds (#4071).
+  if ! migration_sql_paths="$(find prisma/migrations -mindepth 2 -maxdepth 2 -name migration.sql | sort)"; then
+    rm -f "$applied_migrations_file"
+    echo "INV-OPS-002: Could not enumerate migration files; repair the migration directory before retrying." >&2
+    return 1
+  fi
   while IFS= read -r migration_sql_path; do
-    migration_dir="$(dirname "$migration_sql_path")"
-    migration_name="$(basename "$migration_dir")"
+    [ -n "$migration_sql_path" ] || continue
+    migration_name="${migration_sql_path%/migration.sql}"
+    migration_name="${migration_name##*/}"
     if grep -Fxq "$migration_name" "$applied_migrations_file"; then
       continue
+    else
+      applied_status=$?
+      if [ "$applied_status" -ne 1 ]; then
+        rm -f "$applied_migrations_file"
+        echo "INV-OPS-002: Could not compare applied migrations; refusing unknown pending migrations." >&2
+        return 1
+      fi
     fi
     printf '%s\n' "$migration_sql_path"
-  done < <(find prisma/migrations -mindepth 2 -maxdepth 2 -name migration.sql | sort)
+  done <<< "$migration_sql_paths"
 
   rm -f "$applied_migrations_file"
 }
@@ -2406,8 +2441,17 @@ list_pending_migration_sql_files() {
 validate_pending_migrations_blue_green_safe() {
   local pending_sql_files=()
   local pending_sql_file
+  local pending_output
+  local windowed_report
 
-  mapfile -t pending_sql_files < <(list_pending_migration_sql_files)
+  PENDING_WINDOWED_MIGRATIONS=unknown
+  if ! pending_output="$(list_pending_migration_sql_files)"; then
+    echo "INV-OPS-002: Pending migration discovery failed; no app-database migration will run." >&2
+    return 1
+  fi
+  if [ -n "$pending_output" ]; then
+    mapfile -t pending_sql_files <<< "$pending_output"
+  fi
 
   # Remembered for the failure record: the names this deploy was about to apply,
   # captured here because after `migrate deploy` runs they are no longer pending
@@ -2418,15 +2462,108 @@ validate_pending_migrations_blue_green_safe() {
   done
 
   if [ "${#pending_sql_files[@]}" -eq 0 ]; then
+    PENDING_WINDOWED_MIGRATIONS=0
     info "No pending Prisma migrations detected."
     return 0
   fi
 
-  ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS="$ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS" \
-    BLUE_GREEN_MIGRATION_OVERRIDE_REASON="$BLUE_GREEN_MIGRATION_OVERRIDE_REASON" \
-    BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED="$BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED" \
-    MIGRATION_SAFETY_LEDGER="$MIGRATION_SAFETY_LEDGER" \
-    ./scripts/validate-blue-green-migrations.sh "${pending_sql_files[@]}"
+  # INV-SSOT-001: only the validator classifies the pending set. The suffix
+  # preserves its final newline so extra/empty report lines cannot be trimmed
+  # into a valid answer by command substitution.
+  if ! windowed_report="$(
+    ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS="$ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS" \
+      BLUE_GREEN_MIGRATION_OVERRIDE_REASON="$BLUE_GREEN_MIGRATION_OVERRIDE_REASON" \
+      BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED="$BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED" \
+      MIGRATION_SAFETY_LEDGER="$MIGRATION_SAFETY_LEDGER" \
+      ./scripts/validate-blue-green-migrations.sh --report-windowed "${pending_sql_files[@]}" && printf '.'
+  )"; then
+    echo "INV-OPS-002: Pending migration safety validation failed; refusing deploy." >&2
+    return 1
+  fi
+  case "$windowed_report" in
+    $'0\n.') PENDING_WINDOWED_MIGRATIONS=0 ;;
+    $'1\n.') PENDING_WINDOWED_MIGRATIONS=1 ;;
+    *)
+      echo "INV-SSOT-001: Invalid pending-windowed report from migration validator; refusing deploy." >&2
+      return 1
+      ;;
+  esac
+}
+
+verify_windowed_migration_runtime_drained() {
+  local service
+  local container_ids
+  local container_id
+  local running
+  local client_count
+
+  case "${PENDING_WINDOWED_MIGRATIONS:-unknown}" in
+    0) return 0 ;;
+    1) ;;
+    *)
+      echo "INV-OPS-002: Pending-windowed status is unknown; refusing app-database migration." >&2
+      return 1
+      ;;
+  esac
+  if [ "$BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED" != "1" ]; then
+    echo "INV-OPS-002: Windowed migration requires the deploy-shell BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1 acknowledgement after the offline window is established." >&2
+    return 1
+  fi
+
+  # Include stopped containers and every replica, not just the first or the
+  # active colour. A paused container still has State.Running=true.
+  for service in "$CRON_SERVICE" "$BLUE_SERVICE" "$GREEN_SERVICE"; do
+    if ! container_ids="$(docker compose ps --all --quiet "$service" 2>/dev/null)"; then
+      echo "INV-OPS-002: Could not enumerate ${service} containers; verify Docker access and keep the offline window before retrying." >&2
+      return 1
+    fi
+    [ -n "$container_ids" ] || continue
+    while IFS= read -r container_id; do
+      if [[ ! "$container_id" =~ ^[a-fA-F0-9]+$ ]]; then
+        echo "INV-OPS-002: Invalid container enumeration for ${service}; refusing windowed migration." >&2
+        return 1
+      fi
+      if ! running="$(docker inspect --format '{{.State.Running}}' "$container_id" 2>/dev/null && printf '.')"; then
+        echo "INV-OPS-002: Could not inspect ${service} container state; verify all replicas are stopped before retrying." >&2
+        return 1
+      fi
+      case "$running" in
+        false.|$'false\n.') ;;
+        true.|$'true\n.')
+          echo "INV-OPS-002: ${service} has a running container. Stop every app/web replica and worker, then retry within the offline window." >&2
+          return 1
+          ;;
+        *)
+          echo "INV-OPS-002: Invalid running state for ${service}; refusing windowed migration." >&2
+          return 1
+          ;;
+      esac
+    done <<< "$container_ids"
+  done
+
+  # All users and all states, including idle admin/external clients. Only this
+  # checking session, background processes and other databases are excluded.
+  if ! client_count="$(docker compose exec -T "$POSTGRES_SERVICE" \
+    psql -U tac -d tacbookings -Atqc \
+    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND backend_type = 'client backend' AND pid <> pg_backend_pid()" 2>/dev/null && printf '.')"; then
+    echo "INV-OPS-002: Could not read app-database client count; restore database access and verify the offline window before retrying." >&2
+    return 1
+  fi
+  # Preserve output through command substitution, then remove only the suffix
+  # and one normal psql line ending. Extra lines are malformed, even if blank.
+  client_count="${client_count%.}"
+  client_count="${client_count%$'\n'}"
+  if [[ ! "$client_count" =~ ^[0-9]+$ ]]; then
+    echo "INV-OPS-002: Invalid app-database client count; refusing windowed migration." >&2
+    return 1
+  fi
+  # Avoid arithmetic conversion/overflow: only a string consisting of zeroes
+  # represents zero, however large a valid count might be.
+  if [[ ! "$client_count" =~ ^0+$ ]]; then
+    echo "INV-OPS-002: App database still has ${client_count} other client backend(s), including idle clients. Disconnect all app, worker, admin and external clients before retrying." >&2
+    return 1
+  fi
+  info "Windowed migration drain verified: all app/web containers stopped or absent; zero other app-database clients. Maintain the offline window until the new runtime is ready; these checks are snapshots."
 }
 
 assert_readiness_payload_healthy() {
@@ -3583,6 +3720,8 @@ step "12/20" "Validating Prisma schema against committed migrations"
 validate_prisma_schema_matches_migrations
 validate_pending_migrations_blue_green_safe
 info "Prisma schema matches the committed migration history."
+
+verify_windowed_migration_runtime_drained
 
 step "13/20" "Running Prisma migrations"
 # From here on, any failure writes a record: the schema may no longer match

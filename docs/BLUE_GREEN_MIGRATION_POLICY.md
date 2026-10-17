@@ -34,6 +34,23 @@ For a `windowed` migration the boundary moves back to the **migrate step**. Once
 - Write a reverse script and keep it **beside the migration**, as `prisma/migrations/<migration>/rollback.sql`, so the schema change can be undone without a restore. **The validator enforces this**: a `windowed` row whose migration folder has no `rollback.sql` fails the gate as a documentation failure, at PR time and at deploy time, and the `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS` override does not rescue it. If the change genuinely cannot be reversed, commit a `rollback.sql` that says so and names the recovery path — an operator finding an empty folder mid-window is the failure this check exists to prevent. The file's *contents* are still inert: Prisma and every other gate address a migration folder by its `migration.sql` alone, so `rollback.sql` is never applied, never checksummed, and only ever run by an operator on purpose.
 - Keep the migrate → cutover gap as short as the plan allows, and say in `lock_impact_plan` what the old color will do during it.
 
+The deploy verifies the window immediately before step 13's app-database
+migration marker and migrate command, before starting the new app. It enumerates
+all Compose `app`, `app_blue` and `app_green` containers, including every replica,
+and requires `State.Running=false` or no container; paused-running containers
+refuse. It then requires zero other `pg_stat_activity` client backends on the
+current app database, across all users and states, including idle, admin and
+external clients. Only the checking session, background processes and other
+databases are excluded. Failed commands, invalid output or a nonzero count refuse
+before the app database is migrated. Diagnostics identify services or counts,
+without publishing connection addresses, credentials or session query text.
+
+These are **point-in-time checks, not reconnect fencing**. The operator must
+maintain the offline window until the new runtime is ready, including external
+workers and anyone able to restart a service. The deploy does not stop containers,
+terminate sessions, revoke roles or acquire a deployment-wide lock. Its earlier
+shadow-database replay remains separate and runs before these checks.
+
 Historical note: before `windowed` existed the gate hard-required `yes`, so every breaking migration declared it whether or not it was true and the field carried no information for exactly the migrations that most needed scrutiny. Two classes of row predate the value and are more accurately `windowed`.
 
 This note deliberately gives you the **class rule, not a list**. An enumeration here goes stale the moment somebody adds a row: an earlier draft of this note named four migrations when the ledger already held at least nine of them, including the enum rename #2288 was built around — and the artefact written to stop an auditor misreading the record was itself the misleading one. Read the classes off the ledger:
@@ -220,6 +237,17 @@ The measurement behind the 5 s default, both of its bounds, and the recovery an 
 - matching entries in `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`
 
 Hot-table migrations require a lock-impact plan in the ledger. Potentially breaking migrations also require `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a non-empty `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` at deploy time, after the ledger records either why the active old color remains compatible (`old_code_compatible=yes`) or what the maintenance window is (`old_code_compatible=windowed`). A pending `windowed` row additionally requires `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1`; set it only after traffic is removed, the old web color plus every old worker/scheduler/queue consumer are stopped, and no old database connection remains. The override alone cannot satisfy that operational boundary.
+
+Pending discovery must succeed before its output is parsed: a failed database
+read or migration-file enumeration is unknown, never an empty pending set
+(#4071). The validator remains the single classifier (`INV-SSOT-001`). Its
+opt-in `--report-windowed` mode emits exactly one `0` or `1` line on stdout,
+derived from `found_windowed` only after successful validation of the supplied
+pending files; default callers retain stderr diagnostics and empty stdout. The
+deploy rejects a failed or malformed report. Already-applied ledger rows do not
+trigger a window; successful empty and non-windowed pending sets skip the drain
+probes. Override/reason, reverse-script and migration-lock-timeout checks remain
+binding.
 
 The breaking/hot-table scan is line-oriented, not a SQL parser: it reads every non-comment line of the pending `migration.sql`, case-insensitively, including lines inside a `DO $$ … $$` block. No single pattern can see a keyword *phrase* split across lines — `RENAME` at the end of one line and `VALUE` at the start of the next reads as neither. The two rename constructs therefore carry a **partner pattern** that matches the first line on its own: `ALTER TABLE … RENAME` behind `RENAME COLUMN`, and `ALTER TYPE … RENAME` behind `RENAME VALUE`. Both wraps are caught. Splitting *between* clauses is fine and is caught on the second line — `ALTER TYPE "X"` on one line and `RENAME VALUE 'a' TO 'b';` on the next.
 

@@ -84,7 +84,7 @@ function run(harnessLines: string[], options: { stopped?: Shell; pending?: Shell
   const validator = path.join(dir, "scripts", "validate-blue-green-migrations.sh");
   writeFileSync(
     validator,
-    `#!/usr/bin/env bash\nprintf 'VALIDATOR ${STOPPED}=%s\\n' "\${${STOPPED}-UNSET}"\n`,
+    `#!/usr/bin/env bash\nprintf 'VALIDATOR ${STOPPED}=%s\\n' "\${${STOPPED}-UNSET}" >&2\nprintf '0\\n'\n`,
     "utf8",
   );
   chmodSync(validator, 0o755);
@@ -164,7 +164,7 @@ describe(`${STOPPED} stays the validator's, never the containers' (#4027)`, () =
   it("hands the validator the shell's 1, and the containers nothing", () => {
     const result = run(harness(), { stopped: { set: true, value: "1" } });
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`VALIDATOR ${STOPPED}=1`);
+    expect(result.stderr).toContain(`VALIDATOR ${STOPPED}=1`);
     expect(result.stdout).toContain(`SHELL ${STOPPED}=1`);
     const dockerLines = result.stdout.split("\n").filter((line) => line.startsWith("DOCKER "));
     expect(dockerLines).toHaveLength(2);
@@ -174,7 +174,7 @@ describe(`${STOPPED} stays the validator's, never the containers' (#4027)`, () =
   it("still defaults the validator to 0 when the shell never set it", () => {
     const result = run(harness(), { stopped: { set: false } });
     expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toContain(`VALIDATOR ${STOPPED}=0`);
+    expect(result.stderr).toContain(`VALIDATOR ${STOPPED}=0`);
     expect(result.stdout).toContain(`DOCKER compose up -d --force-recreate app ${STOPPED}=UNSET`);
   });
 });
