@@ -642,9 +642,9 @@ home for that judgement), its still-active local mirror is stale drift that
 cleanup deactivates, and active non-cancelled coverage above the cash
 refund-note target is reported as its own drift class
 (`overCoveredStripeRefundPayments`) because it silently suppresses every
-later refund note. A non-Stripe payment keeps ONE refund note, whose mirror
-a void deactivates too (`INV-ADDPAY-041`); a refund request's own note
-(`INV-PAY-118`, role `REFUND_REQUEST_CREDIT_NOTE`) is outside it.
+later refund note. A non-Stripe payment keeps ONE refund note; a refund
+request's own note (`INV-PAY-118`) is outside that rule. A void deactivates
+either mirror (`INV-ADDPAY-041`).
 Operator repair: `scripts/xero-refund-note-link-repair.ts`
 ([runbook](../xero/ARCHITECTURE.md)).
 
@@ -1571,31 +1571,32 @@ decision and would need its own owner decision.
 
 - **A refund credit note Xero voided is never re-adopted as a payment's
   refund note; a reissue's key names every note whose key it could collide
-  with; and on a bank transfer a void undoes the refund** (#4091, owner decisions).
-  Its mirror is written inactive on any payment (`INV-ADDPAY-020`), and
-  `findCanonicalPaymentRefundCreditNote`, `mayRecordAsCanonicalRefundNote`
-  and the booking repair's field backfill and conflict check leave out a note a link records VOIDED or DELETED
+  with; and on a bank transfer a void undoes the refund** (#4091, owner
+  decisions). Its mirror goes inactive on any payment
+  (`INV-ADDPAY-020`); `findCanonicalPaymentRefundCreditNote`,
+  `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill
+  and conflict check leave out a note a link records VOIDED or DELETED
   (`refundNoteIdSets`), so nothing writes one back into
   `Payment.xeroRefundCreditNoteId`. The nightly link cleanup heals a mirror
   left active before #4091 (#4161).
 - **A refund request's own note** (`INV-PAY-118`, #4195) too: its voided
-  mirror goes inactive, never covers the request (`refundRequestOwnNotes`),
-  and the fresh note's key names it. Its void moves no refunded total, so the
-  booking repair still counts the request.
-- **The reissue's key.** `refundNoteKeyAfterVoidParts` is the one home for the
-  row's correlation key and the Xero key. Once the payment has a voided refund
-  note, it appends `after-void:<sorted ids>`: every refund note, live or voided, recorded at the key's watermark (v2) or amount (v1),
-  or every note a "Paid another way" close's own rows raised once one is
-  voided (v3). A figure the link lacks is read from its create row; none
-  there counts as matching. With no void the key is byte-identical. The
-  create path refuses a VOIDED/DELETED note or one another create row
-  raised, recording nothing.
+  mirror goes inactive, even racing a status-less write, and never covers
+  the request. Only an officer re-raises one (#4214), from any row state,
+  never automatically; its Xero key alone names the voided notes. Its void
+  moves no refunded total; the booking repair still counts the request.
+- **The reissue's key** (`refundNoteKeyAfterVoidParts`, row and Xero alike).
+  Once a refund note is voided it appends `after-void:<sorted ids>`: every
+  refund note, live or voided, recorded at the key's watermark (v2) or amount
+  (v1), or every note a "Paid another way" close's own rows raised once one is
+  voided (v3). A figure the link lacks comes from its create row, or counts
+  as matching. With no void the key is byte-identical. The create path
+  refuses, recording nothing, a VOIDED/DELETED note or one another create row
+  raised.
 - **Bank transfers.** Xero is the payment rail (`INV-ADDPAY-021`), so the
   inbound sync returns the refunded amount to what the live notes say and
   nothing is re-raised automatically. A fresh note is raised only once the
   treasurer records the refund again. A refund with no live note is no
-  reconciliation-report drift, by design (#4046); visibility is #4162.
-  Pinned by `xero-refund-note-void-pointer`, `xero-refund-request-note-void`,
-  `xero-refund-note-crash-window`, `xero-refund-note-after-void-key`,
-  `xero-sync`, `xero-booking-repair`, `xero-operation-retry`,
-  `xero-operation-outbox` and `xero-hardening`.
+  reconciliation-report drift, by design (#4046; visibility: #4162).
+  Pinned by `xero-refund-note-{void-pointer,crash-window,after-void-key}`,
+  `xero-refund-request-note-void`, `xero-sync`, `xero-booking-repair`,
+  `xero-operation-retry`, `xero-operation-outbox` and `xero-hardening`.

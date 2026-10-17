@@ -173,8 +173,11 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await reconcile();
       expect(await requestLinks()).toEqual([{ id: VOIDED_NOTE, active: false, status: "VOIDED", requestId: REQUEST_ID }]);
 
-      // The operator retries the request's failed row. A Xero that remembers
-      // the request's key would hand the voided note back for it.
+      // The builder raising the request's note again, driven through the
+      // retry of its stale failed row. Neither the panel nor the repair tool
+      // offers that row once the note is voided (#4214: the officer decides);
+      // the proof is of the key and the cover, which any re-raise uses. A
+      // Xero that remembers the request's key would hand the voided note back.
       const keys: string[] = [];
       const { retryXeroSyncOperation } = await import("@/lib/xero-operation-retry");
       await withFakeXero(

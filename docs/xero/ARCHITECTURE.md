@@ -1080,20 +1080,34 @@ live notes say, and nothing is re-raised automatically. If the refund was real,
 the treasurer records it again, and only then does a request raise the fresh
 note, under its own key.
 
-**A refund request's own note, voided (#4195).** The same rule holds for a
-refund request's own note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`). The
+**A refund request's own note, voided (#4195).** The same void rule holds for
+a refund request's own note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`). The
 inbound sync writes its voided mirror inactive; it never names the pointer, so
-nothing else moves. `refundRequestOwnNotes` never takes a voided note as the
-request's cover, even a mirror an older release left active (every reader
-judges it by its recorded status, so it needs no heal). The retry of the
-request's failed row therefore raises a fresh note under
+nothing else moves. A request-note link write that names no Xero status (a
+retry's, or a completion's) reads the stored row under its row lock in the same
+transaction (`keepStoredRequestNoteVoid`), so a void that committed while it
+waited keeps the link inactive and its status on the row. `refundRequestOwnNotes`
+never takes a voided note as the request's cover, even a mirror an older release
+left active: every reader judges it by its recorded status, so it needs no heal.
+When a request's note is raised again, its Xero key is
 `payment:<id>:refund-request-credit-note:<request>:v1:after-void:<ids>`, naming
-the request's own voided notes, and the create check refuses a note any request
-link records voided. Unlike the payment's one note, the void moves no refunded
-total: the inbound repair reads only the payment's own refund-note roles. So the
-booking repair still counts that request's amount and never hands its cash to
-the cancellation's note. Stated limit: nothing re-raises a request's note whose
-row SUCCEEDED, because its enqueue finds that row and queues nothing.
+the request's own voided notes (its row keeps the plain key), and the create
+check refuses a note any request link records voided. Unlike the payment's one
+note, the void moves no refunded total: the inbound repair reads only the
+payment's own refund-note roles. So the booking repair still counts that
+request's amount and never hands its cash to the cancellation's note.
+
+**Re-raising a voided request note is the officer's decision (#4214, owner
+decision).** Nothing re-raises one automatically, whatever its row's state. A
+SUCCEEDED row is never retried, and its enqueue finds that row and queues
+nothing. A PARTIAL row, or a FAILED row that already names its note, retries
+into the settle-finish, which refuses a voided note. A stale FAILED row from
+before the note was raised shows as Repaired on the Xero Operations panel,
+because a SUCCEEDED row shares its plain correlation key, and the booking
+repair tool reports it with no Retry and never auto-applies one
+(`refundRequestNoteVoidedWithNoLive`). The officer action #4214 builds, "Raise
+a fresh credit note", is the only remedy; until it ships, raise the replacement
+by hand in Xero.
 
 **Deploy and rollback note (#4091).** The previous release writes a voided
 canonical bank-transfer mirror active, re-adopts a voided note through its
@@ -1112,6 +1126,19 @@ finish on one colour; the nightly `link-cleanup` heals a listed mirror (#4161).
 While the previous colour still runs its cleanup, it can flip a voided mirror
 inactive without moving the pointer (#4192's state); the next nightly run on
 the new release heals that too.
+
+**Deploy and rollback note (#4195).** The previous release keeps a voided
+request-note mirror active, takes it as the request's cover and sends the
+request's plain key. An old-colour retry can therefore get the voided note back
+from Xero, and its completion rewrites the link's metadata without the status,
+re-arming the link where no later reader can see the void. Stop the old
+colour's outbox and retry workers before the new release takes over, and do
+not retry request-note rows from the old colour during the switch. Before
+rolling back, and after rolling forward, list the request mirrors still active
+that record a void (read-only):
+`SELECT "localId", "xeroObjectId", "updatedAt" FROM "XeroObjectLink" WHERE "localModel" = 'Payment' AND role = 'REFUND_REQUEST_CREDIT_NOTE' AND active AND upper(trim(metadata->>'status')) IN ('VOIDED', 'DELETED')`.
+The new release reads each as voided without a heal; check each listed request
+in Xero, where the officer decides whether to raise a fresh note (#4214).
 
 Internet-banking settlement rides this flow: when an invoice is
 paid in Xero **with cash evidence** (`amountPaid` > 0, falling back to actual
