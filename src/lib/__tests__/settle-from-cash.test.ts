@@ -82,12 +82,12 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-125)", () => {
     ).toEqual(rewrite(20_000, 50_000, 30_000, "PARTIALLY_REFUNDED"));
   });
 
-  it("#4177: a superseded capture X, the only card capture on a paid booking, is no second instrument: the receipt is the cash, the payment the cash plus X until X's refund lands", () => {
-    // `findSecondInstrumentSettlement` skips X on a paid booking while the
-    // superseded-intent machinery holds it for the member, so the settle passes
-    // `secondInstrument: false` and the cash is recorded; X's own refund, when
-    // it lands, records its refund against X and the payment nets to the cash.
-    const supersededCapture: CashSettlementTransaction = {
+  it("arithmetic pin (#4177): a captured, unrefunded card row beside the bank receipt counts towards the payment's figure, never the receipt", () => {
+    // A pin of the plan's arithmetic only, not a proof of #4177's behaviour:
+    // that a paid booking whose only card capture is one the superseded-intent
+    // machinery holds reaches this plan with `secondInstrument: false` is
+    // proven through the settle in `issue-3638-second-instrument-conflict.test.ts`.
+    const cardCapture: CashSettlementTransaction = {
       kind: "PRIMARY",
       source: "STRIPE",
       status: "SUCCEEDED",
@@ -95,17 +95,8 @@ describe("planInternetBankingCashSettlement (#3979, INV-PAY-125)", () => {
       refundedAmountCents: 0,
     };
     expect(
-      planInternetBankingCashSettlement({ ...base, transactions: [supersededCapture, primary()], secondInstrument: false }),
+      planInternetBankingCashSettlement({ ...base, transactions: [cardCapture, primary()], secondInstrument: false }),
     ).toEqual(rewrite(20_000, 50_000));
-    expect(
-      planInternetBankingCashSettlement({
-        ...base,
-        refundedAmountCents: 30_000,
-        transactions: [{ ...supersededCapture, status: "REFUNDED", refundedAmountCents: 30_000 }, primary()],
-        secondInstrument: false,
-      }),
-      "once X's refund is recorded",
-    ).toEqual(rewrite(20_000, 50_000, 30_000, "PARTIALLY_REFUNDED"));
   });
 
   it("a captured addition counts towards the payment's figure, never the receipt", () => {

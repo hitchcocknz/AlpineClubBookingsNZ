@@ -155,6 +155,7 @@ import {
   settlementMarkerTimelineEntries,
 } from "@/lib/manual-settlement-reversal-event";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { IB_RECEIPT_FROM_CASH_REASON } from "@/lib/xero-inbound/settle-from-cash";
 import {
   isPaymentRecoveryOperationInFlight,
   PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE,
@@ -1075,6 +1076,7 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
     ["a REFUND_SUPERSEDED_PAYMENT whose retries are spent", op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null })],
     ["a CANCEL_PAYMENT_INTENT waiting to run", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)],
     ["a CANCEL_PAYMENT_INTENT being run", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { status: PaymentRecoveryOperationStatus.PROCESSING })],
+    ["a CANCEL_PAYMENT_INTENT that failed and will retry", op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, { status: PaymentRecoveryOperationStatus.FAILED, attempts: 2 })],
   ])("paid: names S, not the older X %s holds", async (_label, operation) => {
     primePayment(switchedPayment(BookingStatus.PAID));
     // Oldest first, as the ordered read returns them: X, then S.
@@ -1104,15 +1106,51 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
     expect(alertedIntent()).toBe(X.stripePaymentIntentId);
   });
 
-  it("paid: raises nothing when the only card capture is one the machinery holds for the member", async () => {
+  it("paid: raises nothing when the only card capture is one the machinery holds for the member, and records the receipt at the cash", async () => {
     primePayment(switchedPayment(BookingStatus.PAID));
     mocks.paymentTransactionFindMany.mockResolvedValue([X]);
     ownedBy([op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)]);
+    // The transition: the bank receipt is not captured yet, and its stored
+    // figure (300.00) differs from the invoice's cash (270.00).
+    mocks.settleRowsFindMany.mockResolvedValue([
+      {
+        kind: PaymentTransactionKind.PRIMARY,
+        source: PaymentSource.INTERNET_BANKING,
+        status: PaymentStatus.PENDING,
+        amountCents: 30000,
+        refundedAmountCents: 0,
+      },
+      {
+        kind: PaymentTransactionKind.PRIMARY,
+        source: PaymentSource.STRIPE,
+        status: PaymentStatus.SUCCEEDED,
+        amountCents: X.amountCents,
+        refundedAmountCents: 0,
+      },
+    ]);
 
     const result = await sync();
 
     expect(result.secondInstrumentSettlementConflicts).toBe(0);
     expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();
+    // No second instrument, so the settle records the receipt at the cash
+    // (INV-PAY-125), and the payment's figure is the cash plus X until X's
+    // refund is recorded.
+    expect(mocks.paymentTransactionUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ source: PaymentSource.INTERNET_BANKING, kind: PaymentTransactionKind.PRIMARY }),
+        data: expect.objectContaining({
+          status: PaymentStatus.SUCCEEDED,
+          amountCents: 27000,
+          reason: IB_RECEIPT_FROM_CASH_REASON,
+        }),
+      }),
+    );
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ amountCents: 27000 + X.amountCents, refundedAmountCents: 0 }),
+      }),
+    );
   });
 
   it.each([

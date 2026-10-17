@@ -1400,9 +1400,9 @@ short).
   order, which an update of an indexed column changes. Nor is a cuid `id`.
   - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from a
     sequence the column owns. The database assigns it; code never writes it.
-    Stored rows had no insertion order, so the migration numbered each tie
-    retired rows first (FAILED, withdrawn, or an ask queued for cancellation),
-    live rows last, then physical order. A stored tie can change order at that
+    The migration numbered each stored tie retired rows first (FAILED,
+    withdrawn, or an ask queued for cancellation), live rows last, then
+    physical order. A stored tie can change order at that
     release; the owner counts the ties before deploying.
   - **One home**: `LEDGER_ROWS_OLDEST_FIRST` and `LEDGER_ROWS_NEWEST_FIRST`,
     with their comparators, in `payment-ledger-order.ts`. Every money read uses
@@ -1417,9 +1417,10 @@ short).
     check for open ones after the old colour drains.
   - **The settling capture is the oldest-inserted qualifying one** (#4177). A
     duplicate-capture refund's is never superseded-owned; a non-card one names
-    no card payment. Xero's conflict (#4163) skips duplicate-refunded
-    captures. When paid, the Xero conflict also skips superseded-owned captures
-    and #1765 refund history (ranked last when cancelled).
+    no card. Xero's conflict (#4163) skips duplicate-refunded captures. When
+    paid, the Xero conflict also skips a capture a superseded refund or
+    in-flight cancel holds, and #1765 refund history (ranked last when
+    cancelled).
   - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, `settled-capture-order.realdb.test.ts`
     and the migration's fixture; the settling capture by

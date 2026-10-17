@@ -283,6 +283,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         { intent: "pi_race_4177_refund_done", type: "REFUND_SUPERSEDED_PAYMENT", status: "SUCCEEDED", attempts: 1, nextRetryAt: null },
         { intent: "pi_race_4177_cancel_waiting", type: "CANCEL_PAYMENT_INTENT", status: "PENDING", attempts: 0, nextRetryAt: TIED_AT },
         { intent: "pi_race_4177_cancel_running", type: "CANCEL_PAYMENT_INTENT", status: "PROCESSING", attempts: 1, nextRetryAt: null },
+        { intent: "pi_race_4177_cancel_retrying", type: "CANCEL_PAYMENT_INTENT", status: "FAILED", attempts: 2, nextRetryAt: TIED_AT },
         { intent: "pi_race_4177_cancel_dead", type: "CANCEL_PAYMENT_INTENT", status: "FAILED", attempts: 5, nextRetryAt: null },
         { intent: "pi_race_4177_cancel_raised_dead", type: "CANCEL_PAYMENT_INTENT", status: "PENDING", attempts: 5, nextRetryAt: TIED_AT },
       ] as const;
@@ -304,7 +305,13 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       );
 
       expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID)).sort()).toEqual(
-        ["pi_race_4177_cancel_running", "pi_race_4177_cancel_waiting", "pi_race_4177_refund_dead", "pi_race_4177_refund_retrying"],
+        [
+          "pi_race_4177_cancel_retrying",
+          "pi_race_4177_cancel_running",
+          "pi_race_4177_cancel_waiting",
+          "pi_race_4177_refund_dead",
+          "pi_race_4177_refund_retrying",
+        ],
       );
       expect((await listLiveSupersededIntentIds(prisma, PAYMENT_ID)).sort()).toEqual(
         operations
