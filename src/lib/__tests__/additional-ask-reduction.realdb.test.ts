@@ -1000,7 +1000,7 @@ let webhookClient: PrismaClient;
       { leavingNightCents: 4_000, refundLeftCents: 3_000, expected: true },
       { leavingNightCents: 2_500, refundLeftCents: 0, expected: false },
     ])(
-      "ROUND 7 (F6): the billed-offset note records whether the edit's own note is expected - a $refundLeftCents refund left after the ask",
+      "ROUND 7 (F6), #4049: the billed-offset note and the edit's history record whether the edit's own note is expected - a $refundLeftCents refund left after the ask",
       async ({ leavingNightCents, refundLeftCents, expected }) => {
         await grownBooking("card", leavingNightCents, 100, "minted", "primary-after-increase");
         const result = await removeLeavingGuest();
@@ -1008,6 +1008,9 @@ let webhookClient: PrismaClient;
         const [note, ...others] = await billedOffsetNotes(result.bookingModificationId!);
         expect(others).toEqual([]);
         expect((note!.requestPayload as Record<string, unknown>).ownNoteExpected ?? false).toBe(expected);
+        // #4049: the edit's history row records the same answer, for the repair pass.
+        const history = await prisma.bookingModification.findUniqueOrThrow({ where: { id: result.bookingModificationId! }, select: { newData: true } });
+        expect((history.newData as Record<string, unknown>).unpaidAskBilledOffsetOwnNoteExpected).toBe(expected);
       },
     );
 
