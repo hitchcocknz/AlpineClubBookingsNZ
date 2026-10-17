@@ -35,10 +35,9 @@ import { bookableAgeTierEnum } from "@/lib/age-tier-schema";
 import { bookingManagementAuthorizationRole } from "@/lib/admin-permissions";
 import { refuseOnBehalfUnlessBookingOfficer } from "@/lib/on-behalf-booking";
 import {
-  BookingGuestStayRangeValidationError,
-  type NormalizedBookingGuestStayRange,
-  normalizeGuestStayRanges,
+  BOOKING_PARTY_GUESTS_MAX, guestRequestSchemaError, guestStayFieldsSchema,
 } from "@/lib/booking-guest-stay-range-input";
+import { type PromoPreviewEdit, resolvePromoPreviewStaysOrRefusal } from "@/lib/promo-preview-stay-ranges";
 import { isDateOnlyString, parseDateOnly } from "@/lib/date-only";
 import { workPartyWindowOverlapsStay } from "@/lib/work-party";
 import { bookingFinalPriceCents } from "@/lib/booking-final-price";
@@ -46,7 +45,7 @@ import { normalizePromoCodeInput } from "@/lib/promo-code-list-rules";
 import { computeMemberGuestBoundary } from "@/lib/booking-guests";
 import { loadMemberGuestAddPolicy, planMemberGuestConsentWrites } from "@/lib/member-guest-add-policy";
 import { guestConsentStatus } from "@/lib/member-guest-consent";
-import { bookingForPromoLookup } from "@/lib/promo-guest-codes";
+import { bookingForPromoLookup, promoPreviewBookingRows } from "@/lib/promo-guest-codes";
 import type { MemberGuestConsentStatus } from "@prisma/client";
 
 const dateOnlyString = z.string().refine(isDateOnlyString, {
@@ -68,8 +67,9 @@ const validateSchema = z
           ageTier: bookableAgeTierEnum,
           isMember: z.boolean(),
           memberId: z.string().min(1).optional(),
-          stayStart: z.string().optional(),
-          stayEnd: z.string().optional(),
+          // #4199: Date In and Date Out, or the grid's night set (#713), so the
+          // preview prices the nights the quote and the save price.
+          ...guestStayFieldsSchema.shape,
           // #3827 (D-3813-4): optional, and it can only make a guest MORE
           // pending. Whether a guest awaits acceptance is decided server-side
           // below, the way the create decides it; no client sends this today.
@@ -81,9 +81,9 @@ const validateSchema = z
           bookingGuestId: z.string().min(1).max(64).optional(),
         })
       )
-      .min(1),
+      .min(1).max(BOOKING_PARTY_GUESTS_MAX),
     forMemberId: z.string().optional(),
-    promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
+    promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_PARTY_GUESTS_MAX).optional(),
     // #3827: several codes, in the booker's order (D-3813-2), each with its own
     // guest choice. Combines with a working bee (D-3813-3). The response then
     // answers per code plus the booking's totals.
@@ -91,7 +91,7 @@ const validateSchema = z
       .array(
         z.object({
           code: z.string().min(1).max(50),
-          promoGuestIndexes: z.array(z.number().int().min(0)).optional(),
+          promoGuestIndexes: z.array(z.number().int().min(0)).max(BOOKING_PARTY_GUESTS_MAX).optional(),
         }),
       )
       .min(1)
@@ -156,21 +156,12 @@ export async function POST(req: NextRequest) {
 
   if (!parsed.success) {
     return NextResponse.json(
-      { error: "Invalid input", details: parsed.error.flatten() },
+      { error: guestRequestSchemaError(parsed.error, "Invalid input"), details: parsed.error.flatten() },
       { status: 400 }
     );
   }
 
-  const { code, checkIn, checkOut } = parsed.data;
-  let guests: Array<(typeof parsed.data.guests)[number] & NormalizedBookingGuestStayRange>;
-  try {
-    guests = normalizeGuestStayRanges(parsed.data.guests, { checkIn, checkOut });
-  } catch (error) {
-    if (error instanceof BookingGuestStayRangeValidationError) {
-      return NextResponse.json({ error: error.message }, { status: 400 });
-    }
-    throw error;
-  }
+  const { code } = parsed.data;
   // On-behalf promo validation follows the booking create/quote rule (#1442):
   // bookings:edit holders validate against the target member; an unauthorized
   // forMemberId is rejected rather than silently checked against the caller.
@@ -190,6 +181,8 @@ export async function POST(req: NextRequest) {
   // (D-3492-3/4, D-3813-4) nor tells the caller anything.
   let storedGuestById: Map<string, { memberId: string | null; consentStatus: MemberGuestConsentStatus | null }> | null =
     null;
+  // #4199: the edited booking and the rows the request names, for the planner.
+  let editStays: PromoPreviewEdit | null = null;
   if (parsed.data.bookingId) {
     const booking = await bookingForPromoLookup({
       bookingId: parsed.data.bookingId,
@@ -199,18 +192,15 @@ export async function POST(req: NextRequest) {
     if (!booking) {
       return NextResponse.json({ error: "Booking not found" }, { status: 404 });
     }
-    const bookingGuestIds = guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : []));
-    storedGuestById = new Map(
-      bookingGuestIds.length
-        ? (
-            await prisma.bookingGuest.findMany({
-              where: { bookingId: booking.id, id: { in: bookingGuestIds } },
-              select: { id: true, memberId: true, consentStatus: true },
-            })
-          ).map((row) => [row.id, { memberId: row.memberId, consentStatus: row.consentStatus }])
-        : [],
-    );
+    ({ consentById: storedGuestById, edit: editStays } = await promoPreviewBookingRows(
+      booking,
+      parsed.data.guests.flatMap((guest) => (guest.bookingGuestId ? [guest.bookingGuestId] : [])),
+    ));
   }
+  // #4199: each guest's nights as the save resolves them (`INV-EXCEPT-022`).
+  const stays = resolvePromoPreviewStaysOrRefusal({ ...parsed.data, edit: editStays });
+  if ("refusal" in stays) return NextResponse.json({ error: stays.refusal }, { status: 400 });
+  const { checkIn, checkOut, guests } = stays;
   /** The stored row for this guest, only when it is this guest's own member's row. */
   const storedRowFor = (guest: { bookingGuestId?: string; memberId?: string }) => {
     const row = guest.bookingGuestId ? storedGuestById?.get(guest.bookingGuestId) : undefined;

@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { GUEST_CHANGE_LIST_BOUND } from "@/lib/booking-guest-stay-range-input";
+
 import {
   addedGuestNightsRefusal,
   changeRequestAddGuestsSchema,
@@ -18,7 +20,7 @@ export const changeRequestDeltaSchema = z.object({
   checkIn: z.string().optional(),
   checkOut: z.string().optional(),
   addGuests: changeRequestAddGuestsSchema.optional(),
-  removeGuestIds: z.array(z.string().trim().min(1)).max(200).optional(),
+  removeGuestIds: z.array(z.string().trim().min(1)).max(...GUEST_CHANGE_LIST_BOUND).optional(),
   guestStayRanges: changeRequestGuestStayRangesSchema.optional(),
   requestedEffectiveDate: z.string().optional(),
 });
