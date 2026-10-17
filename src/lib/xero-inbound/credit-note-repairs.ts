@@ -18,6 +18,7 @@ import { formatCents } from "@/lib/utils";
 import { invoiceCorrectionNoteIds, noCashModificationNoteIds } from "./account-credit-modification-notes";
 import { paymentsCountingInvoiceCorrections, uncapturedPrimaryStatus } from "./modification-note-refunds";
 import { capOrganiserChildMirrorAtStripeRefunds } from "@/lib/organiser-child-refund";
+import { COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 
 /** #3792: the operator alert, and the audit action, for a refused change. */
 const RESTORED_BOOKING_ALLOCATION_CHANGE_ERROR_TYPE =
@@ -184,7 +185,10 @@ export async function repairRefundedPaymentBusinessState(input: {
     };
   }
 
-  const [directRefundLinks, modificationAllocationLinks] = await Promise.all([
+  // #4215 (`INV-PAY-118`): read AFTER the payment rows, so a request completed
+  // between the two reads is either counted here or loses the claim below
+  // (its completion moves the row), never dropped from a write that succeeds.
+  const [directRefundLinks, modificationAllocationLinks, paidBackRefundRequests] = await Promise.all([
     prisma.xeroObjectLink.findMany({
       where: {
         localModel: "Payment",
@@ -219,7 +223,24 @@ export async function repairRefundedPaymentBusinessState(input: {
         metadata: true,
       },
     }),
+    prisma.manualRefundTask.findMany({
+      where: { paymentId: { in: paymentIds }, ...COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE },
+      select: { paymentId: true, amountCents: true },
+    }),
   ]);
+  // #4215 (`INV-PAY-118`): the cash each payment's refund requests were paid
+  // back, as their completions recorded it. A request's own note
+  // (`REFUND_REQUEST_CREDIT_NOTE`) is never read for it - it may be queued or
+  // voided (#4195) while the cash stays paid back - and it is never attributed
+  // to the canonical note, so a recount triggered by that note keeps it.
+  const refundRequestPaidBackCentsByPaymentId = new Map<string, number>();
+  for (const task of paidBackRefundRequests) {
+    if (task.paymentId === null) continue;
+    refundRequestPaidBackCentsByPaymentId.set(
+      task.paymentId,
+      (refundRequestPaidBackCentsByPaymentId.get(task.paymentId) ?? 0) + Math.max(task.amountCents ?? 0, 0),
+    );
+  }
 
   // #3979 (`INV-PAY-126`): a bank-transfer payment's modification notes are
   // found by its invoice too. The inbound sync links an edit's note and its
@@ -398,7 +419,8 @@ export async function repairRefundedPaymentBusinessState(input: {
       directRefundTotalCents +
       modificationRefundTotalCents +
       currentDirectRefundContributionCents +
-      currentModificationRefundContributionCents;
+      currentModificationRefundContributionCents +
+      (refundRequestPaidBackCentsByPaymentId.get(payment.id) ?? 0);
     const nextRefundedTotalCents = Math.min(
       Math.max(rawRefundedTotalCents, 0),
       payment.amountCents

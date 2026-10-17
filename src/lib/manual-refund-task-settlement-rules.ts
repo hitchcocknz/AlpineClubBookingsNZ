@@ -332,6 +332,20 @@ export function isRefundRequestHandBackTask(task: {
 }
 
 /**
+ * #4215 (`INV-PAY-118`): a refund request's hand-back the treasurer marked paid
+ * back, as a where fragment. Its completion moved `refundedAmountCents` by its
+ * `amountCents` (the `local-allocation` route) and queued the request's own
+ * note for the same amount, so the inbound Xero repair that rebuilds a
+ * payment's refunded total reads the request's cash here: never from its note,
+ * which may still be queued or voided (#4195), nor from the canonical one.
+ */
+export const COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE = {
+  kind: "CANCELLED_BOOKING_HAND_BACK" satisfies ManualRefundTaskKind,
+  status: "COMPLETED" satisfies ManualRefundTaskStatus,
+  occurrenceKey: { startsWith: REFUND_REQUEST_HAND_BACK_KEY_PREFIX },
+} as const;
+
+/**
  * #3827 (D-3813-8, `INV-PAY-118`): the refund request a refund-request
  * hand-back was raised for, read off its occurrence key - or null for any
  * other task. Its completion queues THAT request's own Xero refund credit

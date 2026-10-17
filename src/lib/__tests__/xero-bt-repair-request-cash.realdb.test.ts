@@ -186,8 +186,18 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       total: 100, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [],
     });
 
-    it("a canonical-note reconcile keeps the request's $50 beside the note's $100", async () => {
+    it("a canonical-note reconcile keeps the request's $50 beside the note's $100, and only a paid-back request counts", async () => {
       await linkRequestNote("PAID");
+      // A second request still awaiting payment, and a third dismissed: no cash moved for either.
+      for (const [suffix, status] of [["open", "OPEN"], ["dismissed", "DISMISSED"]] as const) {
+        await prisma.manualRefundTask.create({
+          data: {
+            id: `${TASK_ID}-${suffix}`, bookingId: BOOKING_ID, paymentId: PAYMENT_ID, amountCents: 2_000, raisedAmountCents: 2_000, status,
+            kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: `refund-request-hand-back:${REQUEST_ID}-${suffix}`, reason: "race 4215 other request",
+            ...(status === "DISMISSED" ? { note: "race 4215 dismissed", completedAt: new Date("2026-06-01T00:00:00.000Z"), completedByMemberId: OFFICER_ID } : {}),
+          },
+        });
+      }
 
       const result = await reconcileFromXero(canonicalNote("PAID"));
 
