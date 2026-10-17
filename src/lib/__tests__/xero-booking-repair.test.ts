@@ -8504,7 +8504,7 @@ describe("#3954: a reduction set against an unpaid ask", () => {
 
   it.each([
     ["settled by giving back applied credit, nothing captured", { appliedCreditGiveBack: { basisCents: 1000, givenBackCents: 1000 } }],
-    ["an organiser's card refund raises the reduction's note", {}],
+    ["the edit recorded false for another reason, e.g. an organiser's card refund the repair cannot see", {}],
   ])("MUTATION (#4049): a lost billed-offset note whose edit recorded no own note expected (%s) is queued not to wait", async (_label, extra) => {
     const deps = createDependencies({ bookings: [recordedBilledReduction(false, extra)], operations: [makePrimaryInvoiceCreateOperation()] });
 
@@ -8531,6 +8531,32 @@ describe("#3954: a reduction set against an unpaid ask", () => {
     expect(deps.enqueueXeroModificationCreditNoteOperation).toHaveBeenCalledWith(
       expect.objectContaining({ refundAmountCents: 2000, ...billedOffsetScoped, ownNoteExpected: true }),
     );
+  });
+
+  it("MUTATION (#4049): a recorded false outranks a carried true - the note is not held back", async () => {
+    const carriedTrue = billedOffsetNote({
+      status: "CANCELLED",
+      xeroObjectType: null,
+      xeroObjectId: null,
+      requestPayload: {
+        queueType: "MODIFICATION_CREDIT_NOTE",
+        bookingModificationId: "mod_reduction",
+        refundAmountCents: 2000,
+        noteWording: "invoice-correction",
+        ...billedOffsetScoped,
+        ownNoteExpected: true,
+      },
+    });
+    const deps = createDependencies({
+      bookings: [recordedBilledReduction(false)],
+      operations: [makePrimaryInvoiceCreateOperation(), carriedTrue],
+    });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const action = report.passes[0].bookings[0].actions.find((candidate) => candidate.key === "queue:billed-offset-note:mod_reduction");
+    expect(action).toBeDefined();
+    expect(action?.payload).not.toHaveProperty("ownNoteExpected");
   });
 
   it("MUTATION (#4049): the edit's recorded answer outranks one carried on an earlier operation", async () => {
