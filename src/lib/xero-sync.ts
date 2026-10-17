@@ -913,8 +913,11 @@ export async function completeXeroSyncOperation(
   );
 
   const completeWithClient = async (tx: Prisma.TransactionClient) => {
+    const status = completion.status ?? "SUCCEEDED";
     const data = {
-      status: completion.status ?? "SUCCEEDED",
+      status,
+      // #4049: no earlier wait's or failure's error stays on a SUCCEEDED row (PARTIAL keeps it).
+      ...(status === "SUCCEEDED" ? { lastErrorCode: null, lastErrorMessage: null } : {}),
       responsePayload: sanitizeForJson(completion.responsePayload),
       xeroObjectType: completion.xeroObjectType ?? null,
       xeroObjectId: completion.xeroObjectId ?? null,

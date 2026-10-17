@@ -1412,3 +1412,43 @@ describe("completeXeroSyncOperation keepSucceeded", () => {
     expect(tx.xeroSyncOperation.update).not.toHaveBeenCalled();
   });
 });
+
+// #4049: a row that succeeds no longer carries an earlier wait's or failure's
+// code and message (the operations panel showed them in red); PARTIAL keeps them.
+describe("completeXeroSyncOperation clears a stale error on success", () => {
+  function store() {
+    return {
+      xeroSyncOperation: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: "op_note", ...data })),
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ id: "op_note", status: "SUCCEEDED" }),
+      },
+    };
+  }
+
+  it("MUTATION: a SUCCEEDED completion clears lastErrorCode and lastErrorMessage", async () => {
+    const tx = store();
+    await completeXeroSyncOperation("op_note", {}, { store: tx as never });
+    expect(tx.xeroSyncOperation.update).toHaveBeenCalledWith({
+      where: { id: "op_note" },
+      data: expect.objectContaining({ status: "SUCCEEDED", lastErrorCode: null, lastErrorMessage: null }),
+    });
+  });
+
+  it("MUTATION: the keepSucceeded claim clears them too", async () => {
+    const tx = store();
+    await completeXeroSyncOperation("op_note", { status: "SUCCEEDED" }, { store: tx as never, keepSucceeded: true });
+    expect(tx.xeroSyncOperation.updateMany).toHaveBeenCalledWith({
+      where: { id: "op_note", status: { not: "SUCCEEDED" } },
+      data: expect.objectContaining({ status: "SUCCEEDED", lastErrorCode: null, lastErrorMessage: null }),
+    });
+  });
+
+  it("a PARTIAL completion leaves them as they are", async () => {
+    const tx = store();
+    await completeXeroSyncOperation("op_note", { status: "PARTIAL" }, { store: tx as never });
+    const [{ data }] = tx.xeroSyncOperation.update.mock.calls[0] as [{ data: Record<string, unknown> }];
+    expect(data).not.toHaveProperty("lastErrorCode");
+    expect(data).not.toHaveProperty("lastErrorMessage");
+  });
+});
