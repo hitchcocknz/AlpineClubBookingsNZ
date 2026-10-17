@@ -24,6 +24,7 @@ import { prisma } from "./prisma";
 import { stripeReferenceId } from "./stripe-references";
 import { isPrismaUniqueConstraintError } from "./prisma-errors";
 import { isRootPrismaClient, withStoreTransaction } from "./db-transaction";
+import { IntentLedgerRowOnAnotherPaymentError } from "./payment-intent-ledger-row-write";
 import {
   lockPaymentForRefundedTotal,
   reconcilePaymentAggregates,
@@ -244,7 +245,7 @@ async function settleSavedCardChargeAttemptUnderLock(
     select: { id: true, paymentId: true },
   });
   if (existing && existing.id !== attemptRowId) {
-    return keepExistingRow(store, { attemptRowId, existing, answer });
+    return keepExistingRow(store, { attemptRowId, paymentId, paymentIntentId: paymentIntent.id, existing, answer });
   }
 
   const moved = await store.paymentTransaction.updateMany({
@@ -285,6 +286,9 @@ async function keepExistingRow(
   store: PaymentStore,
   params: {
     attemptRowId: string;
+    /** #4217: the payment whose row the settle locked. */
+    paymentId: string;
+    paymentIntentId: string;
     existing: { id: string; paymentId: string };
     answer: {
       ledgerStatus: PaymentStatus;
@@ -294,6 +298,10 @@ async function keepExistingRow(
   }
 ): Promise<SettledSavedCardChargeAttempt> {
   const { attemptRowId, existing, answer } = params;
+  // #4217: only the locked payment's row is written; one on another payment is refused before any write.
+  if (existing.paymentId !== params.paymentId) {
+    throw new IntentLedgerRowOnAnotherPaymentError(params.paymentIntentId, params.paymentId, existing.paymentId);
+  }
   const moved = await store.paymentTransaction.updateMany({
     where: { id: existing.id, status: forwardOnlyStatusGuard(answer.ledgerStatus) },
     data: {

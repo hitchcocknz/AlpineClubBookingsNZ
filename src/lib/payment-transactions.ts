@@ -21,7 +21,7 @@ import {
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
 import { alertCardRefundCapOverflow, readCardRefundCapOverflow, type CardRefundCapOverflow } from "@/lib/card-refund-cap-overflow";
 import logger from "@/lib/logger";
-import { writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-write";
+import { IntentLedgerRowOnAnotherPaymentError, writePaymentIntentTransaction } from "@/lib/payment-intent-ledger-row-write";
 import { accountCreditDispositionCents } from "@/lib/stripe-cash-refund-evidence";
 import type { ClubFormat } from "@/lib/club-format";
 import { syncBookingLedgerSettlements } from "@/lib/booking-ledger-settlement-sync";
@@ -425,6 +425,21 @@ async function findPaymentByIntentPointer(
   });
 }
 
+/**
+ * #4217: the intent's row, or else the payment whose pointer names the intent -
+ * read WITHOUT writing. The one lookup both `findPaymentTransactionByIntentId`
+ * (which then backfills a pre-ledger payment) and the `mark…` writers' pure
+ * read (which then lock that payment) start from.
+ */
+async function locateIntent(store: PaymentStore, paymentIntentId: string) {
+  const transaction = await store.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: paymentIntentId },
+  });
+  if (transaction) return { transaction, paymentId: transaction.paymentId };
+  const payment = await findPaymentByIntentPointer(store, paymentIntentId);
+  return payment ? { transaction: null, paymentId: payment.id } : null;
+}
+
 export async function findPaymentTransactionByIntentId({
   paymentIntentId,
   store = prisma,
@@ -432,25 +447,15 @@ export async function findPaymentTransactionByIntentId({
   paymentIntentId: string;
   store?: PaymentStore;
 }) {
-  let transaction = await store.paymentTransaction.findUnique({
+  const located = await locateIntent(store, paymentIntentId);
+  if (!located) return null;
+  if (located.transaction) return located.transaction;
+
+  // A pre-ledger payment: its rows are backfilled, then the intent's is read.
+  await ensurePaymentTransactionsBackfilled(store, located.paymentId);
+  return store.paymentTransaction.findUnique({
     where: { stripePaymentIntentId: paymentIntentId },
   });
-
-  if (transaction) {
-    return transaction;
-  }
-
-  const payment = await findPaymentByIntentPointer(store, paymentIntentId);
-  if (!payment) {
-    return null;
-  }
-
-  await ensurePaymentTransactionsBackfilled(store, payment.id);
-  transaction = await store.paymentTransaction.findUnique({
-    where: { stripePaymentIntentId: paymentIntentId },
-  });
-
-  return transaction;
 }
 
 // #3653: exported for the organiser child's refund out of the COMBINED charge,
@@ -637,7 +642,7 @@ const REFUND_LEDGER_WRITERS_MIGRATION = "20260509090000_enrich_payment_refund_le
  * is read back here.
  */
 export async function lockPaymentForRefundedTotal(
-  db: PaymentStore,
+  db: Pick<Prisma.TransactionClient, "$executeRaw">,
   paymentId: string
 ): Promise<void> {
   await db.$executeRaw`SELECT 1 FROM "Payment" WHERE "id" = ${paymentId} FOR NO KEY UPDATE`;
@@ -962,7 +967,7 @@ export async function upsertPaymentIntentTransaction({
 }) {
   const provenance = { ...(hadIssuedXeroInvoice !== undefined ? { hadIssuedXeroInvoice } : {}), ...(bookingModificationId !== undefined ? { bookingModificationId } : {}) };
   const update = {
-    paymentId, kind, source: PaymentSource.STRIPE, amountCents, status,
+    kind, source: PaymentSource.STRIPE, amountCents, status,
     ...(paymentMethodId !== undefined ? { paymentMethodId: paymentMethodId ?? null } : {}),
     ...(reason !== undefined ? { reason } : {}),
     ...(carriedAskCents !== undefined ? { carriedAskCents } : {}),
@@ -979,7 +984,7 @@ export async function upsertPaymentIntentTransaction({
   return withStoreTransaction(store, async (db) => {
     await lockPaymentForRefundedTotal(db, paymentId);
     // #4036 review: an ask write naming its edit never lands on another edit's row; #4081: no write lowers a captured status.
-    await writePaymentIntentTransaction(db, { paymentIntentId, bookingModificationId, create, update });
+    await writePaymentIntentTransaction(db, { paymentId, paymentIntentId, bookingModificationId, create, update });
 
     if (stripeCustomerId) {
       await db.payment.update({
@@ -1167,17 +1172,18 @@ export async function markPaymentIntentTransactionFailed({
   });
 }
 
-/** #4217: the intent's payment, read WITHOUT writing (its row, or the Payment pointer), so the lock comes before any backfill. */
+/** #4217: the intent's payment, read WITHOUT writing (`locateIntent`), so the lock comes before any backfill. */
 async function findPaymentIdForIntent(store: PaymentStore, paymentIntentId: string): Promise<string | null> {
-  const row = await store.paymentTransaction.findUnique({
-    where: { stripePaymentIntentId: paymentIntentId },
-    select: { paymentId: true },
-  });
-  if (row) return row.paymentId;
-  return (await findPaymentByIntentPointer(store, paymentIntentId))?.id ?? null;
+  return (await locateIntent(store, paymentIntentId))?.paymentId ?? null;
 }
 
-/** #4217: the intent's row re-read under its Payment row lock; one that moved payment meanwhile is refused (a retry locks the right one). */
+/**
+ * #4217: the intent's row re-read under its Payment row lock. No ledger writer
+ * moves a row between payments (`writePaymentIntentTransaction` is pinned to
+ * the locked payment), so a row on another payment than the one the pure read
+ * named - the Payment pointer naming the intent while the row sits elsewhere -
+ * is an inconsistency, refused before anything is written.
+ */
 async function findPaymentTransactionForLockedPayment(
   db: Prisma.TransactionClient,
   paymentIntentId: string,
@@ -1185,9 +1191,7 @@ async function findPaymentTransactionForLockedPayment(
 ) {
   const transaction = await findPaymentTransactionByIntentId({ paymentIntentId, store: db });
   if (transaction && transaction.paymentId !== lockedPaymentId) {
-    throw new Error(
-      `PaymentIntent ${paymentIntentId}'s ledger row moved from payment ${lockedPaymentId} to ${transaction.paymentId} before its lock was held (#4217); retry`,
-    );
+    throw new IntentLedgerRowOnAnotherPaymentError(paymentIntentId, lockedPaymentId, transaction.paymentId);
   }
   return transaction;
 }

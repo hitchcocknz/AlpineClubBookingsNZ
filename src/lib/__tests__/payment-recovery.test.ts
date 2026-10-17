@@ -313,6 +313,8 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
+  // #4217: the runner's claim hold locks the Payment row before the recovery row.
+  lockPaymentForRefundedTotal: async () => undefined,
   reconcilePaymentAggregates: (...args: unknown[]) =>
     mockReconcilePaymentAggregates(...args),
   recordStripeRefundsAgainstTransaction: (...args: unknown[]) =>

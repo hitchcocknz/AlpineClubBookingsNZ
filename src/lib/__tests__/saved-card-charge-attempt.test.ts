@@ -1258,6 +1258,29 @@ describe("settleSavedCardChargeAttempt", () => {
     expect(mocks.reconcilePaymentAggregates).toHaveBeenCalledWith({ paymentId: PAYMENT, store: ledger });
   });
 
+  // #4217 review (F2): the settle locked its own payment's row; an intent row
+  // on another payment is refused before anything is written or deleted.
+  it("MUTATION (#4217): a row for the intent on ANOTHER payment is refused before any write - the attempt row stays", async () => {
+    const attempt = await begin();
+    const foreignRow = ledger.seed({
+      paymentId: "payment_other",
+      status: PaymentStatus.PROCESSING,
+      stripePaymentIntentId: "pi_foreign",
+      amountCents: 10000,
+    });
+    ledger.paymentTransaction.updateMany.mockClear();
+    ledger.paymentTransaction.deleteMany.mockClear();
+
+    await expect(
+      settle(attempt.attemptRowId, { id: "pi_foreign", status: "succeeded", amount: 10000, payment_method: "pm_1" }),
+    ).rejects.toMatchObject({ name: "IntentLedgerRowOnAnotherPaymentError", lockedPaymentId: PAYMENT, rowPaymentId: "payment_other" });
+    expect(ledger.paymentTransaction.updateMany).not.toHaveBeenCalled();
+    expect(ledger.paymentTransaction.deleteMany).not.toHaveBeenCalled();
+    expect(row(foreignRow.id).status).toBe(PaymentStatus.PROCESSING);
+    expect(row(attempt.attemptRowId)).toBeDefined();
+    expect(mocks.reconcilePaymentAggregates).not.toHaveBeenCalled();
+  });
+
   it("P2002 race: the unique violation on the intent id rolls the short transaction back, and its one retry takes the keep-existing branch instead of throwing on a path that has just captured money", async () => {
     const attempt = await begin();
     // Not visible to the pre-check, present by the time the write runs.

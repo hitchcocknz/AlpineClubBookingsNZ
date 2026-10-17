@@ -239,7 +239,8 @@ export function assertReductionReadForNet(
 
 export type UnpaidAskDb = Pick<
   Prisma.TransactionClient,
-  "paymentTransaction" | "bookingModification" | "paymentRecoveryOperation"
+  // #4217: `$executeRaw` for the Payment row lock a fold-close takes first.
+  "paymentTransaction" | "bookingModification" | "paymentRecoveryOperation" | "$executeRaw"
 >;
 
 export type UnpaidAskBooking = {
@@ -468,16 +469,14 @@ async function retireUnpaidAskChainUnderLocks(
   tx: Prisma.TransactionClient,
   { bookingId, paymentId, ask, now }: { bookingId: string; paymentId: string; ask: UnpaidPriceAsk; now: Date },
 ): Promise<RetiredUnpaidAsk> {
-  // Round 6: the waiting recoveries first, then the rows - the order the
-  // runner's claim hold writes them in (recovery, then its row), so the two
-  // never deadlock on each other.
-  await closeWaitingAskRecoveries(tx, ask.recoveries, now);
-  // #4217 (`INV-LOCK-002`): the Payment row before the ask's rows, the order
-  // the capture webhook (`markPaymentIntentTransactionSucceeded`) and the
-  // runner's claim hold (recovery, then Payment, then its row) take them in.
-  // Stamping a row first and reaching the Payment row at the reconcile would
-  // deadlock a capture of the same intent that holds the Payment row.
+  // #4217 (`INV-LOCK-002`): the Payment row FIRST, then the waiting
+  // recoveries, then the ask's rows - the one order the capture webhook
+  // (Payment, then its row), the runner's claim hold and the re-issue door
+  // (Payment, then the recovery, then the row) and a give-back that already
+  // wrote the Payment row all take. Either row before the Payment row is a
+  // deadlock with one of them.
   await lockPaymentForRefundedTotal(tx, paymentId);
+  await closeWaitingAskRecoveries(tx, ask.recoveries, now);
 
   const retired: RetiredAdditionalAsk[] = [];
   for (const row of ask.rows) {

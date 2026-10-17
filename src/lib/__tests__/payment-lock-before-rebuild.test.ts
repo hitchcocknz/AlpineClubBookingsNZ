@@ -1,6 +1,12 @@
 import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
+// Every store here is passed in; the module client is never reached, so the
+// suite runs without a DATABASE_URL.
+vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+
+import { IntentLedgerRowOnAnotherPaymentError } from "@/lib/payment-intent-ledger-row-write";
+
 import {
   markPaymentIntentTransactionFailed,
   markPaymentIntentTransactionSucceeded,
@@ -87,10 +93,7 @@ const intentRow = {
 
 /** The intent's row is found by the pure read and again under the lock. */
 const ANSWERS: Record<string, (args: unknown) => unknown> = {
-  "paymentTransaction.findUnique": (args) => {
-    const select = (args as { select?: Record<string, boolean> }).select;
-    return select?.paymentId && Object.keys(select).length === 1 ? { paymentId: PAYMENT_ID } : { ...intentRow };
-  },
+  "paymentTransaction.findUnique": () => ({ ...intentRow }),
 };
 
 const WRITERS: Array<[string, (store: PaymentStore) => Promise<unknown>]> = [
@@ -195,18 +198,65 @@ describe("#4217: the Payment row is locked before any ledger row is written or t
     expect(log.filter((call) => call.op === "payment.findUnique")).toEqual([]);
   });
 
-  it("a row that moved to another payment before the lock is refused, never written under the wrong lock", async () => {
+  it("MUTATION: an intent's row on another payment than the one the pure read named is refused under the lock, never written", async () => {
+    // The Payment pointer names the intent; its row sits on another payment.
+    let rowReads = 0;
     const log: Call[] = [];
     const store = recordingClient(log, "tx", {
-      "paymentTransaction.findUnique": (args) => {
-        const select = (args as { select?: Record<string, boolean> }).select;
-        return select?.paymentId ? { paymentId: PAYMENT_ID } : { ...intentRow, paymentId: "payment_other" };
-      },
+      "paymentTransaction.findUnique": () => (rowReads++ === 0 ? null : { ...intentRow, paymentId: "payment_other" }),
+      "payment.findUnique": () => ({ id: PAYMENT_ID }),
+    }) as unknown as PaymentStore;
+
+    const refusal = markPaymentIntentTransactionSucceeded({ paymentIntentId: INTENT_ID, amountCents: 5_000, store });
+    await expect(refusal).rejects.toBeInstanceOf(IntentLedgerRowOnAnotherPaymentError);
+    await expect(refusal).rejects.toThrow(/belongs to payment payment_other, not the locked payment payment_4217/);
+    expect(log.filter(isRowWrite)).toEqual([]);
+  });
+
+  // #4217 review (F3): the upsert's row write is pinned to the payment it
+  // locked, so one payment's lock can never cover a move of another's row.
+  it("MUTATION: the upsert writes only the locked payment's row for the intent", async () => {
+    const log: Call[] = [];
+    const store = recordingClient(log, "tx", ANSWERS) as unknown as PaymentStore & {
+      paymentTransaction: { updateMany: ReturnType<typeof vi.fn> };
+    };
+
+    await upsertPaymentIntentTransaction({
+      paymentId: PAYMENT_ID,
+      kind: PaymentTransactionKind.ADDITIONAL,
+      paymentIntentId: INTENT_ID,
+      amountCents: 5_000,
+      status: PaymentStatus.PENDING,
+      store,
+    });
+
+    for (const [args] of store.paymentTransaction.updateMany.mock.calls) {
+      const { where, data } = args as { where: Record<string, unknown>; data: Record<string, unknown> };
+      expect(where).toMatchObject({ stripePaymentIntentId: INTENT_ID, paymentId: PAYMENT_ID });
+      expect(data).not.toHaveProperty("paymentId");
+    }
+  });
+
+  it("MUTATION: the upsert refuses the intent's row when it is on another payment, writing nothing to it", async () => {
+    const log: Call[] = [];
+    const store = recordingClient(log, "tx", {
+      // Neither update matches (the row is another payment's), the insert meets it.
+      "paymentTransaction.updateMany": () => ({ count: 0 }),
+      "paymentTransaction.createMany": () => ({ count: 0 }),
+      "paymentTransaction.findUnique": () => ({ paymentId: "payment_other", bookingModificationId: null }),
     }) as unknown as PaymentStore;
 
     await expect(
-      markPaymentIntentTransactionSucceeded({ paymentIntentId: INTENT_ID, amountCents: 5_000, store }),
-    ).rejects.toThrow(/moved from payment payment_4217 to payment_other/);
-    expect(log.filter(isRowWrite)).toEqual([]);
+      upsertPaymentIntentTransaction({
+        paymentId: PAYMENT_ID,
+        kind: PaymentTransactionKind.ADDITIONAL,
+        paymentIntentId: INTENT_ID,
+        amountCents: 5_000,
+        status: PaymentStatus.PENDING,
+        store,
+      }),
+    ).rejects.toBeInstanceOf(IntentLedgerRowOnAnotherPaymentError);
+    // No rebuild ran: the refusal rolls the writer's transaction back.
+    expect(log.some((call) => call.op === "payment.findUnique")).toBe(false);
   });
 });

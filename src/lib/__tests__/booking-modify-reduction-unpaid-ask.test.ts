@@ -48,6 +48,8 @@ vi.mock("@/lib/prisma", async () => {
   minterDb.recoveryFindUnique = hoistedVi.fn(async () => minterDb.reissueRecovery);
   minterDb.recoveryUpdateMany = hoistedVi.fn(async () => ({ count: minterDb.completeCount }));
   const prisma = {
+    // #4217: the door's write under its recovery locks the Payment row first.
+    $executeRaw: async () => 0,
     payment: { findUnique: async () => minterDb.currentPayment },
     paymentTransaction: { findMany: async () => [] },
     paymentRecoveryOperation: {
@@ -956,6 +958,24 @@ describe("#3954 retry nets it off: an ask whose mint failed and waits on its rec
       ]);
     },
   );
+
+  // #4217 review (F1): the Payment row before the waiting recovery - the order
+  // the runner's claim hold and the re-issue door take (Payment, then the
+  // recovery), and the one a give-back that already wrote the Payment row
+  // forces. The recovery first is a deadlock with either.
+  it("MUTATION (#4217): the retire locks the Payment row before it closes the waiting recovery", async () => {
+    await adjust(awaitingRetryBooking({ creditPaid: false }), -2_000);
+    const paymentLocks = executeRaw.mock.calls
+      .map((call, index) => ({ call: call as unknown[], order: executeRaw.mock.invocationCallOrder[index]! }))
+      .filter(({ call }) => {
+        const [strings, ...values] = call;
+        const sql = Array.isArray(strings) ? strings.join("?") : String(strings);
+        return sql.includes('FROM "Payment"') && sql.includes("FOR NO KEY UPDATE") && values[0] === "payment_1";
+      });
+    expect(recoveryUpdateMany).toHaveBeenCalledTimes(1);
+    expect(paymentLocks.length).toBeGreaterThanOrEqual(1);
+    expect(paymentLocks[0]!.order).toBeLessThan(recoveryUpdateMany.mock.invocationCallOrder[0]!);
+  });
 
   it("an $80 reduction nets the whole waiting $50 off and refunds only the $30 left, by the tier", async () => {
     mocks.policy = [{ daysBeforeStay: 0, refundPercentage: 50, fixedFeeCents: 0 }];

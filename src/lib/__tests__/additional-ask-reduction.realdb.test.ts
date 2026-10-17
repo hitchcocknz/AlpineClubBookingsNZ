@@ -906,6 +906,77 @@ let webhookClient: PrismaClient;
       expect(await recovery()).toMatchObject({ status: "SUCCEEDED", attempts: 2 });
     });
 
+    // #4217 review (F1): one order for the Payment row and the recovery row -
+    // Payment first. A reduction that gives credit back has written the Payment
+    // row before its retire closes the waiting recovery; the runner's claim hold
+    // used to take the recovery row and only then the Payment row (its row
+    // write). Forced: the edit's connection writes the Payment row as the
+    // give-back does, the REAL runner replays the waiting mint and queues at its
+    // claim hold, and only then does the edit run the REAL retire. Before the
+    // fix the hold held the recovery row the retire's close waited on: 40P01.
+    it("RACE (#4217 F1): a credit give-back's reduction racing the runner's claim hold on the waiting ask: no deadlock - the reduction's fence refuses (409), the runner mints", async () => {
+      await grownBooking("credit", 4_000, 100, "awaiting-retry");
+      fakeStripe();
+      const { readUnpaidPriceAsk, retireUnpaidAskChain } = await import("@/lib/additional-ask-reduction");
+      const { AdditionalAskChangedDuringReductionError } = await import("@/lib/additional-ask-reduction-error");
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+
+      let resolveHeld!: () => void;
+      const held = new Promise<void>((resolve) => (resolveHeld = resolve));
+      let resolveQueued!: () => void;
+      const runnerQueued = new Promise<void>((resolve) => (resolveQueued = resolve));
+      let editPid = 0;
+      const edit = webhookClient
+        .$transaction(
+          async (tx) => {
+            editPid = (await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`)[0]!.pid;
+            const booking = await tx.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, include: { payment: true } });
+            const ask = await readUnpaidPriceAsk(tx, booking);
+            expect(ask.recoveries).toHaveLength(1);
+            // The give-back's write of the Payment row (`booking-modify-credit-give-back.ts`).
+            await tx.payment.update({ where: { id: PAYMENT_ID }, data: { creditAppliedCents: { decrement: 0 } } });
+            resolveHeld();
+            await runnerQueued;
+            await retireUnpaidAskChain(tx, { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, ask });
+            return "committed";
+          },
+          { maxWait: 5_000, timeout: 30_000 },
+        )
+        .catch((err: unknown) => {
+          resolveHeld();
+          return err;
+        });
+      await held;
+
+      const runner = runPaymentRecoveryOperationNow(RECOVERY_ID, CLUB_FORMAT_TEST).catch((err: unknown) => err);
+      let queued = 0;
+      try {
+        const startedAt = process.hrtime.bigint();
+        while (realElapsedMs(startedAt) < 3_000) {
+          const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+            SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+            WHERE datname = current_database() AND ${editPid}::int = ANY(pg_blocking_pids(pid))
+          `;
+          queued = rows[0]?.count ?? 0;
+          if (queued >= 1) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      } finally {
+        resolveQueued();
+      }
+      const [editOutcome, runnerOutcome] = await Promise.all([edit, runner]);
+      expect(queued, "the runner's claim hold never queued behind the edit's Payment row").toBeGreaterThanOrEqual(1);
+
+      // No deadlock on either side: the edit's refusal is its fence's (the
+      // runner had claimed the recovery it read), with no database error
+      // behind it, and the runner minted the ask it was replaying.
+      expect(editOutcome).toBeInstanceOf(AdditionalAskChangedDuringReductionError);
+      expect((editOutcome as Error).cause, `the reduction deadlocked: ${String((editOutcome as Error).cause)}`).toBeUndefined();
+      expect(runnerOutcome).toBe("succeeded");
+      expect(await recovery()).toMatchObject({ status: "SUCCEEDED" });
+      expect((await payment()).additionalAmountCents).toBe(5_000);
+    });
+
     it("ROUND 4 (item 4): a shrunk ask's re-issue is durable from the commit - its recovery waits out the door's grace, and the door's mint completes it with its row in one write", async () => {
       await grownBooking("card", 1_000);
       const result = await removeLeavingGuest();
