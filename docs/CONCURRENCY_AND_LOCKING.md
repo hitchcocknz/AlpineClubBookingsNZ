@@ -3937,11 +3937,12 @@ status and can release capacity.
 
 `lock(1)` also serialises the duplicate-capture adjudication (#1992). When a
 Stripe success arrives for an already-PAID booking, `markBookingPaymentSucceeded`
-refunds the arriving capture only if it is a DIFFERENT intent from a captured
-PRIMARY transaction still holding net cash that no duplicate-capture refund
-operation (`duplicate_capture_<bookingId>_<pi>`) already owns (#4211; the
-earlier rule, "no such operation exists for the booking against another
-intent", kept a third capture). That check-then-enqueue is race-free only
+refunds the arriving capture, when it has no refund history (#1765), only if
+another captured PRIMARY transaction still holds net cash and is either a card
+capture under a different intent that neither a live superseded-intent
+operation (b′) nor a duplicate-capture refund operation
+(`duplicate_capture_<bookingId>_<pi>`, at any status, #4211) owns, or any
+non-card settlement (#2262). That check-then-enqueue is race-free only
 because every caller runs it under `lock(1)`: interleaved webhook replays of
 BOTH captures would otherwise refund both sides and settle the booking at zero
 net cash. The

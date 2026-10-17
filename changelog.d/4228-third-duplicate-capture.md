@@ -8,8 +8,10 @@
 
   Now every payment after the one that settled the booking is refunded
   automatically, each with its own alert and its own entry in the booking's
-  admin history, naming the payment that settled the booking. The payment
-  that settled the booking is never refunded, even while an earlier
-  duplicate's refund is still waiting to go through. Webhook repeats change
-  nothing. This applies from this release: nothing goes back through past
-  bookings for a third payment kept before it.
+  admin history. The alert names the payment that settled the booking; the
+  history entry names it too when the refund goes through straight away. A
+  repeat of the settling payment's webhook keeps that payment, even while an
+  earlier duplicate's refund is still waiting to go through, and a repeat of
+  a refunded payment's webhook changes nothing. This applies from this
+  release: nothing goes back through past bookings for a third payment kept
+  before it.

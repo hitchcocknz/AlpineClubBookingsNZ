@@ -1712,10 +1712,11 @@ transaction and the booking's PAID status are untouched, and
 `markBookingPaymentSucceeded` reports `duplicate_capture_refunded` /
 `duplicate_capture_refund_failed`. A fully `REFUNDED` prior capture is history
 (#1765), never a settlement a repay generation could "duplicate". Every
-capture beyond the settling one is refunded and the settling one never is,
-adjudicated under `lock(1)`: a capture a duplicate-capture refund already
-owns, at any status, is never the settlement, so a third capture is refunded
-too (#4211, `INV-PAY-043`).
+capture beyond the settling one is refunded, decided under `lock(1)`: a
+capture a duplicate-capture refund already owns, at any status, is never the
+settlement, so a third capture is refunded too, and the settling capture's
+redelivery keeps its money while every other capture holding money is owned
+(#4211; the cases where it is not are listed in `INV-PAY-043`).
 
 Audit trail (#2008): the auto-refund is recorded as a durable, ADMIN-ONLY
 `BookingEvent` once its recovery operation reaches `SUCCEEDED` — a `REFUNDED`
