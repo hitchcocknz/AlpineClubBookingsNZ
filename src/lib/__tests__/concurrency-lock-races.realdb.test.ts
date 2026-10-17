@@ -399,6 +399,12 @@ import "./prisma-exact-prefix.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4165` rows.
 import "./audit-query-exact-prefix.realdb.test";
+// #4217 reuses it to prove every payment-ledger writer takes the Payment row
+// before its first row write and the aggregate rebuild reads under it: five
+// forced interleavings against the refund writers, the settle and the Internet
+// Banking settle (#4094). Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns
+// and cleans its own `race-4217-` fixtures.
+import "./payment-lock-before-rebuild.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

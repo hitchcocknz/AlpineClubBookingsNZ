@@ -553,6 +553,82 @@ let webhookClient: PrismaClient;
       expect(await waitingOp()).toEqual({ status: "WAITING_PAYMENT", lastErrorCode: null });
     });
 
+    // #4217 (`INV-LOCK-002`): the capture webhook (`markPaymentIntentTransactionSucceeded`)
+    // takes the Payment row, then the ask's row. A retire that stamped the row
+    // first and reached the Payment row only at its reconcile would deadlock it.
+    // Forced: the webhook connection holds the Payment row, as its first step
+    // does; the retire starts and queues behind it; only then does the webhook
+    // record the capture and commit.
+    it("RACE (#4217): the capture webhook holding the Payment row while the retire starts: no deadlock, the fence refuses the retire (409), the capture stands", async () => {
+      await grownBooking("card", 2_500);
+      const { readUnpaidPriceAsk, retireUnpaidAskChain } = await import("@/lib/additional-ask-reduction");
+      const { lockPaymentForRefundedTotal, markPaymentIntentTransactionSucceeded } = await import("@/lib/payment-transactions");
+
+      let resolveHeld!: () => void;
+      const held = new Promise<void>((resolve) => (resolveHeld = resolve));
+      let resolveQueued!: () => void;
+      const retireQueued = new Promise<void>((resolve) => (resolveQueued = resolve));
+      let webhookPid = 0;
+      const webhook = webhookClient
+        .$transaction(
+          async (tx) => {
+            webhookPid = (await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`)[0]!.pid;
+            await lockPaymentForRefundedTotal(tx, PAYMENT_ID);
+            resolveHeld();
+            await retireQueued;
+            await markPaymentIntentTransactionSucceeded({ paymentIntentId: ASK_INTENT, amountCents: 5_000, paymentMethodId: "pm_race_3954", store: tx });
+            return "captured";
+          },
+          { maxWait: 5_000, timeout: 30_000 },
+        )
+        .catch((err: unknown) => {
+          resolveHeld();
+          return err;
+        });
+      await held;
+
+      const retire = prisma
+        .$transaction(
+          async (tx) => {
+            const booking = await tx.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, include: { payment: true } });
+            const ask = await readUnpaidPriceAsk(tx, booking);
+            await retireUnpaidAskChain(tx, { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, ask });
+            return "committed";
+          },
+          { maxWait: 5_000, timeout: 30_000 },
+        )
+        .catch((err: unknown) => err);
+
+      let queued = 0;
+      try {
+        const startedAt = process.hrtime.bigint();
+        while (realElapsedMs(startedAt) < 10_000) {
+          const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+            SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+            WHERE datname = current_database() AND ${webhookPid}::int = ANY(pg_blocking_pids(pid))
+          `;
+          queued = rows[0]?.count ?? 0;
+          if (queued >= 1) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      } finally {
+        resolveQueued();
+      }
+      const [webhookOutcome, retireOutcome] = await Promise.all([webhook, retire]);
+      expect(queued, "the retire never queued behind the webhook's Payment row").toBeGreaterThanOrEqual(1);
+
+      // No deadlock on either side: the webhook committed, and the retire's
+      // refusal is its fence's - a 409 with no database error behind it.
+      expect(webhookOutcome).toBe("captured");
+      const { AdditionalAskChangedDuringReductionError } = await import("@/lib/additional-ask-reduction-error");
+      expect(retireOutcome).toBeInstanceOf(AdditionalAskChangedDuringReductionError);
+      expect((retireOutcome as Error).cause, `the retire deadlocked: ${String((retireOutcome as Error).cause)}`).toBeUndefined();
+      expect(await askAfter()).toEqual({ status: "SUCCEEDED", withdrawnAt: null });
+      expect(await cancellations()).toEqual([]);
+      expect(await waitingOp()).toEqual({ status: "WAITING_PAYMENT", lastErrorCode: null });
+      expect(await payment()).toMatchObject({ additionalAmountCents: 5_000, additionalPaymentStatus: "SUCCEEDED", amountCents: 15_000 });
+    });
+
     it("RACE: a capture after the reduction commits is handed to the superseded-capture refund, in full, and the books balance once it lands", async () => {
       await grownBooking("card", 2_500);
       await removeLeavingGuest();
