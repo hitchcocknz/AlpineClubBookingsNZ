@@ -5247,6 +5247,31 @@ enqueue joins its caller's transaction. An inbound void racing a create's
 record on one payment can take the same two rows in the opposite order; that
 predates #4161 and is not changed here.
 
+## Refund-request note link writes (#4195)
+
+A refund request's own Xero note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`)
+goes inactive when the inbound sync records it VOIDED or DELETED
+(`INV-ADDPAY-041`). A retry or completion that read the note as live before
+that void committed would otherwise write the link back active. So when a
+request-note link write names no Xero status, `keepStoredRequestNoteVoid`
+(`xero-refund-note-status.ts`, called from the link normaliser in
+`upsertXeroObjectLink`) locks that one link row (`SELECT 1 … FOR UPDATE`),
+re-reads it through Prisma, and keeps a stored VOIDED/DELETED: inactive, its
+status kept on the row.
+
+It writes no money column, no booking status and calls no provider; under
+`INV-LOCK-001` it joins no advisory cohort and takes no advisory key, so
+`INV-LOCK-003`'s Tier-2 registry has no entry for it, and its row lock is in
+the advisory-lock guard's row-lock inventory. The lock is the row the write
+that follows updates anyway, so it adds no row to the transaction and changes
+no order. Its counterpart is the inbound void, which holds only that link row
+(a request note never names the payment pointer), so the two cannot form a
+cycle: whichever takes the row first finishes, and the other then sees its
+write. The nightly heal (#4161) never selects this role. A real-PostgreSQL
+proof (`xero-refund-request-note-void.realdb.test.ts`) holds the void open on
+another connection, shows the retry's write queued behind it, and finds the
+link inactive with its status after both commit.
+
 ## One Xero contact, one local home: the contact-home key (#3367)
 
 **Audience: developer.** The rule this key enforces is `INV-INT-018`

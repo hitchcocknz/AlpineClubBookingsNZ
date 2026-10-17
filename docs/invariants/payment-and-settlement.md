@@ -2261,8 +2261,7 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   the Stripe refund inside the approval's own transaction, under `lock(1)`;
   on an internet-banking payment whatever that plan cannot carry raises a
   `ManualRefundTask` in the same transaction through
-  `raiseRefundRequestHandBack` (`src/lib/edit-refund-hand-back.ts`), so it is
-  netted before the lock is released. A card payment planned short is drift,
+  `raiseRefundRequestHandBack`, so it is netted before the lock is released. A card payment planned short is drift,
   logged, never a task. A task that cannot be raised refuses the approval.
   - **One task per request**: occurrence key
     `refund-request-hand-back:<RefundRequest id>`, unique, inserted
@@ -2274,11 +2273,12 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     the refund on the payment, the bank-refund ledger line and a `REFUNDED`
     event marked `refund_request_hand_back_completed`, outside the narrative's
     settlement.
-  - **Its Xero note is queued on payout, one per request** (D-3813-8): the
-    approval notes only the card part; completion atomically queues the
-    request's own note for the amount paid back
-    (`enqueueXeroRefundRequestCreditNoteOperation`), keyed by the request and
-    linked as `REFUND_REQUEST_CREDIT_NOTE`, outside `INV-ADDPAY-020`'s one note.
+  - **Its Xero note is queued on payout, one live note per request**
+    (D-3813-8; a voided one, `INV-ADDPAY-041`): the approval notes only the
+    card part; completion atomically queues the request's own note for the
+    amount paid back (`enqueueXeroRefundRequestCreditNoteOperation`), keyed by
+    the request, linked as `REFUND_REQUEST_CREDIT_NOTE`, outside
+    `INV-ADDPAY-020`'s one note.
   - **An appeal's ceiling nets everything already handed back**
     (`refundAppealHandedBackParts`; screens `refundAppealCeilingParts`): every
     OPEN hand-back, any kind, late-cash member credit, and card refunds still

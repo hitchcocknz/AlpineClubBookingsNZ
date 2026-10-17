@@ -6,7 +6,7 @@ import { asRecord, readString } from "./xero-json";
 import {
   canonicalRefundNoteFromField,
   isPerDeltaRefundNoteLink,
-  isRefundCreditNoteLinkCancelledInXero,
+  isRefundCreditNoteLinkCancelledInXero, keepStoredRequestNoteVoid,
   perDeltaRefundNoteIds,
   neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
@@ -603,17 +603,17 @@ async function normalizePaymentRefundLinkWithClient(
     return link;
   }
 
-  if (link.role === "REFUND_CREDIT_NOTE" && link.xeroObjectType === "CREDIT_NOTE") {
-    // A note the incoming write records VOIDED/DELETED in Xero credits nothing,
-    // so its mirror is written inactive on every payment: a Stripe or
-    // per-refund note (#2901) and a bank-transfer payment's one canonical note
-    // (#4091). Else an inbound re-reconcile re-arms phantom coverage (upsert
-    // forces `active` from this return). It claims nothing, so retires no sibling.
+  if ((link.role === "REFUND_CREDIT_NOTE" || link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) && link.xeroObjectType === "CREDIT_NOTE") {
+    // A note the incoming write records VOIDED/DELETED in Xero credits nothing, so its mirror is
+    // written inactive on every payment: a Stripe or per-refund note (#2901), a bank-transfer
+    // payment's one canonical note (#4091) and a refund request's own note (#4195, `INV-PAY-118`).
+    // Else an inbound re-reconcile re-arms phantom coverage (upsert forces `active` from this
+    // return). It claims nothing, so retires no sibling.
     if (isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
-      // The pointer moves after this link row is written: link, then payment,
-      // the order the repair apply locks them in.
+      // The pointer moves after this link row is written: link, then payment, the repair apply's order.
       return { ...link, active: false };
     }
+    if (link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) return keepStoredRequestNoteVoid(client, link); // never the one note below
 
     const payment = await client.payment.findUnique({
       where: { id: link.localId },

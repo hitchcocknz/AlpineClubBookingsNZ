@@ -1426,6 +1426,16 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // write. Keyed on immutable cuids; no advisory lock. See
   // docs/CONCURRENCY_AND_LOCKING.md -> "Refund-note link heal (#4161)".
   "src/lib/xero-hardening-canonical-links.ts": 2,
+  // #4195: a refund request's own note link written with no Xero status (a
+  // retry's, a completion's) locks that one `XeroObjectLink` row
+  // (`SELECT 1 … FOR UPDATE`, the heal's statement) inside the link write's own
+  // transaction and re-reads it through Prisma, so an inbound void that
+  // committed meanwhile is kept. The write that follows updates the same row,
+  // so no new row joins the transaction and no order changes; the inbound void
+  // holds only that row. Keyed on the link's immutable unique key; no advisory
+  // lock. See docs/CONCURRENCY_AND_LOCKING.md -> "Refund-request note link
+  // writes (#4195)".
+  "src/lib/xero-refund-note-status.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";

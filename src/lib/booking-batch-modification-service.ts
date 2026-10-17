@@ -37,6 +37,7 @@ import {
   isBookingFullyPaidForGuestNameEdits,
   isMemberWholeLodgeBooking,
   isQuotePricedBooking,
+  GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE,
   QUOTE_PRICED_EDIT_BLOCK_MESSAGE,
 } from "@/lib/booking-modify";
 // Pure readers of the request, imported from their home rather than the barrel
@@ -1117,10 +1118,7 @@ export async function modifyBookingBatch({
       ? await isMemberWholeLodgeBooking(tx, bookingId)
       : false;
     if (hasLinks && !memberWholeLodgeForLink) {
-      throw new ApiError(
-        "Linking a placeholder to a member is only available on member whole-lodge bookings.",
-        400,
-      );
+      throw new ApiError(GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE, 400);
     }
     // A member whole-lodge booking is quote-priced (its placeholders were
     // flat-split at approval), but a link-only request is EXACTLY the sanctioned

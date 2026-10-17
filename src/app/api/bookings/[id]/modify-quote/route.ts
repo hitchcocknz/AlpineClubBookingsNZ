@@ -145,6 +145,7 @@ import { dateOnlyInstantOf } from "@/lib/club-time";
 import {
   calculateModificationSettlementOptions, organiserChildChargeRefusal,
   GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
+  GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE,
   editedGuestPricingLocks,
   resolveGuestMemberLinks,
   resolveGuestNameUpdates,
@@ -594,10 +595,7 @@ export async function POST(
     : false;
   if (hasLinks && !memberWholeLodgeForLink) {
     return NextResponse.json(
-      {
-        error:
-          "Linking a placeholder to a member is only available on member whole-lodge bookings.",
-      },
+      { error: GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE },
       { status: 400 },
     );
   }
