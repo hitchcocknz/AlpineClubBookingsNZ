@@ -13,7 +13,9 @@
  * (`duplicate_capture_refunded`). The three card rows are written first, in
  * mint order, as the intents' PENDING rows, so the settling capture is not
  * always the oldest-inserted row. The admin-only history event of each refund
- * names the settling capture.
+ * names the settling capture. A second capture whose refund failed at Stripe
+ * stays SUCCEEDED while its refund is queued; guard (c) still never counts it
+ * as the settlement, so the settling capture's redelivery keeps its money.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -298,5 +300,56 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         expect(await snapshot()).toEqual(settled);
       },
     );
+
+    it("the second capture's refund fails at Stripe and stays queued: the third is still refunded, the settling capture's replay keeps its money, and the second's replay finishes its own refund", async () => {
+      const [settling, second, third] = TABS;
+      const asked: string[] = [];
+      const makes = stripeMakesRefunds();
+      const makeRefund = stripeRaceHooks.refund!;
+      let stripeDown = true;
+      stripeRaceHooks.refund = async (args) => {
+        asked.push(args.paymentIntentId);
+        if (stripeDown && args.paymentIntentId === second) throw new Error("Stripe is unavailable (503)");
+        return makeRefund(args);
+      };
+
+      expect((await arrive(settling)).outcome).toBe("paid");
+      expect((await arrive(second)).outcome).toBe("duplicate_capture_refund_failed");
+      // The second capture still holds its money, and its refund is queued.
+      expect(
+        await prisma.paymentTransaction.findFirstOrThrow({
+          where: { paymentId: PAYMENT_ID, stripePaymentIntentId: second },
+          select: { status: true },
+        }),
+      ).toEqual({ status: "SUCCEEDED" });
+      expect((await arrive(third)).outcome).toBe("duplicate_capture_refunded");
+      // Guard (c): the settling capture's redelivery finds the second capture
+      // still SUCCEEDED, but a duplicate-capture refund owns it.
+      expect((await arrive(settling)).outcome).toBe("already_paid");
+      expect(asked).toEqual([second, third]);
+
+      stripeDown = false;
+      expect((await arrive(second)).outcome).toBe("duplicate_capture_refunded");
+      expect(asked, "the second's replay re-sends only its own refund").toEqual([second, third, second]);
+      expect(makes).toEqual([third, second]);
+
+      const settled = await snapshot();
+      expect(settled.transactions.map((row) => [row.stripePaymentIntentId, row.status])).toEqual([
+        [settling, "SUCCEEDED"],
+        [second, "REFUNDED"],
+        [third, "REFUNDED"],
+      ]);
+      expect(settled.operations.map((operation) => [operation.idempotencyKey, operation.status])).toEqual([
+        [`duplicate_capture_${BOOKING_ID}_${second}`, "SUCCEEDED"],
+        [`duplicate_capture_${BOOKING_ID}_${third}`, "SUCCEEDED"],
+      ]);
+      const refundEvents = await prisma.bookingEvent.findMany({
+        where: { bookingId: BOOKING_ID, type: "REFUNDED" },
+        select: { snapshot: true },
+      });
+      expect(
+        refundEvents.map((event) => (event.snapshot as { settledPaymentIntentId?: string | null }).settledPaymentIntentId),
+      ).toEqual([settling, settling]);
+    });
   },
 );

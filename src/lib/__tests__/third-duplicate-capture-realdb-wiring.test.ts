@@ -26,5 +26,6 @@ describe("the third-duplicate-capture real-database proof stays wired into CI (#
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("the first settles, the other two are refunded once each and name it, and replaying all three changes nothing");
     expect(suite).toContain("permutations(TABS)");
+    expect(suite).toContain("the second capture's refund fails at Stripe and stays queued");
   });
 });
