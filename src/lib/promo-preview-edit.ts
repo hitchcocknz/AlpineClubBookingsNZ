@@ -3,8 +3,13 @@ import type { z } from "zod";
 import { prisma } from "@/lib/prisma";
 import { ApiError } from "@/lib/api-error";
 import { bookingForPromoLookup } from "@/lib/promo-guest-codes";
-import { resolveGuestMemberLinks } from "@/lib/booking-modify-plan";
-import { GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE } from "@/lib/booking-modify-validation";
+// Through the barrel, as the quote reaches them, so the two cannot differ.
+import {
+  GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
+  GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE,
+  isMemberWholeLodgeBooking,
+  resolveGuestMemberLinks,
+} from "@/lib/booking-modify";
 import {
   assertOtherLodgeExists,
   OtherLodgeRateInProgressError,
@@ -44,8 +49,9 @@ import type { PromoPreviewEdit } from "@/lib/promo-preview-stay-ranges";
  *   re-rates exactly the guests they re-rate: a linked guest prices as the
  *   member with their locks cleared, and a ticked or unticked guest takes the
  *   election's flag with their locks cleared. The refusals those resolvers raise
- *   are the quote's, word for word, and so are its two mid-stay refusals of a
- *   re-rate (`GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE`,
+ *   are the quote's, word for word, and so are its member-origin fence on a
+ *   link (a school's whole-lodge booking may not link) and its two mid-stay
+ *   refusals of a re-rate (`GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE`,
  *   `OtherLodgeRateInProgressError`), judged on the same edit policy.
  *
  * NOT MIRRORED, and why. The quote also refuses an election on an edit whose
@@ -172,6 +178,10 @@ async function resolveRerates(
     select: { status: true, checkOut: true, wholeLodgeHold: true, otherLodgeId: true, guests: true },
   });
   if (!stored) throw new ApiError("Booking not found", 404);
+  // The quote's member-origin fence, raised before its resolver as the quote raises it.
+  if (request.linkGuestToMember?.length && !(await isMemberWholeLodgeBooking(prisma, booking.id))) {
+    throw new ApiError(GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE, 400);
+  }
   const links = resolveGuestMemberLinks({
     booking: stored,
     input: {

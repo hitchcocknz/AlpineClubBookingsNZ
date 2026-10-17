@@ -132,6 +132,8 @@ vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info:
 
 import { POST as modifyQuote } from "@/app/api/bookings/[id]/modify-quote/route";
 import { POST as validatePromo } from "@/app/api/promo-codes/validate/route";
+import { GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE } from "@/lib/booking-modify";
+import { OTHER_LODGE_RATE_ADMIN_ONLY_MESSAGE } from "@/lib/booking-other-lodge-rate";
 
 const D = (day: string) => new Date(`${day}T00:00:00.000Z`);
 /** Today's rate for a night. */
@@ -281,6 +283,9 @@ type Answer =
   | { valid: true; totalPriceCents: number; discountCents: number; promoAdjustmentCents: number }
   | { valid: false; error: string };
 
+/** The HTTP status each route last answered with, for the cases that compare them. */
+const lastStatus = { quote: 0, box: 0 };
+
 /** The quote's answer for the edit: its total and the promo line's discount. */
 async function quote(edit: Edit) {
   h.prisma.promoCode.findUnique.mockResolvedValue(promo(edit.promo));
@@ -306,6 +311,7 @@ async function quote(edit: Edit) {
     { params: Promise.resolve({ id: "b1" }) },
   );
   const body = await res.json();
+  lastStatus.quote = res.status;
   if (res.status !== 200) return { valid: false, error: body.error as string } as Answer;
   expect(body.promoValidation, JSON.stringify(body)).toBeTruthy();
   if (!body.promoValidation.valid) return { valid: false, error: body.promoValidation.error as string } as Answer;
@@ -357,6 +363,7 @@ async function box(edit: Edit) {
     }),
   );
   const body = await res.json();
+  lastStatus.box = res.status;
   if (res.status !== 200 || !body.valid) return { valid: false, error: body.error as string } as Answer;
   return {
     valid: true,
@@ -659,5 +666,90 @@ describe("#4202 review: the box judges the booking's owner and clears the locks 
     const [, link] = REVIEW_EDITS[5]!;
     link.setup?.();
     expect((await quoted(link)).totalPriceCents).toBe(4 * NOW_RATE);
+  });
+});
+
+/**
+ * #4202 review r3: a member who is not an officer may not re-rate anybody, on
+ * the quote or in the box, and both say so with the same 403 and the same words.
+ * And an officer is judged as an officer even on their OWN booking, as the
+ * quote's `isAdmin` judges them.
+ */
+describe("#4202 review r3: who may re-rate, and an officer's own booking", () => {
+  const memberRerates: Array<[string, Record<string, unknown>, string]> = [
+    ["a link", { linkGuestToMember: [{ guestId: "g1", memberId: "m9" }] }, GUEST_MEMBER_LINK_ADMIN_ONLY_MESSAGE],
+    ["an election", { otherLodgeId: "ol-1", otherLodgeMemberGuestIds: ["g1"] }, OTHER_LODGE_RATE_ADMIN_ONLY_MESSAGE],
+  ];
+  for (const [name, fields, message] of memberRerates) {
+    it(`refuses the owner's own ${name} with the quote's 403`, async () => {
+      const edit: Edit = {
+        checkOut: "2026-08-28",
+        promo: { percentOff: 50 },
+        boxGuest: PLACEHOLDER_IN_BOX,
+        quoteBody: fields,
+        boxBody: fields,
+        refused: true,
+        setup: () => {
+          // A member whole-lodge booking, so the link reaches the role check.
+          h.isMemberWholeLodgeBooking.mockResolvedValue(true);
+          storedWith(PLACEHOLDER, { wholeLodgeHold: true });
+        },
+      };
+      await expectParity(edit);
+      expect(await quote(edit)).toEqual({ valid: false, error: message });
+      expect(lastStatus).toEqual({ quote: 403, box: 403 });
+    });
+  }
+
+  it("an officer's link on a booking that is not a member's whole-lodge booking: the quote's member-origin fence", async () => {
+    const fields = { linkGuestToMember: [{ guestId: "g1", memberId: "m9" }] };
+    await expectParity({
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50 },
+      boxGuest: PLACEHOLDER_IN_BOX,
+      quoteBody: fields,
+      boxBody: fields,
+      refused: true,
+      setup: () => {
+        officerCalling();
+        storedWith(PLACEHOLDER, { wholeLodgeHold: true });
+      },
+    });
+    expect(lastStatus).toEqual({ quote: 400, box: 400 });
+  });
+
+  it("a link beside a rename of the same guest: the quote's refusal, judged on the same renames", async () => {
+    const fields = {
+      linkGuestToMember: [{ guestId: "g1", memberId: "m9" }],
+      guestUpdates: [{ guestId: "g1", firstName: "Hemi", lastName: "Renamed" }],
+    };
+    await expectParity({
+      checkOut: "2026-08-28",
+      promo: { percentOff: 50 },
+      boxGuest: PLACEHOLDER_IN_BOX,
+      quoteBody: fields,
+      boxBody: fields,
+      refused: true,
+      setup: () => {
+        officerCalling();
+        h.isMemberWholeLodgeBooking.mockResolvedValue(true);
+        storedWith(PLACEHOLDER, { wholeLodgeHold: true });
+      },
+    });
+    expect(await quote({ checkOut: "2026-08-28", promo: { percentOff: 50 }, quoteBody: fields })).toEqual({
+      valid: false,
+      error: "A guest cannot be renamed and linked in the same change",
+    });
+  });
+
+  it("an officer adding another family's member to their OWN booking is still an officer's add", async () => {
+    const [, officerAdd] = REVIEW_EDITS.find(([name]) => name.startsWith("an officer adds another family's member"))!;
+    await expectParity({
+      ...officerAdd,
+      setup: () => {
+        officerAdd.setup?.();
+        h.prisma.booking.findUnique.mockResolvedValue({ ...storedBooking(), memberId: "officer-1" });
+      },
+    });
   });
 });
