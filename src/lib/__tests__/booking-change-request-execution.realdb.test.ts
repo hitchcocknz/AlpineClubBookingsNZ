@@ -122,7 +122,13 @@ async function supplementaryInvoices(expected: number) {
 async function clean(): Promise<void> {
   // The batch's post-commit Xero leg is fire-and-forget. Let the real writer
   // finish before deleting operations and the modifications that identify them.
-  while (pendingXeroWork.length > 0) await Promise.all(pendingXeroWork.splice(0));
+  const enqueueErrors: unknown[] = [];
+  while (pendingXeroWork.length > 0) {
+    const results = await Promise.allSettled(pendingXeroWork.splice(0));
+    for (const result of results) {
+      if (result.status === "rejected") enqueueErrors.push(result.reason);
+    }
+  }
   await prisma.xeroSyncOperation.deleteMany({
     where: { localModel: "BookingModification", localId: { in: await modificationIds() } },
   });
@@ -157,6 +163,9 @@ async function clean(): Promise<void> {
   // Undo the per-case capacity and season changes (no-ops before the lodge exists).
   await prisma.lodgeSettings.updateMany({ where: { id: LODGE_ID }, data: { capacity: 10 } });
   await prisma.season.updateMany({ where: { id: SEASON_ID }, data: { active: true } });
+  if (enqueueErrors.length > 0) {
+    throw new AggregateError(enqueueErrors, "#4234: real Xero fixture enqueues failed; all work drained and owned fixtures cleaned");
+  }
 }
 
 const ADD_LATE_FRIEND = {
