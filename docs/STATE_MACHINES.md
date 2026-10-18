@@ -3524,6 +3524,8 @@ unconfirmed environment, and a provider failure — stay distinguishable
 ```text
 local business event -> Xero outbox operation queued
 worker claims operation -> provider call -> success or retryable failure
+success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier
+  wait's or failure's code is not shown on it (#4049); PARTIAL keeps them
 worker finds the operation must wait (busy) -> RUNNING -> PENDING: returns
   to PENDING without failing, status-guarded; the billed-offset wait makes no
   Xero call; lastErrorCode is the wait's code or null
@@ -3531,6 +3533,8 @@ worker finds the operation must wait (busy) -> RUNNING -> PENDING: returns
   BILLED_OFFSET_AWAITING_OWN_NOTE, rechecked every
   BILLED_OFFSET_OWN_NOTE_RECHECK_MS; at BILLED_OFFSET_OWN_NOTE_WAIT_MS from
   createdAt -> FAILED for a person (an operator's retry raises it unwaited)
+  it waits only when its edit expected an own note; a note the repair pass
+  queues reads that from the edit's history row (#4049)
 inbound webhook/event recorded -> reconciliation worker processes event
 failure -> retry/backoff/admin visibility
 FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
@@ -3538,6 +3542,18 @@ FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
   refused while the operation is RUNNING, a live copy of it is queued, or a
   queued retry of it overlaps the mark (the mark is then withdrawn)
   refused for applied-credit allocations and deallocations (retry-only)
+credit-note allocation refused by Xero as more than the note has left (#4218)
+  -> FAILED with code CREDIT_NOTE_SPENT_OUTSIDE_APP when a read of the note
+  afterwards CONFIRMS it was spent outside the app. Xero's refusal is the
+  trigger (a read made beforehand could lag an edit and fail an allocation Xero
+  would accept) but not proof: the app's own earlier allocation, whose
+  completion was never recorded, is refused the same way. So the original error
+  stands, unnamed, when the read fails, shows the note now has enough, or shows
+  this invoice already holds an allocation of at least the slice. The row stays
+  replayable and the named code still counts as refused by Xero
+  (xeroRefusedOperation); a retry sends the allocation again and should go
+  through once the credit is restored in Xero. Applies to every credit-note
+  allocation, applied credit included
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
   in Xero (before the claim, or the claim lost to the resolve); nothing ran
 outbox copy RUNNING -> CANCELLED when a sibling for the same document was
@@ -3940,12 +3956,22 @@ valid TOTP/email/recovery code -> server mints single-use challenge token (hashe
 session update carrying that token -> jwt callback consumes it -> twoFactorVerified=true
 client-forged session update without a valid token -> ignored, session stays unverified
 invalid attempts -> per-member counter increments -> 15 minute lockout after 5 failures
+enrollment accepted -> recovery codes stay visible until Continue -> replace document at server-resolved destination
+verification accepted -> replace document at server-resolved destination
+rejected or failed request -> retain challenge and correction flow, no navigation
 ```
 
 To verify: Auth.js JWT callback claim handling, challenge-token single-use
 consumption, protected route-group layout redirects, API guard rejection,
 email-code expiry, TOTP skew window, recovery code single-use consumption, and
-lockout reset after successful verification.
+lockout reset after successful verification. The two successful panel exits share
+one local document-replacement function (`window.location.replace`); destination
+selection stays server-side, including safe deep links and nonce-bound private
+family-invite returns. Neither exit renders that destination in a DOM attribute.
+Enrollment waits for explicit **Continue** so the member can save recovery codes.
+Rendered panel tests cover accepted, pending, rejected and network-failed requests;
+direct browser journeys require protected content after Continue and verification,
+without a later helper navigation (#4060).
 
 ## Magic-Link Sign-In Lifecycle
 
