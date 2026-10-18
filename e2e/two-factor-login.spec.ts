@@ -25,14 +25,16 @@ async function expectPaymentsDestination(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/admin\/payments/);
   const payments = page.getByRole("heading", { name: "Payments", exact: true });
   const details = page.getByRole("dialog", { name: "Confirm member details", exact: true });
-  const saveDetails = details.getByRole("button", { name: "Save and continue", exact: true });
+  const confirmDetails = details.getByRole("button", {
+    name: /^(Save and continue|Confirm details are correct)$/,
+  });
 
   // The protected layout can require profile confirmation before rendering
   // Payments. Either state must contain real destination content; a URL or
   // blank streamed shell cannot complete the authentication journey.
   await expect.poll(async () =>
     await payments.isVisible() ||
-    (await details.isVisible() && await saveDetails.isVisible()),
+    (await details.isVisible() && await confirmDetails.isVisible()),
   {
     message: "Payments must render its heading or the usable member-details gate",
     timeout: 15_000,
