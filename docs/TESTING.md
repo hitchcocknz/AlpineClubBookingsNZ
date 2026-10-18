@@ -40,6 +40,16 @@ before sharding and remain absent; adding them is a separate project.
 does **not** apply sharding in this version, so comparing four `list` outputs
 would falsely suggest every file runs four times.
 
+The required `Migration drift check` also runs the opt-in PostgreSQL race
+proofs. Its dedicated service binds only to loopback, and Docker selects an
+available host port from 55442–65535 rather than requiring port 55442 to be
+free. The workflow validates the resolved URL with the existing race-database
+guard before migration, then shares it through `CONCURRENCY_RACE_DATABASE_URL`;
+the seeded ledger-history database derives its URL from that same endpoint.
+Missing or unsafe endpoint metadata fails the job. Port-range exhaustion or
+service startup failure also stays a failure; neither skips nor passes the
+real database checks.
+
 ## Shared setup
 
 `vitest.config.mts` points every test file at three setup files, in order —
