@@ -1467,6 +1467,29 @@ which every suite sets on purpose. It checks the end state, so a later
 suite's blanket restore could hide an earlier leak: put back only the variable
 your suite changed.
 
+The shared database has the same ownership rule for Xero work (#4234).
+`support/race-harness-outbox-guard.ts` checks after all suite teardown that no
+`PENDING` operations remain, using its own guarded disposable connection.
+Clean operations by the suite's exact owned booking, payment, modification or
+task ids before deleting those fixtures; an operation's scalar `localId` is not
+a foreign key and survives deleting its payment.
+
+An end-state check alone could miss a leak that a later processor consumed.
+Every suite calling the global outbox processor must therefore call
+`assertNoForeignPendingXeroOperations(prisma, ownedLocalIds)` before processing
+or temporarily parking work. Pending rows owned by that suite are legitimate
+inside its tests; foreign rows fail with their ids and queue types. Park only
+the suite's own other rows when a test selects one operation, and restore those
+exact ids in `finally`. Never delete foreign rows, park the whole queue or age
+a row to make it win the processor's oldest-first scan. The guard reports
+leakage; it does not clean it up.
+
+Wait for owned asynchronous enqueues before that cleanup. #3750's real batch
+writer starts its Xero leg without awaiting it; deleting operations first let
+the leg finish after its modification was gone. Its fixture forwards to the
+real enqueue unchanged, captures the returned promises and drains them before
+collecting modification ids for teardown, then restores the forwarding spy.
+
 A declared role is not a fix for a path a suite should never reach. #4013's H1
 case reached the remainder-note mint because its credit lots tied on the
 frozen clock; the cure was an explicit fixture chronology and a regression that
