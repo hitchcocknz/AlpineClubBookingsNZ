@@ -64,8 +64,9 @@ const h = vi.hoisted(() => {
     },
     memberCredit: {
       // #3836: the engine's one batch predicate, over the same rows.
-      groupBy: async ({ where }: { where: { appliedToBookingId: { in: string[] }; type: string; xeroCreditNoteId: null } }) =>
-        where.appliedToBookingId.in.flatMap((appliedToBookingId) => {
+      groupBy: async ({ where }: { where: { appliedToBookingId?: { in: string[] }; type: string; xeroCreditNoteId: null } }) =>
+        // #4219: the lot calculation's write-down read shares this stub; no row here is one.
+        !where.appliedToBookingId ? [] : where.appliedToBookingId.in.flatMap((appliedToBookingId) => {
           const rows = state.appliedRows.filter((r) => matchesApplied(r, { appliedToBookingId, type: where.type, xeroCreditNoteId: null }));
           return rows.length ? [{ appliedToBookingId, _sum: { amountCents: rows.reduce((s, r) => s + r.amountCents, 0) } }] : [];
         }),

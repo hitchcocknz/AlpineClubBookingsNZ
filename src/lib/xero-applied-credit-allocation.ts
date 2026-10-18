@@ -24,6 +24,8 @@ import { CreditType, Prisma } from "@prisma/client";
 import { appliedCreditSettledByCancel, unallocatedAppliedCents } from "./xero-applied-credit-ledger-state";
 import { prisma } from "./prisma";
 import { lockMemberCreditLedger } from "./member-credit";
+import { writtenDownCentsByCreditNote } from "./xero-credit-note-write-down";
+import { convergedForNamedFailure } from "./xero-applied-credit-spent-outside-app";
 import { allocateCreditNoteToInvoice } from "./xero-credit-notes";
 import {
   buildXeroIdempotencyKey,
@@ -114,9 +116,16 @@ async function gatherAppliedCreditLots(
     allocated.map((a) => [a.memberCreditId, a._sum.amountCents ?? 0]),
   );
 
+  // #4219: credit written down because its note was used outside the app is gone.
+  const writtenDown = await writtenDownCentsByCreditNote(
+    tx,
+    memberId,
+    positiveLots.flatMap((l) => (l.xeroCreditNoteId ? [l.xeroCreditNoteId] : [])),
+  );
   const lots: AppliedCreditLot[] = [];
   for (const lot of positiveLots) {
-    const remainingCents = lot.amountCents - (allocatedById.get(lot.id) ?? 0);
+    const downCents = lot.xeroCreditNoteId ? (writtenDown.get(lot.xeroCreditNoteId) ?? 0) : 0;
+    const remainingCents = lot.amountCents - (allocatedById.get(lot.id) ?? 0) - downCents;
     if (remainingCents <= 0) {
       continue;
     }
@@ -332,7 +341,7 @@ async function completeSkip(syncOperationId: string | undefined, reason: string)
  */
 export async function allocateAppliedCreditForBooking(
   bookingId: string,
-  options?: { createdByMemberId?: string; syncOperationId?: string },
+  options?: { createdByMemberId?: string; syncOperationId?: string; convergeAttempts?: number },
 ): Promise<void> {
   const format = await getClubFormat();
   const syncOperationId = options?.syncOperationId;
@@ -493,17 +502,30 @@ export async function allocateAppliedCreditForBooking(
     if (alreadyAllocated) {
       continue;
     }
-    await allocateCreditNoteToInvoice(na.xeroCreditNoteId, invoiceId, na.amountCents, {
-      localModel: "MemberCreditNoteAllocation",
-      localId: joinRow.id,
-      role: APPLIED_CREDIT_ALLOCATION_ROLE,
-      createdByMemberId,
-      appliedCreditContext: {
-        parentOperationId: syncOperationId ?? null,
-        bookingId,
-        paymentId: payment.id,
-      },
-    });
+    try {
+      await allocateCreditNoteToInvoice(na.xeroCreditNoteId, invoiceId, na.amountCents, {
+        localModel: "MemberCreditNoteAllocation",
+        localId: joinRow.id,
+        role: APPLIED_CREDIT_ALLOCATION_ROLE,
+        createdByMemberId,
+        appliedCreditContext: {
+          parentOperationId: syncOperationId ?? null,
+          bookingId,
+          paymentId: payment.id,
+        },
+      });
+    } catch (error) {
+      // #4219: the note was confirmed spent in Xero outside the app. Bring the
+      // ledger into line, then plan again so the booking's other slices still
+      // allocate; a refusal to converge leaves the original failure standing.
+      if (await convergedForNamedFailure(error, bookingId, options?.convergeAttempts)) {
+        return allocateAppliedCreditForBooking(bookingId, {
+          ...options,
+          convergeAttempts: (options?.convergeAttempts ?? 0) + 1,
+        });
+      }
+      throw error;
+    }
   }
 
   // 3) Mint + allocate the noteless (admin / restored) remainder, if any.

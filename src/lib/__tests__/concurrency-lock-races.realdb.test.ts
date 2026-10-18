@@ -83,6 +83,13 @@ import "./additional-ask-reduction.realdb.test";
 // and left consistent by the cancel, on a fake Xero switched on only inside its
 // own describe. Its describe stays skipped unless the shared race flag is set.
 import "./credit-only-card-allocation.realdb.test";
+// #4219 reuses it to prove that a credit note spent in Xero outside the app
+// converges the credit ledger from the allocation worker alone (a fully and a
+// partly spent note, two concurrent runs, the written-down lot not planned again,
+// and the fail-closed refusals), on a fake Xero that keeps the outside spend and
+// refuses an over-allocation in Xero's own words. Its describe stays skipped
+// unless the shared race flag is set.
+import "./credit-note-spent-outside-app.realdb.test";
 // #2595 reuses the same guarded disposable PostgreSQL to prove that a member
 // merge cannot leave two people sharing a double bed with no confirmed
 // partnership, driving the real `executeMemberMerge` and the real
