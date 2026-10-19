@@ -223,7 +223,7 @@ describe("xero cron runner", () => {
         }) as never,
         runBankRefundVoidFollowUp: vi.fn(async () => {
           order.push("follow-up");
-          return { mode: "report-only" as const, scanned: 2, counts: { undone: 2, spare: 0, handled: 0, deferred: 0, unmatched: 0, "awaiting-heal": 0, "not-in-scope": 0, failed: 0 }, items: [] };
+          return { mode: "report-only" as const, scanned: 2, counts: { undone: 2, spare: 0, handled: 0, deferred: 0, unmatched: 0, "awaiting-heal": 0, "not-in-scope": 0, failed: 0 }, deferredOverdue: 0, items: [] };
         }),
       },
     });
@@ -242,7 +242,7 @@ describe("xero cron runner", () => {
       log: { error: vi.fn() },
       tasks: {
         runBankRefundVoidFollowUp: vi.fn(async () => ({
-          mode: "writes" as const, scanned: 1, counts: { undone: 0, spare: 0, handled: 0, deferred: 0, unmatched: 0, "awaiting-heal": 0, "not-in-scope": 0, failed: 1 }, items: [],
+          mode: "writes" as const, scanned: 1, counts: { undone: 0, spare: 0, handled: 0, deferred: 0, unmatched: 0, "awaiting-heal": 0, "not-in-scope": 0, failed: 1 }, deferredOverdue: 0, items: [],
         })),
       },
     });

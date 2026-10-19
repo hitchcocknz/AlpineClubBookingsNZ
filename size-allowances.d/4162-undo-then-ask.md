@@ -50,3 +50,10 @@ reason: the enqueue option, its payload field and the worker's pass-through
 file: src/lib/xero-operation-retry.ts
 lines: 2024
 reason: one pass-through line so an operator retry keeps the hand-back task id.
+
+file: src/lib/xero-refund-note-link-repair.ts
+lines: 918
+reason: one optional parameter on the blocking-create finder, so a create row
+  whose own note Xero voided never holds a voided bank-transfer note back
+  (#4162 review). The finder's query is the one definition of "could still
+  mint"; a second copy beside the follow-up would drift from it.

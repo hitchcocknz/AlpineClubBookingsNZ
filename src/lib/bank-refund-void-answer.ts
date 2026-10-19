@@ -9,6 +9,7 @@ import {
   readBankRefundVoidFollowUpContext,
   type BankRefundVoidAnswer,
 } from "@/lib/bank-refund-void-follow-up-copy";
+import { bookingOwner } from "@/lib/booking-owner";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 import { isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
@@ -177,6 +178,16 @@ export async function verifyHandMadeRefundNote(
   return { creditNoteId: note.creditNoteID!, creditNoteNumber: number, amountCents, status, total: note.total! };
 }
 
+/** The booking owner's own Xero contact, read through the one owner accessor (`INV-SSOT-005`). */
+function bookingOwnerXeroContactId(booking: {
+  member: { xeroContactId: string | null } | null;
+  organisation: { name: string; xeroContactId: string | null } | null;
+}): string | null {
+  if (booking.organisation) return booking.organisation.xeroContactId;
+  const member = bookingOwner(booking).member as { xeroContactId?: string | null } | null;
+  return member?.xeroContactId ?? null;
+}
+
 /** The statuses a hand-made note may carry: approved or paid (review, money 3). */
 const HAND_MADE_NOTE_LIVE_STATUSES: readonly string[] = ["AUTHORISED", "PAID"];
 
@@ -204,7 +215,7 @@ export async function prepareBankRefundVoidAnswer(input: {
       amountCents: true,
       reviewContext: true,
       payment: { select: { xeroInvoiceId: true } },
-      booking: { select: { member: { select: { xeroContactId: true } }, organisation: { select: { xeroContactId: true } } } },
+      booking: { select: { member: { select: { xeroContactId: true } }, organisation: { select: { name: true, xeroContactId: true } } } },
     },
   });
   if (!task || !isBankRefundVoidFollowUpTask(task) || !readBankRefundVoidFollowUpContext(task.reviewContext) || task.amountCents === null) {
@@ -219,7 +230,8 @@ export async function prepareBankRefundVoidAnswer(input: {
     creditNoteNumber: input.answer.creditNoteNumber,
     expectedAmountCents: task.amountCents,
     xeroInvoiceId,
-    ownerXeroContactId: task.booking.member?.xeroContactId ?? task.booking.organisation?.xeroContactId ?? null,
+    // An organisation's booking has its own contact; a member's, the member's.
+    ownerXeroContactId: bookingOwnerXeroContactId(task.booking),
     format: input.format,
   });
   return { answer: "recorded-in-xero", note };
