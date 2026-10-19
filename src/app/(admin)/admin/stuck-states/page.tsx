@@ -47,6 +47,7 @@ import { listCardRefundsPaidTwice } from "@/lib/card-refund-paid-twice";
 import { CardRefundsPaidTwiceList, DeadCardRefundsPanel } from "@/components/admin/dead-card-refunds-panel";
 import { BankRefundVoidsToAnswerPanel } from "@/components/admin/bank-refund-voids-to-answer-panel";
 import { listBankRefundVoidsToAnswerRows } from "@/lib/bank-refund-void-follow-up";
+import { isXeroBankRefundVoidWritesEnabled } from "@/lib/xero-feature-flags";
 import { describeRefundMethod } from "@/lib/xero-refund-method";
 
 const domainIcons: Record<StuckStateDomain, typeof CreditCard> = {
@@ -204,11 +205,16 @@ export default async function AdminStuckStatesPage() {
   // #4162 (`INV-ADDPAY-042`): voided bank refund notes no follow-up could
   // match, answered here - finance:view to list (they name bookings and
   // money), finance:edit to answer.
-  const [dashboard, deadCardRefunds, cardRefundsPaidTwice, bankRefundVoidsToAnswer] = await Promise.all([
-    getStuckStateDashboard({ viewerCanViewMembership, viewerCanViewFinance }),
+  // The list is read once: a finance viewer's dashboard count is its length (review, security 7).
+  const bankRefundVoidsToAnswer = viewerCanViewFinance ? await listBankRefundVoidsToAnswerRows() : [];
+  const [dashboard, deadCardRefunds, cardRefundsPaidTwice] = await Promise.all([
+    getStuckStateDashboard({
+      viewerCanViewMembership,
+      viewerCanViewFinance,
+      ...(viewerCanViewFinance ? { deps: { countBankRefundVoidsToAnswer: async () => bankRefundVoidsToAnswer.length } } : {}),
+    }),
     viewerCanViewFinance ? listDeadCardRefunds() : Promise.resolve([]),
     viewerCanViewFinance ? listCardRefundsPaidTwice() : Promise.resolve([]),
-    viewerCanViewFinance ? listBankRefundVoidsToAnswerRows() : Promise.resolve([]),
   ]);
   const clubTime = await resolveClubTime();
 
@@ -289,7 +295,7 @@ export default async function AdminStuckStatesPage() {
 
       {viewerCanViewFinance ? <CardRefundsPaidTwiceList rows={cardRefundsPaidTwice} /> : null}
 
-      {viewerCanViewFinance ? <BankRefundVoidsToAnswerPanel rows={bankRefundVoidsToAnswer} /> : null}
+      {viewerCanViewFinance ? <BankRefundVoidsToAnswerPanel rows={bankRefundVoidsToAnswer} writesEnabled={isXeroBankRefundVoidWritesEnabled()} /> : null}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-3">

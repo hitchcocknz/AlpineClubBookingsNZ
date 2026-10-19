@@ -28,78 +28,112 @@ import { useAdminAreaEditAccess } from "@/hooks/use-admin-area-edit-access";
 import { MANUAL_PAYMENT_NOTE_MAX } from "@/lib/manual-payment-note";
 import { formatCents } from "@/lib/utils";
 
-/** One voided note a person answers, as `listBankRefundVoidsForAPerson` returns it (serialised). */
+/** One voided note a person looks at, as `listBankRefundVoidsToAnswerRows` returns it (serialised). */
 export interface BankRefundVoidToAnswerRow {
   linkId: string;
   bookingId: string;
   bookingReference: string;
   creditNoteNumber: string | null;
   amountCents: number | null;
-  voidedAt: string;
+  /** When the app found the note voided - not Xero's own void time. */
+  foundVoidedAt: string;
+  /** Why it is here: unmatched (a reason), or `deferred` too long. */
+  reason: string;
+  /** The payment's live bank refunds a person may pick as the one the note recorded. */
+  pickableLines: ReadonlyArray<{ lineId: string; amountCents: number; recordedAt: string | null }>;
 }
 
+type Target = { row: BankRefundVoidToAnswerRow; mode: "pick" | "answer" };
+
 /**
- * #4162 (owner decision 17 Oct 2026, `INV-ADDPAY-042`): bank-transfer refunds
- * whose Xero credit note was voided, which the nightly follow-up could not
- * match to one refund (an older note covering several, or one whose amount
- * cannot be read). Nothing was moved for them. The panel asks the same
- * question the refund list asks, and the answer is recorded here and moves
- * nothing: a person checks whether the money went, makes the Xero side right
- * by hand, and says what they did. `finance:view` to see, `finance:edit` to
- * answer; the banner states the view-only reason once.
+ * #4162 (owner decisions 17 and 18 Oct 2026, `INV-ADDPAY-042`): voided
+ * bank-transfer refund notes the nightly follow-up could not match to one
+ * refund. A person picks the bank refund the note recorded, and the app runs
+ * the same undo as for a matched note: the refund comes out of the payment's
+ * records and "Refund to re-confirm" goes on Money to settle. A note that
+ * recorded a card refund's record has nothing to pick: its note is re-raised
+ * from the Xero repair tool, then the answer is recorded here. Voids deferred
+ * for more than a week are listed too, so they cannot hide.
+ *
+ * `finance:view` to see, `finance:edit` to act; the banner states the
+ * view-only reason once. While the follow-up is report-only every item is
+ * read-only and the panel says actions turn on with the switch.
  */
-export function BankRefundVoidsToAnswerPanel({ rows }: { rows: readonly BankRefundVoidToAnswerRow[] }) {
+export function BankRefundVoidsToAnswerPanel({
+  rows,
+  writesEnabled,
+}: {
+  rows: readonly BankRefundVoidToAnswerRow[];
+  writesEnabled: boolean;
+}) {
   const canEdit = useAdminAreaEditAccess("finance");
   const format = useClubFormat();
   const clubTime = useClubTime();
   const router = useRouter();
   const noteId = useId();
   const errorId = useId();
-  const [targetId, setTargetId] = useState<string | null>(null);
+  const choiceName = useId();
+  const [target, setTarget] = useState<Target | null>(null);
+  const [pickedLineId, setPickedLineId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [errorAttention, setErrorAttention] = useState(0);
   const [listNotice, setListNotice] = useState("");
 
-  const target = targetId === null ? null : (rows.find((row) => row.linkId === targetId) ?? null);
-  if (targetId !== null && target === null && !busy) {
-    setTargetId(null);
-    setListNotice("That voided refund note no longer needs an answer, so its dialog was closed. The list is up to date.");
+  const current = target === null ? null : (rows.find((row) => row.linkId === target.row.linkId) ?? null);
+  if (target !== null && current === null && !busy) {
+    setTarget(null);
+    setListNotice("That voided refund note no longer needs anything here, so its dialog was closed. The list is up to date.");
   }
   if (rows.length === 0 && listNotice === "") return null;
 
-  const amountOf = (row: BankRefundVoidToAnswerRow) =>
-    row.amountCents === null ? "an amount the app cannot read" : formatCents(row.amountCents, format);
+  const amountOf = (cents: number | null) => (cents === null ? "an amount the app cannot read" : formatCents(cents, format));
+  const foundOn = (row: BankRefundVoidToAnswerRow) => clubTime.instantDate(new Date(row.foundVoidedAt));
+
+  function open(row: BankRefundVoidToAnswerRow, mode: Target["mode"]) {
+    setTarget({ row, mode });
+    setPickedLineId(null);
+    setNote("");
+    setError("");
+    setListNotice("");
+  }
 
   async function submit() {
     if (!target) return;
     setBusy(true);
     setError("");
     try {
-      const res = await fetch(`/api/admin/payments/bank-refund-voids/${target.linkId}/answered`, {
+      const pick = target.mode === "pick";
+      const res = await fetch(`/api/admin/payments/bank-refund-voids/${target.row.linkId}/${pick ? "pick" : "answered"}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ note, confirmed: true }),
+        body: JSON.stringify(pick ? { lineId: pickedLineId, confirmed: true } : { note, confirmed: true }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        setError(typeof data.error === "string" ? data.error : "Could not record the answer.");
+        setError(typeof data.error === "string" ? data.error : "Could not record that.");
         setErrorAttention((count) => count + 1);
         if (res.status === 409) router.refresh();
         return;
       }
-      toast.success("Answer recorded. Nothing in the club's records moved.");
-      setListNotice(`The voided refund note on booking ${target.bookingReference} was answered.`);
-      setTargetId(null);
+      toast.success(
+        pick
+          ? "Done. The refund was taken back out of the payment's records and is on Money to settle to re-confirm."
+          : "Answer recorded. Nothing in the club's records moved.",
+      );
+      setListNotice(`The voided refund note on booking ${target.row.bookingReference} was dealt with.`);
+      setTarget(null);
       router.refresh();
     } catch {
-      setError("Could not record the answer.");
+      setError("Could not record that.");
       setErrorAttention((count) => count + 1);
     } finally {
       setBusy(false);
     }
   }
+
+  const canSubmit = target !== null && !busy && (target.mode === "pick" ? pickedLineId !== null : note.trim() !== "");
 
   return (
     <Card id="bank-refund-voids">
@@ -112,77 +146,121 @@ export function BankRefundVoidsToAnswerPanel({ rows }: { rows: readonly BankRefu
       <CardContent className="space-y-3">
         <AdminViewOnlySectionBanner canEdit={canEdit} />
         <p className="text-sm text-muted-foreground">
-          Xero voided the credit note that recorded each of these bank refunds, and the app could not tell which
-          refund the note was for, so it changed nothing. Has the money gone to the member? If it has, make sure
-          Xero records it (raise a credit note there by hand if none does). If it has not, ask a developer to take
-          the refund out of the club&apos;s records. Then record what you did here.
+          Xero voided the credit note that recorded each of these bank refunds, and the app could not tell which refund
+          it was for. Pick the refund the note recorded: the app takes it back out of the payment&apos;s records and puts
+          it on Money to settle, where you answer whether the money went to the member.
         </p>
+        {writesEnabled ? null : (
+          <p className="text-sm font-medium text-warning-11" data-testid="bank-refund-voids-report-only">
+            These are shown for information only. Actions here turn on when the club switches the voided-refund
+            follow-up on; until then nothing is changed.
+          </p>
+        )}
         <p role="status" className="text-sm text-muted-foreground empty:hidden">
           {listNotice}
         </p>
         <ul className="space-y-2" aria-label="Voided bank refund notes to answer">
-          {rows.map((row) => (
-            <li key={row.linkId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted p-2">
-              <div>
-                <div className="text-sm font-medium">
-                  <Link href={`/admin/bookings/${row.bookingId}`} className="underline">
-                    Booking {row.bookingReference}
-                  </Link>
-                  {" - "}
-                  {amountOf(row)}
+          {rows.map((row) => {
+            const deferred = row.reason === "deferred";
+            const pickable = row.pickableLines.length > 0;
+            return (
+              <li key={row.linkId} className="flex flex-wrap items-center justify-between gap-2 rounded-md border bg-muted p-2">
+                <div>
+                  <div className="text-sm font-medium">
+                    <Link href={`/admin/bookings/${row.bookingId}`} className="underline">
+                      Booking {row.bookingReference}
+                    </Link>
+                    {" - "}
+                    {amountOf(row.amountCents)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    Credit note {row.creditNoteNumber ?? "(no number)"} found voided {foundOn(row)}
+                  </div>
+                  {deferred ? (
+                    <div className="text-xs text-muted-foreground">
+                      Waiting for another credit note on this payment to finish in Xero for over a week. Check the
+                      payment&apos;s Xero operations.
+                    </div>
+                  ) : row.reason === "paid-another-way" ? (
+                    <div className="text-xs text-muted-foreground">
+                      It recorded a card refund the club paid back another way. That refund stays recorded: raise its
+                      credit note again from the Xero repair tool, then record the answer here.
+                    </div>
+                  ) : null}
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  Credit note {row.creditNoteNumber ?? "(no number)"} voided {clubTime.instantDate(new Date(row.voidedAt))}
-                </div>
-              </div>
-              <ViewOnlyActionButton
-                canEdit={canEdit}
-                describeReason={false}
-                variant="outline"
-                size="sm"
-                aria-label={`Answer the voided refund note on booking ${row.bookingReference}`}
-                onClick={() => {
-                  setTargetId(row.linkId);
-                  setNote("");
-                  setError("");
-                  setListNotice("");
-                }}
-              >
-                Record the answer
-              </ViewOnlyActionButton>
-            </li>
-          ))}
+                {deferred || !writesEnabled ? null : (
+                  <ViewOnlyActionButton
+                    canEdit={canEdit}
+                    describeReason={false}
+                    variant="outline"
+                    size="sm"
+                    aria-label={`${pickable ? "Pick the refund for" : "Answer"} the voided refund note on booking ${row.bookingReference}`}
+                    onClick={() => open(row, pickable ? "pick" : "answer")}
+                  >
+                    {pickable ? "Pick the refund" : "Record the answer"}
+                  </ViewOnlyActionButton>
+                )}
+              </li>
+            );
+          })}
         </ul>
 
-        <Dialog open={target !== null} onOpenChange={(next) => !busy && !next && setTargetId(null)}>
+        <Dialog open={target !== null} onOpenChange={(next) => !busy && !next && setTarget(null)}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Has the {target ? amountOf(target) : "refund"} gone to the member?</DialogTitle>
+              <DialogTitle>
+                {target?.mode === "pick" ? "Which bank refund did this note record?" : "What did you do about this note?"}
+              </DialogTitle>
               <DialogDescription>
                 {target
-                  ? `Booking ${target.bookingReference}: its Xero credit note ${target.creditNoteNumber ?? ""} was voided on ${clubTime.instantDate(new Date(target.voidedAt))}. Recording your answer moves nothing in the club's records and raises nothing in Xero.`
+                  ? `Booking ${target.row.bookingReference}: Xero credit note ${target.row.creditNoteNumber ?? "(no number)"} for ${amountOf(target.row.amountCents)} was found voided ${foundOn(target.row)}.`
                   : null}
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-1">
-              <Label htmlFor={noteId}>What did you find, and what did you do? (required)</Label>
-              <Textarea
-                id={noteId}
-                value={note}
-                required
-                aria-required="true"
-                maxLength={MANUAL_PAYMENT_NOTE_MAX}
-                placeholder="For example: paid on 7 Oct, credit note CN-0456 raised in Xero by hand"
-                onChange={(event) => setNote(event.target.value)}
-              />
-            </div>
+            {target?.mode === "pick" ? (
+              <fieldset className="space-y-2">
+                <legend className="text-sm font-medium">The payment&apos;s bank refunds</legend>
+                {target.row.pickableLines.map((line) => (
+                  <label key={line.lineId} className="flex items-center gap-2 text-sm">
+                    <input
+                      type="radio"
+                      name={choiceName}
+                      className="size-4"
+                      checked={pickedLineId === line.lineId}
+                      onChange={() => setPickedLineId(line.lineId)}
+                    />
+                    <span>
+                      {formatCents(line.amountCents, format)}
+                      {line.recordedAt ? `, marked paid back ${clubTime.instantDate(new Date(line.recordedAt))}` : ""}
+                    </span>
+                  </label>
+                ))}
+                <p className="text-xs text-muted-foreground">
+                  The refund you pick is taken back out of the payment&apos;s records and goes on Money to settle to
+                  re-confirm. Nothing is sent to the member or raised in Xero.
+                </p>
+              </fieldset>
+            ) : (
+              <div className="space-y-1">
+                <Label htmlFor={noteId}>What did you find, and what did you do? (required)</Label>
+                <Textarea
+                  id={noteId}
+                  value={note}
+                  required
+                  aria-required="true"
+                  maxLength={MANUAL_PAYMENT_NOTE_MAX}
+                  placeholder="For example: re-raised the card refund's credit note from the Xero repair tool"
+                  onChange={(event) => setNote(event.target.value)}
+                />
+              </div>
+            )}
             <FocusedActionError id={errorId} error={error} attentionKey={errorAttention} />
             <DialogFooter className="gap-2 sm:gap-2">
-              <Button variant="outline" disabled={busy} onClick={() => setTargetId(null)}>
+              <Button variant="outline" disabled={busy} onClick={() => setTarget(null)}>
                 Cancel
               </Button>
-              <Button disabled={busy || note.trim() === ""} onClick={() => void submit()}>
-                {busy ? "Recording..." : "Record the answer"}
+              <Button disabled={!canSubmit} onClick={() => void submit()}>
+                {busy ? "Recording..." : target?.mode === "pick" ? "Take this refund back" : "Record the answer"}
               </Button>
             </DialogFooter>
           </DialogContent>

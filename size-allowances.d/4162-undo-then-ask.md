@@ -4,7 +4,7 @@ Eight already-over-budget files grow. The new behaviour itself lives in new
 modules written to their own ceilings (`bank-refund-void-scan.ts`,
 `bank-refund-void-follow-up.ts`, `bank-refund-void-answer.ts`,
 `bank-refund-void-count.ts`, `refund-allocation-unwind.ts`,
-`xero-inbound/bank-transfer-refund-floor.ts`, two components). Each entry
+`xero-inbound/credit-note-bank-transfer-floor.ts`, two components). Each entry
 below is the seam into an existing flow, which belongs where that flow is.
 Three files at their budget were brought back under it rather than allowed.
 

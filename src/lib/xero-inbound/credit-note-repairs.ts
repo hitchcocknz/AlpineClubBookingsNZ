@@ -9,7 +9,7 @@ import { buildBookingAppliedCreditDescription, getAmountCentsFromAllocationMetad
 import { isIncludedRefundCreditNoteStatus } from "@/lib/xero-refund-note-status";
 import { findActiveXeroObjectLinks } from "./object-links";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
-import { floorBankTransferRefundedTotal } from "./bank-transfer-refund-floor";
+import { floorBankTransferRefundedTotal } from "./credit-note-bank-transfer-floor";
 import { createAuditLog } from "@/lib/audit";
 import { lockMemberCreditLedger } from "@/lib/member-credit";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";

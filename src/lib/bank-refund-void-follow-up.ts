@@ -6,10 +6,15 @@ import {
 } from "@/lib/bank-refund-void-follow-up-copy";
 import {
   BANK_REFUND_VOID_MARKER_KEY,
+  BANK_REFUND_VOID_DEFERRAL_ALERT_DAYS,
   classifyVoidedBankRefundNote,
   listBankRefundVoidsForAPerson,
+  readPickableHandBackLines,
   readVoidedBankRefundNoteLinkIds,
+  resolvePickedUndo,
   type BankRefundVoidClassification,
+  type BankRefundVoidUndo,
+  type PickRefusal,
   type BankRefundVoidMarker,
   type ClassifiedVoidedNote,
 } from "@/lib/bank-refund-void-scan";
@@ -53,12 +58,15 @@ import { isXeroBankRefundVoidWritesEnabled } from "@/lib/xero-feature-flags";
  *   the refunded total is recomputed from the detail
  *   (`reconcilePaymentAggregates`). No email, no booking event, no provider
  *   call: nothing is raised in Xero without a person;
- * - an unmatched or ambiguous note goes to a person on Stuck States, and moves
- *   nothing here.
+ * - an unmatched or ambiguous note goes to a person on Stuck States, who picks
+ *   the bank refund it recorded; the same undo then runs
+ *   (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026). A note with
+ *   nothing to pick (a card refund's record) takes a recorded answer instead.
  *
  * REPORT-ONLY BY DEFAULT: until the operator sets
  * `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true` the job classifies every note,
- * logs what it would do, and writes nothing.
+ * logs what it would do, and writes nothing - and a person's pick or answer
+ * is refused, so nothing anywhere writes.
  *
  * LOCKS (`INV-LOCK-001`, `INV-LOCK-002`): the undo moves settlement money that
  * every edit, acceptance, paid cancel and refund appeal reads to size a
@@ -97,6 +105,8 @@ export interface BankRefundVoidJobResult {
   mode: "report-only" | "writes";
   scanned: number;
   counts: Record<BankRefundVoidJobOutcome, number>;
+  /** Notes deferred for more than `BANK_REFUND_VOID_DEFERRAL_ALERT_DAYS`, also listed on Stuck States. */
+  deferredOverdue: number;
   /** Every note that is not already handled, in scan order. */
   items: BankRefundVoidJobItem[];
 }
@@ -174,26 +184,128 @@ export async function writeBankRefundVoidMarker(
 
 /** The follow-up's reason line, as the refund list and the old app version show it. */
 function followUpReason(bookingId: string, creditNoteNumber: string | null): string {
-  return `Refund to re-confirm: Xero credit note ${creditNoteNumber ?? "(no number)"} for booking ${formatBookingReference(bookingId)} was voided, so this bank refund is back on the list. Check whether the money went to the member (#4162).`.slice(
+  return `Refund to re-confirm: Xero credit note ${creditNoteNumber ?? "(no number)"} for booking ${formatBookingReference(bookingId)} was found voided, so this bank refund is back on the list. Check whether the money went to the member (#4162).`.slice(
     0,
     MANUAL_REFUND_TASK_REASON_MAX,
   );
 }
 
+/** A refusal of a person's action, with the status the route answers. Thrown inside the transaction, so nothing commits. */
+export class BankRefundVoidAnswerRefusal extends Error {
+  constructor(
+    message: string,
+    readonly status: 404 | 409,
+  ) {
+    super(message);
+    this.name = "BankRefundVoidAnswerRefusal";
+  }
+}
+
+/** The refusal of every person's action while the follow-up is report-only (review, security 5). */
+export const BANK_REFUND_VOID_REPORT_ONLY_MESSAGE =
+  "This list is report-only until the club switches the voided-refund follow-up on (XERO_ENABLE_BANK_REFUND_VOID_WRITES). Nothing was changed.";
+
 /**
- * Handle ONE voided note under the locks, writing. Exported for the realdb
- * suite and the job below; nothing else calls it.
+ * THE UNDO, under the caller's `lock(1)` and Payment row, of one voided note's
+ * refund - shared by the nightly follow-up (a matched note) and a person's
+ * pick (an unmatched one), so both write exactly the same rows. The claim
+ * first: the follow-up's unique key, before any money moves; a lost claim
+ * moves nothing. Then the unwind, the reversal and the rebuild, and the audit
+ * row naming who acted (none for the job).
+ */
+async function undoUnderLocks(
+  tx: Prisma.TransactionClient,
+  note: ClassifiedVoidedNote,
+  undo: BankRefundVoidUndo,
+  actingMemberId: string | null,
+): Promise<{ claimed: false } | { claimed: true; followUpTaskId: string }> {
+  const bookingId = note.bookingId!;
+  const lodgeId = note.lodgeId!;
+  const occurrenceKey = bankRefundVoidFollowUpOccurrenceKey(note.paymentId, note.link.xeroObjectId);
+  const claimed = await tx.manualRefundTask.createMany({
+    data: [
+      {
+        bookingId,
+        paymentId: note.paymentId,
+        amountCents: undo.amountCents,
+        raisedAmountCents: undo.amountCents,
+        kind: "CANCELLED_BOOKING_HAND_BACK",
+        occurrenceKey,
+        reason: followUpReason(bookingId, note.link.xeroObjectNumber ?? null),
+        reviewContext: bankRefundVoidFollowUpReviewContext({
+          voidedCreditNoteId: note.link.xeroObjectId,
+          voidedCreditNoteNumber: note.link.xeroObjectNumber ?? null,
+          voidedAt: note.link.updatedAt.toISOString(),
+          originalTaskId: undo.taskId,
+          reversedLineId: undo.line.id,
+        }),
+      },
+    ],
+    skipDuplicates: true,
+  });
+  if (claimed.count !== 1) return { claimed: false };
+  await unwindLocalRefundAllocation({ paymentId: note.paymentId, amountCents: undo.amountCents, store: tx });
+  const written = await writeBookingLedgerRows(tx, buildBookingLedgerRows([settlementLineReversal({ bookingId, lodgeId }, undo.line, actingMemberId)]));
+  if (written !== 1) {
+    // A replay would have lost the claim above; a reversal already there
+    // means the ledger moved under us. Roll the whole undo back.
+    throw new Error(`Bank refund void follow-up: the hand-back line ${undo.line.id} was already reversed`);
+  }
+  await reconcilePaymentAggregates({ paymentId: note.paymentId, store: tx });
+  const task = await tx.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey }, select: { id: true } });
+  const booking = await tx.booking.findUniqueOrThrow({ where: { id: bookingId }, select: { memberId: true } });
+  await createAuditLog(
+    {
+      action: "booking-payment.bank-refund.void-undone",
+      memberId: actingMemberId,
+      actorMemberId: actingMemberId,
+      subjectMemberId: bookingOwner(booking).memberId,
+      targetId: bookingId,
+      entityType: "ManualRefundTask",
+      entityId: task.id,
+      category: "payment",
+      severity: "important",
+      outcome: "success",
+      summary: `Xero voided the refund credit note ${note.link.xeroObjectNumber ?? note.link.xeroObjectId} on booking ${formatBookingReference(bookingId)}; the bank refund was taken back out of the payment's records and put back on the refund list to re-confirm${actingMemberId ? " (the refund was picked by a person)" : ""}`,
+      metadata: {
+        paymentId: note.paymentId,
+        voidedCreditNoteId: note.link.xeroObjectId,
+        amountCents: undo.amountCents,
+        originalTaskId: undo.taskId,
+        reversedLineId: undo.line.id,
+        pickedByPerson: actingMemberId !== null,
+      },
+    },
+    tx,
+  );
+  return { claimed: true, followUpTaskId: task.id };
+}
+
+/** `lock(1)`, then the link's Payment row, then the note re-classified under both: the start of every writer here. */
+async function lockAndClassify(tx: Prisma.TransactionClient, linkId: string): Promise<ClassifiedVoidedNote | null> {
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+  // The link's payment is immutable: read unlocked, only to know which row to lock.
+  const head = await tx.xeroObjectLink.findUnique({ where: { id: linkId }, select: { localModel: true, localId: true } });
+  if (!head || head.localModel !== "Payment") return null;
+  await lockPaymentForRefundedTotal(tx, head.localId);
+  return classifyVoidedBankRefundNote(tx, linkId);
+}
+
+/** What a busy link row (`NOWAIT`) turns into: the note waits for the next run. */
+function deferredBusy(linkId: string): BankRefundVoidJobItem {
+  logger.warn({ linkId }, "Deferred a voided bank-transfer refund note to the next run: its link row was busy (#4162)");
+  return { linkId, paymentId: "", creditNoteId: "", creditNoteNumber: null, outcome: "deferred", detail: "Deferred: the link row was busy", amountCents: null };
+}
+
+/**
+ * Handle ONE voided note under the locks, writing: a spare's marker, or a
+ * matched note's undo. Exported for the realdb suite and the job below.
  */
 export async function followUpVoidedBankRefundNote(linkId: string, now: Date = new Date()): Promise<BankRefundVoidJobItem | null> {
   try {
     return await prisma.$transaction(
       async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-        // The link's payment is immutable: read unlocked, only to know which row to lock.
-        const head = await tx.xeroObjectLink.findUnique({ where: { id: linkId }, select: { localModel: true, localId: true } });
-        if (!head || head.localModel !== "Payment") return null;
-        await lockPaymentForRefundedTotal(tx, head.localId);
-        const note = await classifyVoidedBankRefundNote(tx, linkId);
+        const note = await lockAndClassify(tx, linkId);
         if (!note) return null;
         const c = note.classification;
         if (c.kind === "spare") {
@@ -201,112 +313,76 @@ export async function followUpVoidedBankRefundNote(linkId: string, now: Date = n
           return itemOf(note, "spare", describe(c, true));
         }
         if (c.kind !== "undo") return itemOf(note, plannedOutcome(c), describe(c, true));
-
-        const bookingId = note.bookingId!;
-        const lodgeId = note.lodgeId!;
-        // THE CLAIM, before any money moves: the unique occurrence key. A lost
-        // claim (another run raised it) inserts nothing and moves nothing.
-        const occurrenceKey = bankRefundVoidFollowUpOccurrenceKey(note.paymentId, note.link.xeroObjectId);
-        const claimed = await tx.manualRefundTask.createMany({
-          data: [
-            {
-              bookingId,
-              paymentId: note.paymentId,
-              amountCents: c.amountCents,
-              raisedAmountCents: c.amountCents,
-              kind: "CANCELLED_BOOKING_HAND_BACK",
-              occurrenceKey,
-              reason: followUpReason(bookingId, note.link.xeroObjectNumber ?? null),
-              reviewContext: bankRefundVoidFollowUpReviewContext({
-                voidedCreditNoteId: note.link.xeroObjectId,
-                voidedCreditNoteNumber: note.link.xeroObjectNumber ?? null,
-                voidedAt: note.link.updatedAt.toISOString(),
-                originalTaskId: c.taskId,
-                reversedLineId: c.line.id,
-              }),
-            },
-          ],
-          skipDuplicates: true,
-        });
-        if (claimed.count !== 1) {
-          return itemOf(note, "handled", "Already handled (follow-up raised by another run)");
-        }
-        await unwindLocalRefundAllocation({ paymentId: note.paymentId, amountCents: c.amountCents, store: tx });
-        const written = await writeBookingLedgerRows(tx, buildBookingLedgerRows([settlementLineReversal({ bookingId, lodgeId }, c.line)]));
-        if (written !== 1) {
-          // A replay would have lost the claim above; a reversal already there
-          // means the ledger moved under us. Roll the whole undo back.
-          throw new Error(`Bank refund void follow-up: the hand-back line ${c.line.id} was already reversed`);
-        }
-        await reconcilePaymentAggregates({ paymentId: note.paymentId, store: tx });
-        const task = await tx.manualRefundTask.findUniqueOrThrow({ where: { occurrenceKey }, select: { id: true } });
-        const booking = await tx.booking.findUniqueOrThrow({
-          where: { id: bookingId },
-          select: { memberId: true },
-        });
-        await createAuditLog(
-          {
-            action: "booking-payment.bank-refund.void-undone",
-            memberId: null,
-            actorMemberId: null,
-            subjectMemberId: bookingOwner(booking).memberId,
-            targetId: bookingId,
-            entityType: "ManualRefundTask",
-            entityId: task.id,
-            category: "payment",
-            severity: "important",
-            outcome: "success",
-            summary: `Xero voided the refund credit note ${note.link.xeroObjectNumber ?? note.link.xeroObjectId} on booking ${formatBookingReference(bookingId)}; the bank refund was taken back out of the payment's records and put back on the refund list to re-confirm`,
-            metadata: {
-              paymentId: note.paymentId,
-              voidedCreditNoteId: note.link.xeroObjectId,
-              amountCents: c.amountCents,
-              originalTaskId: c.taskId,
-              reversedLineId: c.line.id,
-            },
-          },
-          tx,
-        );
-        return itemOf(note, "undone", describe(c, true), { followUpTaskId: task.id });
+        const done = await undoUnderLocks(tx, note, c, null);
+        if (!done.claimed) return itemOf(note, "handled", "Already handled (follow-up raised by another run)");
+        return itemOf(note, "undone", describe(c, true), { followUpTaskId: done.followUpTaskId });
       },
       { timeout: 30_000 },
     );
   } catch (error) {
-    if (isPostgresLockNotAvailable(error)) {
-      logger.warn({ linkId }, "Deferred a voided bank-transfer refund note to the next run: its link row was busy (#4162)");
-      return {
-        linkId,
-        paymentId: "",
-        creditNoteId: "",
-        creditNoteNumber: null,
-        outcome: "deferred",
-        detail: "Deferred: the link row was busy",
-        amountCents: null,
-      };
-    }
+    if (isPostgresLockNotAvailable(error)) return deferredBusy(linkId);
     throw error;
   }
+}
+
+/** The words a refused pick shows (`resolvePickedUndo`). */
+const PICK_REFUSALS: Record<PickRefusal, string> = {
+  "not-unmatched": "This voided refund note no longer needs a refund picked here. The list has been refreshed.",
+  "line-not-pickable": "That refund is not a live bank refund on this payment any more. The list has been refreshed: pick again.",
+  "detail-short": "The payment's records no longer hold that refund, so it cannot be taken back. The list has been refreshed.",
+};
+
+/**
+ * #4162 (owner decision 18 Oct 2026, comment 6247741127): A PERSON PICKS THE
+ * REFUND an unmatched voided note recorded, and the SAME undo runs - same
+ * locks, same claim key, same rows (`undoUnderLocks`), with the person as its
+ * actor. Under the locks the note must still be unmatched and the line a live
+ * bank hand-back line of THIS payment the payment's detail still holds
+ * (`resolvePickedUndo`). Behind the writes switch: report-only refuses it and
+ * writes nothing.
+ */
+export async function pickRefundForUnmatchedVoid(input: { linkId: string; lineId: string; actingMemberId: string }): Promise<{ followUpTaskId: string; paymentId: string; bookingId: string }> {
+  if (!isXeroBankRefundVoidWritesEnabled()) throw new BankRefundVoidAnswerRefusal(BANK_REFUND_VOID_REPORT_ONLY_MESSAGE, 409);
+  return prisma.$transaction(
+    async (tx) => {
+      const note = await lockAndClassify(tx, input.linkId);
+      if (!note) throw new BankRefundVoidAnswerRefusal("Voided refund note not found.", 404);
+      const picked = await resolvePickedUndo(tx, note, input.lineId);
+      if ("refusal" in picked) throw new BankRefundVoidAnswerRefusal(PICK_REFUSALS[picked.refusal], 409);
+      const done = await undoUnderLocks(tx, note, picked.undo, input.actingMemberId);
+      if (!done.claimed) throw new BankRefundVoidAnswerRefusal(PICK_REFUSALS["not-unmatched"], 409);
+      return { followUpTaskId: done.followUpTaskId, paymentId: note.paymentId, bookingId: note.bookingId! };
+    },
+    { timeout: 30_000 },
+  );
 }
 
 /**
  * THE NIGHTLY JOB. Runs from the Xero cron runner after #4161's link cleanup.
  * `writes` defaults to the operator switch; report-only classifies with the
- * pooled client and writes nothing at all.
+ * pooled client and writes nothing at all. Each note is classified unlocked
+ * first (review, money 9): only a spare or an undo opens the locked
+ * transaction, which classifies it again under the locks before writing.
  */
 export async function runBankRefundVoidFollowUp(options?: { writes?: boolean; now?: Date }): Promise<BankRefundVoidJobResult> {
   const writes = options?.writes ?? isXeroBankRefundVoidWritesEnabled();
   const now = options?.now ?? new Date();
   const counts = Object.fromEntries(OUTCOMES.map((outcome) => [outcome, 0])) as Record<BankRefundVoidJobOutcome, number>;
   const items: BankRefundVoidJobItem[] = [];
-  const linkIds = await readVoidedBankRefundNoteLinkIds(prisma);
+  const deferredBefore = now.getTime() - BANK_REFUND_VOID_DEFERRAL_ALERT_DAYS * 24 * 60 * 60 * 1000;
+  let deferredOverdue = 0;
+  const reader = prisma as unknown as Prisma.TransactionClient;
+  const linkIds = await readVoidedBankRefundNoteLinkIds(reader);
   for (const linkId of linkIds) {
     let item: BankRefundVoidJobItem | null;
     try {
-      if (writes) {
+      const note = await classifyVoidedBankRefundNote(reader, linkId);
+      const kind = note?.classification.kind;
+      if (writes && (kind === "spare" || kind === "undo")) {
         item = await followUpVoidedBankRefundNote(linkId, now);
       } else {
-        const note = await classifyVoidedBankRefundNote(prisma as unknown as Prisma.TransactionClient, linkId);
-        item = note ? itemOf(note, plannedOutcome(note.classification), describe(note.classification, false)) : null;
+        item = note ? itemOf(note, plannedOutcome(note.classification), describe(note.classification, writes)) : null;
+        if (note && kind === "deferred" && note.link.updatedAt.getTime() < deferredBefore) deferredOverdue += 1;
       }
     } catch (error) {
       logger.error({ err: error, linkId }, "Failed to follow up a voided bank-transfer refund note (#4162)");
@@ -316,8 +392,8 @@ export async function runBankRefundVoidFollowUp(options?: { writes?: boolean; no
     counts[item.outcome] += 1;
     if (item.outcome !== "handled" && item.outcome !== "not-in-scope") items.push(item);
   }
-  const result: BankRefundVoidJobResult = { mode: writes ? "writes" : "report-only", scanned: linkIds.length, counts, items };
-  logger.info({ mode: result.mode, scanned: result.scanned, counts }, "Voided bank-transfer refund notes followed up (#4162)");
+  const result: BankRefundVoidJobResult = { mode: writes ? "writes" : "report-only", scanned: linkIds.length, counts, deferredOverdue, items };
+  logger.info({ mode: result.mode, scanned: result.scanned, counts, deferredOverdue }, "Voided bank-transfer refund notes followed up (#4162)");
   return result;
 }
 
@@ -329,12 +405,13 @@ export function bankRefundVoidFollowUpFailureMessage(result: BankRefundVoidJobRe
 }
 
 /**
- * #4162: a person's answer to a voided note no follow-up can answer (Stuck
- * States). It moves no money: under the same locks as the job, it re-classifies
- * the note, refuses unless it is still `unmatched`, and writes the "answered"
- * marker - with who answered and their note - on its link, so it leaves the
- * list. The note says what they did (raised a note in Xero by hand, or asked a
- * developer to correct the records).
+ * #4162: a person's answer to a voided note that has no bank refund to pick -
+ * one that recorded a card refund's record (its note is re-raised from the
+ * card refund pipeline), or a note with no live bank refund left on its
+ * payment. It moves no money: under the same locks as the job, it
+ * re-classifies the note, refuses unless that is still so, and writes the
+ * "answered" marker - with who answered and their note - on its link (taken
+ * `NOWAIT`). Behind the writes switch, as every writer here is.
  */
 export async function markUnmatchedBankRefundVoidAnswered(input: {
   linkId: string;
@@ -342,15 +419,18 @@ export async function markUnmatchedBankRefundVoidAnswered(input: {
   actingMemberId: string;
   now?: Date;
 }): Promise<{ paymentId: string; bookingId: string }> {
+  if (!isXeroBankRefundVoidWritesEnabled()) throw new BankRefundVoidAnswerRefusal(BANK_REFUND_VOID_REPORT_ONLY_MESSAGE, 409);
   const now = input.now ?? new Date();
   return prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    const head = await tx.xeroObjectLink.findUnique({ where: { id: input.linkId }, select: { localModel: true, localId: true } });
-    if (!head || head.localModel !== "Payment") throw new BankRefundVoidAnswerRefusal("Voided refund note not found.", 404);
-    await lockPaymentForRefundedTotal(tx, head.localId);
-    const note = await classifyVoidedBankRefundNote(tx, input.linkId);
-    if (!note || note.classification.kind !== "unmatched" || !note.bookingId) {
-      throw new BankRefundVoidAnswerRefusal("This voided refund note no longer needs an answer here. The list has been refreshed.", 409);
+    const note = await lockAndClassify(tx, input.linkId);
+    if (!note) throw new BankRefundVoidAnswerRefusal("Voided refund note not found.", 404);
+    const c = note.classification;
+    const nothingToPick =
+      c.kind === "unmatched" &&
+      note.bookingId !== null &&
+      (c.reason === "paid-another-way" || (await readPickableHandBackLines(tx, note.paymentId, note.bookingId)).length === 0);
+    if (!nothingToPick || !note.bookingId || c.kind !== "unmatched") {
+      throw new BankRefundVoidAnswerRefusal("This voided refund note no longer takes an answer here: pick the refund it recorded instead. The list has been refreshed.", 409);
     }
     const written = await writeBankRefundVoidMarker(tx, input.linkId, {
       outcome: "answered",
@@ -374,7 +454,7 @@ export async function markUnmatchedBankRefundVoidAnswered(input: {
         outcome: "success",
         summary: `Voided refund credit note ${note.link.xeroObjectNumber ?? note.link.xeroObjectId} on booking ${formatBookingReference(note.bookingId)} answered by a person; nothing in the club's records moved`,
         details: input.note,
-        metadata: { paymentId: note.paymentId, voidedCreditNoteId: note.link.xeroObjectId, reason: note.classification.reason },
+        metadata: { paymentId: note.paymentId, voidedCreditNoteId: note.link.xeroObjectId, reason: c.reason },
       },
       tx,
     );
@@ -382,31 +462,26 @@ export async function markUnmatchedBankRefundVoidAnswered(input: {
   });
 }
 
-/** A refusal of a person's answer, with the status the route answers. Thrown inside the transaction, so nothing commits. */
-export class BankRefundVoidAnswerRefusal extends Error {
-  constructor(
-    message: string,
-    readonly status: 404 | 409,
-  ) {
-    super(message);
-    this.name = "BankRefundVoidAnswerRefusal";
-  }
-}
-
-/** The Stuck States panel's rows: every unmatched voided note, read with the pooled client. */
+/** The Stuck States panel's rows, read with the pooled client, with each pickable refund's task date. */
 export async function listBankRefundVoidsToAnswerRows() {
-  const items = await listBankRefundVoidsForAPerson(prisma as unknown as Prisma.TransactionClient);
+  const reader = prisma as unknown as Prisma.TransactionClient;
+  const items = await listBankRefundVoidsForAPerson(reader);
+  const taskIds = [...new Set(items.flatMap((item) => item.pickableLines.map((line) => line.taskId)))];
+  const tasks = taskIds.length === 0 ? [] : await prisma.manualRefundTask.findMany({ where: { id: { in: taskIds } }, select: { id: true, completedAt: true } });
+  const completedAt = new Map(tasks.map((task) => [task.id, task.completedAt?.toISOString() ?? null]));
   return items.map((item) => ({
     linkId: item.linkId,
     bookingId: item.bookingId,
     bookingReference: formatBookingReference(item.bookingId),
     creditNoteNumber: item.creditNoteNumber,
     amountCents: item.amountCents,
-    voidedAt: item.voidedAt,
+    foundVoidedAt: item.foundVoidedAt,
+    reason: item.reason,
+    pickableLines: item.pickableLines.map((line) => ({ lineId: line.lineId, amountCents: line.amountCents, recordedAt: completedAt.get(line.taskId) ?? null })),
   }));
 }
 
-/** How many voided notes wait for a person: the Stuck States dashboard's count. */
+/** How many voided notes wait for a person: the Stuck States dashboard's count for a viewer without the list. */
 export async function countBankRefundVoidsToAnswer(): Promise<number> {
   return (await listBankRefundVoidsForAPerson(prisma as unknown as Prisma.TransactionClient)).length;
 }
