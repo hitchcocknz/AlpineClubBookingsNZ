@@ -1,4 +1,6 @@
-import { PaymentSource } from "@prisma/client";
+import { PaymentSource, type Prisma } from "@prisma/client";
+
+import { hasVoidAwaitingFollowUp } from "@/lib/bank-refund-void-scan";
 
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
@@ -16,9 +18,10 @@ import { notifyXeroSyncError } from "@/lib/xero-error-alert";
  * ledger line and the total together by the nightly follow-up
  * (`bank-refund-void-follow-up.ts`, `INV-ADDPAY-042`), never by this recount
  * alone. When Xero shows less, the detail is kept, logged and alerted, as the
- * card floor is (#1353). A total already below its detail is never raised
- * here; one above it may still come down to it. Any other source passes
- * through untouched.
+ * card floor is (#1353) - at info and with no alert while a voided refund note
+ * on the payment waits for that follow-up, which is the expected divergence.
+ * A total already below its detail is never raised here; one above it may
+ * still come down to it. Any other source passes through untouched.
  */
 export async function floorBankTransferRefundedTotal(input: {
   payment: { id: string; source: PaymentSource; refundedAmountCents: number };
@@ -31,6 +34,15 @@ export async function floorBankTransferRefundedTotal(input: {
   const detail = await prisma.paymentTransaction.aggregate({ where: { paymentId: payment.id }, _sum: { refundedAmountCents: true } });
   const floorCents = Math.min(payment.refundedAmountCents, Math.max(0, detail._sum.refundedAmountCents ?? 0));
   if (xeroDerivedCents >= floorCents) return xeroDerivedCents;
+  // A voided refund note the nightly follow-up has not handled yet explains
+  // the divergence and resolves it: logged, not alerted (review, security 12).
+  if (await hasVoidAwaitingFollowUp(prisma as unknown as Prisma.TransactionClient, payment.id)) {
+    logger.info(
+      { creditNoteId: input.creditNoteId, paymentId: payment.id, detailCents: floorCents, xeroDerivedRefundedTotalCents: xeroDerivedCents },
+      "Bank-transfer refund total kept at its detail while a voided refund note waits for the nightly follow-up (#4162 floor)",
+    );
+    return floorCents;
+  }
   logger.warn(
     {
       creditNoteId: input.creditNoteId,

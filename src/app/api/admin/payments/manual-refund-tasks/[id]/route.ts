@@ -19,7 +19,7 @@ import {
   resolveManualRefundTask,
 } from "@/lib/manual-refund-task-resolution";
 import { clubFormatValues } from "@/lib/club-format-server";
-import { bankRefundVoidAnswerBodySchema, bankRefundVoidAnswerMessage, prepareBankRefundVoidAnswer } from "@/lib/bank-refund-void-answer";
+import { bankRefundVoidAnswerBodySchema, bankRefundVoidAnswerMessage, prepareBankRefundVoidAnswer, reconcileHandMadeNoteAfterCompletion } from "@/lib/bank-refund-void-answer";
 
 const noteField = z.string().max(MANUAL_PAYMENT_NOTE_MAX).optional().nullable();
 // Explicit confirmation so closing a money task is never a single-click
@@ -207,6 +207,7 @@ export async function POST(
           },
       format,
     );
+    await reconcileHandMadeNoteAfterCompletion(bankRefundVoidAnswer); // #4162: catch a void since the check
     revalidatePath("/admin/payments");
     revalidatePath(BOOKING_DETAIL_ROUTE_PATTERN, "page");
     return NextResponse.json({
