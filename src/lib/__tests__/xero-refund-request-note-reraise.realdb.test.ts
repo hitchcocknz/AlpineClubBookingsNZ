@@ -18,6 +18,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+import { assertNoForeignPendingXeroOperations } from "./support/race-harness-outbox-guard";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -214,11 +215,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await prisma.auditLog.count({ where: { targetId: PAYMENT_ID, action: "xero.refund_request_note.reraised", category: "xero" } })).toBe(1);
 
       // The outbox raises it. A Xero that remembers the request's plain key would hand the voided note back.
-      // The shared harness can hold other suites' PENDING rows; the scan takes the oldest first, so this row goes first.
-      await prisma.xeroSyncOperation.updateMany({
-        where: { localModel: "Payment", localId: PAYMENT_ID, status: "PENDING" },
-        data: { createdAt: new Date("2000-01-01T00:00:00.000Z") },
-      });
+      await assertNoForeignPendingXeroOperations(prisma, [PAYMENT_ID]);
       const keys: string[] = [];
       const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
       const result = await withFakeXero(
