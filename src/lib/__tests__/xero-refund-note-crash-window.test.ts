@@ -186,7 +186,7 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
       async (
         id: string,
         completion: { status?: string; responsePayload?: unknown; xeroObjectId?: string | null; xeroObjectNumber?: string | null; extraLinks?: Row[] },
-        options?: { keepSucceeded?: boolean },
+        options?: { keepSucceeded?: boolean; onlyIfRunningSince?: Date },
       ) => {
         if (state.crash === "at-completion") {
           state.crash = null;
@@ -194,6 +194,8 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
         }
         const row = state.operations.find((operation) => operation.id === id)!;
         if (options?.keepSucceeded && row.status === "SUCCEEDED") return null;
+        // #4256: a retry's completion lands only on its own claim.
+        if (options?.onlyIfRunningSince && !(row.status === "RUNNING" && row.startedAt === options.onlyIfRunningSince)) return null;
         Object.assign(row, {
           status: completion.status ?? "SUCCEEDED",
           responsePayload: JSON.parse(JSON.stringify(completion.responsePayload ?? null)),
@@ -203,8 +205,10 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
         for (const link of completion.extraLinks ?? []) upsertLink(link);
       },
     ),
-    failXeroSyncOperation: vi.fn(async (id: string, error?: unknown) => {
+    failXeroSyncOperation: vi.fn(async (id: string, error?: unknown, _payload?: unknown, options?: { onlyIfRunningSince?: Date }) => {
       const row = state.operations.find((operation) => operation.id === id);
+      // #4256: a retry's abandon lands only on its own claim.
+      if (options?.onlyIfRunningSince && !(row?.status === "RUNNING" && row.startedAt === options.onlyIfRunningSince)) return null;
       if (row) Object.assign(row, { status: "FAILED", responsePayload: { error: "failed" }, lastErrorMessage: error instanceof Error ? error.message : null });
     }),
     upsertXeroObjectLink: vi.fn(async (link: Row) => upsertLink(link)),
@@ -711,12 +715,13 @@ describe("a refund note interrupted between the two persists (#3548)", () => {
   it("two simultaneous retries of the row leave one payment and a completed row", async () => {
     await firstAttemptDies("at-settlement");
     xeroForgetsKeys();
-    state.xero.replayPaymentKeys = false; // Xero dedups neither: only the read-back can
-    state.xero.readBarrier = { waiting: [], size: 2 }; // both read the note unpaid
+    state.xero.replayPaymentKeys = false; // Xero dedups neither
 
     const results = await Promise.allSettled([retry(), retry()]);
 
-    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    // #4256: the retry claims the row first, so the second is refused before Xero.
+    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(state.xero.createPaymentsCalls).toHaveLength(1);
     expect(state.xero.notes.get("cn_1")!.payments).toHaveLength(1);
     expect(row()).toMatchObject({ status: "SUCCEEDED" });
     expect(row().responsePayload).toMatchObject({ refundPayment: { paymentID: "pay_1" } });

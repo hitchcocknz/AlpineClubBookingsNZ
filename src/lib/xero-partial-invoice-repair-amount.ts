@@ -107,6 +107,9 @@ export function zeroCashRepairOutcome(repair: {
  * sends no email, so the row stays PARTIAL for that, which the retry fence then
  * refuses to repair as a payment again.
  */
+export const PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE =
+  "The payment is now recorded in Xero, but the invoice email still failed. Send the invoice from Xero.";
+
 export function repairedPartialInvoiceCompletion(
   operation: { responsePayload: unknown; xeroObjectNumber: string | null },
   invoiceId: string,
@@ -119,5 +122,7 @@ export function repairedPartialInvoiceCompletion(
     xeroObjectType: "INVOICE",
     xeroObjectId: invoiceId,
     xeroObjectNumber: operation.xeroObjectNumber,
+    // The payment fault's message would be stale; say what is left instead.
+    ...(emailStillFailed ? { lastErrorMessage: PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE } : {}),
   };
 }

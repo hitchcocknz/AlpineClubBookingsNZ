@@ -168,6 +168,8 @@ import {
 } from "@/lib/xero-operation-outbox-payload";
 import { CLUB_NAME } from "@/config/club-identity";
 import { PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON } from "@/lib/xero-primary-invoice-fee-at-link";
+import { PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE } from "@/lib/xero-partial-invoice-repair-amount";
+import { XERO_PARTIAL_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 function makeOperation(overrides: Record<string, unknown> = {}) {
@@ -2102,6 +2104,7 @@ describe("retryXeroSyncOperation", () => {
             paymentSkipReason: PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON,
           }),
         }),
+        { onlyIfRunningSince: expect.any(Date), alert: false },
       );
     });
   });
@@ -2266,7 +2269,8 @@ describe("retryXeroSyncOperation", () => {
           paymentSkipped: true,
           paymentSkipReason: "Zero-total invoice does not require Xero payment recording.",
         }),
-      })
+      }),
+      { onlyIfRunningSince: expect.any(Date), alert: false },
     );
   });
 
@@ -2386,7 +2390,8 @@ describe("retryXeroSyncOperation", () => {
       expect.objectContaining({
         status: "SUCCEEDED",
         responsePayload: expect.objectContaining({ refundPaymentSkipped: true, refundPaymentSkipReason: "unset" }),
-      })
+      }),
+      { onlyIfRunningSince: expect.any(Date) },
     );
   });
 
@@ -3533,7 +3538,8 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
 
     expect(mocks.updateManyOperation.mock.calls[0][0]).toEqual({
       where: { id: "op_123", status: "PARTIAL", manuallyResolvedAt: null, replayable: true },
-      data: { status: "RUNNING", startedAt: expect.any(Date) },
+      // #4256 review F1: the marker a stale reset reads to return a dead repair to PARTIAL.
+      data: { status: "RUNNING", startedAt: expect.any(Date), lastErrorCode: XERO_PARTIAL_REPAIR_RUNNING_CODE },
     });
     const claimOrder = mocks.updateManyOperation.mock.invocationCallOrder[0];
     for (const sideEffect of [
@@ -3633,7 +3639,7 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
       xeroObjectType: "INVOICE",
       xeroObjectId: "inv_123",
       xeroObjectNumber: "INV-0042",
-    });
+    }, { onlyIfRunningSince: expect.any(Date), alert: false });
   });
 
   it("leaves it PARTIAL while its invoice email fault remains, which the repair does not send", async () => {
@@ -3644,7 +3650,10 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
       expect.objectContaining({
         status: "PARTIAL",
         responsePayload: expect.objectContaining({ paymentError: null, invoiceEmailError: "SES refused" }),
+        // #4256 review: the stale payment fault's message is replaced.
+        lastErrorMessage: PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE,
       }),
+      { onlyIfRunningSince: expect.any(Date), alert: false },
     );
   });
 

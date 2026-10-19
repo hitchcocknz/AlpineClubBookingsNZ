@@ -409,6 +409,7 @@ describe("Xero operation admin retry routes", () => {
   });
 
   it("marks failed operations non-replayable with an audit reason", async () => {
+    mocks.xeroOperationUpdateMany.mockResolvedValue({ count: 1 });
     const response = await markNonReplayableOperation(
       new NextRequest("http://localhost", {
         method: "POST",
@@ -420,8 +421,9 @@ describe("Xero operation admin retry routes", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mocks.xeroOperationUpdate).toHaveBeenCalledWith({
-      where: { id: "op_failed" },
+    // #4256: guarded on the status read, so a retry's claim in between wins.
+    expect(mocks.xeroOperationUpdateMany).toHaveBeenCalledWith({
+      where: { id: "op_failed", status: { in: ["FAILED", "PARTIAL"] } },
       data: { replayable: false },
     });
     expect(mocks.createAuditLog).toHaveBeenCalledWith(
@@ -439,12 +441,35 @@ describe("Xero operation admin retry routes", () => {
     });
   });
 
+  it("MUTATION: answers 409 and audits nothing when a retry claimed the row after the route read it (#4256)", async () => {
+    // The route read FAILED; a retry's claim then moved it to RUNNING, so the
+    // status-guarded write matches nothing.
+    mocks.xeroOperationUpdateMany.mockImplementation(async ({ where }: { where: { status?: unknown } }) => ({
+      count: where.status === undefined ? 1 : 0,
+    }));
+
+    const response = await markNonReplayableOperation(
+      new NextRequest("http://localhost", {
+        method: "POST",
+        body: JSON.stringify({ reason: "Payload was manually repaired in Xero." }),
+      }),
+      { params: Promise.resolve({ id: "op_failed" }) }
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({
+      error: "A retry is running on this operation; try again when it finishes.",
+    });
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
+    expect(mocks.xeroOperationUpdate).not.toHaveBeenCalled();
+  });
+
   it("leaves the operation replayable when its non-replayable audit cannot be written (#3462)", async () => {
     const row: Record<string, unknown> = { replayable: true };
     simulateRollback(row);
-    mocks.xeroOperationUpdate.mockImplementation(async ({ data }: { data: { replayable: boolean } }) => {
+    mocks.xeroOperationUpdateMany.mockImplementation(async ({ data }: { data: { replayable: boolean } }) => {
       row.replayable = data.replayable;
-      return { id: "op_failed" };
+      return { count: 1 };
     });
     mocks.createAuditLog.mockRejectedValue(new Error("audit insert failed"));
 
@@ -457,7 +482,7 @@ describe("Xero operation admin retry routes", () => {
     );
 
     expect(response.status).toBe(500);
-    expect(mocks.xeroOperationUpdate).toHaveBeenCalled();
+    expect(mocks.xeroOperationUpdateMany).toHaveBeenCalled();
     expect(row.replayable).toBe(true);
     expect(mocks.bareClientWrite).not.toHaveBeenCalled();
   });
@@ -775,7 +800,10 @@ describe("Xero operation admin retry routes", () => {
   );
 
   it("resets stale running operations without erasing provider-created recovery proof", async () => {
-    mocks.xeroOperationUpdateMany.mockResolvedValue({ count: 3 });
+    // None of the three is a PARTIAL repair (#4256), so the repair write matches nothing.
+    mocks.xeroOperationUpdateMany.mockImplementation(async ({ where }: { where: { lastErrorCode?: unknown } }) => ({
+      count: where.lastErrorCode === "PARTIAL_REPAIR_RUNNING" ? 0 : 3,
+    }));
 
     const response = await resetStaleRunning();
 
@@ -798,6 +826,19 @@ describe("Xero operation admin retry routes", () => {
     await expect(response.json()).resolves.toEqual(
       expect.objectContaining({ ok: true, count: 3 })
     );
+    // #4256: the FAILED write leaves a stuck PARTIAL repair to the PARTIAL one.
+    const [failedWrite, repairWrite] = mocks.xeroOperationUpdateMany.mock.calls.map(
+      (call) => call[0] as { where: Record<string, unknown>; data: Record<string, unknown> },
+    );
+    expect(failedWrite.where.OR).toEqual([
+      { lastErrorCode: null },
+      { lastErrorCode: { not: "PARTIAL_REPAIR_RUNNING" } },
+    ]);
+    expect(repairWrite).toMatchObject({
+      where: { status: "RUNNING", lastErrorCode: "PARTIAL_REPAIR_RUNNING" },
+      data: { status: "PARTIAL", lastErrorCode: "ORPHANED_STALE_RUNNING" },
+    });
+    expect(repairWrite.data).not.toHaveProperty("responsePayload");
     expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "XERO_OPERATIONS_RESET_STALE_RUNNING",
@@ -892,6 +933,30 @@ describe("Xero operation admin retry routes", () => {
         }),
         txClient,
       );
+    });
+
+    it("MUTATION: returns a stuck PARTIAL repair to PARTIAL, not FAILED, so Retry repairs it again (#4256)", async () => {
+      mocks.xeroOperationFindUnique.mockResolvedValue({ ...stuckRow, lastErrorCode: "PARTIAL_REPAIR_RUNNING" });
+      mocks.xeroOperationUpdateMany.mockResolvedValue({ count: 1 });
+
+      const response = await markFailedOperation(markRequest(), params);
+
+      expect(response.status).toBe(200);
+      expect(mocks.xeroOperationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(mocks.xeroOperationUpdateMany).toHaveBeenCalledWith({
+        where: {
+          id: "op_stuck",
+          status: "RUNNING",
+          startedAt: { equals: stuckSince, lt: new Date("2026-06-30T23:45:00.000Z") },
+          lastErrorCode: "PARTIAL_REPAIR_RUNNING",
+        },
+        data: expect.objectContaining({ status: "PARTIAL", lastErrorCode: "ORPHANED_STALE_RUNNING" }),
+      });
+      const write = mocks.xeroOperationUpdateMany.mock.calls[0][0] as { data: Record<string, unknown> };
+      expect(write.data).not.toHaveProperty("responsePayload");
+      await expect(response.json()).resolves.toMatchObject({
+        message: expect.stringContaining("returned to PARTIAL"),
+      });
     });
 
     it("leaves the row RUNNING and answers 500 when the audit row cannot be written", async () => {
