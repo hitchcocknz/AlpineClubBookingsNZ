@@ -6,6 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
+import { refundNoteIdSets } from "@/lib/xero-refund-note-status";
 import { sumCoveredRefundCreditNoteCents } from "@/lib/xero-sync";
 
 type OperationReader = Pick<Prisma.TransactionClient, "xeroSyncOperation">;
@@ -38,6 +39,12 @@ function toResolved(
  * in `sumRefundCreditNoteCoverageCents`. That is a crashed row (the note is
  * linked the moment Xero returns it) or a PARTIAL one, resolved by hand. Its
  * keys and id are still reported, so the fences still see it.
+ *
+ * #4250 (`INV-INT-025`): nor does a resolved row whose note a link records
+ * VOIDED or DELETED in Xero (`refundNoteIdSets(...).cancelled`). Xero no longer
+ * holds that note, so it covers nothing - as a cancelled link counts nothing
+ * in `sumCoveredRefundCreditNoteCents` - and its amount is never read, so an
+ * unreadable one refuses nothing. Its keys and id are still reported.
  *
  * A resolved row whose amount cannot be read is reported in
  * `unreadableOperationIds`; callers must refuse loudly on it rather than guess.
@@ -72,6 +79,7 @@ export async function readResolvedRefundCreditNoteCoverage(
     select: { id: true, correlationKey: true, requestPayload: true, xeroObjectId: true },
   });
   const noteIds = [...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId ? [row.xeroObjectId] : [])))];
+  const cancelledNoteIds = noteIds.length > 0 ? (await refundNoteIdSets(paymentId, db)).cancelled : new Set<string>();
   const linkedNoteIds = new Set(
     noteIds.length > 0
       ? (
@@ -97,6 +105,12 @@ export async function readResolvedRefundCreditNoteCoverage(
   };
   for (const row of rows ?? []) {
     const recorded = parsePaymentCreditNoteRetryInput(row);
+    if (row.xeroObjectId && cancelledNoteIds.has(row.xeroObjectId)) {
+      if (recorded && recorded.kind !== "refund") continue;
+      coverage.operationIds.push(row.id);
+      if (row.correlationKey) coverage.correlationKeys.push(row.correlationKey);
+      continue;
+    }
     if (!recorded) {
       coverage.unreadableOperationIds.push(row.id);
       continue;
@@ -135,8 +149,8 @@ export async function sumRefundCreditNoteCoverageCents(
  * payment (a "Paid another way" close's, `paidAnotherWayCloseNoteRowsWhere`).
  * Counted exactly as `sumRefundCreditNoteCoverageCents` counts the payment: the
  * active link of each note those rows raised, plus the recorded amount of a row
- * resolved by hand whose note has no link. So what those notes cover here is
- * exactly their share of the payment's coverage, never more and never less. A
+ * resolved by hand whose note has no link and was not voided in Xero (#4250).
+ * So what those notes cover here is exactly their share of the payment's coverage, never more and never less. A
  * resolved row whose amount cannot be read covers nothing, as there.
  */
 export async function sumRefundCreditNoteCoverageOfRowsCents(
