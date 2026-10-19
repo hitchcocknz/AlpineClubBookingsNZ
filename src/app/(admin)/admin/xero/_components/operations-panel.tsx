@@ -109,6 +109,7 @@ export function OperationsPanel({
   const [markingFailedOperationId, setMarkingFailedOperationId] = useState<string | null>(null)
   const [retryingAllFailed, setRetryingAllFailed] = useState(false)
   const [resettingStale, setResettingStale] = useState(false)
+  const [notesRefreshToken, setNotesRefreshToken] = useState(0)
 
   const syncUrl = useCallback(() => {
     if (!urlSyncEnabled) return
@@ -409,7 +410,7 @@ export function OperationsPanel({
           <ViewOnlyActionButton canEdit={canEdit} describeReason={false} variant="outline" size="sm" onClick={() => void resetStaleRunning()} disabled={resettingStale}>
             {resettingStale ? "Resetting..." : "Reset stale running"}
           </ViewOnlyActionButton>
-          <Button variant="outline" size="sm" onClick={() => void fetchOperations()} disabled={loading}>
+          <Button variant="outline" size="sm" onClick={() => { void fetchOperations(); setNotesRefreshToken((token) => token + 1) }} disabled={loading}>
             {loading ? "Refreshing..." : "Refresh"}
           </Button>
         </>
@@ -431,7 +432,7 @@ export function OperationsPanel({
         </details>
         <VoidedRequestNotesPanel
           canEdit={canEdit}
-          refreshToken={refreshToken}
+          refreshToken={refreshToken + notesRefreshToken}
           onMessage={onMessage}
           onChanged={() => { void fetchOperations(); onRefreshDiagnostics() }}
           ancestorRendersViewOnlyBanner

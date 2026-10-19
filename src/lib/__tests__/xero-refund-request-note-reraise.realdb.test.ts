@@ -17,6 +17,7 @@
  * fixtures.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { assertSafeRaceDbUrl } from "./support/race-db-url";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 import { assertNoForeignPendingXeroOperations } from "./support/race-harness-outbox-guard";
 
@@ -32,28 +33,6 @@ const VOIDED_NOTE = "cn-race-4214-voided";
 const FRESH_NOTE = "cn-race-4214-fresh";
 const REQUEST_KEY = `payment:${PAYMENT_ID}:refund-request-credit-note:${REQUEST_ID}:v1`;
 const AFTER_VOID_KEY = `${REQUEST_KEY}:after-void:${VOIDED_NOTE}`;
-
-/** Standalone fail-closed copy: importing this file must not register another suite. */
-export function assertSafeRequestNoteReraiseRaceDbUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Refund-request note re-raise proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
-  }
-  const port = Number.parseInt(parsed.port, 10);
-  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
-    throw new Error(
-      `Refusing to run refund-request note re-raise proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
-    );
-  }
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname.toLowerCase())) {
-    throw new Error("Refund-request note re-raise proof DB must be loopback-only.");
-  }
-  if (!decodeURIComponent(parsed.pathname.replace(/^\//, "")).includes("concurrency_race_1881")) {
-    throw new Error("Refund-request note re-raise proof DB name must contain 'concurrency_race_1881'.");
-  }
-}
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
@@ -72,7 +51,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     }
 
     beforeAll(async () => {
-      assertSafeRequestNoteReraiseRaceDbUrl(RACE_DB_URL);
+      assertSafeRaceDbUrl(RACE_DB_URL, "Refund-request note re-raise");
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       await deleteFixtures();

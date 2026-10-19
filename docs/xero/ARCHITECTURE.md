@@ -1131,7 +1131,8 @@ refusal's reason in place of Retry. A finance editor confirms the action
    note (`refundRequestOwnNotes`), has no note recorded voided, has a note row
    still PENDING, RUNNING or WAITING_PAYMENT, when its voided notes' recorded
    amounts (`recordedRefundNoteFigure`) cannot be read or disagree, or when an
-   officer resolved a row under the key it would use by hand in Xero;
+   officer resolved a row under the key it would use by hand in Xero, even if
+   that row's payload or recorded amount is unreadable;
 3. queues the request's note row through the shared builder
    (`refundRequestCreditNoteQueuedRow`, the completion's own shape) under the
    after-void key (`refundNoteKeyAfterVoidParts`) for that amount, and writes

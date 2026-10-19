@@ -1,4 +1,5 @@
-import { after, NextRequest, NextResponse } from "next/server";
+import { scheduleAfterResponse } from "@/lib/schedule-after-response";
+import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import logger from "@/lib/logger";
 import { requireAdmin } from "@/lib/session-guards";
@@ -9,16 +10,6 @@ const reraiseSchema = z.object({
   paymentId: z.string().trim().min(1).max(200),
   refundRequestId: z.string().trim().min(1).max(200),
 });
-
-function scheduleAfterResponse(task: () => Promise<void>) {
-  try {
-    after(task);
-  } catch {
-    queueMicrotask(() => {
-      void task();
-    });
-  }
-}
 
 /**
  * #4214 (owner decision): "Raise a fresh credit note" - the officer's one path

@@ -38,7 +38,7 @@ import {
   refundNoteKeyAfterVoidParts,
   refundRequestOwnNotes,
 } from "@/lib/xero-refund-note-status";
-import { readResolvedRefundCreditNoteCoverage } from "@/lib/xero-resolved-in-xero-fences";
+import { isResolvedInXero } from "@/lib/xero-operation-resolution";
 import { startXeroSyncOperation } from "@/lib/xero-sync";
 
 /** The outbox statuses a row is still in flight under (the active-correlation index's set). */
@@ -87,7 +87,7 @@ async function voidedNotesAmountCents(paymentId: string, voidedIds: readonly str
 async function requestNoteRows(paymentId: string, refundRequestId: string, db: Reader) {
   const rows = (await db.xeroSyncOperation.findMany({
     where: { direction: "OUTBOUND", localModel: "Payment", localId: paymentId, entityType: "CREDIT_NOTE", operationType: "CREATE" },
-    select: { id: true, status: true, requestPayload: true, correlationKey: true, idempotencyKey: true },
+    select: { id: true, status: true, requestPayload: true, correlationKey: true, idempotencyKey: true, manuallyResolvedAt: true },
     orderBy: { createdAt: "asc" },
   })) ?? [];
   return rows.filter((row) => readRefundRequestIdFromOperation(row) === refundRequestId);
@@ -174,7 +174,10 @@ export async function reraiseVoidedRefundRequestNote(params: {
       );
     }
     const row = refundRequestCreditNoteQueuedRow({ paymentId, refundRequestId, amountCents, afterVoid, createdByMemberId: actingMemberId });
-    if ((await readResolvedRefundCreditNoteCoverage(paymentId, tx)).correlationKeys.includes(row.correlationKey)) {
+    // INV-INT-025: a resolution fences this key even if its recorded amount
+    // is unreadable. The request reader also recognises keys without a payload.
+    if (rows.some((previous) => isResolvedInXero(previous) &&
+      (previous.correlationKey === row.correlationKey || previous.idempotencyKey === row.idempotencyKey))) {
       throw new RefundRequestNoteReraiseError("An officer resolved this refund request's fresh credit note by hand in Xero, so no new note is queued.");
     }
     const operation = await startXeroSyncOperation({ ...row, store: tx });

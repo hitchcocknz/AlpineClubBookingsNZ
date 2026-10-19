@@ -14,6 +14,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
+import { matchesWhere as matches } from "./support/prisma-where";
 
 type Row = Record<string, unknown>;
 
@@ -31,20 +32,6 @@ const mocks = vi.hoisted(() => ({
   startXeroSyncOperation: vi.fn(),
 }));
 
-function matches(row: Row, where: Row | undefined): boolean {
-  if (!where) return true;
-  return Object.entries(where).every(([key, expected]) => {
-    if (key === "OR" || key === "AND") return true;
-    const actual = row[key] ?? null;
-    if (expected && typeof expected === "object") {
-      if ("in" in expected) return (expected as { in: unknown[] }).in.includes(actual);
-      if ("not" in expected) return actual !== (expected as { not: unknown }).not;
-      return true;
-    }
-    return actual === expected;
-  });
-}
-
 vi.mock("@/lib/prisma", () => {
   const client = {
     $executeRaw: vi.fn(async (strings: TemplateStringsArray) => {
@@ -52,9 +39,11 @@ vi.mock("@/lib/prisma", () => {
       return 0;
     }),
     xeroSyncOperation: {
-      findMany: vi.fn(async ({ where }: { where: Row }) => {
+      findMany: vi.fn(async ({ where, select }: { where: Row; select?: Row }) => {
         state.calls.push("read-rows");
-        return state.operations.filter((row) => matches(row, where));
+        return state.operations.filter((row) => matches(row, where)).map((row) =>
+          select ? Object.fromEntries(Object.keys(select).map((key) => [key, row[key] ?? null])) : row,
+        );
       }),
       findFirst: vi.fn(async ({ where }: { where: Row }) => state.operations.find((row) => matches(row, where)) ?? null),
       count: vi.fn(async ({ where }: { where: Row }) => state.operations.filter((row) => matches(row, where)).length),
@@ -133,7 +122,7 @@ beforeEach(() => {
   let n = 0;
   mocks.startXeroSyncOperation.mockImplementation(async (input: Row) => {
     state.calls.push("queue");
-    const row = { id: `queue_${++n}`, ...input, store: undefined };
+    const row = requestRow({ id: `queue_${++n}`, ...input, store: undefined });
     state.operations.push(row);
     return row;
   });
@@ -245,6 +234,34 @@ describe("reraiseVoidedRefundRequestNote (#4214)", () => {
     expect(result.correlationKey).toBe(AFTER_VOID_KEY);
   });
 
+  it.each([
+    { correlationKey: AFTER_VOID_KEY, idempotencyKey: null, requestPayload: null },
+    { correlationKey: null, idempotencyKey: AFTER_VOID_KEY, requestPayload: { damaged: true } },
+  ])("refuses a resolved fresh note with unreadable payload using either request key: %j", async (identity) => {
+    state.operations.push(requestRow({
+      id: "op_fresh", status: "FAILED", manuallyResolvedAt: new Date(), ...identity,
+    }));
+
+    await expect(reraiseVoidedRefundRequestNote({ ...body, actingMemberId: "admin-1" })).rejects.toMatchObject({
+      status: 409, message: expect.stringContaining("resolved"),
+    });
+    expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+    expect(state.audits).toEqual([]);
+  });
+
+  it("does not fence another request's re-raise because a different request has an unreadable resolved row", async () => {
+    const otherKey = AFTER_VOID_KEY.replace(":rr_1:", ":rr_other:");
+    state.operations.push(requestRow({
+      id: "op_other", status: "FAILED", correlationKey: otherKey, idempotencyKey: otherKey,
+      manuallyResolvedAt: new Date(), requestPayload: null,
+    }));
+
+    await expect(reraiseVoidedRefundRequestNote({ ...body, actingMemberId: "admin-1" })).resolves.toMatchObject({
+      correlationKey: AFTER_VOID_KEY,
+    });
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledTimes(1);
+  });
+
   it("a second void names both voided notes in the key", async () => {
     state.links.push(noteLink({ xeroObjectId: "cn_090", metadata: { amountCents: 5000, refundRequestId: "rr_1", status: "VOIDED" } }));
     const result = await reraiseVoidedRefundRequestNote({ ...body, actingMemberId: "admin-1" });
@@ -335,5 +352,14 @@ describe("the routes (#4214)", () => {
     const response = await reraiseRoute(post({ paymentId: "pay_1" }));
     expect(response.status).toBe(400);
     expect(state.calls).toEqual([]);
+  });
+
+  it("still queues and kicks the outbox if after registration is unavailable", async () => {
+    mocks.after.mockImplementationOnce(() => { throw new Error("No request scope"); });
+    const response = await reraiseRoute(post());
+    expect(response.status).toBe(202);
+    await new Promise<void>((resolve) => queueMicrotask(resolve));
+    expect(mocks.kick).toHaveBeenCalledExactlyOnceWith({ limit: 1 });
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledTimes(1);
   });
 });
