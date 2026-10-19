@@ -936,6 +936,10 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: xLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({ status: 409 });
       expect(await money()).toEqual(after);
       expect(await followUpTasks()).toHaveLength(2);
+      // MUTATION (money A): a marker dropped by a wholesale metadata write leaves the note handled - the picks add up.
+      await prisma.xeroObjectLink.update({ where: { id: linkId }, data: { metadata: { amountCents: 20_000, status: "VOIDED", perDelta: true } } });
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "handled" });
+      expect(await money()).toEqual(after);
     });
 
     it("MUTATION (money A): a refund larger than what is left of the note to pick is not offered, and its pick is refused", async () => {
@@ -1002,6 +1006,10 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const after = await money();
       await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: yLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({ status: 409 });
       expect(await money()).toEqual(after);
+      expect(await followUpTasks()).toHaveLength(1);
+      // MUTATION (money A): with its marker dropped, the one pick still answers it.
+      await prisma.xeroObjectLink.update({ where: { id: linkId }, data: { metadata: { status: "VOIDED" } } });
+      await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: yLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({ status: 409 });
       expect(await followUpTasks()).toHaveLength(1);
     });
 
