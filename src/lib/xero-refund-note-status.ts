@@ -287,6 +287,16 @@ export async function readRefundNoteRaisingRow(
 }
 
 /**
+ * #4162 (money re-check): an outbound refund-note create that raised nothing -
+ * it completed as covered by a note already on the payment
+ * (`createXeroCreditNote`'s `coveredByExistingNote` answer), so the note it
+ * names answers another refund, never the one this row was enqueued for.
+ */
+export function isCoveredByExistingNoteRow(row: { responsePayload: unknown }): boolean {
+  return asRecord(row.responsePayload)?.coveredByExistingNote === true;
+}
+
+/**
  * #4162 (`INV-ADDPAY-042`): a refund note's recorded amount in cents - its
  * link's, else its raising row's - or null when neither records one. What the
  * nightly undo of a voided bank-transfer note takes back; null sends the note

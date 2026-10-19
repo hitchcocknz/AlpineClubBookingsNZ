@@ -76,6 +76,7 @@ import { asRecord, readString } from "@/lib/xero-json";
 import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
 import {
   CANCELLED_CREDIT_NOTE_STATUSES,
+  isCoveredByExistingNoteRow,
   isRefundCreditNoteLinkCancelledInXero,
   readRefundNoteRaisingRow,
   recordedRefundNoteAmountCents,
@@ -473,15 +474,23 @@ const NOTE_TASK_KEYS = ["handBackTaskId", "reviewTaskId", "paidAnotherWayTaskId"
  * #4162 final review (money B): what Xero's LIVE notes still record of one
  * hand-back's refund - the notes whose create rows name its task, counted as
  * the payment's coverage counts them (`sumRefundCreditNoteCoverageOfRowsCents`,
- * never a row resolved by hand whose own note Xero voided), plus a note made by
+ * never a row resolved by hand whose own note Xero voided, nor a row closed as
+ * covered by another hand-back's note, `isCoveredByExistingNoteRow`), plus a note made by
  * hand and linked to it (`handBackTaskId` on an active link whose create row,
  * if any, does not already name it). A line those notes still cover was not
  * the voided note's, so it is never picked.
  */
 async function taskNoteCoverageCents(db: Reader, paymentId: string, taskId: string, cancelledNoteIds: readonly string[]): Promise<number> {
+  const namesTask: Prisma.XeroSyncOperationWhereInput = { OR: NOTE_TASK_KEYS.map((key) => ({ requestPayload: { path: [key], equals: taskId } })) };
+  // A row closed as covered by another hand-back's note minted nothing: that note is not this task's.
+  const namingRows = (await db.xeroSyncOperation.findMany({ where: { localModel: "Payment", localId: paymentId, ...namesTask }, select: { id: true, responsePayload: true } })) ?? [];
+  const coveredByOtherIds = namingRows.filter(isCoveredByExistingNoteRow).map((row) => row.id);
   const rowsWhere: Prisma.XeroSyncOperationWhereInput = {
-    OR: NOTE_TASK_KEYS.map((key) => ({ requestPayload: { path: [key], equals: taskId } })),
-    ...(cancelledNoteIds.length > 0 ? { AND: [{ OR: [{ xeroObjectId: null }, { xeroObjectId: { notIn: [...cancelledNoteIds] } }] }] } : {}),
+    ...namesTask,
+    AND: [
+      ...(coveredByOtherIds.length > 0 ? [{ id: { notIn: coveredByOtherIds } }] : []),
+      ...(cancelledNoteIds.length > 0 ? [{ OR: [{ xeroObjectId: null }, { xeroObjectId: { notIn: [...cancelledNoteIds] } }] }] : []),
+    ],
   };
   const fromRows = await sumRefundCreditNoteCoverageOfRowsCents(paymentId, rowsWhere, db);
   const handMade =

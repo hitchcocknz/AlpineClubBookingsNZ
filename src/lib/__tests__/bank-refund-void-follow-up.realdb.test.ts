@@ -1050,6 +1050,41 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "handled" });
     });
 
+    it("MUTATION (money re-check): a create row closed as covered by another hand-back's note covers nothing of its own - that hand-back is still offered and matched", async () => {
+      await paidBankTransfer();
+      // A (5,000) has its own live note N_A; B's (3,000) create row completed as covered by N_A, minting nothing.
+      const a = await handBackNoted(`${P}-na`, 5_000, { perDelta: true });
+      const b = await handBackNoted(`${P}-b`, 3_000, { noNote: true });
+      const { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } = await import("@/lib/xero-operation-outbox-payload");
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID,
+          status: "SUCCEEDED", xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-na`, xeroObjectNumber: `CN-${P}-na`,
+          correlationKey: `${P}-b-covered`, idempotencyKey: `${P}-b-covered`, queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
+          completedAt: new Date("2026-06-02T00:00:00.000Z"),
+          requestPayload: { refundMethod: "internet-banking", refundAmountCents: 3_000, handBackTaskId: b },
+          responsePayload: { existingCreditNoteId: `${P}-na`, coveredByExistingNote: true },
+        },
+      });
+      const lineOf = async (taskId: string) =>
+        (await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: BOOKING_ID, postingKey: `handback:${taskId}` }, select: { id: true } })).id;
+      const [aLine, bLine] = [await lineOf(a), await lineOf(b)];
+      // B is offerable (A, which N_A covers, is not).
+      const offered = (await scan.readPickableHandBackLines(prisma as never, PAYMENT_ID, BOOKING_ID, null)).map((line) => line.lineId);
+      expect(offered).toContain(bLine);
+      expect(offered).not.toContain(aLine);
+      // B's voided note (an older one naming no task) is matched to B and undone.
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-vb`, xeroObjectNumber: "CN-VB",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 3_000, status: "AUTHORISED", total: 30, perDelta: true },
+        },
+      });
+      const linkId = await voidInXero(`${P}-vb`, 3_000);
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "undone" });
+      expect((await money()).lines).toContainEqual(expect.objectContaining({ reversesLineId: bLine, amountCents: 3_000 }));
+    });
+
     it("MUTATION (money A): a note whose amount cannot be read takes one pick only", async () => {
       await paidBankTransfer();
       const x = await handBackNoted(`${P}-x`, 5_000, { noNote: true });
