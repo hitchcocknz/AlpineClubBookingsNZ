@@ -1831,7 +1831,8 @@ idempotency key, which returns the original invoice
 - **Repaired at the stored cash.** When the Stripe payment write fails, the
   create ends PARTIAL, and the Xero Operations repair records the stored
   `primaryInvoiceCashCents`, read through the same parser as the gap check
-  (`xero-primary-invoice-fee-at-link.ts`). It never records the invoice total,
+  (`xero-primary-invoice-fee-at-link.ts`, sized in
+  `xero-partial-invoice-repair-amount.ts`). It never records the invoice total,
   which on a card booking with applied credit overstates the card cash and
   leaves the credit allocation nothing to settle (#4010). An operation written
   before the figure was stored (no `primaryInvoiceBilledFee` record, or one

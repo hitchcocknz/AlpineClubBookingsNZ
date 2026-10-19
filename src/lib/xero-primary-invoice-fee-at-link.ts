@@ -8,8 +8,8 @@
  * One home for the payload key and its reader (`INV-SSOT`). The writer is
  * `persistPrimaryInvoiceLink` (`xero-primary-invoice-fee-gap.ts`); the readers
  * are the change-fee gap check there and the Xero ops panel's PARTIAL repair
- * (`xero-operation-retry.ts`, #4010). Kept a leaf module so the repair reads
- * the figure without importing the gap check's outbox graph.
+ * (`xero-partial-invoice-repair-amount.ts`, #4010). Kept a leaf module so
+ * the repair reads the figure without importing the gap check's outbox graph.
  */
 import type { PrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-fee-gap";
 import { asRecord } from "@/lib/xero-json";

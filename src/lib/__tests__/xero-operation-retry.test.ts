@@ -2046,7 +2046,8 @@ describe("retryXeroSyncOperation", () => {
     });
 
     it("a record without the cash figure (pre-round-5) or for another invoice also falls back", async () => {
-      const { primaryInvoiceCashCents: _omitted, ...withoutCash } = storedAtLink(8_000).primaryInvoiceBilledFee;
+      const withoutCash: Record<string, unknown> = { ...storedAtLink(8_000).primaryInvoiceBilledFee };
+      delete withoutCash.primaryInvoiceCashCents;
       for (const requestPayload of [
         { ...storedAtLink(8_000), primaryInvoiceBilledFee: withoutCash },
         storedAtLink(8_000, "inv_other"),
