@@ -39,6 +39,7 @@ const PAYMENT_ID = `${P}-payment`;
 const TXN_ID = `${P}-txn`;
 const INVOICE_ID = `inv-${P}`;
 const PAID_CENTS = 20_000;
+const CONTACT_ID = `${P}-contact`;
 /** The extra bookings the bucket count needs, one payment each. */
 const BUCKET_BOOKINGS = ["b1", "b2", "b3", "b4", "b5", "b6", "b7"].map((suffix) => `${P}-${suffix}`);
 
@@ -115,7 +116,15 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     async function handBackNoted(
       noteId: string,
       cents: number,
-      options?: { names?: "handBackTaskId" | "reviewTaskId" | null; perDelta?: boolean; bookingId?: string; paymentId?: string; noteAmountCents?: number; noNote?: boolean },
+      options?: {
+        names?: "handBackTaskId" | "reviewTaskId" | "paidAnotherWayTaskId" | null;
+        perDelta?: boolean;
+        bookingId?: string;
+        paymentId?: string;
+        noteAmountCents?: number;
+        noNote?: boolean;
+        occurrenceKey?: string;
+      },
     ) {
       const bookingId = options?.bookingId ?? BOOKING_ID;
       const paymentId = options?.paymentId ?? PAYMENT_ID;
@@ -128,6 +137,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
           data: {
             id: taskId, bookingId, paymentId, kind: "CANCELLED_BOOKING_HAND_BACK", amountCents: cents, raisedAmountCents: cents,
             status: "COMPLETED", completedAt: new Date(), completedByMemberId: OFFICER_ID, reason: P,
+            ...(options?.occurrenceKey ? { occurrenceKey: options.occurrenceKey } : {}),
           },
         });
         await applyLocalRefundAllocation({ paymentId, amountCents: cents, store: tx });
@@ -246,8 +256,14 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
     }
 
     /** The fake Xero the "already in Xero" check reads: `getCreditNotes` answers with `notes`. */
-    async function withXeroCreditNotes<T>(notes: Array<Record<string, unknown>>, run: () => Promise<T>): Promise<T> {
-      const xero = { accountingApi: { getCreditNotes: async () => ({ body: { creditNotes: notes } }) } };
+    async function withXeroCreditNotes<T>(notes: Array<Record<string, unknown>>, run: () => Promise<T>, readBack?: Record<string, unknown>): Promise<T> {
+      const xero = {
+        accountingApi: {
+          getCreditNotes: async () => ({ body: { creditNotes: notes } }),
+          getInvoice: async () => ({ body: { invoices: [{ contact: { contactID: CONTACT_ID } }] } }),
+          getCreditNote: async () => ({ body: { creditNotes: [readBack ?? notes[0]] } }),
+        },
+      };
       const apiClient = await import("@/lib/xero-api-client");
       const spies = [
         vi.spyOn(apiClient, "getAuthenticatedXeroClient").mockResolvedValue({ xero, tenantId: "tenant-4162b" } as never),
@@ -341,9 +357,10 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const alert = vi.spyOn(alerts, "notifyXeroSyncError").mockResolvedValue(undefined as never);
       await voidInXero(`${P}-v`, PAID_CENTS);
 
-      // INV-ADDPAY-021: Xero shows less than the detail - logged and alerted, never applied.
+      // INV-ADDPAY-021: Xero shows less than the detail - never applied. The
+      // void waits for the follow-up, which explains it: logged, not alerted (security 12).
       expect(await money()).toEqual(before);
-      expect(alert).toHaveBeenCalledWith(expect.objectContaining({ errorType: "refund-ledger-divergence", errorMessage: expect.stringContaining("#4162 floor") }));
+      expect(alert).not.toHaveBeenCalled();
       expect(before.lines).toEqual([expect.objectContaining({ amountCents: -PAID_CENTS, postingKey: `handback:${taskId}`, reversesLineId: null })]);
       expect(await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-v` }, select: { active: true } })).toEqual({ active: false });
     });
@@ -421,6 +438,117 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "handled" });
     });
 
+    it("MUTATION (money 1): a note resolved by hand whose own note Xero voided covers nothing - the void is undone, not a spare", async () => {
+      await paidBankTransfer();
+      await handBackNoted(`${P}-v`, PAID_CENTS);
+      const { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } = await import("@/lib/xero-operation-outbox-payload");
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID,
+          status: "SUCCEEDED", xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-v`, manuallyResolvedAt: new Date("2026-06-02T00:00:00.000Z"),
+          correlationKey: `${P}-resolved`, idempotencyKey: `${P}-resolved`, queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
+          requestPayload: { queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE, refundAmountCents: PAID_CENTS, refundMethod: "internet-banking" },
+        },
+      });
+      const linkId = await voidInXero(`${P}-v`, PAID_CENTS);
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "undone" });
+    });
+
+    it("MUTATION (money 2): a late-capture card refund Xero never received is not owed a note - the duplicate's void is still a spare", async () => {
+      await paidBankTransfer();
+      await handBackNoted(`${P}-v`, PAID_CENTS);
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-dup`, xeroObjectNumber: "CN-DUP",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: PAID_CENTS, status: "AUTHORISED", total: 200, perDelta: true },
+        },
+      });
+      // A 4000c late capture held for approval, refunded by card: INV-PAY-110 leaves it out of the eligible cash.
+      await prisma.manualRefundTask.create({
+        data: {
+          bookingId: BOOKING_ID, paymentId: PAYMENT_ID, kind: "DELETED_BOOKING_LATE_CAPTURE", amountCents: 4_000, raisedAmountCents: 4_000,
+          lateCaptureApprovalIntentId: `pi_${P}_late`, reason: P,
+        },
+      });
+      await prisma.paymentRefund.create({
+        data: { paymentId: PAYMENT_ID, stripeRefundId: `re_${P}_late`, stripePaymentIntentId: `pi_${P}_late`, amountCents: 4_000, currency: "nzd", status: "succeeded" },
+      });
+      const linkId = await voidInXero(`${P}-dup`, PAID_CENTS);
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "spare" });
+    });
+
+    it("MUTATION (money 4): a create row whose own note Xero voided never holds the void back; a deferral over a week is listed", async () => {
+      await paidBankTransfer();
+      await handBackNoted(`${P}-v`, PAID_CENTS);
+      const linkId = await voidInXero(`${P}-v`, PAID_CENTS);
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID,
+          status: "PARTIAL", replayable: true, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-v`,
+          correlationKey: `${P}-partial`, idempotencyKey: `${P}-partial`, requestPayload: { refundAmountCents: PAID_CENTS },
+        },
+      });
+      // A create that could still mint holds it back; over a week, it is listed and counted.
+      const pending = await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: PAYMENT_ID,
+          status: "PENDING", correlationKey: `${P}-pending2`, idempotencyKey: `${P}-pending2`, requestPayload: {},
+        },
+      });
+      await prisma.$executeRaw`UPDATE "XeroObjectLink" SET "updatedAt" = ${new Date("2026-06-20T00:00:00.000Z")} WHERE "id" = ${linkId}`;
+      const listed = (await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID);
+      expect(listed).toEqual([expect.objectContaining({ linkId, reason: "deferred", pickableLines: [] })]);
+      expect((await followUp.runBankRefundVoidFollowUp({ writes: false })).deferredOverdue).toBeGreaterThanOrEqual(1);
+      await prisma.xeroSyncOperation.delete({ where: { id: pending.id } });
+      // The voided note's own PARTIAL row does not block.
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "undone" });
+    });
+
+    it("concurrency 3: the link row held by another transaction - a spare defers with no marker, an answer is refused as busy", async () => {
+      await paidBankTransfer();
+      await handBackNoted(`${P}-v`, PAID_CENTS);
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-dup`, xeroObjectNumber: "CN-DUP",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: PAID_CENTS, status: "AUTHORISED", total: 200, perDelta: true },
+        },
+      });
+      const spareLinkId = await voidInXero(`${P}-dup`, PAID_CENTS);
+      const other = BUCKET_BOOKINGS[1]!;
+      await paidBankTransfer(other, `${other}-payment`, `${other}-txn`);
+      await handBackNoted(`${P}-paw2`, PAID_CENTS, { bookingId: other, paymentId: `${other}-payment`, names: "paidAnotherWayTaskId", perDelta: true, occurrenceKey: `card-refund-paid-another-way:${P}-op2` });
+      await inbound(voidedNote(`${P}-paw2`, PAID_CENTS));
+      const pawLinkId = await linkIdOf(`${P}-paw2`, `${other}-payment`);
+
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let lockedBoth!: () => void;
+      const isLocked = new Promise<void>((resolve) => (lockedBoth = resolve));
+      const holder = prisma.$transaction(
+        async (tx) => {
+          await tx.$executeRaw`SELECT 1 FROM "XeroObjectLink" WHERE "id" IN (${spareLinkId}, ${pawLinkId}) FOR UPDATE`;
+          lockedBoth();
+          await held;
+        },
+        { timeout: 30_000 },
+      );
+      await isLocked;
+      try {
+        expect(await followUp.followUpVoidedBankRefundNote(spareLinkId)).toMatchObject({ outcome: "deferred" });
+        const { isPostgresLockNotAvailable } = await import("@/lib/prisma-errors");
+        const answered = await withWrites(() =>
+          followUp.markUnmatchedBankRefundVoidAnswered({ linkId: pawLinkId, note: "x", actingMemberId: OFFICER_ID }).then(() => null, (error: unknown) => error),
+        );
+        expect(isPostgresLockNotAvailable(answered)).toBe(true);
+      } finally {
+        release();
+        await holder;
+      }
+      const spareLink = await prisma.xeroObjectLink.findUniqueOrThrow({ where: { id: spareLinkId }, select: { metadata: true } });
+      expect(spareLink.metadata).not.toHaveProperty("bankRefundVoid");
+      expect(await followUp.followUpVoidedBankRefundNote(spareLinkId)).toMatchObject({ outcome: "spare" });
+    });
+
     it("defers while a refund-note create on the payment could still mint, then undoes", async () => {
       await paidBankTransfer();
       await handBackNoted(`${P}-v`, PAID_CENTS);
@@ -479,31 +607,58 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect((await money()).lines.filter((line) => line.reversesLineId !== null)).toHaveLength(1);
     });
 
-    it("the job beside a concurrent reconcile, and beside the inbound recount: the total always ends equal to the detail", async () => {
+    it("the job beside a concurrent reconcile: the total ends equal to the detail", async () => {
       await paidBankTransfer();
       await handBackNoted(`${P}-a`, 5_000, { perDelta: true });
       await handBackNoted(`${P}-v`, 15_000);
       const linkId = await voidInXero(`${P}-v`, 15_000);
       const { reconcilePaymentAggregates } = await import("@/lib/payment-transactions");
-      const alerts = await import("@/lib/xero-error-alert");
-      vi.spyOn(alerts, "notifyXeroSyncError").mockResolvedValue(undefined as never);
-
-      await Promise.all([
-        followUp.followUpVoidedBankRefundNote(linkId),
-        reconcilePaymentAggregates({ paymentId: PAYMENT_ID }),
-        // The void delivered again: its recount claims the row as read, loses to
-        // the undo's write and recounts; the floor keeps it at the detail.
-        inbound(voidedNote(`${P}-v`, 15_000)),
-      ]);
-
+      await Promise.all([followUp.followUpVoidedBankRefundNote(linkId), reconcilePaymentAggregates({ paymentId: PAYMENT_ID })]);
       const after = await money();
-      expect(after.detailCents).toBe(5_000);
-      expect(after.payment.refundedAmountCents).toBe(5_000);
+      expect(after).toMatchObject({ detailCents: 5_000, payment: { refundedAmountCents: 5_000 } });
       expect(await followUpTasks()).toEqual([expect.objectContaining({ amountCents: 15_000, status: "OPEN" })]);
-      // The live hand-back's note still counts; the census explains the total by it alone.
       const refunded = (await census()).identities.find((identity) => identity.identity === "REFUNDED");
       expect(refunded).toMatchObject({ columnCents: 5_000 });
       expect(refunded?.status === "AGREE" || refunded?.status === "CLASSIFIED").toBe(true);
+    });
+
+    it("concurrency 2 and MUTATION (floor): the inbound recount reads, the undo commits, the recount resumes - its claim is lost, it recounts, and the floor keeps the total at the detail", async () => {
+      await paidBankTransfer();
+      // A refund with no note in Xero yet, and one whose note Xero voided.
+      await handBackNoted(`${P}-a`, 5_000, { noNote: true });
+      await handBackNoted(`${P}-v`, 15_000);
+      const linkId = await voidInXero(`${P}-v`, 15_000);
+      expect(await money()).toMatchObject({ payment: { refundedAmountCents: 20_000 }, detailCents: 20_000 });
+      const alerts = await import("@/lib/xero-error-alert");
+      vi.spyOn(alerts, "notifyXeroSyncError").mockResolvedValue(undefined as never);
+      const { repairRefundedPaymentBusinessState } = await import("@/lib/xero-inbound/credit-note-repairs");
+      // Force the order: the recount has read the payment; before it reads the
+      // detail and writes, the undo commits.
+      const aggregate = prisma.paymentTransaction.aggregate.bind(prisma.paymentTransaction);
+      let paused = false;
+      const detailRead = vi.spyOn(prisma.paymentTransaction, "aggregate").mockImplementation((async (args: never) => {
+        if (!paused) {
+          paused = true;
+          detailRead.mockRestore();
+          expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "undone" });
+        }
+        return aggregate(args);
+      }) as never);
+      const reads = vi.spyOn(prisma.payment, "findMany");
+      const claims = vi.spyOn(prisma.payment, "updateMany");
+
+      await repairRefundedPaymentBusinessState({
+        creditNoteId: `${P}-v`,
+        creditNote: { status: "VOIDED", total: 150, appliedAmount: 0, remainingCredit: 0 } as never,
+        directPaymentIds: [PAYMENT_ID],
+        modificationRefundAmountsByPaymentId: new Map(),
+      });
+
+      expect(paused).toBe(true);
+      // The claim on the row as first read was lost, and the recount ran again from scratch.
+      expect(await Promise.all(claims.mock.results.map((result) => result.value))).toContainEqual({ count: 0 });
+      expect(reads.mock.calls.length).toBeGreaterThanOrEqual(2);
+      expect(await money()).toMatchObject({ payment: { refundedAmountCents: 5_000 }, detailCents: 5_000 });
     });
 
     it("answer 'Yes, raise a fresh credit note': the money goes back as a hand-back completion records it, and one note keyed and sized on the follow-up is raised (a replay is the same row and key)", async () => {
@@ -568,7 +723,10 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const linkId = await voidInXero(`${P}-v`, PAID_CENTS);
       const followUpId = (await followUp.followUpVoidedBankRefundNote(linkId))!.followUpTaskId!;
       const { prepareBankRefundVoidAnswer } = await import("@/lib/bank-refund-void-answer");
-      const handMade = { creditNoteID: `${P}-hand`, creditNoteNumber: "CN-HAND", status: "AUTHORISED", type: "ACCRECCREDIT", total: 200 };
+      const handMade = {
+        creditNoteID: `${P}-hand`, creditNoteNumber: "CN-HAND", status: "AUTHORISED", type: "ACCRECCREDIT", total: 200,
+        contact: { contactID: CONTACT_ID }, allocations: [],
+      };
       const prepare = (notes: Array<Record<string, unknown>>) =>
         withXeroCreditNotes(notes, () =>
           prepareBankRefundVoidAnswer({ taskId: followUpId, answer: { answer: "recorded-in-xero", creditNoteNumber: "CN-HAND" }, format: CLUB_FORMAT_TEST }),
@@ -578,6 +736,9 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       await expect(prepare([{ ...handMade, total: 150 }])).rejects.toMatchObject({ status: 409, message: expect.stringContaining("not $200.00") });
       await expect(prepare([{ ...handMade, status: "VOIDED" }])).rejects.toMatchObject({ status: 409, message: expect.stringContaining("voided") });
       await expect(prepare([{ ...handMade, type: "ACCPAYCREDIT" }])).rejects.toMatchObject({ status: 409 });
+      await expect(prepare([{ ...handMade, status: "DRAFT" }])).rejects.toMatchObject({ status: 409, message: expect.stringContaining("not approved or paid") });
+      await expect(prepare([{ ...handMade, contact: { contactID: "someone-else" } }])).rejects.toMatchObject({ status: 409, message: expect.stringContaining("different contact") });
+      await expect(prepare([{ ...handMade, allocations: [{ invoice: { invoiceID: "another-invoice" } }] }])).rejects.toMatchObject({ status: 409, message: expect.stringContaining("another invoice") });
       expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: followUpId }, select: { status: true } })).toEqual({ status: "OPEN" });
 
       const answer = await prepare([handMade]);
@@ -589,10 +750,54 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(tracked).toMatchObject({ active: true, role: "REFUND_CREDIT_NOTE", xeroObjectNumber: "CN-HAND" });
       expect(tracked.metadata).toMatchObject({ amountCents: PAID_CENTS, perDelta: true, handBackTaskId: followUpId });
 
-      // Tracked from now on: its own void is caught and undone again.
-      const handLinkId = await voidInXero(`${P}-hand`, PAID_CENTS);
-      expect(await followUp.followUpVoidedBankRefundNote(handLinkId)).toMatchObject({ outcome: "undone" });
+      // Concurrency 1: Xero voided it between the check and the link write.
+      // The read-back after the commit (the inbound reconcile) catches it.
+      const { reconcileHandMadeNoteAfterCompletion } = await import("@/lib/bank-refund-void-answer");
+      const alerts = await import("@/lib/xero-error-alert");
+      vi.spyOn(alerts, "notifyXeroSyncError").mockResolvedValue(undefined as never);
+      await withXeroCreditNotes([], () => reconcileHandMadeNoteAfterCompletion(answer), {
+        ...handMade, status: "VOIDED", appliedAmount: 0, remainingCredit: 0, payments: [],
+      });
+      const handLink = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-hand` }, select: { id: true, active: true } });
+      expect(handLink.active).toBe(false);
+      // Tracked from now on: its own void is undone again by the follow-up.
+      expect(await followUp.followUpVoidedBankRefundNote(handLink.id)).toMatchObject({ outcome: "undone" });
       expect(await money()).toMatchObject({ payment: { refundedAmountCents: 0 }, detailCents: 0 });
+    });
+
+    it("MUTATION (money 6): a hand-made note tracked only by this payment's own inactive, live link is reactivated for the follow-up", async () => {
+      await paidBankTransfer();
+      await handBackNoted(`${P}-v`, PAID_CENTS);
+      const linkId = await voidInXero(`${P}-v`, PAID_CENTS);
+      const followUpId = (await followUp.followUpVoidedBankRefundNote(linkId))!.followUpTaskId!;
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-dup`, xeroObjectNumber: "CN-DUP",
+          role: "REFUND_CREDIT_NOTE", active: false, metadata: { status: "AUTHORISED", amountCents: PAID_CENTS, total: 200 },
+        },
+      });
+      const { prepareBankRefundVoidAnswer } = await import("@/lib/bank-refund-void-answer");
+      const dup = { creditNoteID: `${P}-dup`, creditNoteNumber: "CN-DUP", status: "AUTHORISED", type: "ACCRECCREDIT", total: 200, contact: { contactID: CONTACT_ID }, allocations: [] };
+      const answer = await withXeroCreditNotes([dup], () =>
+        prepareBankRefundVoidAnswer({ taskId: followUpId, answer: { answer: "recorded-in-xero", creditNoteNumber: "CN-DUP" }, format: CLUB_FORMAT_TEST }),
+      );
+      await complete(followUpId, answer);
+      const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-dup` } });
+      expect(link.active).toBe(true);
+      expect(link.metadata).toMatchObject({ handBackTaskId: followUpId, perDelta: true });
+    });
+
+    it("MUTATION (money 5): a fresh note on a payment with no Xero invoice is refused, and nothing moves", async () => {
+      await paidBankTransfer();
+      await handBackNoted(`${P}-v`, PAID_CENTS);
+      const linkId = await voidInXero(`${P}-v`, PAID_CENTS);
+      const followUpId = (await followUp.followUpVoidedBankRefundNote(linkId))!.followUpTaskId!;
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: null } });
+      const before = await money();
+      await expect(complete(followUpId, { answer: "fresh-note" })).rejects.toMatchObject({ status: 409, message: expect.stringContaining("no Xero invoice") });
+      expect(await money()).toEqual(before);
+      expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: followUpId }, select: { status: true } })).toEqual({ status: "OPEN" });
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, status: "PENDING" } })).toBe(0);
     });
 
     it("answer 'No, the club keeps it' is the dismissal with a reason: the refund stays out of the records", async () => {
@@ -655,11 +860,20 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await prisma.xeroObjectLink.findUniqueOrThrow({ where: { id: linkId }, select: { metadata: true } })).not.toMatchObject({ bankRefundVoid: expect.anything() });
     });
 
-    it("a note the job cannot match goes to a person; their answer moves nothing and clears it", async () => {
+    async function withWrites<T>(run: () => Promise<T>): Promise<T> {
+      process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
+      try {
+        return await run();
+      } finally {
+        delete process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES;
+      }
+    }
+
+    /** A pre-#4162 note for two hand-backs at once, voided: no single line has its amount. */
+    async function unmatchedTwoRefundNote() {
       await paidBankTransfer();
-      // A note from before #4162 for two hand-backs at once: no single line has its amount.
-      await handBackNoted(`${P}-x`, 5_000, { noNote: true });
-      await handBackNoted(`${P}-y`, 15_000, { noNote: true });
+      const x = await handBackNoted(`${P}-x`, 5_000, { noNote: true });
+      const y = await handBackNoted(`${P}-y`, 15_000, { noNote: true });
       await prisma.xeroObjectLink.create({
         data: {
           localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-both`, xeroObjectNumber: "CN-BOTH",
@@ -667,19 +881,83 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         },
       });
       const linkId = await voidInXero(`${P}-both`, 20_000);
-      const before = await money();
+      const lineOf = async (taskId: string) =>
+        (await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: BOOKING_ID, postingKey: `handback:${taskId}` }, select: { id: true } })).id;
+      return { linkId, xLine: await lineOf(x), yLine: await lineOf(y), x, y };
+    }
 
+    it("owner 18 Oct: a person picks the refund an unmatched note recorded, and the same undo runs", async () => {
+      const { linkId, yLine, y } = await unmatchedTwoRefundNote();
       expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "unmatched" });
       const listed = (await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID);
-      expect(listed).toEqual([expect.objectContaining({ linkId, amountCents: 20_000, reason: "no-line" })]);
+      expect(listed).toEqual([
+        expect.objectContaining({ linkId, amountCents: 20_000, reason: "no-line", pickableLines: expect.arrayContaining([expect.objectContaining({ lineId: yLine, amountCents: 15_000 })]) }),
+      ]);
 
-      await followUp.markUnmatchedBankRefundVoidAnswered({ linkId, note: "Paid; CN-0999 raised by hand", actingMemberId: OFFICER_ID });
+      const picked = await withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: yLine, actingMemberId: OFFICER_ID }));
 
-      expect(await money()).toEqual(before);
+      // The undo a matched note gets: the picked refund comes out, its line reversed, the total from the detail.
+      expect(await money()).toMatchObject({ payment: { refundedAmountCents: 5_000 }, detailCents: 5_000 });
+      expect((await money()).lines).toContainEqual(expect.objectContaining({ reversesLineId: yLine, amountCents: 15_000 }));
+      expect(await followUpTasks()).toEqual([
+        expect.objectContaining({
+          id: picked.followUpTaskId, status: "OPEN", amountCents: 15_000, occurrenceKey: `bank-refund-void:${PAYMENT_ID}:${P}-both`,
+          reviewContext: { bankRefundVoidFollowUp: expect.objectContaining({ originalTaskId: y, reversedLineId: yLine }) },
+        }),
+      ]);
+      expect(await prisma.auditLog.findFirstOrThrow({ where: { action: "booking-payment.bank-refund.void-undone", entityId: picked.followUpTaskId } })).toMatchObject({ actorMemberId: OFFICER_ID });
       expect((await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID)).toEqual([]);
       expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "handled" });
-      await expect(followUp.markUnmatchedBankRefundVoidAnswered({ linkId, note: "again", actingMemberId: OFFICER_ID })).rejects.toMatchObject({ status: 409 });
-      expect(await prisma.auditLog.count({ where: { action: "booking-payment.bank-refund.void-answered", entityId: linkId } })).toBe(1);
+      // Picked once: a second pick is refused and moves nothing.
+      await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: yLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({ status: 409 });
+    });
+
+    it("MUTATION (report-only): a pick while the follow-up is report-only is refused and writes nothing", async () => {
+      const { linkId, yLine } = await unmatchedTwoRefundNote();
+      const before = await money();
+      delete process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES;
+      await expect(followUp.pickRefundForUnmatchedVoid({ linkId, lineId: yLine, actingMemberId: OFFICER_ID })).rejects.toMatchObject({ status: 409 });
+      expect(await money()).toEqual(before);
+      expect(await followUpTasks()).toEqual([]);
+    });
+
+    it("MUTATION (pick guards): a line of another payment, or one already reversed, is refused under the locks and nothing moves", async () => {
+      const other = BUCKET_BOOKINGS[0]!;
+      await paidBankTransfer(other, `${other}-payment`, `${other}-txn`);
+      const otherTask = await handBackNoted(`${P}-other`, 15_000, { bookingId: other, paymentId: `${other}-payment`, noNote: true });
+      const otherLine = (await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: other, postingKey: `handback:${otherTask}` }, select: { id: true } })).id;
+      const { linkId, xLine } = await unmatchedTwoRefundNote();
+      const before = await money();
+      await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: otherLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("not a live bank refund on this payment"),
+      });
+      // Reverse x's line as a second note's undo would, then pick it.
+      const { settlementLineReversal } = await import("@/lib/booking-ledger-settlement-posting");
+      const { buildBookingLedgerRows, writeBookingLedgerRows } = await import("@/lib/booking-ledger-write");
+      const { findPostedSettlementLines } = await import("@/lib/booking-ledger-read");
+      const posted = (await findPostedSettlementLines(prisma as never, BOOKING_ID, { kind: "BANK_REFUND" })).find((line) => line.id === xLine)!;
+      await prisma.$transaction((tx) => writeBookingLedgerRows(tx, buildBookingLedgerRows([settlementLineReversal({ bookingId: BOOKING_ID, lodgeId: LODGE_ID }, posted)])));
+      await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: xLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({ status: 409 });
+      expect((await money()).detailCents).toBe(before.detailCents);
+      expect(await followUpTasks()).toEqual([]);
+    });
+
+    it("MUTATION (money 7): a voided note of a card refund paid another way goes to a person with nothing to pick, and is never undone", async () => {
+      await paidBankTransfer();
+      const close = await handBackNoted(`${P}-paw`, PAID_CENTS, { names: "paidAnotherWayTaskId", perDelta: true, occurrenceKey: `card-refund-paid-another-way:${P}-op` });
+      const linkId = await voidInXero(`${P}-paw`, PAID_CENTS);
+      const before = await money();
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "unmatched" });
+      expect(await money()).toEqual(before);
+      const listed = (await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID);
+      expect(listed).toEqual([expect.objectContaining({ reason: "paid-another-way", pickableLines: [] })]);
+      const closeLine = (await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: BOOKING_ID, postingKey: `handback:${close}` }, select: { id: true } })).id;
+      await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: closeLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({ status: 409 });
+      // Nothing to pick: the answer is recorded, and moves nothing.
+      await withWrites(() => followUp.markUnmatchedBankRefundVoidAnswered({ linkId, note: "Re-raised from the repair tool", actingMemberId: OFFICER_ID }));
+      expect(await money()).toEqual(before);
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "handled" });
     });
 
     it("the read-only count sorts one fixture per bucket", async () => {
