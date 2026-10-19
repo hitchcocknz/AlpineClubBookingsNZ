@@ -411,7 +411,9 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       const { reconcilePaymentAggregates } = await import("@/lib/payment-transactions");
       await reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
       expect((await money()).payment.refundedAmountCents).toBe(0);
-      // Handled exactly once.
+      // Handled exactly once - and left out of the nightly scan in SQL (review, money 9).
+      expect(await scan.readVoidedBankRefundNoteLinkIds(prisma as never)).not.toContain(linkId);
+      expect(await scan.readVoidedBankRefundNoteLinkIds(prisma as never, { includeHandled: true })).toContain(linkId);
       expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "handled" });
       expect(await followUpTasks()).toHaveLength(1);
     });
