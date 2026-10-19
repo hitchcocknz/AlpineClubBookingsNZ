@@ -20,7 +20,8 @@ export async function POST() {
     const now = new Date();
     // #3462: the reset and its audit row commit together or not at all, so a
     // failed audit never leaves an unattributed bulk override behind.
-    const reset = await prisma.$transaction(async (tx) => {
+    // `count` names this audit writer in the audit-writer census (#2581).
+    const count = await prisma.$transaction(async (tx) => {
       const written = await writeStaleRunningXeroOperationReset(
         staleRunningXeroOperationFilter(now),
         now,
@@ -40,16 +41,16 @@ export async function POST() {
       }
       return written;
     });
-    const count = reset.failed + reset.partial;
+    const total = count.failed + count.partial;
 
     return NextResponse.json({
       ok: true,
-      count,
-      failed: reset.failed,
-      partial: reset.partial,
+      count: total,
+      failed: count.failed,
+      partial: count.partial,
       message:
-        count > 0
-          ? `Reset ${describeReset(reset, "stale running operation", "failed", "partly completed")}. Retry or resolve them from the list.`
+        total > 0
+          ? `Reset ${describeReset(count, "stale running operation", "failed", "partly completed")}. Retry or resolve them from the list.`
           : "No stale running operations to reset.",
     });
   } catch (error) {
