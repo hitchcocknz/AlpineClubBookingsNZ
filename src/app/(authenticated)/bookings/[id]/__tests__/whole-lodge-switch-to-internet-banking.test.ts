@@ -4,7 +4,7 @@ import { isSwitchableToInternetBanking } from "@/lib/booking-payment-flow";
 import { resolveBookingDetailPayment } from "../_lib/booking-detail-payment";
 
 /*
-  Fork, booking-fixes — the switch-to-Internet-Banking door on an approved
+  #4019 — the switch-to-Internet-Banking door on an approved
   member whole-lodge booking.
 
   The approval leaves the payment method to the member when the Internet
@@ -25,6 +25,7 @@ const ownerViewer = {
   canManageBooking: true,
   isBookingOwner: true,
   nonOwnerAdminViewer: false,
+  canSeeOwnerCredit: true,
 } as unknown as Parameters<typeof resolveBookingDetailPayment>[0]["viewer"];
 
 const liveAccess = { isDeleted: false } as unknown as Parameters<
@@ -47,6 +48,7 @@ function booking(overrides: Record<string, unknown> = {}) {
     payment: null,
     creditsFromCancellation: [],
     refundRequests: [],
+    manualRefundTasks: [],
     parentBooking: null,
     deletedAt: null,
     ...overrides,
@@ -80,6 +82,7 @@ describe("the booking page's pay doors on an approved whole-lodge booking", () =
       viewer: ownerViewer,
       access: liveAccess,
       party: noLinkedParty,
+      amountOwed: { owedCents: 30000, dueCents: 30000, appliedCreditCents: 0 },
     });
     expect(payment.showCompletePaymentCard).toBe(true);
     expect(payment.canSwitchToInternetBanking).toBe(true);
@@ -96,12 +99,18 @@ describe("the booking page's pay doors on an approved whole-lodge booking", () =
           refundedAmountCents: 0,
           creditAppliedCents: 0,
           transactions: [],
+          _count: { transactions: 0 },
+          recoveryOperations: [],
+          refunds: [],
+          manualRefundTasks: [],
+          changeFeeCents: 0,
         },
       }),
       modules: modulesOn,
       viewer: ownerViewer,
       access: liveAccess,
       party: noLinkedParty,
+      amountOwed: { owedCents: 30000, dueCents: 30000, appliedCreditCents: 0 },
     });
     expect(payment.showCompletePaymentCard).toBe(false);
     expect(payment.canSwitchToInternetBanking).toBe(false);
@@ -115,6 +124,7 @@ describe("the booking page's pay doors on an approved whole-lodge booking", () =
       viewer: ownerViewer,
       access: liveAccess,
       party: noLinkedParty,
+      amountOwed: { owedCents: 30000, dueCents: 30000, appliedCreditCents: 0 },
     });
     expect(noHold.canSwitchToInternetBanking).toBe(false);
 
@@ -128,6 +138,7 @@ describe("the booking page's pay doors on an approved whole-lodge booking", () =
         viewer: ownerViewer,
         access: liveAccess,
         party: noLinkedParty,
+        amountOwed: { owedCents: 30000, dueCents: 30000, appliedCreditCents: 0 },
       });
       expect(payment.canSwitchToInternetBanking, JSON.stringify(modules)).toBe(false);
     }
@@ -141,9 +152,11 @@ describe("the booking page's pay doors on an approved whole-lodge booking", () =
         canManageBooking: false,
         isBookingOwner: false,
         nonOwnerAdminViewer: true,
+        canSeeOwnerCredit: false,
       } as unknown as typeof ownerViewer,
       access: liveAccess,
       party: noLinkedParty,
+      amountOwed: { owedCents: 30000, dueCents: 30000, appliedCreditCents: 0 },
     });
     expect(payment.canSwitchToInternetBanking).toBe(false);
     expect(payment.showCompletePaymentCard).toBe(false);

@@ -161,7 +161,7 @@ vi.mock("@/lib/admin-modules", () => ({
   isEffectiveModuleEnabled: vi.fn().mockResolvedValue(true),
 }));
 
-// Fork, booking-fixes: the member whole-lodge approval applies the credit a
+// #4019: the member whole-lodge approval applies the credit a
 // member asked for through the ordinary create path's writer. Stubbed so the
 // tests assert the WIRING (owner, clamped amount, booking, lock order) without
 // a real ledger; the manual-invoice alert's ledger read keeps answering zero,
@@ -2534,7 +2534,7 @@ function memberWholeLodgeRequest(overrides: Partial<Record<string, unknown>> = {
 }
 
 /**
- * Fork, booking-fixes: the approval leaves the payment method to the member
+ * #4019: the approval leaves the payment method to the member
  * only when BOTH the Internet Banking and Xero modules are on (the default
  * stub below answers true for every key). This puts a test on the LEGACY
  * pay-on-account path — the Internet Banking module off, Xero as given — which
@@ -3488,7 +3488,7 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Fork, booking-fixes: the member chooses the payment method
+  // #4019: the member chooses the payment method
   // -------------------------------------------------------------------------
   // With the Internet Banking AND Xero modules on (the beforeEach default), the
   // approval leaves the method to the member: no receivable, no invoice, no

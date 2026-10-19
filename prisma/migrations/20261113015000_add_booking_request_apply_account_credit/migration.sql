@@ -1,4 +1,4 @@
--- Fork booking-fixes: a member whole-lodge request records whether the member
+-- #4019: a member whole-lodge request records whether the member
 -- asked for their account credit to be put towards the booking when it is
 -- approved. The price is unknown at request time, so this is a yes/no election;
 -- approval applies min(balance, price) under the member's ledger lock.

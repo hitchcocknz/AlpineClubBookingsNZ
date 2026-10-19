@@ -485,7 +485,7 @@ export type BookingPaymentDueCredit =
     };
 
 /**
- * HOW an unpaid confirmation asks to be paid (fork, booking-fixes).
+ * HOW an unpaid confirmation asks to be paid (#4019).
  *
  * `payOnline`: no receivable exists yet — the member chooses on their booking
  * page between a card payment and a switch to internet banking (the member

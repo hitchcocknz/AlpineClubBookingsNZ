@@ -1,5 +1,5 @@
 - **An approved whole-lodge booking can now be paid by card, with account
-  credit, or by internet banking — the member chooses (fork, booking-fixes).**
+  credit, or by internet banking — the member chooses (#4019).**
   Approving a member's whole-lodge request used to settle the question for
   them: the booking was confirmed with an internet-banking invoice already
   raised, so the booking page offered only the bank-transfer instructions and

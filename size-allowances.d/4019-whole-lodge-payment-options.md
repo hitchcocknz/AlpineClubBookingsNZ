@@ -1,4 +1,4 @@
-# File-size allowances for the booking-fixes branch (whole-lodge payment options)
+# File-size allowances for #4019 (whole-lodge payment options)
 
 The whole-lodge approval now leaves the payment method to the member. Every
 file below is an existing seam that change had to pass through; each grows by a

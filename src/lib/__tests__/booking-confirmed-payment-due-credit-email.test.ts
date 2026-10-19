@@ -376,7 +376,7 @@ describe("#2444 the shared composer", () => {
   });
 
   it("rests on a send path whose credit application is the member's own election, never the legacy receivable's", () => {
-    // THE TRIPWIRE FIRED (fork, booking-fixes), and this is the re-read it
+    // THE TRIPWIRE FIRED (#4019), and this is the re-read it
     // asked for. The whole-lodge approval now applies the credit a member asked
     // for on the request — through `applyCreditToBooking`, the ordinary create
     // path's writer — so the netted copy IS live for real members, on the

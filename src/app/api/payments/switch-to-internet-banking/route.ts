@@ -168,7 +168,7 @@ export async function POST(request: NextRequest) {
   // hold or organiser-settled / draft booking cannot. The status rule is the
   // page's own (`isSwitchableToInternetBanking`): PAYMENT_PENDING, or an
   // approved member whole-lodge booking — CONFIRMED and held, but owing its
-  // whole price with no receivable yet (fork, booking-fixes).
+  // whole price with no receivable yet (#4019).
   const wholeLodgeConfirmed =
     booking.status === "CONFIRMED" && booking.wholeLodgeHold === true;
   if (

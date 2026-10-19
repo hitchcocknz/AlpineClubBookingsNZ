@@ -52,7 +52,7 @@ export function getBookingPaymentMode(
  * the ONE rule the booking page's switch button and the switch route share.
  *
  * - `PAYMENT_PENDING`: the ordinary card booking, as always.
- * - `CONFIRMED` with a whole-lodge hold (fork, booking-fixes): an approved
+ * - `CONFIRMED` with a whole-lodge hold (#4019): an approved
  *   member whole-lodge booking. Its approval leaves the payment method to the
  *   member, so it is CONFIRMED and capacity-holding through its hold yet owes
  *   its whole price with no receivable minted. Every other CONFIRMED booking

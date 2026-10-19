@@ -2195,7 +2195,7 @@ type ApproveMemberWholeLodgeRequestOutcome =
  *   - the booking is created **CONFIRMED**, which is capacity-holding in its own
  *     right (CAPACITY_HOLDING_BOOKING_STATUSES) — no dependence on the PENDING
  *     `originBookingRequest` clause;
- *   - the MONEY is where the two paths now part (fork, booking-fixes). With
+ *   - the MONEY is where the two paths now part (#4019). With
  *     the Internet Banking AND Xero modules on, the approval leaves the payment
  *     method to the MEMBER, exactly as an ordinary card booking does: no
  *     Payment row is minted and nothing is invoiced here. The booking page then
@@ -2941,7 +2941,7 @@ export async function approveMemberWholeLodgeRequest(input: {
         checkOut: request.checkOut.toISOString(),
         exclusivityRequested: true,
         wholeLodgeHold: true,
-        // How the money was left (fork, booking-fixes): the member chooses on
+        // How the money was left (#4019): the member chooses on
         // the booking page, or the legacy pay-on-account receivable.
         paymentMethod: memberChoosesPaymentMethod
           ? "member_choice"

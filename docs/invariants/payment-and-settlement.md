@@ -983,7 +983,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   while the path applies no credit — and the LEGACY branch (either module off)
   still applies none, which the #2328 module guard now pins by position: the
   module's one `applyCreditToBooking` call sits inside the member-choice branch,
-  before the legacy mint. The member-choice branch (fork, booking-fixes) writes
+  before the legacy mint. The member-choice branch (#4019) writes
   NO receivable at approval, so there is no figure for it to get wrong; the
   receivable is minted later by the Internet Banking switch route at the
   effective price, from the same ledger read, exactly as `booking-create` does.

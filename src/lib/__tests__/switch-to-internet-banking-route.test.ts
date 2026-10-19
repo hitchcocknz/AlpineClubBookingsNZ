@@ -464,7 +464,7 @@ describe("POST /api/payments/switch-to-internet-banking", () => {
     expect(mocks.kickQueuedXeroOutboxOperationsIfConnected).toHaveBeenCalled();
   });
 
-  // Fork, booking-fixes: an approved member whole-lodge booking is CONFIRMED
+  // #4019: an approved member whole-lodge booking is CONFIRMED
   // and held, owes its whole price, and carries no Payment row because the
   // approval left the method to the member. It takes the same switch — and
   // takes it WITHOUT an Internet Banking bed hold, because its capacity is held
