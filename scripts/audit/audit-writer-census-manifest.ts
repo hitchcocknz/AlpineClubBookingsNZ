@@ -668,7 +668,9 @@ export const AUDIT_CENSUS_TOTALS = {
   // 504 -> 505 (#4154, owner decision on #4154): `booking-payment.capacity-race.refunded-total-corrected`,
   // the guarded recalculation of a capacity race's card charge before its hand-back, awaited on the
   // completion's own transaction under `payment`. RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 505,
+  // 505 -> 506 (#4219): `xero.credit_note.spent_outside_app_converged`, the credit-ledger
+  // convergence written with the awaited `createAuditLog` inside its own transaction, under `xero`.
+  writeSites: 506,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -873,7 +875,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // awaited on the ledger writer's transaction so the row commits with it.
     // 144 -> 145 (#4154): a capacity race's charge corrected before its hand-back,
     // awaited on the completion's transaction so the row commits with the correction.
-    createAuditLog: { total: 145, uncategorised: 0 },
+    // 145 -> 146 (#4219): the credit-note convergence's own row, in its transaction.
+    createAuditLog: { total: 146, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1319,7 +1322,10 @@ export const AUDIT_CENSUS_TOTALS = {
     // 38 -> 39 (#3792): `xero.allocation.restored-booking-change-refused`,
     // beside the inbound reconcile's other `xero` rows. Nobody's readership
     // changes.
-    xero: 39,
+    //
+    // 39 -> 40 (#4219): `xero.credit_note.spent_outside_app_converged`, beside the other
+    // `xero` rows. Nobody's readership changes.
+    xero: 40,
     // 12 -> 14 (#2581 child 2): `BULK_COMMUNICATION_SENT` and
     // `EMAIL_SUPPRESSION_CLEARED`. Safe only BECAUSE child 1 moved
     // `communication` out of the support-only system entry into the membership

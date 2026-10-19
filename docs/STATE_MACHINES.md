@@ -3557,9 +3557,11 @@ credit-note allocation refused by Xero as more than the note has left (#4218)
 applied-credit allocation raises that named failure (#4219) -> the worker
   converges the credit ledger with Xero (write the lot down, release the
   booking's applied credit, shrink or delete the unsent slice, close the slice's
-  failed allocation rows through the resolution fields), then plans again; the
-  operation completes SUCCEEDED when nothing is left to allocate. Fails closed
-  (original failure stands) when it cannot account for the discrepancy
+  failed allocation rows through the resolution fields and mark them
+  non-replayable), then plans again; the operation completes SUCCEEDED when
+  nothing is left to allocate. Only credit Xero shows spent on an invoice or
+  payment the app has no record of counts. Fails closed (original failure
+  stands) when it cannot account for the discrepancy
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
   in Xero (before the claim, or the claim lost to the resolve); nothing ran
 outbox copy RUNNING -> CANCELLED when a sibling for the same document was

@@ -180,7 +180,7 @@ const h = vi.hoisted(() => {
             j.memberCreditId === key.memberCreditId &&
             j.appliedToBookingId === key.appliedToBookingId,
         );
-        return row ? { id: row.id } : null;
+        return row ? { id: row.id, amountCents: row.amountCents } : null;
       },
     },
     xeroObjectLink: {

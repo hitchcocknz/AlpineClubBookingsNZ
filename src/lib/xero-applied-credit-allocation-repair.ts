@@ -1,9 +1,10 @@
 import { CreditType, Prisma } from "@prisma/client";
+import { APPLIED_CREDIT_ALLOCATION_ROLE } from "./xero-applied-credit-link-roles";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
 import { buildSyntheticAllocationLinkId } from "@/lib/xero-inbound/amounts";
+import { NOT_A_CONVERGENCE_ROW, writtenDownCentsByCreditNote } from "@/lib/xero-credit-note-write-down";
 
-const APPLIED_CREDIT_ALLOCATION_ROLE = "APPLIED_CREDIT_ALLOCATION";
 const APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE =
   "APPLIED_CREDIT_REMAINDER_ALLOCATION";
 
@@ -145,6 +146,7 @@ async function findUniqueFundingLot(params: {
       memberId: params.memberId,
       xeroCreditNoteId: params.xeroCreditNoteId,
       amountCents: { gt: 0 },
+      ...NOT_A_CONVERGENCE_ROW,
     },
     select: { id: true, amountCents: true },
     take: 2,
@@ -162,6 +164,7 @@ async function findUniqueFundingLot(params: {
 
 async function assertSliceFitsFundingLot(params: {
   db: RepairDb;
+  memberId: string;
   sliceId?: string;
   memberCreditId: string;
   fundingCents: number;
@@ -177,9 +180,11 @@ async function assertSliceFitsFundingLot(params: {
     },
     _sum: { amountCents: true },
   });
+  // #4219: credit written down because its note was used outside the app is gone.
+  const writtenDown = await writtenDownCentsByCreditNote(params.db, params.memberId, [params.xeroCreditNoteId]);
   const remainingCents = Math.max(
     0,
-    params.fundingCents - (allocated._sum.amountCents ?? 0),
+    params.fundingCents - (allocated._sum.amountCents ?? 0) - (writtenDown.get(params.xeroCreditNoteId) ?? 0),
   );
   if (params.targetCents > remainingCents) {
     throw new Error(
@@ -287,6 +292,7 @@ export async function repairLegacyAppliedCreditNoteAllocationsForBooking(
       });
       await assertSliceFitsFundingLot({
         db,
+        memberId,
         memberCreditId: lot.id,
         fundingCents: lot.amountCents,
         targetCents: providerTarget.amountCents,
@@ -335,6 +341,7 @@ export async function repairLegacyAppliedCreditNoteAllocationsForBooking(
       }
       await assertSliceFitsFundingLot({
         db,
+        memberId: lot.memberId,
         sliceId: current.id,
         memberCreditId: current.memberCreditId,
         fundingCents: lot.amountCents,
@@ -448,6 +455,7 @@ export async function repairLegacyAppliedCreditNoteAllocationsForBooking(
   });
   await assertSliceFitsFundingLot({
     db,
+    memberId: owningMemberId,
     memberCreditId: lot.id,
     fundingCents: lot.amountCents,
     targetCents: amountCents,

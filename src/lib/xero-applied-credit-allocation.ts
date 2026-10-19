@@ -20,11 +20,12 @@
  * outbox worker, outside the ledger transactions.
  */
 import { CreditNote, LineAmountTypes } from "xero-node";
+import { APPLIED_CREDIT_ALLOCATION_ROLE } from "./xero-applied-credit-link-roles";
 import { CreditType, Prisma } from "@prisma/client";
 import { appliedCreditSettledByCancel, unallocatedAppliedCents } from "./xero-applied-credit-ledger-state";
 import { prisma } from "./prisma";
 import { lockMemberCreditLedger } from "./member-credit";
-import { writtenDownCentsByCreditNote } from "./xero-credit-note-write-down";
+import { NOT_A_CONVERGENCE_ROW, writtenDownCentsByCreditNote } from "./xero-credit-note-write-down";
 import { convergedForNamedFailure } from "./xero-applied-credit-spent-outside-app";
 import { allocateCreditNoteToInvoice } from "./xero-credit-notes";
 import {
@@ -56,7 +57,6 @@ import {
 } from "./xero-applied-credit-operation-serialization";
 
 // XeroObjectLink roles for this engine's artefacts.
-const APPLIED_CREDIT_ALLOCATION_ROLE = "APPLIED_CREDIT_ALLOCATION";
 const APPLIED_CREDIT_REMAINDER_NOTE_ROLE = "APPLIED_CREDIT_REMAINDER_NOTE";
 const APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE =
   "APPLIED_CREDIT_REMAINDER_ALLOCATION";
@@ -92,7 +92,7 @@ async function gatherAppliedCreditLots(
   tx: Prisma.TransactionClient,
 ): Promise<AppliedCreditLot[]> {
   const positiveLots = await tx.memberCredit.findMany({
-    where: { memberId, amountCents: { gt: 0 } },
+    where: { memberId, amountCents: { gt: 0 }, ...NOT_A_CONVERGENCE_ROW },
     // `type` is read for the mint's account mapping (#2717) — see
     // `mintSliceMappingKey`. Blue/green runtime-prep: name only what is read.
     select: {
@@ -484,7 +484,7 @@ export async function allocateAppliedCreditForBooking(
           appliedToBookingId: bookingId,
         },
       },
-      select: { id: true },
+      select: { id: true, amountCents: true },
     });
     if (!joinRow) {
       continue;
@@ -503,7 +503,8 @@ export async function allocateAppliedCreditForBooking(
       continue;
     }
     try {
-      await allocateCreditNoteToInvoice(na.xeroCreditNoteId, invoiceId, na.amountCents, {
+      // The slice's current amount, not the plan's: a concurrent converge may have shrunk it (#4219).
+      await allocateCreditNoteToInvoice(na.xeroCreditNoteId, invoiceId, joinRow.amountCents, {
         localModel: "MemberCreditNoteAllocation",
         localId: joinRow.id,
         role: APPLIED_CREDIT_ALLOCATION_ROLE,

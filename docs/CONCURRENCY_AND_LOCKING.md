@@ -4870,7 +4870,7 @@ cancel-settled and deallocation-fence preconditions, under both keys. The Xero
 read that confirmed the signal happened before the transaction, so no provider
 call is held inside it. There is no separate claim row: a repeat finds the
 write-down already counted and writes nothing, and a concurrent run that lost the
-race finds the booking converged. Registered in `advisory-lock-guard.test.ts`
+race finds the booking converged or its slice already shrunk below what was refused. Registered in `advisory-lock-guard.test.ts`
 (`convergeCreditNoteSpentOutsideApp#1`); proved against real PostgreSQL by
 `credit-note-spent-outside-app.realdb.test.ts`.
 

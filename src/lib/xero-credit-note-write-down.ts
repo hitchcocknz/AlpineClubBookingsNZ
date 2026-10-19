@@ -12,7 +12,16 @@ import { CreditType, Prisma } from "@prisma/client";
 
 export const CREDIT_NOTE_WRITE_DOWN_TYPE = CreditType.ADMIN_ADJUSTMENT;
 
-/** The member's write-down rows for these notes: negative, stamped with a note id. */
+/**
+ * Rows the convergence writes carry `outsideSpendConvergedAt`: the booking's
+ * release (a positive `BOOKING_APPLIED` row) and the lot's write-down. The marker
+ * says "this row is not a spendable lot", because a positive row is otherwise the
+ * member's own money and the planner would mint a Xero note for it. Every reader
+ * that finds lots excludes marked rows through this one predicate.
+ */
+export const NOT_A_CONVERGENCE_ROW = { outsideSpendConvergedAt: null } satisfies Prisma.MemberCreditWhereInput;
+
+/** The member's write-down rows for these notes: marked, negative, stamped with a note id. */
 export function creditNoteWriteDownWhere(
   memberId: string,
   creditNoteIds: string[],
@@ -21,6 +30,7 @@ export function creditNoteWriteDownWhere(
     memberId,
     type: CREDIT_NOTE_WRITE_DOWN_TYPE,
     amountCents: { lt: 0 },
+    outsideSpendConvergedAt: { not: null },
     xeroCreditNoteId: { in: creditNoteIds },
   };
 }
@@ -45,9 +55,9 @@ export async function writtenDownCentsByCreditNote(
 }
 
 export function creditNoteWriteDownDescription(bookingId: string): string {
-  return `Credit note used outside the app: credit written down (booking ${bookingId.slice(0, 8)})`;
+  return `Credit used in Xero outside the app: written off (booking ${bookingId.slice(0, 8)})`;
 }
 
 export function creditNoteReleaseDescription(bookingId: string): string {
-  return `Applied credit released after booking ${bookingId.slice(0, 8)}'s credit note was used outside the app`;
+  return `Credit no longer applied to booking ${bookingId.slice(0, 8)}: it was used in Xero outside the app, so the amount is owing on the booking`;
 }
