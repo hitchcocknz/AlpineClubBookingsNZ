@@ -43,6 +43,8 @@ const state = vi.hoisted(() => ({
   realResolved: false,
   /** Runs when a payment call fails, before it throws: a concurrent winner. */
   onFailedPayment: null as null | (() => void),
+  // #4256: runs as a payment call reaches the fake Xero.
+  onPayment: null as null | (() => void),
   bankTransferAccount: "090" as string | null,
   crash: null as null | "at-settlement" | "at-completion",
   xero: {
@@ -331,6 +333,7 @@ function xeroApi() {
       key: string,
     ) => {
       const request = body.payments[0]!;
+      state.onPayment?.();
       state.xero.createPaymentsCalls.push({
         key,
         account: request.account.code,
@@ -550,6 +553,7 @@ beforeEach(() => {
   state.resolved = { coveredCents: 0, correlationKeys: [], operationIds: [], unreadableOperationIds: [] };
   state.realResolved = false;
   state.onFailedPayment = null;
+  state.onPayment = null;
   state.bankTransferAccount = "090";
   state.crash = null;
   state.xero.notes = new Map();
@@ -817,6 +821,20 @@ describe("a refund note interrupted between the two persists (#3548)", () => {
     expect(row("op_replay")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_1" });
     expect(row("op_replay").responsePayload).toEqual({ existingCreditNoteId: "cn_1", coveredByExistingNote: true });
     expectNoSucceededRowWithNeither();
+  });
+
+  it("MUTATION (#4256 F4): a retry's settlement whose claim an operator took back mid-payment writes nothing over it", async () => {
+    await firstAttemptDies("at-settlement");
+    // An operator's Mark failed lands while the payment is in flight: the row
+    // is no longer this retry's RUNNING claim.
+    state.onPayment = () => {
+      Object.assign(row(), { status: "FAILED", lastErrorMessage: "marked failed by an operator" });
+    };
+
+    await retry();
+
+    expect(state.xero.notes.get("cn_1")!.payments).toHaveLength(1);
+    expect(row()).toMatchObject({ status: "FAILED", lastErrorMessage: "marked failed by an operator" });
   });
 
   it("the loser of two retries whose payment call fails never writes PARTIAL over the winner's SUCCEEDED (round 3 R2-6)", async () => {
