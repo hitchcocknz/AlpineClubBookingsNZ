@@ -29,6 +29,9 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 // #4107: FIRST, so its snapshot predates every imported suite's hooks and its
 // afterAll runs last: the harness leaves `process.env` as it found it.
 import "./support/race-harness-env-guard";
+// #4234: after suite teardown, no queued Xero work may remain. Consumers also
+// check ownership before processing, so an earlier leak cannot be consumed away.
+import "./support/race-harness-outbox-guard";
 // #2363 reuses this suite's already-guarded, disposable hosted PostgreSQL but
 // creates/drops its own unique schema. Importing registers the trigger proofs in
 // the explicit CI race command without changing the workflow or making ordinary
