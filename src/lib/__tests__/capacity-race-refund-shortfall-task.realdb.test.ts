@@ -53,6 +53,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
+import { assertNoForeignPendingXeroOperations } from "./support/race-harness-outbox-guard";
 
 /** The one shared double: the LAST file to register a factory wins, so every realdb file registers this same one. */
 vi.mock("@/lib/stripe", async (importOriginal) =>
@@ -654,14 +655,20 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       return sumRefundCreditNoteCoverageCents(PAYMENT_ID, await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, prisma), prisma);
     }
 
-    /**
-     * One pass of the real outbox worker over its oldest queued row, made `operationId`: the shared harness database
-     * can hold other suites' queued rows, so this one is dated before them all, and the worker sends nothing else.
-     */
+    /** One real worker pass on this row, preserving the chronology of both owned notes. */
     async function outboxSends(operationId: string) {
-      await prisma.xeroSyncOperation.update({ where: { id: operationId }, data: { createdAt: new Date("2000-01-01T00:00:00.000Z") } });
-      const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
-      expect(await processQueuedXeroOutboxOperations({ limit: 1 })).toMatchObject({ processed: 1 });
+      await assertNoForeignPendingXeroOperations(prisma, [PAYMENT_ID, BOOKING_ID]);
+      const parked = await prisma.xeroSyncOperation.findMany({
+        where: { status: "PENDING", localId: { in: [PAYMENT_ID, BOOKING_ID] }, id: { not: operationId } },
+        select: { id: true },
+      });
+      await prisma.xeroSyncOperation.updateMany({ where: { id: { in: parked.map((row) => row.id) } }, data: { status: "PARKED_RACE_4154" } });
+      try {
+        const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
+        expect(await processQueuedXeroOutboxOperations({ limit: 1 })).toMatchObject({ processed: 1 });
+      } finally {
+        await prisma.xeroSyncOperation.updateMany({ where: { id: { in: parked.map((row) => row.id) } }, data: { status: "PENDING" } });
+      }
       return prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { status: true, responsePayload: true } });
     }
 

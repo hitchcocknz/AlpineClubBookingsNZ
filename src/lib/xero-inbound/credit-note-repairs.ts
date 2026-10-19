@@ -1,3 +1,4 @@
+import { APPLIED_CREDIT_ALLOCATION_ROLE } from "@/lib/xero-applied-credit-link-roles";
 import { type CreditNote as XeroCreditNote } from "xero-node";
 import { CreditType, PaymentSource, PaymentStatus } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
@@ -83,10 +84,7 @@ async function recordRestoredBookingAllocationRefusal(
   }
 }
 
-const APPLIED_CREDIT_ALLOCATION_ROLES = [
-  "APPLIED_CREDIT_ALLOCATION",
-  "APPLIED_CREDIT_REMAINDER_ALLOCATION",
-] as const;
+const APPLIED_CREDIT_ALLOCATION_ROLES = [APPLIED_CREDIT_ALLOCATION_ROLE, "APPLIED_CREDIT_REMAINDER_ALLOCATION"] as const;
 
 async function includeDeletedAppliedCreditAllocationTargets(
   creditNoteId: string,
@@ -949,7 +947,7 @@ export async function repairAccountCreditAllocationBusinessState(
           description?: string;
         } = {};
 
-        if (appliedCredit.description !== expectedDescription) {
+        if (appliedCredit.description !== expectedDescription && appliedCredit.outsideSpendConvergedAt === null) {
           updates.description = expectedDescription;
         }
 
