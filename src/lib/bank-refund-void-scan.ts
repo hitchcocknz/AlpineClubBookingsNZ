@@ -71,6 +71,7 @@ import { readPaidAnotherWayCash } from "@/lib/card-refund-paid-another-way-cash"
 import { unwindableHandBackCents } from "@/lib/refund-allocation-unwind";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import { asRecord, readString } from "@/lib/xero-json";
 import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
 import {
@@ -451,7 +452,7 @@ export async function classifyVoidedBankRefundNote(db: Reader, linkId: string): 
 async function readPicksOfNote(db: Reader, paymentId: string, creditNoteId: string): Promise<{ count: number; cents: number }> {
   const tasks =
     (await db.manualRefundTask.findMany({
-      where: { ...BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE, occurrenceKey: { startsWith: bankRefundVoidPickKeyPrefix(paymentId, creditNoteId) } },
+      where: { ...BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE, occurrenceKey: exactPrefix(bankRefundVoidPickKeyPrefix(paymentId, creditNoteId)) },
       select: { amountCents: true, raisedAmountCents: true },
     })) ?? [];
   return { count: tasks.length, cents: tasks.reduce((sum, task) => sum + (task.raisedAmountCents ?? task.amountCents ?? 0), 0) };
