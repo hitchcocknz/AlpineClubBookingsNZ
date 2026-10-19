@@ -10,6 +10,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const calls: string[] = [];
 const classify = vi.fn();
+const resolvePicked = vi.fn();
+const pickable = vi.fn(async () => [] as unknown[]);
 const unwind = vi.fn(async () => {
   calls.push("unwind");
 });
@@ -33,6 +35,11 @@ vi.mock("@/lib/bank-refund-void-scan", async (importOriginal) => ({
     return classify(...args);
   },
   readVoidedBankRefundNoteLinkIds: vi.fn(async () => ["link-1"]),
+  resolvePickedUndo: (...args: unknown[]) => {
+    calls.push("resolve-pick");
+    return resolvePicked(...args);
+  },
+  readPickableHandBackLines: (...args: unknown[]) => pickable(...args),
 }));
 vi.mock("@/lib/booking-ledger-write", () => ({ buildBookingLedgerRows: (rows: unknown[]) => rows, writeBookingLedgerRows: writeLines }));
 vi.mock("@/lib/payment-transactions", () => ({
@@ -66,7 +73,7 @@ const tx = {
 const transaction = vi.fn(async (run: (client: typeof tx) => unknown) => run(tx));
 vi.mock("@/lib/prisma", () => ({ prisma: { $transaction: (run: (client: typeof tx) => unknown) => transaction(run) } }));
 
-const { followUpVoidedBankRefundNote, markUnmatchedBankRefundVoidAnswered, runBankRefundVoidFollowUp } = await import(
+const { followUpVoidedBankRefundNote, markUnmatchedBankRefundVoidAnswered, pickRefundForUnmatchedVoid, runBankRefundVoidFollowUp } = await import(
   "@/lib/bank-refund-void-follow-up"
 );
 
@@ -155,8 +162,41 @@ describe("followUpVoidedBankRefundNote (#4162)", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
   });
 
-  it("a person's answer takes lock(1), then the Payment row, then re-classifies, and refuses a note that no longer needs one", async () => {
+  it("MUTATION (report-only, money 9): the nightly run takes no lock for a note it will not write", async () => {
+    process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
     classify.mockResolvedValue(classified({ kind: "unmatched", reason: "no-line", amountCents: 20_000 }));
+    expect(await runBankRefundVoidFollowUp()).toMatchObject({ mode: "writes", counts: { unmatched: 1 } });
+    expect(transaction).not.toHaveBeenCalled();
+    classify.mockResolvedValue(classified({ kind: "spare", amountCents: 20_000, coverageCents: 20_000, requiredCents: 20_000 }));
+    await runBankRefundVoidFollowUp();
+    expect(transaction).toHaveBeenCalledTimes(1);
+  });
+
+  it("MUTATION (report-only, owner 18 Oct): a person's pick and answer are refused before any transaction while report-only", async () => {
+    await expect(pickRefundForUnmatchedVoid({ linkId: "link-1", lineId: "line-1", actingMemberId: "officer-1" })).rejects.toMatchObject({ status: 409 });
+    await expect(markUnmatchedBankRefundVoidAnswered({ linkId: "link-1", note: "x", actingMemberId: "officer-1" })).rejects.toMatchObject({ status: 409 });
+    expect(transaction).not.toHaveBeenCalled();
+  });
+
+  it("a person's pick runs the same undo, in the same order, with the person as its actor; a refused pick moves nothing", async () => {
+    process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
+    classify.mockResolvedValue(classified({ kind: "unmatched", reason: "no-line", amountCents: 20_000 }));
+    resolvePicked.mockResolvedValue({ undo: { amountCents: 15_000, taskId: "task-1", line } });
+    await expect(pickRefundForUnmatchedVoid({ linkId: "link-1", lineId: "line-1", actingMemberId: "officer-1" })).resolves.toMatchObject({ followUpTaskId: "follow-up-1" });
+    expect(calls).toEqual(["SELECT pg_advisory_xact_lock(1)", "lock-payment:pay-1", "classify", "resolve-pick", "claim", "unwind", "reverse-line", "reconcile", "audit"]);
+    expect(unwind).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 15_000 }));
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ actorMemberId: "officer-1" }), tx);
+
+    vi.clearAllMocks();
+    resolvePicked.mockResolvedValue({ refusal: "line-not-pickable" });
+    await expect(pickRefundForUnmatchedVoid({ linkId: "link-1", lineId: "line-x", actingMemberId: "officer-1" })).rejects.toMatchObject({ status: 409 });
+    expect(tx.manualRefundTask.createMany).not.toHaveBeenCalled();
+    expect(unwind).not.toHaveBeenCalled();
+  });
+
+  it("a person's answer takes lock(1), then the Payment row, then re-classifies, and refuses a note that has a refund to pick", async () => {
+    process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
+    classify.mockResolvedValue(classified({ kind: "unmatched", reason: "paid-another-way", amountCents: 20_000 }));
     await markUnmatchedBankRefundVoidAnswered({ linkId: "link-1", note: "Raised CN-9 by hand", actingMemberId: "officer-1" });
     expect(calls.slice(0, 3)).toEqual(["SELECT pg_advisory_xact_lock(1)", "lock-payment:pay-1", "classify"]);
     expect(tx.xeroObjectLink.update).toHaveBeenCalledWith({
@@ -166,5 +206,9 @@ describe("followUpVoidedBankRefundNote (#4162)", () => {
 
     classify.mockResolvedValue(classified({ kind: "handled", by: "answered", followUpTaskId: null }));
     await expect(markUnmatchedBankRefundVoidAnswered({ linkId: "link-1", note: "again", actingMemberId: "officer-1" })).rejects.toMatchObject({ status: 409 });
+    // A note with a bank refund to pick takes the pick, never an answer.
+    classify.mockResolvedValue(classified({ kind: "unmatched", reason: "no-line", amountCents: 20_000 }));
+    pickable.mockResolvedValueOnce([{ lineId: "line-1", taskId: "task-1", amountCents: 20_000 }]);
+    await expect(markUnmatchedBankRefundVoidAnswered({ linkId: "link-1", note: "x", actingMemberId: "officer-1" })).rejects.toMatchObject({ status: 409 });
   });
 });

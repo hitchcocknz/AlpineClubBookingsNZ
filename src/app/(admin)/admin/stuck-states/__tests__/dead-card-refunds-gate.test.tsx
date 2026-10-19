@@ -133,10 +133,26 @@ describe("who sees the card refunds Stripe gave up on", () => {
 
     mocks.areas = ["support", "finance"];
     mocks.listBankRefundVoidsToAnswerRows.mockResolvedValue([
-      { linkId: "link-1", bookingId: "booking-1", bookingReference: "B-123", creditNoteNumber: "CN-0456", amountCents: 20_000, voidedAt: "2026-06-30T00:00:00.000Z" },
+      {
+        linkId: "link-1", bookingId: "booking-1", bookingReference: "B-123", creditNoteNumber: "CN-0456", amountCents: 20_000,
+        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "no-line", pickableLines: [{ lineId: "line-1", amountCents: 20_000, recordedAt: null }],
+      },
     ]);
+    // Report-only: shown, with no action and the reason why.
+    delete process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES;
     render(await AdminStuckStatesPage());
     expect(screen.getByText("Voided bank refund notes to answer")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Answer the voided refund note on booking B-123" })).toBeInTheDocument();
+    expect(screen.getByTestId("bank-refund-voids-report-only")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pick the refund for the voided refund note on booking B-123" })).not.toBeInTheDocument();
+    cleanup();
+
+    process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
+    try {
+      render(await AdminStuckStatesPage());
+      expect(screen.getByRole("button", { name: "Pick the refund for the voided refund note on booking B-123" })).toBeInTheDocument();
+      expect(screen.queryByTestId("bank-refund-voids-report-only")).not.toBeInTheDocument();
+    } finally {
+      delete process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES;
+    }
   });
 });

@@ -7,28 +7,51 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const getCreditNotes = vi.fn();
+const getInvoice = vi.fn();
 const findUnique = vi.fn();
+const callXeroApi = vi.fn((call: () => unknown, _options?: unknown) => call());
 
-vi.mock("@/lib/xero-api-client", () => ({
-  getAuthenticatedXeroClient: vi.fn(async () => ({ xero: { accountingApi: { getCreditNotes } }, tenantId: "tenant" })),
-  callXeroApi: vi.fn((call: () => unknown) => call()),
+vi.mock("@/lib/xero-api-client", async (importOriginal) => ({
+  XeroDailyLimitError: ((await importOriginal()) as typeof import("@/lib/xero-api-client")).XeroDailyLimitError,
+  getAuthenticatedXeroClient: vi.fn(async () => ({ xero: { accountingApi: { getCreditNotes, getInvoice } }, tenantId: "tenant" })),
+  callXeroApi: (call: () => unknown, options?: unknown) => callXeroApi(call, options),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: { manualRefundTask: { findUnique } } }));
+vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 
 const { prepareBankRefundVoidAnswer, verifyHandMadeRefundNote } = await import("@/lib/bank-refund-void-answer");
 const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
 const copy = await import("@/lib/bank-refund-void-follow-up-copy");
 
-const live = { creditNoteID: "cn-hand", creditNoteNumber: "CN-0123", status: "AUTHORISED", type: "ACCRECCREDIT", total: 200 };
-const verify = (number = "CN-0123") => verifyHandMadeRefundNote({ creditNoteNumber: number, expectedAmountCents: 20_000, format: CLUB_FORMAT_TEST });
+const live = {
+  creditNoteID: "cn-hand", creditNoteNumber: "CN-0123", status: "AUTHORISED", type: "ACCRECCREDIT", total: 200,
+  contact: { contactID: "contact-sam" }, allocations: [{ invoice: { invoiceID: "inv-1" } }],
+};
+const verify = (number = "CN-0123", over: Partial<{ xeroInvoiceId: string | null; ownerXeroContactId: string | null }> = {}) =>
+  verifyHandMadeRefundNote({ creditNoteNumber: number, expectedAmountCents: 20_000, xeroInvoiceId: "inv-1", ownerXeroContactId: null, format: CLUB_FORMAT_TEST, ...over });
 
 describe("verifyHandMadeRefundNote (#4162)", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    getInvoice.mockResolvedValue({ body: { invoices: [{ contact: { contactID: "contact-sam" } }] } });
+  });
 
-  it("finds the note by its number and accepts a live sales note for the amount", async () => {
+  it("finds the note by its number and accepts an approved sales note for the amount, the invoice's contact and that invoice", async () => {
     getCreditNotes.mockResolvedValue({ body: { creditNotes: [live] } });
     await expect(verify(" CN-0123 ")).resolves.toEqual({ creditNoteId: "cn-hand", creditNoteNumber: "CN-0123", amountCents: 20_000, status: "AUTHORISED", total: 200 });
     expect(getCreditNotes).toHaveBeenCalledWith("tenant", undefined, 'CreditNoteNumber=="CN-0123"');
+    expect(getInvoice).toHaveBeenCalledWith("tenant", "inv-1");
+    // Security 4: a person waits on these reads - one retry, a 5-second wait.
+    expect(callXeroApi).toHaveBeenCalledWith(expect.any(Function), expect.objectContaining({ maxRetries: 1, maxWaitSec: 5 }));
+    getCreditNotes.mockResolvedValue({ body: { creditNotes: [{ ...live, status: "PAID" }] } });
+    await expect(verify()).resolves.toMatchObject({ status: "PAID" });
+  });
+
+  it("checks the owner's contact when the payment has no invoice", async () => {
+    getCreditNotes.mockResolvedValue({ body: { creditNotes: [{ ...live, allocations: [] }] } });
+    await expect(verify("CN-0123", { xeroInvoiceId: null, ownerXeroContactId: "contact-sam" })).resolves.toMatchObject({ creditNoteId: "cn-hand" });
+    expect(getInvoice).not.toHaveBeenCalled();
+    await expect(verify("CN-0123", { xeroInvoiceId: null, ownerXeroContactId: "contact-other" })).rejects.toMatchObject({ status: 409 });
   });
 
   it.each([
@@ -36,7 +59,13 @@ describe("verifyHandMadeRefundNote (#4162)", () => {
     [[{ ...live, total: 150 }], "is for $150.00 in Xero, not $200.00"],
     [[{ ...live, status: "VOIDED" }], "is voided in Xero"],
     [[{ ...live, status: "DELETED" }], "is deleted in Xero"],
+    // MUTATION (money 3): approved or paid only.
+    [[{ ...live, status: "DRAFT" }], "is draft in Xero, not approved or paid"],
+    [[{ ...live, status: "SUBMITTED" }], "not approved or paid"],
     [[{ ...live, type: "ACCPAYCREDIT" }], "is not a sales credit note"],
+    // MUTATION (money 3): the payment's contact, and no other invoice.
+    [[{ ...live, contact: { contactID: "contact-other" } }], "is for a different contact"],
+    [[{ ...live, allocations: [{ invoice: { invoiceID: "inv-other" } }] }], "is allocated to another invoice"],
     [[live, { ...live, creditNoteID: "cn-other" }], "more than one credit note numbered"],
   ])("refuses %j with a reason", async (notes, reason) => {
     getCreditNotes.mockResolvedValue({ body: { creditNotes: notes } });
@@ -48,33 +77,43 @@ describe("verifyHandMadeRefundNote (#4162)", () => {
     expect(getCreditNotes).not.toHaveBeenCalled();
   });
 
-  it("says Xero could not be reached rather than guessing", async () => {
+  it("says Xero could not be reached, or is busy on a rate limit, rather than guessing", async () => {
     getCreditNotes.mockRejectedValue(new Error("network"));
     await expect(verify()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("could not reach Xero") });
+    getCreditNotes.mockRejectedValue(Object.assign(new Error("Too Many Requests"), { response: { statusCode: 429 } }));
+    await expect(verify()).rejects.toMatchObject({ status: 409, message: "Xero is busy, try again in a minute." });
   });
 
-  it("prepares the answer only for a follow-up, at its own amount", async () => {
+  it("prepares the answer only for a follow-up, at its own amount; a fresh note needs an invoice and no Xero call", async () => {
     getCreditNotes.mockResolvedValue({ body: { creditNotes: [live] } });
-    findUnique.mockResolvedValue({
+    const followUp = (xeroInvoiceId: string | null) => ({
       kind: "CANCELLED_BOOKING_HAND_BACK",
       occurrenceKey: "bank-refund-void:pay-1:cn-1",
       amountCents: 20_000,
+      payment: { xeroInvoiceId },
+      booking: { member: { xeroContactId: "contact-sam" }, organisation: null },
       reviewContext: copy.bankRefundVoidFollowUpReviewContext({
         voidedCreditNoteId: "cn-1", voidedCreditNoteNumber: "CN-1", voidedAt: "2026-06-30T00:00:00.000Z", originalTaskId: "t", reversedLineId: "l",
       }),
     });
+    findUnique.mockResolvedValue(followUp("inv-1"));
     await expect(
       prepareBankRefundVoidAnswer({ taskId: "f", answer: { answer: "recorded-in-xero", creditNoteNumber: "CN-0123" }, format: CLUB_FORMAT_TEST }),
     ).resolves.toMatchObject({ answer: "recorded-in-xero", note: { creditNoteId: "cn-hand" } });
-
-    findUnique.mockResolvedValue({ kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "edit-refund-hand-back:m", amountCents: 20_000, reviewContext: null });
-    await expect(
-      prepareBankRefundVoidAnswer({ taskId: "f", answer: { answer: "recorded-in-xero", creditNoteNumber: "CN-0123" }, format: CLUB_FORMAT_TEST }),
-    ).rejects.toMatchObject({ status: 400 });
-    // A fresh note needs no provider call at all.
     getCreditNotes.mockClear();
     await expect(prepareBankRefundVoidAnswer({ taskId: "f", answer: { answer: "fresh-note" }, format: CLUB_FORMAT_TEST })).resolves.toEqual({ answer: "fresh-note" });
     expect(getCreditNotes).not.toHaveBeenCalled();
+    // MUTATION (money 5): no invoice, no fresh note - the treasurer is told what to do.
+    findUnique.mockResolvedValue(followUp(null));
+    await expect(prepareBankRefundVoidAnswer({ taskId: "f", answer: { answer: "fresh-note" }, format: CLUB_FORMAT_TEST })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("no Xero invoice"),
+    });
+
+    findUnique.mockResolvedValue({ ...followUp("inv-1"), occurrenceKey: "edit-refund-hand-back:m", reviewContext: null });
+    await expect(
+      prepareBankRefundVoidAnswer({ taskId: "f", answer: { answer: "recorded-in-xero", creditNoteNumber: "CN-0123" }, format: CLUB_FORMAT_TEST }),
+    ).rejects.toMatchObject({ status: 400 });
   });
 });
 
