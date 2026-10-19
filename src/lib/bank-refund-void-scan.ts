@@ -504,16 +504,48 @@ async function taskNoteCoverageCents(db: Reader, paymentId: string, taskId: stri
   return fromRows + (await sumCoveredRefundCreditNoteCents(paymentId, db, onlyOnLink));
 }
 
-/** Whether live notes still cover this hand-back line's refund (money B). */
-async function isLineStillCovered(db: Reader, paymentId: string, line: PostedSettlementLine): Promise<boolean> {
+/** How much of this hand-back line's refund its own task's live notes still record, at most the line's refund (money B). */
+async function lineOwnLiveCoverageCents(db: Reader, paymentId: string, line: PostedSettlementLine): Promise<number> {
   const cancelledNoteIds = [...(await refundNoteIdSets(paymentId, db)).cancelled];
-  return (await taskNoteCoverageCents(db, paymentId, line.anchorId, cancelledNoteIds)) >= lineCents(line);
+  return Math.min(lineCents(line), await taskNoteCoverageCents(db, paymentId, line.anchorId, cancelledNoteIds));
+}
+
+/**
+ * Whether live notes still record ANY of this line's refund (money B, final
+ * re-check). Even in part, it is never offered, picked or matched: an undo
+ * takes back the whole line, so it would take back what Xero still records,
+ * and leave too little of the voided note to pick the refunds it did record.
+ * Such a line goes to the answer path, its live share shown to the person.
+ */
+async function isLineStillCovered(db: Reader, paymentId: string, line: PostedSettlementLine): Promise<boolean> {
+  return (await lineOwnLiveCoverageCents(db, paymentId, line)) > 0;
+}
+
+/** A live bank hand-back line its own live notes record in part: not offered, shown with its live share. */
+export interface PartlyCoveredHandBackLine {
+  lineId: string;
+  taskId: string;
+  amountCents: number;
+  /** What its own live notes in Xero still record of it: more than 0, less than `amountCents`. */
+  coveredCents: number;
+}
+
+/** The payment's live bank hand-backs (never a card refund's record) whose own live notes record part of them. */
+export async function readPartlyCoveredHandBackLines(db: Reader, paymentId: string, bookingId: string): Promise<PartlyCoveredHandBackLine[]> {
+  const { undoableLines } = await readPaymentHandBacks(db, paymentId, bookingId);
+  const out: PartlyCoveredHandBackLine[] = [];
+  for (const line of undoableLines) {
+    const amountCents = lineCents(line);
+    const coveredCents = await lineOwnLiveCoverageCents(db, paymentId, line);
+    if (coveredCents > 0 && coveredCents < amountCents) out.push({ lineId: line.id, taskId: line.anchorId, amountCents, coveredCents });
+  }
+  return out;
 }
 
 /**
  * The live bank hand-backs a person may pick for an unmatched note on this
- * payment: never a card refund's record, never one live notes still cover
- * (money B), and none larger than what is left of the note's amount to pick
+ * payment: never a card refund's record, never one live notes still record
+ * even in part (money B), and none larger than what is left of the note's amount to pick
  * (`remainingCents`; any size when the amount cannot be read). Each says
  * whether its refund is exactly what is left.
  */
@@ -541,7 +573,7 @@ export type PickRefusal = "not-unmatched" | "line-not-pickable" | "still-covered
  * #4162 (owner decision 18 Oct 2026, comment 6247741127): the undo a person's
  * pick asks for, re-read under the caller's locks - the note still unmatched,
  * the line a live hand-back line of THIS payment that an undo may take back,
- * that no live note still covers (money B), no larger than what is left of the
+ * that no live note of its own still records even in part (money B), no larger than what is left of the
  * note's amount to pick (money A), and the payment's detail still holding its
  * refund. The undo takes back the picked line's refund.
  */
@@ -602,6 +634,8 @@ export interface BankRefundVoidForAPerson {
   reason: BankRefundVoidUnmatchedReason | "deferred";
   /** For an unmatched note, the payment's live bank refunds it may have recorded. Empty otherwise. */
   pickableLines: PickableHandBackLine[];
+  /** For an unmatched note, the bank refunds not offered because their own live notes still record part of them. */
+  partlyCoveredLines: PartlyCoveredHandBackLine[];
 }
 
 /**
@@ -633,6 +667,8 @@ export async function listBankRefundVoidsForAPerson(db: Reader, now: Date = new 
         c.kind === "unmatched" && c.reason !== "paid-another-way"
           ? await readPickableHandBackLines(db, note.paymentId, note.bookingId, c.remainingCents)
           : [],
+      partlyCoveredLines:
+        c.kind === "unmatched" && c.reason !== "paid-another-way" ? await readPartlyCoveredHandBackLines(db, note.paymentId, note.bookingId) : [],
     });
   }
   return items;

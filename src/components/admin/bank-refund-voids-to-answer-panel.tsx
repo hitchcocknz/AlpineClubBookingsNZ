@@ -43,6 +43,8 @@ export interface BankRefundVoidToAnswerRow {
   reason: string;
   /** The payment's live bank refunds a person may pick as one the note recorded; `matchesNote` when it is exactly what is left. */
   pickableLines: ReadonlyArray<{ lineId: string; amountCents: number; matchesNote: boolean; recordedAt: string | null }>;
+  /** Bank refunds not offered because their own live notes in Xero still record part of them. */
+  partlyCoveredLines: ReadonlyArray<{ lineId: string; amountCents: number; coveredCents: number; recordedAt: string | null }>;
 }
 
 /**
@@ -215,6 +217,14 @@ export function BankRefundVoidsToAnswerPanel({
                       Some of the refunds it recorded are picked; {formatCents(row.remainingCents, format)} is still to pick.
                     </div>
                   ) : null}
+                  {row.partlyCoveredLines.map((line) => (
+                    <div key={line.lineId} className="text-xs text-muted-foreground">
+                      {formatCents(line.coveredCents, format)} of the {formatCents(line.amountCents, format)} refund
+                      {line.recordedAt ? ` marked paid back ${clubTime.instantDate(new Date(line.recordedAt))}` : ""} still has a
+                      live note in Xero, so it is not offered here. If the voided note recorded the rest of it, check Xero and
+                      record the answer.
+                    </div>
+                  ))}
                 </div>
                 {deferred || !writesEnabled ? null : (
                   <ViewOnlyActionButton

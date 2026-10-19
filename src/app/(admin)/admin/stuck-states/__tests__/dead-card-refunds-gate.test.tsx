@@ -135,7 +135,7 @@ describe("who sees the card refunds Stripe gave up on", () => {
     mocks.listBankRefundVoidsToAnswerRows.mockResolvedValue([
       {
         linkId: "link-1", bookingId: "booking-1", bookingReference: "B-123", creditNoteNumber: "CN-0456", amountCents: 20_000, remainingCents: 20_000,
-        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "no-line", pickableLines: [{ lineId: "line-1", amountCents: 20_000, matchesNote: true, recordedAt: null }],
+        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "no-line", partlyCoveredLines: [], pickableLines: [{ lineId: "line-1", amountCents: 20_000, matchesNote: true, recordedAt: null }],
       },
     ]);
     // Report-only: shown, with no action and the reason why.
@@ -161,15 +161,15 @@ describe("who sees the card refunds Stripe gave up on", () => {
     mocks.listBankRefundVoidsToAnswerRows.mockResolvedValue([
       {
         linkId: "link-1", bookingId: "booking-1", bookingReference: "B-123", creditNoteNumber: "CN-0456", amountCents: 20_000, remainingCents: 5_000,
-        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "partly-picked", pickableLines: [{ lineId: "line-1", amountCents: 5_000, matchesNote: true, recordedAt: null }],
+        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "partly-picked", partlyCoveredLines: [], pickableLines: [{ lineId: "line-1", amountCents: 5_000, matchesNote: true, recordedAt: null }],
       },
       {
         linkId: "link-2", bookingId: "booking-2", bookingReference: "B-456", creditNoteNumber: "CN-0457", amountCents: 9_000, remainingCents: 9_000,
-        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "detail-short", pickableLines: [],
+        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "detail-short", partlyCoveredLines: [{ lineId: "line-x", amountCents: 5_000, coveredCents: 2_000, recordedAt: null }], pickableLines: [],
       },
       {
         linkId: "link-3", bookingId: "booking-3", bookingReference: "B-789", creditNoteNumber: "CN-0458", amountCents: null, remainingCents: null,
-        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "amount-unknown", pickableLines: [{ lineId: "line-3", amountCents: 4_000, matchesNote: false, recordedAt: null }],
+        foundVoidedAt: "2026-06-30T00:00:00.000Z", reason: "amount-unknown", partlyCoveredLines: [], pickableLines: [{ lineId: "line-3", amountCents: 4_000, matchesNote: false, recordedAt: null }],
       },
     ]);
     process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
@@ -177,6 +177,7 @@ describe("who sees the card refunds Stripe gave up on", () => {
       render(await AdminStuckStatesPage());
       expect(screen.getByText(/\$50\.00 is still to pick/)).toBeInTheDocument();
       expect(screen.getByText(/no longer hold a refund it could have recorded/)).toBeInTheDocument();
+      expect(screen.getByText(/\$20\.00 of the \$50\.00 refund still has a live note in Xero/)).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Answer the voided refund note on booking B-456" })).toBeInTheDocument();
       expect(screen.getByText("Its amount cannot be read, so you can pick one refund for it.")).toBeInTheDocument();
     } finally {

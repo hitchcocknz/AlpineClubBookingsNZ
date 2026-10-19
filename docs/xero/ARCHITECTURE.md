@@ -1504,7 +1504,7 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
 | spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
-| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still cover, nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; any other row with nothing to pick says why and takes a recorded answer. |
+| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; any other row with nothing to pick says why and takes a recorded answer. |
 
 A note is matched to the hand-back it recorded by the task it names - a
 cancellation's note carries `handBackTaskId` in its payload since #4162 (never
@@ -1513,8 +1513,8 @@ in its key), a review's `reviewTaskId`, a follow-up's fresh note
 task's live line for exactly the note's amount. An older note naming no task
 takes the one live hand-back line of its amount, only when no other live
 `BANK_REFUND` line on the booking has that amount. A line whose own task's live
-notes (create rows naming the task, or a hand-made link) still cover it is
-never matched: it was not this note's.
+notes (create rows naming the task, or a hand-made link) still record any of it
+is never matched: an undo takes back the whole line.
 
 **Report-only by default.** Until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`
 the job classifies and logs, and writes nothing; a person's pick or answer is

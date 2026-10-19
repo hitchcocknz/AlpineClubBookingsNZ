@@ -5418,8 +5418,8 @@ takes them), the same rows. Its claim is the note-and-line key
 (`bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`), so a note that
 recorded several refunds takes one pick per refund. Under the locks it
 re-checks that the note is still unmatched and that the picked line is a live
-`BANK_REFUND` hand-back line of THIS payment, that its own task's live notes
-no longer cover, no larger than what is left of the note's amount, and whose
+`BANK_REFUND` hand-back line of THIS payment, that no live note of its own
+task records even in part, no larger than what is left of the note's amount, and whose
 refund the detail still holds (`resolvePickedUndo`). The pick that leaves
 nothing to pick then writes the `picked` marker on the link row, last and
 `NOWAIT`, as a spare's marker is written. `markUnmatchedBankRefundVoidAnswered` (a card
@@ -5438,7 +5438,7 @@ create in flight; the link row held by another transaction (a spare defers
 with no marker, an answer is refused as busy); a pick, two picks on one note
 that recorded two refunds (both undone, then a third refused), and picks of
 another payment's line, a reversed one, one larger than what is left or one
-its own live note still covers refused. The order is pinned by
+its own live note records in full or in part refused. The order is pinned by
 `bank-refund-void-follow-up.test.ts`.
 
 ## Refund-request note link writes (#4195)

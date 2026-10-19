@@ -981,7 +981,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(listed).toEqual([expect.objectContaining({ reason: "no-line", pickableLines: [expect.objectContaining({ lineId: xLine, matchesNote: false })] })]);
       await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: wLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({
         status: 409,
-        message: expect.stringContaining("still records that refund"),
+        message: expect.stringContaining("still records some or all of that refund"),
       });
       expect(await money()).toEqual(before);
       expect(await followUpTasks()).toEqual([]);
@@ -1010,6 +1010,44 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await money()).toEqual(before);
       const listed = (await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID);
       expect(listed).toEqual([expect.objectContaining({ pickableLines: [expect.objectContaining({ lineId: xLine })] })]);
+    });
+
+    it("MUTATION (money B, re-check): a refund its own live note records only in part is not offered, matched or picked; the other refund still is", async () => {
+      await paidBankTransfer();
+      // CN-C (6,000) recorded 3,000 of x and 3,000 of y; x (5,000) also has its own live 2,000 note.
+      const x = await handBackNoted(`${P}-x`, 5_000, { noteAmountCents: 2_000, perDelta: true });
+      const y = await handBackNoted(`${P}-y`, 3_000, { noNote: true });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-c`, xeroObjectNumber: "CN-C",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 6_000, status: "AUTHORISED", total: 60, perDelta: true },
+        },
+      });
+      const linkId = await voidInXero(`${P}-c`, 6_000);
+      const lineOf = async (taskId: string) =>
+        (await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: BOOKING_ID, postingKey: `handback:${taskId}` }, select: { id: true } })).id;
+      const [xLine, yLine] = [await lineOf(x), await lineOf(y)];
+      const before = await money();
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "unmatched" });
+      const listed = (await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID);
+      expect(listed).toEqual([
+        expect.objectContaining({
+          pickableLines: [expect.objectContaining({ lineId: yLine, amountCents: 3_000 })],
+          partlyCoveredLines: [expect.objectContaining({ lineId: xLine, amountCents: 5_000, coveredCents: 2_000 })],
+        }),
+      ]);
+      await expect(withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: xLine, actingMemberId: OFFICER_ID }))).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("still records some or all of that refund"),
+      });
+      expect(await money()).toEqual(before);
+      // y is picked as usual; x then goes to the answer path, nothing left to pick.
+      await withWrites(() => followUp.pickRefundForUnmatchedVoid({ linkId, lineId: yLine, actingMemberId: OFFICER_ID }));
+      expect((await money()).detailCents).toBe(before.detailCents - 3_000);
+      const after = (await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID);
+      expect(after).toEqual([expect.objectContaining({ reason: "partly-picked", remainingCents: 3_000, pickableLines: [] })]);
+      await withWrites(() => followUp.markUnmatchedBankRefundVoidAnswered({ linkId, note: "x's other 3,000 checked in Xero", actingMemberId: OFFICER_ID }));
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "handled" });
     });
 
     it("MUTATION (money A): a note whose amount cannot be read takes one pick only", async () => {

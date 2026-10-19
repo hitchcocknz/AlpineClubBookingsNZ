@@ -292,9 +292,12 @@ note's amount, its number and the day the app found it voided.
 1. Press **Pick the refund**. The dialog lists the payment's bank refunds that
    are still recorded, with their amounts and the day each was marked paid back.
    A refund whose amount is exactly what the note still has to account for is
-   marked **matches the note's amount**. A refund another live credit note in
-   Xero still records is not offered (it was not this note's), and neither is
-   one larger than what is left of the note's amount.
+   marked **matches the note's amount**. A refund that its own live credit note
+   in Xero still records, even in part, is not offered - taking it back would
+   take back the whole refund - and the row says how much of it still has a
+   live note; if the voided note recorded the rest of it, check Xero and record
+   the answer. A refund larger than what is left of the note's amount is not
+   offered either.
 2. Choose the one the voided note recorded and press **Take this refund back**.
    The app takes that refund back out of the payment's records - the same undo
    it runs by itself for a note it can match - and the refund appears on

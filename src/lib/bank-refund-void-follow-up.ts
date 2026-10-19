@@ -333,7 +333,7 @@ export async function followUpVoidedBankRefundNote(linkId: string, now: Date = n
 const PICK_REFUSALS: Record<PickRefusal, string> = {
   "not-unmatched": "This voided refund note no longer needs a refund picked here. The list has been refreshed.",
   "line-not-pickable": "That refund is not a live bank refund on this payment any more. The list has been refreshed: pick again.",
-  "still-covered": "Another credit note in Xero still records that refund, so it was not the voided note's. The list has been refreshed: pick again.",
+  "still-covered": "Another credit note in Xero still records some or all of that refund, so taking the whole refund back would undo what Xero still records. The list has been refreshed: pick again, or record the answer.",
   "too-large": "That refund is larger than what is left of the voided note's amount to pick, so the note did not record it. The list has been refreshed: pick again.",
   "detail-short": "The payment's records no longer hold that refund, so it cannot be taken back. The list has been refreshed.",
 };
@@ -481,7 +481,7 @@ export async function markUnmatchedBankRefundVoidAnswered(input: {
 export async function listBankRefundVoidsToAnswerRows() {
   const reader = prisma as unknown as Prisma.TransactionClient;
   const items = await listBankRefundVoidsForAPerson(reader);
-  const taskIds = [...new Set(items.flatMap((item) => item.pickableLines.map((line) => line.taskId)))];
+  const taskIds = [...new Set(items.flatMap((item) => [...item.pickableLines, ...item.partlyCoveredLines].map((line) => line.taskId)))];
   const tasks = taskIds.length === 0 ? [] : await prisma.manualRefundTask.findMany({ where: { id: { in: taskIds } }, select: { id: true, completedAt: true } });
   const completedAt = new Map(tasks.map((task) => [task.id, task.completedAt?.toISOString() ?? null]));
   return items.map((item) => ({
@@ -497,6 +497,12 @@ export async function listBankRefundVoidsToAnswerRows() {
       lineId: line.lineId,
       amountCents: line.amountCents,
       matchesNote: line.matchesNote,
+      recordedAt: completedAt.get(line.taskId) ?? null,
+    })),
+    partlyCoveredLines: item.partlyCoveredLines.map((line) => ({
+      lineId: line.lineId,
+      amountCents: line.amountCents,
+      coveredCents: line.coveredCents,
       recordedAt: completedAt.get(line.taskId) ?? null,
     })),
   }));
