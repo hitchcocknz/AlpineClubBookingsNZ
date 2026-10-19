@@ -987,6 +987,31 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await followUpTasks()).toEqual([]);
     });
 
+    it("MUTATION (money B): a refund a hand-made note's live link records (handBackTaskId, no create row) is neither matched nor offered", async () => {
+      await paidBankTransfer();
+      const x = await handBackNoted(`${P}-x`, 5_000, { noNote: true });
+      const w = await handBackNoted(`${P}-w`, 15_000, { noNote: true });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-hm`, xeroObjectNumber: "CN-HM",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 15_000, status: "AUTHORISED", total: 150, perDelta: true, handBackTaskId: w },
+        },
+      });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-v`, xeroObjectNumber: "CN-V",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 15_000, status: "AUTHORISED", total: 150, perDelta: true },
+        },
+      });
+      const linkId = await voidInXero(`${P}-v`, 15_000);
+      const xLine = (await prisma.bookingLedgerLine.findFirstOrThrow({ where: { bookingId: BOOKING_ID, postingKey: `handback:${x}` }, select: { id: true } })).id;
+      const before = await money();
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).toMatchObject({ outcome: "unmatched" });
+      expect(await money()).toEqual(before);
+      const listed = (await scan.listBankRefundVoidsForAPerson(prisma as never)).filter((item) => item.paymentId === PAYMENT_ID);
+      expect(listed).toEqual([expect.objectContaining({ pickableLines: [expect.objectContaining({ lineId: xLine })] })]);
+    });
+
     it("MUTATION (money A): a note whose amount cannot be read takes one pick only", async () => {
       await paidBankTransfer();
       const x = await handBackNoted(`${P}-x`, 5_000, { noNote: true });
