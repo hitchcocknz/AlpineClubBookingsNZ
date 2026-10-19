@@ -416,7 +416,13 @@ phase may already have completed before a later local reconciliation reaches the
 participant fence. The card-payment panel therefore suppresses another payment and
 keeps a focused alert mounted: it distinguishes received-but-unconfirmed payment,
 an existing successful card transaction whose refund/net state is unknown, and a
-capacity cancellation whose refund did or did not complete.
+capacity cancellation whose refund did or did not complete. For that cancellation,
+the two checkout endpoints carry the existing charged and planned-refund amounts
+as additive `capacityRefund` facts. Only a confirmed plan is described as refunded:
+a partial plan names the card amount and the remaining club follow-up; an empty,
+failed or unknown plan says the club will be in touch about the refund, without
+claiming automatic recovery is pending. The card-refund and follow-up clauses
+share `booking-card-refund-copy.ts` with the booking narrative (`INV-SSOT-001`).
 
 Xero create, link, unlink, and contact import likewise name only the phase already
 proved. Member detail, member list/editor, Contact Sync, and diagnostics close or

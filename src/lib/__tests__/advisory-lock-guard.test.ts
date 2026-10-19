@@ -1412,8 +1412,18 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // rows -> transaction row -> PaymentRecoveryOperation (#4104: a refund seen
   // failing after it counted is kept owed last) everywhere. NO KEY strength so a `PaymentRefund`
   // insert's FK check (`FOR KEY SHARE`) is not blocked. Keyed on an immutable
-  // cuid; taken after `lock(1)` where the caller holds it. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> the #3640 paragraph.
+  // cuid; taken after `lock(1)` where the caller holds it. #4217: the same one
+  // statement is also taken first by `reconcilePaymentAggregates` (before it
+  // reads), by the five ledger-row writers that end in it (upsert, the raise,
+  // the bank receipt, mark succeeded / failed - before their first row write),
+  // and, through the helper, by the reduction's retire, the saved-card settle,
+  // the Stripe settle, the Internet Banking settle, and (review F1) the
+  // recovery runner's claim hold, the re-issue door, the increase's
+  // fold-close and the manual-payment reversal, each before the recovery row;
+  // still one site, no new key.
+  // Order: lock(1) -> lodge -> member credit -> Payment -> refund, recovery and
+  // transaction rows. See docs/CONCURRENCY_AND_LOCKING.md -> the #3640
+  // paragraph and its #4217 sequel.
   "src/lib/payment-transactions.ts": 1,
   // #4161 / #4192: the nightly link cleanup's refund-note heal takes two
   // lock-only statements: the one `XeroObjectLink` row it is about to re-write
