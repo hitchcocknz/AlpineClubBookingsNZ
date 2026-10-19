@@ -1,7 +1,6 @@
 import { PaymentSource, Prisma } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
-import { getXeroErrorStatusCode } from "./xero-error-shape";
 import { asRecord, readString } from "./xero-json";
 import {
   canonicalRefundNoteFromField,
@@ -20,7 +19,7 @@ import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instruction";
-import { namedXeroErrorCode, xeroSyncErrorText } from "@/lib/xero-sync-error-text";
+import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 
 export interface XeroSyncOperationInput {
@@ -1003,13 +1002,9 @@ export async function failXeroSyncOperation(
     lastErrorMessage?: string;
   }
 ) {
-  const statusCode = getXeroErrorStatusCode(error);
-  const rawMessage = options?.lastErrorMessage ?? xeroSyncErrorText(error);
-  const message = redactSensitiveText(rawMessage);
   const data = {
     status: "FAILED" as const,
-    lastErrorCode: namedXeroErrorCode(error) ?? (statusCode ? String(statusCode) : null),
-    lastErrorMessage: message,
+    ...xeroSyncErrorFields(error, options?.lastErrorMessage),
     responsePayload: sanitizeForJson(responsePayload ?? error),
     completedAt: new Date(),
   };

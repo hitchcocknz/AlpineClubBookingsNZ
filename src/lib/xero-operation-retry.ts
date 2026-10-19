@@ -57,6 +57,7 @@ import {
   resolveRefundNoteMethod,
 } from "@/lib/xero-refund-method";
 import { queuedReviewTaskId } from "@/lib/xero-review-task-key";
+import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { isRetryOfVoidedRefundRequestNote, mayRecordAsCanonicalRefundNote, VOIDED_REQUEST_NOTE_RETRY_REASON } from "@/lib/xero-refund-note-status";
 import type { CashRefundMethod } from "@/lib/xero-refund-method";
 import {
@@ -361,13 +362,16 @@ export function retryAbandonedItsClaim(error: unknown): boolean {
 async function runWithClaimedOriginal<T>(
   operationId: string,
   run: () => Promise<T>,
+  // #4256: a PARTIAL repair claims only PARTIAL, and a throw gives the row
+  // back PARTIAL with its payload, so it stays repairable.
+  options?: { from: "PARTIAL" },
 ): Promise<T> {
   const claimedAt = new Date();
   const claimed = await prisma.xeroSyncOperation.updateMany({
     // #3635: a resolve landing after the read makes this claim lose.
     where: {
       id: operationId,
-      status: { in: ["FAILED", "PARTIAL"] },
+      status: options ? options.from : { in: ["FAILED", "PARTIAL"] },
       manuallyResolvedAt: null,
     },
     data: { status: "RUNNING", startedAt: claimedAt },
@@ -382,18 +386,26 @@ async function runWithClaimedOriginal<T>(
     return await run();
   } catch (error) {
     try {
-      const abandoned = await failXeroSyncOperation(operationId, error, undefined, {
-        onlyIfRunningSince: claimedAt,
-      });
-      if (abandoned && typeof error === "object" && error !== null) {
-        abandonedClaimErrors.add(error);
+      if (options) {
+        // Not `abandonedClaimErrors`: the original is back to PARTIAL, not FAILED.
+        await prisma.xeroSyncOperation.updateMany({
+          where: { id: operationId, status: "RUNNING", startedAt: claimedAt },
+          data: { status: "PARTIAL", ...xeroSyncErrorFields(error), completedAt: new Date() },
+        });
+      } else {
+        const abandoned = await failXeroSyncOperation(operationId, error, undefined, {
+          onlyIfRunningSince: claimedAt,
+        });
+        if (abandoned && typeof error === "object" && error !== null) {
+          abandonedClaimErrors.add(error);
+        }
       }
     } catch (abandonError) {
       // The run's own error is the one the operator needs; a failed abandon
       // leaves the row RUNNING, where the stale census offers Mark failed.
       logger.error(
         { err: abandonError, operationId },
-        "Failed to return a claimed Xero operation to FAILED after its retry threw",
+        "Failed to give back a claimed Xero operation after its retry threw",
       );
     }
     throw error;
@@ -819,6 +831,26 @@ function parsePartialInvoiceRepairInput(
   }
 
   return null;
+}
+
+/**
+ * #4256: close a claimed PARTIAL invoice row its repair recorded the payment
+ * for. SUCCEEDED, unless the invoice email also failed: the repair sends no
+ * email, so the row stays PARTIAL for that, which the retry fence then refuses.
+ */
+async function completeRepairedPartialInvoice(
+  operation: Pick<RetryableOperation, "id" | "responsePayload" | "xeroObjectNumber">,
+  invoiceId: string,
+  paymentOutcome: Record<string, unknown>,
+): Promise<void> {
+  const emailStillFailed = readXeroInvoiceOperationOutcome(operation.responsePayload)?.invoiceEmailFailed;
+  await completeXeroSyncOperation(operation.id, {
+    status: emailStillFailed ? "PARTIAL" : "SUCCEEDED",
+    responsePayload: { ...(asRecord(operation.responsePayload) ?? {}), paymentError: null, ...paymentOutcome },
+    xeroObjectType: "INVOICE",
+    xeroObjectId: invoiceId,
+    xeroObjectNumber: operation.xeroObjectNumber ?? null,
+  });
 }
 
 function parseRefundCreditNoteRepairInput(
@@ -1417,47 +1449,43 @@ export async function retryXeroSyncOperation(
       operation.localModel &&
       operation.localId
     ) {
-      if (partialInvoiceRepair.amountCents === 0) {
-        const zeroCashRepair = zeroCashRepairOutcome(partialInvoiceRepair);
-        const existingResponsePayload = asRecord(operation.responsePayload);
-
-        await completeXeroSyncOperation(operation.id, {
-          status: "SUCCEEDED",
-          responsePayload: {
-            ...(existingResponsePayload ?? {}),
-            payment: null,
-            paymentError: null,
-            paymentSkipped: true,
-            paymentSkipReason: zeroCashRepair.skipReason,
-          },
-          xeroObjectType: "INVOICE",
-          xeroObjectId: partialInvoiceRepair.invoiceId,
-        });
-
-        return { message: zeroCashRepair.message };
-      }
-
-      await xero.createXeroPaymentForInvoice({
-        localModel: operation.localModel,
-        localId: operation.localId,
-        invoiceId: partialInvoiceRepair.invoiceId,
-        amountCents: partialInvoiceRepair.amountCents,
-        idempotencyKey: partialInvoiceRepair.idempotencyKey,
-        reference: partialInvoiceRepair.reference,
-        role: partialInvoiceRepair.linkRole,
-        createdByMemberId,
-        metadata: {
-          invoiceId: partialInvoiceRepair.invoiceId,
-          amountCents: partialInvoiceRepair.amountCents,
+      // #4256: claim the row first, so a resolve or a second retry landing
+      // after the read makes this one write nothing and call Xero for nothing.
+      return runWithClaimedOriginal(
+        operation.id,
+        async () => {
+          if (partialInvoiceRepair.amountCents === 0) {
+            const zeroCashRepair = zeroCashRepairOutcome(partialInvoiceRepair);
+            await completeRepairedPartialInvoice(operation, partialInvoiceRepair.invoiceId, {
+              payment: null,
+              paymentSkipped: true,
+              paymentSkipReason: zeroCashRepair.skipReason,
+            });
+            return { message: zeroCashRepair.message };
+          }
+          const paymentId = await xero.createXeroPaymentForInvoice({
+            localModel: operation.localModel!,
+            localId: operation.localId!,
+            invoiceId: partialInvoiceRepair.invoiceId,
+            amountCents: partialInvoiceRepair.amountCents,
+            idempotencyKey: partialInvoiceRepair.idempotencyKey,
+            reference: partialInvoiceRepair.reference,
+            role: partialInvoiceRepair.linkRole,
+            createdByMemberId,
+            metadata: { invoiceId: partialInvoiceRepair.invoiceId, amountCents: partialInvoiceRepair.amountCents },
+          });
+          await completeRepairedPartialInvoice(operation, partialInvoiceRepair.invoiceId, {
+            payment: { paymentID: paymentId, amount: partialInvoiceRepair.amountCents / 100 },
+          });
+          return {
+            message:
+              partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
+                ? "Repaired Xero booking invoice payment recording."
+                : "Repaired Xero supplementary invoice payment recording.",
+          };
         },
-      });
-
-      return {
-        message:
-          partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
-            ? "Repaired Xero booking invoice payment recording."
-            : "Repaired Xero supplementary invoice payment recording.",
-      };
+        { from: "PARTIAL" },
+      );
     }
 
     const refundCreditNoteRepair = parseRefundCreditNoteRepairInput(operation);
@@ -1466,12 +1494,12 @@ export async function retryXeroSyncOperation(
       operation.operationType === "CREATE" &&
       refundCreditNoteRepair
     ) {
-      await repairRefundCreditNoteFollowUpActions(
-        operation,
-        xero,
-        refundCreditNoteRepair,
+      // #4256: claimed like the invoice repair; the shared leg completes the row.
+      await runWithClaimedOriginal(
+        operation.id,
+        () => repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair),
+        { from: "PARTIAL" },
       );
-
       return { message: "Repaired Xero refund credit note follow-up actions." };
     }
 
