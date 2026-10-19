@@ -9,7 +9,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const getCreditNotes = vi.fn();
 const getInvoice = vi.fn();
 const findUnique = vi.fn();
-const callXeroApi = vi.fn((call: () => unknown, _options?: unknown) => call());
+const callXeroApi = vi.fn<(call: () => unknown, options?: unknown) => unknown>((call) => call());
 
 vi.mock("@/lib/xero-api-client", async (importOriginal) => ({
   XeroDailyLimitError: ((await importOriginal()) as typeof import("@/lib/xero-api-client")).XeroDailyLimitError,

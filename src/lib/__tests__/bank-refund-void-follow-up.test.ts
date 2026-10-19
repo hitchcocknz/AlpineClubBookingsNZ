@@ -11,7 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const calls: string[] = [];
 const classify = vi.fn();
 const resolvePicked = vi.fn();
-const pickable = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+const pickable = vi.fn<(...args: unknown[]) => Promise<unknown[]>>(async () => []);
 const unwind = vi.fn(async () => {
   calls.push("unwind");
 });
