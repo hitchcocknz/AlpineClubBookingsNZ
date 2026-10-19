@@ -610,9 +610,30 @@ describe("allocateAppliedCreditForBooking (#1620 handler retry idempotency)", ()
     );
     expect(groupByCalls).toContainEqual(
       expect.objectContaining({
-        where: expect.objectContaining({ type: "ADMIN_ADJUSTMENT", amountCents: { lt: 0 }, outsideSpendConvergedAt: { not: null }, xeroCreditNoteId: { in: ["cn1"] } }),
+        where: expect.objectContaining({ memberId: "m1", type: "ADMIN_ADJUSTMENT", amountCents: { lt: 0 }, outsideSpendConvergedAt: { not: null }, xeroCreditNoteId: { in: ["cn1"] } }),
       }),
     );
+  });
+
+  it("takes a note's write-down once, from its oldest lot, not from every lot stamped with the note (#4219)", async () => {
+    // Two positive rows carry cn1: the funding lot (3000) and a later reconciliation row (500), 1000 written down.
+    h.state.lots = [
+      { id: "c1", memberId: "m1", amountCents: 3000, xeroCreditNoteId: "cn1" },
+      { id: "c2", memberId: "m1", amountCents: 500, xeroCreditNoteId: "cn1" },
+    ];
+    h.state.appliedRows = [{ appliedToBookingId: "b1", type: "BOOKING_APPLIED", amountCents: -2500, xeroCreditNoteId: null }];
+    vi.mocked(allocateCreditNoteToInvoice).mockResolvedValue(undefined);
+    const realGroupBy = h.prismaStub.memberCredit.groupBy;
+    const groupBy = vi.spyOn(h.prismaStub.memberCredit, "groupBy").mockImplementation(((args: { where: { outsideSpendConvergedAt?: unknown } }) =>
+      args.where.outsideSpendConvergedAt ? [{ xeroCreditNoteId: "cn1", _sum: { amountCents: -1000 } }] : realGroupBy(args as never)) as never);
+    try {
+      await allocateAppliedCreditForBooking("b1", { syncOperationId: "op1" });
+    } finally {
+      groupBy.mockRestore();
+    }
+
+    // 2000 left on c1 and 500 on c2 cover 2500; taking 1000 from EACH lot would leave 2000 + 0 and fail.
+    expect(h.state.joinRows.map((row) => [row.memberCreditId, row.amountCents])).toEqual([["c1", 2000], ["c2", 500]]);
   });
 
   it("does not plan credit that was written down: the lot's remaining balance falls by it (#4219)", async () => {
@@ -621,7 +642,7 @@ describe("allocateAppliedCreditForBooking (#1620 handler retry idempotency)", ()
       args.where.outsideSpendConvergedAt ? [{ xeroCreditNoteId: "cn1", _sum: { amountCents: -1000 } }] : realGroupBy(args as never)) as never);
     try {
       // The lot holds 3000 and 1000 of it was written down, so 3000 of applied credit cannot be covered.
-      await expect(allocateAppliedCreditForBooking("b1", { syncOperationId: "op1" })).rejects.toThrow();
+      await expect(allocateAppliedCreditForBooking("b1", { syncOperationId: "op1" })).rejects.toThrow(/ledger inconsistency/);
       expect(allocateCreditNoteToInvoice).not.toHaveBeenCalled();
     } finally {
       groupBy.mockRestore();

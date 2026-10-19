@@ -124,8 +124,11 @@ async function gatherAppliedCreditLots(
   );
   const lots: AppliedCreditLot[] = [];
   for (const lot of positiveLots) {
-    const downCents = lot.xeroCreditNoteId ? (writtenDown.get(lot.xeroCreditNoteId) ?? 0) : 0;
-    const remainingCents = lot.amountCents - (allocatedById.get(lot.id) ?? 0) - downCents;
+    const free = lot.amountCents - (allocatedById.get(lot.id) ?? 0);
+    // A note's write-down is taken once, oldest lot first, never from each lot stamped with the note.
+    const downCents = lot.xeroCreditNoteId ? Math.min(Math.max(free, 0), writtenDown.get(lot.xeroCreditNoteId) ?? 0) : 0;
+    if (lot.xeroCreditNoteId && downCents > 0) writtenDown.set(lot.xeroCreditNoteId, (writtenDown.get(lot.xeroCreditNoteId) ?? 0) - downCents);
+    const remainingCents = free - downCents;
     if (remainingCents <= 0) {
       continue;
     }

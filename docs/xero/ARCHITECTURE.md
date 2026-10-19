@@ -2610,7 +2610,9 @@ spendable lot**: a positive row is otherwise the member's own money, and the
 planner would mint a Xero note for it. `src/lib/xero-credit-note-write-down.ts` is
 the one definition; `gatherAppliedCreditLots`, the funding-lot finder and the
 slice-fit check read through it, and `xero-applied-credit-slice-lookup.ts` holds
-the two lookups they share.
+the two lookups they share. A note's write-down is taken once, from its oldest lot
+first, not from every lot stamped with the note; the inbound repair never rewrites a
+marked row's description.
 
 This is the **expand release**: the readers ship first and nothing writes the
 marker yet, so every row is unmarked and behaviour is unchanged. The writer, the
