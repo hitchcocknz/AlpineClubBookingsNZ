@@ -156,6 +156,7 @@ import {
   getXeroOperationRetryMeta,
   retryAbandonedItsClaim,
   retryXeroSyncOperation,
+  XeroOperationNotReplayableError,
   XeroOperationResolvedInXeroError,
   XeroOperationRetryError,
 } from "@/lib/xero-operation-retry";
@@ -3575,7 +3576,10 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
       count: args.where.replayable === true ? 0 : 1,
     }));
 
-    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toMatchObject({
+    const refusal = retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    // Its own class, so the queued-retry drain skips its row (review, permissions F1).
+    await expect(refusal).rejects.toBeInstanceOf(XeroOperationNotReplayableError);
+    await expect(refusal).rejects.toMatchObject({
       status: 409,
       message: "This operation is not marked replayable.",
     });
@@ -3689,5 +3693,97 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
     await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toThrow("Xero 503");
     expect(mocks.updateManyOperation.mock.calls[1][0].where).toMatchObject({ status: "RUNNING" });
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("refuses a row read as not replayable with its own error, before any claim", async () => {
+    mocks.findUniqueOperation.mockResolvedValue({ ...partialInvoice(45.67), replayable: false });
+    const refusal = retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    await expect(refusal).rejects.toBeInstanceOf(XeroOperationNotReplayableError);
+    await expect(refusal).rejects.toMatchObject({ status: 400 });
+    expect(mocks.updateManyOperation).not.toHaveBeenCalled();
+    noSideEffect();
+  });
+
+  it("sends Xero the stored cash, and completes onto its own claim with no repeated-failure alert", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67));
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    expect(mocks.createXeroPaymentForInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 4567, invoiceId: "inv_123", idempotencyKey: "payment:pay_123:invoice-payment:v1" }),
+    );
+    const claimedAt = mocks.updateManyOperation.mock.calls[0][0].data.startedAt;
+    expect(mocks.completeXeroSyncOperation.mock.calls[0][2]).toEqual({ onlyIfRunningSince: claimedAt, alert: false });
+  });
+
+  it("a zero-cash repair with an email fault stays PARTIAL, records no payment and says the email is what is left", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(0, { invoiceEmailError: "SES refused" }));
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    expect(mocks.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_123",
+      expect.objectContaining({
+        status: "PARTIAL",
+        responsePayload: expect.objectContaining({ payment: null, paymentError: null, paymentSkipped: true }),
+        lastErrorMessage: PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE,
+      }),
+      { onlyIfRunningSince: expect.any(Date), alert: false },
+    );
+  });
+
+  it("a give-back records the Xero status code of the error that stopped the repair", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67));
+    const refusal = Object.assign(new Error("Service Unavailable"), { response: { statusCode: 503 } });
+    mocks.createXeroPaymentForInvoice.mockRejectedValue(refusal);
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toBe(refusal);
+    expect(mocks.updateManyOperation.mock.calls[1][0].data).toMatchObject({
+      status: "PARTIAL",
+      lastErrorCode: "503",
+      lastErrorMessage: "Service Unavailable",
+    });
+  });
+
+  describe("the FAILED refund-note repair claims its row too (review F3)", () => {
+    const failedRefundNote = () => ({ ...partialRefundNote(), status: "FAILED" });
+
+    it("MUTATION: claims FAILED/PARTIAL before it settles, with no repair marker, and completes onto the claim", async () => {
+      mocks.findUniqueOperation.mockResolvedValue(failedRefundNote());
+      await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+
+      const claim = mocks.updateManyOperation.mock.calls[0][0];
+      expect(claim).toEqual({
+        where: { id: "op_123", status: { in: ["FAILED", "PARTIAL"] }, manuallyResolvedAt: null, replayable: true },
+        data: { status: "RUNNING", startedAt: expect.any(Date) },
+      });
+      expect(mocks.updateManyOperation.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.finishRefundCreditNoteSettlement.mock.invocationCallOrder[0],
+      );
+      expect(mocks.finishRefundCreditNoteSettlement).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: "op_123", onlyIfRunningSince: claim.data.startedAt }),
+      );
+    });
+
+    it("MUTATION: a resolve landing before its claim makes it settle nothing", async () => {
+      mocks.findUniqueOperation
+        .mockResolvedValueOnce(failedRefundNote())
+        .mockResolvedValueOnce({ manuallyResolvedAt: RESOLVED_AT, requestPayload: null });
+      mocks.updateManyOperation.mockResolvedValue({ count: 0 });
+
+      await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toBeInstanceOf(
+        XeroOperationResolvedInXeroError,
+      );
+      noSideEffect();
+    });
+
+    it("a throw before the leg completes abandons the claim to FAILED, guarded on it", async () => {
+      mocks.findUniqueOperation.mockResolvedValue(failedRefundNote());
+      const refusal = new Error("Credit note cn_123 is VOIDED in Xero");
+      mocks.finishRefundCreditNoteSettlement.mockRejectedValueOnce(refusal);
+
+      await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toBe(refusal);
+      const claimedAt = mocks.updateManyOperation.mock.calls[0][0].data.startedAt;
+      expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith("op_123", refusal, undefined, {
+        onlyIfRunningSince: claimedAt,
+      });
+    });
   });
 });
