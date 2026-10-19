@@ -1828,6 +1828,15 @@ idempotency key, which returns the original invoice
   payment (found by its `Stripe <intent>` reference) and the cap reaches
   zero, its `INVOICE_PAYMENT` link is recorded and its amount stored as the
   primary's cash, rather than the cash being skipped.
+- **Repaired at the stored cash.** When the Stripe payment write fails, the
+  create ends PARTIAL, and the Xero Operations repair records the stored
+  `primaryInvoiceCashCents`, read through the same parser as the gap check
+  (`xero-primary-invoice-fee-at-link.ts`). It never records the invoice total,
+  which on a card booking with applied credit overstates the card cash and
+  leaves the credit allocation nothing to settle (#4010). An operation written
+  before the figure was stored (no `primaryInvoiceBilledFee` record, or one
+  without the cash figure) falls back to the total. A stored figure of zero
+  records no payment, and says the applied credit took it.
 - **Limits.** The ordinary settled edit's fee increment (#3980) is not claimed
   against the link, so its fee racing a create has no anchor: it is logged,
   not billed. An invoice linked without stored figures (before this check, or

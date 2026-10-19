@@ -35,6 +35,10 @@ import { prisma } from "@/lib/prisma";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
 import { asRecord } from "@/lib/xero-json";
 import {
+  parsePrimaryInvoiceFeeAtLink,
+  PRIMARY_INVOICE_FEE_AT_LINK_KEY,
+} from "@/lib/xero-primary-invoice-fee-at-link";
+import {
   CHANGE_FEE_LINE_DESCRIPTION,
   invoiceLineItemsTotalCents,
 } from "@/lib/xero-modification-line-items";
@@ -200,9 +204,6 @@ export function unrecordedPrimaryInvoiceCash(input: {
   return { netCapturedCents, invoicePaymentCents: primaryInvoiceCashCents, gapInvoiceCashCents, unrecordedCashCents };
 }
 
-/** The create operation's payload key the figures are kept under. */
-const FEE_AT_LINK_KEY = "primaryInvoiceBilledFee";
-
 /**
  * Saves the payment's invoice link and, in the SAME transaction, records on
  * the create operation what the invoice billed and the fee the payment held
@@ -238,7 +239,7 @@ export async function persistPrimaryInvoiceLink(input: {
       data: {
         requestPayload: sanitizeForJson({
           ...(asRecord(operation?.requestPayload) ?? {}),
-          [FEE_AT_LINK_KEY]: atLink,
+          [PRIMARY_INVOICE_FEE_AT_LINK_KEY]: atLink,
         }),
       },
     });
@@ -256,28 +257,12 @@ async function readPrimaryInvoiceFeeAtLink(
       entityType: "INVOICE",
       operationType: "CREATE",
       correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
-      requestPayload: { path: [FEE_AT_LINK_KEY, "xeroInvoiceId"], equals: xeroInvoiceId },
+      requestPayload: { path: [PRIMARY_INVOICE_FEE_AT_LINK_KEY, "xeroInvoiceId"], equals: xeroInvoiceId },
     },
     orderBy: { createdAt: "desc" },
     select: { requestPayload: true },
   });
-  const record = asRecord(asRecord(operation?.requestPayload)?.[FEE_AT_LINK_KEY]);
-  if (
-    !record ||
-    typeof record.billedChangeFeeCents !== "number" ||
-    typeof record.billedTotalCents !== "number" ||
-    typeof record.recordedChangeFeeCentsAtLink !== "number" ||
-    typeof record.primaryInvoiceCashCents !== "number"
-  ) {
-    return null;
-  }
-  return {
-    xeroInvoiceId,
-    billedChangeFeeCents: record.billedChangeFeeCents,
-    billedTotalCents: record.billedTotalCents,
-    recordedChangeFeeCentsAtLink: record.recordedChangeFeeCentsAtLink,
-    primaryInvoiceCashCents: record.primaryInvoiceCashCents,
-  };
+  return parsePrimaryInvoiceFeeAtLink(operation?.requestPayload, xeroInvoiceId);
 }
 
 export type PrimaryInvoiceChangeFeeGapResult = {

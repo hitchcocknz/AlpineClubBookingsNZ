@@ -37,6 +37,10 @@ import {
 } from "@/lib/xero-payment-credit-note-payload";
 import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import {
+  parsePrimaryInvoiceFeeAtLink,
+  PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON,
+} from "@/lib/xero-primary-invoice-fee-at-link";
 import { shouldRepairXeroContactNameOrder } from "@/lib/xero-contact-sync";
 import { parseXeroContactDateOfBirth } from "@/lib/xero-contact-date-of-birth";
 import {
@@ -803,19 +807,41 @@ function partialInvoiceOperationHasPaymentFault(
   return true;
 }
 
+const ZERO_TOTAL_INVOICE_REASON = "Zero-total invoice does not require Xero payment recording.";
+
 function parsePartialInvoiceRepairInput(
   operation: Pick<RetryableOperation, "localModel" | "localId" | "xeroObjectId" | "requestPayload" | "responsePayload">
-): { invoiceId: string; amountCents: number; linkRole: string; idempotencyKey: string; reference: string } | null {
+): {
+  invoiceId: string;
+  amountCents: number;
+  linkRole: string;
+  idempotencyKey: string;
+  reference: string;
+  /** Why no payment is recorded when `amountCents` is zero. */
+  zeroCashReason: string;
+} | null {
   if (!operation.localModel || !operation.localId || !operation.xeroObjectId) {
     return null;
   }
 
-  const amountCents = readStoredInvoiceTotalCents(operation);
-  if (amountCents === null) {
+  const invoiceTotalCents = readStoredInvoiceTotalCents(operation);
+  if (invoiceTotalCents === null) {
     return null;
   }
 
   if (operation.localModel === "Payment") {
+    // #4010: the cash the create would have recorded, not the invoice total.
+    // On a card booking with applied account credit part of the total is
+    // paid by that credit, so recording the total overstates the Stripe cash
+    // and leaves the credit allocation nothing to settle. The create stored
+    // the capped figure with the invoice link (`persistPrimaryInvoiceLink`);
+    // only an operation written before that figure existed falls back to the
+    // total (see `parsePrimaryInvoiceFeeAtLink` for how one is recognised).
+    const storedCashCents = parsePrimaryInvoiceFeeAtLink(
+      operation.requestPayload,
+      operation.xeroObjectId,
+    )?.primaryInvoiceCashCents;
+    const amountCents = storedCashCents ?? invoiceTotalCents;
     return {
       invoiceId: operation.xeroObjectId,
       amountCents,
@@ -830,10 +856,17 @@ function parsePartialInvoiceRepairInput(
         amountCents > 0
           ? `${CLUB_NAME} invoice payment ${operation.localId.slice(0, 8)}`
           : "Zero-dollar booking (100% promo discount)",
+      zeroCashReason:
+        amountCents === 0 && invoiceTotalCents > 0
+          ? PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON
+          : ZERO_TOTAL_INVOICE_REASON,
     };
   }
 
   if (operation.localModel === "Booking" || operation.localModel === "BookingModification") {
+    // A supplementary invoice bills exactly the net its create records as
+    // paid, and carries no applied credit, so its total is its cash.
+    const amountCents = invoiceTotalCents;
     return {
       invoiceId: operation.xeroObjectId,
       amountCents,
@@ -846,6 +879,7 @@ function parsePartialInvoiceRepairInput(
         "v1"
       ),
       reference: `${CLUB_NAME} supplementary payment ${operation.localId.slice(0, 8)}`,
+      zeroCashReason: ZERO_TOTAL_INVOICE_REASON,
     };
   }
 
@@ -1458,7 +1492,7 @@ export async function retryXeroSyncOperation(
             payment: null,
             paymentError: null,
             paymentSkipped: true,
-            paymentSkipReason: "Zero-total invoice does not require Xero payment recording.",
+            paymentSkipReason: partialInvoiceRepair.zeroCashReason,
           },
           xeroObjectType: "INVOICE",
           xeroObjectId: partialInvoiceRepair.invoiceId,
@@ -1466,7 +1500,9 @@ export async function retryXeroSyncOperation(
 
         return {
           message:
-            partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
+            partialInvoiceRepair.zeroCashReason === PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON
+              ? "Marked Xero booking invoice as repaired without payment recording: its applied account credit leaves no card cash to record."
+              : partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
               ? "Marked zero-total Xero booking invoice as repaired without payment recording."
               : "Marked zero-total Xero supplementary invoice as repaired without payment recording.",
         };
