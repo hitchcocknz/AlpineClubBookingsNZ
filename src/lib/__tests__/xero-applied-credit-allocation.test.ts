@@ -64,8 +64,9 @@ const h = vi.hoisted(() => {
     },
     memberCredit: {
       // #3836: the engine's one batch predicate, over the same rows.
-      groupBy: async ({ where }: { where: { appliedToBookingId: { in: string[] }; type: string; xeroCreditNoteId: null } }) =>
-        where.appliedToBookingId.in.flatMap((appliedToBookingId) => {
+      groupBy: async ({ where }: { where: { appliedToBookingId?: { in: string[] }; type: string; xeroCreditNoteId: null } }) =>
+        // #4219: the lot calculation's write-down read shares this stub; no row here is one.
+        !where.appliedToBookingId ? [] : where.appliedToBookingId.in.flatMap((appliedToBookingId) => {
           const rows = state.appliedRows.filter((r) => matchesApplied(r, { appliedToBookingId, type: where.type, xeroCreditNoteId: null }));
           return rows.length ? [{ appliedToBookingId, _sum: { amountCents: rows.reduce((s, r) => s + r.amountCents, 0) } }] : [];
         }),
@@ -592,5 +593,38 @@ describe("allocateAppliedCreditForBooking (#1620 handler retry idempotency)", ()
     expect(h.state.joinRows).toHaveLength(1);
     // Both runs resolved the op (first: complete, second: skip-complete).
     expect(completeXeroSyncOperation).toHaveBeenCalledTimes(2);
+  });
+  it("plans only from lots that are not convergence rows, less credit written down because its note was used outside the app (#4219)", async () => {
+    const findMany = vi.spyOn(h.prismaStub.memberCredit, "findMany");
+    const groupBy = vi.spyOn(h.prismaStub.memberCredit, "groupBy");
+    vi.mocked(allocateCreditNoteToInvoice).mockResolvedValue(undefined);
+
+    await allocateAppliedCreditForBooking("b1", { syncOperationId: "op1" });
+    const findManyCalls = findMany.mock.calls.map((call) => call[0]);
+    const groupByCalls = groupBy.mock.calls.map((call) => call[0]);
+    findMany.mockRestore();
+    groupBy.mockRestore();
+
+    expect(findManyCalls).toContainEqual(
+      expect.objectContaining({ where: expect.objectContaining({ amountCents: { gt: 0 }, outsideSpendConvergedAt: null }) }),
+    );
+    expect(groupByCalls).toContainEqual(
+      expect.objectContaining({
+        where: expect.objectContaining({ type: "ADMIN_ADJUSTMENT", amountCents: { lt: 0 }, outsideSpendConvergedAt: { not: null }, xeroCreditNoteId: { in: ["cn1"] } }),
+      }),
+    );
+  });
+
+  it("does not plan credit that was written down: the lot's remaining balance falls by it (#4219)", async () => {
+    const realGroupBy = h.prismaStub.memberCredit.groupBy;
+    const groupBy = vi.spyOn(h.prismaStub.memberCredit, "groupBy").mockImplementation(((args: { where: { outsideSpendConvergedAt?: unknown } }) =>
+      args.where.outsideSpendConvergedAt ? [{ xeroCreditNoteId: "cn1", _sum: { amountCents: -1000 } }] : realGroupBy(args as never)) as never);
+    try {
+      // The lot holds 3000 and 1000 of it was written down, so 3000 of applied credit cannot be covered.
+      await expect(allocateAppliedCreditForBooking("b1", { syncOperationId: "op1" })).rejects.toThrow();
+      expect(allocateCreditNoteToInvoice).not.toHaveBeenCalled();
+    } finally {
+      groupBy.mockRestore();
+    }
   });
 });

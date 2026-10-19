@@ -932,6 +932,7 @@ export async function repairAccountCreditAllocationBusinessState(
           amountCents: true,
           description: true,
           xeroCreditNoteId: true,
+          outsideSpendConvergedAt: true,
         },
       });
 
@@ -965,9 +966,8 @@ export async function repairAccountCreditAllocationBusinessState(
         // Historical negative rows plus later positive/negative offsets are an
         // intentional append-only record. The precise slice reconciler below,
         // not destructive rewrites of those rows, determines provider truth.
-        const staleDescriptions = linkedAppliedCredits.filter(
-          (credit) => credit.description !== expectedDescription,
-        );
+        // #4219: a row the credit-note convergence wrote keeps the description that says why.
+        const staleDescriptions = linkedAppliedCredits.filter((credit) => credit.description !== expectedDescription && credit.outsideSpendConvergedAt === null);
         if (staleDescriptions.length > 0) {
           await tx.memberCredit.updateMany({
             where: { id: { in: staleDescriptions.map((credit) => credit.id) } },
