@@ -317,7 +317,8 @@ let retry: typeof import("@/lib/xero-operation-retry");
         const count = await prisma.$transaction((tx) =>
           stale.writeStaleRunningXeroOperationReset(stale.staleRunningXeroOperationFilter(now), now, "bulk reset", tx),
         );
-        expect(count).toBe(1);
+        // #4256 final round: the two counts the bulk reset's texts are worded from.
+        expect(count).toEqual({ failed: 0, partial: 1 });
       }
       const recovered = await readRow();
       expect(recovered).toMatchObject({ status: "PARTIAL", lastErrorCode: "ORPHANED_STALE_RUNNING" });
@@ -351,12 +352,48 @@ let retry: typeof import("@/lib/xero-operation-retry");
       while (!release) await new Promise((resolve) => setTimeout(resolve, 10));
 
       release();
-      await late;
+      // Never "Repaired": the payment went, but the row is the operator's now.
+      await expect(late).resolves.toEqual({ message: retry.PARTIAL_REPAIR_CLAIM_LOST_MESSAGE });
 
       // The operator's PARTIAL stands; the payment row the late run wrote is its own.
       const row = await readRow();
       expect(row).toMatchObject({ status: "PARTIAL", lastErrorCode: "ORPHANED_STALE_RUNNING" });
       expect(row.responsePayload).toEqual(partialPayload(45.67));
+    });
+
+    // Money B: the run recorded the payment (Xero took it, its link is written)
+    // and died before closing the row. The retry after recovery reads the link
+    // and closes the row without a second payment, whatever Xero remembers.
+    it("MUTATION: a repair that died after its payment was recorded is closed by the next retry with no second payment", async () => {
+      await seedPartial(45.67);
+      const sync = await import("@/lib/xero-sync");
+      const original = sync.completeXeroSyncOperation;
+      const hang = vi
+        .spyOn(sync, "completeXeroSyncOperation")
+        .mockImplementation(((id: string, ...rest: Parameters<typeof original> extends [string, ...infer R] ? R : never) =>
+          id === OPERATION_ID ? new Promise(() => {}) : original(id, ...rest)) as typeof original);
+      void retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST).catch(() => {});
+
+      const started = process.hrtime.bigint();
+      while ((await prisma.xeroObjectLink.count({ where: { localId: PAYMENT_ID, xeroObjectType: "PAYMENT" } })) === 0) {
+        if (realElapsedMs(started) > 10_000) throw new Error("The first run never recorded its payment.");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      hang.mockRestore();
+      await claimThenStrand();
+      const stale = await import("@/lib/xero-stale-operations");
+      expect(await stale.markStaleRunningXeroOperationFailed(OPERATION_ID, async () => {})).toMatchObject({
+        returnedTo: "PARTIAL",
+      });
+
+      await expect(retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST)).resolves.toEqual({
+        message: "The payment was already recorded in Xero; closed the operation without paying again.",
+      });
+      expect(createPayments).toHaveBeenCalledTimes(1);
+      expect(await paymentRows()).toBe(1);
+      const closed = await readRow();
+      expect(closed.status).toBe("SUCCEEDED");
+      expect(closed.responsePayload).toMatchObject({ paymentError: null, payment: { paymentID: "race-4256-xero-payment-1" } });
     });
   },
 );

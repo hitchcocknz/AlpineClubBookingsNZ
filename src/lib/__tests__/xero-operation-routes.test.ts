@@ -824,7 +824,13 @@ describe("Xero operation admin retry routes", () => {
     expect(update.data).not.toHaveProperty("xeroObjectType");
     expect(update.data).not.toHaveProperty("xeroObjectId");
     await expect(response.json()).resolves.toEqual(
-      expect.objectContaining({ ok: true, count: 3 })
+      expect.objectContaining({
+        ok: true,
+        count: 3,
+        failed: 3,
+        partial: 0,
+        message: "Reset 3 stale running operations to failed. Retry or resolve them from the list.",
+      })
     );
     // #4256: the FAILED write leaves a stuck PARTIAL repair to the PARTIAL one.
     const [failedWrite, repairWrite] = mocks.xeroOperationUpdateMany.mock.calls.map(
@@ -873,6 +879,28 @@ describe("Xero operation admin retry routes", () => {
 
     expect(response.status).toBe(200);
     expect(mocks.createAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: words the bulk reset's audit and answer from both counts when a stuck repair went back to PARTIAL (#4256)", async () => {
+    mocks.xeroOperationUpdateMany.mockImplementation(async ({ where }: { where: { lastErrorCode?: unknown } }) => ({
+      count: where.lastErrorCode === "PARTIAL_REPAIR_RUNNING" ? 1 : 2,
+    }));
+
+    const response = await resetStaleRunning();
+
+    await expect(response.json()).resolves.toMatchObject({
+      count: 3,
+      failed: 2,
+      partial: 1,
+      message:
+        "Reset 2 stale running operations to failed and 1 interrupted repair back to partly completed. Retry or resolve them from the list.",
+    });
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        details: "Reset 2 stale RUNNING Xero operations to FAILED and 1 interrupted repair back to PARTIAL",
+      }),
+      txClient,
+    );
   });
 
   describe("Mark failed on one stale running operation (#3462)", () => {

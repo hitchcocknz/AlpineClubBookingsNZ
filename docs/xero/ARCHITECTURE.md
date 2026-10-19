@@ -1028,6 +1028,19 @@ note.
    closed as skipped. Rows repaired before this release stay partly
    completed; retry them once and they close.
 
+   Before it pays, the invoice repair looks for the payment link an earlier run
+   recorded (`createXeroPaymentForInvoice` writes it, role `INVOICE_PAYMENT` or
+   `SUPPLEMENTARY_INVOICE_PAYMENT`, metadata `invoiceId`). If one exists, it
+   closes the row on that payment and calls Xero for nothing, so a run that
+   died after its payment never pays twice, whatever Xero still remembers of
+   the idempotency key. A repair whose completion lost its claim (an operator
+   reset the row while it ran) logs a warning and says "Retry it once to close
+   it", never "Repaired". If Xero refuses a repair's payment as an
+   overpayment, the money is already there: resolve the row in Xero. During a
+   blue/green deploy overlap, the old version's stale reset sends a stuck
+   repair to FAILED, and that row then needs Resolve in Xero or a by-hand
+   check of the payment.
+
    **Stuck RUNNING rows.** A row RUNNING longer than
    `STALE_RUNNING_XERO_OPERATION_MINUTES` (15) is stale (`xero-stale-operations.ts`).
    `isStaleRunningXeroOperation` takes the row and checks RUNNING itself,

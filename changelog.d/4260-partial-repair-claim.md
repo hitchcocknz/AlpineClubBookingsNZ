@@ -12,4 +12,6 @@
   uses Mark failed or Reset stale running, so Retry repairs it again. Marking
   an operation not replayable while a retry of it is running is refused with
   "try again when it finishes". Rows repaired before this release stay partly
-  completed; retry them once and they close.
+  completed; retry them once and they close. A retry never sends a payment
+  Xero already holds for that invoice, and Reset stale running now says how
+  many operations it failed and how many interrupted repairs it returned.

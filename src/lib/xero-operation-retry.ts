@@ -60,6 +60,9 @@ import {
 import { queuedReviewTaskId } from "@/lib/xero-review-task-key";
 import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { XERO_PARTIAL_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
+
+export const PARTIAL_REPAIR_CLAIM_LOST_MESSAGE =
+  "The payment was sent to Xero, but this operation was reset while it ran. Retry it once to close it.";
 import { isRetryOfVoidedRefundRequestNote, mayRecordAsCanonicalRefundNote, VOIDED_REQUEST_NOTE_RETRY_REASON } from "@/lib/xero-refund-note-status";
 import type { CashRefundMethod } from "@/lib/xero-refund-method";
 import {
@@ -1462,43 +1465,66 @@ export async function retryXeroSyncOperation(
       return runWithClaimedOriginal(
         operation.id,
         async (claimedAt) => {
-          if (partialInvoiceRepair.amountCents === 0) {
-            const zeroCashRepair = zeroCashRepairOutcome(partialInvoiceRepair);
-            await completeXeroSyncOperation(
+          const repair = partialInvoiceRepair;
+          // Completes onto this claim only; null when an operator reset the row meanwhile.
+          const close = async (
+            paymentOutcome: Record<string, unknown>,
+            message: string,
+            lostMessage = PARTIAL_REPAIR_CLAIM_LOST_MESSAGE,
+          ) => {
+            const closed = await completeXeroSyncOperation(
               operation.id,
-              repairedPartialInvoiceCompletion(operation, partialInvoiceRepair.invoiceId, {
-                payment: null,
-                paymentSkipped: true,
-                paymentSkipReason: zeroCashRepair.skipReason,
-              }),
+              repairedPartialInvoiceCompletion(operation, repair.invoiceId, paymentOutcome),
               { onlyIfRunningSince: claimedAt, alert: false },
             );
-            return { message: zeroCashRepair.message };
+            if (closed) return { message };
+            logger.warn({ operationId: operation.id }, "Xero PARTIAL repair finished after its claim was reset; row left as the operator set it");
+            return { message: lostMessage };
+          };
+          if (repair.amountCents === 0) {
+            const zeroCashRepair = zeroCashRepairOutcome(repair);
+            return close(
+              { payment: null, paymentSkipped: true, paymentSkipReason: zeroCashRepair.skipReason },
+              zeroCashRepair.message,
+              "This operation was reset while the repair ran, so it was not closed. Retry it once to close it.",
+            );
+          }
+          // #4256: a payment an earlier run recorded (its link) is never sent
+          // again, whether or not Xero still remembers the idempotency key.
+          const recorded = await prisma.xeroObjectLink.findFirst({
+            where: {
+              localModel: operation.localModel!,
+              localId: operation.localId!,
+              xeroObjectType: "PAYMENT",
+              role: repair.linkRole,
+              active: true,
+              metadata: { path: ["invoiceId"], equals: repair.invoiceId },
+            },
+            select: { xeroObjectId: true },
+          });
+          if (recorded) {
+            return close(
+              { payment: { paymentID: recorded.xeroObjectId, amount: repair.amountCents / 100 } },
+              "The payment was already recorded in Xero; closed the operation without paying again.",
+            );
           }
           const paymentId = await xero.createXeroPaymentForInvoice({
             localModel: operation.localModel!,
             localId: operation.localId!,
-            invoiceId: partialInvoiceRepair.invoiceId,
-            amountCents: partialInvoiceRepair.amountCents,
-            idempotencyKey: partialInvoiceRepair.idempotencyKey,
-            reference: partialInvoiceRepair.reference,
-            role: partialInvoiceRepair.linkRole,
+            invoiceId: repair.invoiceId,
+            amountCents: repair.amountCents,
+            idempotencyKey: repair.idempotencyKey,
+            reference: repair.reference,
+            role: repair.linkRole,
             createdByMemberId,
-            metadata: { invoiceId: partialInvoiceRepair.invoiceId, amountCents: partialInvoiceRepair.amountCents },
+            metadata: { invoiceId: repair.invoiceId, amountCents: repair.amountCents },
           });
-          await completeXeroSyncOperation(
-            operation.id,
-            repairedPartialInvoiceCompletion(operation, partialInvoiceRepair.invoiceId, {
-              payment: { paymentID: paymentId, amount: partialInvoiceRepair.amountCents / 100 },
-            }),
-            { onlyIfRunningSince: claimedAt, alert: false },
+          return close(
+            { payment: { paymentID: paymentId, amount: repair.amountCents / 100 } },
+            repair.linkRole === "INVOICE_PAYMENT"
+              ? "Repaired Xero booking invoice payment recording."
+              : "Repaired Xero supplementary invoice payment recording.",
           );
-          return {
-            message:
-              partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
-                ? "Repaired Xero booking invoice payment recording."
-                : "Repaired Xero supplementary invoice payment recording.",
-          };
         },
         { from: "PARTIAL" },
       );

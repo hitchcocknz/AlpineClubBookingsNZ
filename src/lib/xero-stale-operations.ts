@@ -140,8 +140,8 @@ export async function writeStaleRunningXeroOperationReset(
   lastErrorMessage: string,
   db: StaleResetWriter,
   only?: "FAILED" | "PARTIAL",
-): Promise<number> {
-  let count = 0;
+): Promise<{ failed: number; partial: number }> {
+  const count = { failed: 0, partial: 0 };
   if (only !== "PARTIAL") {
     const failed = await db.xeroSyncOperation.updateMany({
       where: only
@@ -154,7 +154,7 @@ export async function writeStaleRunningXeroOperationReset(
         completedAt: now,
       },
     });
-    count += failed.count;
+    count.failed = failed.count;
   }
   if (only !== "FAILED") {
     const repairs = await db.xeroSyncOperation.updateMany({
@@ -166,7 +166,7 @@ export async function writeStaleRunningXeroOperationReset(
         completedAt: now,
       },
     });
-    count += repairs.count;
+    count.partial = repairs.count;
   }
   return count;
 }
@@ -251,7 +251,7 @@ export async function markStaleRunningXeroOperationFailed(
   };
   const returnedTo = row.lastErrorCode === XERO_PARTIAL_REPAIR_RUNNING_CODE ? "PARTIAL" : "FAILED";
   const marked = await prisma.$transaction(async (tx) => {
-    const count = await writeStaleRunningXeroOperationReset(
+    const reset = await writeStaleRunningXeroOperationReset(
       {
         id: row.id,
         status: stale.status,
@@ -262,7 +262,7 @@ export async function markStaleRunningXeroOperationFailed(
       tx,
       returnedTo,
     );
-    if (count !== 1) return false;
+    if (reset.failed + reset.partial !== 1) return false;
     await recordAudit(tx, operation);
     return true;
   });

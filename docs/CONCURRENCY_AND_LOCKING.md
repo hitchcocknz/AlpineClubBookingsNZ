@@ -166,7 +166,10 @@ carries `lastErrorCode = PARTIAL_REPAIR_RUNNING`, so if its process dies the
 stale reset and Mark failed return it to PARTIAL rather than FAILED. No
 advisory key and no lock is held across the Xero call. The booking invoice
 replay's own completion (`createXeroInvoiceForBooking`) is not yet guarded on
-the claim. Proven against real PostgreSQL by
+the claim. A repair whose process died after its payment was recorded is
+closed by the next retry from the payment's link, with no second Xero call.
+During a blue/green overlap the old version's stale reset sends a stuck repair
+to FAILED, which then needs Resolve in Xero or a by-hand payment check. Proven against real PostgreSQL by
 `xero-partial-repair-claim.realdb.test.ts`.
 
 ### The Xero token refresh uses a row lease, shared across colours (#3454)
