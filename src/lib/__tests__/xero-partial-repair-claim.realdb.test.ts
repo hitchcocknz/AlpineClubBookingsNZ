@@ -130,37 +130,59 @@ let retry: typeof import("@/lib/xero-operation-retry");
       prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, entityType: "PAYMENT" } });
 
     /**
-     * Hold the row's lock while the retry reads it, wait until its claim is
-     * blocked on that lock, then commit `officerWrite` - the officer's mark
-     * landing between the retry's read and its claim.
+     * Hold the row's lock while the retries read it, wait until every one of
+     * their claims is blocked on that lock, then commit `officerWrite` - the
+     * officer's mark landing between the retries' read and their claims. With
+     * no write it is a barrier: the claims race only once all have read.
      */
-    async function landWhileClaimWaits<T>(
-      officerWrite: (tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<unknown>,
-      runRetry: () => Promise<T>,
-    ): Promise<PromiseSettledResult<T>> {
-      let retried!: Promise<PromiseSettledResult<T>>;
+    async function landWhileClaimsWait<T>(
+      officerWrite: ((tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0]) => Promise<unknown>) | null,
+      runRetries: Array<() => Promise<T>>,
+    ): Promise<Array<PromiseSettledResult<T>>> {
+      let retried!: Promise<Array<PromiseSettledResult<T>>>;
       await prisma.$transaction(
         async (tx) => {
           await tx.$queryRaw`SELECT id FROM "XeroSyncOperation" WHERE id = ${OPERATION_ID} FOR UPDATE`;
-          retried = runRetry().then(
-            (value) => ({ status: "fulfilled", value }) as const,
-            (reason: unknown) => ({ status: "rejected", reason }) as const,
-          );
+          retried = Promise.allSettled(runRetries.map((run) => run()));
           const started = process.hrtime.bigint();
           for (;;) {
             const waiting = await prisma.$queryRaw<Array<{ n: bigint }>>`
               SELECT count(*)::bigint AS n FROM pg_stat_activity
               WHERE datname = current_database() AND wait_event_type = 'Lock'
                 AND query ILIKE '%UPDATE%XeroSyncOperation%'`;
-            if (Number(waiting[0]?.n ?? 0) > 0) break;
-            if (realElapsedMs(started) > 10_000) throw new Error("The retry never reached its claim.");
+            if (Number(waiting[0]?.n ?? 0) >= runRetries.length) break;
+            if (realElapsedMs(started) > 10_000) throw new Error("The retries never reached their claims.");
             await new Promise((resolve) => setTimeout(resolve, 20));
           }
-          await officerWrite(tx);
+          if (officerWrite) await officerWrite(tx);
         },
         { timeout: 20_000 },
       );
       return retried;
+    }
+
+    const landWhileClaimWaits = async <T,>(
+      officerWrite: Parameters<typeof landWhileClaimsWait<T>>[0],
+      runRetry: () => Promise<T>,
+    ) => (await landWhileClaimsWait(officerWrite, [runRetry]))[0]!;
+
+    /** Wait until the repair's claim is on the row (RUNNING, marked), then make it stale. */
+    async function claimThenStrand() {
+      const started = process.hrtime.bigint();
+      for (;;) {
+        const row = await readRow();
+        if (row.status === "RUNNING") {
+          expect(row.lastErrorCode).toBe("PARTIAL_REPAIR_RUNNING");
+          break;
+        }
+        if (realElapsedMs(started) > 10_000) throw new Error("The repair never claimed the row.");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      // The process "dies" here: nothing completes the claim, and 20 minutes pass.
+      await prisma.xeroSyncOperation.update({
+        where: { id: OPERATION_ID },
+        data: { startedAt: new Date(Date.now() - 20 * 60_000) },
+      });
     }
 
     beforeAll(async () => {
@@ -234,9 +256,10 @@ let retry: typeof import("@/lib/xero-operation-retry");
     it("two retries of one row at once make one payment write and close the row once", async () => {
       await seedPartial(45.67);
 
-      const outcomes = await Promise.allSettled([
-        retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST),
-        retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST),
+      // Review F5: a barrier, so both have read the row before either claims.
+      const outcomes = await landWhileClaimsWait(null, [
+        () => retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST),
+        () => retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST),
       ]);
 
       expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
@@ -246,6 +269,7 @@ let retry: typeof import("@/lib/xero-operation-retry");
       expect(refused).toHaveLength(1);
       expect(refused[0].reason).toMatchObject({ status: 409 });
       expect(createPayments).toHaveBeenCalledTimes(1);
+      expect(createPayments.mock.calls[0][1].payments[0].amount).toBe(45.67);
       expect(createPayments.mock.calls[0][3]).toBe(PAYMENT_KEY);
       expect(await paymentRows()).toBe(1);
       const row = await readRow();
@@ -268,6 +292,71 @@ let retry: typeof import("@/lib/xero-operation-retry");
         message: "Repaired Xero booking invoice payment recording.",
       });
       expect((await readRow()).status).toBe("SUCCEEDED");
+    });
+
+    // Review F1: a repair whose process died mid-claim is stranded RUNNING. The
+    // operator's remedy returns it to PARTIAL, payload kept, and Retry repairs it
+    // again - never FAILED, where the invoice replay would find the invoice and
+    // record no payment.
+    it.each([
+      ["Mark failed", "mark"],
+      ["Reset stale running", "bulk"],
+    ] as const)("MUTATION: a repair that died mid-claim comes back PARTIAL through %s, and the retry makes one payment write", async (_label, remedy) => {
+      await seedPartial(45.67);
+      const apiClient = await import("@/lib/xero-api-client");
+      vi.mocked(apiClient.getAuthenticatedXeroClient).mockImplementationOnce(() => new Promise(() => {}));
+      void retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST).catch(() => {});
+      await claimThenStrand();
+
+      const stale = await import("@/lib/xero-stale-operations");
+      if (remedy === "mark") {
+        const result = await stale.markStaleRunningXeroOperationFailed(OPERATION_ID, async () => {});
+        expect(result).toMatchObject({ outcome: "marked", returnedTo: "PARTIAL" });
+      } else {
+        const now = new Date();
+        const count = await prisma.$transaction((tx) =>
+          stale.writeStaleRunningXeroOperationReset(stale.staleRunningXeroOperationFilter(now), now, "bulk reset", tx),
+        );
+        expect(count).toBe(1);
+      }
+      const recovered = await readRow();
+      expect(recovered).toMatchObject({ status: "PARTIAL", lastErrorCode: "ORPHANED_STALE_RUNNING" });
+      expect(recovered.responsePayload).toEqual(partialPayload(45.67));
+      expect(retry.getXeroOperationRetryMeta(recovered)).toEqual({ supported: true, reason: null });
+
+      await expect(retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST)).resolves.toEqual({
+        message: "Repaired Xero booking invoice payment recording.",
+      });
+      expect(createPayments).toHaveBeenCalledTimes(1);
+      expect(createPayments.mock.calls[0][1].payments[0].amount).toBe(45.67);
+      expect(createPayments.mock.calls[0][3]).toBe(PAYMENT_KEY);
+      expect(await readRow()).toMatchObject({ status: "SUCCEEDED", lastErrorCode: null });
+    });
+
+    it("MUTATION: a repair that finishes after an operator's Mark failed writes nothing over it (review F4)", async () => {
+      await seedPartial(45.67);
+      let release!: () => void;
+      createPayments.mockImplementationOnce(async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return { body: { payments: [{ paymentID: "race-4256-late-payment" }] } };
+      });
+      const late = retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST);
+      await claimThenStrand();
+      const stale = await import("@/lib/xero-stale-operations");
+      expect(await stale.markStaleRunningXeroOperationFailed(OPERATION_ID, async () => {})).toMatchObject({
+        returnedTo: "PARTIAL",
+      });
+      while (!release) await new Promise((resolve) => setTimeout(resolve, 10));
+
+      release();
+      await late;
+
+      // The operator's PARTIAL stands; the payment row the late run wrote is its own.
+      const row = await readRow();
+      expect(row).toMatchObject({ status: "PARTIAL", lastErrorCode: "ORPHANED_STALE_RUNNING" });
+      expect(row.responsePayload).toEqual(partialPayload(45.67));
     });
   },
 );
