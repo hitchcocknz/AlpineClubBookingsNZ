@@ -1,9 +1,11 @@
 /**
  * What the Xero Operations repair of a PARTIAL invoice create records as paid
  * (`xero-operation-retry.ts`): the invoice total read from the stored payloads
- * and, for a primary booking invoice, the cash its create stored (#4010).
+ * and, for a primary booking invoice, the cash its create stored (#4010); and
+ * how the repaired row is closed (#4256).
  */
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
 import { asArray, asRecord, readNumber } from "@/lib/xero-json";
 import {
   parsePrimaryInvoiceFeeAtLink,
@@ -96,5 +98,26 @@ export function zeroCashRepairOutcome(repair: {
   return {
     skipReason: "Zero-total invoice does not require Xero payment recording.",
     message: `Marked zero-total Xero ${invoice} invoice as repaired without payment recording.`,
+  };
+}
+
+/**
+ * #4256: the completion of a claimed PARTIAL invoice row whose payment leg the
+ * repair settled. SUCCEEDED, unless the invoice email also failed: the repair
+ * sends no email, so the row stays PARTIAL for that, which the retry fence then
+ * refuses to repair as a payment again.
+ */
+export function repairedPartialInvoiceCompletion(
+  operation: { responsePayload: unknown; xeroObjectNumber: string | null },
+  invoiceId: string,
+  paymentOutcome: Record<string, unknown>,
+) {
+  const emailStillFailed = readXeroInvoiceOperationOutcome(operation.responsePayload)?.invoiceEmailFailed;
+  return {
+    status: emailStillFailed ? ("PARTIAL" as const) : ("SUCCEEDED" as const),
+    responsePayload: { ...(asRecord(operation.responsePayload) ?? {}), paymentError: null, ...paymentOutcome },
+    xeroObjectType: "INVOICE",
+    xeroObjectId: invoiceId,
+    xeroObjectNumber: operation.xeroObjectNumber,
   };
 }

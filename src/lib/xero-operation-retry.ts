@@ -40,6 +40,7 @@ import { providerAmountToCents } from "@/lib/money-provider-amount";
 import {
   primaryInvoiceRepairCashCents,
   readStoredInvoiceTotalCents,
+  repairedPartialInvoiceCompletion,
   zeroCashRepairOutcome,
 } from "@/lib/xero-partial-invoice-repair-amount";
 import { shouldRepairXeroContactNameOrder } from "@/lib/xero-contact-sync";
@@ -368,11 +369,13 @@ async function runWithClaimedOriginal<T>(
 ): Promise<T> {
   const claimedAt = new Date();
   const claimed = await prisma.xeroSyncOperation.updateMany({
-    // #3635: a resolve landing after the read makes this claim lose.
+    // #3635: a resolve landing after the read makes this claim lose; #4256: so
+    // does a mark non-replayable.
     where: {
       id: operationId,
       status: options ? options.from : { in: ["FAILED", "PARTIAL"] },
       manuallyResolvedAt: null,
+      replayable: true,
     },
     data: { status: "RUNNING", startedAt: claimedAt },
   });
@@ -434,13 +437,14 @@ export class XeroOperationResolvedInXeroError extends XeroOperationRetryError {
  * say so with the resolved error, so the queued-retry drain closes its row as
  * skipped rather than failed and nobody is told a second retry exists.
  */
+const NOT_REPLAYABLE_REASON = "This operation is not marked replayable.";
 async function throwLostRetryClaim(operationId: string, message: string): Promise<never> {
   const current = await prisma.xeroSyncOperation.findUnique({
     where: { id: operationId },
-    select: { manuallyResolvedAt: true, queueType: true, requestPayload: true },
+    select: { manuallyResolvedAt: true, queueType: true, requestPayload: true, replayable: true },
   });
   if (current) refuseRetryIfResolvedInXero(current);
-  throw new XeroOperationRetryError(message, 409);
+  throw new XeroOperationRetryError(current?.replayable === false ? NOT_REPLAYABLE_REASON : message, 409);
 }
 
 type ResolvedMarkReadable = {
@@ -833,26 +837,6 @@ function parsePartialInvoiceRepairInput(
   return null;
 }
 
-/**
- * #4256: close a claimed PARTIAL invoice row its repair recorded the payment
- * for. SUCCEEDED, unless the invoice email also failed: the repair sends no
- * email, so the row stays PARTIAL for that, which the retry fence then refuses.
- */
-async function completeRepairedPartialInvoice(
-  operation: Pick<RetryableOperation, "id" | "responsePayload" | "xeroObjectNumber">,
-  invoiceId: string,
-  paymentOutcome: Record<string, unknown>,
-): Promise<void> {
-  const emailStillFailed = readXeroInvoiceOperationOutcome(operation.responsePayload)?.invoiceEmailFailed;
-  await completeXeroSyncOperation(operation.id, {
-    status: emailStillFailed ? "PARTIAL" : "SUCCEEDED",
-    responsePayload: { ...(asRecord(operation.responsePayload) ?? {}), paymentError: null, ...paymentOutcome },
-    xeroObjectType: "INVOICE",
-    xeroObjectId: invoiceId,
-    xeroObjectNumber: operation.xeroObjectNumber ?? null,
-  });
-}
-
 function parseRefundCreditNoteRepairInput(
   operation: Pick<RetryableOperation, "localModel" | "localId" | "requestPayload" | "responsePayload" | "xeroObjectId">
 ): {
@@ -1006,7 +990,7 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
   if (!operation.replayable) {
     return {
       supported: false,
-      reason: "This operation is not marked replayable.",
+      reason: NOT_REPLAYABLE_REASON,
     };
   }
 
@@ -1456,11 +1440,14 @@ export async function retryXeroSyncOperation(
         async () => {
           if (partialInvoiceRepair.amountCents === 0) {
             const zeroCashRepair = zeroCashRepairOutcome(partialInvoiceRepair);
-            await completeRepairedPartialInvoice(operation, partialInvoiceRepair.invoiceId, {
-              payment: null,
-              paymentSkipped: true,
-              paymentSkipReason: zeroCashRepair.skipReason,
-            });
+            await completeXeroSyncOperation(
+              operation.id,
+              repairedPartialInvoiceCompletion(operation, partialInvoiceRepair.invoiceId, {
+                payment: null,
+                paymentSkipped: true,
+                paymentSkipReason: zeroCashRepair.skipReason,
+              }),
+            );
             return { message: zeroCashRepair.message };
           }
           const paymentId = await xero.createXeroPaymentForInvoice({
@@ -1474,9 +1461,12 @@ export async function retryXeroSyncOperation(
             createdByMemberId,
             metadata: { invoiceId: partialInvoiceRepair.invoiceId, amountCents: partialInvoiceRepair.amountCents },
           });
-          await completeRepairedPartialInvoice(operation, partialInvoiceRepair.invoiceId, {
-            payment: { paymentID: paymentId, amount: partialInvoiceRepair.amountCents / 100 },
-          });
+          await completeXeroSyncOperation(
+            operation.id,
+            repairedPartialInvoiceCompletion(operation, partialInvoiceRepair.invoiceId, {
+              payment: { paymentID: paymentId, amount: partialInvoiceRepair.amountCents / 100 },
+            }),
+          );
           return {
             message:
               partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"

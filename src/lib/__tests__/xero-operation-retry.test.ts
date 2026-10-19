@@ -891,6 +891,8 @@ describe("retryXeroSyncOperation", () => {
         id: "op_123",
         status: { in: ["FAILED", "PARTIAL"] },
         manuallyResolvedAt: null,
+        // #4256: a mark non-replayable landing after the read loses it too.
+        replayable: true,
       },
       data: { status: "RUNNING", startedAt: expect.any(Date) },
     });
@@ -3525,12 +3527,12 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
     mocks.finishRefundCreditNoteSettlement.mockResolvedValue({ refundPaymentErr: null });
   });
 
-  it.each(branches)("MUTATION: %s claims PARTIAL only, unresolved, before anything else", async (_label, row) => {
+  it.each(branches)("MUTATION: %s claims PARTIAL only, unresolved and replayable, before anything else", async (_label, row) => {
     mocks.findUniqueOperation.mockResolvedValue(row());
     await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
 
     expect(mocks.updateManyOperation.mock.calls[0][0]).toEqual({
-      where: { id: "op_123", status: "PARTIAL", manuallyResolvedAt: null },
+      where: { id: "op_123", status: "PARTIAL", manuallyResolvedAt: null, replayable: true },
       data: { status: "RUNNING", startedAt: expect.any(Date) },
     });
     const claimOrder = mocks.updateManyOperation.mock.invocationCallOrder[0];
@@ -3559,7 +3561,22 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
     noSideEffect();
   });
 
-  it.each(branches)("MUTATION: %s loses to a mark that took the row out of PARTIAL (non-replayable, failed)", async (_label, row) => {
+  it.each(branches)("MUTATION: a mark non-replayable landing before %s claims makes it write nothing", async (_label, row) => {
+    mocks.findUniqueOperation
+      .mockResolvedValueOnce(row())
+      .mockResolvedValueOnce({ manuallyResolvedAt: null, requestPayload: null, replayable: false });
+    mocks.updateManyOperation.mockImplementation(async (args: { where: Record<string, unknown> }) => ({
+      count: args.where.replayable === true ? 0 : 1,
+    }));
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toMatchObject({
+      status: 409,
+      message: "This operation is not marked replayable.",
+    });
+    noSideEffect();
+  });
+
+  it.each(branches)("MUTATION: %s loses to a write that took the row out of PARTIAL (Mark failed, a requeue)", async (_label, row) => {
     mocks.findUniqueOperation
       .mockResolvedValueOnce(row())
       .mockResolvedValueOnce({ manuallyResolvedAt: null, requestPayload: null });
