@@ -48,7 +48,7 @@ reason: the enqueue option, its payload field and the worker's pass-through
   for the hand-back task id, each beside the matching existing field.
 
 file: src/lib/xero-operation-retry.ts
-lines: 2024
+lines: 1989
 reason: one pass-through line so an operator retry keeps the hand-back task id.
 
 file: src/lib/xero-refund-note-link-repair.ts
