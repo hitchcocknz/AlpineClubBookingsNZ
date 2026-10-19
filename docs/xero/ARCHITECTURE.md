@@ -997,6 +997,19 @@ note.
    it gets "is FAILED; fix the cause, then requeue it". A REQUEUE row is never
    replayable itself, because replaying a replay compounds the state.
 
+   **A PARTIAL repair claims its row too (#4256).** The PARTIAL invoice
+   payment repair and the PARTIAL refund-note repair run through the same
+   helper in its PARTIAL-only mode. The claim needs the row PARTIAL,
+   unresolved and replayable, so an officer's resolve or mark non-replayable,
+   or a second retry, landing after the retry's read makes it lose: nothing is
+   written and Xero is not called. Before this, the zero-cash repair completed
+   the row SUCCEEDED over such a mark, and two retries both reached Xero,
+   stopped only by the payment's idempotency key. The invoice repair now closes
+   its row: SUCCEEDED, or PARTIAL while an invoice-email fault remains, which
+   the retry fence then refuses as a payment repair. A throw gives the row back
+   PARTIAL with its payload and the run's error, guarded on the claim, never
+   FAILED, whose error payload would replace what the repair reads.
+
    **Stuck RUNNING rows.** A row RUNNING longer than
    `STALE_RUNNING_XERO_OPERATION_MINUTES` (15) is stale (`xero-stale-operations.ts`).
    `isStaleRunningXeroOperation` takes the row and checks RUNNING itself,

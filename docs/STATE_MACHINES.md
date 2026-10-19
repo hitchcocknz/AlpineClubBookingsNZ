@@ -3559,9 +3559,17 @@ queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
 outbox copy RUNNING -> CANCELLED when a sibling for the same document was
   resolved after the copy was queued; no Xero call
 retry claims original FAILED/PARTIAL -> RUNNING -> handler completes it
+  the claim needs the row unresolved and replayable: a resolve or a mark
+  non-replayable after the retry's read makes it lose, with no write and no
+  Xero call (#3635, #4256)
   handler throws before completing -> original RUNNING -> FAILED with the
   run's error (guarded: still RUNNING, still this claim's startedAt) (#3462)
   queued retry (REQUEUE) -> FAILED, naming the original and its status
+PARTIAL invoice payment repair or refund-note repair claims PARTIAL -> RUNNING
+  (#4256) -> invoice repair records the payment -> SUCCEEDED, or PARTIAL while
+  an invoice-email fault remains; the refund-note leg completes its own row
+  handler throws first -> RUNNING -> PARTIAL, payload kept, with the run's
+  error (guarded on the claim), so the row stays repairable
 stale RUNNING (> 15 min) -> FAILED by an officer's Mark failed (one row) or
   Reset stale running (all), code ORPHANED_STALE_RUNNING; then retryable
 retry of an outbox-run row (group invoice and its VOIDs, kept late capture,
@@ -3579,6 +3587,8 @@ by `xero-operation-retry.test.ts` and `xero-booking-repair.test.ts` (#3635).
 The claimed-original abandon and Mark failed are pinned by
 `xero-operation-retry.test.ts`, `xero-sync.test.ts`,
 `xero-operation-queue.test.ts` and `xero-operation-routes.test.ts` (#3462).
+The PARTIAL repair's claim is pinned by `xero-operation-retry.test.ts` and,
+against real PostgreSQL, `xero-partial-repair-claim.realdb.test.ts` (#4256).
 
 ## Cron And Recovery Lifecycle
 
