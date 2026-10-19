@@ -143,6 +143,15 @@ vi.mock("@/lib/prisma", () => {
         Object.assign(row, data);
         return row;
       }),
+      // #4256: the PARTIAL repair's claim and give-back. A fixture row reads
+      // with the schema's defaults (replayable, unresolved) where it omits them.
+      updateMany: vi.fn(async ({ where, data }: { where: Row; data: Row }) => {
+        const hits = state.operations.filter((operation) =>
+          matches({ replayable: true, manuallyResolvedAt: null, ...operation }, where),
+        );
+        for (const row of hits) Object.assign(row, data);
+        return { count: hits.length };
+      }),
     },
     $transaction: vi.fn(async (run: (tx: unknown) => unknown) => run(prisma)),
   };
