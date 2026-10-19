@@ -1993,7 +1993,12 @@ describe("retryXeroSyncOperation", () => {
   // figure stored with the invoice link, capped for applied account credit —
   // not the invoice total. The total is only an older operation's fallback.
   describe("primary invoice PARTIAL repair sizes at the stored cash figure (#4010)", () => {
-    const storedAtLink = (primaryInvoiceCashCents: number, xeroInvoiceId = "inv_123") => ({
+    // `attempted` undefined models a record written before #4010 stored it.
+    const storedAtLink = (
+      primaryInvoiceCashCents: number,
+      xeroInvoiceId = "inv_123",
+      primaryInvoiceAttemptedCashCents: number | undefined = primaryInvoiceCashCents,
+    ) => ({
       invoices: [{ lineItems: [{ quantity: 1, unitAmount: 100 }] }],
       primaryInvoiceBilledFee: {
         xeroInvoiceId,
@@ -2001,6 +2006,7 @@ describe("retryXeroSyncOperation", () => {
         billedTotalCents: 10_000,
         recordedChangeFeeCentsAtLink: 0,
         primaryInvoiceCashCents,
+        ...(primaryInvoiceAttemptedCashCents === undefined ? {} : { primaryInvoiceAttemptedCashCents }),
       },
     });
     const partialPrimary = (requestPayload: unknown) =>
@@ -2030,6 +2036,23 @@ describe("retryXeroSyncOperation", () => {
       expect(repairedPaymentCents()).toBe(8_000);
     });
 
+    // #4010 review: the stored cash is floored at an earlier unmatched payment
+    // on the invoice; the repair records what the create tried to pay.
+    it.each([
+      { floored: 6_000, attempted: 4_000 },
+      { floored: 3_000, attempted: 2_000 },
+    ])("records the attempted $attempted, never the floored $floored", async ({ floored, attempted }) => {
+      mocks.findUniqueOperation.mockResolvedValue(partialPrimary(storedAtLink(floored, "inv_123", attempted)));
+      await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+      expect(repairedPaymentCents()).toBe(attempted);
+    });
+
+    it("a record from before the attempted figure falls back to the stored cash", async () => {
+      mocks.findUniqueOperation.mockResolvedValue(partialPrimary(storedAtLink(8_000, "inv_123", undefined)));
+      await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+      expect(repairedPaymentCents()).toBe(8_000);
+    });
+
     it("card only: the stored figure is the total, so the repair is unchanged", async () => {
       mocks.findUniqueOperation.mockResolvedValue(partialPrimary(storedAtLink(10_000)));
       await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
@@ -2046,7 +2069,7 @@ describe("retryXeroSyncOperation", () => {
     });
 
     it("a record without the cash figure (pre-round-5) or for another invoice also falls back", async () => {
-      const withoutCash: Record<string, unknown> = { ...storedAtLink(8_000).primaryInvoiceBilledFee };
+      const withoutCash: Record<string, unknown> = { ...storedAtLink(8_000, "inv_123", undefined).primaryInvoiceBilledFee };
       delete withoutCash.primaryInvoiceCashCents;
       for (const requestPayload of [
         { ...storedAtLink(8_000), primaryInvoiceBilledFee: withoutCash },

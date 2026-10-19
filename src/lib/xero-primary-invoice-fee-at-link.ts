@@ -5,14 +5,42 @@
  * recorded against the invoice (`primaryInvoiceCashCents`), which is capped so
  * the member's applied account credit still fits.
  *
- * One home for the payload key and its reader (`INV-SSOT`). The writer is
+ * One home for the record's types, payload key and reader (`INV-SSOT`). The writer is
  * `persistPrimaryInvoiceLink` (`xero-primary-invoice-fee-gap.ts`); the readers
  * are the change-fee gap check there and the Xero ops panel's PARTIAL repair
  * (`xero-partial-invoice-repair-amount.ts`, #4010). Kept a leaf module so
  * the repair reads the figure without importing the gap check's outbox graph.
  */
-import type { PrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-fee-gap";
 import { asRecord } from "@/lib/xero-json";
+
+/** What a primary invoice billed, as the gap check needs it. */
+export interface PrimaryInvoiceBilledFee {
+  readonly xeroInvoiceId: string;
+  /** Its change-fee lines. */
+  readonly billedChangeFeeCents: number;
+  /** All its lines: what a Stripe payment recorded against it can have settled. */
+  readonly billedTotalCents: number;
+}
+
+/**
+ * What the invoice billed, the fee its payment recorded when the link was
+ * saved, and the Stripe cash recorded against the invoice
+ * (`primaryInvoiceCashCents`, #3955 round 5, finding 4): computed ONCE by the
+ * create and stored with the link, so the gap rule reads the figure the
+ * primary's payment was sized at rather than recomputing it from figures that
+ * may since have moved.
+ */
+export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
+  readonly recordedChangeFeeCentsAtLink: number;
+  readonly primaryInvoiceCashCents: number;
+  /**
+   * The Stripe payment the create itself tried to write (#4010): the capped
+   * figure when it recorded one, else 0. Unlike `primaryInvoiceCashCents` it
+   * is never floored at cash the invoice already held, so it is what the
+   * PARTIAL repair records. Absent on a record written before it existed.
+   */
+  readonly primaryInvoiceAttemptedCashCents?: number;
+}
 
 /**
  * Why a primary invoice records no Stripe cash although the card captured
@@ -33,6 +61,7 @@ export const PRIMARY_INVOICE_FEE_AT_LINK_KEY = "primaryInvoiceBilledFee";
  * carries no `primaryInvoiceBilledFee` record at all, and one written before
  * its round 5 carries the record without `primaryInvoiceCashCents`. A record
  * for a different invoice is not this invoice's figure and also reads as null.
+ * One written before #4010 parses, without `primaryInvoiceAttemptedCashCents`.
  */
 export function parsePrimaryInvoiceFeeAtLink(
   requestPayload: unknown,
@@ -55,5 +84,8 @@ export function parsePrimaryInvoiceFeeAtLink(
     billedTotalCents: record.billedTotalCents,
     recordedChangeFeeCentsAtLink: record.recordedChangeFeeCentsAtLink,
     primaryInvoiceCashCents: record.primaryInvoiceCashCents,
+    ...(typeof record.primaryInvoiceAttemptedCashCents === "number"
+      ? { primaryInvoiceAttemptedCashCents: record.primaryInvoiceAttemptedCashCents }
+      : {}),
   };
 }

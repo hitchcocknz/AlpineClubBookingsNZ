@@ -37,6 +37,8 @@ import { asRecord } from "@/lib/xero-json";
 import {
   parsePrimaryInvoiceFeeAtLink,
   PRIMARY_INVOICE_FEE_AT_LINK_KEY,
+  type PrimaryInvoiceBilledFee,
+  type PrimaryInvoiceFeeAtLink,
 } from "@/lib/xero-primary-invoice-fee-at-link";
 import {
   CHANGE_FEE_LINE_DESCRIPTION,
@@ -58,27 +60,7 @@ export function billedChangeFeeCents(lineItems: ReadonlyArray<LineItem>): number
   );
 }
 
-/** What a primary invoice billed, as the gap check needs it. */
-export interface PrimaryInvoiceBilledFee {
-  readonly xeroInvoiceId: string;
-  /** Its change-fee lines. */
-  readonly billedChangeFeeCents: number;
-  /** All its lines: what a Stripe payment recorded against it can have settled. */
-  readonly billedTotalCents: number;
-}
-
-/**
- * What the invoice billed, the fee its payment recorded when the link was
- * saved, and the Stripe cash recorded against the invoice
- * (`primaryInvoiceCashCents`, #3955 round 5, finding 4): computed ONCE by the
- * create and stored with the link, so the gap rule reads the figure the
- * primary's payment was sized at rather than recomputing it from figures that
- * may since have moved.
- */
-export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
-  readonly recordedChangeFeeCentsAtLink: number;
-  readonly primaryInvoiceCashCents: number;
-}
+export type { PrimaryInvoiceBilledFee, PrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-fee-at-link";
 
 export function primaryInvoiceBilledFee(
   xeroInvoiceId: string,
@@ -218,6 +200,8 @@ export async function persistPrimaryInvoiceLink(input: {
   billed: PrimaryInvoiceBilledFee;
   /** The Stripe cash recorded against this invoice, computed once by the create. */
   primaryInvoiceCashCents: number;
+  /** The Stripe payment the create itself tried to write: what a repair records (#4010). */
+  primaryInvoiceAttemptedCashCents: number;
 }): Promise<PrimaryInvoiceFeeAtLink> {
   return prisma.$transaction(async (tx) => {
     const linked = await tx.payment.update({
@@ -229,6 +213,7 @@ export async function persistPrimaryInvoiceLink(input: {
       ...input.billed,
       recordedChangeFeeCentsAtLink: recordedChangeFeeCents(linked),
       primaryInvoiceCashCents: input.primaryInvoiceCashCents,
+      primaryInvoiceAttemptedCashCents: input.primaryInvoiceAttemptedCashCents,
     };
     const operation = await tx.xeroSyncOperation.findUnique({
       where: { id: input.operationId },

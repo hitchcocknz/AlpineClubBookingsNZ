@@ -1151,7 +1151,7 @@ export async function createXeroInvoiceForBooking(
     // round 5, finding 4): the payment Xero holds where there is one, else the
     // figure it was sized at, floored (round 6, F1) at the cash the invoice
     // already held. If the payment write failed, the Xero ops panel's PARTIAL
-    // repair records this stored figure too (#4010, xero-operation-retry.ts).
+    // repair records the attempted payment stored beside it (#4010).
     const primaryInvoiceCashCents = Math.max(
       providerAmountToCents(paymentResponseBody?.amount) ??
         (shouldRecordStripeInvoicePayment ? invoicePaymentCents : 0),
@@ -1168,6 +1168,8 @@ export async function createXeroInvoiceForBooking(
       xeroInvoiceNumber: createdInvoice.invoiceNumber ?? null,
       billed: primaryInvoiceBilledFee(createdInvoice.invoiceID, createdInvoice.lineItems ?? lineItems),
       primaryInvoiceCashCents,
+      // #4010: the payment this run tried to write, unfloored - what a repair records.
+      primaryInvoiceAttemptedCashCents: shouldRecordStripeInvoicePayment ? invoicePaymentCents : 0,
     });
     await prisma.paymentTransaction.updateMany({
       where: {

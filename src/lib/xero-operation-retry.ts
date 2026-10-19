@@ -37,8 +37,11 @@ import {
 } from "@/lib/xero-payment-credit-note-payload";
 import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
-import { PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON } from "@/lib/xero-primary-invoice-fee-at-link";
-import { primaryInvoiceRepairCashCents, readStoredInvoiceTotalCents } from "@/lib/xero-partial-invoice-repair-amount";
+import {
+  primaryInvoiceRepairCashCents,
+  readStoredInvoiceTotalCents,
+  zeroCashRepairOutcome,
+} from "@/lib/xero-partial-invoice-repair-amount";
 import { shouldRepairXeroContactNameOrder } from "@/lib/xero-contact-sync";
 import { parseXeroContactDateOfBirth } from "@/lib/xero-contact-date-of-birth";
 import {
@@ -1415,6 +1418,7 @@ export async function retryXeroSyncOperation(
       operation.localId
     ) {
       if (partialInvoiceRepair.amountCents === 0) {
+        const zeroCashRepair = zeroCashRepairOutcome(partialInvoiceRepair);
         const existingResponsePayload = asRecord(operation.responsePayload);
 
         await completeXeroSyncOperation(operation.id, {
@@ -1424,22 +1428,13 @@ export async function retryXeroSyncOperation(
             payment: null,
             paymentError: null,
             paymentSkipped: true,
-            paymentSkipReason: partialInvoiceRepair.creditTookAllCash
-              ? PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON
-              : "Zero-total invoice does not require Xero payment recording.",
+            paymentSkipReason: zeroCashRepair.skipReason,
           },
           xeroObjectType: "INVOICE",
           xeroObjectId: partialInvoiceRepair.invoiceId,
         });
 
-        return {
-          message:
-            partialInvoiceRepair.creditTookAllCash
-              ? "Marked Xero booking invoice as repaired without payment recording: its applied account credit leaves no card cash to record."
-              : partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
-              ? "Marked zero-total Xero booking invoice as repaired without payment recording."
-              : "Marked zero-total Xero supplementary invoice as repaired without payment recording.",
-        };
+        return { message: zeroCashRepair.message };
       }
 
       await xero.createXeroPaymentForInvoice({
