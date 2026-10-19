@@ -18,7 +18,11 @@ vi.mock("@/lib/logger", () => ({
   default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 
-import { convergedForNamedFailure } from "@/lib/xero-applied-credit-spent-outside-app";
+import {
+  CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON,
+  convergedForNamedFailure,
+} from "@/lib/xero-applied-credit-spent-outside-app";
+import { resolutionLabel } from "@/lib/xero-operation-resolution";
 
 describe("convergedForNamedFailure", () => {
   it("never acts on an error that is not the confirmed named failure", async () => {
@@ -36,5 +40,13 @@ describe("convergedForNamedFailure", () => {
     mocks.bookingFindUnique.mockResolvedValue(null);
     const named = new CreditNoteSpentOutsideAppError("spent", "cn_1", 0, 5250);
     await expect(convergedForNamedFailure(named, "booking_1")).resolves.toBe(false);
+  });
+});
+
+describe("resolutionLabel", () => {
+  it("names a close the app made itself, and keeps \"Resolved in Xero\" for an officer's mark", () => {
+    expect(resolutionLabel(CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON)).toBe("Closed: credit used outside the app");
+    expect(resolutionLabel("Fixed the invoice by hand")).toBe("Resolved in Xero");
+    expect(resolutionLabel(null)).toBe("Resolved in Xero");
   });
 });

@@ -3,7 +3,8 @@ import { APPLIED_CREDIT_ALLOCATION_ROLE } from "./xero-applied-credit-link-roles
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
 import { buildSyntheticAllocationLinkId } from "@/lib/xero-inbound/amounts";
-import { NOT_A_CONVERGENCE_ROW, writtenDownCentsByCreditNote } from "@/lib/xero-credit-note-write-down";
+import { writtenDownCentsByCreditNote } from "@/lib/xero-credit-note-write-down";
+import { findFundingLotsForNote } from "@/lib/xero-applied-credit-slice-lookup";
 
 const APPLIED_CREDIT_REMAINDER_ALLOCATION_ROLE =
   "APPLIED_CREDIT_REMAINDER_ALLOCATION";
@@ -141,16 +142,7 @@ async function findUniqueFundingLot(params: {
   memberId: string;
   xeroCreditNoteId: string;
 }) {
-  const lots = await params.db.memberCredit.findMany({
-    where: {
-      memberId: params.memberId,
-      xeroCreditNoteId: params.xeroCreditNoteId,
-      amountCents: { gt: 0 },
-      ...NOT_A_CONVERGENCE_ROW,
-    },
-    select: { id: true, amountCents: true },
-    take: 2,
-  });
+  const lots = await findFundingLotsForNote(params.db, params.memberId, params.xeroCreditNoteId);
   // "Exactly one positive funding lot" said as a first with no rest, so the
   // lot this returns is a value the check already holds (#2800).
   const [lot, ...extraLots] = lots;

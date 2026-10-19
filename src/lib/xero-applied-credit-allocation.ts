@@ -21,6 +21,7 @@
  */
 import { CreditNote, LineAmountTypes } from "xero-node";
 import { APPLIED_CREDIT_ALLOCATION_ROLE } from "./xero-applied-credit-link-roles";
+import { sliceHeldInXero } from "./xero-applied-credit-slice-lookup";
 import { CreditType, Prisma } from "@prisma/client";
 import { appliedCreditSettledByCancel, unallocatedAppliedCents } from "./xero-applied-credit-ledger-state";
 import { prisma } from "./prisma";
@@ -489,17 +490,7 @@ export async function allocateAppliedCreditForBooking(
     if (!joinRow) {
       continue;
     }
-    const alreadyAllocated = await prisma.xeroObjectLink.findFirst({
-      where: {
-        localModel: "MemberCreditNoteAllocation",
-        localId: joinRow.id,
-        xeroObjectType: "ALLOCATION",
-        role: APPLIED_CREDIT_ALLOCATION_ROLE,
-        active: true,
-      },
-      select: { id: true },
-    });
-    if (alreadyAllocated) {
+    if (await sliceHeldInXero(prisma, joinRow.id)) {
       continue;
     }
     try {

@@ -26,6 +26,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { ENVIRONMENT_ROLE_ENV_VAR } from "@/lib/environment-role-declaration";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 import type { SuiteEnvironmentRoleDeclaration } from "./helpers/environment-role";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
@@ -33,6 +34,7 @@ const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 
 const MEMBER_ID = "race-4219-member";
+const OTHER_MEMBER_ID = "race-4219-member-two";
 const LODGE_ID = "race-4219-lodge";
 const BOOKING_ID = "race-4219-booking";
 const SECOND_BOOKING_ID = "race-4219-booking-two";
@@ -45,6 +47,7 @@ const SPENT_NOTE_ID = "race-4219-note-spent";
 const HEALTHY_NOTE_ID = "race-4219-note-healthy";
 const SPENT_LOT_ID = "race-4219-lot-spent";
 const HEALTHY_LOT_ID = "race-4219-lot-healthy";
+const SUBSCRIPTION_INVOICE_ID = "race-4219-subscription-invoice";
 const OUTSIDE_INVOICE_ID = "race-4219-outside-invoice";
 const KNOWN_APP_INVOICE_ID = "race-4219-known-app-invoice";
 
@@ -61,7 +64,7 @@ const HEALTHY_LOT_AT = new Date("2026-12-01T00:00:00.000Z");
 const fakeXero = vi.hoisted(() => {
   const XERO_REFUSAL_TEXT =
     "Credit Note cannot be allocated as the allocation amount is greater than the amount remaining on the Credit Note";
-  type Allocation = { allocationID: string; invoiceID: string; amountCents: number };
+  type Allocation = { allocationID: string; invoiceID: string; amountCents: number; isDeleted?: boolean };
   const state = {
     on: false,
     seq: 0,
@@ -73,7 +76,7 @@ const fakeXero = vi.hoisted(() => {
   };
   const remainingCents = (noteId: string) => {
     const note = state.notes.get(noteId);
-    return note ? note.totalCents - note.allocations.reduce((sum, a) => sum + a.amountCents, 0) - note.payments.reduce((sum, p) => sum + p.amountCents, 0) : 0;
+    return note ? note.totalCents - note.allocations.filter((a) => !a.isDeleted).reduce((sum, a) => sum + a.amountCents, 0) - note.payments.reduce((sum, p) => sum + p.amountCents, 0) : 0;
   };
   const noteBody = (creditNoteID: string) => {
     const note = state.notes.get(creditNoteID);
@@ -90,6 +93,7 @@ const fakeXero = vi.hoisted(() => {
             allocationID: a.allocationID,
             invoice: { invoiceID: a.invoiceID },
             amount: a.amountCents / 100,
+            isDeleted: a.isDeleted ?? false,
           })),
         },
       ],
@@ -143,6 +147,8 @@ let credit: typeof import("@/lib/member-credit");
 let ledgerState: typeof import("@/lib/xero-applied-credit-ledger-state");
 let harnessRole: SuiteEnvironmentRoleDeclaration | undefined;
 let installedSpies: Array<{ mockRestore: () => void }> = [];
+let lockHolderClient: import("@prisma/client").PrismaClient;
+let observerClient: import("@prisma/client").PrismaClient;
 
 (RUN ? describe : describe.skip)(
   "#4219: a credit note spent in Xero outside the app converges the credit ledger - real PostgreSQL",
@@ -159,7 +165,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
         // The allocation attempts' own rows name their slice, which the converge deletes: find them by booking.
         await prisma.xeroSyncOperation.deleteMany({ where: { requestPayload: { path: ["appliedCreditContext", "bookingId"], equals: bookingId } } });
       }
-      await prisma.xeroObjectLink.deleteMany({ where: { xeroObjectId: KNOWN_APP_INVOICE_ID } });
+      await prisma.xeroObjectLink.deleteMany({ where: { xeroObjectId: { in: [KNOWN_APP_INVOICE_ID, SUBSCRIPTION_INVOICE_ID] } } });
       await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: localIds } } });
       await prisma.memberCreditNoteAllocation.deleteMany({ where: { appliedToBookingId: { in: bookingIds } } });
       await prisma.memberCreditNoteAllocation.deleteMany({ where: { memberCredit: { memberId: MEMBER_ID } } });
@@ -172,7 +178,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       await prisma.bookingGuest.deleteMany({ where: { bookingId: { in: bookingIds } } });
       await prisma.booking.deleteMany({ where: { id: { in: bookingIds } } });
       await prisma.lodge.deleteMany({ where: { id: LODGE_ID } });
-      await prisma.member.deleteMany({ where: { id: MEMBER_ID } });
+      await prisma.member.deleteMany({ where: { id: { in: [MEMBER_ID, OTHER_MEMBER_ID] } } });
     }
 
     async function createBooking(bookingId: string, paymentId: string, invoiceId: string, creditCents: number) {
@@ -274,6 +280,19 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       ledgerState = await import("@/lib/xero-applied-credit-ledger-state");
       // The fake Xero client, for this describe only; each spy delegates to the real
       // function whenever the fake is switched off.
+      const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
+        import("@prisma/client"),
+        import("@/lib/prisma-adapter"),
+      ]);
+      const separate = (applicationName: string) => {
+        const url = new URL(RACE_DB_URL);
+        url.searchParams.set("connection_limit", "1");
+        url.searchParams.set("application_name", applicationName);
+        return new SeparatePrismaClient({ adapter: createPrismaPgAdapter(url.toString()) });
+      };
+      lockHolderClient = separate("race-4219-lock-holder");
+      observerClient = separate("race-4219-observer");
+      await Promise.all([lockHolderClient.$connect(), observerClient.$connect()]);
       const xeroApi = await import("@/lib/xero-api-client");
       const realGetClient = xeroApi.getAuthenticatedXeroClient;
       const realCall = xeroApi.callXeroApi;
@@ -295,6 +314,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       fakeXero.state.on = false;
       for (const spy of installedSpies) spy.mockRestore();
       installedSpies = [];
+      await Promise.all([lockHolderClient, observerClient].map((client) => (client ? client.$disconnect().catch(() => {}) : Promise.resolve())));
       try {
         if (typeof prisma !== "undefined") {
           try {
@@ -335,6 +355,11 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       expect(failed.every((operation) => operation.replayable === false)).toBe(true);
       expect(failed.every((operation) => operation.lastErrorCode === "CREDIT_NOTE_SPENT_OUTSIDE_APP")).toBe(true);
       expect(await convergedAudits()).toBe(1);
+      const audit = await prisma.auditLog.findFirstOrThrow({ where: { action: "xero.credit_note.spent_outside_app_converged", targetId: BOOKING_ID } });
+      // The system did this: the member is its subject, never its actor.
+      expect(audit.subjectMemberId).toBe(MEMBER_ID);
+      expect(audit.actorMemberId).toBeNull();
+      expect(audit.category).toBe("xero");
 
       // Repeating it changes nothing.
       const rowsBefore = await prisma.memberCredit.count({ where: { memberId: MEMBER_ID } });
@@ -435,7 +460,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
       const result = await convergeCreditNoteSpentOutsideApp({
         bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS,
-        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: 2_000 }], xeroPayments: [],
+        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: 2_000 }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: CREDIT_CENTS - 2_000,
       });
       expect(result).toMatchObject({ converged: true, writtenDownCents: 2_000 });
       expect(await prisma.memberCredit.count({ where: { appliedToBookingId: BOOKING_ID, type: "BOOKING_APPLIED", amountCents: { gt: 0 }, xeroCreditNoteId: null } })).toBe(1);
@@ -476,10 +501,129 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
 
       const result = await convergeCreditNoteSpentOutsideApp({
         bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS,
-        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [],
+        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0,
       });
 
       expect(result).toEqual({ converged: false, reason: "cancelled" });
+      expect(await writeDowns()).toHaveLength(0);
+    });
+
+    it("counts an offset against an invoice that is not a booking's (such as a subscription invoice) as an outside spend", async () => {
+      await seed({ outsideSpentCents: 0, knownInvoiceSpentCents: 0 });
+      fakeXero.state.notes.get(SPENT_NOTE_ID)!.allocations.push({ allocationID: "race-4219-subscription", invoiceID: SUBSCRIPTION_INVOICE_ID, amountCents: CREDIT_CENTS });
+      await prisma.xeroObjectLink.create({
+        data: { localModel: "MembershipSubscriptionCharge", localId: "race-4219-charge", xeroObjectType: "INVOICE", xeroObjectId: SUBSCRIPTION_INVOICE_ID, role: "PRIMARY_INVOICE", active: true },
+      });
+
+      await runEngine();
+
+      expect((await writeDowns()).map((row) => row.amountCents)).toEqual([-CREDIT_CENTS]);
+      expect(await applied()).toBe(0);
+    });
+
+    it("ignores an allocation Xero lists as deleted, which holds no credit", async () => {
+      await seed({ outsideSpentCents: 2_000 });
+      fakeXero.state.notes.get(SPENT_NOTE_ID)!.allocations.push({ allocationID: "race-4219-removed", invoiceID: OUTSIDE_INVOICE_ID, amountCents: 3_000, isDeleted: true });
+
+      await runEngine();
+
+      // Only the live 2000 was spent: it is written down, and the remaining 3250 is allocated.
+      expect((await writeDowns()).map((row) => row.amountCents)).toEqual([-2_000]);
+      expect(fakeXero.state.acceptedAllocations).toBe(1);
+    });
+
+    it("writes nothing when Xero's list does not add up to what the note has lost", async () => {
+      await seed();
+      const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
+      await prisma.memberCreditNoteAllocation.create({
+        data: { memberCreditId: SPENT_LOT_ID, xeroCreditNoteId: SPENT_NOTE_ID, appliedToBookingId: BOOKING_ID, amountCents: CREDIT_CENTS },
+      });
+
+      // The note lost 5250 but the list explains only 3000 of it.
+      const result = await convergeCreditNoteSpentOutsideApp({
+        bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS,
+        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: 3_000 }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0,
+      });
+
+      expect(result).toEqual({ converged: false, reason: "unexplained-spend" });
+      expect(await writeDowns()).toHaveLength(0);
+    });
+
+    it("takes the global lock before it decides, and refuses if the booking's owner changed while it waited", async () => {
+      await seed();
+      await prisma.memberCreditNoteAllocation.create({
+        data: { memberCreditId: SPENT_LOT_ID, xeroCreditNoteId: SPENT_NOTE_ID, appliedToBookingId: BOOKING_ID, amountCents: CREDIT_CENTS },
+      });
+      await prisma.member.create({
+        data: { id: OTHER_MEMBER_ID, email: "race-4219-two@example.invalid", passwordHash: "x", firstName: "Other", lastName: "Payer", role: "USER", ageTier: "ADULT" },
+      });
+      const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
+      let holderPid = 0;
+      const holding = deferred();
+      const release = deferred();
+      // A writer holding the global key (a cancel, a capture), which also moves the booking to another member.
+      const held = lockHolderClient.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        holderPid = (await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`)[0]!.pid;
+        holding.resolve();
+        await release.promise;
+        await tx.booking.update({ where: { id: BOOKING_ID }, data: { memberId: OTHER_MEMBER_ID } });
+      }, { timeout: 30_000, maxWait: 10_000 });
+      await holding.promise;
+
+      const converging = convergeCreditNoteSpentOutsideApp({
+        bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS,
+        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0,
+      });
+      // It queues behind the global key: proof it takes the key at all.
+      const startedAt = process.hrtime.bigint();
+      let blocked = false;
+      while (realElapsedMs(startedAt) < 5_000 && !blocked) {
+        const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+          SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+          WHERE datname = current_database() AND ${holderPid}::int = ANY(pg_blocking_pids(pid))
+        `;
+        blocked = (rows[0]?.count ?? 0) >= 1;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked, "the converge queues behind the global key").toBe(true);
+      release.resolve();
+      await held;
+
+      expect(await converging).toEqual({ converged: false, reason: "owner-changed" });
+      expect(await writeDowns()).toHaveLength(0);
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { memberId: MEMBER_ID } });
+    });
+
+    it("refuses a credit note shared by several credits", async () => {
+      await seed();
+      await prisma.memberCreditNoteAllocation.create({
+        data: { memberCreditId: SPENT_LOT_ID, xeroCreditNoteId: SPENT_NOTE_ID, appliedToBookingId: BOOKING_ID, amountCents: CREDIT_CENTS },
+      });
+      await prisma.memberCredit.create({
+        data: { memberId: MEMBER_ID, amountCents: 1_000, type: "CANCELLATION_REFUND", description: "race 4219 second credit on the same note", xeroCreditNoteId: SPENT_NOTE_ID },
+      });
+      const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
+
+      const result = await convergeCreditNoteSpentOutsideApp({
+        bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS,
+        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0,
+      });
+
+      expect(result).toEqual({ converged: false, reason: "shared-credit-note" });
+      expect(await writeDowns()).toHaveLength(0);
+    });
+
+    it("refuses a booking with unallocated credit and no slice for the note", async () => {
+      await seed();
+      const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
+
+      const result = await convergeCreditNoteSpentOutsideApp({
+        bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS,
+        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0,
+      });
+
+      expect(result).toEqual({ converged: false, reason: "no-single-slice" });
       expect(await writeDowns()).toHaveLength(0);
     });
 
@@ -490,7 +634,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       });
       const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
 
-      const result = await convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [], xeroPayments: [] });
+      const result = await convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: CREDIT_CENTS });
 
       expect(result).toEqual({ converged: false, reason: "nothing-missing" });
       expect(await writeDowns()).toHaveLength(0);
@@ -511,7 +655,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       });
       const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
 
-      const result = await convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [] });
+      const result = await convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0 });
 
       expect(result).toEqual({ converged: false, reason: "slice-already-in-xero" });
       expect(await writeDowns()).toHaveLength(0);
@@ -533,7 +677,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
 
       await expect(
-        convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [] }),
+        convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0 }),
       ).rejects.toThrow(/deallocation/i);
 
       expect(await writeDowns()).toHaveLength(0);
@@ -551,7 +695,7 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
       await prisma.booking.update({ where: { id: BOOKING_ID }, data: { status: "CANCELLED" } });
       const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
 
-      const result = await convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [] });
+      const result = await convergeCreditNoteSpentOutsideApp({ bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS, xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0 });
 
       expect(result).toEqual({ converged: false, reason: "cancelled" });
       expect(await writeDowns()).toHaveLength(0);
@@ -566,3 +710,11 @@ let installedSpies: Array<{ mockRestore: () => void }> = [];
     expect(process.env[ENVIRONMENT_ROLE_ENV_VAR]).toBe(harnessRole!.before);
   });
 });
+
+function deferred<T = void>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}

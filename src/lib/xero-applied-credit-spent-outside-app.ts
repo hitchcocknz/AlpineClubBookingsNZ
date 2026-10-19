@@ -45,14 +45,15 @@ import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { deriveBookingAppliedCreditCents, lockMemberCreditLedger } from "./member-credit";
 import { unallocatedAppliedCents } from "./xero-applied-credit-ledger-state";
 import { assertNoAppliedCreditDeallocationFence } from "./xero-applied-credit-operation-serialization";
-import { APPLIED_CREDIT_ALLOCATION_ROLE } from "./xero-applied-credit-link-roles";
+import { findFundingLotsForNote, sliceHeldInXero } from "./xero-applied-credit-slice-lookup";
+import { CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX } from "./xero-operation-resolution";
 import {
   isCreditNoteSpentOutsideAppError,
   type XeroNoteAllocation,
   type XeroNotePayment,
 } from "./xero-credit-note-spent-outside-app";
 import {
-  NOT_A_CONVERGENCE_ROW,
+  BOOKING_INVOICE_LINK_MODELS,
   creditNoteReleaseDescription,
   creditNoteWriteDownDescription,
   writtenDownCentsByCreditNote,
@@ -60,7 +61,7 @@ import {
 
 /** `XeroSyncOperation.manuallyResolvedReason` for a failure this routine closed. */
 export const CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON =
-  "CREDIT_SPENT_OUTSIDE_APP: the credit note was used in Xero outside the app; the credit ledger was brought into line with Xero (#4219).";
+  `${CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX}: the credit note was used in Xero outside the app; the credit ledger was brought into line with Xero (#4219).`;
 
 export type ConvergeRefusal =
   | "no-payment-or-owner"
@@ -85,13 +86,16 @@ export interface ConvergeInput {
   /** The note's allocations and payments in Xero, from #4218's confirming read. */
   xeroAllocations: readonly XeroNoteAllocation[];
   xeroPayments: readonly XeroNotePayment[];
+  /** The note's total and remaining credit in Xero, from the same read. */
+  noteTotalCents: number | null;
+  remainingCents: number;
 }
 
 /**
  * How much of the note Xero shows spent on things the app has no record of: the
- * allocations to invoices it does not track and the payments it did not make. An
- * invoice is the app's if any `XeroObjectLink` names it or a payment's
- * `xeroInvoiceId` is it; a payment is the app's if a link names it.
+ * allocations to invoices that are not a booking's and the payments it did not
+ * make. An invoice is a booking's if a payment's `xeroInvoiceId` is it or a booking
+ * `XeroObjectLink` names it; a payment is the app's if a link names it.
  */
 async function outsideSpendCents(
   tx: Pick<typeof prisma, "xeroObjectLink" | "payment">,
@@ -103,7 +107,10 @@ async function outsideSpendCents(
   const [invoiceLinks, localPayments, paymentLinks] = await Promise.all([
     invoiceIds.length
       ? tx.xeroObjectLink.findMany({
-          where: { xeroObjectType: "INVOICE", xeroObjectId: { in: invoiceIds } },
+          // Only a booking's invoice is "the app's own" here: those are the ones the inbound sync
+          // mirrors. An offset against a subscription or other invoice moved the member's credit
+          // and nothing else will record it.
+          where: { xeroObjectType: "INVOICE", xeroObjectId: { in: invoiceIds }, localModel: { in: [...BOOKING_INVOICE_LINK_MODELS] } },
           select: { xeroObjectId: true },
         })
       : [],
@@ -172,22 +179,10 @@ export async function convergeCreditNoteSpentOutsideApp(input: ConvergeInput): P
       // A concurrent partial converge already shrank this slice below what was refused.
       return { converged: false, reason: "already-converged" };
     }
-    const heldInXero = await tx.xeroObjectLink.findFirst({
-      where: {
-        localModel: "MemberCreditNoteAllocation",
-        localId: slice.id,
-        xeroObjectType: "ALLOCATION",
-        role: APPLIED_CREDIT_ALLOCATION_ROLE,
-        active: true,
-      },
-      select: { id: true },
-    });
+    const heldInXero = await sliceHeldInXero(tx, slice.id);
     if (heldInXero) return { converged: false, reason: "slice-already-in-xero" };
 
-    const lots = await tx.memberCredit.findMany({
-      where: { memberId: lockedOwnerId, xeroCreditNoteId: creditNoteId, amountCents: { gt: 0 }, ...NOT_A_CONVERGENCE_ROW },
-      select: { id: true, amountCents: true },
-    });
+    const lots = await findFundingLotsForNote(tx, lockedOwnerId, creditNoteId);
     const [lot, ...otherLots] = lots;
     if (!lot || otherLots.length > 0 || lot.id !== slice.memberCreditId) {
       return { converged: false, reason: "shared-credit-note" };
@@ -195,6 +190,14 @@ export async function convergeCreditNoteSpentOutsideApp(input: ConvergeInput): P
 
     // What Xero shows spent on things the app has no record of, less what this
     // routine has already written down for the note. The slice bounds the rest.
+    // The explained-shortfall rail: Xero's list must account for exactly what the
+    // note has lost (its total less what remains). A list that does not add up (a
+    // removed entry still shown, an amount we could not read) is not acted on.
+    const listedCents =
+      input.xeroAllocations.reduce((sum, a) => sum + a.cents, 0) + input.xeroPayments.reduce((sum, p) => sum + p.cents, 0);
+    if (input.noteTotalCents === null || listedCents !== input.noteTotalCents - input.remainingCents) {
+      return { converged: false, reason: "unexplained-spend" };
+    }
     const spent = await outsideSpendCents(tx, input.xeroAllocations, input.xeroPayments);
     if (spent > lot.amountCents) return { converged: false, reason: "unexplained-spend" };
     const writtenDown = (await writtenDownCentsByCreditNote(tx, lockedOwnerId, [creditNoteId])).get(creditNoteId) ?? 0;
@@ -333,6 +336,8 @@ export async function convergedForNamedFailure(
     requestedCents: error.requestedCents,
     xeroAllocations: error.xeroAllocations,
     xeroPayments: error.xeroPayments,
+    noteTotalCents: error.totalCents,
+    remainingCents: error.remainingCents,
   });
   return result.converged || result.reason === "already-converged";
 }

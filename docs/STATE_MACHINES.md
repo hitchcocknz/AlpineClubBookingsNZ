@@ -3553,7 +3553,8 @@ credit-note allocation refused by Xero as more than the note has left (#4218)
   replayable and the named code still counts as refused by Xero
   (xeroRefusedOperation); a retry sends the allocation again and should go
   through once the credit is restored in Xero. Applies to every credit-note
-  allocation, applied credit included
+  allocation; for an applied-credit allocation the next arm then converges and
+  closes the row instead
 applied-credit allocation raises that named failure (#4219) -> the worker
   converges the credit ledger with Xero (write the lot down, release the
   booking's applied credit, shrink or delete the unsent slice, close the slice's

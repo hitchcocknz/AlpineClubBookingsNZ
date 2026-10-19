@@ -50,16 +50,20 @@ export class CreditNoteSpentOutsideAppError extends Error {
       xeroAllocations?: readonly XeroNoteAllocation[];
       /** The payments made against the note in Xero (refunds), from the same read. */
       xeroPayments?: readonly XeroNotePayment[];
+      /** The note's total in Xero, from the same read; null when it was not an exact cent figure. */
+      totalCents?: number | null;
     },
   ) {
     super(message, options?.cause === undefined ? undefined : { cause: options.cause });
     this.name = "CreditNoteSpentOutsideAppError";
     this.xeroAllocations = options?.xeroAllocations ?? [];
     this.xeroPayments = options?.xeroPayments ?? [];
+    this.totalCents = options?.totalCents ?? null;
   }
 
   readonly xeroAllocations: readonly XeroNoteAllocation[];
   readonly xeroPayments: readonly XeroNotePayment[];
+  readonly totalCents: number | null;
 }
 
 export function isCreditNoteSpentOutsideAppError(

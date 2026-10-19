@@ -1318,8 +1318,9 @@ on `manuallyResolvedAt`.
   written before this release is void on the retry path
   (`isResolvedInXeroForRetry`), so it can still be retried to convergence. The
   one failure a retry cannot fix, a credit note spent in Xero outside the app
-  (#4218), converges itself when it is retried (#4219, below); no officer mark is
-  involved.
+  (#4218), converges itself for an applied-credit allocation (#4219, below, on its
+  first attempt, or on a retry when it was recorded before that release); no
+  officer mark is involved.
 - **Repair tool.** `getBlockingOperation` returns a discriminated result:
   `retryable`, `blocked` (live, or refused by the retry helper) or `resolved`.
   A resolved row never outranks a newer live failure, and it is never dropped,
@@ -2650,7 +2651,9 @@ keeps the local ledger as its source of truth.
     non-replayable; one `xero`-category audit row names the member as its subject,
     not its actor.
 - **No Xero write, no money moves.** The member owes the released amount on the
-  booking's invoice, which Xero's receivable already shows. An automatic pay-link
+  booking's invoice, which Xero's receivable already shows. The app's own booking
+  page does not show a balance for a booking whose payment succeeded, so until the
+  email lands the treasurer collects it from Xero. An automatic pay-link
   email to collect it is decided (owner, 17 Oct 2026) and ships as its own change
   after this one (#4253), settling the booking's existing open invoice.
 - **Fails closed.** A cancelled booking, an owner who changed, no single slice for
@@ -2658,6 +2661,12 @@ keeps the local ledger as its source of truth.
   outside spend larger than the lot: nothing is written and the original failure
   stands. An unfinished deallocation of the booking's applied credit makes the
   worker wait (the existing busy path).
+- **The evidence is read once, before the locks.** Xero's list and the note's total
+  and remaining credit must agree (the list accounts for exactly what the note has
+  lost, ignoring entries Xero marks deleted), or nothing is written. If the spend is
+  reversed in the instant between that read and the transaction, credit Xero gave
+  back is written down; it is capped by the booking's slice and is the inbound
+  mirror's to restore.
 - **Idempotent.** The write-down counts in the next calculation, so a repeat finds
   nothing missing; a concurrent run that lost the race finds the booking already
   converged, or its slice already shrunk below what was refused, and plans again.

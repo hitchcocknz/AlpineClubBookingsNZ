@@ -497,8 +497,7 @@ re-run, never offered for retry, never re-minted beside (owner decision,
   withdrawn. What remains: clock skew between instances, and a caller of
   `retryXeroSyncOperation` that bypasses the drain.
 - **Applied-credit operations are retry-only.** The route refuses them, and a
-  mark on one written before this release is void on the retry path (the app's
-  own #4219 close of a credit spent outside it excepted).
+  mark on one written before this release is void on the retry path.
 - **Done is not absent.** `getBlockingOperation` returns `retryable`, `blocked`
   or `resolved`; a resolved row never outranks a live one and is never dropped.
   `buildRetryAction` takes only `retryable`. Where no document is recorded, the

@@ -4867,8 +4867,12 @@ then the member's credit-ledger key) and excludes the cancel, capture and refund
 writers that take the global key as well as the credit writers that take the
 member's. It re-reads the slice, the lot and the write-downs, and checks the
 cancel-settled and deallocation-fence preconditions, under both keys. The Xero
-read that confirmed the signal happened before the transaction, so no provider
-call is held inside it. There is no separate claim row: a repeat finds the
+read that confirmed the signal, and the allocations and payments it listed, happened
+before the transaction, so no provider call is held inside it. That evidence can
+go stale in the milliseconds between: if the treasurer reverses the outside spend
+then, the routine writes down credit Xero has given back. The amount is capped by
+the booking's slice, and the inbound mirror (the next change of #4219) is what
+restores a reversed spend. There is no separate claim row: a repeat finds the
 write-down already counted and writes nothing, and a concurrent run that lost the
 race finds the booking converged or its slice already shrunk below what was refused. Registered in `advisory-lock-guard.test.ts`
 (`convergeCreditNoteSpentOutsideApp#1`); proved against real PostgreSQL by

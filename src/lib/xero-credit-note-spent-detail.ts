@@ -24,9 +24,10 @@ import {
 
 /** The note's allocations with an exact-cent amount and an invoice (anything else is skipped). */
 function xeroAllocationsOf(
-  allocations: ReadonlyArray<{ invoice?: { invoiceID?: string } | null; amount?: unknown }> | null | undefined,
+  allocations: ReadonlyArray<{ invoice?: { invoiceID?: string } | null; amount?: unknown; isDeleted?: boolean }> | null | undefined,
 ): XeroNoteAllocation[] {
   return (allocations ?? []).flatMap((allocation) => {
+    if (allocation.isDeleted === true) return [];
     const invoiceId = allocation.invoice?.invoiceID;
     const cents = exactProviderAmountToCents(allocation.amount);
     return invoiceId && cents !== null ? [{ invoiceId, cents }] : [];
@@ -35,9 +36,10 @@ function xeroAllocationsOf(
 
 /** The payments made against the note (refunds of its credit) with an exact-cent amount. */
 function xeroPaymentsOf(
-  payments: ReadonlyArray<{ paymentID?: string; amount?: unknown }> | null | undefined,
+  payments: ReadonlyArray<{ paymentID?: string; amount?: unknown; status?: unknown }> | null | undefined,
 ): XeroNotePayment[] {
   return (payments ?? []).flatMap((payment) => {
+    if (String(payment.status ?? "") === "DELETED") return [];
     const cents = exactProviderAmountToCents(payment.amount);
     return payment.paymentID && cents !== null ? [{ paymentId: payment.paymentID, cents }] : [];
   });
@@ -63,6 +65,7 @@ export async function describeCreditNoteSpentOutsideApp(
 ): Promise<CreditNoteSpentOutsideAppError | null> {
   let remainingCents: number | null;
   let allocatedToInvoiceCents: number[];
+  let totalCents: number | null;
   let xeroAllocations: XeroNoteAllocation[];
   let xeroPayments: XeroNotePayment[];
   try {
@@ -86,6 +89,7 @@ export async function describeCreditNoteSpentOutsideApp(
       invoiceId,
       exactProviderAmountToCents,
     );
+    totalCents = exactProviderAmountToCents(note?.total);
     xeroAllocations = xeroAllocationsOf(note?.allocations);
     xeroPayments = xeroPaymentsOf(note?.payments);
   } catch (readError) {
@@ -112,7 +116,7 @@ export async function describeCreditNoteSpentOutsideApp(
     creditNoteId,
     remainingCents,
     amountCents,
-    { cause, xeroAllocations, xeroPayments },
+    { cause, xeroAllocations, xeroPayments, totalCents },
   );
 }
 
