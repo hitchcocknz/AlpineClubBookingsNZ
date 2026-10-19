@@ -75,7 +75,7 @@ export function bankRefundVoidQuestion(parts: {
   voidedOn: string;
 }): string {
   const note = parts.creditNoteNumber ? `Its Xero credit note ${parts.creditNoteNumber}` : "Its Xero credit note";
-  return `Booking ${parts.bookingReference}: ${parts.amount} to ${parts.memberName}. ${note} was voided on ${parts.voidedOn}, so it's back on this list. Has the ${parts.amount} gone to the member?`;
+  return `Booking ${parts.bookingReference}: ${parts.amount} to ${parts.memberName}. ${note} was found voided on ${parts.voidedOn}, so it's back on this list. Has the ${parts.amount} gone to the member?`;
 }
 
 /** Each answer as the dialog offers it. */

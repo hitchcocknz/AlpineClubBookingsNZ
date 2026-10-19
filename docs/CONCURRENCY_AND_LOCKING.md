@@ -5408,14 +5408,27 @@ Counterparts:
   row through its allocation. The "already in Xero" answer reads Xero before
   that transaction opens, so no provider call runs under either lock.
 
-`markUnmatchedBankRefundVoidAnswered` (a person's answer on Stuck States) moves
-no money but joins the same cohort and order so it never interleaves with the
-follow-up's classification of the same note: `lock(1)`, the `Payment` row,
-re-classify, then the marker on the link row `NOWAIT`. Registered as
-`followUpVoidedBankRefundNote#1` and `markUnmatchedBankRefundVoidAnswered#1`;
-the link row lock is in the row-lock inventory. Proved by
-`bank-refund-void-follow-up.realdb.test.ts` (two runs, a concurrent reconcile
-and recount, the heal deferring, a create in flight) and the order by
+**A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
+runs the very same undo (`undoUnderLocks`) for an unmatched note: the same
+`lock(1)` and `Payment` row (`lockAndClassify`, the one place every writer here
+takes them), the same claim key, the same rows. Under the locks it re-checks
+that the note is still unmatched and that the picked line is a live
+`BANK_REFUND` hand-back line of THIS payment whose refund the detail still
+holds (`resolvePickedUndo`). `markUnmatchedBankRefundVoidAnswered` (a card
+refund's record, nothing to pick) moves no money but joins the same cohort and
+order, then writes its marker on the link row `NOWAIT`. Both are refused while
+the follow-up is report-only. The nightly run classifies each note unlocked
+first and takes the locks only for a spare or an undo, so handled and
+unmatched notes never take `lock(1)`. One registered site,
+`lockAndClassify#1`; the link row lock is in the row-lock inventory.
+
+Proved by `bank-refund-void-follow-up.realdb.test.ts`: two runs; a concurrent
+reconcile; the inbound recount forced to read, wait for the undo's commit and
+resume - its claim lost, it recounts, and the total ends equal to the detail
+(the `INV-ADDPAY-021` floor is what keeps it there); the heal deferring; a
+create in flight; the link row held by another transaction (a spare defers
+with no marker, an answer is refused as busy); a pick, and picks of another
+payment's line or a reversed one refused. The order is pinned by
 `bank-refund-void-follow-up.test.ts`.
 
 ## Refund-request note link writes (#4195)

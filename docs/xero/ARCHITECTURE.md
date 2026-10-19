@@ -1498,10 +1498,10 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | --- | --- |
 | awaiting heal | The mirror is still active: the next night, after the heal. |
 | handled | Its follow-up exists (the key is the claim), or a link marker records a spare or a person's answer. Nothing more. |
-| deferred | A refund-note create on the payment could still mint. Tried again next night. |
-| spare | Live notes plus notes resolved by hand (`INV-INT-025`) still cover every bank hand-back and card refund: nothing moves; a `bankRefundVoid` marker on the link records it. |
+| deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
+| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
-| unmatched | The amount cannot be read, no single live hand-back line has it, or the detail no longer holds it: listed on Stuck States for a person; nothing moves. |
+| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, or it recorded a card refund's record (a "Paid another way" close or shortfall): listed on Stuck States. A person picks the live bank refund it recorded and the same undo runs (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026); a card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded. |
 
 A note is matched to the hand-back it recorded by the task it names - a
 cancellation's note carries `handBackTaskId` in its payload since #4162 (never
@@ -1512,26 +1512,37 @@ takes the one live hand-back line of its amount, only when no other live
 `BANK_REFUND` line on the booking has that amount.
 
 **Report-only by default.** Until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`
-the job classifies and logs, and writes nothing.
+the job classifies and logs, and writes nothing; a person's pick or answer is
+refused (409) and the panel is read-only. Each night a note is classified
+unlocked first; only a spare or an undo takes the locks, and handled notes are
+left out of the scan in SQL.
 
 **The answers** (refund list, `resolveManualRefundTask`): a fresh note is queued
 in the completion's transaction, keyed and sized on the follow-up (the
 `paidAnotherWayTaskId` path a card refund shortfall uses: Xero key
 `payment:<id>:refund-credit-note:paid-another-way:<task>:<own cover>:v3`), dated
 today. "Already in Xero" reads the hand-made note by number before the
-transaction (`getCreditNotes`, `bank-refund-void-answer.ts`), checks it is a
-live `ACCRECCREDIT` for the amount and tracked by nothing else, and the
-completion links it as a per-refund `REFUND_CREDIT_NOTE` naming the follow-up,
-so its own void is caught the same way.
+transaction (`getCreditNotes`, and the payment's invoice for its contact,
+`bank-refund-void-answer.ts`; one retry, 5s wait, "Xero is busy" on a rate
+limit), checks it is an `ACCRECCREDIT` that is AUTHORISED or PAID, for the
+amount, for the invoice's contact (else the owner's), allocated to no other
+invoice and tracked by nothing else here (this payment's own inactive,
+non-voided link is reactivated), and the completion links it as a per-refund
+`REFUND_CREDIT_NOTE` naming the follow-up. After the commit the note is
+reconciled once more (`reconcileXeroCreditNote`), so a void in between is
+caught. A fresh note is refused on a payment with no Xero invoice, and when
+nothing could be queued.
 
 **Count before switching on.** `pnpm run xero:bank-refund-void-count` (read-only:
 no transaction, no lock, no write, no provider call; `--list` adds ids,
 `--json` is machine-readable) sorts every voided note with the job's own
 classifier into: awaiting heal; handled (follow-up, spare, answered); deferred;
 spare; undo with the payment's total already below its detail or still equal to
-it; unmatched by reason (amount unknown, no line, ambiguous, detail short). It
-also counts bank-transfer payments whose total is below their detail with no
-void, which the job never touches.
+it; unmatched by reason (amount unknown, no line, ambiguous, detail short, paid
+another way, coverage unknown). It also counts bank-transfer payments whose
+total is below their detail with no void, which the job never touches, and
+says how many payments hold several voids (each note is counted against today's
+records, so those can overstate).
 
 ### Stripe refund notes cover cash evidence, never the mirror (#2902)
 

@@ -36,6 +36,12 @@ export type BankRefundVoidCountBucket =
 export interface BankRefundVoidCount {
   voidedNotes: number;
   buckets: Partial<Record<BankRefundVoidCountBucket, { count: number; amountCents: number; linkIds: string[] }>>;
+  /**
+   * Payments holding more than one voided note not yet handled (review, money
+   * 8). Each note is classified against today's records, so on these the count
+   * can overstate: once the first is undone the next may classify differently.
+   */
+  paymentsWithSeveralVoids: number;
   /** Bank-transfer payments whose total is below their detail, with no voided refund note. */
   totalBelowDetailWithoutVoid: { count: number; gapCents: number; paymentIds: string[] };
 }
@@ -58,17 +64,22 @@ function amountOf(c: BankRefundVoidClassification): number {
 }
 
 export async function countBankRefundVoids(db: Prisma.TransactionClient): Promise<BankRefundVoidCount> {
-  const linkIds = await readVoidedBankRefundNoteLinkIds(db);
+  const linkIds = await readVoidedBankRefundNoteLinkIds(db, { includeHandled: true });
   const result: BankRefundVoidCount = {
     voidedNotes: linkIds.length,
     buckets: {},
+    paymentsWithSeveralVoids: 0,
     totalBelowDetailWithoutVoid: { count: 0, gapCents: 0, paymentIds: [] },
   };
   const voidedPaymentIds = new Set<string>();
+  const openVoidsByPayment = new Map<string, number>();
   for (const linkId of linkIds) {
     const note = await classifyVoidedBankRefundNote(db, linkId);
     if (!note) continue;
     voidedPaymentIds.add(note.paymentId);
+    if (note.classification.kind !== "handled" && note.classification.kind !== "not-in-scope") {
+      openVoidsByPayment.set(note.paymentId, (openVoidsByPayment.get(note.paymentId) ?? 0) + 1);
+    }
     const bucket = bucketOf(note.classification, note.figures);
     const entry = (result.buckets[bucket] ??= { count: 0, amountCents: 0, linkIds: [] });
     entry.count += 1;
@@ -76,6 +87,7 @@ export async function countBankRefundVoids(db: Prisma.TransactionClient): Promis
     entry.linkIds.push(linkId);
   }
 
+  result.paymentsWithSeveralVoids = [...openVoidsByPayment.values()].filter((count) => count > 1).length;
   const details = await db.paymentTransaction.groupBy({
     by: ["paymentId"],
     where: { payment: { source: "INTERNET_BANKING" }, refundedAmountCents: { gt: 0 } },
@@ -112,6 +124,8 @@ const BUCKET_LABELS: Record<string, string> = {
   "unmatched-no-line": "Unmatched, to a person: no single live hand-back line for the amount",
   "unmatched-ambiguous": "Unmatched, to a person: more than one hand-back could be the one",
   "unmatched-detail-short": "Unmatched, to a person: the payment's detail no longer holds the amount",
+  "unmatched-paid-another-way": "To a person, nothing to pick: it recorded a card refund paid another way",
+  "unmatched-coverage-unknown": "Unmatched, to a person: a note resolved by hand in Xero has no readable amount",
   "not-in-scope": "Not in scope (re-checked in code)",
 };
 
@@ -123,6 +137,11 @@ export function formatBankRefundVoidCount(count: BankRefundVoidCount, options?: 
     if (!entry) continue;
     lines.push(`  ${label}: ${entry.count} (${formatCentsPlain(entry.amountCents)})`);
     if (options?.list) lines.push(...entry.linkIds.map((id) => `    link ${id}`));
+  }
+  if (count.paymentsWithSeveralVoids > 0) {
+    lines.push(
+      `Note: ${count.paymentsWithSeveralVoids} payment(s) hold more than one voided note. Each note above is counted against today's records, so for these the count can overstate: once the first is undone, the next may be counted differently.`,
+    );
   }
   const gap = count.totalBelowDetailWithoutVoid;
   lines.push(

@@ -1618,11 +1618,14 @@ decision and would need its own owner decision.
   unique key `bank-refund-void:<payment>:<note>`, then unwind the allocation,
   reverse the hand-back's line and recompute the total from the detail. The
   follow-up is a new open `CANCELLED_BOOKING_HAND_BACK`; the completed task is
-  never reopened. A note matches by the task it names, else by a unique amount;
-  an unmatched one goes to a person on Stuck States and moves nothing.
+  never reopened. A note matches by the task it names, else by a unique amount.
+  For an unmatched one a person picks the live bank refund it recorded on
+  Stuck States, and the same undo runs (owner, 18 Oct 2026); a card refund's
+  record is never undone here.
 - **Nothing is raised in Xero without a person.** No email, booking event or
   provider call. Completing the follow-up needs an answer: a fresh note keyed
   and sized on it, or a hand-made note checked in Xero first and then tracked.
-- **Report-only** until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`.
+- **Report-only** until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`: nothing,
+  the person's pick included, writes before then.
   Pinned by `bank-refund-void-follow-up` (unit and realdb),
   `bank-refund-void-answer` and `advisory-lock-guard`.

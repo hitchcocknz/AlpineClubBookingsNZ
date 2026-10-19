@@ -381,21 +381,28 @@ the refund is no longer recorded anywhere the books agree on. So each night
 refunded total, its refund history and the booking's ledger - and puts it back
 in **Money to settle** as owed, with one question:
 
-> Booking B-123: $200.00 to Sam Lee. Its Xero credit note CN-0456 was voided on
-> 14 Oct 2026, so it's back on this list. Has the $200.00 gone to the member?
+> Booking B-123: $200.00 to Sam Lee. Its Xero credit note CN-0456 was found
+> voided on 14 Oct 2026, so it's back on this list. Has the $200.00 gone to the
+> member?
+
+("Found voided" is the day the app learned of the void, not Xero's own date.)
 
 Nothing is sent to the member and nothing is raised in Xero until you answer:
 
 - **Yes, it has gone → Yes, raise a fresh credit note.** The refund is recorded
-  as paid back again and **one** new credit note is raised in Xero for it, dated
-  today. Nothing is copied from the voided note.
+  as paid back again and **one** new credit note is queued for Xero, dated
+  today. Nothing is copied from the voided note. If the payment has no Xero
+  invoice for a note to credit, the app refuses and says so: use the next
+  answer with a note you made in Xero.
 - **Yes, it has gone → Yes, I already recorded it in Xero myself.** Type the
   number of the credit note you made in Xero (for example `CN-0789`). The app
-  reads it from Xero and checks that it is a sales credit note, that it is not
-  voided or deleted, and that it is for exactly this amount. If not, it tells
-  you why and nothing changes. If it is, the refund is recorded as paid back
-  again against that note, and the app keeps track of it: if that note is ever
-  voided too, the refund comes back here again.
+  reads it from Xero and checks that it is a sales credit note, **approved or
+  paid**, for exactly this amount, for the **same contact** as the booking's
+  invoice, and not allocated to another invoice. If not, it tells you why and
+  nothing changes (if Xero is busy, try again in a minute). If it is, the
+  refund is recorded as paid back again against that note, and the app keeps
+  track of it: it reads the note once more straight afterwards, and if that
+  note is ever voided too, the refund comes back here again.
 - **Not yet.** Cancel the dialog and leave it on the list until the money goes.
 - **No, the club keeps it.** The refund stays out of the payment's records and
   no note is raised. A reason is required.
@@ -404,16 +411,16 @@ If the voided note was only a **duplicate** - Xero still has live notes for
 every bank refund on that payment - nothing changes and nothing is asked.
 
 A voided note the app cannot match to a single refund (an older note that
-covered several refunds at once, or one whose amount it cannot read) is never
-changed automatically. It appears on **Stuck States** under **Voided bank
-refund notes to answer**. Check whether the money went; if it did, make sure
-Xero records it (raise a credit note there by hand if none does); if it did
-not, ask a developer to correct the records. Then press **Record the answer**
-and say what you did. That records your answer and moves nothing.
+covered several refunds at once, or one whose amount it cannot read) appears on
+**Stuck States** under **Voided bank refund notes to answer**
+([guide](stuck-states.md#pick-the-refund-a-voided-bank-refund-note-recorded)).
+Press **Pick the refund**, choose which of the payment's bank refunds the note
+recorded, and the app takes that refund back out of the records exactly as it
+does for a matched note - it then appears here with the same question.
 
 This only happens once your administrator has switched it on (see
 [`UPGRADING.md`](../UPGRADING.md)); until then the app only reports what it
-would do.
+would do, and the Stuck States list is read-only.
 
 ### Settle a part payment an officer cancelled as unpaid
 

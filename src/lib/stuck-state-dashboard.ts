@@ -1134,7 +1134,7 @@ export async function getStuckStateDashboard(input?: {
       owner: "Finance",
       count: bankRefundVoidsToAnswer,
       href: input?.viewerCanViewFinance ? "/admin/stuck-states#bank-refund-voids" : "/admin/xero",
-      summary: `${bankRefundVoidsToAnswer} bank ${plural(bankRefundVoidsToAnswer, "refund")} had ${bankRefundVoidsToAnswer === 1 ? "its" : "their"} Xero credit note voided, and the app could not tell which refund the note recorded. Nothing was changed; a person checks whether the money went and records the answer.`,
+      summary: `${bankRefundVoidsToAnswer} bank ${plural(bankRefundVoidsToAnswer, "refund")} had ${bankRefundVoidsToAnswer === 1 ? "its" : "their"} Xero credit note voided, and the app could not tell which refund the note recorded (or another note has held it back for over a week). Pick the refund on this page and the app takes it back out of the records for the treasurer to re-confirm.`,
     });
   }
 

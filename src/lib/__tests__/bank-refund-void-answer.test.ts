@@ -91,7 +91,7 @@ describe("the follow-up's copy (#4162)", () => {
   it("asks the owner's one question", () => {
     expect(
       copy.bankRefundVoidQuestion({ bookingReference: "B-123", amount: "$200.00", memberName: "Sam Lee", creditNoteNumber: "CN-0456", voidedOn: "14 Oct 2026" }),
-    ).toBe("Booking B-123: $200.00 to Sam Lee. Its Xero credit note CN-0456 was voided on 14 Oct 2026, so it's back on this list. Has the $200.00 gone to the member?");
+    ).toBe("Booking B-123: $200.00 to Sam Lee. Its Xero credit note CN-0456 was found voided on 14 Oct 2026, so it's back on this list. Has the $200.00 gone to the member?");
   });
 });
 

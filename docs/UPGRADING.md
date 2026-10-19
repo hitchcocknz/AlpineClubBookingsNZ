@@ -130,8 +130,9 @@ total below its own refund history (`INV-ADDPAY-021`). No migration runs.
 
 **It ships report-only.** Until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true` is
 set, the nightly job classifies every voided note and logs what it would do,
-and writes nothing. The cron-health page records it as
-`xero-bank-refund-void-follow-up`.
+and writes nothing - and the Stuck States list of voids a person must pick a
+refund for is read-only, so nothing anywhere writes. The cron-health page
+records it as `xero-bank-refund-void-follow-up`.
 
 **Before switching it on.**
 
@@ -145,10 +146,11 @@ and writes nothing. The cron-health page records it as
    It sorts every voided bank-transfer refund note into the buckets in
    [the runbook](xero/ARCHITECTURE.md#voided-bank-transfer-refund-notes-4162):
    how many will be undone (one refund-list question each), how many are spare
-   duplicates (nothing moves), how many go to a person on Stuck States, and how
-   many wait for the link cleanup or an in-flight note. It also counts
-   bank-transfer payments whose total is already below their refund history
-   with no void.
+   duplicates (nothing moves), how many go to a person on Stuck States (who
+   picks the refund each recorded, after the switch), and how many wait for the
+   link cleanup or an in-flight note. It also counts bank-transfer payments
+   whose total is already below their refund history with no void, and says
+   when a payment holds several voids (its count can then overstate).
 2. Read the count with the treasurer: every "will be undone" note becomes a
    question on the refund list the first night.
 3. Set `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true` and restart. The next 02:25

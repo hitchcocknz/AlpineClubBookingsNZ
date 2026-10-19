@@ -12,8 +12,9 @@ straight to the screen where you fix it. Find it at **Admin → Monitoring & Sup
 (`/admin/stuck-states`).
 
 The page is computed on each visit (it shows when it was generated). It is
-read-only apart from one money action: closing a card refund Stripe gave up on
-as **paid another way** (below). It complements [System Health](health.md) (which watches services)
+read-only apart from two money actions: closing a card refund Stripe gave up on
+as **paid another way**, and picking the refund a voided bank refund note
+recorded (both below). It complements [System Health](health.md) (which watches services)
 by watching **data** — see [`ARCHITECTURE.md`](../ARCHITECTURE.md)
 (stuck-state dashboard).
 
@@ -280,6 +281,33 @@ This action does not cover two kinds of refund:
 
 Those two still show in the **Exhausted recovery operations** count. Ask a
 developer to reconcile them.
+
+### Pick the refund a voided bank refund note recorded
+
+**Voided bank refund notes to answer** (finance view to see it, finance edit to
+act; #4162) lists bank refunds whose Xero credit note was voided where the app
+could not tell which refund the note was for. Each row shows the booking, the
+note's amount, its number and the day the app found it voided.
+
+1. Press **Pick the refund**. The dialog lists the payment's bank refunds that
+   are still recorded, with their amounts and the day each was marked paid back.
+2. Choose the one the voided note recorded and press **Take this refund back**.
+   The app takes that refund back out of the payment's records - the same undo
+   it runs by itself for a note it can match - and the refund appears on
+   **Money to settle** with the question "Has the money gone to the member?"
+   ([guide](payments.md#answer-a-bank-refund-whose-xero-credit-note-was-voided)).
+   Nothing is sent to the member or raised in Xero.
+
+Two kinds of row have nothing to pick. A note that recorded a **card refund the
+club paid back another way** keeps that refund recorded: raise its credit note
+again from the Xero repair tool, then press **Record the answer** and say what
+you did (this moves nothing). A note held back for **over a week** by another
+credit note still being raised in Xero on the same payment is shown so it
+cannot hide: check that payment's Xero operations.
+
+Until the club switches the follow-up on (`XERO_ENABLE_BANK_REFUND_VOID_WRITES`,
+see [`UPGRADING.md`](../UPGRADING.md)) the list is for information only and no
+action is offered.
 
 ### A booking change's card request that stopped on its first refusal
 
