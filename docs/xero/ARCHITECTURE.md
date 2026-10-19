@@ -1289,6 +1289,11 @@ on `manuallyResolvedAt`.
   `parsePaymentCreditNoteRetryInput` the retry replays with): never a
   per-payment block, so a later refund beyond it gets its own note, sized from
   the same coverage, and the hand-made note is never covered twice. A resolved
+  row whose note a link records VOIDED or DELETED covers nothing (#4250,
+  `refundNoteIdSets(...).cancelled`): Xero no longer holds that note, so the
+  nightly card self-heal sees the gap and raises a fresh note under an
+  after-void key (`INV-ADDPAY-041`). Its id and key are still reported to the
+  fences, and its amount is never read. A resolved
   row whose amount cannot be read makes the enqueue refuse loudly (error log,
   "raise it by hand"). `readRefundCreditNoteGap` is the one reader of the gap
   for the self-heal list and the booking page. No new booking invoice is queued
@@ -1502,7 +1507,7 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | awaiting heal | The mirror is still active: the next night, after the heal. |
 | handled | Its nightly follow-up exists (the key is the claim); a link marker records a spare, a person's answer, or picks in full; or a person's picks add up to its amount (one pick when its amount cannot be read). Nothing more. |
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
-| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
+| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
 | unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; any other row with nothing to pick says why and takes a recorded answer. |
 
