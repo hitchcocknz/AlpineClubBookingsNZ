@@ -181,11 +181,30 @@ describe("followUpVoidedBankRefundNote (#4162)", () => {
   it("a person's pick runs the same undo, in the same order, with the person as its actor; a refused pick moves nothing", async () => {
     process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
     classify.mockResolvedValue(classified({ kind: "unmatched", reason: "no-line", amountCents: 20_000 }));
-    resolvePicked.mockResolvedValue({ undo: { amountCents: 15_000, taskId: "task-1", line } });
+    resolvePicked.mockResolvedValue({ undo: { amountCents: 15_000, taskId: "task-1", line }, remainingCents: 20_000 });
     await expect(pickRefundForUnmatchedVoid({ linkId: "link-1", lineId: "line-1", actingMemberId: "officer-1" })).resolves.toMatchObject({ followUpTaskId: "follow-up-1" });
+    // 5,000 of the note is still to pick: no "picked" marker yet.
     expect(calls).toEqual(["SELECT pg_advisory_xact_lock(1)", "lock-payment:pay-1", "classify", "resolve-pick", "claim", "unwind", "reverse-line", "reconcile", "audit"]);
     expect(unwind).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 15_000 }));
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ actorMemberId: "officer-1" }), tx);
+    // Money A: the pick is claimed under the note-and-line key, never the nightly undo's per-note key.
+    expect(tx.manualRefundTask.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: [expect.objectContaining({ occurrenceKey: "bank-refund-void:pay-1:cn-1:line-1" })] }),
+    );
+
+    // The pick that leaves nothing to pick marks the note, its link row taken NOWAIT last.
+    calls.length = 0;
+    resolvePicked.mockResolvedValue({ undo: { amountCents: 15_000, taskId: "task-1", line }, remainingCents: 15_000 });
+    await pickRefundForUnmatchedVoid({ linkId: "link-1", lineId: "line-1", actingMemberId: "officer-1" });
+    expect(calls.slice(-3)).toEqual(["audit", 'SELECT 1 FROM "XeroObjectLink" WHERE "id" = ? FOR UPDATE NOWAIT', "marker"]);
+    expect(tx.xeroObjectLink.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { metadata: expect.objectContaining({ bankRefundVoid: expect.objectContaining({ outcome: "picked", memberId: "officer-1" }) }) } }),
+    );
+    // A note of unreadable amount takes one pick only: that pick marks it.
+    calls.length = 0;
+    resolvePicked.mockResolvedValue({ undo: { amountCents: 15_000, taskId: "task-1", line }, remainingCents: null });
+    await pickRefundForUnmatchedVoid({ linkId: "link-1", lineId: "line-1", actingMemberId: "officer-1" });
+    expect(calls.at(-1)).toBe("marker");
 
     vi.clearAllMocks();
     resolvePicked.mockResolvedValue({ refusal: "line-not-pickable" });

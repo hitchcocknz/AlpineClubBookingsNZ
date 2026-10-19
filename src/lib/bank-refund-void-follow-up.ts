@@ -24,7 +24,7 @@ import { bookingOwner } from "@/lib/booking-owner";
 import { formatBookingReference } from "@/lib/booking-reference";
 import logger from "@/lib/logger";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
-import { bankRefundVoidFollowUpOccurrenceKey } from "@/lib/bank-refund-void-follow-up-key";
+import { bankRefundVoidFollowUpOccurrenceKey, bankRefundVoidPickOccurrenceKey } from "@/lib/bank-refund-void-follow-up-key";
 import {
   lockPaymentForRefundedTotal,
   reconcilePaymentAggregates,
@@ -60,7 +60,10 @@ import { isXeroBankRefundVoidWritesEnabled } from "@/lib/xero-feature-flags";
  *   call: nothing is raised in Xero without a person;
  * - an unmatched or ambiguous note goes to a person on Stuck States, who picks
  *   the bank refund it recorded; the same undo then runs
- *   (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026). A note with
+ *   (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026). A note that
+ *   recorded several refunds takes one pick per refund, each claimed under its
+ *   own key, until the picks add up to its amount (one pick when its amount
+ *   cannot be read); the last pick marks the note "picked". A note with
  *   nothing to pick (a card refund's record) takes a recorded answer instead.
  *
  * REPORT-ONLY BY DEFAULT: until the operator sets
@@ -218,10 +221,11 @@ async function undoUnderLocks(
   note: ClassifiedVoidedNote,
   undo: BankRefundVoidUndo,
   actingMemberId: string | null,
+  /** The claim: the note's own key for the nightly undo, the note-and-line key for a person's pick. */
+  occurrenceKey: string,
 ): Promise<{ claimed: false } | { claimed: true; followUpTaskId: string }> {
   const bookingId = note.bookingId!;
   const lodgeId = note.lodgeId!;
-  const occurrenceKey = bankRefundVoidFollowUpOccurrenceKey(note.paymentId, note.link.xeroObjectId);
   const claimed = await tx.manualRefundTask.createMany({
     data: [
       {
@@ -313,7 +317,7 @@ export async function followUpVoidedBankRefundNote(linkId: string, now: Date = n
           return itemOf(note, "spare", describe(c, true));
         }
         if (c.kind !== "undo") return itemOf(note, plannedOutcome(c), describe(c, true));
-        const done = await undoUnderLocks(tx, note, c, null);
+        const done = await undoUnderLocks(tx, note, c, null, bankRefundVoidFollowUpOccurrenceKey(note.paymentId, note.link.xeroObjectId));
         if (!done.claimed) return itemOf(note, "handled", "Already handled (follow-up raised by another run)");
         return itemOf(note, "undone", describe(c, true), { followUpTaskId: done.followUpTaskId });
       },
@@ -329,17 +333,24 @@ export async function followUpVoidedBankRefundNote(linkId: string, now: Date = n
 const PICK_REFUSALS: Record<PickRefusal, string> = {
   "not-unmatched": "This voided refund note no longer needs a refund picked here. The list has been refreshed.",
   "line-not-pickable": "That refund is not a live bank refund on this payment any more. The list has been refreshed: pick again.",
+  "still-covered": "Another credit note in Xero still records that refund, so it was not the voided note's. The list has been refreshed: pick again.",
+  "too-large": "That refund is larger than what is left of the voided note's amount to pick, so the note did not record it. The list has been refreshed: pick again.",
   "detail-short": "The payment's records no longer hold that refund, so it cannot be taken back. The list has been refreshed.",
 };
 
 /**
  * #4162 (owner decision 18 Oct 2026, comment 6247741127): A PERSON PICKS THE
  * REFUND an unmatched voided note recorded, and the SAME undo runs - same
- * locks, same claim key, same rows (`undoUnderLocks`), with the person as its
- * actor. Under the locks the note must still be unmatched and the line a live
- * bank hand-back line of THIS payment the payment's detail still holds
- * (`resolvePickedUndo`). Behind the writes switch: report-only refuses it and
- * writes nothing.
+ * locks, same rows (`undoUnderLocks`), with the person as its actor. Under the
+ * locks the note must still be unmatched and the line a live bank hand-back
+ * line of THIS payment that no live note still covers, no larger than what is
+ * left of the note's amount, and that the payment's detail still holds
+ * (`resolvePickedUndo`). Each pick is claimed under the note-and-line key, so a
+ * note that recorded several refunds takes one pick per refund (review, money
+ * A); the pick that leaves nothing to pick - or the one pick a note of
+ * unreadable amount allows - writes the "picked" marker on its link (`NOWAIT`,
+ * last), which takes the note out of the nightly scan. Behind the writes
+ * switch: report-only refuses it and writes nothing.
  */
 export async function pickRefundForUnmatchedVoid(input: { linkId: string; lineId: string; actingMemberId: string }): Promise<{ followUpTaskId: string; paymentId: string; bookingId: string }> {
   if (!isXeroBankRefundVoidWritesEnabled()) throw new BankRefundVoidAnswerRefusal(BANK_REFUND_VOID_REPORT_ONLY_MESSAGE, 409);
@@ -349,8 +360,12 @@ export async function pickRefundForUnmatchedVoid(input: { linkId: string; lineId
       if (!note) throw new BankRefundVoidAnswerRefusal("Voided refund note not found.", 404);
       const picked = await resolvePickedUndo(tx, note, input.lineId);
       if ("refusal" in picked) throw new BankRefundVoidAnswerRefusal(PICK_REFUSALS[picked.refusal], 409);
-      const done = await undoUnderLocks(tx, note, picked.undo, input.actingMemberId);
+      const key = bankRefundVoidPickOccurrenceKey(note.paymentId, note.link.xeroObjectId, picked.undo.line.id);
+      const done = await undoUnderLocks(tx, note, picked.undo, input.actingMemberId, key);
       if (!done.claimed) throw new BankRefundVoidAnswerRefusal(PICK_REFUSALS["not-unmatched"], 409);
+      if (picked.remainingCents === null || picked.remainingCents - picked.undo.amountCents <= 0) {
+        await writeBankRefundVoidMarker(tx, input.linkId, { outcome: "picked", at: new Date().toISOString(), memberId: input.actingMemberId });
+      }
       return { followUpTaskId: done.followUpTaskId, paymentId: note.paymentId, bookingId: note.bookingId! };
     },
     { timeout: 30_000 },
@@ -428,7 +443,7 @@ export async function markUnmatchedBankRefundVoidAnswered(input: {
     const nothingToPick =
       c.kind === "unmatched" &&
       note.bookingId !== null &&
-      (c.reason === "paid-another-way" || (await readPickableHandBackLines(tx, note.paymentId, note.bookingId)).length === 0);
+      (c.reason === "paid-another-way" || (await readPickableHandBackLines(tx, note.paymentId, note.bookingId, c.remainingCents)).length === 0);
     if (!nothingToPick || !note.bookingId || c.kind !== "unmatched") {
       throw new BankRefundVoidAnswerRefusal("This voided refund note no longer takes an answer here: pick the refund it recorded instead. The list has been refreshed.", 409);
     }
@@ -475,9 +490,15 @@ export async function listBankRefundVoidsToAnswerRows() {
     bookingReference: formatBookingReference(item.bookingId),
     creditNoteNumber: item.creditNoteNumber,
     amountCents: item.amountCents,
+    remainingCents: item.remainingCents,
     foundVoidedAt: item.foundVoidedAt,
     reason: item.reason,
-    pickableLines: item.pickableLines.map((line) => ({ lineId: line.lineId, amountCents: line.amountCents, recordedAt: completedAt.get(line.taskId) ?? null })),
+    pickableLines: item.pickableLines.map((line) => ({
+      lineId: line.lineId,
+      amountCents: line.amountCents,
+      matchesNote: line.matchesNote,
+      recordedAt: completedAt.get(line.taskId) ?? null,
+    })),
   }));
 }
 

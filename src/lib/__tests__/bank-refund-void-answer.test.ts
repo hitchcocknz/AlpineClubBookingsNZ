@@ -54,6 +54,16 @@ describe("verifyHandMadeRefundNote (#4162)", () => {
     await expect(verify("CN-0123", { xeroInvoiceId: null, ownerXeroContactId: "contact-other" })).rejects.toMatchObject({ status: 409 });
   });
 
+  it("MUTATION (security low 2): with no contact to compare, says so instead of naming a different contact", async () => {
+    getCreditNotes.mockResolvedValue({ body: { creditNotes: [{ ...live, allocations: [] }] } });
+    await expect(verify("CN-0123", { xeroInvoiceId: null, ownerXeroContactId: null })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("no Xero invoice and the booking's owner has no Xero contact, so there is no Xero contact to check it against"),
+    });
+    getInvoice.mockResolvedValue({ body: { invoices: [{}] } });
+    await expect(verify("CN-0123")).rejects.toMatchObject({ status: 409, message: expect.stringContaining("invoice has no contact to check it against") });
+  });
+
   it.each([
     [[], "Xero has no credit note numbered CN-0123"],
     [[{ ...live, total: 150 }], "is for $150.00 in Xero, not $200.00"],
@@ -77,11 +87,15 @@ describe("verifyHandMadeRefundNote (#4162)", () => {
     expect(getCreditNotes).not.toHaveBeenCalled();
   });
 
-  it("says Xero could not be reached, or is busy on a rate limit, rather than guessing", async () => {
+  it("says Xero could not be reached, is busy on a rate limit, or has spent its daily limit, rather than guessing", async () => {
     getCreditNotes.mockRejectedValue(new Error("network"));
     await expect(verify()).rejects.toMatchObject({ status: 409, message: expect.stringContaining("could not reach Xero") });
     getCreditNotes.mockRejectedValue(Object.assign(new Error("Too Many Requests"), { response: { statusCode: 429 } }));
     await expect(verify()).rejects.toMatchObject({ status: 409, message: "Xero is busy, try again in a minute." });
+    // MUTATION (security low 1): the daily limit is its own message - a minute will not help.
+    const { XeroDailyLimitError } = await import("@/lib/xero-api-client");
+    getCreditNotes.mockRejectedValue(new XeroDailyLimitError(3_600, true));
+    await expect(verify()).rejects.toMatchObject({ status: 409, message: "Xero's daily limit has been reached; try again tomorrow." });
   });
 
   it("prepares the answer only for a follow-up, at its own amount; a fresh note needs an invoice and no Xero call", async () => {

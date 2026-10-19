@@ -85,9 +85,17 @@ function normaliseCreditNoteNumber(raw: string): string {
   return number;
 }
 
-/** Whether a Xero failure was its rate limit, which the treasurer is told to wait out. */
-function isXeroBusy(error: unknown): boolean {
-  return error instanceof XeroDailyLimitError || getXeroErrorStatusCode(error) === 429;
+/** The refusal when Xero's daily call limit is spent: nothing to retry until it resets (final review, security low 1). */
+export const XERO_DAILY_LIMIT_MESSAGE = "Xero's daily limit has been reached; try again tomorrow.";
+
+/** The refusal when Xero is rate-limiting this minute. */
+export const XERO_BUSY_MESSAGE = "Xero is busy, try again in a minute.";
+
+/** What the treasurer is told when Xero could not be read: its daily limit, its per-minute limit, or unreachable. */
+function xeroReadFailureMessage(error: unknown): string {
+  if (error instanceof XeroDailyLimitError) return XERO_DAILY_LIMIT_MESSAGE;
+  if (getXeroErrorStatusCode(error) === 429) return XERO_BUSY_MESSAGE;
+  return "The app could not reach Xero to check that credit note. Check Xero is connected, then try again.";
 }
 
 /** The two short-retry Xero reads behind the answer: a person waits on them (review, security 4). */
@@ -140,12 +148,7 @@ export async function verifyHandMadeRefundNote(
     }
   } catch (error) {
     logger.error({ err: error, creditNoteNumber: number }, "Could not read a hand-made refund credit note from Xero (#4162)");
-    throw new ManualBookingPaymentError(
-      isXeroBusy(error)
-        ? "Xero is busy, try again in a minute."
-        : "The app could not reach Xero to check that credit note. Check Xero is connected, then try again.",
-      409,
-    );
+    throw new ManualBookingPaymentError(xeroReadFailureMessage(error), 409);
   }
   const matches = creditNotes.filter((note) => note.creditNoteID && note.creditNoteNumber?.trim() === number);
   if (matches.length === 0) {
@@ -162,7 +165,16 @@ export async function verifyHandMadeRefundNote(
   if (String(note.type ?? "") !== "ACCRECCREDIT") {
     throw new ManualBookingPaymentError(`Credit note ${number} is not a sales credit note in Xero, so it does not record a refund to a member.`, 409);
   }
-  if (!expectedContactId || note.contact?.contactID !== expectedContactId) {
+  if (!expectedContactId) {
+    // Final review, security low 2: say why nothing could be compared.
+    throw new ManualBookingPaymentError(
+      input.xeroInvoiceId
+        ? `Credit note ${number} cannot be checked: this booking's Xero invoice has no contact to check it against.`
+        : `Credit note ${number} cannot be checked: this payment has no Xero invoice and the booking's owner has no Xero contact, so there is no Xero contact to check it against.`,
+      409,
+    );
+  }
+  if (note.contact?.contactID !== expectedContactId) {
     throw new ManualBookingPaymentError(`Credit note ${number} is for a different contact in Xero than this booking's invoice, so it does not record this refund.`, 409);
   }
   if ((note.allocations ?? []).some((allocation) => allocation.invoice?.invoiceID && allocation.invoice.invoiceID !== input.xeroInvoiceId)) {

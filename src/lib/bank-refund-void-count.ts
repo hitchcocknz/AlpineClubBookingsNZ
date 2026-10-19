@@ -26,6 +26,7 @@ export type BankRefundVoidCountBucket =
   | "handled-follow-up"
   | "handled-spare"
   | "handled-answered"
+  | "handled-picked"
   | "deferred"
   | "spare"
   | "undo-total-below-detail"
@@ -49,7 +50,7 @@ export interface BankRefundVoidCount {
 function bucketOf(c: BankRefundVoidClassification, figures: { refundedCents: number; detailCents: number } | null): BankRefundVoidCountBucket {
   switch (c.kind) {
     case "handled":
-      return c.by === "follow-up" ? "handled-follow-up" : c.by === "spare" ? "handled-spare" : "handled-answered";
+      return `handled-${c.by}`;
     case "undo":
       return figures && figures.refundedCents < figures.detailCents ? "undo-total-below-detail" : "undo-total-equal-detail";
     case "unmatched":
@@ -60,7 +61,8 @@ function bucketOf(c: BankRefundVoidClassification, figures: { refundedCents: num
 }
 
 function amountOf(c: BankRefundVoidClassification): number {
-  return c.kind === "undo" || c.kind === "spare" ? c.amountCents : c.kind === "unmatched" ? (c.amountCents ?? 0) : 0;
+  // An unmatched note counts what is still to pick: the rest of a partly picked note's amount.
+  return c.kind === "undo" || c.kind === "spare" ? c.amountCents : c.kind === "unmatched" ? (c.remainingCents ?? c.amountCents ?? 0) : 0;
 }
 
 export async function countBankRefundVoids(db: Prisma.TransactionClient): Promise<BankRefundVoidCount> {
@@ -116,6 +118,7 @@ const BUCKET_LABELS: Record<string, string> = {
   "handled-follow-up": "Already handled: a follow-up is on the refund list",
   "handled-spare": "Already handled: recorded as a spare",
   "handled-answered": "Already handled: answered by a person on Stuck States",
+  "handled-picked": "Already handled: a person picked the refunds it recorded",
   deferred: "Deferred: a refund-note create on the payment could still mint",
   spare: "Spare: live notes still cover every bank hand-back; nothing will move",
   "undo-total-below-detail": "Will be undone (one follow-up each); the payment's total is already below its detail",
@@ -126,6 +129,7 @@ const BUCKET_LABELS: Record<string, string> = {
   "unmatched-detail-short": "Unmatched, to a person: the payment's detail no longer holds the amount",
   "unmatched-paid-another-way": "To a person, nothing to pick: it recorded a card refund paid another way",
   "unmatched-coverage-unknown": "Unmatched, to a person: a note resolved by hand in Xero has no readable amount",
+  "unmatched-partly-picked": "Unmatched, to a person: some of the refunds it recorded are picked, the rest still to pick",
   "not-in-scope": "Not in scope (re-checked in code)",
 };
 

@@ -35,13 +35,28 @@ export interface BankRefundVoidToAnswerRow {
   bookingReference: string;
   creditNoteNumber: string | null;
   amountCents: number | null;
+  /** What is left of it to pick: less than the amount once some refunds are picked; null when the amount cannot be read. */
+  remainingCents: number | null;
   /** When the app found the note voided - not Xero's own void time. */
   foundVoidedAt: string;
   /** Why it is here: unmatched (a reason), or `deferred` too long. */
   reason: string;
-  /** The payment's live bank refunds a person may pick as the one the note recorded. */
-  pickableLines: ReadonlyArray<{ lineId: string; amountCents: number; recordedAt: string | null }>;
+  /** The payment's live bank refunds a person may pick as one the note recorded; `matchesNote` when it is exactly what is left. */
+  pickableLines: ReadonlyArray<{ lineId: string; amountCents: number; matchesNote: boolean; recordedAt: string | null }>;
 }
+
+/**
+ * Final review (security low 3): why an unmatched note has no bank refund to
+ * pick, in one line. A card refund's record has its own fuller line below.
+ */
+const NOTHING_TO_PICK_REASONS: Record<string, string> = {
+  "no-line": "No bank refund on this payment is left that this note could have recorded.",
+  ambiguous: "No bank refund on this payment is left that this note could have recorded.",
+  "partly-picked": "The rest of its amount matches no bank refund left on this payment.",
+  "detail-short": "The payment's records no longer hold a refund it could have recorded, so there is nothing to take back.",
+  "coverage-unknown": "A credit note resolved by hand in Xero has no amount the app can read, so the app cannot tell what Xero still records.",
+  "amount-unknown": "Its amount cannot be read, and no bank refund on this payment is left to pick.",
+};
 
 type Target = { row: BankRefundVoidToAnswerRow; mode: "pick" | "answer" };
 
@@ -186,6 +201,19 @@ export function BankRefundVoidsToAnswerPanel({
                       It recorded a card refund the club paid back another way. That refund stays recorded: raise its
                       credit note again from the Xero repair tool, then record the answer here.
                     </div>
+                  ) : !pickable ? (
+                    <div className="text-xs text-muted-foreground">
+                      {NOTHING_TO_PICK_REASONS[row.reason] ?? "No bank refund on this payment is left to pick for it."} Check
+                      the payment in Xero, then record what you found.
+                    </div>
+                  ) : row.amountCents === null ? (
+                    <div className="text-xs text-muted-foreground">
+                      Its amount cannot be read, so you can pick one refund for it.
+                    </div>
+                  ) : row.remainingCents !== null && row.remainingCents < row.amountCents ? (
+                    <div className="text-xs text-muted-foreground">
+                      Some of the refunds it recorded are picked; {formatCents(row.remainingCents, format)} is still to pick.
+                    </div>
                   ) : null}
                 </div>
                 {deferred || !writesEnabled ? null : (
@@ -232,12 +260,22 @@ export function BankRefundVoidsToAnswerPanel({
                     <span>
                       {formatCents(line.amountCents, format)}
                       {line.recordedAt ? `, marked paid back ${clubTime.instantDate(new Date(line.recordedAt))}` : ""}
+                      {line.matchesNote ? (
+                        <span className="font-medium">
+                          {target.row.remainingCents !== target.row.amountCents
+                            ? " - matches what is left of the note"
+                            : " - matches the note's amount"}
+                        </span>
+                      ) : null}
                     </span>
                   </label>
                 ))}
                 <p className="text-xs text-muted-foreground">
                   The refund you pick is taken back out of the payment&apos;s records and goes on Money to settle to
-                  re-confirm. Nothing is sent to the member or raised in Xero.
+                  re-confirm. Nothing is sent to the member or raised in Xero.{" "}
+                  {target.row.amountCents === null
+                    ? "The note's amount cannot be read, so it takes one pick only."
+                    : "If the note recorded more than one refund, pick them one at a time; it stays on this list until the picks add up to its amount."}
                 </p>
               </fieldset>
             ) : (
@@ -249,7 +287,11 @@ export function BankRefundVoidsToAnswerPanel({
                   required
                   aria-required="true"
                   maxLength={MANUAL_PAYMENT_NOTE_MAX}
-                  placeholder="For example: re-raised the card refund's credit note from the Xero repair tool"
+                  placeholder={
+                    target?.row.reason === "paid-another-way"
+                      ? "For example: re-raised the card refund's credit note from the Xero repair tool"
+                      : "For example: what you checked in Xero, and what you found"
+                  }
                   onChange={(event) => setNote(event.target.value)}
                 />
               </div>
