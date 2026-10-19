@@ -1010,6 +1010,24 @@ note.
    PARTIAL with its payload and the run's error, guarded on the claim, never
    FAILED, whose error payload would replace what the repair reads.
 
+   The claim stamps `lastErrorCode = PARTIAL_REPAIR_RUNNING`
+   (`XERO_PARTIAL_REPAIR_RUNNING_CODE`). If the process dies mid-repair, the
+   row is stuck RUNNING with that code, and Mark failed or Reset stale running
+   (`writeStaleRunningXeroOperationReset`) returns it to PARTIAL, payload kept,
+   rather than FAILED. A FAILED Payment invoice row would go down the invoice
+   replay, which finds the invoice already linked, closes the row and records
+   no payment. Every completion a claimed repair writes, including the refund
+   settlement leg's, is guarded on the claim (`completeXeroSyncOperation`'s
+   `onlyIfRunningSince`), so a repair finishing after an operator's Mark failed
+   writes nothing over it; that completion also clears the marker code. An
+   invoice repair left PARTIAL by an email fault says so in `lastErrorMessage`
+   and raises no repeated-failure alert. The FAILED refund-note repair claims
+   its row too (FAILED mode). Mark non-replayable writes only onto a FAILED or
+   PARTIAL row, so a retry that claimed it after the officer's read gets the
+   409 "a retry is running"; a queued retry of a row marked not replayable is
+   closed as skipped. Rows repaired before this release stay partly
+   completed; retry them once and they close.
+
    **Stuck RUNNING rows.** A row RUNNING longer than
    `STALE_RUNNING_XERO_OPERATION_MINUTES` (15) is stale (`xero-stale-operations.ts`).
    `isStaleRunningXeroOperation` takes the row and checks RUNNING itself,

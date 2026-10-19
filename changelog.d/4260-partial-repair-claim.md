@@ -6,4 +6,10 @@
   retry now takes the operation first, so the officer's mark wins and the
   retry does nothing. A successful payment repair now also marks the operation
   succeeded, so the booking stops showing the payment as not recorded. If the
-  invoice email had also failed, the operation stays partly completed for that.
+  invoice email had also failed, the operation stays partly completed for that,
+  and its message now says the email is what is left. A repair interrupted
+  part-way (the server stopped) comes back as partly completed when an officer
+  uses Mark failed or Reset stale running, so Retry repairs it again. Marking
+  an operation not replayable while a retry of it is running is refused with
+  "try again when it finishes". Rows repaired before this release stay partly
+  completed; retry them once and they close.

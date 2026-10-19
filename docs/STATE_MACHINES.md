@@ -3566,12 +3566,25 @@ retry claims original FAILED/PARTIAL -> RUNNING -> handler completes it
   run's error (guarded: still RUNNING, still this claim's startedAt) (#3462)
   queued retry (REQUEUE) -> FAILED, naming the original and its status
 PARTIAL invoice payment repair or refund-note repair claims PARTIAL -> RUNNING
-  (#4256) -> invoice repair records the payment -> SUCCEEDED, or PARTIAL while
-  an invoice-email fault remains; the refund-note leg completes its own row
+  with code PARTIAL_REPAIR_RUNNING (#4256) -> invoice repair records the
+  payment -> SUCCEEDED, or PARTIAL while an invoice-email fault remains (its
+  message says so; no repeated-failure alert); the refund-note leg completes
+  its own row. Every completion is guarded on the claim (still RUNNING, still
+  its startedAt), so it never lands over an officer's Mark failed
   handler throws first -> RUNNING -> PARTIAL, payload kept, with the run's
   error (guarded on the claim), so the row stays repairable
+  process dies mid-repair -> stuck RUNNING -> Mark failed / Reset stale running
+  -> PARTIAL (above) -> Retry repairs it, under the payment's one key
+  rows repaired before #4256 stay PARTIAL; one retry closes them
+FAILED refund-note repair claims FAILED -> RUNNING too; a throw -> FAILED
+mark non-replayable on FAILED/PARTIAL only, status-guarded: a retry that
+  claimed the row after the officer's read -> 409, nothing written, no audit
+queued retry (REQUEUE) of an operation marked not replayable -> CANCELLED,
+  skipped "not-replayable"; nothing ran
 stale RUNNING (> 15 min) -> FAILED by an officer's Mark failed (one row) or
   Reset stale running (all), code ORPHANED_STALE_RUNNING; then retryable
+  a PARTIAL repair's claim (code PARTIAL_REPAIR_RUNNING) -> PARTIAL instead,
+  payload kept, code ORPHANED_STALE_RUNNING; Retry repairs it again (#4256)
 retry of an outbox-run row (group invoice and its VOIDs, kept late capture,
   membership subscription invoice) -> the SAME row back to PENDING, same
   correlation key, status-guarded; the outbox claim runs it. Refused (409, no
