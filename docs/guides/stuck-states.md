@@ -291,19 +291,32 @@ note's amount, its number and the day the app found it voided.
 
 1. Press **Pick the refund**. The dialog lists the payment's bank refunds that
    are still recorded, with their amounts and the day each was marked paid back.
+   A refund whose amount is exactly what the note still has to account for is
+   marked **matches the note's amount**. A refund another live credit note in
+   Xero still records is not offered (it was not this note's), and neither is
+   one larger than what is left of the note's amount.
 2. Choose the one the voided note recorded and press **Take this refund back**.
    The app takes that refund back out of the payment's records - the same undo
    it runs by itself for a note it can match - and the refund appears on
    **Money to settle** with the question "Has the money gone to the member?"
    ([guide](payments.md#answer-a-bank-refund-whose-xero-credit-note-was-voided)).
    Nothing is sent to the member or raised in Xero.
+3. If the note recorded **more than one refund**, it stays on the list, saying
+   how much is still to pick. Pick the next refund the same way; the row leaves
+   the list once the refunds picked add up to the note's amount. Each picked
+   refund gets its own question on Money to settle. A note whose amount the app
+   **cannot read** takes one pick only, and the row says so.
 
-Two kinds of row have nothing to pick. A note that recorded a **card refund the
-club paid back another way** keeps that refund recorded: raise its credit note
-again from the Xero repair tool, then press **Record the answer** and say what
-you did (this moves nothing). A note held back for **over a week** by another
-credit note still being raised in Xero on the same payment is shown so it
-cannot hide: check that payment's Xero operations.
+Some rows have nothing to pick. A note that recorded a **card refund the club
+paid back another way** keeps that refund recorded: raise its credit note again
+from the Xero repair tool, then press **Record the answer** and say what you did
+(this moves nothing). Any other row with nothing to pick says why in one line -
+no bank refund left that the note could have recorded, the payment's records no
+longer holding it, or a credit note resolved by hand in Xero with no amount the
+app can read. Check the payment in Xero, then press **Record the answer** and
+say what you found (this moves nothing either). A note held back for **over a
+week** by another credit note still being raised in Xero on the same payment is
+shown so it cannot hide: check that payment's Xero operations.
 
 Until the club switches the follow-up on (`XERO_ENABLE_BANK_REFUND_VOID_WRITES`,
 see [`UPGRADING.md`](../UPGRADING.md)) the list is for information only and no

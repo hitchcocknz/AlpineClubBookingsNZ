@@ -399,7 +399,10 @@ Nothing is sent to the member and nothing is raised in Xero until you answer:
   reads it from Xero and checks that it is a sales credit note, **approved or
   paid**, for exactly this amount, for the **same contact** as the booking's
   invoice, and not allocated to another invoice. If not, it tells you why and
-  nothing changes (if Xero is busy, try again in a minute). If it is, the
+  nothing changes. If Xero is busy, try again in a minute; if Xero's daily
+  limit has been reached, try again tomorrow; if the booking has no Xero
+  invoice and its owner no Xero contact, there is nothing to check the note
+  against, and the app says so. If it is, the
   refund is recorded as paid back again against that note, and the app keeps
   track of it: it reads the note once more straight afterwards, and if that
   note is ever voided too, the refund comes back here again.
@@ -416,7 +419,9 @@ covered several refunds at once, or one whose amount it cannot read) appears on
 ([guide](stuck-states.md#pick-the-refund-a-voided-bank-refund-note-recorded)).
 Press **Pick the refund**, choose which of the payment's bank refunds the note
 recorded, and the app takes that refund back out of the records exactly as it
-does for a matched note - it then appears here with the same question.
+does for a matched note - it then appears here with the same question. A note
+that recorded several refunds takes one pick per refund, each with its own
+question here, until the picks add up to its amount.
 
 This only happens once your administrator has switched it on (see
 [`UPGRADING.md`](../UPGRADING.md)); until then the app only reports what it

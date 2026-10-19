@@ -2203,7 +2203,8 @@ the nightly follow-up (`INV-ADDPAY-042`) takes that refund back out of the
 payment's records and inserts ONE new task OPEN - never a reopen: the completed
 hand-back stays COMPLETED (#3498) and its ledger line is reversed instead. It is
 a `CANCELLED_BOOKING_HAND_BACK` keyed `bank-refund-void:<payment>:<note>` (the
-claim, so one per voided note), netted from refundable cash while OPEN like an
+claim, so one per voided note), or `bank-refund-void:<payment>:<note>:<line>`
+for each refund a person picks for an unmatched note, netted from refundable cash while OPEN like an
 edit's. OPEN -> COMPLETED needs one of two answers (raise a fresh credit note
 keyed on the task; or the hand-made note's number, checked in Xero before the
 transaction and then tracked), writes the allocation and the `BANK_REFUND` line

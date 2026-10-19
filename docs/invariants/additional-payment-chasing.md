@@ -1619,9 +1619,12 @@ decision and would need its own owner decision.
   reverse the hand-back's line and recompute the total from the detail. The
   follow-up is a new open `CANCELLED_BOOKING_HAND_BACK`; the completed task is
   never reopened. A note matches by the task it names, else by a unique amount.
-  For an unmatched one a person picks the live bank refund it recorded on
-  Stuck States, and the same undo runs (owner, 18 Oct 2026); a card refund's
-  record is never undone here.
+  For an unmatched one a person picks the live bank refunds it recorded on
+  Stuck States, and the same undo runs (owner, 18 Oct 2026): one pick per
+  refund, keyed `<payment>:<note>:<line>`, until the picks add up to the
+  note's amount (one pick if unreadable). A line its own live notes still
+  cover is never matched or picked; a card refund's record is never undone
+  here.
 - **Nothing is raised in Xero without a person.** No email, booking event or
   provider call. Completing the follow-up needs an answer: a fresh note keyed
   and sized on it, or a hand-made note checked in Xero first and then tracked.

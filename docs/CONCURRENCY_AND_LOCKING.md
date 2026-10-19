@@ -5406,15 +5406,23 @@ Counterparts:
 - **The follow-up's completion** (`resolveManualRefundTask`) takes `lock(1)`,
   because the follow-up is a non-cancellation hand-back, then the `Payment`
   row through its allocation. The "already in Xero" answer reads Xero before
-  that transaction opens, so no provider call runs under either lock.
+  that transaction opens, so no provider call runs under either lock. After
+  the commit, and outside any lock, the hand-made note is read again
+  (`reconcileHandMadeNoteAfterCompletion`, through the inbound
+  `reconcileXeroCreditNote`), so a void in between is caught.
 
 **A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
 runs the very same undo (`undoUnderLocks`) for an unmatched note: the same
 `lock(1)` and `Payment` row (`lockAndClassify`, the one place every writer here
-takes them), the same claim key, the same rows. Under the locks it re-checks
-that the note is still unmatched and that the picked line is a live
-`BANK_REFUND` hand-back line of THIS payment whose refund the detail still
-holds (`resolvePickedUndo`). `markUnmatchedBankRefundVoidAnswered` (a card
+takes them), the same rows. Its claim is the note-and-line key
+(`bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`), so a note that
+recorded several refunds takes one pick per refund. Under the locks it
+re-checks that the note is still unmatched and that the picked line is a live
+`BANK_REFUND` hand-back line of THIS payment, that its own task's live notes
+no longer cover, no larger than what is left of the note's amount, and whose
+refund the detail still holds (`resolvePickedUndo`). The pick that leaves
+nothing to pick then writes the `picked` marker on the link row, last and
+`NOWAIT`, as a spare's marker is written. `markUnmatchedBankRefundVoidAnswered` (a card
 refund's record, nothing to pick) moves no money but joins the same cohort and
 order, then writes its marker on the link row `NOWAIT`. Both are refused while
 the follow-up is report-only. The nightly run classifies each note unlocked
@@ -5427,8 +5435,10 @@ reconcile; the inbound recount forced to read, wait for the undo's commit and
 resume - its claim lost, it recounts, and the total ends equal to the detail
 (the `INV-ADDPAY-021` floor is what keeps it there); the heal deferring; a
 create in flight; the link row held by another transaction (a spare defers
-with no marker, an answer is refused as busy); a pick, and picks of another
-payment's line or a reversed one refused. The order is pinned by
+with no marker, an answer is refused as busy); a pick, two picks on one note
+that recorded two refunds (both undone, then a third refused), and picks of
+another payment's line, a reversed one, one larger than what is left or one
+its own live note still covers refused. The order is pinned by
 `bank-refund-void-follow-up.test.ts`.
 
 ## Refund-request note link writes (#4195)

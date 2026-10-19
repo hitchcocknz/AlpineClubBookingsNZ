@@ -147,7 +147,7 @@ records it as `xero-bank-refund-void-follow-up`.
    [the runbook](xero/ARCHITECTURE.md#voided-bank-transfer-refund-notes-4162):
    how many will be undone (one refund-list question each), how many are spare
    duplicates (nothing moves), how many go to a person on Stuck States (who
-   picks the refund each recorded, after the switch), and how many wait for the
+   picks the refunds each recorded, one at a time, after the switch), and how many wait for the
    link cleanup or an in-flight note. It also counts bank-transfer payments
    whose total is already below their refund history with no void, and says
    when a payment holds several voids (its count can then overstate).

@@ -1079,7 +1079,10 @@ On a bank transfer a void is undone, then asked once (#4162, `INV-ADDPAY-042`).
 The inbound sync no longer lowers the refunded total below the payment's own
 transaction detail (`INV-ADDPAY-021`); the nightly follow-up moves the detail,
 the hand-back's ledger line and the total together and puts the money back on
-the refund list. Nothing is re-raised automatically. See
+the refund list. Nothing is re-raised automatically. While a payment holds a
+voided note the follow-up has not handled, the floor logs its divergence at
+info and raises no alert - including, while report-only, notes the job would
+undo, which no screen lists: the count below is where those appear. See
 [Voided bank-transfer refund notes](#voided-bank-transfer-refund-notes-4162).
 
 **A refund request's own note, voided (#4195).** The same void rule holds for
@@ -1497,11 +1500,11 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | Answer | What happens |
 | --- | --- |
 | awaiting heal | The mirror is still active: the next night, after the heal. |
-| handled | Its follow-up exists (the key is the claim), or a link marker records a spare or a person's answer. Nothing more. |
+| handled | Its nightly follow-up exists (the key is the claim); a link marker records a spare, a person's answer, or picks in full; or a person's picks add up to its amount (one pick when its amount cannot be read). Nothing more. |
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
 | spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
-| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, or it recorded a card refund's record (a "Paid another way" close or shortfall): listed on Stuck States. A person picks the live bank refund it recorded and the same undo runs (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026); a card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded. |
+| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still cover, nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; any other row with nothing to pick says why and takes a recorded answer. |
 
 A note is matched to the hand-back it recorded by the task it names - a
 cancellation's note carries `handBackTaskId` in its payload since #4162 (never
@@ -1509,7 +1512,9 @@ in its key), a review's `reviewTaskId`, a follow-up's fresh note
 `paidAnotherWayTaskId`, a hand-made note's link `handBackTaskId` - and that
 task's live line for exactly the note's amount. An older note naming no task
 takes the one live hand-back line of its amount, only when no other live
-`BANK_REFUND` line on the booking has that amount.
+`BANK_REFUND` line on the booking has that amount. A line whose own task's live
+notes (create rows naming the task, or a hand-made link) still cover it is
+never matched: it was not this note's.
 
 **Report-only by default.** Until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`
 the job classifies and logs, and writes nothing; a person's pick or answer is
@@ -1524,7 +1529,7 @@ in the completion's transaction, keyed and sized on the follow-up (the
 today. "Already in Xero" reads the hand-made note by number before the
 transaction (`getCreditNotes`, and the payment's invoice for its contact,
 `bank-refund-void-answer.ts`; one retry, 5s wait, "Xero is busy" on a rate
-limit), checks it is an `ACCRECCREDIT` that is AUTHORISED or PAID, for the
+limit, "try again tomorrow" on the daily limit), checks it is an `ACCRECCREDIT` that is AUTHORISED or PAID, for the
 amount, for the invoice's contact (else the owner's), allocated to no other
 invoice and tracked by nothing else here (this payment's own inactive,
 non-voided link is reactivated), and the completion links it as a per-refund
@@ -1536,10 +1541,11 @@ nothing could be queued.
 **Count before switching on.** `pnpm run xero:bank-refund-void-count` (read-only:
 no transaction, no lock, no write, no provider call; `--list` adds ids,
 `--json` is machine-readable) sorts every voided note with the job's own
-classifier into: awaiting heal; handled (follow-up, spare, answered); deferred;
-spare; undo with the payment's total already below its detail or still equal to
-it; unmatched by reason (amount unknown, no line, ambiguous, detail short, paid
-another way, coverage unknown). It also counts bank-transfer payments whose
+classifier into: awaiting heal; handled (follow-up, spare, answered, picked);
+deferred; spare; undo with the payment's total already below its detail or
+still equal to it; unmatched by reason (amount unknown, no line, ambiguous,
+detail short, paid another way, coverage unknown, partly picked - counted at
+what is left to pick). It also counts bank-transfer payments whose
 total is below their detail with no void, which the job never touches, and
 says how many payments hold several voids (each note is counted against today's
 records, so those can overstate).
