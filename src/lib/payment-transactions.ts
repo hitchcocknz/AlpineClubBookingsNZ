@@ -239,7 +239,7 @@ export function legacyBackfillRows(
   return rows;
 }
 
-async function ensurePaymentTransactionsBackfilled(
+export async function ensurePaymentTransactionsBackfilled(
   store: PaymentStore,
   paymentId: string
 ) {
