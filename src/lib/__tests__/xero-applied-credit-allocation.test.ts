@@ -636,6 +636,30 @@ describe("allocateAppliedCreditForBooking (#1620 handler retry idempotency)", ()
     expect(h.state.joinRows.map((row) => [row.memberCreditId, row.amountCents])).toEqual([["c1", 2000], ["c2", 500]]);
   });
 
+  it("spills a write-down larger than the oldest lot's free amount onto the next lot stamped with the note (#4219)", async () => {
+    // c1 is nearly spent (500 free), c2 holds 3000; 1000 was written down, so c1 gives up 500 and c2 gives up the other 500.
+    h.state.lots = [
+      { id: "c1", memberId: "m1", amountCents: 500, xeroCreditNoteId: "cn1" },
+      { id: "c2", memberId: "m1", amountCents: 3000, xeroCreditNoteId: "cn1" },
+    ];
+    vi.mocked(allocateCreditNoteToInvoice).mockResolvedValue(undefined);
+    const realGroupBy = h.prismaStub.memberCredit.groupBy;
+    const groupBy = vi.spyOn(h.prismaStub.memberCredit, "groupBy").mockImplementation(((args: { where: { outsideSpendConvergedAt?: unknown } }) =>
+      args.where.outsideSpendConvergedAt ? [{ xeroCreditNoteId: "cn1", _sum: { amountCents: -1000 } }] : realGroupBy(args as never)) as never);
+    try {
+      // 3000 is applied but only 2500 of the note is left after the write-down: it cannot be covered.
+      h.state.appliedRows = [{ appliedToBookingId: "b1", type: "BOOKING_APPLIED", amountCents: -3000, xeroCreditNoteId: null }];
+      await expect(allocateAppliedCreditForBooking("b1", { syncOperationId: "op1" })).rejects.toThrow(/ledger inconsistency/);
+
+      // 2500 is exactly what is left, and all of it is on c2.
+      h.state.appliedRows = [{ appliedToBookingId: "b1", type: "BOOKING_APPLIED", amountCents: -2500, xeroCreditNoteId: null }];
+      await allocateAppliedCreditForBooking("b1", { syncOperationId: "op1" });
+      expect(h.state.joinRows.map((row) => [row.memberCreditId, row.amountCents])).toEqual([["c2", 2500]]);
+    } finally {
+      groupBy.mockRestore();
+    }
+  });
+
   it("does not plan credit that was written down: the lot's remaining balance falls by it (#4219)", async () => {
     const realGroupBy = h.prismaStub.memberCredit.groupBy;
     const groupBy = vi.spyOn(h.prismaStub.memberCredit, "groupBy").mockImplementation(((args: { where: { outsideSpendConvergedAt?: unknown } }) =>
