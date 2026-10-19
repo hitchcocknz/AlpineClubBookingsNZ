@@ -34,7 +34,7 @@ reason: one optional field on the request type, one prop pass-through and
   the #2263 controls already live in their own file beside it.
 
 file: src/lib/email/booking.ts
-lines: 1812
+lines: 1811
 reason: the pay-online shape is a type swap and a spread at the two places
   the sender composes the payment-due note; the composer itself lives in
   email-message-notes.ts, which is where the new wording went.
