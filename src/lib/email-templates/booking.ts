@@ -53,12 +53,11 @@ import {
 import { CLUB_LODGE_TRAVEL_NOTE } from "@/config/club-identity";
 import {
   bookingBumpedRebookAction,
-  bookingPaymentDueNote,
-  type BookingPaymentDueInstruction,
   creditRestoredSentenceTail,
   splitGuestPortionOwnBookingLine,
   type CreditRestoredBasis,
 } from "@/lib/email-message-notes";
+import { bookingPaymentDueNote, type BookingPaymentDueInstruction } from "@/lib/email-payment-due-note";
 import { emailCalendarDay, emailClubDateTime } from "@/lib/email-templates-club-time";
 import type { ClubFormat } from "@/lib/club-format";
 

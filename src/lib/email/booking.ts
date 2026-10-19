@@ -46,8 +46,6 @@ import {
 } from "@/lib/email-templates/booking-reminders";
 import {
   bookingBumpedRebookAction,
-  bookingPaymentDueNote,
-  type BookingPaymentDueInstruction,
   checkoutDayChoreNote,
   composeChoreLine,
   composeOptionalEmailLine,
@@ -56,6 +54,7 @@ import {
   splitGuestPortionOwnBookingLine,
   wholeLodgeGuestNamesUrgencyNote,
 } from "../email-message-notes";
+import { bookingPaymentDueNote, type BookingPaymentDueInstruction } from "../email-payment-due-note";
 import { CLUB_NAME } from "@/config/club-identity";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";

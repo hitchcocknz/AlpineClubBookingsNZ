@@ -73,7 +73,7 @@ import {
   OPTIONAL_TEMPLATE_TOKENS,
   findDanglingDefaultLines,
 } from "@/lib/email-message-token-contract";
-import { bookingPaymentDueNote } from "@/lib/email-message-notes";
+import { bookingPaymentDueNote } from "@/lib/email-payment-due-note";
 import { bookingConfirmedTemplate } from "@/lib/email-templates/booking";
 import {
   resolveUnpaidCreditNetting,
