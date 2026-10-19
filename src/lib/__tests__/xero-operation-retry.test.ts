@@ -3479,3 +3479,189 @@ describe("retryXeroSyncOperation", () => {
     } satisfies Partial<XeroOperationRetryError>);
   });
 });
+
+// #4256: the PARTIAL repairs claim their row first, PARTIAL -> RUNNING, like
+// every other retry that writes the original. A resolve, a mark or a second
+// retry landing after the read makes the claim lose: nothing written, no Xero.
+describe("PARTIAL repairs claim the original before they write or call Xero (#4256)", () => {
+  const partialInvoice = (totalDollars: number, extra: Record<string, unknown> = {}) =>
+    makeOperation({
+      status: "PARTIAL",
+      xeroObjectId: "inv_123",
+      xeroObjectNumber: "INV-0042",
+      responsePayload: {
+        invoice: { invoices: [{ total: totalDollars }] },
+        paymentError: { message: "Xero 503" },
+        ...extra,
+      },
+    });
+  const partialRefundNote = () =>
+    makeOperation({
+      status: "PARTIAL",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      xeroObjectId: "cn_123",
+      requestPayload: { allocation: { invoiceId: "inv_123", amount: 12.34 } },
+      responsePayload: {},
+    });
+  const branches = [
+    ["the invoice payment repair", () => partialInvoice(45.67)],
+    ["the zero-cash invoice repair", () => partialInvoice(0)],
+    ["the refund-note repair", partialRefundNote],
+  ] as const;
+  const noSideEffect = () => {
+    expect(mocks.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+    expect(mocks.finishRefundCreditNoteSettlement).not.toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+    expect(mocks.updatePayment).not.toHaveBeenCalled();
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.findFirstOperation.mockResolvedValue(null);
+    mocks.updateManyOperation.mockResolvedValue({ count: 1 });
+    mocks.findUniquePayment.mockResolvedValue({ id: "pay_123", source: "STRIPE" });
+    mocks.createXeroPaymentForInvoice.mockResolvedValue("xpay_1");
+    mocks.finishRefundCreditNoteSettlement.mockResolvedValue({ refundPaymentErr: null });
+  });
+
+  it.each(branches)("MUTATION: %s claims PARTIAL only, unresolved, before anything else", async (_label, row) => {
+    mocks.findUniqueOperation.mockResolvedValue(row());
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+    expect(mocks.updateManyOperation.mock.calls[0][0]).toEqual({
+      where: { id: "op_123", status: "PARTIAL", manuallyResolvedAt: null },
+      data: { status: "RUNNING", startedAt: expect.any(Date) },
+    });
+    const claimOrder = mocks.updateManyOperation.mock.invocationCallOrder[0];
+    for (const sideEffect of [
+      mocks.createXeroPaymentForInvoice,
+      mocks.finishRefundCreditNoteSettlement,
+      mocks.completeXeroSyncOperation,
+      mocks.updatePayment,
+    ]) {
+      for (const order of sideEffect.mock.invocationCallOrder) expect(claimOrder).toBeLessThan(order);
+    }
+  });
+
+  it.each(branches)("MUTATION: a resolve landing before %s claims makes it write nothing and call Xero for nothing", async (_label, row) => {
+    // The read saw the row unresolved; the re-read after the lost claim sees the mark.
+    mocks.findUniqueOperation
+      .mockResolvedValueOnce(row())
+      .mockResolvedValueOnce({ manuallyResolvedAt: RESOLVED_AT, requestPayload: null });
+    mocks.updateManyOperation.mockImplementation(async (args: { where: Record<string, unknown> }) => ({
+      count: args.where.manuallyResolvedAt === null ? 0 : 1,
+    }));
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toBeInstanceOf(
+      XeroOperationResolvedInXeroError,
+    );
+    noSideEffect();
+  });
+
+  it.each(branches)("MUTATION: %s loses to a mark that took the row out of PARTIAL (non-replayable, failed)", async (_label, row) => {
+    mocks.findUniqueOperation
+      .mockResolvedValueOnce(row())
+      .mockResolvedValueOnce({ manuallyResolvedAt: null, requestPayload: null });
+    // The row is no longer PARTIAL: only a PARTIAL-only claim misses it.
+    mocks.updateManyOperation.mockImplementation(async (args: { where: { status?: unknown } }) => ({
+      count: args.where.status === "PARTIAL" ? 0 : 1,
+    }));
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringContaining("already claimed"),
+    });
+    noSideEffect();
+  });
+
+  it.each(branches)("MUTATION: two retries racing on %s run its side effect once", async (_label, row) => {
+    mocks.findUniqueOperation.mockImplementation(async () => ({ ...row(), manuallyResolvedAt: null }));
+    let status = "PARTIAL";
+    mocks.updateManyOperation.mockImplementation(async (args: { where: { status?: unknown }; data: { status?: string } }) => {
+      const matches =
+        args.where.status === status ||
+        (typeof args.where.status === "object" &&
+          (args.where.status as { in?: string[] } | null)?.in?.includes(status));
+      if (!matches) return { count: 0 };
+      if (args.data.status) status = args.data.status;
+      return { count: 1 };
+    });
+
+    const results = await Promise.allSettled([
+      retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST),
+      retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST),
+    ]);
+    expect(results.map((r) => r.status).sort()).toEqual(["fulfilled", "rejected"]);
+    // One run's worth: at most one payment write, one settle, one completion.
+    for (const sideEffect of [
+      mocks.createXeroPaymentForInvoice,
+      mocks.finishRefundCreditNoteSettlement,
+      mocks.completeXeroSyncOperation,
+    ]) {
+      expect(sideEffect.mock.calls.length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("closes the repaired invoice row SUCCEEDED with the payment, keeping its invoice number", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67));
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_123", {
+      status: "SUCCEEDED",
+      responsePayload: expect.objectContaining({
+        invoice: { invoices: [{ total: 45.67 }] },
+        payment: { paymentID: "xpay_1", amount: 45.67 },
+        paymentError: null,
+      }),
+      xeroObjectType: "INVOICE",
+      xeroObjectId: "inv_123",
+      xeroObjectNumber: "INV-0042",
+    });
+  });
+
+  it("leaves it PARTIAL while its invoice email fault remains, which the repair does not send", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67, { invoiceEmailError: "SES refused" }));
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+      "op_123",
+      expect.objectContaining({
+        status: "PARTIAL",
+        responsePayload: expect.objectContaining({ paymentError: null, invoiceEmailError: "SES refused" }),
+      }),
+    );
+  });
+
+  it("MUTATION: a failed payment write gives the row back PARTIAL with its payload, guarded on this claim", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67));
+    const refusal = new Error("Xero 503 again");
+    mocks.createXeroPaymentForInvoice.mockRejectedValue(refusal);
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toBe(refusal);
+
+    const claim = mocks.updateManyOperation.mock.calls[0][0];
+    expect(mocks.updateManyOperation.mock.calls[1][0]).toEqual({
+      where: { id: "op_123", status: "RUNNING", startedAt: claim.data.startedAt },
+      data: {
+        status: "PARTIAL",
+        lastErrorCode: null,
+        lastErrorMessage: "Xero 503 again",
+        completedAt: expect.any(Date),
+      },
+    });
+    // Not FAILED, which would replace the payload the repair reads.
+    expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+    expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
+    expect(retryAbandonedItsClaim(refusal)).toBe(false);
+  });
+
+  it("a refund-note leg that completed the row itself before throwing is not overwritten", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialRefundNote());
+    mocks.finishRefundCreditNoteSettlement.mockResolvedValueOnce({ refundPaymentErr: new Error("Xero 503") });
+    // The shared leg already wrote PARTIAL, so the claim's give-back matches nothing.
+    mocks.updateManyOperation.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toThrow("Xero 503");
+    expect(mocks.updateManyOperation.mock.calls[1][0].where).toMatchObject({ status: "RUNNING" });
+    expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+  });
+});
