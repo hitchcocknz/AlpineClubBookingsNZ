@@ -367,7 +367,7 @@ export const ADDITIONAL_OWED_AMOUNT_CENTS = 21_000;
 // the nightly follow-up put back on Money to settle because Xero voided its
 // credit note (the follow-up task, as the follow-up writes it, and the voided
 // note's link). e2e/bank-refund-void-follow-up.spec.ts answers ONE per attempt
-// (`testInfo.retry` picks it): an answer is final and the suite seeds once per
+// (the first still open): an answer is final and the suite seeds once per
 // run, so a retry must never meet the row its earlier attempt answered
 // (docs/E2E_PLAYWRIGHT.md, flake invariant 1). The ids' first eight characters
 // differ, so each booking reference does. Every window is in
