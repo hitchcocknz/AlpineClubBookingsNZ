@@ -997,6 +997,55 @@ note.
    it gets "is FAILED; fix the cause, then requeue it". A REQUEUE row is never
    replayable itself, because replaying a replay compounds the state.
 
+   **A PARTIAL repair claims its row too (#4256).** The PARTIAL invoice
+   payment repair and the PARTIAL refund-note repair run through the same
+   helper in its PARTIAL-only mode. The claim needs the row PARTIAL,
+   unresolved and replayable, so an officer's resolve or mark non-replayable,
+   or a second retry, landing after the retry's read makes it lose: nothing is
+   written and Xero is not called. Before this, the zero-cash repair completed
+   the row SUCCEEDED over such a mark, and two retries both reached Xero,
+   stopped only by the payment's idempotency key. The invoice repair now closes
+   its row: SUCCEEDED, or PARTIAL while an invoice-email fault remains, which
+   the retry fence then refuses as a payment repair. A throw gives the row back
+   PARTIAL with its payload and the run's error, guarded on the claim, never
+   FAILED, whose error payload would replace what the repair reads.
+
+   The claim stamps `lastErrorCode = PARTIAL_REPAIR_RUNNING`
+   (`XERO_PARTIAL_REPAIR_RUNNING_CODE`). If the process dies mid-repair, the
+   row is stuck RUNNING with that code, and Mark failed or Reset stale running
+   (`writeStaleRunningXeroOperationReset`) returns it to PARTIAL, payload kept,
+   rather than FAILED. A FAILED Payment invoice row would go down the invoice
+   replay, which finds the invoice already linked, closes the row and records
+   no payment. Every completion a claimed repair writes, including the refund
+   settlement leg's, is guarded on the claim (`completeXeroSyncOperation`'s
+   `onlyIfRunningSince`), so a repair finishing after an operator's Mark failed
+   writes nothing over it; that completion also clears the marker code. An
+   invoice repair left PARTIAL by an email fault says so in `lastErrorMessage`
+   and raises no repeated-failure alert. The FAILED refund-note repair claims
+   its row too (FAILED mode). Mark non-replayable writes only onto a FAILED or
+   PARTIAL row, so a retry that claimed it after the officer's read gets the
+   409 "a retry is running"; a queued retry of a row marked not replayable is
+   closed as skipped. Rows repaired before this release stay partly
+   completed; retry them once and they close.
+
+   Before it pays, the invoice repair looks for the payment link an earlier run
+   recorded (`createXeroPaymentForInvoice` writes it, role `INVOICE_PAYMENT` or
+   `SUPPLEMENTARY_INVOICE_PAYMENT`, metadata `invoiceId`). The inbound sync
+   links every payment Xero reports on the invoice, a hand, part or DELETED one
+   included, so a link counts only when it is live money
+   (`isRecordedBookingInvoicePayment`) at exactly the repair's amount
+   (`recordedRepairPayment`); any other link leaves the repair to pay under its
+   idempotency key. A counted link closes the row on that payment, its own id
+   and amount, and calls Xero for nothing, so a run that
+   died after its payment never pays twice, whatever Xero still remembers of
+   the idempotency key. A repair whose completion lost its claim (an operator
+   reset the row while it ran) logs a warning and says "Retry it once to close
+   it", never "Repaired". If Xero refuses a repair's payment as an
+   overpayment, the money is already there: resolve the row in Xero. During a
+   blue/green deploy overlap, the old version's stale reset sends a stuck
+   repair to FAILED, and that row then needs Resolve in Xero or a by-hand
+   check of the payment.
+
    **Stuck RUNNING rows.** A row RUNNING longer than
    `STALE_RUNNING_XERO_OPERATION_MINUTES` (15) is stale (`xero-stale-operations.ts`).
    `isStaleRunningXeroOperation` takes the row and checks RUNNING itself,

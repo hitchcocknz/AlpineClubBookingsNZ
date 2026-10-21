@@ -1,4 +1,6 @@
 import { isCreditNoteSpentOutsideAppError } from "@/lib/xero-credit-note-spent-outside-app";
+import { getXeroErrorStatusCode } from "@/lib/xero-error-shape";
+import { redactSensitiveText } from "@/lib/redact-sensitive-json";
 
 /**
  * #3462: THE text of a Xero sync failure, read from whatever was thrown. One
@@ -19,4 +21,20 @@ export function xeroSyncErrorText(error: unknown): string {
  */
 export function namedXeroErrorCode(error: unknown): string | null {
   return isCreditNoteSpentOutsideAppError(error) ? error.code : null;
+}
+
+/**
+ * #4256: the `lastErrorCode` and redacted `lastErrorMessage` a failure records.
+ * One home for `failXeroSyncOperation` and the PARTIAL claim's give-back in
+ * `xero-operation-retry`, so the two never record the same throw differently.
+ */
+export function xeroSyncErrorFields(
+  error: unknown,
+  lastErrorMessage?: string,
+): { lastErrorCode: string | null; lastErrorMessage: string } {
+  const statusCode = getXeroErrorStatusCode(error);
+  return {
+    lastErrorCode: namedXeroErrorCode(error) ?? (statusCode ? String(statusCode) : null),
+    lastErrorMessage: redactSensitiveText(lastErrorMessage ?? xeroSyncErrorText(error)),
+  };
 }
