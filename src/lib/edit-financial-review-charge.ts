@@ -28,6 +28,7 @@ import logger from "@/lib/logger";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { enqueueEditFinancialReviewChargeRecovery } from "@/lib/payment-recovery";
 import { isCapturedTransactionStatus } from "@/lib/payment-transactions";
+import { restatableSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
 import type { ClubFormat } from "@/lib/club-format";
 
 // #3402: the sync moved to its own module with the raise claim around it;
@@ -278,7 +279,23 @@ export async function chooseEditReviewChargeRoute({
     );
   }
 
-  if (canChargeCard && bookingPayment && member) {
+  // #3947 review: ONE INSTRUMENT PER EDIT. A share of an edit whose earlier
+  // share took the `invoice` route - its supplementary invoice still queued,
+  // and no card request for this edit - stays on that route, so the Xero leg's
+  // restate bills both shares on the one invoice. Taking the card here would
+  // mint an ask for the edit's whole total while the restate raised the queued
+  // invoice to the same total: the member billed twice. Before #3947 a
+  // credit-paid booking's shares all took the invoice route; this is the
+  // transition #3947 opens. A card-route edit's own queued invoice always has
+  // a card request beside it (the leg defers it until one exists), so it never
+  // reaches this check.
+  const joinsQueuedInvoice =
+    canChargeCard &&
+    existing === null &&
+    hasIssuedXeroInvoice &&
+    (await hasRestatableReviewChargeInvoice({ bookingModificationId, store }));
+
+  if (canChargeCard && !joinsQueuedInvoice && bookingPayment && member) {
     return {
       kind: "additional-charge",
       collectVia: "stripe",
@@ -312,6 +329,29 @@ export async function chooseEditReviewChargeRoute({
   };
 }
 
+
+/**
+ * #3947 review: whether this edit has a supplementary invoice a restate can
+ * still raise - `restatePendingSupplementaryInvoiceAmount`'s own read
+ * (`restatableSupplementaryInvoiceOperationsWhere`), asked on the chooser's
+ * transaction, so the route and the restate cannot disagree about it.
+ */
+async function hasRestatableReviewChargeInvoice({
+  bookingModificationId,
+  store,
+}: {
+  bookingModificationId: string;
+  store: EditReviewChargeStore;
+}): Promise<boolean> {
+  const queued = await store.xeroSyncOperation.findFirst({
+    where: restatableSupplementaryInvoiceOperationsWhere({
+      localModel: "BookingModification",
+      localId: bookingModificationId,
+    }),
+    select: { id: true },
+  });
+  return queued !== null;
+}
 
 /**
  * Raise the request, AFTER the caller's transaction has committed - the same

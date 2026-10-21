@@ -112,6 +112,8 @@ import {
 import { linkReviewTaskId, queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import {
   OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES,
+  RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES,
+  restatableSupplementaryInvoiceOperationsWhere,
   waitingSupplementaryInvoiceOperationsWhere,
 } from "@/lib/xero-supplementary-invoice-statuses";
 import { formatDateOnly } from "@/lib/date-only";
@@ -1203,17 +1205,7 @@ export async function enqueueXeroAccountCreditNoteOperation(
   };
 }
 
-/**
- * The two states in which a queued supplementary invoice has not yet reached
- * Xero, so its amount may still be restated. Named once because the read and the
- * write must use the SAME set - a filter on one and not the other is a
- * check-then-act, which is how a restate came to rewrite an operation the outbox
- * had already moved on (#3170 fix round, F3).
- */
-const RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES = [
-  "PENDING",
-  "WAITING_PAYMENT",
-] as const;
+// `RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES` moved to its leaf with its read (#3947).
 
 // #3502: moved to its own leaf; re-exported so no importer moved.
 export { OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES };
@@ -1937,19 +1929,12 @@ export async function restatePendingSupplementaryInvoiceAmount({
    */
   store?: Prisma.TransactionClient | typeof prisma;
 }): Promise<{ restated: number; alreadyCovering: number }> {
+  // #3947: the one read, shared with the review charge's route chooser.
   const operations = await store.xeroSyncOperation.findMany({
-    where: {
-      status: { in: [...RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES] },
-      direction: "OUTBOUND",
-      entityType: "INVOICE",
-      operationType: "CREATE",
+    where: restatableSupplementaryInvoiceOperationsWhere({
       localModel,
       localId: bookingModificationId,
-      requestPayload: {
-        path: ["queueType"],
-        equals: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-      },
-    },
+    }),
     select: { id: true, requestPayload: true },
   });
 
