@@ -211,7 +211,22 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
       fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
       const dialog = await screen.findByRole("dialog");
       expect(dialog.textContent).toMatch(/once the money has actually gone back to the group organiser, who paid for this booking/);
+      expect(dialog.textContent).toMatch(/emailed to raise its Xero credit note by hand/);
       expect(dialog.textContent).not.toMatch(/gone back to the member/);
+      // Review: the title names the organiser too.
+      expect(screen.getByRole("heading", { name: /as paid back to the group organiser for /i })).toBeInTheDocument();
+    }
+  });
+
+  it("#3949 review: such rows get the organiser intro, never the member's edit or appeal sentence, and their dismissal names the organiser", async () => {
+    for (const marker of [{ editRefundHandBack: true }, { refundRequestHandBack: true }]) {
+      cleanup();
+      await renderQueue({ tasks: [{ ...HAND_BACK_TASK, ...marker, paidToGroupOrganiser: true }], viewerCanViewBookings: true });
+      expect(screen.getByTestId("manual-refund-task-organiser-payee-intro").textContent).toMatch(/goes back to the organiser by bank transfer/);
+      expect(screen.queryByTestId("manual-refund-task-edit-refund-intro")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("manual-refund-task-refund-request-intro")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+      expect((await screen.findByRole("dialog")).textContent).toMatch(/for a group organiser who declined the refund/);
     }
   });
 

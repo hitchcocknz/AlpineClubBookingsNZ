@@ -204,6 +204,8 @@ describe("the queue payload marks an appeal's hand-back for the card", () => {
         organisation: null,
         memberId: "ann",
         deletedAt: null,
+        organiserSettled: false,
+        parentBookingId: null,
         status: "CANCELLED",
         payment: null,
       },

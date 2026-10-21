@@ -2298,32 +2298,32 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 **Related: `INV-PAY-117`, `INV-PAY-118`** (the tasks it completes) and
 **`INV-PAY-124`** (the organiser's own Internet Banking hand-back).
 
-- **An edit's or an approved appeal's hand-back on a joiner the organiser paid
-  for by Internet Banking goes back to the organiser, onto the child's mirror**
-  (#3949; owner decisions, 15 and 21 Oct 2026). `paidByOrganiserInternetBanking`
-  (`group-organiser-paid.ts`) is the one test. The child's payment is the
-  settle's mirror, with no `PaymentTransaction`, so `applyLocalRefundAllocation`
-  cannot carry it.
-  - **Completing it** (the `group-settlement-mirror` route,
-    `group-settlement-mirror-hand-back.ts`) takes `lock(1)`, then the `Payment`
-    row; caps, before the claim, at the payment less every OTHER open edit or
-    appeal hand-back; then raises `refundedAmountCents`
-    (`mirrorPlanRefundedCents`, REFUNDED or PARTIALLY_REFUNDED) and posts the
-    `BANK_REFUND` line and the marked `REFUNDED` event. An edit queues no Xero
-    note; an appeal keeps its own. The `GroupBookingSettlement` is untouched.
-    A live or a cancelled child alike; a payment a transaction backs keeps the
-    ledger route.
-  - **Dismissal and reopening are unchanged**: once the group is cancelled an
-    edit's is refused both (the cancel netted it); an appeal's may still be
-    dismissed, and reopened under its ceiling. The refusals name the organiser.
-  - **The group cancel's replay and the ledger planner** read the plan's share
-    as written only above what paid-back edit and appeal hand-backs moved
-    (`mirrorPlanShareWritten`), the replay under the `Payment` row, so a cancel
-    after one neither skips nor double-counts it.
-  - **The task's reason and the member's emails name the organiser**
-    (`bankTransferRefundPayee`).
+- **A refund on a joiner the organiser paid for by Internet Banking goes back
+  to the organiser, onto the child's mirror** (#3949; owner decisions, 15 and
+  21 Oct 2026): an edit's or approved appeal's hand-back, and a refund-direction
+  edit review. `paidByOrganiserInternetBanking` (`group-organiser-paid.ts`) is
+  the one test. The child's payment is the settle's mirror, with no
+  `PaymentTransaction`, so `applyLocalRefundAllocation` cannot carry it.
+  - **Completing it** (`group-settlement-mirror-hand-back.ts`) takes `lock(1)`,
+    then the `Payment` row; before the claim, caps at what the payment still
+    holds (less what it has refunded) less every OTHER open edit or appeal
+    hand-back; then raises `refundedAmountCents` (REFUNDED or
+    PARTIALLY_REFUNDED) and posts the `BANK_REFUND` line and `REFUNDED` event.
+    The `GroupBookingSettlement` is untouched. A payment a transaction backs
+    keeps the ledger route. A review on a cancelled child is refused, as the
+    card twin's is.
+  - **No Xero note**: the child has no invoice; admins are alerted to credit the
+    group's combined invoice by hand.
+  - **The mirror is capture evidence** (`organiserInternetBankingMirrorCaptured`):
+    a joiner's cancel never reads it as unpaid or flips it FAILED.
+  - **Dismissal and reopening are unchanged**; the refusals name the organiser.
+  - **The cancel's replay and the ledger planner** read the plan's share as
+    written only above what paid-back edit and appeal hand-backs moved
+    (`mirrorPlanShareWritten`), not by the plan's ledger line, which a child
+    settled before #3854 never holds.
+  - **The task's reason, dialog and the member's emails name the organiser.**
 - Proven by `group-settlement-mirror-hand-back.test.ts`,
-  `manual-refund-task.test.ts`, `manual-refund-task-reopen.test.ts`,
+  `manual-refund-task.test.ts`, `organiser-child-refund-edit.test.ts`,
   `group-cancel.test.ts`, `booking-ledger-projection-census-group.test.ts` and
   `ib-group-child-hand-back.realdb.test.ts`.
 

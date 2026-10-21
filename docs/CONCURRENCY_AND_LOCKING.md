@@ -3574,7 +3574,9 @@ does too, and both would post. So `resolveManualRefundTask` takes
 **#3949 adds no key.** An edit's or an appeal's hand-back on a joiner the
 organiser paid for by Internet Banking (`INV-PAY-136`) completes under the
 `lock(1)` above and then the child's `Payment` row (`lockPaymentForRefundedTotal`),
-taken in the route choice before the cap read and held to the mirror write:
+taken in the route choice before it counts the payment's transactions and reads
+the cap, and held to the mirror write (a refund-direction edit review takes the
+same order):
 global, then the row (`INV-LOCK-002`), the order every refunded-total writer
 takes it in. The organiser cancel's per-child claim holds `lock(1)` and writes
 the same row, so the two serialise on the global key. Its recovery replay

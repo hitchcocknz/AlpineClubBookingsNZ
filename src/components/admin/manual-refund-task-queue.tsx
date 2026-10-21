@@ -650,6 +650,10 @@ function completionTitle({ task, resolution }: ResolutionTarget, format: ClubFor
   if (task.groupOrganiserHandBack === true && task.amountCents !== null) {
     return `Record ${formatCents(task.amountCents, format)} as repaid to the group organiser, ${task.memberName}?`;
   }
+  // #3949 review: a joiner's refund that goes to the group organiser who paid for their place.
+  if (task.paidToGroupOrganiser === true && task.amountCents !== null) {
+    return `Record ${formatCents(task.amountCents, format)} as paid back to the group organiser for ${task.memberName}?`;
+  }
   return task.amountCents === null
     ? `Record this refund as paid back to ${task.memberName}?`
     : `Record ${formatCents(task.amountCents, format)} as paid back to ${task.memberName}?`;
@@ -672,6 +676,9 @@ function resolutionDescription({
     if (task.bankRefundVoidFollowUp) {
       return "The refund stays out of the payment's records and no credit note is raised. Give the reason the club is keeping it, so the record makes sense later.";
     }
+    if (task.paidToGroupOrganiser === true) { // #3949 review
+      return "Dismissing closes the task without refunding anything — for a group organiser who declined the refund, or money settled another way. Say which, so the record makes sense later.";
+    }
     return isFinancialReview(task)
       ? "This closes the review as looked at, with nothing to pay back or credit. It moves no money and records none as having moved. Say what the evidence showed, so the finding makes sense to whoever reads it next."
       : "Dismissing closes the task without refunding anything — for a member who declined the refund, or money settled another way. Say which, so the record makes sense later.";
@@ -691,7 +698,7 @@ function resolutionDescription({
   if (task.groupOrganiserHandBack === true) {
     return "Only do this once the money has actually gone back to the organiser. It records that the club repaid them and who did it; the joiners' refunds are already in the ledger, so nothing more is written there or on the bookings' history.";
   }
-  if (task.paidToGroupOrganiser === true) return "Only do this once the money has actually gone back to the group organiser, who paid for this booking. It writes the refund into the payment ledger and records a refund on the booking's history."; // #3949
+  if (task.paidToGroupOrganiser === true) return "Only do this once the money has actually gone back to the group organiser, who paid for this booking. It writes the refund into the payment ledger and records a refund on the booking's history; admins are then emailed to raise its Xero credit note by hand."; // #3949
   if (task.cardShortfallCheck === true) return "Only do this once you have checked the member really is owed it. The app first checks it can record this; pay straight after it accepts. It writes the refund into the payment ledger and records a refund on the booking's history. If it refuses, follow what it says."; // #4154 review (M3): mark first, then pay
   return "Only do this once the money has actually gone back to the member. It writes the refund into the payment ledger and records a refund on the booking's history.";
 }
@@ -1536,8 +1543,11 @@ export function ManualRefundTaskQueue() {
   */
   const hasLateCaptureRows = openTasks.some(isLateCaptureApproval);
   const hasPartPaymentReviewRows = openTasks.some(isPartPaymentReview);
-  const hasEditRefundRows = openTasks.some(isEditRefundHandBack);
-  const hasRefundRequestRows = openTasks.some(isRefundRequestHandBack);
+  // #3949 review: a row paid back to a group organiser has its own sentence, not the member's.
+  const toMember = (task: ManualRefundTask) => task.paidToGroupOrganiser !== true;
+  const hasEditRefundRows = openTasks.some((task) => isEditRefundHandBack(task) && toMember(task));
+  const hasRefundRequestRows = openTasks.some((task) => isRefundRequestHandBack(task) && toMember(task));
+  const hasOrganiserPayeeRows = openTasks.some((task) => !toMember(task));
   const hasGroupOrganiserRows = openTasks.some((task) => task.groupOrganiserHandBack === true);
   const hasCardShortfallRows = openTasks.some((task) => task.cardShortfallHandBack === true);
   const hasCardShortfallCheckRows = openTasks.some((task) => task.cardShortfallCheck === true);
@@ -1645,6 +1655,22 @@ export function ManualRefundTaskQueue() {
                 club sends the approved amount by bank transfer; the member has
                 been told it is coming. Mark a refund as paid back once the
                 money has actually gone.
+              </p>
+            ) : null}
+            {hasOrganiserPayeeRows ? (
+              <p
+                className="text-sm text-muted-foreground"
+                data-testid="manual-refund-task-organiser-payee-intro"
+              >
+                Some of these are refunds on joiners&apos; bookings that a group
+                organiser paid for by internet banking, after a change lowered
+                the price or an appeal was approved. That money came from the
+                organiser, so it goes back to the organiser by bank transfer,
+                not to the joiner; the joiner has been told so. The app raises
+                no Xero credit note for these: once you mark one paid back,
+                admins are emailed to credit the group&apos;s Xero invoice by
+                hand. Mark a refund as paid back once the money has actually
+                gone.
               </p>
             ) : null}
             {hasCardShortfallRows ? (

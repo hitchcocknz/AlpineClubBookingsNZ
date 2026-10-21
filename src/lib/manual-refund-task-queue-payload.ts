@@ -91,9 +91,9 @@ export type OpenManualRefundTaskRow = {
   booking: QueueBookingSummary & {
     /** #3536: `OPEN_TASK_BOOKING_PAYMENT_SELECT`. */
     status: string;
-    /** #3949: the same select; absent on a row read without it, which reads as not organiser-paid. */
-    organiserSettled?: boolean;
-    parentBookingId?: string | null;
+    /** #3949: the same select - whether the group organiser paid for it (`paidByOrganiserInternetBanking`). */
+    organiserSettled: boolean;
+    parentBookingId: string | null;
     payment: {
       id: string;
       status: string;
@@ -295,7 +295,7 @@ export function toOpenManualRefundTaskPayload(
     refundRequestHandBack: isRefundRequestHandBackTask(task),
     paidToGroupOrganiser:
       (isEditRefundHandBackTask(task) || isRefundRequestHandBackTask(task)) &&
-      paidByOrganiserInternetBanking({ organiserSettled: task.booking.organiserSettled ?? false, parentBookingId: task.booking.parentBookingId ?? null, payment: task.booking.payment }),
+      paidByOrganiserInternetBanking(task.booking),
     groupOrganiserHandBack: groupHandBack,
     cardShortfallHandBack: cancelCardShortfallPart(task) === "bank",
     cardShortfallCheck: cancelCardShortfallPart(task) === "check",

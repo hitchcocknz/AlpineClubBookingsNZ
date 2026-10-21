@@ -17,9 +17,18 @@ reason: the "Booking Modified" sender's `refundByBankTransfer` parameter now
   beside the parameter it types, which every edit door's call is checked against.
 
 file: src/components/admin/manual-refund-task-queue.tsx
-lines: 2341
-reason: the finance queue's paid-back dialog tells the officer the money goes
-  to the group organiser on a joiner the organiser paid for by internet
-  banking; the payload flag and its one sentence sit beside every other
-  kind's flag and confirmation sentence in this same render, so the new one
-  has to sit with them.
+lines: 2367
+reason: the finance queue tells the officer the money goes to the group
+  organiser on a joiner the organiser paid for by internet banking - the
+  paid-back dialog's title and sentence, the dismissal's sentence and the
+  queue's intro paragraph for those rows; each sits beside every other kind's
+  title, sentence and intro in this same render, so the new ones have to sit
+  with them.
+
+file: src/lib/booking-cancel.ts
+lines: 2843
+reason: the paid-cancel gate and the cancel's capture evidence each learn that
+  an Internet Banking organiser child's settle mirror is the capture (the one
+  predicate lives in `group-organiser-paid.ts`), beside the card twin's line
+  in the same gate; without it a joiner's cancel flipped the organiser's share
+  FAILED. Two call sites pass the booking the evidence now reads.

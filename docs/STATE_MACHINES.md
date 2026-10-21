@@ -2204,7 +2204,10 @@ the refund on the child's payment mirror (REFUNDED or PARTIALLY_REFUNDED) under
 `lock(1)` and then the `Payment` row, because that payment holds no captured
 transaction to allocate against; the group's settlement row does not move. It
 completes on a live child and after the organiser's group cancel alike, so the
-edit's task that the cancel netted is paid rather than stranded. See
+edit's task that the cancel netted is paid rather than stranded. A
+refund-direction edit financial review on a live child completes the same way;
+on a cancelled one it is refused, task OPEN. No Xero note is queued: after the
+commit admins are alerted to credit the group's invoice by hand. See
 [`INV-PAY-136`](invariants/payment-and-settlement.md#inv-pay-136).
 
 **#4162 (owner decision 17 Oct 2026): a bank refund to re-confirm follows it

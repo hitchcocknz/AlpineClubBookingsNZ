@@ -148,6 +148,8 @@ describe("the queue payload marks an edit refund hand-back for the card", () => 
         organisation: null,
         memberId: "ann",
         deletedAt: null,
+        organiserSettled: false,
+        parentBookingId: null,
         status: "CONFIRMED",
         payment: null,
       },
