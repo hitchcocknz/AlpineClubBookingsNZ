@@ -2095,16 +2095,17 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   NOTHING IS TAKEN FROM THE CARD BY THE COMPLETION: it raises the request and the
   member pays it. A booking with neither a card to ask
   (`canAskCardForReviewCharge`) nor an issued Xero invoice is REFUSED before the
-  claim, with the task left OPEN. The Xero leg is the same choke point with a
-  POSITIVE `priceDiffCents`, the only place the direction becomes a sign.
+  claim, with the task left OPEN. The Xero leg is the same supplementary-invoice
+  enqueue, billed a POSITIVE amount: the only place direction becomes a sign.
 - **Which instrument a charge uses** (#3947; owner decisions 15 and 22 Oct
   2026). The card when `canAskCardForReviewCharge` says so: the edit doors'
   `canAskCardForIncrease`, so a settled credit-paid booking too, Xero or not,
   plus captured card money on an unsettled booking (pending #4272). Otherwise
   the issued invoice. ONE INSTRUMENT PER EDIT: a share whose edit has no card
-  request but an invoice queued, sending, or failed and unresolved joins it,
-  never the card. The invoice route queues its invoice inside the completion's
-  transaction, so the next share always sees it.
+  request but an invoice queued, sending, or failed and unresolved joins it;
+  one issued, or resolved by hand in Xero, refuses it. The invoice route queues
+  its invoice inside the completion's transaction, and "coming" is read before
+  "issued", so no later share misses it.
 
 ## INV-PAY-062
 
@@ -2394,13 +2395,13 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 - **The Xero leg bills the TOTAL, on ONE invoice per edit, enforced rather than
   assumed** (#3170). A share arriving while this edit's supplementary invoice
   operation is still PENDING or WAITING_PAYMENT RAISES that operation's amount
-  rather than queueing a second invoice. `enqueueXeroSupplementaryInvoiceOperation`
-  decides link-check → queued-check → write inside ONE transaction holding
+  rather than queueing a second invoice. The enqueue decides link-check →
+  queued-check → write inside ONE transaction (its own, or an invoice-route
+  review charge's completion, #3947) holding
   `pg_advisory_xact_lock(hashtext("xero-supplementary-invoice"),
-  hashtext(<anchor>))`, and looks for an outstanding invoice by ANCHOR rather
-  than by the amount-derived correlation key — the active `SUPPLEMENTARY_INVOICE`
-  link exists only once the FIRST invoice exists, so before that it fences
-  nothing.
+  hashtext(<anchor>))`, and finds an outstanding invoice by ANCHOR, not the
+  amount-derived correlation key: the link exists only once the FIRST invoice
+  does.
 - **A restate that WRITES is a restate that goes out.**
   `processQueuedXeroOutboxOperations` re-reads `requestPayload` after its claim
   commits; RUNNING is outside the restatable set, so a restate either lands and

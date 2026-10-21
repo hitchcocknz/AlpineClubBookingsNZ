@@ -2692,11 +2692,11 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
       ).toBe(true);
     });
 
-    it("a RUNNING invoice the cooldown hands back to PENDING (round 2, F1): B's leg raises THAT invoice, beside no card ask", async () => {
-      // Chosen while RUNNING; by B's post-commit leg a Xero cooldown has
-      // returned A's un-attempted row to PENDING, so the restate raises it to
-      // $100. Had B taken the card, that would be a $100 invoice beside a $100
-      // card ask.
+    it("a RUNNING invoice the cooldown hands back to PENDING (round 2, F1): B's in-transaction enqueue raises THAT invoice, beside no card ask", async () => {
+      // Chosen while RUNNING; by the time B's enqueue decides - inside B's own
+      // completion transaction since option 2 - a Xero cooldown has returned
+      // A's un-attempted row to PENDING, so the enqueue raises it to $100. Had B
+      // taken the card, that would be a $100 invoice beside a $100 card ask.
       outboxRows = [shareAInvoice({ status: "RUNNING" })];
       // By the time B's enqueue decides, the cooldown has handed A's row back,
       // so the enqueue raises it to the edit's total.
