@@ -56,13 +56,67 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     for (const file of [CLAIM, SETTLEMENT, GUESTS_ROUTE, ...SETTLEMENT_DOORS]) expect(files).toContain(file);
   });
 
-  it("the claim guards on the link still being unset; the only other such payment write sets the link", () => {
+  it("the claim guards on the link still being unset", () => {
     expect(read(CLAIM)).toMatch(/payment\.updateMany\(\{\s*where: \{ id: input\.paymentId, xeroInvoiceId: null \}/);
-    const guarding = sourceFiles().filter((file) => /xeroInvoiceId: null \}/.test(read(file)) && /payment\.updateMany/.test(read(file)));
-    // The inbound "invoice paid" match links a payment that has none: a link
-    // writer on the same row, so it orders against the claim like the create's
-    // save. A new entry here is a writer to read against the protocol.
-    expect(guarding).toEqual([CLAIM, "src/lib/xero-inbound/invoice-paid-effects.ts"]);
+  });
+
+  /**
+   * Review C4: EVERY write that sets `Payment.xeroInvoiceId`. Each takes the
+   * Payment row, so a claim that queues behind it sees the link and is refused;
+   * only the create's save (`persistPrimaryInvoiceLink`) stores the figures the
+   * gap check reads, so an edit that claimed just before one of the others is
+   * not measured (`INV-PAY-119`'s limits). A new entry here is a link writer to
+   * read against that protocol. Found by reading each payment write's call,
+   * including a `data` held in a variable the same file fills with the link.
+   */
+  it("lists every write that sets Payment.xeroInvoiceId", () => {
+    const writers: string[] = [];
+    for (const file of sourceFiles()) {
+      const source = read(file);
+      for (const match of source.matchAll(/\b\w+\.payment\.(update|updateMany|upsert|create|createMany)\(/g)) {
+        let depth = 1;
+        let index = match.index! + match[0].length;
+        while (depth > 0 && index < source.length) {
+          if (source[index] === "(") depth += 1;
+          else if (source[index] === ")") depth -= 1;
+          index += 1;
+        }
+        const call = source.slice(match.index!, index);
+        const data = call.slice(Math.max(0, call.indexOf("data")));
+        const variable = /data: (\w+)\b/.exec(data)?.[1];
+        const setsLink =
+          /xeroInvoiceId/.test(data) ||
+          (variable !== undefined &&
+            new RegExp(`(const|let) ${variable}\\b[^;]*xeroInvoiceId|${variable}\\.xeroInvoiceId\\s*=`).test(source));
+        if (setsLink) writers.push(`${file} ${match[1]}`);
+      }
+    }
+    expect(writers.sort()).toEqual([
+      // The mirror of the newest primary transaction's invoice (`reconcilePaymentAggregates`).
+      "src/lib/payment-transactions.ts update",
+      // An operator's local primary-invoice field repair.
+      "src/lib/xero-booking-repair-passes.ts update",
+      // The inbound "invoice paid" match (guarded on an unset link) and its settle under lock(1).
+      "src/lib/xero-inbound/invoice-paid-effects.ts update",
+      "src/lib/xero-inbound/invoice-paid-effects.ts updateMany",
+      // The inbound payment's canonical link, where none is set.
+      "src/lib/xero-inbound/payment.ts update",
+      // The create's save: guarded on an unset link, then a different invoice's overwrite.
+      "src/lib/xero-primary-invoice-fee-gap.ts update",
+      "src/lib/xero-primary-invoice-fee-gap.ts updateMany",
+    ]);
+  });
+
+  it("every price writer outside the edit doors that claims does so through the one write", () => {
+    const callers = sourceFiles().filter(
+      (file) => file !== CLAIM && /\bwriteEditOnPayment\(/.test(read(file)),
+    );
+    expect(callers).toEqual([
+      GUESTS_ROUTE,
+      "src/lib/booking-modify-settlement.ts",
+      "src/lib/booking-review-price-rebase.ts",
+      "src/lib/school-pending-adult-resolution.ts",
+    ]);
   });
 
   it("applyPaymentAdjustments makes it for its doors, and each door marks its history row", () => {

@@ -16,6 +16,7 @@ import {
   type BookingMoneyBuildUpSelection,
 } from "@/lib/booking-money-build-up";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
+import { PrimaryInvoiceRaisedDuringEditError, writeEditOnPayment } from "@/lib/booking-primary-invoice-claim";
 import type { ClubFormat } from "@/lib/club-format";
 
 /**
@@ -178,6 +179,10 @@ export const REBASE_STRAND_NOT_ON_BOOKING_MESSAGE =
 export const REBASE_RACED_MESSAGE =
   "This booking's price changed while you were closing the review, so nothing was saved. Reload the page and check the booking before trying again.";
 
+/** #3980 review C4: the primary invoice was linked while the review re-priced the booking. */
+export const REBASE_INVOICE_RAISED_MESSAGE =
+  "This booking's invoice was being raised while you were closing the review, so nothing was saved. Please try again in a moment.";
+
 /**
  * The assertion that must never fire. It is not a refusal an operator can act
  * on, so it is deliberately not a `ManualBookingPaymentError`: reaching it means
@@ -272,6 +277,8 @@ export function rebaseChangedTheBooking(rebase: BookingPriceRebase): boolean {
 }
 
 const REBASE_BOOKING_INCLUDE = {
+  // #3980 review C4: the invoice link the re-price claims (`writeEditOnPayment`).
+  payment: { select: { id: true, xeroInvoiceId: true } },
   promoRedemptions: {
     include: {
       guestTargets: { select: { bookingGuestId: true } },
@@ -487,6 +494,20 @@ export async function rebaseBookingPriceFromStrands({
   });
   if (rebased.count !== 1) {
     throw new ManualBookingPaymentError(REBASE_RACED_MESSAGE, 409);
+  }
+  // #3980 review C4 (`INV-PAY-119`): a re-price that read no primary invoice
+  // link claims it on the payment row, as an edit does, so it never lands
+  // between the invoice create's read and its link save unseen. It writes no
+  // history row, so a gap it leaves is the treasurer's task, not billed.
+  if (verifiedNewFinalPriceCents !== booking.finalPriceCents) {
+    try {
+      await writeEditOnPayment(store, { payment: booking.payment, changeFeeCents: 0 });
+    } catch (err) {
+      if (err instanceof PrimaryInvoiceRaisedDuringEditError) {
+        throw new ManualBookingPaymentError(REBASE_INVOICE_RAISED_MESSAGE, 409);
+      }
+      throw err;
+    }
   }
 
   return {

@@ -28,12 +28,14 @@ import {
   rebaseDivergesFromIssuedInvoice,
   rebaseMovedStoredMoney,
   recordBookingPriceRebaseHistory,
+  REBASE_INVOICE_RAISED_MESSAGE,
   type BookingPriceRebase,
 } from "@/lib/booking-review-price-rebase";
 import { requireCalendarDate } from "@/lib/club-time";
 import { selectBookingMoneyBuildUp } from "@/lib/booking-money-build-up";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
+const paymentClaim = vi.fn();
 const store = {
   booking: {
     findUnique: (...a: unknown[]) => mocks.bookingFindUnique(...a),
@@ -42,6 +44,8 @@ const store = {
   bookingModification: {
     create: (...a: unknown[]) => mocks.bookingModificationCreate(...a),
   },
+  // #3980 review C4: the re-price's claim on an unlinked primary invoice.
+  payment: { updateMany: (...a: unknown[]) => paymentClaim(...a), update: vi.fn() },
   // #3276: the re-base records the promotion build-up over the strands' nights.
   bookingGuestNightAdjustment: {
     deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
@@ -739,4 +743,42 @@ describe("D1's two consequences, surfaced rather than shipped blind (#3219)", ()
       ).toBe(expectedMovementCents);
     },
   );
+});
+
+describe("#3980 review C4: a re-price claims an unlinked primary invoice, as an edit does", () => {
+  const rebase = () =>
+    rebaseBookingPriceFromStrands({
+      format: CLUB_FORMAT_TEST,
+      bookingId: "booking-1",
+      repairedStrands: [{ bookingGuestId: "guest-1", totalCents: 10_000 }],
+      todayAtClub: TODAY,
+      store,
+    });
+
+  it("MUTATION: claims the payment row when it changes the price and read no link", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(
+      bookingWithStrands([SURVIVING_STRAND], { payment: { id: "payment-1", xeroInvoiceId: null } }),
+    );
+    paymentClaim.mockResolvedValue({ count: 1 });
+    await rebase();
+    expect(paymentClaim).toHaveBeenCalledWith({
+      where: { id: "payment-1", xeroInvoiceId: null },
+      data: { changeFeeCents: { increment: 0 } },
+    });
+  });
+
+  it("is refused, nothing saved, when the link was saved under it - and claims nothing once linked", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(
+      bookingWithStrands([SURVIVING_STRAND], { payment: { id: "payment-1", xeroInvoiceId: null } }),
+    );
+    paymentClaim.mockResolvedValue({ count: 0 });
+    await expect(rebase()).rejects.toMatchObject({ status: 409, message: REBASE_INVOICE_RAISED_MESSAGE });
+
+    paymentClaim.mockClear();
+    mocks.bookingFindUnique.mockResolvedValue(
+      bookingWithStrands([SURVIVING_STRAND], { payment: { id: "payment-1", xeroInvoiceId: "inv-1" } }),
+    );
+    await rebase();
+    expect(paymentClaim).not.toHaveBeenCalled();
+  });
 });
