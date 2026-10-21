@@ -1575,7 +1575,7 @@ decision and would need its own owner decision.
   refund note; a reissue's key names every note whose key it could collide
   with; and on a bank transfer a void undoes the refund** (#4091, owner
   decisions). Its mirror goes inactive on any payment (`INV-ADDPAY-020`),
-  status-less racing writes too (#4223);
+  status-less racing writes too, even on a missing mirror (#4223);
   `findCanonicalPaymentRefundCreditNote`, `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill
   and conflict check leave out a note a link records VOIDED or DELETED
   (`refundNoteIdSets`), so nothing writes one back into

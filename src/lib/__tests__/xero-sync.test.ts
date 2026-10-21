@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   txPaymentFindUnique: vi.fn(),
   txPaymentUpdateMany: vi.fn(),
+  txLinkCreateMany: vi.fn(),
   txLinkUpdateMany: vi.fn(),
   txLinkUpsert: vi.fn(),
   txLinkFindUnique: vi.fn(),
@@ -383,6 +384,7 @@ describe("findCanonicalPaymentRefundCreditNote", () => {
 describe("upsertXeroObjectLink", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.txLinkCreateMany.mockResolvedValue({ count: 0 });
     mocks.txLinkUpdateMany.mockResolvedValue({ count: 1 });
     mocks.txPaymentUpdateMany.mockResolvedValue({ count: 1 });
     mocks.txLinkUpsert.mockResolvedValue({ id: "link_1" });
@@ -397,6 +399,7 @@ describe("upsertXeroObjectLink", () => {
           updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
+          createMany: mocks.txLinkCreateMany,
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: mocks.txLinkFindUnique,
@@ -674,7 +677,12 @@ describe("upsertXeroObjectLink", () => {
       // One order for every writer of the row: a mixed order (a retry's own row
       // first, an inbound live write's siblings first) could deadlock two
       // writers of one note that both retire an active sibling.
+      expect(mocks.txLinkCreateMany).toHaveBeenCalledWith({
+        data: [{ localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE", active: false }],
+        skipDuplicates: true,
+      });
       const lockAt = mocks.txExecuteRaw.mock.invocationCallOrder[0]!;
+      expect(mocks.txLinkCreateMany.mock.invocationCallOrder[0]!).toBeLessThan(lockAt);
       expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(1);
       expect(lockAt).toBeLessThan(mocks.txPaymentFindUnique.mock.invocationCallOrder[0]!);
       expect(lockAt).toBeLessThan(mocks.txLinkUpdateMany.mock.invocationCallOrder[0]!);
@@ -693,6 +701,7 @@ describe("upsertXeroObjectLink", () => {
           updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
+          createMany: mocks.txLinkCreateMany,
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: txLinkFindUnique,
@@ -814,6 +823,7 @@ describe("upsertXeroObjectLink", () => {
           updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
+          createMany: mocks.txLinkCreateMany,
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: txLinkFindUnique,

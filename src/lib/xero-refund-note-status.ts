@@ -206,18 +206,29 @@ export async function isRetryOfVoidedRefundRequestNote(
  * #4195, #4223 (`INV-ADDPAY-041`): THE ONE RULE FOR A REFUND-NOTE LINK WRITE
  * RACING AN INBOUND VOID, for both roles - the payment's own notes
  * (`REFUND_CREDIT_NOTE`, its one canonical note among them) and a refund
- * request's (`REFUND_REQUEST_CREDIT_NOTE`). Every such write first locks its
- * own link row in the write's transaction, so the link funnel takes that row
- * before any sibling note's row or the Payment row, on every write. A write
- * that names no Xero status (a retry's, a completion's, a repair's) then
- * re-reads the row under that lock, so a void that committed while it waited is
- * kept: inactive, its status on the row, where the funnel's void rules read it
+ * request's (`REFUND_REQUEST_CREDIT_NOTE`). Every such write first ensures an
+ * inactive identity row, then locks it in the write's transaction, so the link
+ * funnel takes that row before any sibling note's row or the Payment row, on
+ * every write. A write that names no Xero status (a retry's, a completion's,
+ * a repair's) then re-reads the row under that lock, so a void that committed
+ * while it waited is kept: inactive, its status on the row, where the funnel's void rules read it
  * (no sibling retired, a pointer naming it released). A write that names a
  * status is judged on it.
  */
 export async function keepStoredRefundNoteVoid<L extends {
   localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; metadata?: unknown; active?: boolean; mergeMetadata?: boolean;
 }>(client: Pick<Prisma.TransactionClient, "$executeRaw" | "xeroObjectLink">, link: L): Promise<L> {
+  // INV-ADDPAY-041: a missing row cannot be locked. Reserve only its identity,
+  // inactive, in this same write transaction. The existing unique key waits for
+  // a competing first insertion to commit (or roll back); skipDuplicates leaves
+  // an existing row untouched. Never commit this reservation on its own.
+  await client.xeroObjectLink.createMany({
+    data: [{
+      localModel: link.localModel, localId: link.localId, xeroObjectType: link.xeroObjectType,
+      xeroObjectId: link.xeroObjectId, role: link.role, active: false,
+    }],
+    skipDuplicates: true,
+  });
   // Lock only (the #4161 heal's statement), then read through the model under it.
   await client.$executeRaw`
     SELECT 1 FROM "XeroObjectLink"

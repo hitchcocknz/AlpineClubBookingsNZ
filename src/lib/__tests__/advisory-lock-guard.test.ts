@@ -1449,15 +1449,16 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // docs/CONCURRENCY_AND_LOCKING.md -> "Refund-note link heal (#4161)".
   "src/lib/xero-hardening-canonical-links.ts": 2,
   // #4195, #4223 (`keepStoredRefundNoteVoid`): every refund-note link write,
-  // either role (the payment's own notes and a refund request's), first locks
+  // either role (the payment's own notes and a refund request's), first reserves
+  // an inactive identity row with createMany(skipDuplicates), then locks
   // its own `XeroObjectLink` row (`SELECT 1 … FOR UPDATE`, the heal's
   // statement) inside the link write's transaction; one with no Xero status
   // then re-reads it through Prisma, so an inbound void that committed
-  // meanwhile is kept. The write that follows updates the same row, so no new
-  // row joins the transaction. Order, on every write: own link row, then any
-  // sibling note the canonical rule retires, then the Payment row a kept void
-  // releases - the inbound void's own order. Keyed on the link's immutable
-  // unique key; no advisory lock. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // meanwhile is kept, including a competing first insertion. Existing rows
+  // are untouched by reservation; a new identity row rolls back with the write.
+  // Order, on every write: own link row, then any sibling note the canonical
+  // rule retires, then the Payment row a kept void releases - the inbound
+  // void's own order. Keyed on the link's immutable unique key; no advisory lock. See docs/CONCURRENCY_AND_LOCKING.md ->
   // "Refund-note link writes racing a void (#4195, #4223)".
   "src/lib/xero-refund-note-status.ts": 1,
 };

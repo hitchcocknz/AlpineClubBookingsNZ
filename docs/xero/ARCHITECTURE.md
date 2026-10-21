@@ -1048,11 +1048,13 @@ before #4091 (still active, its pointer naming it) is healed by the nightly
 A link write that names no Xero status (a retry recording the note as its
 cover, the enqueue's existing-note branch, a repair) can race the void: it
 read the note as live, and the void commits before its write. Every
-refund-note link write first locks its own row in its transaction and, when it
-names no status, re-reads it (`keepStoredRefundNoteVoid`), so a void that
-committed while it waited is kept. The mirror stays inactive, the status is
-merged onto the row, no sibling is retired, and a pointer the retry wrote back
-at the note is released by the same write (#4223). Lock order: [Refund-note
+refund-note link write first reserves its natural key as an inactive row
+without changing any existing row, then locks it in the same transaction and,
+when it names no status, re-reads it (`keepStoredRefundNoteVoid`). Concurrent
+first insertions wait on the unique key before this read; the reservation
+rolls back with the write. A void that committed while it waited is kept. The
+mirror stays inactive, the status is merged onto the row, no sibling is
+retired, and a pointer the retry wrote back at the note is released by the same write (#4223). Lock order: [Refund-note
 link writes racing a void](../CONCURRENCY_AND_LOCKING.md#refund-note-link-writes-racing-a-void-4195-4223).
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
@@ -1134,11 +1136,17 @@ by hand in Xero.
 **Deploy and rollback note (#4091).** The previous release writes a voided
 canonical bank-transfer mirror active, re-adopts a voided note through its
 succeeded create, and sends the plain key, so a reissue there can get the voided
-note back from Xero. Stop the old colour's outbox and inbound workers before the
-new release queues refund notes. A retry of a row the old code first attempted,
-on a payment that already has a matching void, gets the new key and so may mint
-a fresh note beside one the lost attempt raised; the scoping above makes that
-rare. Before rolling back, and after rolling forward, list the rows at risk
+note back from Xero. Stop and drain every old-colour refund-note writer before
+the new release queues or writes refund notes: outbox, inbound and retry
+workers, plus web/direct retry paths. The old canonical writer takes sibling
+rows before its own row; #4223 takes its own row first. Both writing the same
+note with an active historical sibling can deadlock (40P01), so mirror healing
+does not make mixed execution compatible. Before rollback, stop and drain the
+new release's same writers before restarting old ones; after rolling forward,
+stop and drain the old writers again before enabling the new ones. A retry of
+a row the old code first attempted, on a payment that already has a matching
+void, gets the new key and so may mint a fresh note beside one the lost
+attempt raised; the scoping above makes that rare. Before rolling back, and after rolling forward, list the rows at risk
 (read-only):
 `SELECT "localId", "xeroObjectId", "updatedAt" FROM "XeroObjectLink" WHERE "localModel" = 'Payment' AND role = 'REFUND_CREDIT_NOTE' AND active AND upper(trim(metadata->>'status')) IN ('VOIDED', 'DELETED')`
 (voided mirrors still active), and

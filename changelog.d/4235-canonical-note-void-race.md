@@ -9,10 +9,11 @@
   the nightly link cleanup put it right.
 
   The retry now waits for the incoming Xero sync and then keeps the void: the
-  note stays inactive, its voided status is kept, and the payment no longer
-  points at it. The same rule already covered a refund request's own note
+  note stays inactive even if its mirror was missing, its voided status is
+  kept, and the payment no longer points at it. The same rule already covered a refund request's own note
   (#4195), and now covers card payments' notes too.
 
-  Deploying: no database change. While the previous release is still running
-  it can still mark such a note live again in the same narrow window; the
-  nightly link cleanup heals it, as before.
+  Deploying: no database change. Stop and drain old refund-note workers and
+  web/direct retries before enabling new refund-note writes; the old and new
+  canonical writers take row locks in different orders. Rollback requires the
+  same drain in reverse (see the Xero architecture guide's deploy note).

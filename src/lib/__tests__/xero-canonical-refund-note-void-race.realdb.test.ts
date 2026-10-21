@@ -17,6 +17,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+import { assertSafeRaceDbUrl } from "./support/race-db-url";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -26,28 +27,6 @@ const LODGE_ID = "race-4223-lodge";
 const BOOKING_ID = "race-4223-booking";
 const PAYMENT_ID = "race-4223-payment";
 const NOTE = "cn-race-4223-canonical";
-
-/** Standalone fail-closed copy: importing this file must not register another suite. */
-export function assertSafeCanonicalNoteVoidRaceDbUrl(url: string): void {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("Canonical refund-note void race proofs need a valid CONCURRENCY_RACE_DATABASE_URL.");
-  }
-  const port = Number.parseInt(parsed.port, 10);
-  if (!Number.isFinite(port) || port === 5432 || port < 55442) {
-    throw new Error(
-      `Refusing to run canonical refund-note void race proofs against port ${parsed.port || "(none)"}: use a throwaway PostgreSQL on 55442+ (never 5432).`,
-    );
-  }
-  if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(parsed.hostname.toLowerCase())) {
-    throw new Error("Canonical refund-note void race proof DB must be loopback-only.");
-  }
-  if (!decodeURIComponent(parsed.pathname.replace(/^\//, "")).includes("concurrency_race_1881")) {
-    throw new Error("Canonical refund-note void race proof DB name must contain 'concurrency_race_1881'.");
-  }
-}
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
@@ -65,7 +44,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     }
 
     beforeAll(async () => {
-      assertSafeCanonicalNoteVoidRaceDbUrl(RACE_DB_URL);
+      assertSafeRaceDbUrl(RACE_DB_URL, "Canonical refund-note void");
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       await deleteFixtures();
@@ -126,7 +105,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
      * The inbound void's link write (what `reconcileXeroCreditNote` sends for a
      * VOIDED note), held open on its own connection until `release()`.
      */
-    async function holdInboundVoid() {
+    async function holdInboundVoid(status = "VOIDED") {
       const { upsertXeroObjectLink } = await import("@/lib/xero-sync");
       let release!: () => void;
       const released = new Promise<void>((resolve) => (release = resolve));
@@ -137,7 +116,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
           await upsertXeroObjectLink(
             {
               localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE, xeroObjectNumber: "CN-4223",
-              role: "REFUND_CREDIT_NOTE", metadata: { status: "VOIDED", total: 200 }, mergeMetadata: true,
+              role: "REFUND_CREDIT_NOTE", metadata: { status, total: 200 }, mergeMetadata: true,
             },
             { store: tx },
           );
@@ -170,6 +149,42 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const payment = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { xeroRefundCreditNoteId: true } });
       return { active: link.active, metadata: link.metadata, pointer: payment.xeroRefundCreditNoteId };
     }
+
+    it.each(["VOIDED", "DELETED"])("a retry with no mirror waits for an inbound %s first insertion and keeps it inactive (race)", async (status) => {
+      // The pointer still names the note, so the real retry finds coverage even
+      // though its mirror does not exist in the retry's snapshot. A SELECT FOR
+      // UPDATE alone locks nothing; the unique-key reservation must wait for
+      // the inbound first insertion before the status is read.
+      await prisma.xeroObjectLink.deleteMany({ where: { localId: PAYMENT_ID } });
+      const inbound = await holdInboundVoid(status);
+      const retry = retryRefundNote();
+      try {
+        await waitForBlockedBy(inbound.pid);
+      } finally {
+        inbound.release();
+      }
+      await inbound.committed;
+      expect(await retry).toBe(NOTE);
+      expect(await state()).toEqual({
+        active: false,
+        metadata: { status, total: 200 },
+        pointer: null,
+      });
+    });
+
+    it("a first mirror and its inactive reservation roll back with the caller's transaction", async () => {
+      await prisma.xeroObjectLink.deleteMany({ where: { localId: PAYMENT_ID } });
+      const { upsertXeroObjectLink } = await import("@/lib/xero-sync");
+      await expect(prisma.$transaction(async (tx) => {
+        await upsertXeroObjectLink({
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE,
+          role: "REFUND_CREDIT_NOTE", metadata: { status: "VOIDED", total: 200 },
+        }, { store: tx });
+        throw new Error("rollback first mirror");
+      })).rejects.toThrow("rollback first mirror");
+      expect(await prisma.xeroObjectLink.count({ where: { localId: PAYMENT_ID } })).toBe(0);
+      expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).xeroRefundCreditNoteId).toBe(NOTE);
+    });
 
     it("a retry that read the canonical note as live, then waited on the inbound void, keeps the void: inactive, status kept, pointer released (race)", async () => {
       const inbound = await holdInboundVoid();

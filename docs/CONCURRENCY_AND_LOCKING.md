@@ -5454,8 +5454,14 @@ note itself once the void had released the pointer, so it re-armed the mirror
 
 So every refund-note link write, either role, starts in
 `keepStoredRefundNoteVoid` (`xero-refund-note-status.ts`, called from the link
-normaliser in `upsertXeroObjectLink`): it locks its own link row
-(`SELECT 1 … FOR UPDATE`, the #4161 heal's statement). A write that names no
+normaliser in `upsertXeroObjectLink`): it first ensures an inactive row with
+only the five natural-key fields (`createMany`, `skipDuplicates: true`), then
+locks that row (`SELECT 1 … FOR UPDATE`, the #4161 heal's statement). The
+unique key serialises concurrent first insertions: if the mirror was missing,
+a competing inbound insert must commit or roll back before the status read.
+An existing row is untouched by the reservation. The reservation, lock, read
+and final link write share the caller's transaction; failure rolls them all
+back, so no identity-only placeholder commits alone. A write that names no
 Xero status then re-reads the row through Prisma and keeps a stored
 VOIDED/DELETED: the link stays inactive, the status is merged onto the row,
 no sibling is retired for it, and a pointer naming it is released, exactly as
@@ -5476,8 +5482,8 @@ siblings before it wrote its own row; the own-row lock now comes first on
 every write, status or not, so two writers of one note always take the pair in
 the same order. (A mixed order, the retry's own row first and an inbound live
 write's siblings first, could deadlock two writers of one note that both
-retire an active sibling.) The lock is the row the write updates anyway, so it
-adds no row to the transaction. Two writers of two different notes on one
+retire an active sibling.) The lock protects the same natural-key row the
+final write updates. Two writers of two different notes on one
 payment that each retire the other can still take that pair in opposite
 orders; that needs two notes both acting as the payment's one note at once,
 predates #4223, and is not changed here.
@@ -5503,7 +5509,17 @@ the waiting write queued behind it, then find the link inactive with its
 status after both commit: `xero-refund-request-note-void.realdb.test.ts` for a
 request's note, and `xero-canonical-refund-note-void-race.realdb.test.ts`
 for the canonical note through the real `createXeroCreditNote` retry, with the
-pointer released.
+pointer released. The canonical suite also forces an inbound first insertion
+of a missing mirror, for VOIDED and DELETED, and proves the caller's rollback
+leaves neither the mirror nor its reservation.
+
+**Mixed releases.** The own-row-first order is consistent within this release;
+the old canonical writer takes siblings before its own row. Running both on
+the same note with an active historical sibling can deadlock (40P01). The
+[deploy and rollback boundary](xero/ARCHITECTURE.md#flow-2--inbound-reconciliation-webhooks--incremental-cursors)
+therefore excludes old refund-note writers, including web/direct retries,
+before new ones start. Nightly healing of old mirror state does not make the
+two lock orders compatible.
 
 ## One Xero contact, one local home: the contact-home key (#3367)
 
