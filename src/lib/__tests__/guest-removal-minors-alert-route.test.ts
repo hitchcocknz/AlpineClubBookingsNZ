@@ -862,7 +862,8 @@ describe("DELETE guest removal - a credit-paid ($0) booking whose price RISES (#
     mocks.paymentTransactionFindMany.mockResolvedValue([]);
     const tx = {
       ...buildTx([ADULT, CHILD], { payment: zeroDollarPayment(xeroInvoiceId) }),
-      payment: { update: vi.fn().mockResolvedValue({}) },
+      // #3980: a removal that read no invoice link claims the payment row.
+      payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     };
     mocks.transaction.mockImplementation((cb: (tx: unknown) => unknown) => cb(tx));
 

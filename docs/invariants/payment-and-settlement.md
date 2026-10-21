@@ -3384,26 +3384,25 @@ _Split from `INV-PAY-057` (#3220)._
   An edit's credit clamp, zero-dollar decision and stale-intent comparison
   read worth; a guest's acceptance nets credit to the price, its return route
   admitting only credit and cash summing to it.
-- A fee a finished-stay correction keeps on a stay with nothing captured is
-  recorded on the payment, claimed against the invoice link the edit read, and
-  posts its `CHANGE_FEE` line under its modification's key at the settle,
-  counting as income once captured.
-- **The primary invoice bills the recorded fee in full.** Its link is saved
-  in one transaction with what it billed, the fee then recorded and its Stripe
-  cash (capped so unallocated ledger credit fits). A supplementary invoice,
-  anchored on its routing correction, bills the gap, paid from cash the
-  primary left, else unpaid; untaken cash is logged. Retries re-check stored
-  figures without re-queuing; PARTIAL repairs record the attempted payment
-  (#4010).
-- Limits: a capture recorded for its intent is not re-checked against a later
-  fee; a fee the ordinary settled edit (#3980, `applyPaymentAdjustments`)
-  records mid-create, before the link is saved, is unclaimed: logged, not
-  billed; an invoice linked without stored figures is unchecked, warning when
-  a fee is recorded.
+- A finished-stay correction's fee on a stay with nothing captured is recorded
+  on the payment and posts its `CHANGE_FEE` line under its modification's key
+  at the settle, counting as income once captured.
+- **The primary invoice bills worth as the create read it** (#3980). An edit
+  reading no invoice link claims the payment row, with its fee, or is refused
+  (409, retry); its history row is marked. The link's transaction stores what
+  was billed, worth then, the build's worth and line total, and Stripe cash
+  (capped so ledger credit fits). Gap: worth moved since the build plus built
+  less billed. A shortfall goes on a supplementary invoice anchored on a
+  marked edit, paid from leftover cash or unpaid; an overcharge or unanchored
+  shortfall is a Xero Operations task. Retries re-check stored figures;
+  PARTIAL repairs record the attempted payment (#4010).
+- Limits: a capture is not re-checked against a later fee; an invoice linked
+  without stored figures is unchecked.
 - Pinned by `amount-owed-one-home.test.ts`,
   `booking-detail-history-amount-owed.test.ts`,
-  `booking-change-request-execution.realdb.test.ts` and
-  `xero-primary-invoice-fee-gap.test.ts`.
+  `booking-change-request-execution.realdb.test.ts`,
+  `xero-primary-invoice-fee-gap.test.ts` and
+  `primary-invoice-edit-race.realdb.test.ts`.
 
 ## INV-PAY-124
 
