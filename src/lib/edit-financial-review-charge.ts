@@ -5,7 +5,7 @@ import {
   PaymentStatus,
 } from "@prisma/client";
 
-import { hasCapturedPayment } from "@/lib/booking-payment-state";
+import { canAskCardForReviewCharge } from "@/lib/booking-payment-state";
 import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import {
   REVIEW_CHARGE_ANCHOR_MISSING_MESSAGE,
@@ -130,8 +130,10 @@ export type EditReviewChargeRoute =
   | {
       kind: "additional-charge";
       /**
-       * The booking has a CAPTURED card payment, so an additional PaymentIntent
-       * is minted against it - or, when this edit already has one, raised to the
+       * The booking's payment is one the card may be asked against
+       * (`canAskCardForReviewCharge`: captured by card, or a settled booking
+       * paid wholly with credit, #3947), so an additional PaymentIntent is
+       * minted against it - or, when this edit already has one, raised to the
        * new total.
        */
       collectVia: "stripe";
@@ -179,8 +181,11 @@ export async function chooseEditReviewChargeRoute({
   store,
 }: {
   bookingModificationId: string | null;
-  /** #3653: whether the group organiser paid for this booking (`paidByOrganiserCard`). */
-  booking: { organiserSettled: boolean; parentBookingId: string | null };
+  /**
+   * #3653: whether the group organiser paid for this booking (`paidByOrganiserCard`).
+   * #3947: and its `status`, half of the card question (`canAskCardForReviewCharge`).
+   */
+  booking: { status: string; organiserSettled: boolean; parentBookingId: string | null };
   bookingPayment: {
     id: string;
     status: string;
@@ -211,16 +216,20 @@ export async function chooseEditReviewChargeRoute({
   if (paidByOrganiserCard({ ...booking, payment: bookingPayment })) {
     throw new ManualBookingPaymentError(REVIEW_CHARGE_ORGANISER_PAID_MESSAGE, 409);
   }
-  // The same test `applyPaymentAdjustments` uses to decide whether an ordinary
-  // price increase mints an intent: a CAPTURED payment whose source is the card.
-  // `Payment.source` alone is not enough - its schema DEFAULT is STRIPE, so a
-  // hand-settled booking carries it with nothing captured behind it. A MEMBER is
-  // part of the test rather than a fallback: minting needs somebody to bill, and
-  // a booking with none has no card route - it falls to the invoice route, or to
-  // the no-instrument refusal below.
+  // #3947 (owner decision 15 Oct 2026): the review charge's ONE card question,
+  // which the sync's mint asks again after the commit - so the two cannot
+  // disagree and strand the debt on a replay that never raises. It is the
+  // edit doors' `canAskCardForIncrease` (#3502), so a booking paid wholly with
+  // credit - a $0 SUCCEEDED card payment - is asked by card, Xero or not; plus
+  // the captured-card test this path used before, so nothing that was card-asked
+  // stops being asked (the helper's docblock says why). `Payment.source` alone
+  // is not enough - its schema DEFAULT is STRIPE, so a hand-settled booking
+  // carries it with nothing captured behind it. A MEMBER is part of the test
+  // rather than a fallback: minting needs somebody to bill, and a booking with
+  // none has no card route - it falls to the invoice route, or to the
+  // no-instrument refusal below.
   const canChargeCard =
-    hasCapturedPayment(bookingPayment) &&
-    bookingPayment?.source === PaymentSource.STRIPE &&
+    canAskCardForReviewCharge({ status: booking.status, payment: bookingPayment }) &&
     Boolean(member);
   // An ISSUED Xero invoice is the other instrument. It has to be ISSUED rather
   // than merely possible - with no invoice to add to,

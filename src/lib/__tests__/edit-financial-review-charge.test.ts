@@ -522,6 +522,8 @@ beforeEach(() => {
     amountCents: 15000,
     refundedAmountCents: 0,
     source: PaymentSource.STRIPE,
+    // #3947: the sync re-reads the booking's status with the payment.
+    booking: { status: "PAID" },
     stripeCustomerId: "cus_1",
   });
   // The real minter's provider. Each mint answers the next intent id, so the
@@ -698,6 +700,8 @@ describe("a completed review that asks the member for money (#3170)", () => {
       amountCents: 0,
       refundedAmountCents: 0,
       source: PaymentSource.STRIPE,
+      // #3947: the sync re-reads the booking's status with the payment.
+      booking: { status: "PAID" },
       stripeCustomerId: "cus_1",
     });
 
@@ -1113,6 +1117,8 @@ describe("two shares of one booking edit (#3170 combined request)", () => {
       amountCents: 15000,
       refundedAmountCents: 0,
       source: PaymentSource.STRIPE,
+      // #3947: the sync re-reads the booking's status with the payment.
+      booking: { status: "PAID" },
       stripeCustomerId: "cus_1",
       stripePaymentIntentId: "pi_primary",
       transactions: [
@@ -1396,6 +1402,8 @@ describe("what the sync reports, and the trace it leaves (#3170 fix round)", () 
       amountCents: 15000000,
       refundedAmountCents: 0,
       source: PaymentSource.STRIPE,
+      // #3947: the sync re-reads the booking's status with the payment.
+      booking: { status: "PAID" },
       stripeCustomerId: "cus_1",
     });
   });
@@ -1459,6 +1467,8 @@ describe("what the sync reports, and the trace it leaves (#3170 fix round)", () 
       amountCents: null,
       refundedAmountCents: 0,
       source: PaymentSource.STRIPE,
+      // #3947: the sync re-reads the booking's status with the payment.
+      booking: { status: "PAID" },
       stripeCustomerId: null,
     });
 
@@ -2004,6 +2014,8 @@ describe("#3371: a review charge carries the unpaid ask its mint retires", () =>
       amountCents: 15000,
       refundedAmountCents: 0,
       source: PaymentSource.STRIPE,
+      // #3947: the sync re-reads the booking's status with the payment.
+      booking: { status: "PAID" },
       stripeCustomerId: "cus_1",
       additionalAmountCents,
       additionalPaymentStatus,
@@ -2265,6 +2277,8 @@ describe("#3371: a later share joins a request that carried a balance", () => {
       amountCents: 15000,
       refundedAmountCents: 0,
       source: PaymentSource.STRIPE,
+      // #3947: the sync re-reads the booking's status with the payment.
+      booking: { status: "PAID" },
       stripeCustomerId: "cus_1",
       additionalAmountCents: 26000,
       additionalPaymentStatus: PaymentStatus.PENDING,

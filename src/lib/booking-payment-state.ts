@@ -202,6 +202,46 @@ export function canAskCardForIncrease(booking: {
   );
 }
 
+/**
+ * #3947 (`INV-PAY-047`, `INV-PAY-112`): may an officer's settled edit-review
+ * CHARGE (`CHARGE_TO_MEMBER`) ask the member's card? THE ONE ANSWER for that
+ * path, asked twice and never restated: by the route chooser before the claim
+ * (`chooseEditReviewChargeRoute`) and by the sync's mint after the commit
+ * (`syncEditFinancialReviewChargeRequest`, which the recovery replay re-enters).
+ * The two must agree, or a route chosen as "card" mints nothing, queues a
+ * recovery row, and every replay reports `not-raised` until the row dies FAILED.
+ *
+ * It is `canAskCardForIncrease` — so a settled booking paid wholly with credit
+ * (`{ amountCents: 0, SUCCEEDED, STRIPE }`) IS asked by card, the owner's
+ * 15 Oct 2026 decision on #3947, matching the four edit doors (#3502) — OR the
+ * captured-card test this path used before (`hasCapturedPayment` + `STRIPE`).
+ *
+ * The second clause is kept deliberately, not left over. A review can be
+ * settled on a booking that has since left the settled statuses (most often
+ * CANCELLED) while still holding money captured on a card, and that booking
+ * took the card route before #3947. The decision covered credit-paid bookings,
+ * not those, so their route is unchanged: dropping the clause would turn each
+ * into a no-instrument refusal, because `hasIssuedPrimaryXeroInvoice` is gated
+ * on the same settled statuses. The union therefore only ever ADDS the
+ * credit-paid shape; nothing that was card-asked stops being asked.
+ *
+ * INCREASES ONLY, like `canAskCardForIncrease`: a review REFUND reads its own
+ * captured-cash tests (`editReviewRefundGoesBackOnCard`).
+ */
+export function canAskCardForReviewCharge(booking: {
+  status: string;
+  payment:
+    | (BookingPaymentState & { source: PaymentSource })
+    | null
+    | undefined;
+}): boolean {
+  return (
+    canAskCardForIncrease(booking) ||
+    (hasCapturedPayment(booking.payment) &&
+      booking.payment?.source === CARD_PAYMENT_SOURCE)
+  );
+}
+
 export function getRemainingRefundableCents(
   payment: BookingPaymentState | null | undefined
 ): number {
