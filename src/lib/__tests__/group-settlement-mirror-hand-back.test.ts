@@ -13,7 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   bookingFindUnique: vi.fn(async (): Promise<unknown> => null),
   groupBookingFindUnique: vi.fn(async (): Promise<unknown> => null),
-  sendAdminXeroSyncErrorAlert: vi.fn(async (_input: unknown) => ({})),
+  sendAdminXeroSyncErrorAlert: vi.fn<(input: unknown) => Promise<object>>(async () => ({})),
 }));
 vi.mock("server-only", () => ({}));
 vi.mock("@/lib/prisma", () => ({
