@@ -39,6 +39,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 import { assertSafeRaceDbUrl } from "@/lib/__tests__/support/race-db-url";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -72,8 +73,38 @@ let invoiceKey: typeof import("@/lib/xero-booking-invoice-key");
 let lineItems: typeof import("@/lib/xero-modification-line-items");
 let paymentState: typeof import("@/lib/booking-payment-state");
 let claim: typeof import("@/lib/booking-primary-invoice-claim");
+let snapshot: typeof import("@/lib/xero-primary-invoice-read");
 const pendingXeroWork: Promise<unknown>[] = [];
 let restoreXeroQueue: (() => void) | undefined;
+let restoreClaim: (() => void) | undefined;
+/** Review C1/C2: a connection of its own, to see who waits on whom. */
+let observerClient: PrismaClient;
+/** Review C2: when set, the edit pauses inside its transaction right after its claim. */
+let pauseAfterClaim: { claimed: ReturnType<typeof deferred>; release: ReturnType<typeof deferred>; pid: number } | null = null;
+const LOCK_POLL_TIMEOUT_MS = 5_000;
+
+/** How many sessions are queued behind this backend (`pg_blocking_pids`). */
+async function queuedBehind(blockerPid: number): Promise<number> {
+  const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+    SELECT COUNT(*)::int AS "count"
+    FROM pg_stat_activity
+    WHERE datname = current_database()
+      AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
+  `;
+  return rows[0]?.count ?? 0;
+}
+
+/** Waits (real clock) until a session queues behind `blockerPid`; returns how many did. */
+async function untilQueuedBehind(blockerPid: number): Promise<number> {
+  const startedAt = process.hrtime.bigint();
+  let queued = 0;
+  while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
+    queued = await queuedBehind(blockerPid);
+    if (queued >= 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return queued;
+}
 
 function deferred() {
   let resolve!: () => void;
@@ -204,10 +235,9 @@ const REMOVE_GUEST = { removeGuestIds: [GUEST_2_ID] };
  * bills the lines the create sent.
  */
 async function inFlightCreate(release: Promise<void>, reached: () => void) {
-  const booking = await prisma.booking.findUniqueOrThrow({
-    where: { id: BOOKING_ID },
-    include: { guests: { include: { nights: true } }, payment: true },
-  });
+  // The create's own snapshot read (review M1).
+  const { booking: read, markedModificationIdsAtBuild } = await snapshot.readBookingForPrimaryInvoice(BOOKING_ID);
+  const booking = read!;
   const nights = 2;
   const lines = invoices.buildInvoiceLineItems(
     booking.guests.map((guest) => ({
@@ -228,6 +258,7 @@ async function inFlightCreate(release: Promise<void>, reached: () => void) {
       changeFeeCents: booking.payment!.changeFeeCents,
     }),
     lineTotalCents: lineItems.invoiceLineItemsTotalCents(lines),
+    markedModificationIdsAtBuild,
   };
   const key = invoiceKey.buildXeroBookingInvoiceCorrelationKey(BOOKING_ID);
   const operation = await xeroSync.startXeroSyncOperation({
@@ -297,6 +328,7 @@ async function reviewTasks() {
     lineItems = await import("@/lib/xero-modification-line-items");
     paymentState = await import("@/lib/booking-payment-state");
     claim = await import("@/lib/booking-primary-invoice-claim");
+    snapshot = await import("@/lib/xero-primary-invoice-read");
     const xeroQueue = await import("@/lib/xero-booking-edit-settlement");
     const queue = xeroQueue.queueXeroBookingEditSettlement;
     const spy = vi.spyOn(xeroQueue, "queueXeroBookingEditSettlement").mockImplementation((input) => {
@@ -305,6 +337,30 @@ async function reviewTasks() {
       return pending;
     });
     restoreXeroQueue = () => spy.mockRestore();
+    // Review C2: pass-through unless a case sets `pauseAfterClaim`, because the
+    // harness imports every suite into one process.
+    const writeEditOnPayment = claim.writeEditOnPayment;
+    const claimSpy = vi.spyOn(claim, "writeEditOnPayment").mockImplementation(async (tx, input) => {
+      const settled = await writeEditOnPayment(tx, input);
+      const pause = pauseAfterClaim;
+      if (pause && settled) {
+        const rows = await (tx as unknown as PrismaClient).$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+        pause.pid = rows[0]?.pid ?? 0;
+        pause.claimed.resolve();
+        await pause.release.promise;
+      }
+      return settled;
+    });
+    restoreClaim = () => claimSpy.mockRestore();
+    const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
+      import("@prisma/client"),
+      import("@/lib/prisma-adapter"),
+    ]);
+    const observerUrl = new URL(RACE_DB_URL);
+    observerUrl.searchParams.set("connection_limit", "1");
+    observerUrl.searchParams.set("application_name", "race-3980-observer");
+    observerClient = new SeparatePrismaClient({ adapter: createPrismaPgAdapter(observerUrl.toString()) });
+    await observerClient.$connect();
 
     await clean();
     await prisma.membershipTypeSeasonRate.deleteMany({ where: { seasonId: SEASON_ID } });
@@ -379,6 +435,9 @@ async function reviewTasks() {
       await prisma.member.deleteMany({ where: { id: { in: [OWNER_ID, OFFICER_ID] } } });
     } finally {
       restoreXeroQueue?.();
+      restoreClaim?.();
+      pauseAfterClaim = null;
+      await observerClient?.$disconnect();
     }
   });
 
@@ -430,6 +489,8 @@ async function reviewTasks() {
       atBuildCents: PRICE_CENTS,
       builtTotalCents: PRICE_CENTS,
       atLinkCents: PRICE_CENTS - GUEST_CENTS,
+      // The create's snapshot held no marked edit: this one landed mid-create.
+      markedModificationIdsAtBuild: [],
     });
     expect(created.worthGap).toMatchObject({ gapCents: -GUEST_CENTS, queueOperationId: null });
 
@@ -442,6 +503,9 @@ async function reviewTasks() {
       requestPayload: expect.objectContaining({ kind: "OVERBILLED", gapCents: -GUEST_CENTS, xeroInvoiceId: INVOICE_ID }),
     });
     expect(tasks[0].lastErrorMessage).toContain("bills $100.00 more than the booking is worth");
+    // Review M5: how the reduction settled - nothing was paid, so nothing came back.
+    expect(tasks[0].lastErrorMessage).toContain("The change returned no money.");
+    expect(tasks[0].requestPayload).toMatchObject({ reductionModificationIds: [modification.id] });
 
     await drainXeroWork();
     expect(await supplementaryInvoices()).toHaveLength(0);
@@ -456,13 +520,59 @@ async function reviewTasks() {
     expect(await reviewTasks()).toHaveLength(1);
   }, 60_000);
 
+  it("review C2: the link's save queues behind an edit that has claimed, and reads its worth back once it commits", async () => {
+    // The create reads the booking (before the edit) and waits on Xero.
+    const xeroAnswered = deferred();
+    const createReached = deferred();
+    const create = inFlightCreate(xeroAnswered.promise, createReached.resolve);
+    await createReached.promise;
+
+    // The edit claims the unlinked payment row and pauses inside its transaction.
+    const pause = { claimed: deferred(), release: deferred(), pid: 0 };
+    pauseAfterClaim = pause;
+    const edited = edit(ADD_GUEST).then(
+      () => "applied",
+      (error: unknown) => error,
+    );
+    let queued = 0;
+    try {
+      await pause.claimed.promise;
+      // Xero answers: the create's REAL link save now runs, and must queue on
+      // the row the edit's claim holds.
+      xeroAnswered.resolve();
+      queued = await untilQueuedBehind(pause.pid);
+    } finally {
+      pauseAfterClaim = null;
+      pause.release.resolve();
+      xeroAnswered.resolve();
+    }
+    expect(queued).toBe(1);
+    expect(await edited).toBe("applied");
+    const { atLink, worthGap } = await create;
+
+    // The save waited for the edit, so the worth it read back holds it.
+    expect(atLink.worth).toMatchObject({ atBuildCents: PRICE_CENTS, atLinkCents: PRICE_CENTS + GUEST_CENTS });
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    expect(worthGap).toMatchObject({ gapCents: GUEST_CENTS, alreadyQueued: false });
+    await drainXeroWork();
+    const queuedInvoices = await supplementaryInvoices();
+    expect(queuedInvoices).toHaveLength(1);
+    expect(queuedInvoices[0]).toMatchObject({
+      localId: modification.id,
+      requestPayload: expect.objectContaining({ priceDiffCents: GUEST_CENTS, changeFeeCents: 0 }),
+    });
+  }, 60_000);
+
   it("an edit arriving while the link's save holds the Payment row is refused whole, and its retry adjusts the invoice", async () => {
     // The link's save: its first statement is the Payment row's update, held
     // uncommitted while the edit reads "no invoice" and reaches its claim.
     const holding = deferred();
     const release = deferred();
+    let holderPid = 0;
     const persist = prisma.$transaction(
       async (tx) => {
+        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+        holderPid = rows[0]?.pid ?? 0;
         await tx.payment.update({
           where: { id: PAYMENT_ID },
           data: { xeroInvoiceId: INVOICE_ID, xeroInvoiceNumber: "INV-3980" },
@@ -477,11 +587,16 @@ async function reviewTasks() {
       () => "applied",
       (error: unknown) => error,
     );
-    // Long enough for the edit to reach its claim and queue on the row the save
-    // holds (real clock; the suite's Date is frozen).
-    await new Promise((resolve) => setTimeout(resolve, 750));
-    release.resolve();
-    await persist;
+    // Review C1: wait until the edit's claim is QUEUED on the row the save
+    // holds, as PostgreSQL reports it, not for a guessed length of time.
+    let queuedOnRow = 0;
+    try {
+      queuedOnRow = await untilQueuedBehind(holderPid);
+    } finally {
+      release.resolve();
+      await persist;
+    }
+    expect(queuedOnRow).toBe(1);
 
     const refusal = await outcome;
     expect(refusal).toBeInstanceOf(claim.PrimaryInvoiceRaisedDuringEditError);

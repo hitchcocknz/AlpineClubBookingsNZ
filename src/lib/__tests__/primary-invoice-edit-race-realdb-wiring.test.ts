@@ -25,5 +25,6 @@ describe("the primary invoice edit-race proof stays wired into CI (#3980)", () =
     expect(suite).toContain("a price increase committed mid-create is billed once");
     expect(suite).toContain("a reduction committed mid-create raises one Xero Operations task");
     expect(suite).toContain("an edit arriving while the link's save holds the Payment row is refused whole");
+    expect(suite).toContain("the link's save queues behind an edit that has claimed");
   });
 });
