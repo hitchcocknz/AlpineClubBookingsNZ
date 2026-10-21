@@ -295,10 +295,10 @@ export async function priceGroupChildWithPromoCodes(prisma: PrismaClient, names:
  * #3827 `INV-PAY-117`), so the real organiser cancel sizes that child's refund
  * net of the open hand-back. Returns that task's id (null without one).
  *
- * The hand-back stays OPEN: the real resolver cannot complete one on a child an
- * Internet Banking settlement paid, whose payment holds no captured
- * `PaymentTransaction` for `applyLocalRefundAllocation` to draw on (a main-side
- * limit of #3827 on group children, reported with #3854's sync).
+ * The hand-back stays OPEN here. Since #3949 (`INV-PAY-136`) the real resolver
+ * can complete one on such a child, onto its mirror rather than through
+ * `applyLocalRefundAllocation` (the child's payment holds no captured
+ * `PaymentTransaction`); `ib-group-child-hand-back.realdb.test.ts` proves that.
  */
 export async function buildPromoHandBackGroup(
   prisma: PrismaClient,
