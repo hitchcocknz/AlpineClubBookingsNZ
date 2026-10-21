@@ -12,6 +12,7 @@ import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
 import logger from "@/lib/logger";
+import { bookingOwner } from "@/lib/booking-owner";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
@@ -261,7 +262,7 @@ export async function alertGroupMirrorRefundXeroByHand({
   try {
     const child = await prisma.booking.findUnique({
       where: { id: bookingId },
-      select: { parentBookingId: true, member: { select: { firstName: true, lastName: true } } },
+      select: { parentBookingId: true, member: { select: { firstName: true, lastName: true } }, organisation: { select: { name: true, email: true } } },
     });
     const group = child?.parentBookingId
       ? await prisma.groupBooking.findUnique({
@@ -275,7 +276,7 @@ export async function alertGroupMirrorRefundXeroByHand({
     await sendAdminXeroSyncErrorAlert({
       errorType: "GROUP_ORGANISER_REFUND_NOTE_BY_HAND",
       operation: `Refund credit note for booking ${bookingId} (paid back to the group organiser)`,
-      errorMessage: `${formatCents(refundCents, format)} was paid back by bank transfer to the group organiser (${name(group?.organiserMember, "the organiser")}) for ${name(child?.member, "a joiner")}'s place in a group the organiser paid for by internet banking (refund task ${taskId}). The app cannot raise this refund's Xero credit note: that booking has no invoice of its own, and the money was taken on the group's ${invoice}. In Xero, raise a credit note for ${formatCents(refundCents, format)} to the organiser against that invoice and record the bank refund against it.`,
+      errorMessage: `${formatCents(refundCents, format)} was paid back by bank transfer to the group organiser (${name(group?.organiserMember, "the organiser")}) for ${name(child ? bookingOwner(child).member : null, "a joiner")}'s place in a group the organiser paid for by internet banking (refund task ${taskId}). The app cannot raise this refund's Xero credit note: that booking has no invoice of its own, and the money was taken on the group's ${invoice}. In Xero, raise a credit note for ${formatCents(refundCents, format)} to the organiser against that invoice and record the bank refund against it.`,
       timestamp: new Date(),
     });
   } catch (err) {
