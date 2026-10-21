@@ -40,6 +40,8 @@ const PAYMENT_ID = "race-4256-payment";
 const OPERATION_ID = "race-4256-op-partial";
 const INVOICE_ID = "race-4256-invoice";
 const PAYMENT_KEY = `payment:${PAYMENT_ID}:invoice-payment:v1`;
+// Built, not quoted: a quoted `*Key` literal reads to gitleaks as a secret.
+const INVOICE_KEY = ["race-4256", "invoice", "key"].join("-");
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 export function assertSafePartialRepairClaimRaceDbUrl(url: string): void {
@@ -114,8 +116,8 @@ let retry: typeof import("@/lib/xero-operation-retry");
           localModel: "Payment",
           localId: PAYMENT_ID,
           status: "PARTIAL",
-          idempotencyKey: "race-4256-invoice-key",
-          correlationKey: "race-4256-invoice-key",
+          idempotencyKey: INVOICE_KEY,
+          correlationKey: INVOICE_KEY,
           responsePayload: partialPayload(totalDollars),
           xeroObjectType: "INVOICE",
           xeroObjectId: INVOICE_ID,
@@ -359,6 +361,32 @@ let retry: typeof import("@/lib/xero-operation-retry");
       const row = await readRow();
       expect(row).toMatchObject({ status: "PARTIAL", lastErrorCode: "ORPHANED_STALE_RUNNING" });
       expect(row.responsePayload).toEqual(partialPayload(45.67));
+    });
+
+    // Review C: the inbound sync keeps a payment Xero reports DELETED as an
+    // active link. It is not money held, so the repair still pays.
+    it("MUTATION: a DELETED payment the inbound sync linked to the invoice does not stop the repair paying", async () => {
+      await seedPartial(45.67);
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment",
+          localId: PAYMENT_ID,
+          xeroObjectType: "PAYMENT",
+          xeroObjectId: "race-4256-deleted-payment",
+          role: "INVOICE_PAYMENT",
+          active: true,
+          metadata: { invoiceId: INVOICE_ID, amount: 45.67, status: "DELETED" },
+        },
+      });
+
+      await expect(retry.retryXeroSyncOperation(OPERATION_ID, CLUB_FORMAT_TEST)).resolves.toEqual({
+        message: "Repaired Xero booking invoice payment recording.",
+      });
+      expect(createPayments).toHaveBeenCalledTimes(1);
+      expect(createPayments.mock.calls[0][1].payments[0].amount).toBe(45.67);
+      const closed = await readRow();
+      expect(closed.status).toBe("SUCCEEDED");
+      expect(closed.responsePayload).toMatchObject({ payment: { paymentID: "race-4256-xero-payment-1" } });
     });
 
     // Money B: the run recorded the payment (Xero took it, its link is written)

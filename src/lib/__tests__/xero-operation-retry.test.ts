@@ -3536,6 +3536,7 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
     mocks.finishRefundCreditNoteSettlement.mockResolvedValue({ refundPaymentErr: null });
     mocks.completeXeroSyncOperation.mockResolvedValue({ id: "op_123" });
     mocks.findFirstXeroObjectLink.mockResolvedValue(null);
+    mocks.findManyXeroObjectLink.mockResolvedValue([]);
   });
 
   it.each(branches)("MUTATION: %s claims PARTIAL only, unresolved and replayable, before anything else", async (_label, row) => {
@@ -3757,14 +3758,24 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
     await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).resolves.toEqual({ message });
   });
 
-  it("MUTATION: a payment an earlier run already recorded (its link) is never sent again; the row just closes", async () => {
+  const paymentLink = (metadata: Record<string, unknown>, xeroObjectId = "xpay_earlier") => ({
+    xeroObjectId,
+    xeroObjectType: "PAYMENT",
+    role: "INVOICE_PAYMENT",
+    metadata,
+  });
+
+  it.each([
+    ["the repair's own link (amountCents)", { invoiceId: "inv_123", amountCents: 4567 }],
+    ["the create's or the inbound sync's link (dollar amount)", { invoiceId: "inv_123", amount: 45.67, status: "AUTHORISED" }],
+  ])("MUTATION: a payment already recorded for this invoice at this amount - %s - is never sent again; the row closes on it", async (_label, metadata) => {
     mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67));
-    mocks.findFirstXeroObjectLink.mockResolvedValue({ xeroObjectId: "xpay_earlier" });
+    mocks.findManyXeroObjectLink.mockResolvedValue([paymentLink(metadata)]);
 
     await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).resolves.toEqual({
       message: "The payment was already recorded in Xero; closed the operation without paying again.",
     });
-    expect(mocks.findFirstXeroObjectLink).toHaveBeenCalledWith({
+    expect(mocks.findManyXeroObjectLink).toHaveBeenCalledWith({
       where: {
         localModel: "Payment",
         localId: "pay_123",
@@ -3773,7 +3784,7 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
         active: true,
         metadata: { path: ["invoiceId"], equals: "inv_123" },
       },
-      select: { xeroObjectId: true },
+      select: { xeroObjectId: true, xeroObjectType: true, role: true, metadata: true },
     });
     expect(mocks.createXeroPaymentForInvoice).not.toHaveBeenCalled();
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
@@ -3784,6 +3795,34 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
       }),
       { onlyIfRunningSince: expect.any(Date), alert: false },
     );
+  });
+
+  // Review C: the inbound sync links every payment Xero reports on the invoice.
+  it.each([
+    ["a DELETED payment", { invoiceId: "inv_123", amount: 45.67, status: "DELETED" }],
+    ["a VOIDED payment", { invoiceId: "inv_123", amountCents: 4567, status: "VOIDED" }],
+    ["a part payment of a different amount", { invoiceId: "inv_123", amount: 20, status: "AUTHORISED" }],
+    ["a payment against another invoice", { invoiceId: "inv_other", amount: 45.67, status: "AUTHORISED" }],
+    ["a link with no readable amount", { invoiceId: "inv_123", status: "AUTHORISED" }],
+  ])("MUTATION: %s is not this repair's payment, so the repair still pays", async (_label, metadata) => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67));
+    mocks.findManyXeroObjectLink.mockResolvedValue([paymentLink(metadata)]);
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).resolves.toEqual({
+      message: "Repaired Xero booking invoice payment recording.",
+    });
+    expect(mocks.createXeroPaymentForInvoice).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 4567 }));
+    expect(mocks.completeXeroSyncOperation.mock.calls[0][1].responsePayload.payment).toEqual({ paymentID: "xpay_1", amount: 45.67 });
+  });
+
+  it("a closing-on-the-recorded-payment whose completion lost its claim says the payment is already recorded (review D)", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(partialInvoice(45.67));
+    mocks.findManyXeroObjectLink.mockResolvedValue([paymentLink({ invoiceId: "inv_123", amountCents: 4567 })]);
+    mocks.completeXeroSyncOperation.mockResolvedValue(null);
+
+    await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).resolves.toEqual({
+      message: "The payment is already recorded in Xero; retry once to close this operation.",
+    });
   });
 
   describe("the FAILED refund-note repair claims its row too (review F3)", () => {

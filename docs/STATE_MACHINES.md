@@ -3590,8 +3590,10 @@ PARTIAL invoice payment repair or refund-note repair claims PARTIAL -> RUNNING
   error (guarded on the claim), so the row stays repairable
   process dies mid-repair -> stuck RUNNING -> Mark failed / Reset stale running
   -> PARTIAL (above) -> Retry repairs it, under the payment's one key; a
-  payment the dead run already recorded (its INVOICE_PAYMENT link) closes the
-  row with no second Xero call; Xero refusing an overpayment -> resolve in Xero
+  payment the dead run already recorded (a live INVOICE_PAYMENT link for the
+  invoice at the repair's amount; a DELETED or other-amount one does not
+  count) closes the row with no second Xero call; Xero refusing an
+  overpayment -> resolve in Xero
   completion lost its claim -> row stays as the operator set it; the retry says
   "Retry it once to close it", never "Repaired"
   Reset stale running reports FAILED and PARTIAL counts separately

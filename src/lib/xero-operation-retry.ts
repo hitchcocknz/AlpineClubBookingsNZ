@@ -40,6 +40,7 @@ import { providerAmountToCents } from "@/lib/money-provider-amount";
 import {
   primaryInvoiceRepairCashCents,
   readStoredInvoiceTotalCents,
+  recordedRepairPayment,
   repairedPartialInvoiceCompletion,
   zeroCashRepairOutcome,
 } from "@/lib/xero-partial-invoice-repair-amount";
@@ -1491,21 +1492,25 @@ export async function retryXeroSyncOperation(
           }
           // #4256: a payment an earlier run recorded (its link) is never sent
           // again, whether or not Xero still remembers the idempotency key.
-          const recorded = await prisma.xeroObjectLink.findFirst({
-            where: {
-              localModel: operation.localModel!,
-              localId: operation.localId!,
-              xeroObjectType: "PAYMENT",
-              role: repair.linkRole,
-              active: true,
-              metadata: { path: ["invoiceId"], equals: repair.invoiceId },
-            },
-            select: { xeroObjectId: true },
-          });
+          const recorded = recordedRepairPayment(
+            await prisma.xeroObjectLink.findMany({
+              where: {
+                localModel: operation.localModel!,
+                localId: operation.localId!,
+                xeroObjectType: "PAYMENT",
+                role: repair.linkRole,
+                active: true,
+                metadata: { path: ["invoiceId"], equals: repair.invoiceId },
+              },
+              select: { xeroObjectId: true, xeroObjectType: true, role: true, metadata: true },
+            }),
+            repair,
+          );
           if (recorded) {
             return close(
-              { payment: { paymentID: recorded.xeroObjectId, amount: repair.amountCents / 100 } },
+              { payment: { paymentID: recorded.paymentId, amount: recorded.amountCents / 100 } },
               "The payment was already recorded in Xero; closed the operation without paying again.",
+              "The payment is already recorded in Xero; retry once to close this operation.",
             );
           }
           const paymentId = await xero.createXeroPaymentForInvoice({

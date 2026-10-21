@@ -6,6 +6,7 @@
  */
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
+import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { asArray, asRecord, readNumber } from "@/lib/xero-json";
 import {
   parsePrimaryInvoiceFeeAtLink,
@@ -125,4 +126,28 @@ export function repairedPartialInvoiceCompletion(
     // The payment fault's message would be stale; say what is left instead.
     ...(emailStillFailed ? { lastErrorMessage: PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE } : {}),
   };
+}
+
+/**
+ * #4256: the payment an earlier run of THIS repair already recorded against the
+ * invoice, read from its links, or null. The inbound sync links every payment
+ * Xero reports on the invoice (a hand or bank-feed one, a part payment, one
+ * since DELETED), so a link counts only when it is live money
+ * (`isRecordedBookingInvoicePayment`) for this invoice at exactly the repair's
+ * amount. The repair's own link stores `amountCents`; the create's and the
+ * inbound sync's store Xero's dollar `amount`. Anything else is not this
+ * payment, and the repair pays under its idempotency key as before.
+ */
+export function recordedRepairPayment(
+  links: Array<{ xeroObjectId: string; xeroObjectType: string; role: string | null; metadata: unknown }>,
+  repair: { invoiceId: string; amountCents: number },
+): { paymentId: string; amountCents: number } | null {
+  for (const link of links) {
+    if (!isRecordedBookingInvoicePayment(link)) continue;
+    const metadata = asRecord(link.metadata);
+    if (metadata?.invoiceId !== repair.invoiceId) continue;
+    const amountCents = readNumber(metadata.amountCents) ?? providerAmountToCents(readNumber(metadata.amount));
+    if (amountCents === repair.amountCents) return { paymentId: link.xeroObjectId, amountCents };
+  }
+  return null;
 }

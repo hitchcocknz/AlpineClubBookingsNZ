@@ -1030,8 +1030,13 @@ note.
 
    Before it pays, the invoice repair looks for the payment link an earlier run
    recorded (`createXeroPaymentForInvoice` writes it, role `INVOICE_PAYMENT` or
-   `SUPPLEMENTARY_INVOICE_PAYMENT`, metadata `invoiceId`). If one exists, it
-   closes the row on that payment and calls Xero for nothing, so a run that
+   `SUPPLEMENTARY_INVOICE_PAYMENT`, metadata `invoiceId`). The inbound sync
+   links every payment Xero reports on the invoice, a hand, part or DELETED one
+   included, so a link counts only when it is live money
+   (`isRecordedBookingInvoicePayment`) at exactly the repair's amount
+   (`recordedRepairPayment`); any other link leaves the repair to pay under its
+   idempotency key. A counted link closes the row on that payment, its own id
+   and amount, and calls Xero for nothing, so a run that
    died after its payment never pays twice, whatever Xero still remembers of
    the idempotency key. A repair whose completion lost its claim (an operator
    reset the row while it ran) logs a warning and says "Retry it once to close
