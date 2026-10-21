@@ -5356,6 +5356,91 @@ enqueue joins its caller's transaction. An inbound void racing a create's
 record on one payment can take the same two rows in the opposite order; that
 predates #4161 and is not changed here.
 
+## Voided bank-transfer refund note follow-up (#4162)
+
+`followUpVoidedBankRefundNote` (`src/lib/bank-refund-void-follow-up.ts`, owner
+decision 17 Oct 2026, `INV-ADDPAY-042`) undoes a bank refund whose Xero credit
+note was voided: it takes the amount out of the payment's transactions
+(`unwindLocalRefundAllocation`), reverses the hand-back's `BANK_REFUND` line,
+recomputes the refunded total (`reconcilePaymentAggregates`) and raises one open
+follow-up hand-back, in one commit. That is settlement money and an open
+hand-back that every edit, acceptance, paid cancel and refund appeal reads
+separately to size a refund, so it is a global-cohort writer (`INV-LOCK-001`).
+Each voided note is its own short transaction, in this order (`INV-LOCK-002`):
+
+1. `lock(1)`, the transaction's first lock;
+2. the `Payment` row (`lockPaymentForRefundedTotal`) BEFORE anything about the
+   payment is read - the #4217 order: every refunded-total writer without
+   `lock(1)` (every Stripe refund recorder, a cancellation hand-back's
+   completion, the rebuild) takes that row first;
+3. the note re-classified under both (`classifyVoidedBankRefundNote`);
+4. the claim: the follow-up's unique occurrence key
+   (`bank-refund-void:<paymentId>:<creditNoteId>`, `createMany` with
+   `skipDuplicates`), inserted before any money moves. A lost claim moves
+   nothing;
+5. the unwind's `PaymentTransaction` rows (re-taking the `Payment` row it
+   holds), the reversal line, the rebuild (re-taking it again), the audit row.
+
+A spare note writes only a marker on its link. The link row is taken last,
+after the `Payment` row, with `FOR UPDATE NOWAIT`: the inbound sync's link
+write and #4161's heal take the link before the `Payment` row, so the follow-up
+never waits on a link while holding the `Payment` row - a busy link raises
+55P03, the transaction rolls back having written nothing, and the note is
+tried again the next night. No new cycle against the #4217 order (`lock(1)`,
+lodge, member, `Payment`, rows): the follow-up takes no lodge or member key,
+and every row it touches comes after the `Payment` row.
+
+Counterparts:
+
+- **#4161's heal** runs first in the same 02:25 slot. It takes the link and the
+  `Payment` row `NOWAIT`, so while a follow-up holds the `Payment` row it
+  defers; a mirror still active is left for the next night ("awaiting heal").
+- **The inbound recount** (`repairRefundedPaymentBusinessState`) takes no lock:
+  its compare-and-set on the row as read loses to the follow-up's write and
+  recounts, and its floor (`INV-ADDPAY-021`) never takes a bank-transfer total
+  below the detail the follow-up left.
+- **A refund-note create in flight** (`findBlockingRefundCreditNoteOperationId`)
+  defers the note: that create's coverage is not known yet.
+- **A second run** queues on `lock(1)` and re-classifies the note as handled;
+  without the lock, the unique key would still refuse its insert.
+- **The follow-up's completion** (`resolveManualRefundTask`) takes `lock(1)`,
+  because the follow-up is a non-cancellation hand-back, then the `Payment`
+  row through its allocation. The "already in Xero" answer reads Xero before
+  that transaction opens, so no provider call runs under either lock. After
+  the commit, and outside any lock, the hand-made note is read again
+  (`reconcileHandMadeNoteAfterCompletion`, through the inbound
+  `reconcileXeroCreditNote`), so a void in between is caught.
+
+**A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
+runs the very same undo (`undoUnderLocks`) for an unmatched note: the same
+`lock(1)` and `Payment` row (`lockAndClassify`, the one place every writer here
+takes them), the same rows. Its claim is the note-and-line key
+(`bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`), so a note that
+recorded several refunds takes one pick per refund. Under the locks it
+re-checks that the note is still unmatched and that the picked line is a live
+`BANK_REFUND` hand-back line of THIS payment, that no live note of its own
+task records even in part, no larger than what is left of the note's amount, and whose
+refund the detail still holds (`resolvePickedUndo`). The pick that leaves
+nothing to pick then writes the `picked` marker on the link row, last and
+`NOWAIT`, as a spare's marker is written. `markUnmatchedBankRefundVoidAnswered` (a card
+refund's record, nothing to pick) moves no money but joins the same cohort and
+order, then writes its marker on the link row `NOWAIT`. Both are refused while
+the follow-up is report-only. The nightly run classifies each note unlocked
+first and takes the locks only for a spare or an undo, so handled and
+unmatched notes never take `lock(1)`. One registered site,
+`lockAndClassify#1`; the link row lock is in the row-lock inventory.
+
+Proved by `bank-refund-void-follow-up.realdb.test.ts`: two runs; a concurrent
+reconcile; the inbound recount forced to read, wait for the undo's commit and
+resume - its claim lost, it recounts, and the total ends equal to the detail
+(the `INV-ADDPAY-021` floor is what keeps it there); the heal deferring; a
+create in flight; the link row held by another transaction (a spare defers
+with no marker, an answer is refused as busy); a pick, two picks on one note
+that recorded two refunds (both undone, then a third refused), and picks of
+another payment's line, a reversed one, one larger than what is left or one
+its own live note records in full or in part refused. The order is pinned by
+`bank-refund-void-follow-up.test.ts`.
+
 ## Refund-note link writes racing a void (#4195, #4223)
 
 A refund note's mirror goes inactive when the inbound sync records it VOIDED
