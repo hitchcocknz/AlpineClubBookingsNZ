@@ -3597,7 +3597,7 @@ primary booking invoice create saves its link -> worth gap check (#3980,
     -> supplementary invoice operation queued PENDING (once per anchor set)
   overcharge, or a shortfall no marked edit anchors -> REVIEW operation
     PRIMARY_INVOICE_WORTH_GAP written FAILED, replayable false (Retry
-    refused) -> treasurer acts in Xero and marks it resolved; one per
+    refused) -> treasurer acts in Xero, then Resolve (fixed in Xero); one per
     booking, invoice and direction
 ```
 

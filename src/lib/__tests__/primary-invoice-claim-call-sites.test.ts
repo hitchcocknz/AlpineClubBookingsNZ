@@ -74,9 +74,9 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     }
   });
 
-  it("the guests route, which settles for itself, makes the claim and marks its row", () => {
+  it("the guests route, which settles for itself, makes the same write and marks its row", () => {
     const route = read(GUESTS_ROUTE);
-    expect(route).toContain("await claimPrimaryInvoiceStillUnlinked(tx, {");
+    expect(route).toContain("await writeEditOnPayment(tx, { payment: booking.payment, changeFeeCents: 0 })");
     expect(route).toContain("primaryInvoiceSettlementHistory(settledAgainstPrimaryInvoice)");
   });
 

@@ -87,7 +87,7 @@ describe("the primary invoice's Xero Operations task (#3980)", () => {
       "primary-invoice-review:underbilled:b:i",
     );
     expect(primaryInvoiceReviewMessage({ kind: "OVERBILLED", bookingId: "abcdefgh-1", gapCents: -5_000 }, CLUB_FORMAT_TEST)).toBe(
-      "The primary Xero invoice for Booking abcdefgh bills $50.00 more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for $50.00 in Xero if one is due, then mark this resolved.",
+      "The primary Xero invoice for Booking abcdefgh bills $50.00 more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for $50.00 in Xero if one is due, then choose Resolve (fixed in Xero).",
     );
     expect(primaryInvoiceReviewMessage({ kind: "UNDERBILLED", bookingId: "abcdefgh-1", gapCents: 8_000 }, CLUB_FORMAT_TEST)).toContain(
       "bills $80.00 less than the booking is worth",

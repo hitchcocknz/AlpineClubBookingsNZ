@@ -1924,7 +1924,7 @@ recorded fee), not its fee alone:
   `operationType` `PRIMARY_INVOICE_WORTH_GAP`, on the booking, FAILED and not
   replayable, with the gap and figures on its payload and a plain-English
   `lastErrorMessage`. It shows in the panel as an active failure, Retry
-  refuses it, and the treasurer closes it with "Resolved in Xero"
+  refuses it, and the treasurer closes it with **Resolve (fixed in Xero)**
   (`INV-INT-025`) once they have acted. Its own correlation key, one per
   booking, invoice and direction, means a re-run raises no second task and no
   invoice or credit-note query mistakes it for a document's operation.

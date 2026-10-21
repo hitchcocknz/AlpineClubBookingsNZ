@@ -72,7 +72,7 @@ import {
 } from "@/lib/additional-payment-ask";
 import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
 import { NO_FOLDED_REISSUED_ASKS, NO_UNPAID_ASK_SETTLEMENT, unpaidAskOffsetHistory, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
-import { claimPrimaryInvoiceStillUnlinked, primaryInvoiceSettlementHistory, settlesAgainstPrimaryInvoice } from "@/lib/booking-primary-invoice-claim";
+import { primaryInvoiceSettlementHistory, writeEditOnPayment } from "@/lib/booking-primary-invoice-claim";
 import { additionalAmountToName, createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
@@ -1085,15 +1085,9 @@ export async function POST(
         additionalAmountCents = priceDiffCents;
       }
 
-      // #3980 (`INV-PAY-119`): this door settles for itself, so it claims an unlinked
-      // invoice itself (no fee: an add charges none), or is refused whole (409).
-      const settledAgainstPrimaryInvoice = settlesAgainstPrimaryInvoice(booking.payment);
-      if (settledAgainstPrimaryInvoice && booking.payment) {
-        await claimPrimaryInvoiceStillUnlinked(tx, {
-          paymentId: booking.payment.id,
-          changeFeeIncrementCents: 0,
-        });
-      }
+      // #3980 (`INV-PAY-119`): this door settles for itself, so it makes the edits'
+      // one payment write itself (no fee: an add charges none); 409 if the link moved.
+      const settledAgainstPrimaryInvoice = await writeEditOnPayment(tx, { payment: booking.payment, changeFeeCents: 0 });
 
       // This route only adds guests, so the no-adult rule can only change
       // from flagged → cleared (by adding an adult). When that happens, wipe

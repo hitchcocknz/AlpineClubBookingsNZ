@@ -10,5 +10,5 @@
   the invoice is linked: if the booking is now worth more, the difference is
   billed automatically on a supplementary invoice; if it is worth less, the
   treasurer gets a task in Xero Operations to check the invoice and raise a
-  credit note by hand, then mark it resolved. No credit note is ever raised
+  credit note by hand, then choose **Resolve (fixed in Xero)**. No credit note is ever raised
   automatically.

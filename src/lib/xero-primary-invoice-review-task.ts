@@ -14,7 +14,7 @@
  * THE TASK IS A `XeroSyncOperation` ROW, written FAILED and not replayable, so
  * it shows in the Xero Operations panel as an active failure with its message,
  * Retry refuses it ("not marked replayable"), and the treasurer closes it with
- * "Resolved in Xero" once they have acted (`INV-INT-025`). No provider call is
+ * "Resolve (fixed in Xero)" once they have acted (`INV-INT-025`). No provider call is
  * made and no migration is needed: `status` and the type columns are text.
  *
  * Its types are its own (`entityType` `REVIEW`) so no invoice, credit-note or
@@ -27,6 +27,7 @@
 import type { ClubFormat } from "@/lib/club-format";
 import { getClubFormat } from "@/lib/club-format-settings";
 import { prisma } from "@/lib/prisma";
+import { redactSensitiveText } from "@/lib/redact-sensitive-json";
 import { formatCents } from "@/lib/utils";
 import { sanitizeForJson } from "@/lib/xero-sync";
 
@@ -56,12 +57,22 @@ export function primaryInvoiceReviewMessage(
   const reference = `Booking ${input.bookingId.slice(0, 8)}`;
   const amount = formatCents(Math.abs(input.gapCents), format);
   return input.kind === "OVERBILLED"
-    ? `The primary Xero invoice for ${reference} bills ${amount} more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for ${amount} in Xero if one is due, then mark this resolved.`
-    : `The primary Xero invoice for ${reference} bills ${amount} less than the booking is worth: the booking was changed while the invoice was being raised, and no change could carry the difference. Check the invoice and bill ${amount} in Xero if it is due, then mark this resolved.`;
+    ? `The primary Xero invoice for ${reference} bills ${amount} more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for ${amount} in Xero if one is due, then choose Resolve (fixed in Xero).`
+    : `The primary Xero invoice for ${reference} bills ${amount} less than the booking is worth: the booking was changed while the invoice was being raised, and no change could carry the difference. Check the invoice and bill ${amount} in Xero if it is due, then choose Resolve (fixed in Xero).`;
 }
 
 /**
  * Raises the task, or finds the one an earlier run raised. Returns its id.
+ *
+ * ONE ATOMIC INSERT, written by hand rather than through the operation
+ * helpers, because neither fits: `startXeroSyncOperation` cannot write the
+ * error fields, and following it with `failXeroSyncOperation` is two writes -
+ * a crash between them leaves a RUNNING row the stale-running reset would turn
+ * into an ORPHANED_STALE_RUNNING failure with no message - and the second would
+ * count this row towards the repeated-failure alert, which is for providers
+ * that keep failing, not for a finding. The message is redacted as that
+ * helper's would be (`redactSensitiveText`), and the row sets no `xeroObjectUrl`
+ * (`xero-object-url-write-guard.test.ts`).
  * Two runs racing past the lookup could each write one; the panel groups rows
  * by correlation key and shows the latest, so a duplicate reads as one task.
  */
@@ -96,7 +107,7 @@ export async function raisePrimaryInvoiceReviewTask(input: {
       correlationKey,
       replayable: false,
       lastErrorCode: `PRIMARY_INVOICE_${input.kind}`,
-      lastErrorMessage: primaryInvoiceReviewMessage(input, await getClubFormat()),
+      lastErrorMessage: redactSensitiveText(primaryInvoiceReviewMessage(input, await getClubFormat())),
       requestPayload: sanitizeForJson({
         kind: input.kind,
         bookingId: input.bookingId,

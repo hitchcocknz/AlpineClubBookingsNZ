@@ -634,7 +634,7 @@ describe("the primary invoice's worth gap (#3980)", () => {
     expect(mocks.review).not.toHaveBeenCalled();
   });
 
-  it("splits the gap into the fee recorded since the build and the price, and never bills a negative part", async () => {
+  it("MUTATION: splits the gap into the fee recorded since the build and the price, signed as an edit's are (#1356)", async () => {
     // Price up 20.00 and a 15.00 fee recorded after the create read the booking.
     await queuePrimaryInvoiceWorthGap({
       bookingId: "booking_1",
@@ -644,13 +644,14 @@ describe("the primary invoice's worth gap (#3980)", () => {
       expect.objectContaining({ priceDiffCents: 2_000, changeFeeCents: 1_500 }),
       expect.anything(),
     );
-    // A correction that removed 10.00 of stay and kept a 15.00 fee: 5.00 owed, as fee.
+    // A correction that removed 10.00 of stay and kept a 15.00 fee: 5.00 owed,
+    // billed as the 15.00 fee and the 10.00 removal, never a 5.00 "fee".
     await queuePrimaryInvoiceWorthGap({
       bookingId: "booking_1",
       atLink: worthAtLink({ billed: [guest(300)], feeAtLinkCents: 1_500, atBuildCents: 30_000, builtTotalCents: 30_000, atLinkCents: 30_500 }),
     });
     expect(mocks.enqueue).toHaveBeenLastCalledWith(
-      expect.objectContaining({ priceDiffCents: 0, changeFeeCents: 500 }),
+      expect.objectContaining({ priceDiffCents: -1_000, changeFeeCents: 1_500 }),
       expect.anything(),
     );
   });

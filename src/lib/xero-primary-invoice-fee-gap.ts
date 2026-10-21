@@ -414,8 +414,9 @@ async function primaryInvoiceGapAnchors(bookingId: string): Promise<string[]> {
  *    ({@link primaryInvoiceGapAnchors}). Such an edit raised no document of its
  *    own, so an invoice anchored on one is this gap's and nothing else's -
  *    which is also how a re-run knows the gap is already queued, and why it
- *    never raises another edit's queued figure. Its lines are the fee share as
- *    a change fee and the rest as price, signed as an edit's are (#1356).
+ *    never raises another edit's queued figure. Its lines are the fee recorded
+ *    since the build as a change fee and the rest as price, signed as an
+ *    edit's are (#1356).
  *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
  *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
  *    credit note is raised automatically (owner, 21 Oct 2026).
@@ -535,14 +536,16 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   const recordPayment =
     payment?.source === PaymentSource.STRIPE && hasCapturedPayment(payment) && leftOverCashCents >= gapCents;
 
-  // The fee share as a change fee, the rest as price; the fee share never
-  // exceeds the gap, so neither part is negative and the two sum to it.
-  const changeFeeCents = Math.min(gapCents, Math.max(0, feeGapCents));
+  // The components stay SIGNED, as an edit's own are (#1356,
+  // `classifyXeroBookingEditSettlement`): the fee recorded since the build as a
+  // change fee, the rest as price, summing to the gap. A correction that kept
+  // a fee and removed a guest bills the fee and credits the removal on the one
+  // invoice, rather than netting the two into a smaller fee.
   const queued = await enqueueXeroSupplementaryInvoiceOperation(
     {
       bookingId,
-      priceDiffCents: gapCents - changeFeeCents,
-      changeFeeCents,
+      priceDiffCents: gapCents - feeGapCents,
+      changeFeeCents: feeGapCents,
       bookingModificationId: anchorIds[0],
     },
     { createdByMemberId: input.createdByMemberId, recordPayment },

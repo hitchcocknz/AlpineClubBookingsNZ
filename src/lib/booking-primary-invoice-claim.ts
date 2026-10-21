@@ -37,7 +37,7 @@ import { AdditionalAskChangedDuringReductionError } from "@/lib/additional-ask-r
 
 /** The member-facing refusal when the primary invoice was linked while the edit ran. */
 export const PRIMARY_INVOICE_RAISED_DURING_EDIT_MESSAGE =
-  "This booking's invoice was being raised while your change was saved, so nothing was changed. Please try again in a moment.";
+  "This booking's invoice was being raised while your change was being saved, so nothing was changed. Please try again in a moment.";
 
 /**
  * The refusal itself: TRANSIENT, like the unpaid-ask race it extends, so every
