@@ -1451,6 +1451,42 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
     });
   });
 
+  // #3949 (`INV-PAY-136`): an Internet Banking child's paid-back edit or appeal
+  // hand-back moves its refunded total too, so "above zero" is no longer
+  // "mirrored": the replay asks it net of those hand-backs, under the Payment row.
+  it("mirrors a child whose total only a paid-back hand-back moved, and skips one whose plan share is written beside it (#3949)", async () => {
+    mocks.settlementFindUnique.mockResolvedValue(settlement({ status: PaymentStatus.REFUNDED }));
+    const paidBack = (paymentId: string) => [
+      { kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", occurrenceKey: "edit-refund-hand-back:mod-1", paymentId, amountCents: 1000 },
+    ];
+    txClient.manualRefundTask.findMany.mockImplementation(async (args?: unknown) => paidBack((args as { where: { paymentId: string } }).where.paymentId));
+    const child = (id: string, paymentId: string, refunded: number) => ({
+      ...cancelledChild(id, paymentId, refunded),
+      payment: { id: paymentId, amountCents: 9000, refundedAmountCents: refunded, status: PaymentStatus.PARTIALLY_REFUNDED },
+    });
+    mocks.bookingFindUnique
+      .mockResolvedValueOnce(child("child-1", "pay-1", 1000))
+      .mockResolvedValueOnce(child("child-2", "pay-2", 5500));
+
+    const result = await executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST);
+
+    expect(result).toEqual({ outcome: "already_refunded", mirroredChildren: 1 });
+    // The hand-back's $10 stays; the plan's $45 goes on top, guarded on the figure read under the row lock.
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "pay-1", refundedAmountCents: 1000 },
+      data: { refundedAmountCents: 5500, status: PaymentStatus.PARTIALLY_REFUNDED },
+    });
+    // The note and the event are this plan's share, never the hand-back's again.
+    expect(mocks.enqueueXeroRefund).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueXeroRefund).toHaveBeenCalledWith("pay-1", 4500, { store: txClient });
+    expect(mocks.recordBookingEvent).toHaveBeenCalledWith(expect.objectContaining({ bookingId: "child-1", amountCents: 4500 }));
+    // The Payment row first, then the read (a hand-back's completion holds that row before its claim).
+    expect(mocks.txExecuteRaw).toHaveBeenCalled();
+    expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.paymentFindUniqueOrThrowLocked.mock.invocationCallOrder[0]!);
+    txClient.manualRefundTask.findMany.mockImplementation(async () => []);
+  });
+
   it("leaves ACTIVE children to the inline loop / reaper resume path", async () => {
     mocks.settlementFindUnique.mockResolvedValue(
       settlement({ refundPlan: { "child-1": 4500 } })

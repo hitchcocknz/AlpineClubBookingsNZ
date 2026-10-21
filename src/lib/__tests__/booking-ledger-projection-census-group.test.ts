@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import { planConfirmationChargeLines } from "@/lib/booking-ledger-confirmation-posting";
 import {
   groupChildHandBacksFromRows,
+  mirrorPlanShareWritten,
   organiserCardAppealRefundsFromRows,
   organiserChildRefundEvidenceFromRows,
   planGroupChildLines,
@@ -473,6 +474,36 @@ describe("sync lens F1: a refund appeal approved after the organiser cancel leav
   it("a paid appeal never stands in for an unwritten mirror: the plan's share is still added", () => {
     // Defensive: refunds made since the cancel that are the appeal's say nothing about the mirror.
     expect(kept(1_000, [task("COMPLETED", appeal, 1_000)])).toBe(2_250);
+  });
+
+  // #3949 (`INV-PAY-136`): an IB child's paid-back edit hand-back is in `refundedAmountCents` too,
+  // so it no longer says the plan's share is written; only what is above the paid-back hand-backs does.
+  it("#3949: a paid-back edit hand-back never stands in for an unwritten mirror either", () => {
+    const edit = "edit-refund-hand-back:m1";
+    // Only the $10 hand-back is on the mirror: the plan's $22.50 is still added to what goes back.
+    expect(kept(1_000, [task("COMPLETED", edit, 1_000)])).toBe(1_250);
+    // Hand-back paid before the cancel, plan sized net of it and written beside it: kept the same.
+    expect(kept(3_250, [task("COMPLETED", edit, 1_000)])).toBe(1_250);
+    const handBacks = groupChildHandBacksFromRows("pay-1", [task("COMPLETED", edit, 1_000), task("COMPLETED", appeal, 500)]);
+    expect(handBacks.completedEditRefundHandBackCents).toBe(1_000);
+    expect(mirrorPlanShareWritten(1_500, handBacks)).toBe(false);
+    expect(mirrorPlanShareWritten(1_501, handBacks)).toBe(true);
+    // And the plan's refund line is posted only once its share is on the mirror.
+    const planRefund = (refundedAmountCents: number) => {
+      const plan = planGroupChildLines({
+        child,
+        settlement,
+        siblings,
+        perChildCommittedRefundCents: null,
+        payment: { status: "PARTIALLY_REFUNDED", source: "INTERNET_BANKING", amountCents: 4_500, refundedAmountCents },
+        handBacks: groupChildHandBacksFromRows("pay-1", [task("COMPLETED", edit, 1_000)]),
+        appealRefunds: { recordedCents: 0, committedCents: 0 },
+      });
+      if (plan?.kind !== "plan") throw new Error("expected a plan");
+      return plan.postings.filter((posting) => posting.kind === "BANK_REFUND").map((posting) => posting.unitCents);
+    };
+    expect(planRefund(1_000)).toEqual([]);
+    expect(planRefund(3_250)).toEqual([2_250]);
   });
 
   it("the census plans the same, and once the back-post posts it the child agrees: no in-flight or dismissed hand-back to acknowledge", () => {
