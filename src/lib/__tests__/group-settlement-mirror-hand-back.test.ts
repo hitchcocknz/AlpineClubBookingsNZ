@@ -17,10 +17,11 @@ import { bankTransferRefundPayee, paidByOrganiserCard, paidByOrganiserInternetBa
 import {
   applyGroupSettlementMirrorRefund,
   chooseGroupSettlementMirrorRoute,
+  isBankTransferHandBackRoute,
   isGroupSettlementMirrorHandBack,
   type GroupSettlementMirrorRoute,
 } from "@/lib/group-settlement-mirror-hand-back";
-import { isBankTransferHandBackRoute, refundMethodForEditReviewRoute, refundRequestCreditNoteAsk } from "@/lib/edit-financial-review-xero-leg";
+import { refundMethodForEditReviewRoute, refundRequestCreditNoteAsk } from "@/lib/edit-financial-review-xero-leg";
 import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
 import { editRefundBankTransferPayee } from "@/lib/edit-refund-hand-back";
 import { editRefundHandBackReason, refundRequestHandBackReason } from "@/lib/manual-refund-task-copy";

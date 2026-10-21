@@ -2293,6 +2293,40 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   - **The member is told the club WILL refund by bank transfer**
     (`refundRequestApprovedRefundSentence`); card wording is unchanged.
 
+## INV-PAY-136
+
+**Related: `INV-PAY-117`, `INV-PAY-118`** (the tasks it completes) and
+**`INV-PAY-124`** (the organiser's own Internet Banking hand-back).
+
+- **An edit's or an approved appeal's hand-back on a joiner the organiser paid
+  for by Internet Banking goes back to the organiser, onto the child's mirror**
+  (#3949; owner decisions, 15 and 21 Oct 2026). `paidByOrganiserInternetBanking`
+  (`group-organiser-paid.ts`) is the one test. The child's payment is the
+  settle's mirror, with no `PaymentTransaction`, so `applyLocalRefundAllocation`
+  cannot carry it.
+  - **Completing it** (the `group-settlement-mirror` route,
+    `group-settlement-mirror-hand-back.ts`) takes `lock(1)`, then the `Payment`
+    row; caps, before the claim, at the payment less every OTHER open edit or
+    appeal hand-back; then raises `refundedAmountCents`
+    (`mirrorPlanRefundedCents`, REFUNDED or PARTIALLY_REFUNDED) and posts the
+    `BANK_REFUND` line and the marked `REFUNDED` event. An edit queues no Xero
+    note; an appeal keeps its own. The `GroupBookingSettlement` is untouched.
+    A live or a cancelled child alike; a payment a transaction backs keeps the
+    ledger route.
+  - **Dismissal and reopening are unchanged**: once the group is cancelled an
+    edit's is refused both (the cancel netted it); an appeal's may still be
+    dismissed, and reopened under its ceiling. The refusals name the organiser.
+  - **The group cancel's replay and the ledger planner** read the plan's share
+    as written only above what paid-back edit and appeal hand-backs moved
+    (`mirrorPlanShareWritten`), the replay under the `Payment` row, so a cancel
+    after one neither skips nor double-counts it.
+  - **The task's reason and the member's emails name the organiser**
+    (`bankTransferRefundPayee`).
+- Proven by `group-settlement-mirror-hand-back.test.ts`,
+  `manual-refund-task.test.ts`, `manual-refund-task-reopen.test.ts`,
+  `group-cancel.test.ts`, `booking-ledger-projection-census-group.test.ts` and
+  `ib-group-child-hand-back.realdb.test.ts`.
+
 ## INV-PAY-120
 
 - **A price reduction is first set against the member's unpaid card ask**

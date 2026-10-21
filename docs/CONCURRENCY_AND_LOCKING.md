@@ -3571,6 +3571,18 @@ does too, and both would post. So `resolveManualRefundTask` takes
   to PENDING and deletes that OPEN task in one transaction under the same key
   (`PUT /api/admin/refund-requests/[id]#2`, `INV-LOCK-001`).
 
+**#3949 adds no key.** An edit's or an appeal's hand-back on a joiner the
+organiser paid for by Internet Banking (`INV-PAY-136`) completes under the
+`lock(1)` above and then the child's `Payment` row (`lockPaymentForRefundedTotal`),
+taken in the route choice before the cap read and held to the mirror write:
+global, then the row (`INV-LOCK-002`), the order every refunded-total writer
+takes it in. The organiser cancel's per-child claim holds `lock(1)` and writes
+the same row, so the two serialise on the global key. Its recovery replay
+(`executeGroupSettlementRefundPlan`) holds no `lock(1)`, so it now takes that
+`Payment` row before it reads whether the plan's share is written
+(`readGroupChildMirrorForPlanReplay`): a completion holds the row before its
+claim, so the replay reads the refunded total and the paid-back task together.
+
 **#3791 adds the per-member credit-ledger lock to that completion, after
 `lock(1)`, the claim and the closure's re-price**, on the account-credit route
 only where nothing was captured: the share goes back through

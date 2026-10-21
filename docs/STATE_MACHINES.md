@@ -2197,6 +2197,16 @@ though the booking is cancelled, because the cancel came first and never
 counted it. See
 [`INV-PAY-118`](invariants/payment-and-settlement.md#inv-pay-118).
 
+**#3949 (owner decisions, 15 and 21 Oct 2026): on a joiner the organiser paid
+for by Internet Banking, both go back to the organiser.** The same OPEN ->
+COMPLETED or DISMISSED transitions, guarded the same way, but COMPLETED records
+the refund on the child's payment mirror (REFUNDED or PARTIALLY_REFUNDED) under
+`lock(1)` and then the `Payment` row, because that payment holds no captured
+transaction to allocate against; the group's settlement row does not move. It
+completes on a live child and after the organiser's group cancel alike, so the
+edit's task that the cancel netted is paid rather than stranded. See
+[`INV-PAY-136`](invariants/payment-and-settlement.md#inv-pay-136).
+
 **#4162 (owner decision 17 Oct 2026): a bank refund to re-confirm follows it
 too, raised by a void.** When Xero voids the credit note of a bank hand-back,
 the nightly follow-up (`INV-ADDPAY-042`) takes that refund back out of the

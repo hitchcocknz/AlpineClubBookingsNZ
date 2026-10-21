@@ -8,7 +8,6 @@ import {
   refundableCashNetOfOpenHandBacks,
 } from "@/lib/edit-refund-hand-back";
 import {
-  editRefundHandBackReopenAfterCancelMessage,
   isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   isRefundRequestHandBackTask,
@@ -16,7 +15,7 @@ import {
 import { recordManualRefundTaskReopenAudit } from "@/lib/manual-refund-task-reopen-audit";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
-import { bankTransferRefundPayee } from "@/lib/group-organiser-paid";
+import { editRefundHandBackReopenAfterCancelMessage } from "@/lib/manual-refund-task-copy";
 import {
   MANUAL_PAYMENT_NOTE_MAX,
   normaliseManualPaymentNote,
@@ -230,7 +229,7 @@ export async function reopenManualRefundTask({
     // #3827 (`INV-PAY-117`): a cancellation since the dismissal sized its refund
     // without this task, so reopening it would promise the same money twice.
     if (isEditRefundHandBackTask(task) && task.booking.status === BookingStatus.CANCELLED) {
-      throw new ManualBookingPaymentError(editRefundHandBackReopenAfterCancelMessage(bankTransferRefundPayee(task.booking)), 409); // #3949
+      throw new ManualBookingPaymentError(editRefundHandBackReopenAfterCancelMessage(task.booking), 409); // #3949
     }
     // #3827 (`INV-PAY-117`): never promise back more cash than was taken - for
     // an edit's refund and (D-3813-7) an approved appeal's alike, an appeal's

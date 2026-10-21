@@ -269,8 +269,7 @@ export async function PUT(
           bookingId: booking.id,
           paymentId: payment.id,
           refundRequestId: id,
-          amountCents: bankTransferCents,
-          booking: { ...booking, payment: lockedPayment }, // #3949: the payee on a group child
+          amountCents: bankTransferCents, booking: { ...booking, payment: lockedPayment }, // #3949: names the payee
         });
         // A row already holds this request's key (left by an earlier approval
         // of it), so nobody would be asked to send this money. Refuse rather
@@ -556,8 +555,7 @@ export async function PUT(
           firstName: refundRequest.member.firstName,
           amountCents: approvedAmountCents,
           bankTransferCents,
-          organiserCardRefund,
-          bankTransferPayee: bankTransferRefundPayee(booking), // #3949
+          organiserCardRefund, bankTransferPayee: bankTransferRefundPayee(booking), // #3949
           adminNotes: adminNotes ?? null,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
@@ -580,8 +578,7 @@ export async function PUT(
             approvedAmountCents,
             bankTransferCents,
             money.cents,
-            organiserCardRefund,
-            bankTransferRefundPayee(booking), // #3949: the group organiser, when they paid by internet banking
+            organiserCardRefund, bankTransferRefundPayee(booking), // #3949: the group organiser, when they paid by internet banking
           ),
           adminNotes: adminNotes ?? "",
           // #2268: pre-composed optional line — the flat body has no

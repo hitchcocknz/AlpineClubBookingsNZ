@@ -124,8 +124,12 @@ to send it from the **Money to settle** card (see the [payments guide](payments.
 (#3827). On a group booking the organiser paid for by card, the refund goes to
 the group organiser's card, and the sentence says it has been processed there
 only once that card refund has gone through; until then it says the refund is
-on its way to the group organiser's card (#4057). A reduction that goes back
-partly to the card and partly as account credit names both. A reduction that
+on its way to the group organiser's card (#4057). On a group booking the
+organiser paid for by internet banking, the bank transfer goes to the organiser
+and the sentence reads "The club will refund $X to the group organiser
+directly, because the group organiser paid for this booking." (#3949). A
+reduction that goes back partly to the card and partly as account credit names
+both. A reduction that
 cancels the member's unpaid additional payment outright adds "The additional
 payment we asked for has been cancelled, so you no longer need to pay it."
 (#3954).
@@ -137,7 +141,10 @@ refund $X to you by bank transfer.", and a booking paid partly by card names
 both parts (#3827). On a group joiner's booking the organiser paid for by card
 it reads "A refund of $X has been processed to the group organiser's card,
 because the group organiser paid for this booking." (or "is on its way to" while
-the card provider has not answered yet) (#3956). `{{amount}}` is still available
+the card provider has not answered yet) (#3956); on one the organiser paid for
+by internet banking it reads "The club will refund $X to the group organiser
+directly, because the group organiser paid for this booking." (#3949).
+`{{amount}}` is still available
 to a saved override, but it cannot say which way the money goes, so use
 `{{refundSentence}}`.
 
@@ -370,7 +377,8 @@ Two consequences worth knowing before you edit one:
   refund names where it went: the member's original payment method or, on a
   group booking the organiser paid for by card, the group organiser's card —
   processed there, or on its way there when the card refund has not gone
-  through yet (#4057, #4070) — or a bank transfer the club will send. Keep it
+  through yet (#4057, #4070) — or a bank transfer the club will send, to the
+  group organiser when the organiser paid for it by internet banking (#3949). Keep it
   on a line of its own, with no `$` or label in front.
 - **`{{changeSummary}}` on Booking Modified lists what changed, one line each.**
   Dates, guest count and total appear as a Previous/New pair only when they

@@ -48,7 +48,6 @@ import {
   EditFinancialReviewPendingError,
 } from "@/lib/edit-financial-review";
 import { sendBookingModifiedEmail } from "@/lib/email/booking";
-import type { BankTransferRefundPayee } from "@/lib/group-organiser-paid";
 import {
   editRefundBankTransferPayee,
   raiseEditRefundHandBackIfOwed,
@@ -164,8 +163,7 @@ export type GuestAcceptanceReprice =
       creditReturnedAsApplied: boolean;
       hasIssuedXeroInvoice: boolean;
       hasSucceededPayment: boolean;
-      /** #3949: who the club's bank transfer goes to (`editRefundBankTransferPayee`), or null when none is sent. */
-      bankTransferRefundPayee: BankTransferRefundPayee | null;
+      bankTransferRefundPayee: ReturnType<typeof editRefundBankTransferPayee>; // #3949: member, group organiser, or null
       paymentStatus: string | null;
       paymentId: string | null;
       zeroDollarAutoPaid: boolean;
@@ -355,8 +353,7 @@ export async function repriceBookingAfterGuestAcceptance(
       settlementMethod: null,
       creditReturnedAsApplied: false,
       hasIssuedXeroInvoice: hasIssuedPrimaryXeroInvoice(loaded),
-      hasSucceededPayment: false,
-      bankTransferRefundPayee: null,
+      hasSucceededPayment: false, bankTransferRefundPayee: null,
       paymentStatus: booking.payment?.status ?? null,
       paymentId: booking.payment?.id ?? null,
       zeroDollarAutoPaid: false,
@@ -518,8 +515,7 @@ export async function repriceBookingAfterGuestAcceptance(
     paymentId: booking.payment?.id ?? null,
     bookingModificationId: bookingModification.id,
     adjusted: paymentImpact,
-    editLabel: "guest's acceptance re-price",
-    booking, // #3949: the organiser is the payee on a group child they paid by internet banking
+    editLabel: "guest's acceptance re-price", booking, // #3949: booking names the payee (a group organiser who paid by bank transfer)
   });
   // #3954: a smaller re-issued ask, and a billed offset's note, are durable from this commit.
   await queueReductionAskFollowUps(tx, { bookingId, paymentId: booking.payment?.id ?? null, bookingModificationId: bookingModification.id, settled: paymentImpact });

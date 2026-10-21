@@ -15,9 +15,8 @@ import { hasIssuedPrimaryXeroInvoice } from "@/lib/booking-payment-state";
 import { isNonNegativeIntegerCents } from "@/lib/edit-financial-review-context";
 import { chooseEditReviewSettlementRoute, executeEditReviewSettlement, type EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
 import { giveBackCancelledShareCredit, writeEditReviewAccountCredit, type EditReviewAccountCreditOutcome } from "@/lib/edit-financial-review-account-credit";
-import { cancelledBookingRefundInvoiceId, isBankTransferHandBackRoute, queueCancelledBookingHandBackNoteInTransaction, queueRefundRequestCreditNoteInTransaction, refundMethodForEditReviewRoute } from "@/lib/edit-financial-review-xero-leg";
-import { applyGroupSettlementMirrorRefund } from "@/lib/group-settlement-mirror-hand-back";
-import { bankTransferRefundPayee } from "@/lib/group-organiser-paid";
+import { cancelledBookingRefundInvoiceId, queueCancelledBookingHandBackNoteInTransaction, queueRefundRequestCreditNoteInTransaction, refundMethodForEditReviewRoute } from "@/lib/edit-financial-review-xero-leg";
+import { applyGroupSettlementMirrorRefund, isBankTransferHandBackRoute } from "@/lib/group-settlement-mirror-hand-back"; // #3949
 import { MANUAL_PAYMENT_NOTE_MAX, normaliseManualPaymentNote } from "@/lib/manual-subscription-payment";
 import { requireMemberCreditRecipient } from "@/lib/member-credit";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
@@ -32,11 +31,10 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 // #3195: the $0 refusal is said by the settle SCREEN as well as thrown here, and
 // this module is `server-only` - so the sentence lives in a client-safe home and
 // both read it (`INV-SSOT`).
-import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
+import { editRefundHandBackDismissAfterCancelMessage, zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 import { recordBankRefundVoidAnswerInTransaction } from "@/lib/bank-refund-void-answer";
 import { isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
 import {
-  editRefundHandBackDismissAfterCancelMessage,
   isCancelCardShortfallTask, isEditRefundHandBackTask,
   isNonCancellationHandBackTask,
   refundRequestIdOfHandBack,
@@ -198,12 +196,8 @@ export async function resolveManualRefundTask(
     // settled by paying it. The cancel counted it as going back; dismissing it
     // now would leave the cancellation's kept figure wrong. Read under lock(1)
     // (taken above for this kind), which a paid cancel also holds.
-    if (
-      resolution === "dismissed" &&
-      isEditRefundHandBackTask(task) &&
-      task.booking.status === BookingStatus.CANCELLED
-    ) {
-      throw new ManualBookingPaymentError(editRefundHandBackDismissAfterCancelMessage(bankTransferRefundPayee(task.booking)), 409); // #3949: names the organiser on a group child
+    if (resolution === "dismissed" && isEditRefundHandBackTask(task) && task.booking.status === BookingStatus.CANCELLED) {
+      throw new ManualBookingPaymentError(editRefundHandBackDismissAfterCancelMessage(task.booking), 409); // #3949: names the organiser on a group child
     }
     const groupRefusal = groupOrganiserHandBackRefusal(task, resolution, confirmedAmountCents, format); if (groupRefusal) throw new ManualBookingPaymentError(groupRefusal, 409); // #4042
 
@@ -440,10 +434,7 @@ export async function resolveManualRefundTask(
             store: tx,
           });
         }
-        // #3949 (`INV-PAY-136`): a group child's hand-back, on its mirror (lock(1), then its Payment row).
-        else if (settlementRoute.kind === "group-settlement-mirror") {
-          await applyGroupSettlementMirrorRefund({ route: settlementRoute, store: tx });
-        }
+        else if (settlementRoute.kind === "group-settlement-mirror") await applyGroupSettlementMirrorRefund({ route: settlementRoute, store: tx }); // #3949: onto a group child's mirror, under its Payment row
         else if (settlementRoute.kind === "stripe-refund" && settlementRoute.refundCents > 0) {
           await enqueueEditFinancialReviewRefundRecovery({
             bookingId: task.bookingId,

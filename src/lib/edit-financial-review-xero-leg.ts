@@ -15,6 +15,7 @@ import {
 } from "@/lib/xero-operation-outbox";
 import { enqueueXeroRefundRequestCreditNoteOperation } from "@/lib/xero-refund-request-credit-note-outbox";
 import { isCancelCardShortfallTask, isNonCancellationHandBackTask, refundRequestIdOfHandBack } from "@/lib/manual-refund-task-settlement-rules";
+import { isBankTransferHandBackRoute } from "@/lib/group-settlement-mirror-hand-back";
 import type { RefundMethod } from "@/lib/xero-refund-method";
 import type { ClubFormat } from "@/lib/club-format";
 
@@ -42,20 +43,6 @@ export function refundMethodForEditReviewRoute(
     default:
       return "card";
   }
-}
-
-/**
- * #3949 (`INV-PAY-136`): DID THIS COMPLETION SEND MONEY BACK BY BANK TRANSFER,
- * recorded inside its own transaction? The ordinary hand-back
- * (`local-allocation`, on the payment's transactions) and a group child's
- * (`group-settlement-mirror`, on its mirror) alike: both post the
- * `BANK_REFUND` line, both are the `REFUNDED` event's money, and both owe a
- * refund request its own note. The one test, so neither is left out of one.
- */
-export function isBankTransferHandBackRoute(
-  route: EditReviewSettlementRoute | null,
-): route is Extract<EditReviewSettlementRoute, { kind: "local-allocation" | "group-settlement-mirror" }> {
-  return route?.kind === "local-allocation" || route?.kind === "group-settlement-mirror";
 }
 
 /**

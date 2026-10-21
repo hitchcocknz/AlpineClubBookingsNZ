@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ManualRefundTaskStatus } from "@prisma/client";
-import { EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE, editRefundHandBackReopenAfterCancelMessage } from "@/lib/manual-refund-task-settlement-rules";
+import { EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE } from "@/lib/manual-refund-task-settlement-rules";
+import { editRefundHandBackReopenAfterCancelMessage } from "@/lib/manual-refund-task-copy";
 
 /**
  * #3498 (owner decision D2, epic #2797): putting a DISMISSED money task back on
@@ -507,9 +508,9 @@ describe("reopening a dismissed hand-back on a joiner the organiser paid for by 
   it("refuses an edit's after the group cancel, naming the organiser", async () => {
     mocks.findUnique.mockResolvedValue(dismissedOnGroupChild("edit-refund-hand-back:mod-1", "CANCELLED"));
 
-    await expect(reopen()).rejects.toMatchObject({ status: 409, message: editRefundHandBackReopenAfterCancelMessage("organiser") });
-    expect(editRefundHandBackReopenAfterCancelMessage("organiser")).toContain("organiser");
-    expect(editRefundHandBackReopenAfterCancelMessage("member")).toBe(EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE);
+    await expect(reopen()).rejects.toMatchObject({ status: 409, message: editRefundHandBackReopenAfterCancelMessage(GROUP_CHILD) });
+    expect(editRefundHandBackReopenAfterCancelMessage(GROUP_CHILD)).toContain("organiser");
+    expect(editRefundHandBackReopenAfterCancelMessage({ ...GROUP_CHILD, organiserSettled: false })).toBe(EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE);
     expect(mocks.updateMany).not.toHaveBeenCalled();
   });
 

@@ -42,13 +42,15 @@ const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 const PREFIX = "race-3949-";
 const NAMES = historyNames(PREFIX);
 const D2 = new Date("2027-10-02T00:00:00.000Z");
+/** Who paid, as the refusals read it: the organiser, by internet banking. */
+const GROUP_PAID = { organiserSettled: true, parentBookingId: "organiser", payment: { source: "INTERNET_BANKING" } };
 /** The edit's reduction: one night $15 cheaper. */
 const EDIT_CENTS = 1_500;
 
 let prisma: PrismaClient;
 let resolution: typeof import("@/lib/manual-refund-task-resolution");
 let reopenDoor: typeof import("@/lib/manual-refund-task-reopen");
-let rules: typeof import("@/lib/manual-refund-task-settlement-rules");
+let copy: typeof import("@/lib/manual-refund-task-copy");
 let censusStore: typeof import("@/lib/booking-ledger-projection-census-store");
 
 async function census(): Promise<BookingLedgerCensusReport> {
@@ -147,7 +149,7 @@ const money = async (bookingId: string) =>
     ({ prisma } = await import("@/lib/prisma"));
     resolution = await import("@/lib/manual-refund-task-resolution");
     reopenDoor = await import("@/lib/manual-refund-task-reopen");
-    rules = await import("@/lib/manual-refund-task-settlement-rules");
+    copy = await import("@/lib/manual-refund-task-copy");
     censusStore = await import("@/lib/booking-ledger-projection-census-store");
     await cleanHistories(prisma, PREFIX);
     await seedHistoryFixtures(prisma, PREFIX);
@@ -191,7 +193,7 @@ const money = async (bookingId: string) =>
     // The plan halves each child's refundable base, the edited one net of the $15 still promised.
     const plan = (await prisma.groupBookingSettlement.findUniqueOrThrow({ where: { id: g.settlement } })).refundPlan;
     expect(plan).toEqual({ [edited!]: (GROUP_CHILD_CENTS - EDIT_CENTS) / 2, [other!]: GROUP_CHILD_CENTS / 2 });
-    await expect(dismiss(live)).rejects.toMatchObject({ status: 409, message: rules.editRefundHandBackDismissAfterCancelMessage("organiser") });
+    await expect(dismiss(live)).rejects.toMatchObject({ status: 409, message: copy.editRefundHandBackDismissAfterCancelMessage(GROUP_PAID) });
     // Until it is paid, the census holds it as money the cancel counted as going back.
     expect(about(await census(), edited!)).toEqual({ ...NOTHING, classes: ["IN_FLIGHT_HAND_BACK:PRICE"] });
 
@@ -214,7 +216,7 @@ const money = async (bookingId: string) =>
     await dismiss(taskId);
     await cancelGroupHistory(NAMES, g);
 
-    await expect(reopen(taskId)).rejects.toMatchObject({ status: 409, message: rules.editRefundHandBackReopenAfterCancelMessage("organiser") });
+    await expect(reopen(taskId)).rejects.toMatchObject({ status: 409, message: copy.editRefundHandBackReopenAfterCancelMessage(GROUP_PAID) });
     expect((await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId } })).status).toBe("DISMISSED");
   }, 300_000);
 
@@ -234,7 +236,7 @@ const money = async (bookingId: string) =>
 
     expect(await payment(child!)).toEqual({ status: "REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: GROUP_CHILD_CENTS });
     expect(await settlementStatus(g)).toBe("SUCCEEDED");
-    const event = await prisma.bookingEvent.findFirstOrThrow({ where: { bookingId: child!, type: "REFUNDED", amountCents: remaining, snapshot: { not: null } }, select: { snapshot: true } });
+    const event = await prisma.bookingEvent.findFirstOrThrow({ where: { bookingId: child!, type: "REFUNDED", amountCents: remaining, snapshot: { path: ["kind"], equals: "refund_request_hand_back_completed" } }, select: { snapshot: true } });
     expect(event.snapshot).toEqual({ kind: "refund_request_hand_back_completed", manualRefundTaskId: taskId });
     const found = about(await census(), child!);
     expect(found).toMatchObject({ disagreements: [], coverage: [], integrity: [] });

@@ -10,6 +10,7 @@ import { mirrorPlanRefundedCents } from "@/lib/group-settlement-refund-plan";
 import { isEditRefundHandBackTask, isRefundRequestHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
+import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
 
 /**
  * #3949 (`INV-PAY-136`; owner decisions on #3949, 15 and 21 Oct 2026): AN
@@ -41,6 +42,20 @@ import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
  * (`lockPaymentForRefundedTotal`) next, before the cap read, so the cap and the
  * write see one figure (`INV-LOCK-002`: global, then the row).
  */
+
+/**
+ * #3949 (`INV-PAY-136`): DID THIS COMPLETION SEND MONEY BACK BY BANK TRANSFER,
+ * recorded inside its own transaction? The ordinary hand-back
+ * (`local-allocation`, on the payment's transactions) and a group child's
+ * (`group-settlement-mirror`, on its mirror) alike: both post the
+ * `BANK_REFUND` line, both are the `REFUNDED` event's money, and both owe a
+ * refund request its own note. The one test, so neither is left out of one.
+ */
+export function isBankTransferHandBackRoute(
+  route: EditReviewSettlementRoute | null,
+): route is Extract<EditReviewSettlementRoute, { kind: "local-allocation" | "group-settlement-mirror" }> {
+  return route?.kind === "local-allocation" || route?.kind === "group-settlement-mirror";
+}
 
 /** The route a completion takes for such a hand-back (`EditReviewSettlementRoute`'s member). */
 export type GroupSettlementMirrorRoute = {

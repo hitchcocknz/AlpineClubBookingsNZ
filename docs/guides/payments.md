@@ -233,6 +233,19 @@ made (being retried, or stopped and listed on
 made after the booking is cancelled, the cancellation never counted this task,
 and it can be dismissed (with a note) if the club settles it another way.
 
+**On a joiner's booking the group organiser paid for by internet banking
+(#3949).** Both tasks above can be raised on such a booking: a joiner's change
+that lowers the price, or an approved appeal on their place. The money came
+from the organiser's one group payment, so it goes back to the **organiser**,
+not the joiner: the task's reason says "to the group organiser by bank
+transfer", and the joiner's email says the club will refund the group organiser
+directly. Send it to the organiser and mark it paid back as above; that records
+the refund against the joiner's share of the group payment, and the group's own
+settlement is left as it was. The rules above are unchanged: once the organiser
+has cancelled the group, a change's task can only be marked paid back, while an
+appeal's can still be dismissed with a note. Tasks raised before this change,
+which could not be marked paid back at all, now can.
+
 **The same task for a group paid by internet banking (#4042).** When the
 organiser of a group they paid for with one internet banking settlement
 cancels it, each joiner's refund is recorded in the app's ledger straight

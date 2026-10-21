@@ -268,7 +268,8 @@ vi.mock("@/lib/member-credit", () => {
 });
 
 import { resolveManualRefundTask } from "@/lib/manual-refund-task-resolution";
-import { EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE, editRefundHandBackDismissAfterCancelMessage } from "@/lib/manual-refund-task-settlement-rules";
+import { EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE } from "@/lib/manual-refund-task-settlement-rules";
+import { editRefundHandBackDismissAfterCancelMessage } from "@/lib/manual-refund-task-copy";
 import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
 import { GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE } from "@/lib/group-organiser-hand-back-rules";
 import { completionMessage } from "@/lib/manual-refund-task-copy";
@@ -5489,8 +5490,10 @@ describe("#3949 - a hand-back on a joiner the organiser paid for by internet ban
   it("refuses dismissing an edit's after the group cancel, naming the organiser (the cancel netted it)", async () => {
     groupChildTask("edit-refund-hand-back:mod-1", "CANCELLED");
 
-    await expect(dismiss()).rejects.toMatchObject({ status: 409, message: editRefundHandBackDismissAfterCancelMessage("organiser") });
-    expect(editRefundHandBackDismissAfterCancelMessage("organiser")).toContain("group organiser");
+    const organiserPaid = { organiserSettled: true, parentBookingId: "organiser-booking", payment: { source: "INTERNET_BANKING" } };
+    await expect(dismiss()).rejects.toMatchObject({ status: 409, message: editRefundHandBackDismissAfterCancelMessage(organiserPaid) });
+    expect(editRefundHandBackDismissAfterCancelMessage(organiserPaid)).toContain("group organiser");
+    expect(editRefundHandBackDismissAfterCancelMessage({ ...organiserPaid, organiserSettled: false })).toBe(EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE);
     expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
   });
 
