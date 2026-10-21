@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof for #3980 (`INV-PAY-136`; owner decision 21 Oct 2026,
+ * Real-PostgreSQL proof for #3980 (`INV-PAY-137`; owner decision 21 Oct 2026,
  * "refuse, and bill the gap"): an ordinary edit racing the booking's primary
  * Xero invoice create either is refused, or lands in what the create measures
  * at its link and is billed (a price increase) or handed to the treasurer (a

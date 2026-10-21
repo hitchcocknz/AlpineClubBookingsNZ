@@ -359,7 +359,7 @@ export async function applyPaymentAdjustments(
     additionalAmountCents = xeroAdditionalAmountCents;
   }
 
-  // #3980 (`INV-PAY-136`): the fee, and the claim on an unlinked invoice (409 if it moved).
+  // #3980 (`INV-PAY-137`): the fee, and the claim on an unlinked invoice (409 if it moved).
   const settledAgainstPrimaryInvoice = await writeEditOnPayment(tx, {
     payment: booking.payment,
     changeFeeCents: feeRecordedHereCents,

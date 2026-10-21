@@ -1501,7 +1501,7 @@ refunded total it corrects).
     `booking-ledger-projection-census.test.ts` and
     `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
-## INV-PAY-136
+## INV-PAY-137
 
 **Related: `INV-PAY-119`** (worth, and what the primary invoice bills).
 
@@ -3423,7 +3423,7 @@ _Split from `INV-PAY-057` (#3220)._
   on the payment and posts its `CHANGE_FEE` line under its modification's key
   at the settle, counting as income once captured.
 - **The primary invoice bills worth as the create read it**; an edit racing
-  its create is refused or measured (`INV-PAY-136`). The link's transaction
+  its create is refused or measured (`INV-PAY-137`). The link's transaction
   stores what was billed and Stripe cash (capped so ledger credit fits); a
   shortfall's supplementary invoice is paid from leftover cash, else unpaid.
   Retries re-check stored figures; PARTIAL repairs record the attempted

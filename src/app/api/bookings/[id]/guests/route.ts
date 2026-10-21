@@ -1085,7 +1085,7 @@ export async function POST(
         additionalAmountCents = priceDiffCents;
       }
 
-      // #3980 (`INV-PAY-136`): this door settles for itself, so it makes the edits'
+      // #3980 (`INV-PAY-137`): this door settles for itself, so it makes the edits'
       // one payment write itself (no fee: an add charges none); 409 if the link moved.
       const settledAgainstPrimaryInvoice = await writeEditOnPayment(tx, { payment: booking.payment, changeFeeCents: 0 });
 
