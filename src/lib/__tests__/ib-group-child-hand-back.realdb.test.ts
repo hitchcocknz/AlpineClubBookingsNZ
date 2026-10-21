@@ -218,21 +218,23 @@ const money = async (bookingId: string) =>
     expect((await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId } })).status).toBe("DISMISSED");
   }, 300_000);
 
-  it("an approved appeal's, after the group cancel: dismissed, reopened under its ceiling, then completed onto the mirror", async () => {
+  it("an approved appeal's, after the group cancel: dismissed, reopened under its ceiling, then completed onto the mirror for all the payment still holds", async () => {
     const g = await settledGroup("appeal");
     const [child] = g.children;
     await cancelGroupHistory(NAMES, g);
     const planned = GROUP_CHILD_CENTS / 2;
     expect((await payment(child!)).refundedAmountCents).toBe(planned);
-    const taskId = await appealHandBack(child!, 1_000);
+    // Every cent the cancel kept: the cap counts the OTHER open hand-backs, never this task's own amount.
+    const remaining = GROUP_CHILD_CENTS - planned;
+    const taskId = await appealHandBack(child!, remaining);
 
     await dismiss(taskId);
     await reopen(taskId);
     await complete(taskId);
 
-    expect(await payment(child!)).toEqual({ status: "PARTIALLY_REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: planned + 1_000 });
+    expect(await payment(child!)).toEqual({ status: "REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: GROUP_CHILD_CENTS });
     expect(await settlementStatus(g)).toBe("SUCCEEDED");
-    const event = await prisma.bookingEvent.findFirstOrThrow({ where: { bookingId: child!, type: "REFUNDED", amountCents: 1_000 }, select: { snapshot: true } });
+    const event = await prisma.bookingEvent.findFirstOrThrow({ where: { bookingId: child!, type: "REFUNDED", amountCents: remaining, snapshot: { not: null } }, select: { snapshot: true } });
     expect(event.snapshot).toEqual({ kind: "refund_request_hand_back_completed", manualRefundTaskId: taskId });
     const found = about(await census(), child!);
     expect(found).toMatchObject({ disagreements: [], coverage: [], integrity: [] });
