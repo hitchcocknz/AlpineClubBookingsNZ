@@ -23,6 +23,7 @@
  */
 import { PaymentTransactionKind } from "@prisma/client";
 
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 import { recordedPrimaryInvoiceSettlement, type PrimaryInvoiceEditSettlement } from "@/lib/booking-primary-invoice-claim";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
@@ -93,7 +94,7 @@ export async function anchorCardAsk(
 export async function readAnchorAsk(bookingId: string, bookingModificationId: string) {
   return prisma.paymentTransaction.findFirst({
     where: { payment: { bookingId }, kind: PaymentTransactionKind.ADDITIONAL, bookingModificationId },
-    orderBy: { createdAt: "desc" },
+    orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
     select: { stripePaymentIntentId: true, status: true, withdrawnAt: true },
   });
 }
