@@ -2103,9 +2103,9 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   credit is card-asked, Xero or not, plus captured card money on a booking that
   has left the settled statuses (today's route, pending #4272). Otherwise the
   issued invoice. ONE INSTRUMENT PER EDIT: a share whose edit has no card
-  request but a supplementary invoice still queued joins that invoice, which
-  the restate raises to the edit's total; a card ask beside it would bill the
-  member twice.
+  request but a supplementary invoice queued, sending, or failed and not yet
+  resolved joins that invoice; a card ask beside it would bill the member
+  twice.
 
 ## INV-PAY-062
 

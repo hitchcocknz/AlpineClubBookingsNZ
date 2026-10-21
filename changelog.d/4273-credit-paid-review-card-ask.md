@@ -11,5 +11,6 @@
   follows it too. Bookings that already had money taken by card are asked the
   same way as before, and a booking paid by internet banking is still billed
   through its invoice. If an earlier review of the same change was already
-  billed on a Xero invoice that has not yet been sent, a later one is added to
-  that invoice rather than asked by card, so the member is never billed twice.
+  billed on a Xero invoice that is still on its way to Xero (queued, being
+  sent, or failed and not yet resolved), a later one goes on that invoice
+  rather than to the card, so the member is not asked twice for the same money.
