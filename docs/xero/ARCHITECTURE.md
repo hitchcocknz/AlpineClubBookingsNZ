@@ -997,6 +997,55 @@ note.
    it gets "is FAILED; fix the cause, then requeue it". A REQUEUE row is never
    replayable itself, because replaying a replay compounds the state.
 
+   **A PARTIAL repair claims its row too (#4256).** The PARTIAL invoice
+   payment repair and the PARTIAL refund-note repair run through the same
+   helper in its PARTIAL-only mode. The claim needs the row PARTIAL,
+   unresolved and replayable, so an officer's resolve or mark non-replayable,
+   or a second retry, landing after the retry's read makes it lose: nothing is
+   written and Xero is not called. Before this, the zero-cash repair completed
+   the row SUCCEEDED over such a mark, and two retries both reached Xero,
+   stopped only by the payment's idempotency key. The invoice repair now closes
+   its row: SUCCEEDED, or PARTIAL while an invoice-email fault remains, which
+   the retry fence then refuses as a payment repair. A throw gives the row back
+   PARTIAL with its payload and the run's error, guarded on the claim, never
+   FAILED, whose error payload would replace what the repair reads.
+
+   The claim stamps `lastErrorCode = PARTIAL_REPAIR_RUNNING`
+   (`XERO_PARTIAL_REPAIR_RUNNING_CODE`). If the process dies mid-repair, the
+   row is stuck RUNNING with that code, and Mark failed or Reset stale running
+   (`writeStaleRunningXeroOperationReset`) returns it to PARTIAL, payload kept,
+   rather than FAILED. A FAILED Payment invoice row would go down the invoice
+   replay, which finds the invoice already linked, closes the row and records
+   no payment. Every completion a claimed repair writes, including the refund
+   settlement leg's, is guarded on the claim (`completeXeroSyncOperation`'s
+   `onlyIfRunningSince`), so a repair finishing after an operator's Mark failed
+   writes nothing over it; that completion also clears the marker code. An
+   invoice repair left PARTIAL by an email fault says so in `lastErrorMessage`
+   and raises no repeated-failure alert. The FAILED refund-note repair claims
+   its row too (FAILED mode). Mark non-replayable writes only onto a FAILED or
+   PARTIAL row, so a retry that claimed it after the officer's read gets the
+   409 "a retry is running"; a queued retry of a row marked not replayable is
+   closed as skipped. Rows repaired before this release stay partly
+   completed; retry them once and they close.
+
+   Before it pays, the invoice repair looks for the payment link an earlier run
+   recorded (`createXeroPaymentForInvoice` writes it, role `INVOICE_PAYMENT` or
+   `SUPPLEMENTARY_INVOICE_PAYMENT`, metadata `invoiceId`). The inbound sync
+   links every payment Xero reports on the invoice, a hand, part or DELETED one
+   included, so a link counts only when it is live money
+   (`isRecordedBookingInvoicePayment`) at exactly the repair's amount
+   (`recordedRepairPayment`); any other link leaves the repair to pay under its
+   idempotency key. A counted link closes the row on that payment, its own id
+   and amount, and calls Xero for nothing, so a run that
+   died after its payment never pays twice, whatever Xero still remembers of
+   the idempotency key. A repair whose completion lost its claim (an operator
+   reset the row while it ran) logs a warning and says "Retry it once to close
+   it", never "Repaired". If Xero refuses a repair's payment as an
+   overpayment, the money is already there: resolve the row in Xero. During a
+   blue/green deploy overlap, the old version's stale reset sends a stuck
+   repair to FAILED, and that row then needs Resolve in Xero or a by-hand
+   check of the payment.
+
    **Stuck RUNNING rows.** A row RUNNING longer than
    `STALE_RUNNING_XERO_OPERATION_MINUTES` (15) is stale (`xero-stale-operations.ts`).
    `isStaleRunningXeroOperation` takes the row and checks RUNNING itself,
@@ -1308,8 +1357,17 @@ on `manuallyResolvedAt`.
   `parsePaymentCreditNoteRetryInput` the retry replays with): never a
   per-payment block, so a later refund beyond it gets its own note, sized from
   the same coverage, and the hand-made note is never covered twice. A resolved
-  row whose amount cannot be read makes the enqueue refuse loudly (error log,
-  "raise it by hand"). `readRefundCreditNoteGap` is the one reader of the gap
+  row whose note a link records VOIDED or DELETED covers nothing (#4250,
+  `refundNoteIdSets(...).cancelled`, read in the same query as the live
+  notes): Xero no longer holds that note, so the nightly card self-heal sees
+  the gap and raises a fresh note (`INV-ADDPAY-041`). Its id is still
+  reported, but never its key: a re-raise's key can equal it when the note
+  executed at another watermark than it was queued at. Its amount is never
+  read. Owner decision (21 Oct 2026): a voided card refund note is raised
+  again automatically, even one resolved in Xero, so officers are told not to
+  replace it by hand as well, which would duplicate it. A resolved row whose
+  amount cannot be read, unless its note is voided or deleted (#4250), makes
+  the enqueue refuse loudly (error log, "raise it by hand"). `readRefundCreditNoteGap` is the one reader of the gap
   for the self-heal list and the booking page. No new booking invoice is queued
   while the payment's latest invoice create is resolved, and the
   missing-invoices list behind **Queue all** leaves those out. Single-booking
@@ -1438,7 +1496,8 @@ document automatically** — that judgement stays with the operator.
    every refund-note link (active/inactive, recorded or payload-recovered
    amount, recorded Xero status) and the plan. Active coverage counts notes
    an officer resolved in Xero, as the enqueue does (`INV-INT-025`), and a
-   resolved note whose amount cannot be read blocks the payment. The plan: reactivations (oldest first,
+   resolved note whose amount cannot be read blocks the payment, unless its
+   note is voided or deleted (#4250). The plan: reactivations (oldest first,
    never past the cash target), active links mirroring notes already
    VOIDED/DELETED in Xero (always deactivated — a cancelled note is never
    coverage), and what still needs manual review. A payment whose cash
@@ -1521,7 +1580,7 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | awaiting heal | The mirror is still active: the next night, after the heal. |
 | handled | Its nightly follow-up exists (the key is the claim); a link marker records a spare, a person's answer, or picks in full; or a person's picks add up to its amount (one pick when its amount cannot be read). Nothing more. |
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
-| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
+| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
 | unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; any other row with nothing to pick says why and takes a recorded answer. |
 

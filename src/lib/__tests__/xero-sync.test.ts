@@ -1545,3 +1545,53 @@ describe("completeXeroSyncOperation clears a stale error on success", () => {
     expect(data).not.toHaveProperty("lastErrorMessage");
   });
 });
+
+// #4256: a retry's completion lands only on its own claim, clears the claim's
+// marker code, and a repair that stays PARTIAL can opt out of the alert.
+describe("completeXeroSyncOperation onlyIfRunningSince", () => {
+  const claimedAt = new Date("2026-06-30T23:59:00.000Z");
+  function store(count: number) {
+    return {
+      xeroSyncOperation: {
+        updateMany: vi.fn().mockResolvedValue({ count }),
+        update: vi.fn(),
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ id: "op_repair", status: "PARTIAL" }),
+      },
+    };
+  }
+
+  it("MUTATION: writes only onto that RUNNING claim, and answers null when the claim is gone", async () => {
+    const tx = store(0);
+    await expect(
+      completeXeroSyncOperation("op_repair", { status: "SUCCEEDED" }, { store: tx as never, onlyIfRunningSince: claimedAt }),
+    ).resolves.toBeNull();
+    expect(tx.xeroSyncOperation.updateMany).toHaveBeenCalledWith({
+      where: { id: "op_repair", status: "RUNNING", startedAt: claimedAt },
+      data: expect.objectContaining({ status: "SUCCEEDED" }),
+    });
+    expect(tx.xeroSyncOperation.update).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: a PARTIAL completion onto the claim clears its marker code and takes the message it is given", async () => {
+    const tx = store(1);
+    await completeXeroSyncOperation(
+      "op_repair",
+      { status: "PARTIAL", lastErrorMessage: "The invoice email still failed." },
+      { store: tx as never, onlyIfRunningSince: claimedAt },
+    );
+    expect(tx.xeroSyncOperation.updateMany.mock.calls[0][0].data).toMatchObject({
+      status: "PARTIAL",
+      lastErrorCode: null,
+      lastErrorMessage: "The invoice email still failed.",
+    });
+  });
+
+  it("MUTATION: alert false raises no repeated-failure alert for a row left PARTIAL", async () => {
+    const { maybeNotifyXeroRepeatedFailure } = await import("@/lib/xero-hardening");
+    vi.mocked(maybeNotifyXeroRepeatedFailure).mockClear();
+    await completeXeroSyncOperation("op_repair", { status: "PARTIAL" }, { store: store(1) as never, onlyIfRunningSince: claimedAt, alert: false });
+    expect(maybeNotifyXeroRepeatedFailure).not.toHaveBeenCalled();
+    await completeXeroSyncOperation("op_repair", { status: "PARTIAL" }, { store: store(1) as never, onlyIfRunningSince: claimedAt });
+    expect(maybeNotifyXeroRepeatedFailure).toHaveBeenCalledTimes(1);
+  });
+});

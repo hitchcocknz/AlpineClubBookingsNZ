@@ -95,23 +95,29 @@ export function canonicalRefundNoteCandidates<
 async function readRefundNoteLinks(localId: string | { in: string[] }, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
   return (await db.xeroObjectLink.findMany({
     where: { localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
-    select: { xeroObjectId: true, metadata: true },
+    select: { xeroObjectId: true, metadata: true, active: true },
   })) ?? [];
 }
 
 /**
  * The payment's refund notes, active or not, in one read on the caller's client:
- * its per-refund notes (#3880), and the notes Xero recorded VOIDED/DELETED,
- * which are never re-adopted as its one refund note (`INV-ADDPAY-041`).
+ * its per-refund notes (#3880), the notes Xero recorded VOIDED/DELETED, which
+ * are never re-adopted as its one refund note (`INV-ADDPAY-041`), and (#4250)
+ * the notes with an active link - all from the same read, so a void landing
+ * meanwhile never shows in one set and not another.
  */
 export async function refundNoteIdSets(
   paymentId: string,
   db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
-): Promise<{ perDelta: Set<string>; cancelled: Set<string> }> {
+): Promise<{ perDelta: Set<string>; cancelled: Set<string>; active: Set<string> }> {
   const links = await readRefundNoteLinks(paymentId, db);
-  const idsWhere = (keep: (metadata: unknown) => boolean) =>
-    new Set(links.filter((link) => keep(link.metadata)).map((link) => link.xeroObjectId));
-  return { perDelta: idsWhere(isPerDeltaRefundNoteLink), cancelled: idsWhere(isRefundCreditNoteLinkCancelledInXero) };
+  const idsWhere = (keep: (link: (typeof links)[number]) => boolean) =>
+    new Set(links.filter(keep).map((link) => link.xeroObjectId));
+  return {
+    perDelta: idsWhere((link) => isPerDeltaRefundNoteLink(link.metadata)),
+    cancelled: idsWhere((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)),
+    active: idsWhere((link) => link.active === true),
+  };
 }
 
 /** `refundNoteIdSets(...).cancelled` for several payments at once (the booking repair's loader). */
