@@ -222,8 +222,9 @@ export async function chooseEditReviewChargeRoute({
   // disagree and strand the debt on a replay that never raises. It is the
   // edit doors' `canAskCardForIncrease` (#3502), so a booking paid wholly with
   // credit - a $0 SUCCEEDED card payment - is asked by card, Xero or not; plus
-  // the captured-card test this path used before, so nothing that was card-asked
-  // stops being asked (the helper's docblock says why). `Payment.source` alone
+  // the captured-card test this path used before - today's route for a
+  // booking outside the settled statuses, kept pending a decision (#4272), not
+  // the intended rule (the helper's docblock says why). `Payment.source` alone
   // is not enough - its schema DEFAULT is STRIPE, so a hand-settled booking
   // carries it with nothing captured behind it. A MEMBER is part of the test
   // rather than a fallback: minting needs somebody to bill, and a booking with

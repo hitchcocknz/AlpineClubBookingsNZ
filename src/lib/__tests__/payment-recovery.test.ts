@@ -5095,6 +5095,75 @@ describe("edit-financial-review charge recovery (#3170)", () => {
     expect(mockSyncEditFinancialReviewChargeRequest).not.toHaveBeenCalled();
     expect(mockAttachIntentToWaitingOps).not.toHaveBeenCalled();
   });
+
+  /**
+   * #3947: a booking paid wholly with account credit. Its payment is a $0
+   * SUCCEEDED card row with no customer, which the sync now asks the card for
+   * (`canAskCardForReviewCharge`, proved against the real sync in
+   * `edit-financial-review-charge.test.ts`). Here the replay around it: given a
+   * `raised` answer it must close the row and complete the deferred invoice
+   * exactly as for a card-paid booking.
+   */
+  describe("#3947: a booking paid wholly with credit", () => {
+    function creditPaidBooking(status: string) {
+      return {
+        status,
+        member: {
+          id: "m1",
+          email: "alice@test.com",
+          firstName: "Alice",
+          lastName: "Smith",
+        },
+        // Credit paid it, so no card was ever taken and no customer exists.
+        payment: { stripeCustomerId: null, status: PaymentStatus.SUCCEEDED },
+      };
+    }
+
+    it("a PAID booking's replay re-enters the sync, closes on `raised`, and raises the deferred invoice", async () => {
+      mockBookingFindUnique.mockResolvedValue(creditPaidBooking("PAID"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockSyncEditFinancialReviewChargeRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bookingId: "booking-1",
+          bookingModificationId: "mod-1",
+          paymentId: "payment-1",
+          hasIssuedXeroInvoice: true,
+          // The minter makes the customer; the replay passes none.
+          member: expect.objectContaining({ id: "m1", stripeCustomerId: null }),
+        }),
+      );
+      expect(result.succeeded).toBe(1);
+      expect(wasClosedSuccessfully()).toBe(true);
+      expect(wasLeftForRetry()).toBe(false);
+      expect(mockAttachIntentToWaitingOps).toHaveBeenCalledWith({
+        bookingModificationId: "mod-1",
+        paymentIntentId: "pi_additional_1",
+      });
+      expect(mockCompleteDeferredSupplementaryInvoice).toHaveBeenCalledTimes(1);
+      expect(mockCompleteDeferredSupplementaryInvoice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          bookingModificationId: "mod-1",
+          paymentIntentId: "pi_additional_1",
+          priceDiffCents: 23000,
+          hasIssuedXeroInvoice: true,
+        }),
+      );
+    });
+
+    it("a CANCELLED booking's replay closes without calling the sync", async () => {
+      mockBookingFindUnique.mockResolvedValue(creditPaidBooking("CANCELLED"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(wasClosedSuccessfully()).toBe(true);
+      expect(mockSyncEditFinancialReviewChargeRequest).not.toHaveBeenCalled();
+      expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
+      expect(mockAttachIntentToWaitingOps).not.toHaveBeenCalled();
+    });
+  });
 });
 
 /**

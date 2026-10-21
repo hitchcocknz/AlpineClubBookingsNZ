@@ -216,14 +216,17 @@ export function canAskCardForIncrease(booking: {
  * 15 Oct 2026 decision on #3947, matching the four edit doors (#3502) — OR the
  * captured-card test this path used before (`hasCapturedPayment` + `STRIPE`).
  *
- * The second clause is kept deliberately, not left over. A review can be
- * settled on a booking that has since left the settled statuses (most often
- * CANCELLED) while still holding money captured on a card, and that booking
- * took the card route before #3947. The decision covered credit-paid bookings,
- * not those, so their route is unchanged: dropping the clause would turn each
- * into a no-instrument refusal, because `hasIssuedPrimaryXeroInvoice` is gated
- * on the same settled statuses. The union therefore only ever ADDS the
- * credit-paid shape; nothing that was card-asked stops being asked.
+ * The second clause is TODAY'S ROUTE, KEPT PENDING A DECISION (#4272), not the
+ * intended rule. A review can be settled on a booking that has since left the
+ * settled statuses (most often CANCELLED) while still holding money captured on
+ * a card, and that booking took the card route before #3947. The decision on
+ * #3947 covered credit-paid bookings, not those, so their route is unchanged:
+ * dropping the clause would turn each into a no-instrument refusal, because
+ * `hasIssuedPrimaryXeroInvoice` is gated on the same settled statuses. Whether
+ * such a booking should be card-asked at all - a CANCELLED booking's ask is one
+ * the member cannot pay (`INV-ADDPAY-023`), and its recovery replay skips it -
+ * is #4272's question. Until then the union only ever ADDS the credit-paid
+ * shape; nothing that was card-asked stops being asked.
  *
  * INCREASES ONLY, like `canAskCardForIncrease`: a review REFUND reads its own
  * captured-cash tests (`editReviewRefundGoesBackOnCard`).

@@ -2633,9 +2633,11 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
     expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
   });
 
-  it("CONTROL: a CANCELLED booking holding money captured on a card keeps the card route it had", async () => {
-    // Nothing that was card-asked before #3947 stops being asked: the helper
-    // keeps the captured-card clause for a booking outside the settled statuses.
+  it("CONTROL: a CANCELLED booking holding money captured on a card keeps today's route, pending a decision (#4272)", async () => {
+    // TODAY'S ROUTE, KEPT PENDING A DECISION (see #4272), not the intended
+    // rule: #3947 changes nothing that was card-asked before it, so the helper
+    // keeps the captured-card clause for a booking outside the settled
+    // statuses. This pins that #3947 did not change it; #4272 decides it.
     mocks.manualRefundTaskFindUnique.mockResolvedValue(
       cardReviewTask({ booking: { ...cardReviewTask().booking, status: "CANCELLED" } }),
     );
@@ -2669,7 +2671,8 @@ describe("canAskCardForReviewCharge (#3947)", () => {
     ["asks: a settled credit-paid ($0) card payment", "PAID", payment(), true],
     ["asks: a settled captured card payment", "CONFIRMED", payment({ amountCents: 15000 }), true],
     ["asks: a PAYMENT_PENDING credit-paid booking", "PAYMENT_PENDING", payment(), true],
-    ["asks: a cancelled booking with money captured on a card", "CANCELLED", payment({ amountCents: 15000 }), true],
+    // Today's route, kept pending a decision (#4272).
+    ["asks (today's route, pending #4272): a cancelled booking with money captured on a card", "CANCELLED", payment({ amountCents: 15000 }), true],
     ["refuses: a cancelled credit-paid booking", "CANCELLED", payment(), false],
     ["refuses: a settled $0 internet-banking payment", "PAID", payment({ source: PaymentSource.INTERNET_BANKING }), false],
     ["refuses: a settled booking whose card payment never captured", "PAYMENT_PENDING", payment({ status: "PENDING" }), false],
