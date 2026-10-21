@@ -1,5 +1,5 @@
 - **The production deploy no longer demands AWS SES keys from a club that
-  sends mail through its own SMTP relay (fork, booking-fixes).** The deploy
+  sends mail through its own SMTP relay.** The deploy
   script's step-3 preflight required `AWS_SES_ACCESS_KEY_ID`,
   `AWS_SES_SECRET_ACCESS_KEY` and `SES_SNS_TOPIC_ARN` whatever the
   `.env` said about the mail provider, so an installation with
@@ -26,3 +26,8 @@
   straight back to the upstream registry, and step 3/8 says which source each
   name came from. A deploy run under `sudo`, which strips the shell
   environment, therefore still pulls the fork's own images.
+
+  The preflight reads the three provider flags exactly as the application
+  does: `true` or `false`, in any case; any other value (`yes`, `on`, `1`)
+  is refused before anything is deployed, instead of passing here and
+  leaving the site unable to send a single message.

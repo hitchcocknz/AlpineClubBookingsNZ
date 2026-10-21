@@ -1,5 +1,4 @@
-- **The database connection ceiling can be raised from `.env` (fork,
-  booking-fixes).** A routine blue/green handover on a live host was measured
+- **The database connection ceiling can be raised from `.env`.** A routine blue/green handover on a live host was measured
   at 39 open client connections, with one app container holding 18 against
   a configured limit of 10, so the deploy's pre-cutover warm-up found every
   public page failing with "too many database connections opened" and refused
@@ -13,3 +12,8 @@
   "Connection pool sizing" section records the measurement and why raising
   the ceiling, not shrinking a pool, is the right response until the
   app's multiple-pool behaviour is pinned and fixed.
+
+  `POSTGRES_MEM_LIMIT` (default `768m`, unchanged) lets a host raise the
+  database container's memory in step with the ceiling. The measurement
+  behind the change, one app container holding more connections than its
+  pool allows, is filed as #4269 for the fix at its source.

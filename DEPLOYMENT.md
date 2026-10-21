@@ -100,22 +100,26 @@ may lower both values, but keep the invariant above whenever you change a pool
 size, `max_connections`, or the replica count.
 
 **The ceiling is a setting, and the pool arithmetic above is not what a live host
-measures (fork, booking-fixes).** `POSTGRES_MAX_CONNECTIONS` in `.env` sets
-`max_connections` (default `40`, upstream's figure); it is applied when the
-`postgres` container is next created, which a blue/green deploy does at step 11
-when the compose model has changed. It became a setting because a routine
-handover on a live host was sampled, two seconds apart, at **39 client
-connections**: the serving web slot at 11, the cron leader at 18 and the
-freshly warmed target slot at 8 to 11 — against documented `connection_limit`s
-of 10, 5 and 10. One container holding 18 means the app opens **more than one
-pool per container** (each `PrismaClient` carries its own `pg` pool, and the
-production bundle evidently instantiates more than one), so the 27 budget is
-an undercount by roughly a factor of two, and the warm-up gate's page renders
+measured.** `POSTGRES_MAX_CONNECTIONS` in `.env` sets `max_connections`
+(default `40`, unchanged); it is applied when the `postgres` container is next
+created, which a blue/green deploy does at step 11 when the compose model has
+changed. It became a setting because a routine handover on a live host was
+sampled, two seconds apart, at **39 client connections**: the serving web slot
+at 11, the cron leader at 18 and the freshly warmed target slot at 8 to 11,
+against documented `connection_limit`s of 10, 5 and 10. One container holding
+18 means the app opens more than one pool per container, which is filed as
+[#4269](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4269) with
+the measurement; until it is pinned and fixed, the 27 budget above is an
+undercount by roughly a factor of two, and the warm-up gate's page renders
 fail with `P2037: too many database connections opened` exactly when three app
-containers are live. Until that multi-pool behaviour is pinned and fixed, a
-host that sees that error should raise the ceiling — `80` is comfortable under
-the 768m `mem_limit` — rather than lower a pool, because a smaller pool just
-moves the failure to `P2024` pool timeouts under real traffic.
+containers are live. A host that sees that error raises the ceiling rather
+than lowering a pool (a smaller pool moves the failure to `P2024` pool
+timeouts under real traffic), and raises `POSTGRES_MEM_LIMIT` with it: each
+backend costs its `work_mem` and connection overhead, so going from 40 to 80
+wants the limit taken from the default `768m` towards `1g`. The pairing
+`POSTGRES_MAX_CONNECTIONS=80` with the default `768m` has run on one fork host
+since mid-October 2026 without memory pressure, which is one host's evidence,
+not a measurement of the headroom.
 
 ## App CPU sizing
 
@@ -755,6 +759,10 @@ Caddy appended closest to the app container, then falls back to `X-Real-IP`.
 Do not expose app containers directly to the Internet or through another proxy
 that preserves attacker-supplied `X-Forwarded-For` values without appending its
 own trusted peer address.
+Caddy sets that header to its resolved client IP (`header_up X-Forwarded-For
+{client_ip}` in `deploy/caddy/tacbookings-active.caddy`), which is the connecting
+peer when Caddy is the edge and, in `CADDY_TLS_MODE=local`, the address the
+trusted proxy forwarded — see "Client IPs behind the proxy" below.
 
 ### Behind a TLS-terminating proxy: `CADDY_TLS_MODE=local`
 
@@ -785,6 +793,24 @@ docker compose --project-name <project> up -d caddy
 Do **not** edit `Caddyfile` on the host for this: the deploy refuses a dirty
 checkout, and the workspace it builds is a clean `git archive` that would drop
 the edit on the next release.
+
+#### Client IPs behind the proxy
+
+Behind another proxy, the only peer Caddy sees is that proxy, so without more
+the app would take the proxy's address as every visitor's: the per-IP rate
+limits on login, registration, forgotten-password and magic-link requests would
+share one bucket for the whole site (ten failed logins from anyone would lock
+every member out for the window), and the audit log would record the proxy's
+IP on every row. `tls-local.caddy` therefore declares the proxy as a trusted
+proxy (`servers { trusted_proxies static … }`, from `CADDY_TRUSTED_PROXIES`,
+default `private_ranges`) and reads the visitor's address from the proxy's
+`X-Forwarded-For`; the app's `reverse_proxy` then sends that resolved address
+as the one `X-Forwarded-For` value the app reads. Set `CADDY_TRUSTED_PROXIES`
+to the proxy's own address or CIDR when it is not on a private range, and
+**never** to a range the public can reach, because a visitor connecting from
+a trusted address can name any IP it likes. The proxy must itself set
+`X-Forwarded-For` (Nginx Proxy Manager does by default).
+
 
 ### Keep-alive windows must stay ordered (#3293)
 

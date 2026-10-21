@@ -113,6 +113,12 @@ write_active_upstream_file() {
     # the app had already closed and a reuse landing on that boundary was reset.
     # A reset POST/PUT cannot be replayed by Caddy's transport, so it reached the
     # browser as a bare 502 and every admin form showed its generic save error.
+    # The app reads the LAST X-Forwarded-For value as the visitor (getClientIp,
+    # src/lib/rate-limit.ts). Set it to Caddy's resolved client IP rather than
+    # appending Caddy's peer: behind a TLS-terminating proxy (CADDY_TLS_MODE=local,
+    # deploy/caddy/tls-local.caddy) the peer is the proxy, and every visitor would
+    # share one rate-limit bucket. With Caddy at the edge the two are the same.
+    echo "  header_up X-Forwarded-For {client_ip}"
     echo "  transport http {"
     echo "    keepalive 30s"
     echo "  }"
@@ -1891,10 +1897,25 @@ require_safe_database_password() {
 # nested inside `run_production_wrapper`, which the `--internal-blue-green-deploy`
 # re-entry never calls, so the wrapper's `env_flag_is_true` does not exist in
 # this process. The flag test is therefore defined here, beside its one caller.
+# Mirrors the app's own rule (`parseBooleanFlag`, src/lib/email-delivery.ts):
+# only `true` and `false`, case-insensitively; anything else is an error there,
+# so it must be one here too — `USE_SMTP_RELAY=yes` used to pass this preflight
+# and then the app refused to send a single message.
 env_file_flag_is_true() {
-  case "$1" in
-    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+  case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    true) return 0 ;;
     *) return 1 ;;
+  esac
+}
+
+require_env_file_flag_is_boolean() {
+  local name="$1" value="$2"
+  case "$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')" in
+    ""|true|false) return 0 ;;
+    *)
+      echo "${name} must be true or false; .env has '${value}'" >&2
+      return 1
+      ;;
   esac
 }
 
@@ -1904,6 +1925,9 @@ require_email_transport_env_keys() {
   use_ses="$(trim_whitespace "$(get_env_file_value USE_AWS_SES)")"
   use_relay="$(trim_whitespace "$(get_env_file_value USE_SMTP_RELAY)")"
   use_capture="$(trim_whitespace "$(get_env_file_value USE_LOCAL_CAPTURE)")"
+  require_env_file_flag_is_boolean USE_AWS_SES "$use_ses"
+  require_env_file_flag_is_boolean USE_SMTP_RELAY "$use_relay"
+  require_env_file_flag_is_boolean USE_LOCAL_CAPTURE "$use_capture"
   env_file_flag_is_true "$use_ses" && enabled_count=$((enabled_count + 1))
   env_file_flag_is_true "$use_relay" && enabled_count=$((enabled_count + 1))
   env_file_flag_is_true "$use_capture" && enabled_count=$((enabled_count + 1))
@@ -3735,6 +3759,12 @@ write_active_upstream_file() {
     # the app had already closed and a reuse landing on that boundary was reset.
     # A reset POST/PUT cannot be replayed by Caddy's transport, so it reached the
     # browser as a bare 502 and every admin form showed its generic save error.
+    # The app reads the LAST X-Forwarded-For value as the visitor (getClientIp,
+    # src/lib/rate-limit.ts). Set it to Caddy's resolved client IP rather than
+    # appending Caddy's peer: behind a TLS-terminating proxy (CADDY_TLS_MODE=local,
+    # deploy/caddy/tls-local.caddy) the peer is the proxy, and every visitor would
+    # share one rate-limit bucket. With Caddy at the edge the two are the same.
+    echo "  header_up X-Forwarded-For {client_ip}"
     echo "  transport http {"
     echo "    keepalive 30s"
     echo "  }"

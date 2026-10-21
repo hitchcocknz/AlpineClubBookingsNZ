@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 /*
   The production deploy's step-3 preflight requires the email transport's
-  credentials PER PROVIDER (fork booking-fixes). Until this change it demanded
+  credentials PER PROVIDER. Until this change it demanded
   the AWS SES keys and the SNS topic unconditionally, so a club relaying
   through its own SMTP provider — `USE_SMTP_RELAY=true`, SES keys legitimately
   blank, exactly as CONFIGURATION.md documents — could not deploy at all.
@@ -152,6 +152,45 @@ describe("the deploy requires email transport keys per provider", () => {
     expect(caddyfile).toContain("import /etc/caddy/deploy/tls-{$CADDY_TLS_MODE:acme}.caddy");
     const compose = readFileSync(join(process.cwd(), "docker-compose.yml"), "utf8");
     expect(compose).toContain("CADDY_TLS_MODE: ${CADDY_TLS_MODE:-acme}");
+  });
+
+  it("parses the provider flags exactly as the app does: true or false, case-insensitively", () => {
+    // `USE_SMTP_RELAY=yes` used to pass this preflight and then the app refused
+    // to send a single message; `USE_AWS_SES=True` was refused here and accepted
+    // there. The app's rule is `parseBooleanFlag` (src/lib/email-delivery.ts).
+    const isTrue = functionBody("env_file_flag_is_true");
+    expect(isTrue).toContain("tr '[:upper:]' '[:lower:]'");
+    expect(isTrue).toContain("true) return 0 ;;");
+    expect(isTrue).not.toMatch(/\byes\b|\bon\b|\b1\|/);
+    const isBoolean = functionBody("require_env_file_flag_is_boolean");
+    expect(isBoolean).toContain('""|true|false) return 0 ;;');
+    expect(isBoolean).toContain("must be true or false");
+    const body = functionBody("require_email_transport_env_keys");
+    for (const flag of ["USE_AWS_SES", "USE_SMTP_RELAY", "USE_LOCAL_CAPTURE"]) {
+      expect(body).toContain(`require_env_file_flag_is_boolean ${flag} `);
+    }
+    expect(script.indexOf("require_env_file_flag_is_boolean() {")).toBeGreaterThan(
+      script.indexOf("run_internal_blue_green_deploy() {"),
+    );
+  });
+
+  it("forwards the visitor's IP, not the proxy's, in both TLS modes", () => {
+    // Behind a TLS-terminating proxy the only peer Caddy sees is the proxy, and
+    // the app reads the LAST X-Forwarded-For value (getClientIp), so every
+    // visitor would share one rate-limit bucket. Local mode trusts the proxy
+    // and the app's reverse_proxy forwards Caddy's resolved client IP.
+    const local = readFileSync(join(process.cwd(), "deploy", "caddy", "tls-local.caddy"), "utf8");
+    expect(local).toMatch(/^\s*trusted_proxies static \{\$CADDY_TRUSTED_PROXIES:private_ranges\}$/m);
+    expect(local).toMatch(/^\s*client_ip_headers X-Forwarded-For$/m);
+    const acme = readFileSync(join(process.cwd(), "deploy", "caddy", "tls-acme.caddy"), "utf8");
+    expect(acme).not.toMatch(/trusted_proxies/);
+    const forward = "header_up X-Forwarded-For {client_ip}";
+    expect(readFileSync(join(process.cwd(), "deploy", "caddy", "tacbookings-active.caddy"), "utf8")).toContain(forward);
+    expect(readFileSync(join(process.cwd(), "Caddyfile.staging"), "utf8")).toContain(forward);
+    // Both generators of the active snippet (the wrapper's and the engine's).
+    expect(script.split(`echo "  ${forward}"`).length - 1).toBe(2);
+    const compose = readFileSync(join(process.cwd(), "docker-compose.yml"), "utf8");
+    expect(compose).toContain("CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-private_ranges}");
   });
 
   it("refuses the two states the app refuses, in the app's words", () => {
