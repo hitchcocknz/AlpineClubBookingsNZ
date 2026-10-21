@@ -18,8 +18,9 @@
  * spelling of the same rule is a `manuallyResolvedAt: null` filter (the
  * failure overview, the operations list's failure-state filter, contact-create
  * recovery, the retry claims in `xero-operation-retry.ts`, the resolve route,
- * the outbox cooldown hand-back, the repeated-failure alert and the refund-note
- * link repair) or `manuallyResolvedAt: { not: null }` (the enqueue fences in
+ * the outbox cooldown hand-back, the repeated-failure alert, the refund-note
+ * link repair and the review charge's still-coming read,
+ * `supplementaryInvoiceStillComingWhere`, #3947) or `manuallyResolvedAt: { not: null }` (the enqueue fences in
  * `xero-resolved-in-xero-fences.ts`, `hasInvoiceClearingNote`) - a `where`
  * clause cannot call a function, so those stay spelled out (`INV-INT-025`).
  */
