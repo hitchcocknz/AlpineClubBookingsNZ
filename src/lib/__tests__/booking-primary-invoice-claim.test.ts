@@ -120,7 +120,7 @@ describe("the edit's claim on the unlinked primary invoice (#3980)", () => {
       accountCreditAmountCents: 0,
       appliedCreditGivenBackCents: 1_000,
       unpaidAskOffsetCents: 2_500,
-      additionalAsk: { amountCents: 0 },
+      additionalAsk: { amountCents: 0, carriedCents: 0 },
     });
     expect(marker).toEqual({
       primaryInvoiceSettlement: {

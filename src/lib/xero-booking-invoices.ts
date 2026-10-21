@@ -1183,12 +1183,19 @@ export async function createXeroInvoiceForBooking(
     // goes on a supplementary invoice; an overcharge, or a shortfall no edit
     // anchors, becomes a Xero Operations task for the treasurer.
     // #3980 review C3: a second save of this invoice keeps the first's figures.
+    // Review round 2 F6: with no figures stored for it, this run's own are measured.
     const worthGap = feeAtLink
-      ? await queuePrimaryInvoiceWorthGap({ bookingId, atLink: feeAtLink, createdByMemberId: options?.createdByMemberId })
+      ? await queuePrimaryInvoiceWorthGap({
+          bookingId,
+          atLink: feeAtLink,
+          figuresOperationId: operationId!,
+          createdByMemberId: options?.createdByMemberId,
+        })
       : await recheckPrimaryInvoiceWorthGap({
           bookingId,
           xeroInvoiceId: createdInvoice.invoiceID,
           createdByMemberId: options?.createdByMemberId,
+          unstoredSave: { built: builtFrom, billedTotalCents: invoiceLineItemsTotalCents(createdInvoice.lineItems ?? lineItems) },
         });
 
     // #3955 round 5 (finding 3): captured cash the cap left off, untaken, is never silent.

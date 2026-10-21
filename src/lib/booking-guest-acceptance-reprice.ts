@@ -622,7 +622,9 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       // An acceptance never raises a settled booking's price (see
       // `repriceBookingAfterGuestAcceptance`), so there is no Stripe ask to wait on.
       requiresAdditionalStripePayment: false,
-      additionalPaymentIntentId: null,
+      // #3980 review round 2 F3: the re-issued ask it minted, for a gap invoice
+      // waiting on it (`settleParkedGapInvoice`).
+      additionalPaymentIntentId: additionalMint.additionalPaymentIntentId ?? null,
       createPrimaryInvoiceWhenMissing: reprice.zeroDollarAutoPaid && !reprice.hasIssuedXeroInvoice,
       // #3653: the organiser's refund raises its own note once Stripe has made it.
       organiserChildRefundOwnsCreditNote: reprice.organiserChildRefund !== null,

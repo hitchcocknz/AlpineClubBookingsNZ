@@ -107,6 +107,43 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     ]);
   });
 
+  /**
+   * Review round 2 F3: every door that mints a card ask after its commit hands
+   * the minted intent to its Xero leg, which settles a primary invoice's gap
+   * invoice waiting on that ask (`settleParkedGapInvoice`). A `null` there
+   * leaves such an invoice waiting on no intent until the reaper retires it.
+   */
+  it("every door that mints an ask passes its intent to the Xero leg", () => {
+    const doors = sourceFiles().filter(
+      (file) =>
+        /\bcreateModificationAdditionalPaymentIntent\(/.test(read(file)) &&
+        /\b(queueXeroBookingEditSettlement|queueGuestRemovalXeroSettlement)\(/.test(read(file)),
+    );
+    expect(doors).toEqual([
+      "src/app/api/bookings/[id]/guests/[guestId]/route.ts",
+      GUESTS_ROUTE,
+      "src/lib/booking-batch-modification-service.ts",
+      "src/lib/booking-date-modification-service.ts",
+      "src/lib/booking-guest-acceptance-reprice.ts",
+      "src/lib/member-guest-consent-service.ts",
+    ]);
+    for (const door of doors) {
+      const source = read(door);
+      for (const match of source.matchAll(/\b(queueXeroBookingEditSettlement|queueGuestRemovalXeroSettlement)\(/g)) {
+        let depth = 1;
+        let index = match.index! + match[0].length;
+        while (depth > 0 && index < source.length) {
+          if (source[index] === "(") depth += 1;
+          else if (source[index] === ")") depth -= 1;
+          index += 1;
+        }
+        const call = source.slice(match.index!, index);
+        expect(call, door).toMatch(/additionalPaymentIntentId/);
+        expect(call, door).not.toMatch(/additionalPaymentIntentId: null\b/);
+      }
+    }
+  });
+
   it("every price writer outside the edit doors that claims does so through the one write", () => {
     const callers = sourceFiles().filter(
       (file) => file !== CLAIM && /\bwriteEditOnPayment\(/.test(read(file)),

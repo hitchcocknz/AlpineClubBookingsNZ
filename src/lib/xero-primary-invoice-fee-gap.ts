@@ -34,12 +34,15 @@ import type { Invoice, LineItem, Payment as XeroPayment } from "xero-node";
 import { bookingWorthCents, hasCapturedPayment, recordedChangeFeeCents } from "@/lib/booking-payment-state";
 import { raisePrimaryInvoiceReviewTask } from "@/lib/xero-primary-invoice-review-task";
 import {
-  anchorCardAsk,
+  classifyAnchorAsk,
   primaryInvoiceGapAnchors,
+  primaryInvoiceReplayCutoff,
+  racingMarkedEdits,
   racingReductionSettlement,
   readAnchorAsk,
   readMarkedPrimaryInvoiceEdits,
 } from "@/lib/xero-primary-invoice-gap-anchors";
+import { settleParkedGapInvoice } from "@/lib/xero-primary-invoice-gap-ask";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
@@ -56,10 +59,7 @@ import {
 } from "@/lib/xero-modification-line-items";
 import { unallocatedAppliedCents } from "@/lib/xero-applied-credit-ledger-state";
 import { isCreditOnlyCardPayment } from "@/lib/credit-only-card-payment";
-import {
-  attachPaymentIntentToWaitingSupplementaryInvoiceOperations,
-  enqueueXeroSupplementaryInvoiceOperation,
-} from "@/lib/xero-operation-outbox";
+import { enqueueXeroSupplementaryInvoiceOperation } from "@/lib/xero-operation-outbox";
 import {
   readQueuedOutboxPayload,
   XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
@@ -291,7 +291,7 @@ export async function persistPrimaryInvoiceLink(input: {
 async function readPrimaryInvoiceFeeAtLink(
   bookingId: string,
   xeroInvoiceId: string,
-): Promise<PrimaryInvoiceFeeAtLink | null> {
+): Promise<{ atLink: PrimaryInvoiceFeeAtLink; operationId: string } | null> {
   const operation = await prisma.xeroSyncOperation.findFirst({
     where: {
       direction: "OUTBOUND",
@@ -301,9 +301,10 @@ async function readPrimaryInvoiceFeeAtLink(
       requestPayload: { path: [PRIMARY_INVOICE_FEE_AT_LINK_KEY, "xeroInvoiceId"], equals: xeroInvoiceId },
     },
     orderBy: { createdAt: "desc" },
-    select: { requestPayload: true },
+    select: { id: true, requestPayload: true },
   });
-  return parsePrimaryInvoiceFeeAtLink(operation?.requestPayload, xeroInvoiceId);
+  const atLink = parsePrimaryInvoiceFeeAtLink(operation?.requestPayload, xeroInvoiceId);
+  return operation && atLink ? { atLink, operationId: operation.id } : null;
 }
 
 /**
@@ -386,8 +387,20 @@ export async function recheckPrimaryInvoiceWorthGap(input: {
   bookingId: string;
   xeroInvoiceId: string;
   createdByMemberId?: string;
+  /**
+   * Review round 2 F6: what a create whose save found this invoice ALREADY
+   * linked - by another writer, which stores no figures - built and was billed.
+   * With no stored figures the gap is measured from these against the worth
+   * now, and handed to the treasurer rather than billed: the worth now may
+   * hold edits that read that link and billed themselves.
+   */
+  unstoredSave?: { built: { worthCents: number; lineTotalCents: number }; billedTotalCents: number };
 }): Promise<PrimaryInvoiceWorthGapResult> {
-  const atLink = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.xeroInvoiceId);
+  const stored = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.xeroInvoiceId);
+  const atLink = stored?.atLink ?? null;
+  if (!atLink && input.unstoredSave) {
+    return reviewUnstoredRelink({ ...input, unstoredSave: input.unstoredSave });
+  }
   if (!atLink) {
     const payment = await prisma.payment.findUnique({
       where: { bookingId: input.bookingId },
@@ -405,8 +418,56 @@ export async function recheckPrimaryInvoiceWorthGap(input: {
   return queuePrimaryInvoiceWorthGap({
     bookingId: input.bookingId,
     atLink,
+    figuresOperationId: stored?.operationId,
     createdByMemberId: input.createdByMemberId,
   });
+}
+
+/**
+ * Round 2 F6: the create's figures, measured against the worth now, for an
+ * invoice another writer linked first. Any gap is the treasurer's task, never
+ * billed: which edits after that link adjusted the invoice themselves is not
+ * known here.
+ */
+async function reviewUnstoredRelink(input: {
+  bookingId: string;
+  xeroInvoiceId: string;
+  createdByMemberId?: string;
+  unstoredSave: { built: { worthCents: number; lineTotalCents: number }; billedTotalCents: number };
+}): Promise<PrimaryInvoiceWorthGapResult> {
+  const booking = await prisma.booking.findUniqueOrThrow({
+    where: { id: input.bookingId },
+    select: { finalPriceCents: true, payment: { select: { changeFeeCents: true } } },
+  });
+  const worthNowCents = bookingWorthCents({
+    finalPriceCents: booking.finalPriceCents,
+    changeFeeCents: booking.payment?.changeFeeCents ?? null,
+  });
+  const { built, billedTotalCents } = input.unstoredSave;
+  const gapCents = worthNowCents - built.worthCents + (built.lineTotalCents - billedTotalCents);
+  if (gapCents === 0) return NO_GAP;
+  const figures = {
+    bookingId: input.bookingId,
+    xeroInvoiceId: input.xeroInvoiceId,
+    measuredOn: "worth-now",
+    worthCentsAtBuild: built.worthCents,
+    builtTotalCents: built.lineTotalCents,
+    billedTotalCents,
+    worthCentsNow: worthNowCents,
+  };
+  logger.error(
+    { ...figures, gapCents },
+    "The booking's primary Xero invoice was linked by another writer while the create was in flight, and it bills other than the booking is worth; a Xero Operations task asks the treasurer to check it (#3980)",
+  );
+  const review = await raisePrimaryInvoiceReviewTask({
+    kind: gapCents < 0 ? "OVERBILLED" : "UNDERBILLED",
+    bookingId: input.bookingId,
+    xeroInvoiceId: input.xeroInvoiceId,
+    gapCents,
+    figures,
+    createdByMemberId: input.createdByMemberId,
+  });
+  return { ...NO_GAP, gapCents, reviewOperationId: review.operationId };
 }
 
 /**
@@ -432,6 +493,8 @@ export async function recheckPrimaryInvoiceWorthGap(input: {
 export async function queuePrimaryInvoiceWorthGap(input: {
   bookingId: string;
   atLink: PrimaryInvoiceFeeAtLink;
+  /** The create operation that stored `atLink` (review round 2 F1: a replay's anchors). */
+  figuresOperationId?: string;
   createdByMemberId?: string;
 }): Promise<PrimaryInvoiceWorthGapResult> {
   const { bookingId, atLink } = input;
@@ -453,7 +516,13 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   };
   if (gapCents === 0) return NO_GAP;
 
-  const marked = await readMarkedPrimaryInvoiceEdits(bookingId);
+  // Round 2 F1: only the marked edits that landed while the create was in
+  // flight - never one already on the primary invoice's lines.
+  const racing = racingMarkedEdits(
+    await readMarkedPrimaryInvoiceEdits(bookingId),
+    atLink.worth?.markedModificationIdsAtBuild,
+    await primaryInvoiceReplayCutoff(bookingId, input.figuresOperationId),
+  );
   const raiseReview = async (
     kind: "OVERBILLED" | "UNDERBILLED",
     message: string,
@@ -482,16 +551,16 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     return raiseReview(
       "OVERBILLED",
       "The booking's primary Xero invoice bills more than the booking was worth when its link was saved; a Xero Operations task asks the treasurer to correct it (#3980)",
-      racingReductionSettlement(marked, atLink.worth?.markedModificationIdsAtBuild),
+      racingReductionSettlement(racing) ?? undefined,
     );
   }
 
-  const anchors = await primaryInvoiceGapAnchors(bookingId, marked);
+  const anchors = await primaryInvoiceGapAnchors(bookingId, racing);
   const anchorIds = anchors.map((anchor) => anchor.id);
   if (anchorIds.length === 0) {
     return raiseReview(
       "UNDERBILLED",
-      "The booking's primary Xero invoice bills less than the booking was worth when its link was saved, and no edit settled against it to anchor the remainder on; a Xero Operations task asks the treasurer to bill it (#3980)",
+      "The booking's primary Xero invoice bills less than the booking was worth when its link was saved, and no edit that landed while it was raised anchors the remainder; a Xero Operations task asks the treasurer to bill it (#3980)",
     );
   }
 
@@ -557,10 +626,17 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   });
   const netCapturedCents = Math.max(0, (payment?.amountCents ?? 0) - (payment?.refundedAmountCents ?? 0));
   const leftOverCashCents = payment ? netCapturedCents - atLink.primaryInvoiceCashCents : 0;
-  // Review M2: an anchor that asked the member's card is paid by that ask, as
-  // its own supplementary invoice would have been - never by the primary's cash.
-  const cardAsk = await anchorCardAsk(bookingId, anchors[0]!);
-  const recordPayment = cardAsk
+  // Review M2: an anchor that asked the member's card, an ask live and of its
+  // own at least the gap (round 2 F2), is what pays it, as its own
+  // supplementary invoice would have been - never the primary's cash. The
+  // invoice waits on the ask; `settleParkedGapInvoice` settles it below.
+  const anchorAsk = classifyAnchorAsk({
+    anchor: anchors[0]!,
+    row: await readAnchorAsk(prisma, bookingId, anchorIds[0]!),
+    gapCents,
+  });
+  const parked = anchorAsk.kind === "pending" || anchorAsk.kind === "captured" || anchorAsk.kind === "unminted";
+  const recordPayment = parked
     ? true
     : payment?.source === PaymentSource.STRIPE && hasCapturedPayment(payment) && leftOverCashCents >= gapCents;
 
@@ -579,33 +655,26 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     {
       createdByMemberId: input.createdByMemberId,
       recordPayment,
-      ...(cardAsk
+      ...(parked
         ? {
-            paymentIntentId: cardAsk.paymentIntentId,
-            waitForConfirmedAdditionalPayment: !cardAsk.captured,
+            paymentIntentId: "paymentIntentId" in anchorAsk ? anchorAsk.paymentIntentId : null,
+            waitForConfirmedAdditionalPayment: true,
           }
         : {}),
     },
   );
-  if (cardAsk && !cardAsk.paymentIntentId && queued.queueOperationId) {
-    // The ask was not written when this looked. The door's Xero leg attaches
-    // its intent to this waiting invoice once it is minted; looking again
-    // after the invoice exists closes the window between the two, since
-    // whichever writes second sees the other.
-    const minted = await readAnchorAsk(bookingId, anchorIds[0]!);
-    if (minted?.stripePaymentIntentId && !minted.withdrawnAt) {
-      await attachPaymentIntentToWaitingSupplementaryInvoiceOperations({
-        bookingModificationId: anchorIds[0]!,
-        paymentIntentId: minted.stripePaymentIntentId,
-      });
-    }
+  if (parked && queued.queueOperationId) {
+    // Settled against the ask as it now stands, under the lock the ask's
+    // retire takes (round 2 F3/F4): attached, raised unpaid, or released for
+    // a capture through the one release path (F2).
+    await settleParkedGapInvoice({ bookingId, bookingModificationId: anchorIds[0]! });
   }
   const outcome = {
     ...context,
     gapCents,
     bookingModificationId: anchorIds[0],
     recordPayment,
-    paymentIntentId: cardAsk?.paymentIntentId ?? null,
+    anchorAsk: anchorAsk.kind,
     queueOperationId: queued.queueOperationId,
     enqueueOutcome: queued.outcome,
   };
@@ -628,6 +697,6 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     gapCents,
     queueOperationId: queued.queueOperationId,
     // The card ask pays it, not the cash the primary invoice left.
-    cashTakenCents: recordPayment && !cardAsk ? gapCents : 0,
+    cashTakenCents: recordPayment && !parked ? gapCents : 0,
   };
 }

@@ -781,4 +781,26 @@ describe("#3980 review C4: a re-price claims an unlinked primary invoice, as an 
     await rebase();
     expect(paymentClaim).not.toHaveBeenCalled();
   });
+
+  it("MUTATION round 2 F4: claims against the CLOSURE's read, so a link saved between the two reads refuses the closure", async () => {
+    // The closure read no link; the re-base's own read already sees one.
+    mocks.bookingFindUnique.mockResolvedValue(
+      bookingWithStrands([SURVIVING_STRAND], { payment: { id: "payment-1", xeroInvoiceId: "inv-new" } }),
+    );
+    paymentClaim.mockResolvedValue({ count: 0 });
+    await expect(
+      rebaseBookingPriceFromStrands({
+        format: CLUB_FORMAT_TEST,
+        bookingId: "booking-1",
+        repairedStrands: [{ bookingGuestId: "guest-1", totalCents: 10_000 }],
+        todayAtClub: TODAY,
+        store,
+        paymentLinkRead: { id: "payment-1", xeroInvoiceId: null },
+      }),
+    ).rejects.toMatchObject({ status: 409, message: REBASE_INVOICE_RAISED_MESSAGE });
+    expect(paymentClaim).toHaveBeenCalledWith({
+      where: { id: "payment-1", xeroInvoiceId: null },
+      data: { changeFeeCents: { increment: 0 } },
+    });
+  });
 });

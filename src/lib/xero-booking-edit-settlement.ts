@@ -9,8 +9,8 @@ import {
   isPrimaryInvoiceUnsafe,
   wouldQueueCheckInDatedInvoiceUpdate,
 } from "@/lib/xero-booking-edit-conditions";
+import { settleParkedGapInvoice } from "@/lib/xero-primary-invoice-gap-ask";
 import {
-  attachPaymentIntentToWaitingSupplementaryInvoiceOperations,
   enqueueXeroBookingInvoiceOperation,
   enqueueXeroBookingInvoiceUpdateOperation,
   enqueueXeroModificationAccountCreditNoteOperation,
@@ -386,14 +386,15 @@ export async function queueXeroBookingEditSettlement(
   );
   let supplementaryInvoice: XeroSupplementaryInvoiceEnqueueOutcome = "none";
 
-  // #3980 review M2: an edit that settled against the primary invoice and asked
-  // the member's card may anchor that invoice's gap, queued waiting on no intent
-  // when the ask was not yet minted. Its intent is attached here, once minted;
-  // the gap check looks again after queueing, so whichever runs second sees it.
+  // #3980 review M2 and round 2: an edit that settled against the primary
+  // invoice and asked the member's card may anchor that invoice's gap, queued
+  // waiting on no intent when the ask was not yet minted. Settled against the
+  // ask once it is (attached, raised unpaid, or released for a capture); the
+  // gap check settles it again after queueing, so whichever runs second sees it.
   if (!input.hasIssuedXeroInvoice && input.additionalPaymentIntentId) {
-    await attachPaymentIntentToWaitingSupplementaryInvoiceOperations({
+    await settleParkedGapInvoice({
+      bookingId: input.bookingId,
       bookingModificationId: input.bookingModificationId,
-      paymentIntentId: input.additionalPaymentIntentId,
     });
   }
 
