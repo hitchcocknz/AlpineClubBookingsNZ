@@ -5296,7 +5296,13 @@ Xero's idempotency key, gets the same invoice back and saves the link.
 
 **Not covered.** An edit on a booking with no Payment row has nothing to claim.
 The create needs a Payment row to run, and such an edit is still marked, so one
-that commits before the link is in the worth read back.
+that commits before the link is in the worth read back. The inbound "invoice
+paid" match (`xero-inbound/invoice-paid-effects.ts`) is the other writer that
+links a payment, guarded on `xeroInvoiceId: null` too, so it orders against the
+claim the same way; it stores no figures, so an edit that claimed just before it
+is not measured, like any invoice linked without stored figures. The census
+`primary-invoice-claim-call-sites.test.ts` lists both guarded writers and every
+door that claims.
 
 Proved against PostgreSQL in `primary-invoice-edit-race.realdb.test.ts`: the
 create held between its read and its link save while a price increase and a
