@@ -1403,6 +1403,7 @@ function deferred() {
         primaryInvoiceCashCents: 0,
         primaryInvoiceAttemptedCashCents: 0,
       });
+      if (!atLink) throw new Error("expected the first save of this link");
       expect(atLink).toMatchObject({ billedChangeFeeCents: fee, recordedChangeFeeCentsAtLink: fee, primaryInvoiceCashCents: 0 });
       // #3955 round 5, finding 4: stored with the link, in the same transaction.
       expect(
@@ -1476,6 +1477,7 @@ function deferred() {
         primaryInvoiceCashCents: 0,
         primaryInvoiceAttemptedCashCents: 0,
       });
+      if (!atLink) throw new Error("expected the first save of this link");
       const after = await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { finalPriceCents: true } });
       expect(atLink.worth).toEqual({
         atBuildCents: before.finalPriceCents,

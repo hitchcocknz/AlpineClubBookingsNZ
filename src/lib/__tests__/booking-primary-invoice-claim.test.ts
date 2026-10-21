@@ -10,6 +10,7 @@ import {
   PRIMARY_INVOICE_RAISED_DURING_EDIT_MESSAGE,
   PrimaryInvoiceRaisedDuringEditError,
   primaryInvoiceSettlementHistory,
+  recordedPrimaryInvoiceSettlement,
   SETTLED_AGAINST_PRIMARY_INVOICE_PATH,
   settlesAgainstPrimaryInvoice,
 } from "@/lib/booking-primary-invoice-claim";
@@ -112,8 +113,34 @@ describe("the edit's claim on the unlinked primary invoice (#3980)", () => {
     expect(settlesAgainstPrimaryInvoice({ xeroInvoiceId: null })).toBe(true);
     expect(settlesAgainstPrimaryInvoice(null)).toBe(true);
     expect(settlesAgainstPrimaryInvoice({ xeroInvoiceId: "inv_1" })).toBe(false);
-    expect(primaryInvoiceSettlementHistory(true)).toEqual({ primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true } });
-    expect(primaryInvoiceSettlementHistory(false)).toEqual({});
+    // #3980 review M5: with how the edit settled its own money, for the treasurer.
+    const marker = primaryInvoiceSettlementHistory({
+      settledAgainstPrimaryInvoice: true,
+      refundAmountCents: 4_000,
+      accountCreditAmountCents: 0,
+      appliedCreditGivenBackCents: 1_000,
+      unpaidAskOffsetCents: 2_500,
+      additionalAsk: { amountCents: 0 },
+    });
+    expect(marker).toEqual({
+      primaryInvoiceSettlement: {
+        settledAgainstPrimaryInvoice: true,
+        refundAmountCents: 4_000,
+        accountCreditAmountCents: 0,
+        appliedCreditGivenBackCents: 1_000,
+        unpaidAskOffsetCents: 2_500,
+        cardAskCents: 0,
+      },
+    });
+    expect(recordedPrimaryInvoiceSettlement(marker)).toEqual({
+      refundAmountCents: 4_000,
+      accountCreditAmountCents: 0,
+      appliedCreditGivenBackCents: 1_000,
+      unpaidAskOffsetCents: 2_500,
+      cardAskCents: 0,
+    });
+    expect(primaryInvoiceSettlementHistory({ settledAgainstPrimaryInvoice: false, refundAmountCents: 4_000 })).toEqual({});
+    expect(recordedPrimaryInvoiceSettlement({})).toBeNull();
     expect(SETTLED_AGAINST_PRIMARY_INVOICE_PATH).toEqual(["primaryInvoiceSettlement", "settledAgainstPrimaryInvoice"]);
   });
 });

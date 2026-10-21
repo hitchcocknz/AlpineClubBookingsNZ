@@ -65,6 +65,12 @@ export interface PrimaryInvoiceWorthAtLink {
   readonly atBuildCents: number;
   readonly builtTotalCents: number;
   readonly atLinkCents: number;
+  /**
+   * #3980 review M5: the edits already marked as settled against the primary
+   * invoice in the create's snapshot; one marked since landed mid-create.
+   * Absent on a record written before it.
+   */
+  readonly markedModificationIdsAtBuild?: readonly string[];
 }
 
 /**
@@ -127,11 +133,15 @@ function parseWorth(value: unknown): { worth?: PrimaryInvoiceWorthAtLink } {
   ) {
     return {};
   }
+  const marked = worth.markedModificationIdsAtBuild;
   return {
     worth: {
       atBuildCents: worth.atBuildCents,
       builtTotalCents: worth.builtTotalCents,
       atLinkCents: worth.atLinkCents,
+      ...(Array.isArray(marked) && marked.every((id) => typeof id === "string")
+        ? { markedModificationIdsAtBuild: marked as string[] }
+        : {}),
     },
   };
 }

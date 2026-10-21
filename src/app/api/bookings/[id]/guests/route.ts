@@ -1229,7 +1229,7 @@ export async function POST(
             ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
             // #3954 round 6: the waiting re-issues this add folded into its ask.
             ...unpaidAskOffsetHistory({ ...NO_UNPAID_ASK_SETTLEMENT, foldedReissuedAsks }),
-            ...primaryInvoiceSettlementHistory(settledAgainstPrimaryInvoice), // #3980: the gap's anchor
+            ...primaryInvoiceSettlementHistory({ settledAgainstPrimaryInvoice, additionalAsk }), // #3980: the gap's anchor
           },
           priceDiffCents,
           changeFeeCents: 0,

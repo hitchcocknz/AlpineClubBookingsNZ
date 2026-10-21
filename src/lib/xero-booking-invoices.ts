@@ -110,6 +110,7 @@ import {
   unrecordedPrimaryInvoiceCash,
 } from "@/lib/xero-primary-invoice-fee-gap";
 import { PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON } from "@/lib/xero-primary-invoice-fee-at-link";
+import { readBookingForPrimaryInvoice } from "@/lib/xero-primary-invoice-read";
 
 export interface CreateXeroBookingInvoiceOptions
   extends FindOrCreateXeroContactOptions {
@@ -373,22 +374,8 @@ export async function createXeroInvoiceForBooking(
   bookingId: string,
   options?: CreateXeroBookingInvoiceOptions
 ): Promise<string | null> {
-  const booking = await prisma.booking.findUnique({
-    where: { id: bookingId },
-    include: {
-      // Per-night rows (issue #713) so non-contiguous stays produce one line
-      // item per contiguous run.
-      guests: { include: { nights: true } },
-      payment: true,
-      promoRedemptions: { include: { promoCode: true, allocations: true } },
-      nightAdjustments: true,
-      // #2258: recipient for the withheld-send audit row when the booking's
-      // "No emails" switch stops Xero emailing the invoice.
-      member: { select: { email: true } },
-      // #3369: the owner may be an Organisation; bookingOwner() reads both.
-      organisation: { select: { name: true, email: true } },
-    },
-  });
+  // #3980 review M1: one snapshot, so the worth built from and the lines agree.
+  const { booking, markedModificationIdsAtBuild } = await readBookingForPrimaryInvoice(bookingId);
 
   if (!booking) throw new Error(`Booking not found: ${bookingId}`);
   if (!booking.payment) throw new Error(`No payment record for booking: ${bookingId}`);
@@ -652,6 +639,7 @@ export async function createXeroInvoiceForBooking(
   const builtFrom = {
     worthCents: bookingWorthCents({ finalPriceCents: booking.finalPriceCents, changeFeeCents: booking.payment.changeFeeCents }),
     lineTotalCents: invoiceLineItemsTotalCents(lineItems),
+    markedModificationIdsAtBuild,
   };
 
   // Read once, outside the closure: `buildInvoice` runs for the recorded
@@ -1194,11 +1182,14 @@ export async function createXeroInvoiceForBooking(
     // invoice) bills other than the booking was worth at the link. A shortfall
     // goes on a supplementary invoice; an overcharge, or a shortfall no edit
     // anchors, becomes a Xero Operations task for the treasurer.
-    const worthGap = await queuePrimaryInvoiceWorthGap({
-      bookingId,
-      atLink: feeAtLink,
-      createdByMemberId: options?.createdByMemberId,
-    });
+    // #3980 review C3: a second save of this invoice keeps the first's figures.
+    const worthGap = feeAtLink
+      ? await queuePrimaryInvoiceWorthGap({ bookingId, atLink: feeAtLink, createdByMemberId: options?.createdByMemberId })
+      : await recheckPrimaryInvoiceWorthGap({
+          bookingId,
+          xeroInvoiceId: createdInvoice.invoiceID,
+          createdByMemberId: options?.createdByMemberId,
+        });
 
     // #3955 round 5 (finding 3): captured cash the cap left off, untaken, is never silent.
     const primaryInvoiceCashShortfall = unrecordedPrimaryInvoiceCash({

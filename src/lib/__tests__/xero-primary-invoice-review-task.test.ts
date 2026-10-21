@@ -89,6 +89,18 @@ describe("the primary invoice's Xero Operations task (#3980)", () => {
     expect(primaryInvoiceReviewMessage({ kind: "OVERBILLED", bookingId: "abcdefgh-1", gapCents: -5_000 }, CLUB_FORMAT_TEST)).toBe(
       "The primary Xero invoice for Booking abcdefgh bills $50.00 more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for $50.00 in Xero if one is due, then choose Resolve (fixed in Xero).",
     );
+    // Review M5: how the reduction behind an overcharge settled, so its refund is accounted for too.
+    expect(
+      primaryInvoiceReviewMessage(
+        {
+          kind: "OVERBILLED",
+          bookingId: "abcdefgh-1",
+          gapCents: -5_000,
+          settledBy: { refundAmountCents: 3_000, accountCreditAmountCents: 0, appliedCreditGivenBackCents: 0, unpaidAskOffsetCents: 2_000 },
+        },
+        CLUB_FORMAT_TEST,
+      ),
+    ).toContain("The change was settled by a refund of $30.00 paid out, $20.00 taken off an unpaid payment request; account for that too.");
     expect(primaryInvoiceReviewMessage({ kind: "UNDERBILLED", bookingId: "abcdefgh-1", gapCents: 8_000 }, CLUB_FORMAT_TEST)).toContain(
       "bills $80.00 less than the booking is worth",
     );

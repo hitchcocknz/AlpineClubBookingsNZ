@@ -11,14 +11,23 @@ const mocks = vi.hoisted(() => {
     },
     // #3548: a new refund note is recorded (payment, link, row) in one
     // transaction; the same fns as the global client's, so assertions hold.
-    payment: { update: vi.fn() },
+    // #3980 review C3: the link's write is guarded on it being unset, then the
+    // fee is read back under its lock.
+    payment: {
+      update: vi.fn(),
+      updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      findUniqueOrThrow: vi.fn().mockResolvedValue({ changeFeeCents: 0, bookingId: "booking_1", xeroInvoiceId: null }),
+    },
     // #3955 round 4: the invoice link is saved with the fee figures it is
     // checked against in one transaction. Its payload read is the
     // transaction's own, so the global read of the email instruction below
     // stays countable.
     xeroSyncOperation: { update: vi.fn(), findUnique: vi.fn().mockResolvedValue({ requestPayload: {} }) },
     // #3980: and with the booking's worth, read after the link's own update.
-    booking: { findUniqueOrThrow: vi.fn().mockResolvedValue({ finalPriceCents: 0 }) },
+    // Review M1: the create's own read runs in a transaction too, so the
+    // booking read is shared with the global client's.
+    booking: { findUniqueOrThrow: vi.fn().mockResolvedValue({ finalPriceCents: 0 }), findUnique: vi.fn() },
+    bookingModification: { findMany: vi.fn().mockResolvedValue([]) },
   };
 
   const prisma = {
@@ -39,7 +48,7 @@ const mocks = vi.hoisted(() => {
     // mock fns so every existing fixture serves both phases.
     member: tx.member,
     booking: {
-      findUnique: vi.fn(),
+      findUnique: tx.booking.findUnique,
       findUniqueOrThrow: tx.booking.findUniqueOrThrow,
     },
     // #3530: a modification credit note reads its row's stored lines; none
@@ -64,6 +73,8 @@ const mocks = vi.hoisted(() => {
     payment: {
       findUnique: vi.fn(),
       update: tx.payment.update,
+      updateMany: tx.payment.updateMany,
+      findUniqueOrThrow: tx.payment.findUniqueOrThrow,
     },
     // #3955 round 5: the allocation engine's own figure for the applied credit
     // still to allocate (`unallocatedAppliedCents`); none unless a test says.
@@ -536,6 +547,54 @@ describe("createXeroInvoiceForBooking", () => {
     expect(feeLines).toEqual([expect.objectContaining({ unitAmount: 53.2, quantity: 1 })]);
   });
 
+  it("#3980 review M1: reads the booking and its marked edits from one REPEATABLE READ snapshot", async () => {
+    mocks.tx.bookingModification.findMany.mockResolvedValueOnce([{ id: "mod_marked" }]);
+    await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+    const [, options] = mocks.prisma.$transaction.mock.calls[0] as unknown as [unknown, { isolationLevel?: string }];
+    expect(options).toEqual({ isolationLevel: "RepeatableRead" });
+    // The worth, the lines and the marked edits come from that one transaction.
+    expect(mocks.tx.booking.findUnique).toHaveBeenCalledTimes(1);
+    expect(mocks.tx.bookingModification.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ bookingId: "booking_1" }), select: { id: true } }),
+    );
+    expect(mocks.prisma.$transaction.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.xeroClientInstance.accountingApi.createInvoices.mock.invocationCallOrder[0],
+    );
+    expect(mocks.prisma.xeroSyncOperation.update).toHaveBeenCalledWith({
+      where: { id: "op_1" },
+      data: {
+        requestPayload: expect.objectContaining({
+          primaryInvoiceBilledFee: expect.objectContaining({
+            worth: expect.objectContaining({ markedModificationIdsAtBuild: ["mod_marked"] }),
+          }),
+        }),
+      },
+    });
+  });
+
+  it("#3980 review C3: a second save of the same invoice keeps the first's figures and re-checks from them", async () => {
+    // The link is already this invoice's: a run reset from stale RUNNING, retried.
+    mocks.tx.payment.updateMany.mockResolvedValueOnce({ count: 0 });
+    mocks.tx.payment.findUniqueOrThrow.mockResolvedValueOnce({ xeroInvoiceId: "inv_1" });
+    feeGap.recheckPrimaryInvoiceWorthGap.mockResolvedValueOnce({
+      gapCents: 0,
+      queueOperationId: null,
+      alreadyQueued: false,
+      cashTakenCents: 0,
+      reviewOperationId: null,
+    });
+    await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
+    expect(queuePrimaryInvoiceWorthGap).not.toHaveBeenCalled();
+    expect(feeGap.recheckPrimaryInvoiceWorthGap).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "booking_1", xeroInvoiceId: "inv_1" }),
+    );
+    // Nothing re-measured, nothing overwritten.
+    expect(mocks.tx.booking.findUniqueOrThrow).not.toHaveBeenCalled();
+    expect(mocks.prisma.payment.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ xeroInvoiceId: "inv_1" }) }),
+    );
+  });
+
   it("#3955 X4 (round 4): saves the link with what Xero's invoice billed and the fee recorded then, and checks the gap from those", async () => {
     const returnedLines = [
       { description: "Jordan - (ADULT, Member) - 2 nights", quantity: 1, unitAmount: 100 },
@@ -551,7 +610,7 @@ describe("createXeroInvoiceForBooking", () => {
     mocks.prisma.booking.findUnique.mockResolvedValueOnce({ ...fixture, finalPriceCents: 10_000 });
     // The link's own row update reads back the fee recorded at that instant,
     // and (#3980) the booking's price after it.
-    mocks.prisma.payment.update.mockResolvedValueOnce({ changeFeeCents: 3_000, bookingId: "booking_1" });
+    mocks.prisma.payment.findUniqueOrThrow.mockResolvedValueOnce({ changeFeeCents: 3_000, bookingId: "booking_1" });
     mocks.prisma.booking.findUniqueOrThrow.mockResolvedValueOnce({ finalPriceCents: 10_000 });
     await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
     const atLink = {
@@ -562,12 +621,11 @@ describe("createXeroInvoiceForBooking", () => {
       // Nothing captured, so no cash on the invoice.
       primaryInvoiceCashCents: 0,
       primaryInvoiceAttemptedCashCents: 0,
-      worth: { atBuildCents: 10_000, builtTotalCents: 10_000, atLinkCents: 13_000 },
+      worth: { atBuildCents: 10_000, builtTotalCents: 10_000, atLinkCents: 13_000, markedModificationIdsAtBuild: [] },
     };
-    expect(mocks.prisma.payment.update).toHaveBeenCalledWith({
-      where: { id: "pay_1" },
+    expect(mocks.prisma.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "pay_1", xeroInvoiceId: null },
       data: { xeroInvoiceId: "inv_1", xeroInvoiceNumber: "INV-1" },
-      select: { changeFeeCents: true, bookingId: true },
     });
     expect(mocks.prisma.xeroSyncOperation.update).toHaveBeenCalledWith({
       where: { id: "op_1" },
@@ -576,7 +634,7 @@ describe("createXeroInvoiceForBooking", () => {
     expect(queuePrimaryInvoiceWorthGap).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: "booking_1", atLink }),
     );
-    expect(mocks.prisma.payment.update.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mocks.prisma.payment.updateMany.mock.invocationCallOrder[0]).toBeLessThan(
       queuePrimaryInvoiceWorthGap.mock.invocationCallOrder[0],
     );
   });
@@ -1165,13 +1223,12 @@ describe("createXeroInvoiceForBooking", () => {
     );
     expect(mocks.xeroClientInstance.accountingApi.createPayment).not.toHaveBeenCalled();
     expect(mocks.xeroClientInstance.accountingApi.emailInvoice).not.toHaveBeenCalled();
-    expect(mocks.prisma.payment.update).toHaveBeenCalledWith({
-      where: { id: "pay_1" },
+    expect(mocks.prisma.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "pay_1", xeroInvoiceId: null },
       data: {
         xeroInvoiceId: "inv_1",
         xeroInvoiceNumber: "INV-1",
       },
-      select: { changeFeeCents: true, bookingId: true },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
       "op_1",
@@ -1382,7 +1439,7 @@ describe("createXeroInvoiceForBooking", () => {
       expect(mocks.prisma.emailLog.create).not.toHaveBeenCalled();
       // The invoice ids are still persisted, so the booking is not left thinking
       // no invoice exists.
-      expect(mocks.prisma.payment.update).toHaveBeenCalled();
+      expect(mocks.prisma.payment.updateMany).toHaveBeenCalled();
       expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
         "op_1",
         expect.objectContaining({
@@ -1594,7 +1651,7 @@ describe("createXeroInvoiceForBooking", () => {
         mocks.xeroClientInstance.accountingApi.createInvoices.mock.calls[0];
       expect(invoicePayload.invoices[0].status).toBe("AUTHORISED");
       // Its ids are persisted, so no surface thinks the invoice is missing.
-      expect(mocks.prisma.payment.update).toHaveBeenCalled();
+      expect(mocks.prisma.payment.updateMany).toHaveBeenCalled();
 
       // The withheld-email audit evidence, in the existing vocabulary, naming
       // THIS reason rather than the switch.

@@ -67,13 +67,62 @@ export function settlesAgainstPrimaryInvoice(
   return !payment?.xeroInvoiceId;
 }
 
+/**
+ * How the edit settled its own money, beside the marker (#3980 review M5): what
+ * it refunded, credited, gave back of applied credit and took off an unpaid
+ * ask. A treasurer told the primary invoice bills more than the booking is
+ * worth needs it to raise the credit note and record the refund paid out.
+ */
+export type PrimaryInvoiceEditSettlement = {
+  refundAmountCents: number;
+  accountCreditAmountCents: number;
+  appliedCreditGivenBackCents: number;
+  unpaidAskOffsetCents: number;
+  /**
+   * Review M2: what the edit asked the member's card for. A gap invoice
+   * anchored on an edit that asked waits on that ask's payment, as the edit's
+   * own supplementary invoice would have, rather than being raised unpaid.
+   */
+  cardAskCents: number;
+};
+
+export type PrimaryInvoiceSettlementMarker = { settledAgainstPrimaryInvoice: true } & PrimaryInvoiceEditSettlement;
+
 /** The `newData` fields an edit writes for the marker, or none. */
-export function primaryInvoiceSettlementHistory(settledAgainstPrimaryInvoice: boolean): {
-  primaryInvoiceSettlement?: { settledAgainstPrimaryInvoice: true };
-} {
-  return settledAgainstPrimaryInvoice
-    ? { primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true } }
-    : {};
+export function primaryInvoiceSettlementHistory(
+  edit: { settledAgainstPrimaryInvoice: boolean; additionalAsk?: { amountCents: number } } & Partial<
+    Omit<PrimaryInvoiceEditSettlement, "cardAskCents">
+  >,
+): { primaryInvoiceSettlement?: PrimaryInvoiceSettlementMarker } {
+  if (!edit.settledAgainstPrimaryInvoice) return {};
+  return {
+    primaryInvoiceSettlement: {
+      settledAgainstPrimaryInvoice: true,
+      refundAmountCents: edit.refundAmountCents ?? 0,
+      accountCreditAmountCents: edit.accountCreditAmountCents ?? 0,
+      appliedCreditGivenBackCents: edit.appliedCreditGivenBackCents ?? 0,
+      unpaidAskOffsetCents: edit.unpaidAskOffsetCents ?? 0,
+      cardAskCents: edit.additionalAsk?.amountCents ?? 0,
+    },
+  };
+}
+
+/** The settlement a marked edit recorded, or null for an unmarked one. */
+export function recordedPrimaryInvoiceSettlement(newData: unknown): PrimaryInvoiceEditSettlement | null {
+  const record = asObject(asObject(newData)?.primaryInvoiceSettlement);
+  if (!record || record.settledAgainstPrimaryInvoice !== true) return null;
+  const cents = (value: unknown) => (Number.isInteger(value) ? (value as number) : 0);
+  return {
+    refundAmountCents: cents(record.refundAmountCents),
+    accountCreditAmountCents: cents(record.accountCreditAmountCents),
+    appliedCreditGivenBackCents: cents(record.appliedCreditGivenBackCents),
+    unpaidAskOffsetCents: cents(record.unpaidAskOffsetCents),
+    cardAskCents: cents(record.cardAskCents),
+  };
+}
+
+function asObject(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
 /**

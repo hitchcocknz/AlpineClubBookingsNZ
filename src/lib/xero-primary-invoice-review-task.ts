@@ -51,14 +51,41 @@ export function primaryInvoiceReviewMessage(
     kind: PrimaryInvoiceReviewKind;
     bookingId: string;
     gapCents: number;
+    settledBy?: ReductionSettlement;
   },
   format: ClubFormat,
 ): string {
   const reference = `Booking ${input.bookingId.slice(0, 8)}`;
   const amount = formatCents(Math.abs(input.gapCents), format);
   return input.kind === "OVERBILLED"
-    ? `The primary Xero invoice for ${reference} bills ${amount} more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for ${amount} in Xero if one is due, then choose Resolve (fixed in Xero).`
+    ? `The primary Xero invoice for ${reference} bills ${amount} more than the booking is worth: the booking was changed while the invoice was being raised. ${settledSentence(input.settledBy, format)}Check the invoice and raise a credit note for ${amount} in Xero if one is due, then choose Resolve (fixed in Xero).`
     : `The primary Xero invoice for ${reference} bills ${amount} less than the booking is worth: the booking was changed while the invoice was being raised, and no change could carry the difference. Check the invoice and bill ${amount} in Xero if it is due, then choose Resolve (fixed in Xero).`;
+}
+
+/** How the reductions behind an overcharge settled their own money (review M5). */
+export type ReductionSettlement = {
+  refundAmountCents: number;
+  accountCreditAmountCents: number;
+  appliedCreditGivenBackCents: number;
+  unpaidAskOffsetCents: number;
+};
+
+function settledSentence(settledBy: ReductionSettlement | undefined, format: ClubFormat): string {
+  if (!settledBy) return "";
+  const parts = [
+    settledBy.refundAmountCents > 0 ? `a refund of ${formatCents(settledBy.refundAmountCents, format)} paid out` : null,
+    settledBy.accountCreditAmountCents > 0
+      ? `${formatCents(settledBy.accountCreditAmountCents, format)} of account credit`
+      : null,
+    settledBy.appliedCreditGivenBackCents > 0
+      ? `${formatCents(settledBy.appliedCreditGivenBackCents, format)} of applied credit given back`
+      : null,
+    settledBy.unpaidAskOffsetCents > 0
+      ? `${formatCents(settledBy.unpaidAskOffsetCents, format)} taken off an unpaid payment request`
+      : null,
+  ].filter((part): part is string => part !== null);
+  if (parts.length === 0) return "The change returned no money. ";
+  return `The change was settled by ${parts.join(", ")}; account for that too. `;
 }
 
 /**
@@ -82,6 +109,8 @@ export async function raisePrimaryInvoiceReviewTask(input: {
   xeroInvoiceId: string;
   gapCents: number;
   figures: Record<string, unknown>;
+  /** An overcharge's: how the reductions behind it settled (review M5). */
+  settledBy?: ReductionSettlement;
   createdByMemberId?: string;
 }): Promise<{ operationId: string; alreadyRaised: boolean }> {
   const correlationKey = primaryInvoiceReviewCorrelationKey(input);

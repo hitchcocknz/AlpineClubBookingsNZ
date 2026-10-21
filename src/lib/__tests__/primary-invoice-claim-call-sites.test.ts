@@ -70,14 +70,14 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     for (const door of SETTLEMENT_DOORS) {
       const source = read(door);
       expect(source, door).toContain("applyPaymentAdjustments(");
-      expect(source, door).toMatch(/primaryInvoiceSettlementHistory\(\w+\.settledAgainstPrimaryInvoice\)/);
+      expect(source, door).toMatch(/primaryInvoiceSettlementHistory\((payments|paymentImpact|adjusted)\)/);
     }
   });
 
   it("the guests route, which settles for itself, makes the same write and marks its row", () => {
     const route = read(GUESTS_ROUTE);
     expect(route).toContain("await writeEditOnPayment(tx, { payment: booking.payment, changeFeeCents: 0 })");
-    expect(route).toContain("primaryInvoiceSettlementHistory(settledAgainstPrimaryInvoice)");
+    expect(route).toContain("primaryInvoiceSettlementHistory({ settledAgainstPrimaryInvoice, additionalAsk })");
   });
 
   it("every caller of applyPaymentAdjustments is a door that marks its row", () => {

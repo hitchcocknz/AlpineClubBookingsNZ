@@ -59,6 +59,30 @@ describe("classifyUnpaidAskBilling", () => {
     ).toEqual({ supplementaryInvoicedCents: 0, established: true });
   });
 
+  it("MUTATION #3980 review M2: 'no invoice yet' money a primary invoice's gap invoice bills on the asking edit is supplementary", () => {
+    const asked = row({ hadIssuedXeroInvoice: false, bookingModificationId: "mod_increase" });
+    // The gap invoice bills 3,000 of the ask's 5,000; the primary billed the rest.
+    expect(
+      classifyUnpaidAskBilling({
+        rows: [asked],
+        retired: NOTHING_RETIRED,
+        modifications: [increase],
+        intentMinters: NO_MINTERS,
+        gapInvoicedCents: new Map([["mod_increase", 3_000]]),
+      }),
+    ).toEqual({ supplementaryInvoicedCents: 3_000, established: true });
+    // Never more than the row's own money.
+    expect(
+      classifyUnpaidAskBilling({
+        rows: [asked],
+        retired: NOTHING_RETIRED,
+        modifications: [increase],
+        intentMinters: NO_MINTERS,
+        gapInvoicedCents: new Map([["mod_increase", 9_000]]),
+      }).supplementaryInvoicedCents,
+    ).toBe(5_000);
+  });
+
   it("MUTATION: a row a recovery minted reads that recovery's frozen answer, not the row's own or when it was written", () => {
     // The under-credit shape: the edit saw no invoice, its mint failed, the
     // primary invoice was raised (billing the edit), then the recovery minted.

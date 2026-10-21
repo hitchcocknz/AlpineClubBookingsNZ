@@ -1333,7 +1333,7 @@ export async function modifyBookingDates({
           ...creditGiveBackHistory(payments.appliedCreditGiveBack),
           // #3954: what an unpaid ask took of this reduction, for the Xero repair pass.
           ...unpaidAskOffsetHistory(payments),
-          ...primaryInvoiceSettlementHistory(payments.settledAgainstPrimaryInvoice), // #3980: the gap's anchor
+          ...primaryInvoiceSettlementHistory(payments), // #3980: the gap's anchor
           // #2390: the same sentence the member was shown at the edit, kept on
           // the booking's own history so the split has an answer later.
           ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
