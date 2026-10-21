@@ -49,13 +49,16 @@ export async function POST(
     const retryMeta = getXeroOperationRetryMeta(operation);
     // #3462: the flag and its audit row commit together or not at all, so a
     // failed audit never leaves an unattributed override behind a 500.
-    await prisma.$transaction(async (tx) => {
-      await tx.xeroSyncOperation.update({
-        where: { id },
+    // #4256: guarded on the status read, so a retry that claimed the row
+    // (RUNNING) after that read is never marked under it, and no audit is written.
+    const marked = await prisma.$transaction(async (tx) => {
+      const flagged = await tx.xeroSyncOperation.updateMany({
+        where: { id, status: { in: ["FAILED", "PARTIAL"] } },
         data: {
           replayable: false,
         },
       });
+      if (flagged.count !== 1) return false;
 
       await createAuditLog({
         action: "xero.operation.marked_non_replayable",
@@ -81,7 +84,14 @@ export async function POST(
           retryReasonBeforeReview: retryMeta.reason,
         },
       }, tx);
+      return true;
     });
+    if (!marked) {
+      return NextResponse.json(
+        { error: "A retry is running on this operation; try again when it finishes." },
+        { status: 409 }
+      );
+    }
 
     return NextResponse.json({
       ok: true,

@@ -89,7 +89,9 @@ idempotent — retrying the same work never double-charges.
    then treated as done and is never retried or recreated automatically,
    though the repair tool still lists it for information. You cannot resolve
    one while a retry of it is running, or an applied-credit allocation at all
-   (retry those).
+   (retry those). If you later void a card refund's credit note in Xero, even
+   one you resolved, don't replace it by hand: the app raises a fresh one
+   overnight (#4250).
    **Inbound Events** lists stored webhooks with a per-event **Replay**. Each
    queue has its own **Reset** for filters and page; it keeps the current section,
    the sibling queue's URL state, and unrelated URL context.

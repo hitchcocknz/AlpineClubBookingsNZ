@@ -35,6 +35,18 @@ import { xeroSectionId } from "./types"
 import type { XeroOperation } from "./types"
 import { useClubFormat } from "@/components/club-format-provider"
 
+/**
+ * The resolve dialog's text. A credit note's adds the owner's rule (#4250,
+ * 21 Oct 2026): a voided card refund note is raised again overnight, even one
+ * resolved here, so a replacement made by hand as well would duplicate it.
+ */
+export function resolveDialogDescription(entityType: string): string {
+  const base = "How was this resolved in Xero? This drops it off the active failure list."
+  return entityType === "CREDIT_NOTE"
+    ? `${base} If you later void a card refund's credit note in Xero, don't make a replacement by hand: the app raises a fresh one overnight.`
+    : base
+}
+
 export function OperationsPanel({
   connected,
   open,
@@ -300,10 +312,10 @@ export function OperationsPanel({
     }
   }
 
-  const resolveOperation = async (operationId: string) => {
+  const resolveOperation = async (operationId: string, entityType: string) => {
     const reason = await prompt({
       title: "Resolve this Xero operation?",
-      description: "How was this resolved in Xero? This drops it off the active failure list.",
+      description: resolveDialogDescription(entityType),
       inputLabel: "Reason",
       defaultValue: "Resolved manually in Xero",
       confirmLabel: "Resolve",
@@ -475,7 +487,7 @@ export function OperationsPanel({
                 markingFailed={markingFailedOperationId === operation.id}
                 onRetry={() => void retryOperation(operation.id)}
                 onMarkNonReplayable={() => void markNonReplayable(operation.id)}
-                onResolve={() => void resolveOperation(operation.id)}
+                onResolve={() => void resolveOperation(operation.id, operation.entityType)}
                 onMarkFailed={() => void markFailed(operation.id)}
               />
             ))}
