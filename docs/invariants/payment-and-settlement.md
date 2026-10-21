@@ -1507,33 +1507,30 @@ refunded total it corrects).
 
 - **An edit racing the primary invoice create is refused, or measured and
   billed or handed on** (#3980; owner, 21 Oct 2026).
-- **Who claims.** A writer that changes a booking's worth and read no invoice
-  link makes one guarded `Payment` write (`writeEditOnPayment`: `updateMany
-  where {id, xeroInvoiceId: null}`, carrying its fee) or is refused whole,
-  409 "try again": the date, batch (finished-stay correction included),
-  guest-removal and acceptance re-price doors through
-  `applyPaymentAdjustments`, the guests route, the review price re-base and
-  school pending-adult naming. The doors mark their history row with how they
-  settled.
+- **Who claims.** A writer changing a booking's worth that read no invoice
+  link makes one guarded `Payment` write (`writeEditOnPayment`, `updateMany
+  where {id, xeroInvoiceId: null}`, carrying its fee) or is refused, 409: the
+  date, batch, guest-removal and acceptance doors (`applyPaymentAdjustments`),
+  the guests route, the review re-base (against the closure's own read) and
+  school naming. Doors mark their history row.
 - **What is measured.** The create reads the booking and its marked edits in
   one REPEATABLE READ snapshot. Its link save is guarded on the link being
-  unset (a second save of the same invoice re-checks the stored figures) and
-  stores, in one transaction, what Xero billed, the worth and line total built
-  from, and the worth read after the row write. Gap: worth moved since the
+  unset and stores, in one transaction, what Xero billed, the worth and lines
+  built from, and the worth after the row write. Gap: worth moved since the
   build plus built less billed.
-- **What follows.** A shortfall goes on one supplementary invoice, signed as an
-  edit's, anchored on the newest marked edit that moved money and has no
-  financial review, waiting on that edit's card ask where it asked. An
-  overcharge, or an unanchored shortfall, is one Xero Operations task, naming
-  how the racing reductions settled. Never an automatic credit note.
-- **Limits.** The other link writers (the inbound "invoice paid" match and
-  settle, the inbound payment link, the reconcile mirror, an operator's field
-  repair) store no figures, so an edit just before them is unmeasured. The
-  credit election changes no price and does not claim. A booking with no
-  payment row has nothing to claim.
+- **What follows.** A shortfall goes on one signed supplementary invoice
+  anchored on the newest marked edit outside the snapshot (and, on a replay,
+  after the first create) that moved money and has no review. It waits on
+  that edit's live card ask when the ask's own money covers the gap, settled
+  under the `Payment` row lock the ask's retire takes. Otherwise, or for an
+  overcharge, one Xero Operations task; never an automatic credit note.
+- **Limits.** The other link writers store no figures: an edit just before
+  them is unmeasured, and a create finding one's link hands any gap to the
+  treasurer. The credit election changes no price. No payment row, no claim.
 - Pinned by `primary-invoice-edit-race.realdb.test.ts`,
   `primary-invoice-claim-call-sites.test.ts`,
-  `xero-primary-invoice-fee-gap.test.ts` and
+  `xero-primary-invoice-fee-gap.test.ts`,
+  `xero-primary-invoice-gap-ask.test.ts` and
   `booking-primary-invoice-claim.test.ts`.
 
 ## INV-PAY-031

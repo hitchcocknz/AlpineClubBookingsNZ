@@ -3594,10 +3594,13 @@ retry of an outbox-run row (group invoice and its VOIDs, kept late capture,
 primary booking invoice create saves its link -> worth gap check (#3980,
   INV-PAY-136), and again on its "invoice already exists" replay
   a second save of the same invoice stores nothing -> re-check from the first's
-  shortfall anchored on a marked edit that moved money, with no review
+  shortfall anchored on a marked edit outside the create's snapshot that
+  moved money, with no review
     -> supplementary invoice operation queued PENDING (once per anchor set),
-       or WAITING_PAYMENT on the anchor's card ask (its intent attached when
-       minted) -> released PENDING by that capture
+       or WAITING_PAYMENT on the anchor's card ask, where its own money covers
+       the gap (its intent attached when minted) -> released PENDING by that
+       capture; the ask declined, withdrawn or retired -> PENDING unpaid
+       (settleParkedGapInvoice, under the Payment row lock)
   overcharge, or a shortfall no marked edit anchors -> REVIEW operation
     PRIMARY_INVOICE_WORTH_GAP written FAILED, replayable false (Retry
     refused) -> treasurer acts in Xero, then Resolve (fixed in Xero); one per

@@ -5269,7 +5269,9 @@ every lock. The two are ordered on the **Payment row** alone (`INV-PAY-136`):
   finished-stay correction through the batch door); the guests route, the
   review price re-base (`booking-review-price-rebase.ts`) and the school
   pending-adult naming (`school-pending-adult-resolution.ts`) make it
-  themselves. A count other than 1 refuses the whole change with a 409 and it
+  themselves; the re-base claims against the review closure's own read of the
+  link (`paymentLinkRead`), so a link saved between the two reads refuses the
+  closure. A count other than 1 refuses the whole change with a 409 and it
   rolls back. The credit election changes no price and makes none.
 - **The link's save.** `persistPrimaryInvoiceLink` writes the link with an
   `updateMany` guarded on it being unset, then reads the fee and the booking's
@@ -5302,6 +5304,21 @@ behind the claim. A long edit holding the Payment row can make the link's save
 wait past its transaction budget; the create then fails and its retry replays
 Xero's idempotency key, gets the same invoice back and saves the link.
 
+**A parked gap invoice against its ask (review round 2).** The gap check may
+queue the gap invoice WAITING_PAYMENT on its anchor edit's card ask. A
+reduction after the link can retire that ask (`retireUnpaidAskChain`), which
+takes the `Payment` row first (`lockPaymentForRefundedTotal`), then stamps the
+ask's rows withdrawn and retires the invoices parked on its intents.
+`settleParkedGapInvoice` (`xero-primary-invoice-gap-ask.ts`) takes that same
+lock through the same helper, then reads the ask and the waiting invoice and
+attaches, raises unpaid or hands to the capture release. The retire first: the
+ask reads withdrawn, and the invoice it could not see is raised unpaid rather
+than waiting on a dead intent. The settle first: the invoice is parked on the
+intent when the retire reads its parked invoices. Payment row before the
+operation rows, as the retire takes them, so no cycle; no new key. The gap
+check runs it after queueing, and a door's Xero leg after minting the ask, so
+whichever runs second sees the other.
+
 **The other link writers.** Five more writes set `Payment.xeroInvoiceId`, and
 each takes the same row, so a claim queued behind one finds the link and is
 refused: the inbound "invoice paid" match (guarded on an unset link) and its
@@ -5323,7 +5340,9 @@ create held between its read and its link save while a price increase and a
 reduction commit (gap invoice, treasurer task); an edit paused right after its
 claim, with the create's real link save seen queued behind it (by
 `pg_blocking_pids`) and, once the edit commits, reading its worth back; and an
-edit queued behind a held link save, refused.
+edit queued behind a held link save, refused; and a parked gap invoice's
+settle queued behind the ask's retire on the `Payment` row, then raised
+unpaid.
 
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 

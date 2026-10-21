@@ -476,15 +476,16 @@ async function reviewUnstoredRelink(input: {
  * ({@link primaryInvoiceWorthGap}) — all from `atLink`, never a fresh read.
  *
  *  - A POSITIVE gap goes on a supplementary invoice anchored on the newest
- *    edit that settled against the primary invoice and moved money, with no
- *    financial review of its own (`primaryInvoiceGapAnchors`). Such an edit
+ *    edit that landed while the create was in flight (`racingMarkedEdits`),
+ *    settled against the primary invoice and moved money, with no financial
+ *    review of its own (`primaryInvoiceGapAnchors`). Such an edit
  *    raised no document of its own, so an invoice anchored on one is this
  *    gap's and nothing else's - which is also how a re-run knows the gap is
  *    already queued, and why it never raises another edit's queued figure. Its
  *    lines are the fee recorded since the build as a change fee and the rest
- *    as price, signed as an edit's are (#1356). Where the anchor asked the
- *    member's card, the invoice waits on that ask's payment and records it
- *    (`anchorCardAsk`).
+ *    as price, signed as an edit's are (#1356). Where the anchor's live card
+ *    ask covers the gap, the invoice waits on that ask and records its payment
+ *    (`classifyAnchorAsk`, `settleParkedGapInvoice`).
  *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
  *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
  *    credit note is raised automatically (owner, 21 Oct 2026). An overcharge's
