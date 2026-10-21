@@ -10,7 +10,7 @@ each file below adds is only the wiring that has to sit where the edit's
 history row, or the create's read, already is.
 
 file: src/app/api/bookings/[id]/guests/route.ts
-lines: 1697
+lines: 1691
 reason: this door settles for itself instead of through
   `applyPaymentAdjustments`, so its claim on the payment row and its history
   row's marker have to sit in its own transaction beside its settle step.
@@ -30,7 +30,8 @@ lines: 1512
 reason: its history row carries the marker the gap check anchors on; the row
   is written inline here and nowhere else.
 
-file: src/lib/xero-booking-invoices.ts
-lines: 1659
-reason: the create's own read is the worth it built from, so the figure is
-  taken here, where the read and the lines are, and handed to the link's save.
+file: src/lib/xero-booking-repair-classify.ts
+lines: 2390
+reason: the repair pass decides per edit, inside its one loop, which documents
+  an edit expects; a marked edit's "expects none of its own" has to sit beside
+  the two arms it switches off, and the reason it is safe is written there.

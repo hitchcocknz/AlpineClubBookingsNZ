@@ -28,8 +28,10 @@
  *    gap's and nothing else's.
  *
  * A leaf module (only `ApiError` and the transient race refusal) so the edit
- * doors, the guests route and the gap check share one marker and one claim
- * without pulling each other's graphs in (`INV-SSOT-001`).
+ * doors, the guests route, the other price writers that claim (the review
+ * re-base, the school pending-adult naming) and the gap check share one
+ * marker and one write ({@link writeEditOnPayment}) without pulling each
+ * other's graphs in (`INV-SSOT-001`).
  */
 import type { Prisma } from "@prisma/client";
 
