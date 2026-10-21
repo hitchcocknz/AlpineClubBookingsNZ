@@ -3802,7 +3802,7 @@ describe("PUT /api/bookings/[id]/modify", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const { sendBookingModifiedEmail } = await import("@/lib/email");
     expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ refundAmountCents: 5000, refundDestination: "own", refundByBankTransfer: true }),
+      expect.objectContaining({ refundAmountCents: 5000, refundDestination: "own", refundByBankTransfer: "member" }),
       expect.anything(),
     );
   });
@@ -3842,7 +3842,7 @@ describe("PUT /api/bookings/[id]/modify", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     const { sendBookingModifiedEmail } = await import("@/lib/email");
     expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ refundAmountCents: 5000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.objectContaining({ refundAmountCents: 5000, refundDestination: destination, refundByBankTransfer: null }),
       expect.anything(),
     );
   });

@@ -55,6 +55,8 @@ const txClient = {
   groupBooking: { update: mocks.groupBookingUpdate },
   booking: { update: mocks.bookingUpdate, updateMany: mocks.bookingUpdate },
   payment: { update: mocks.paymentUpdate, updateMany: mocks.paymentUpdateMany, findUniqueOrThrow: mocks.paymentFindUniqueOrThrowLocked },
+  // #3949: the replay reads the child's paid-back hand-backs under its Payment row; none by default.
+  manualRefundTask: { findMany: vi.fn(async () => [] as unknown[]) },
   groupBookingSettlement: {
     updateMany: mocks.settlementUpdateMany,
     findUnique: mocks.settlementAtFenceFindUnique,
@@ -203,7 +205,9 @@ beforeEach(() => {
   // by default nothing moved it since the load.
   mocks.paymentFindUniqueOrThrowLocked.mockImplementation(async ({ where }: { where: { id: string } }) => {
     const loaded = (await mocks.bookingFindMany.mock.results.at(-1)?.value) as Array<{ payment: { id: string } | null }> | undefined;
-    const payment = loaded?.find((row) => row.payment?.id === where.id)?.payment;
+    // #3949: the replay re-reads a child it loaded one at a time (`prisma.booking.findUnique`) under its Payment row.
+    const replayed = await Promise.all(mocks.bookingFindUnique.mock.results.map((result) => result.value as Promise<{ payment: { id: string } | null } | null>));
+    const payment = loaded?.find((row) => row.payment?.id === where.id)?.payment ?? replayed.find((row) => row?.payment?.id === where.id)?.payment;
     if (!payment) throw new Error(`no payment ${where.id}`);
     return payment;
   });

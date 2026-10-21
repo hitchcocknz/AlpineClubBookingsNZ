@@ -33,6 +33,6 @@ describe("census purity (#3854)", () => {
       { kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", occurrenceKey: "refund-request-hand-back:r2", paymentId: "pay", amountCents: 400 },
       { kind: "CANCELLED_BOOKING_HAND_BACK", status: "DISMISSED", occurrenceKey: "refund-request-hand-back:r3", paymentId: "pay", amountCents: 200 },
       { kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", occurrenceKey: "refund-request-hand-back:r4", paymentId: "other", amountCents: 100 },
-    ])).toEqual({ openEditRefundHandBackCents: 1_000, completedRefundRequestHandBackCents: 400 });
+    ])).toEqual({ openEditRefundHandBackCents: 1_000, completedRefundRequestHandBackCents: 400, completedEditRefundHandBackCents: 500 });
   });
 });

@@ -1275,7 +1275,7 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     expectQueuedOnce(mockEnqueueBookingModificationRefundRecovery, queued, 3000);
     const { sendBookingModifiedEmail } = await import("@/lib/email");
     expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ refundAmountCents: 3000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.objectContaining({ refundAmountCents: 3000, refundDestination: destination, refundByBankTransfer: null }),
       expect.anything(),
     );
   });
@@ -1328,7 +1328,7 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     const { sendBookingModifiedEmail } = await import("@/lib/email");
     expect(sendBookingModifiedEmail).toHaveBeenCalledWith(
       // #4070: no Stripe refund ran, so the member's own wording stands.
-      expect.objectContaining({ refundAmountCents: 3000, refundByBankTransfer: true, refundDestination: "own" }),
+      expect.objectContaining({ refundAmountCents: 3000, refundByBankTransfer: "member", refundDestination: "own" }),
       expect.anything(),
     );
 
