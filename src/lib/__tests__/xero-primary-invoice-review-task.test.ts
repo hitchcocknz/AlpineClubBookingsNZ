@@ -4,6 +4,12 @@ const mocks = vi.hoisted(() => ({
   xeroSyncOperation: { findFirst: vi.fn(), create: vi.fn() },
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: { xeroSyncOperation: mocks.xeroSyncOperation } }));
+vi.mock("@/lib/club-format-settings", async () => {
+  const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
+  return { getClubFormat: vi.fn(async () => CLUB_FORMAT_TEST) };
+});
+
+import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 
 import {
   primaryInvoiceReviewCorrelationKey,
@@ -80,10 +86,10 @@ describe("the primary invoice's Xero Operations task (#3980)", () => {
     expect(primaryInvoiceReviewCorrelationKey({ bookingId: "b", xeroInvoiceId: "i", kind: "UNDERBILLED" })).toBe(
       "primary-invoice-review:underbilled:b:i",
     );
-    expect(primaryInvoiceReviewMessage({ kind: "OVERBILLED", bookingId: "abcdefgh-1", gapCents: -5_000 })).toBe(
+    expect(primaryInvoiceReviewMessage({ kind: "OVERBILLED", bookingId: "abcdefgh-1", gapCents: -5_000 }, CLUB_FORMAT_TEST)).toBe(
       "The primary Xero invoice for Booking abcdefgh bills $50.00 more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for $50.00 in Xero if one is due, then mark this resolved.",
     );
-    expect(primaryInvoiceReviewMessage({ kind: "UNDERBILLED", bookingId: "abcdefgh-1", gapCents: 8_000 })).toContain(
+    expect(primaryInvoiceReviewMessage({ kind: "UNDERBILLED", bookingId: "abcdefgh-1", gapCents: 8_000 }, CLUB_FORMAT_TEST)).toContain(
       "bills $80.00 less than the booking is worth",
     );
   });

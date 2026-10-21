@@ -24,7 +24,10 @@
  * One per invoice and direction: a re-run of the check finds the first and
  * raises no second.
  */
+import type { ClubFormat } from "@/lib/club-format";
+import { getClubFormat } from "@/lib/club-format-settings";
 import { prisma } from "@/lib/prisma";
+import { formatCents } from "@/lib/utils";
 import { sanitizeForJson } from "@/lib/xero-sync";
 
 export const PRIMARY_INVOICE_REVIEW_ENTITY_TYPE = "REVIEW";
@@ -41,18 +44,17 @@ export function primaryInvoiceReviewCorrelationKey(input: {
   return `primary-invoice-review:${input.kind.toLowerCase()}:${input.bookingId}:${input.xeroInvoiceId}`;
 }
 
-function formatCents(cents: number): string {
-  return `$${(cents / 100).toFixed(2)}`;
-}
-
 /** What the treasurer reads in the panel. Plain figures, no member details. */
-export function primaryInvoiceReviewMessage(input: {
-  kind: PrimaryInvoiceReviewKind;
-  bookingId: string;
-  gapCents: number;
-}): string {
+export function primaryInvoiceReviewMessage(
+  input: {
+    kind: PrimaryInvoiceReviewKind;
+    bookingId: string;
+    gapCents: number;
+  },
+  format: ClubFormat,
+): string {
   const reference = `Booking ${input.bookingId.slice(0, 8)}`;
-  const amount = formatCents(Math.abs(input.gapCents));
+  const amount = formatCents(Math.abs(input.gapCents), format);
   return input.kind === "OVERBILLED"
     ? `The primary Xero invoice for ${reference} bills ${amount} more than the booking is worth: the booking was changed while the invoice was being raised. Check the invoice and raise a credit note for ${amount} in Xero if one is due, then mark this resolved.`
     : `The primary Xero invoice for ${reference} bills ${amount} less than the booking is worth: the booking was changed while the invoice was being raised, and no change could carry the difference. Check the invoice and bill ${amount} in Xero if it is due, then mark this resolved.`;
@@ -94,7 +96,7 @@ export async function raisePrimaryInvoiceReviewTask(input: {
       correlationKey,
       replayable: false,
       lastErrorCode: `PRIMARY_INVOICE_${input.kind}`,
-      lastErrorMessage: primaryInvoiceReviewMessage(input),
+      lastErrorMessage: primaryInvoiceReviewMessage(input, await getClubFormat()),
       requestPayload: sanitizeForJson({
         kind: input.kind,
         bookingId: input.bookingId,
