@@ -108,6 +108,7 @@ interface ManualRefundTask {
   editRefundHandBack?: boolean;
   /** #3827 (D-3813-7): an approved appeal's refund, by bank transfer. Optional, as above. */
   refundRequestHandBack?: boolean;
+  paidToGroupOrganiser?: boolean; // #3949: either of those two, paid back to the group organiser
   /** #4042: an organiser's Internet Banking group cancel, repaid to the organiser. Optional, as above. */
   groupOrganiserHandBack?: boolean;
   /** #4097: what a card cancellation's card refund could not carry - by bank transfer, or checked first. Optional, as above. */
@@ -690,6 +691,7 @@ function resolutionDescription({
   if (task.groupOrganiserHandBack === true) {
     return "Only do this once the money has actually gone back to the organiser. It records that the club repaid them and who did it; the joiners' refunds are already in the ledger, so nothing more is written there or on the bookings' history.";
   }
+  if (task.paidToGroupOrganiser === true) return "Only do this once the money has actually gone back to the group organiser, who paid for this booking. It writes the refund into the payment ledger and records a refund on the booking's history."; // #3949
   if (task.cardShortfallCheck === true) return "Only do this once you have checked the member really is owed it. The app first checks it can record this; pay straight after it accepts. It writes the refund into the payment ledger and records a refund on the booking's history. If it refuses, follow what it says."; // #4154 review (M3): mark first, then pay
   return "Only do this once the money has actually gone back to the member. It writes the refund into the payment ledger and records a refund on the booking's history.";
 }

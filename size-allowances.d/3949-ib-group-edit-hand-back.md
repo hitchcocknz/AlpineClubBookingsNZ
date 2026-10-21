@@ -15,3 +15,11 @@ reason: the "Booking Modified" sender's `refundByBankTransfer` parameter now
   says who the bank transfer goes to (the member, or the group organiser) rather
   than only whether there is one; the one line is the payee type's import,
   beside the parameter it types, which every edit door's call is checked against.
+
+file: src/components/admin/manual-refund-task-queue.tsx
+lines: 2341
+reason: the finance queue's paid-back dialog tells the officer the money goes
+  to the group organiser on a joiner the organiser paid for by internet
+  banking; the payload flag and its one sentence sit beside every other
+  kind's flag and confirmation sentence in this same render, so the new one
+  has to sit with them.

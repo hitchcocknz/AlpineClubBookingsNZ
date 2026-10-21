@@ -154,5 +154,14 @@ describe("the queue payload marks an edit refund hand-back for the card", () => 
     };
     expect(toOpenManualRefundTaskPayload(row, null, []).editRefundHandBack).toBe(true);
     expect(toOpenManualRefundTaskPayload({ ...row, occurrenceKey: null }, null, []).editRefundHandBack).toBe(false);
+    // #3949: on a joiner the organiser paid for by internet banking, it goes back to the organiser.
+    expect(toOpenManualRefundTaskPayload(row, null, []).paidToGroupOrganiser).toBe(false);
+    const groupChild = {
+      ...row,
+      booking: { ...row.booking, organiserSettled: true, parentBookingId: "organiser", payment: { id: "p", status: "SUCCEEDED", amountCents: 6000, refundedAmountCents: 0, source: "INTERNET_BANKING" } },
+    };
+    expect(toOpenManualRefundTaskPayload(groupChild, null, []).paidToGroupOrganiser).toBe(true);
+    expect(toOpenManualRefundTaskPayload({ ...groupChild, occurrenceKey: "refund-request-hand-back:r1" }, null, []).paidToGroupOrganiser).toBe(true);
+    expect(toOpenManualRefundTaskPayload({ ...groupChild, occurrenceKey: null }, null, []).paidToGroupOrganiser).toBe(false);
   });
 });

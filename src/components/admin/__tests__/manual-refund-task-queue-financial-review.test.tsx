@@ -204,6 +204,17 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
     expect(dialog.textContent).not.toMatch(/once the money has actually gone back/);
   });
 
+  it("#3949: an edit's or appeal's hand-back on a joiner the organiser paid for by internet banking is paid back to the organiser", async () => {
+    for (const marker of [{ editRefundHandBack: true }, { refundRequestHandBack: true }]) {
+      cleanup();
+      await renderQueue({ tasks: [{ ...HAND_BACK_TASK, ...marker, paidToGroupOrganiser: true }], viewerCanViewBookings: true });
+      fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog.textContent).toMatch(/once the money has actually gone back to the group organiser, who paid for this booking/);
+      expect(dialog.textContent).not.toMatch(/gone back to the member/);
+    }
+  });
+
   it("CONTROL: a cash hand-back's paid-back dialog keeps its sentence", async () => {
     await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
     fireEvent.click(screen.getByRole("button", { name: /paid back/i }));

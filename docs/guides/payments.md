@@ -238,7 +238,8 @@ and it can be dismissed (with a note) if the club settles it another way.
 that lowers the price, or an approved appeal on their place. The money came
 from the organiser's one group payment, so it goes back to the **organiser**,
 not the joiner: the task's reason says "to the group organiser by bank
-transfer", and the joiner's email says the club will refund the group organiser
+transfer", the paid-back dialog says the money goes back to the group
+organiser, and the joiner's email says the club will refund the group organiser
 directly. Send it to the organiser and mark it paid back as above; that records
 the refund against the joiner's share of the group payment, and the group's own
 settlement is left as it was. The rules above are unchanged: once the organiser
