@@ -10,4 +10,6 @@
   and the background retry that takes over when Stripe is briefly unavailable
   follows it too. Bookings that already had money taken by card are asked the
   same way as before, and a booking paid by internet banking is still billed
-  through its invoice.
+  through its invoice. If an earlier review of the same change was already
+  billed on a Xero invoice that has not yet been sent, a later one is added to
+  that invoice rather than asked by card, so the member is never billed twice.
