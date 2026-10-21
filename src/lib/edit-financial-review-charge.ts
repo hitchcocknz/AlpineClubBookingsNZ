@@ -29,7 +29,10 @@ import logger from "@/lib/logger";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { enqueueEditFinancialReviewChargeRecovery } from "@/lib/payment-recovery";
 import { isCapturedTransactionStatus } from "@/lib/payment-transactions";
-import { supplementaryInvoiceStillComingWhere } from "@/lib/xero-supplementary-invoice-statuses";
+import {
+  resolvedSupplementaryInvoiceOperationsWhere,
+  supplementaryInvoiceStillComingWhere,
+} from "@/lib/xero-supplementary-invoice-statuses";
 import {
   enqueueEditReviewChargeInvoiceInTransaction,
   kickQueuedXeroOutboxOperationsIfConnected,
@@ -281,13 +284,6 @@ export async function chooseEditReviewChargeRoute({
       );
     }
   }
-  if (await hasIssuedSupplementaryInvoice({ bookingModificationId, store })) {
-    throw new ManualBookingPaymentError(
-      REVIEW_CHARGE_REQUEST_CLOSED_MESSAGE,
-      409,
-    );
-  }
-
   // #3947 review: ONE INSTRUMENT PER EDIT. A share of an edit whose earlier
   // share took the `invoice` route - its supplementary invoice still coming
   // (queued, being sent, or failed and not resolved), and no card request for
@@ -298,11 +294,28 @@ export async function chooseEditReviewChargeRoute({
   // invoice route; this is the transition #3947 opens. A card-route edit's own
   // invoice always has a card request beside it (the leg defers it until one
   // exists), so it never reaches this check.
+  //
+  // READ BEFORE THE "already issued" check below, and the order is the
+  // guarantee (round 4, concurrency F1). These are two READ COMMITTED
+  // statements, and the outbox worker moves a row from still-coming to issued
+  // (SUCCEEDED and its link) in ONE commit, under neither `lock(1)` nor the
+  // anchor key. Read this way round, every such row is seen by one of the two:
+  // still coming at the first read, or already issued by the second, which
+  // refuses. The other way round, a commit landing between them reads "no
+  // invoice issued" and then "nothing coming", and the share takes the card
+  // beside the invoice just sent. An officer's resolve-in-Xero mark moves a
+  // FAILED row the same one way (coming -> resolved), so the same order holds.
   const joinsQueuedInvoice =
     canChargeCard &&
     existing === null &&
     hasIssuedXeroInvoice &&
     (await hasReviewChargeInvoiceStillComing({ bookingModificationId, store }));
+  if (await isReviewChargeInvoiceDone({ bookingModificationId, store })) {
+    throw new ManualBookingPaymentError(
+      REVIEW_CHARGE_REQUEST_CLOSED_MESSAGE,
+      409,
+    );
+  }
 
   if (canChargeCard && !joinsQueuedInvoice && bookingPayment && member) {
     return {
@@ -338,6 +351,33 @@ export async function chooseEditReviewChargeRoute({
   };
 }
 
+
+/**
+ * #3947: whether this edit's supplementary invoice is DONE, so no further share
+ * may join it or be asked beside it: issued (an active `SUPPLEMENTARY_INVOICE`
+ * link, `hasIssuedSupplementaryInvoice`, #3170) or - round 4, money F1 - made by
+ * hand in Xero after its operation failed, which an officer records by marking
+ * the row resolved (`INV-INT-025`: done, never re-sent and never minted beside).
+ * Treating that row as "not coming" sent a later share to the card for the
+ * edit's whole total beside the hand-made invoice.
+ */
+async function isReviewChargeInvoiceDone({
+  bookingModificationId,
+  store,
+}: {
+  bookingModificationId: string;
+  store: EditReviewChargeStore;
+}): Promise<boolean> {
+  if (await hasIssuedSupplementaryInvoice({ bookingModificationId, store })) return true;
+  const resolved = await store.xeroSyncOperation.findFirst({
+    where: resolvedSupplementaryInvoiceOperationsWhere({
+      localModel: "BookingModification",
+      localId: bookingModificationId,
+    }),
+    select: { id: true },
+  });
+  return resolved !== null;
+}
 
 /**
  * #3947 review: whether this edit's supplementary invoice is still coming
@@ -461,7 +501,9 @@ export async function finishEditReviewChargeInvoice({
   format: ClubFormat;
 }): Promise<void> {
   if (queued.queueOperationId) {
-    await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((err) =>
+    // Fire-and-forget, as the dispatch it replaces was (round 4, money F2): the
+    // kick can reach Xero, and the officer's request must not wait on it.
+    void kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((err) =>
       logger.error({ err, bookingId, taskId }, "Failed to kick the Xero outbox after a review charge's invoice was queued"),
     );
   }

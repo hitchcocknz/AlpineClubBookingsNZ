@@ -2581,6 +2581,9 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
         if (condition !== null && typeof condition === "object" && "in" in condition) {
           return (condition as { in: unknown[] }).in.includes(row[key]);
         }
+        if (condition !== null && typeof condition === "object" && "not" in condition) {
+          return (row[key] ?? null) !== (condition as { not: unknown }).not;
+        }
         if (condition !== null && typeof condition === "object" && "path" in condition) {
           const { path, equals } = condition as { path: string[]; equals: unknown };
           return (row[key] as Record<string, unknown> | undefined)?.[path[0]] === equals;
@@ -2633,6 +2636,13 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
       });
       expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
       expect(mocks.restatePendingSupplementaryInvoiceAmount).not.toHaveBeenCalled();
+    }
+
+    /** How many times the chooser asked whether the edit's invoice is still coming. */
+    function stillComingReads(): number {
+      return mocks.xeroSyncOperationFindFirst.mock.calls.filter(
+        ([args]) => "OR" in (args as { where: Record<string, unknown> }).where,
+      ).length;
     }
 
     /** B stayed on the invoice route: no card ask of any kind. */
@@ -2709,18 +2719,107 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
       expectNoCardAsk(result);
     });
 
-    it("CONTROL: a FAILED invoice an officer marked resolved in Xero is done, so B takes the card", async () => {
+    it("a FAILED invoice an officer marked resolved in Xero is DONE (round 4, money F1): B is refused, never asked beside it", async () => {
+      // The officer made A's invoice by hand (`INV-INT-025`: done, never minted
+      // beside). Asking B's card for the edit's $100 next to that hand-made $60
+      // would bill the member twice, so the share is refused exactly as one
+      // arriving after the invoice was issued is, with the task left OPEN.
       outboxRows = [
         shareAInvoice({ status: "FAILED", manuallyResolvedAt: new Date("2026-06-30T00:00:00.000Z") }),
       ];
 
+      await expect(charge({ confirmedAmountCents: 4000 })).rejects.toMatchObject({
+        status: 409,
+        message: REVIEW_CHARGE_REQUEST_CLOSED_MESSAGE,
+      });
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+      expect(mocks.enqueueChargeInvoiceInTransaction).not.toHaveBeenCalled();
+    });
+
+    it("the outbox worker sending A's invoice BETWEEN B's two reads still keeps B off the card (round 4, concurrency F1)", async () => {
+      // The worker moves A's row from still-coming to issued (SUCCEEDED and its
+      // link) in one commit, under no lock B holds. Simulated here at the
+      // instant after B's FIRST outbox-or-link read, whichever that is. Read
+      // still-coming first (the fix), B sees it coming and then sees the link,
+      // and is refused; read the link first, B sees "no link" and then
+      // "nothing coming", and takes the card beside the invoice just sent.
+      outboxRows = [shareAInvoice({ status: "RUNNING" })];
+      let linked = false;
+      let committed = false;
+      const workerCommits = () => {
+        if (committed) return;
+        committed = true;
+        outboxRows = [shareAInvoice({ status: "SUCCEEDED" })];
+        linked = true;
+      };
+      mocks.xeroSyncOperationFindFirst.mockImplementation(
+        async ({ where }: { where: Record<string, unknown> }) => {
+          const found = outboxRows.find((row) => matches(row, where)) ?? null;
+          workerCommits();
+          return found;
+        },
+      );
+      mocks.xeroObjectLinkFindFirst.mockImplementation(
+        async ({ where }: { where: { role?: string } }) => {
+          if (where.role !== "SUPPLEMENTARY_INVOICE") return null;
+          const found = linked ? { id: "link-share-a" } : null;
+          workerCommits();
+          return found;
+        },
+      );
+
+      await expect(charge({ confirmedAmountCents: 4000 })).rejects.toMatchObject({
+        status: 409,
+        message: REVIEW_CHARGE_REQUEST_CLOSED_MESSAGE,
+      });
+      expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+    });
+
+    it("an in-transaction enqueue that THROWS rejects the completion, with no post-commit work (round 4, money F3)", async () => {
+      // The invoice is written in the completion's own transaction, so a write
+      // that fails takes the whole completion with it: Prisma rolls the claim
+      // back and the task stays OPEN. The transaction double here only runs the
+      // callback, so the rollback itself is Prisma's; that the enqueue is inside
+      // the completion's ONE transaction (A cannot commit while it waits) is
+      // proven against PostgreSQL in `edit-financial-review-races.realdb.test.ts`.
+      outboxRows = [shareAInvoice({ status: "PENDING" })];
+      mocks.enqueueChargeInvoiceInTransaction.mockRejectedValue(new Error("unique violation"));
+
+      await expect(charge({ confirmedAmountCents: 4000 })).rejects.toThrow("unique violation");
+      // It ran INSIDE the transaction, after the claim it would roll back...
+      expect(mocks.enqueueChargeInvoiceInTransaction.mock.calls[0][1]).toBe(tx);
+      expect(mocks.enqueueChargeInvoiceInTransaction.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mocks.manualRefundTaskUpdateMany.mock.invocationCallOrder[0],
+      );
+      // ...and nothing that runs after a commit ran at all.
+      await flushDispatch();
+      expect(mocks.kickOutbox).not.toHaveBeenCalled();
+      expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+      expect(mocks.enqueueXeroSecondSupplementaryInvoiceOperation).not.toHaveBeenCalled();
+      expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+    });
+
+    it("an invoice-route share its queued invoice could not take (short-sent) reaches the SECOND ASK for that share alone (round 4, money F3)", async () => {
+      outboxRows = [shareAInvoice({ status: "PENDING" })];
+      mocks.enqueueChargeInvoiceInTransaction.mockResolvedValue({
+        queueOperationId: null,
+        outcome: "short-sent",
+        message: "Xero supplementary invoice already linked for this modification.",
+      });
+
       const result = await charge({ confirmedAmountCents: 4000 });
 
-      expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
-      expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
-      // The card route queues no invoice inside the completion (option 2 is the
-      // invoice route's alone); its invoice waits on the card request as before.
-      expect(mocks.enqueueChargeInvoiceInTransaction).not.toHaveBeenCalled();
+      expectNoCardAsk(result);
+      await flushDispatch();
+      expect(mocks.enqueueXeroSecondSupplementaryInvoiceOperation).toHaveBeenCalledTimes(1);
+      const [params] = mocks.enqueueXeroSecondSupplementaryInvoiceOperation.mock.calls[0] as [
+        { bookingModificationId: string; reviewTaskId: string; shareCents: number },
+      ];
+      // THIS share, anchored on THIS task - never the edit's $100.
+      expect(params).toMatchObject({ bookingModificationId: "mod-1", reviewTaskId: "task-1", shareCents: 4000 });
+      // Nothing was queued, so there is nothing to kick.
+      expect(mocks.kickOutbox).not.toHaveBeenCalled();
     });
 
     it("CONTROL: another edit's invoice, or none, leaves B on the card", async () => {
@@ -2728,7 +2827,7 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
 
       const result = await charge({ confirmedAmountCents: 4000 });
 
-      expect(mocks.xeroSyncOperationFindFirst).toHaveBeenCalledTimes(1);
+      expect(stillComingReads()).toBe(1);
       expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
       expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
     });
@@ -2745,7 +2844,7 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
 
       await charge({ confirmedAmountCents: 3000 });
 
-      expect(mocks.xeroSyncOperationFindFirst).not.toHaveBeenCalled();
+      expect(stillComingReads()).toBe(0);
       expect(mocks.updatePaymentIntentAmount).toHaveBeenCalledWith("pi_additional_1", 23000);
     });
   });

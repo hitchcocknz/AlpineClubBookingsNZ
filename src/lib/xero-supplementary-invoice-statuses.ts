@@ -72,7 +72,9 @@ export function outstandingSupplementaryInvoiceOperationsWhere(anchor: {
  *
  * `PARTIAL` is deliberately absent: the handler finishes `PARTIAL` only after
  * creating the invoice, and writes its `SUPPLEMENTARY_INVOICE` link in that same
- * completion, so the chooser's issued-link refusal has already answered.
+ * commit, so such a row is issued, not coming. The chooser reads THIS first and
+ * the issued link second, which is what makes that one-commit move safe
+ * between two READ COMMITTED reads (`chooseEditReviewChargeRoute`).
  */
 export function supplementaryInvoiceStillComingWhere(anchor: {
   localModel: XeroSupplementaryInvoiceAnchorModel;
@@ -87,6 +89,22 @@ export function supplementaryInvoiceStillComingWhere(anchor: {
         manuallyResolvedAt: null,
       },
     ],
+  };
+}
+
+/**
+ * #3947 round 4 (money F1): an invoice for this anchor whose operation an
+ * officer marked resolved in Xero - made by hand, so done (`INV-INT-025`). Only
+ * a FAILED or PARTIAL row can carry the mark; the query side spells the rule
+ * `manuallyResolvedAt: { not: null }`.
+ */
+export function resolvedSupplementaryInvoiceOperationsWhere(anchor: {
+  localModel: XeroSupplementaryInvoiceAnchorModel;
+  localId: string;
+}): Prisma.XeroSyncOperationWhereInput {
+  return {
+    ...supplementaryInvoiceAnchorOperationsWhere(anchor),
+    manuallyResolvedAt: { not: null },
   };
 }
 
