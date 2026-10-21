@@ -35,6 +35,7 @@ import { formatStayDate } from "@/lib/club-time";
 import { clubFormat } from "@/lib/club-format-server";
 import { renderEmailHtml } from "@/lib/email-theme";
 import { refundRequestApprovedRefundSentence } from "@/lib/booking-modified-email-copy";
+import { bankTransferRefundPayee } from "@/lib/group-organiser-paid";
 import {
   OrganiserChildRefundRefusedError,
   organiserCardAppealCap,
@@ -269,6 +270,7 @@ export async function PUT(
           paymentId: payment.id,
           refundRequestId: id,
           amountCents: bankTransferCents,
+          booking: { ...booking, payment: lockedPayment }, // #3949: the payee on a group child
         });
         // A row already holds this request's key (left by an earlier approval
         // of it), so nobody would be asked to send this money. Refuse rather
@@ -555,6 +557,7 @@ export async function PUT(
           amountCents: approvedAmountCents,
           bankTransferCents,
           organiserCardRefund,
+          bankTransferPayee: bankTransferRefundPayee(booking), // #3949
           adminNotes: adminNotes ?? null,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
@@ -578,6 +581,7 @@ export async function PUT(
             bankTransferCents,
             money.cents,
             organiserCardRefund,
+            bankTransferRefundPayee(booking), // #3949: the group organiser, when they paid by internet banking
           ),
           adminNotes: adminNotes ?? "",
           // #2268: pre-composed optional line — the flat body has no

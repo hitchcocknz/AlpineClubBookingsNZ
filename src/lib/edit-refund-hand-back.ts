@@ -21,6 +21,8 @@ import { openCardRefundOwedCents } from "@/lib/open-card-refund-owed";
 import { sumInternetBankingMintedCentsForBookings } from "@/lib/internet-banking-late-cash-credit";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { MANUAL_REFUND_TASK_REASON_MAX } from "@/lib/manual-subscription-payment";
+import { bankTransferRefundPayee, type BankTransferRefundPayee } from "@/lib/group-organiser-paid";
+import { editRefundHandBackReason, refundRequestHandBackReason } from "@/lib/manual-refund-task-copy";
 
 /**
  * #3827 (owner decision D-3813-6, `INV-PAY-117`): AN EDIT'S REFUND THAT THE
@@ -54,6 +56,19 @@ export function editRefundGoesBackByHand(adjusted: {
 }
 
 /**
+ * #3949 (`INV-PAY-136`): WHO that bank transfer goes to, or null when the
+ * edit's refund is not sent by hand: the member, or the group organiser who
+ * paid for the booking by internet banking (`bankTransferRefundPayee`). The
+ * one answer the hand-back's reason and the "Booking Modified" email share.
+ */
+export function editRefundBankTransferPayee(
+  adjusted: Parameters<typeof editRefundGoesBackByHand>[0],
+  booking: Parameters<typeof bankTransferRefundPayee>[0],
+): BankTransferRefundPayee | null {
+  return editRefundGoesBackByHand(adjusted) ? bankTransferRefundPayee(booking) : null;
+}
+
+/**
  * Raise the edit's refund hand-back, when it owes one, and say whether it did.
  *
  * IDEMPOTENT PER MODIFICATION: the occurrence key is unique, and the insert is
@@ -74,10 +89,13 @@ export async function raiseEditRefundHandBackIfOwed(
     adjusted: { refundAmountCents: number; hasSucceededPayment: boolean };
     /** What changed, for the task's reason line (e.g. "date change"). */
     editLabel: string;
+    /** #3949: whether the group organiser paid for it, whom the reason names as the payee. */
+    booking: Parameters<typeof bankTransferRefundPayee>[0];
   },
 ): Promise<boolean> {
-  const { bookingId, paymentId, bookingModificationId, adjusted, editLabel } = params;
-  if (!editRefundGoesBackByHand(adjusted) || paymentId === null) return false;
+  const { bookingId, paymentId, bookingModificationId, adjusted, editLabel, booking } = params;
+  const payee = editRefundBankTransferPayee(adjusted, booking);
+  if (payee === null || paymentId === null) return false;
   await tx.manualRefundTask.createMany({
     data: [
       {
@@ -87,10 +105,7 @@ export async function raiseEditRefundHandBackIfOwed(
         raisedAmountCents: adjusted.refundAmountCents,
         kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
         occurrenceKey: editRefundHandBackOccurrenceKey(bookingModificationId),
-        reason: `Booking ${bookingId} lowered by a ${editLabel}; paid by internet banking or by hand, so the club refunds the difference by bank transfer (#3827).`.slice(
-          0,
-          MANUAL_REFUND_TASK_REASON_MAX,
-        ),
+        reason: editRefundHandBackReason({ bookingId, editLabel, payee }).slice(0, MANUAL_REFUND_TASK_REASON_MAX),
       },
     ],
     skipDuplicates: true,
@@ -125,9 +140,11 @@ export async function raiseRefundRequestHandBack(
     refundRequestId: string;
     /** The approved amount no card refund carries; nothing is raised at 0. */
     amountCents: number;
+    /** #3949: whether the group organiser paid for it, whom the reason names as the payee. */
+    booking: Parameters<typeof bankTransferRefundPayee>[0];
   },
 ): Promise<number> {
-  const { bookingId, paymentId, refundRequestId, amountCents } = params;
+  const { bookingId, paymentId, refundRequestId, amountCents, booking } = params;
   if (amountCents <= 0) return 0;
   const raised = await tx.manualRefundTask.createMany({
     data: [
@@ -138,10 +155,7 @@ export async function raiseRefundRequestHandBack(
         raisedAmountCents: amountCents,
         kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
         occurrenceKey: refundRequestHandBackOccurrenceKey(refundRequestId),
-        reason: `Refund appeal approved on booking ${bookingId}; not paid by card, so the club refunds this by bank transfer (#3827).`.slice(
-          0,
-          MANUAL_REFUND_TASK_REASON_MAX,
-        ),
+        reason: refundRequestHandBackReason({ bookingId, payee: bankTransferRefundPayee(booking) }).slice(0, MANUAL_REFUND_TASK_REASON_MAX),
       },
     ],
     skipDuplicates: true,

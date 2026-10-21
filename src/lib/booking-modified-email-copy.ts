@@ -6,10 +6,11 @@
  * "Refund Appeal Approved" emails - HTML template and admin-editable body alike -
  * and for the cancel dialog's on-screen confirmation of an organiser-paid
  * refund (#3973) or an own-card refund not made yet (#4084). Pure, with no
- * imports, so a client component can read it. Every function takes the
+ * runtime imports (types only), so a client component can read it. Every function takes the
  * settlement's own answer of where the money went or is going; nothing here
  * decides it.
  */
+import type { BankTransferRefundPayee } from "@/lib/group-organiser-paid";
 
 /**
  * #3916, #3973: a refund on a joiner's booking the group organiser paid for by
@@ -276,7 +277,8 @@ export type BookingModifiedRefundDestination =
  */
 export function bookingModifiedRefundSentence(
   amount: string,
-  refundByBankTransfer: boolean,
+  /** #3949: who the club's bank transfer goes to (`editRefundBankTransferPayee`), or null when none is sent by hand. */
+  refundByBankTransfer: BankTransferRefundPayee | null,
   refundDestination: BookingModifiedRefundDestination,
 ): string {
   switch (refundDestination) {
@@ -287,7 +289,9 @@ export function bookingModifiedRefundSentence(
     case "own_card_pending":
       return ownCardRefundPendingSentence(amount);
     case "own":
-      return refundByBankTransfer ? bankTransferRefundSentence(amount) : ownCardRefundSentence(amount);
+      // #3949 (`INV-PAY-136`): a joiner's booking the organiser paid by internet banking is refunded to the organiser.
+      if (refundByBankTransfer === "organiser") return organiserByHandRefundSentence(amount);
+      return refundByBankTransfer === "member" ? bankTransferRefundSentence(amount) : ownCardRefundSentence(amount);
   }
 }
 
@@ -320,6 +324,8 @@ export function refundRequestApprovedRefundSentence(
    * other booking.
    */
   organiserCardRefund: OrganiserCardAppealRefund | null = null,
+  /** #3949 (`INV-PAY-136`): who the bank-transfer part goes to - the group organiser who paid for the booking by internet banking, or the member. */
+  bankTransferPayee: BankTransferRefundPayee = "member",
 ): string {
   if (organiserCardRefund === "organiser_card") return organiserCardRefundSentence(formatAmount(approvedCents));
   if (organiserCardRefund === "organiser_card_pending") {
@@ -329,6 +335,9 @@ export function refundRequestApprovedRefundSentence(
   if (bankTransferCents <= 0) {
     return `${ownCardRefundPlannedClause(formatAmount(approvedCents))}.`;
   }
-  if (cardCents <= 0) return bankTransferRefundSentence(formatAmount(bankTransferCents));
+  if (cardCents <= 0) {
+    // #3949: an organiser's internet-banking payment has no card part, so all of it goes back to them.
+    return bankTransferPayee === "organiser" ? organiserByHandRefundSentence(formatAmount(bankTransferCents)) : bankTransferRefundSentence(formatAmount(bankTransferCents));
+  }
   return `${ownCardRefundPlannedClause(formatAmount(cardCents))}, and ${bankTransferRefundClause(`the remaining ${formatAmount(bankTransferCents)}`)}.`;
 }

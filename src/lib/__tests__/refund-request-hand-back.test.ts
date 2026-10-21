@@ -45,6 +45,7 @@ describe("raising an approved appeal's hand-back (D-3813-7)", () => {
       paymentId: "pay-1",
       refundRequestId: "req-1",
       amountCents: 10000,
+      booking: { organiserSettled: false, parentBookingId: null, payment: null },
     });
     expect(raised).toBe(1);
     expect(store.manualRefundTask.createMany).toHaveBeenCalledWith({
@@ -70,6 +71,7 @@ describe("raising an approved appeal's hand-back (D-3813-7)", () => {
         paymentId: "pay-1",
         refundRequestId: "req-1",
         amountCents: 10000,
+        booking: { organiserSettled: false, parentBookingId: null, payment: null },
       }),
     ).toBe(0);
   });
@@ -83,6 +85,7 @@ describe("raising an approved appeal's hand-back (D-3813-7)", () => {
           paymentId: "pay-1",
           refundRequestId: "req-1",
           amountCents,
+          booking: { organiserSettled: false, parentBookingId: null, payment: null },
         }),
       ).toBe(0);
       expect(store.manualRefundTask.createMany).not.toHaveBeenCalled();

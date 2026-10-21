@@ -74,7 +74,7 @@ import { getDefaultLodgeId, lodgeNullTolerantScope } from "@/lib/lodges";
 import { readReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
 import { queueReductionAskFollowUps } from "@/lib/unpaid-ask-billed-offset-note";
 import {
-  editRefundGoesBackByHand,
+  editRefundBankTransferPayee,
   raiseEditRefundHandBackIfOwed,
 } from "@/lib/edit-refund-hand-back";
 import {
@@ -1365,6 +1365,7 @@ export async function modifyBookingDates({
       bookingModificationId: bookingModification.id,
       adjusted: payments,
       editLabel: "date change",
+      booking, // #3949: the organiser is the payee on a group child they paid by internet banking
     });
     // #3954: a smaller re-issued ask, and the note for an offset Xero had
     // already billed, are durable from this commit, not from after it.
@@ -1775,7 +1776,7 @@ async function dispatchDatePostTransactionSideEffects({
       promoCoverageNote: result.promoCoverage?.message ?? null,
       financialReviewPending,
       refundDestination,
-      refundByBankTransfer: editRefundGoesBackByHand(result),
+      refundByBankTransfer: editRefundBankTransferPayee(result, result.booking), // #3949: or the group organiser,
       lodgeId: result.booking.lodgeId,
     }, format).catch((err) =>
       logger.error({ err, bookingId }, "Failed to send booking modified email"),
@@ -2343,7 +2344,7 @@ export async function adminShiftBookingDates({
       financialReviewPending,
       refundDestination: "own",
       // A shift keeps the price, so nothing is refunded.
-      refundByBankTransfer: false,
+      refundByBankTransfer: null,
       lodgeId: result.lodgeId,
     }, format).catch((err) =>
       logger.error({ err, bookingId }, "Failed to send admin override date-shift email"),

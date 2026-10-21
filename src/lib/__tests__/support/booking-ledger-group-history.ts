@@ -325,7 +325,8 @@ export async function buildPromoHandBackGroup(
   const { raiseEditRefundHandBackIfOwed } = await import("@/lib/edit-refund-hand-back");
   await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    const payment = await tx.payment.findUniqueOrThrow({ where: { bookingId: editedChild! } });
+    const child = await tx.booking.findUniqueOrThrow({ where: { id: editedChild! }, include: { payment: true } });
+    const payment = child.payment!;
     expect(
       await raiseEditRefundHandBackIfOwed(tx, {
         bookingId: editedChild!,
@@ -333,6 +334,7 @@ export async function buildPromoHandBackGroup(
         bookingModificationId: modificationId,
         adjusted: { refundAmountCents: 1_500, hasSucceededPayment: false },
         editLabel: "night re-price",
+        booking: child, // #3949: an organiser-settled IB child, so the organiser is the payee
       }),
     ).toBe(true);
   });

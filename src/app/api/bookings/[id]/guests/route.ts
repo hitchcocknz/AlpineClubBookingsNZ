@@ -1489,7 +1489,7 @@ export async function POST(
         changeFeeCents: 0,
         refundAmountCents: 0,
         // Guest adds never decrease the price, so nothing is refunded.
-        refundByBankTransfer: false,
+        refundByBankTransfer: null,
         appliedCreditGivenBackCents: 0,
         additionalAmountCents: namedAdditionalCents,
         // A guest add only raises a price.

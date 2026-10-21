@@ -39,6 +39,7 @@ describe("raising the edit's refund hand-back", () => {
       bookingModificationId: "mod-1",
       adjusted: { refundAmountCents: 6000, hasSucceededPayment: false },
       editLabel: "date change",
+      booking: { organiserSettled: false, parentBookingId: null, payment: null },
     });
     expect(raised).toBe(true);
     expect(store.manualRefundTask.createMany).toHaveBeenCalledTimes(1);
@@ -74,6 +75,7 @@ describe("raising the edit's refund hand-back", () => {
         bookingModificationId: "mod-1",
         adjusted,
         editLabel: "date change",
+        booking: { organiserSettled: false, parentBookingId: null, payment: null },
       });
       expect(raised).toBe(false);
       expect(store.manualRefundTask.createMany).not.toHaveBeenCalled();
@@ -110,10 +112,10 @@ describe("telling an edit refund hand-back from a cancellation's (INV-PAY-117)",
 
 describe("the member is told the club WILL refund by bank transfer (D-3813-6)", () => {
   it("promises a bank transfer, and keeps the card wording for a card refund", () => {
-    expect(bookingModifiedRefundSentence("$60.00", true, "own")).toBe(
+    expect(bookingModifiedRefundSentence("$60.00", "member", "own")).toBe(
       "The club will refund $60.00 to you by bank transfer.",
     );
-    expect(bookingModifiedRefundSentence("$60.00", false, "own")).toBe(
+    expect(bookingModifiedRefundSentence("$60.00", null, "own")).toBe(
       "A refund of $60.00 has been processed to your original payment method.",
     );
   });

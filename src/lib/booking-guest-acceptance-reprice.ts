@@ -48,8 +48,9 @@ import {
   EditFinancialReviewPendingError,
 } from "@/lib/edit-financial-review";
 import { sendBookingModifiedEmail } from "@/lib/email/booking";
+import type { BankTransferRefundPayee } from "@/lib/group-organiser-paid";
 import {
-  editRefundGoesBackByHand,
+  editRefundBankTransferPayee,
   raiseEditRefundHandBackIfOwed,
 } from "@/lib/edit-refund-hand-back";
 import { fullReductionReturnRoute } from "@/lib/booking-guest-acceptance-return-route";
@@ -163,6 +164,8 @@ export type GuestAcceptanceReprice =
       creditReturnedAsApplied: boolean;
       hasIssuedXeroInvoice: boolean;
       hasSucceededPayment: boolean;
+      /** #3949: who the club's bank transfer goes to (`editRefundBankTransferPayee`), or null when none is sent. */
+      bankTransferRefundPayee: BankTransferRefundPayee | null;
       paymentStatus: string | null;
       paymentId: string | null;
       zeroDollarAutoPaid: boolean;
@@ -353,6 +356,7 @@ export async function repriceBookingAfterGuestAcceptance(
       creditReturnedAsApplied: false,
       hasIssuedXeroInvoice: hasIssuedPrimaryXeroInvoice(loaded),
       hasSucceededPayment: false,
+      bankTransferRefundPayee: null,
       paymentStatus: booking.payment?.status ?? null,
       paymentId: booking.payment?.id ?? null,
       zeroDollarAutoPaid: false,
@@ -515,6 +519,7 @@ export async function repriceBookingAfterGuestAcceptance(
     bookingModificationId: bookingModification.id,
     adjusted: paymentImpact,
     editLabel: "guest's acceptance re-price",
+    booking, // #3949: the organiser is the payee on a group child they paid by internet banking
   });
   // #3954: a smaller re-issued ask, and a billed offset's note, are durable from this commit.
   await queueReductionAskFollowUps(tx, { bookingId, paymentId: booking.payment?.id ?? null, bookingModificationId: bookingModification.id, settled: paymentImpact });
@@ -543,6 +548,7 @@ export async function repriceBookingAfterGuestAcceptance(
     creditReturnedAsApplied: returnRoute.kind === "account-credit",
     hasIssuedXeroInvoice: paymentImpact.hasIssuedXeroInvoice,
     hasSucceededPayment: paymentImpact.hasSucceededPayment,
+    bankTransferRefundPayee: editRefundBankTransferPayee(paymentImpact, booking),
     paymentStatus: booking.payment?.status ?? null,
     paymentId: booking.payment?.id ?? null,
     zeroDollarAutoPaid: lifecycle.zeroDollarAutoPaid,
@@ -684,7 +690,7 @@ export async function settleGuestAcceptanceRepriceAfterCommit(params: {
       // a booking under an open financial review is never re-priced.
       financialReviewPending: false,
       // D-3813-6: an internet-banking refund is the club's to send.
-      refundByBankTransfer: editRefundGoesBackByHand(reprice),
+      refundByBankTransfer: reprice.bankTransferRefundPayee, // #3949: the member, or the group organiser
       refundDestination: refund.refundDestination,
       lodgeId: reprice.lodgeId,
       // #3954 round 9: not named once a later reduction retired the re-issue.

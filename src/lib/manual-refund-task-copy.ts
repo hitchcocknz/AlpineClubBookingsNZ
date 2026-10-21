@@ -30,6 +30,7 @@
 import type { ManualRefundTaskKind } from "@prisma/client";
 
 import type { ClubFormat } from "@/lib/club-format";
+import type { BankTransferRefundPayee } from "@/lib/group-organiser-paid";
 import { manualRefundTaskKindAllowsSettlement } from "@/lib/manual-refund-task-settlement-rules";
 import { formatCents } from "@/lib/utils";
 import type { EditReviewStillOwedPreview } from "@/lib/edit-financial-review-still-owed";
@@ -326,4 +327,25 @@ export function stillOwedNoticeText(preview: EditReviewStillOwedPreview | null, 
   }
   const then = split ?? { "hand-back": `hand back ${owed}, not the full share`, card: `${owed} will be refunded to the card`, "account-credit": `${owed} will be credited` }[route];
   return `Only ${owed} of the ${formatCents(shareCents, format)} share is still owed after the booking's cancellation - ${then}.`;
+}
+
+/**
+ * #3827, #3949 (`INV-PAY-136`): THE REASON LINE of an edit's refund hand-back
+ * (`INV-PAY-117`) and of an approved appeal's (`INV-PAY-118`), as the finance
+ * queue shows it - naming who the bank transfer goes to. A joiner's booking the
+ * group organiser paid for by internet banking is refunded to the ORGANISER
+ * (owner decision on #3949, 21 Oct 2026), never to the joiner, so the officer
+ * paying it must be told whose account to send it to. The member wording is
+ * exactly what it was.
+ */
+export function editRefundHandBackReason({ bookingId, editLabel, payee }: { bookingId: string; editLabel: string; payee: BankTransferRefundPayee }): string {
+  return payee === "organiser"
+    ? `Booking ${bookingId} lowered by a ${editLabel}; the group organiser paid for it by internet banking, so the club refunds the difference to the group organiser by bank transfer (#3949).`
+    : `Booking ${bookingId} lowered by a ${editLabel}; paid by internet banking or by hand, so the club refunds the difference by bank transfer (#3827).`;
+}
+
+export function refundRequestHandBackReason({ bookingId, payee }: { bookingId: string; payee: BankTransferRefundPayee }): string {
+  return payee === "organiser"
+    ? `Refund appeal approved on booking ${bookingId}; the group organiser paid for it by internet banking, so the club refunds this to the group organiser by bank transfer (#3949).`
+    : `Refund appeal approved on booking ${bookingId}; not paid by card, so the club refunds this by bank transfer (#3827).`;
 }
