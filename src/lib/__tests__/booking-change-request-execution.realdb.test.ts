@@ -1428,6 +1428,82 @@ function deferred() {
     }
   }, 60_000);
 
+  it("#3980: a correction landing mid-create is measured on its whole worth, so its removal is not billed again", async () => {
+    await seed({
+      secondGuest: true,
+      unpaid: { invoiced: false },
+      requested: { addGuests: [], removeGuests: [{ id: GUEST_2_ID }], summary: "remove Second Guest" },
+    });
+    // The create read the booking before the correction: both guests, no fee.
+    const before = await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { finalPriceCents: true } });
+    const builtLines = [
+      { description: "Original Guest", quantity: 1, unitAmount: (2 * STORED_NIGHT_CENTS) / 100 },
+      { description: "Second Guest", quantity: 1, unitAmount: (2 * STORED_NIGHT_CENTS) / 100 },
+    ];
+    const fee = STORED_NIGHT_CENTS;
+    expect(await approve(OFFICER_ID)).toMatchObject({ outcome: "executed", changeFeeCents: fee });
+    const [modification] = await prisma.bookingModification.findMany({ where: { bookingId: BOOKING_ID } });
+    // It read no invoice link, so it claimed the payment row and is marked.
+    expect(modification.newData).toMatchObject({
+      primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true },
+      finishedStayCorrection: { feeOnPrimaryInvoice: true },
+    });
+
+    const gap = await import("@/lib/xero-primary-invoice-fee-gap");
+    const { startXeroSyncOperation } = await import("@/lib/xero-sync");
+    const { buildXeroBookingInvoiceCorrelationKey } = await import("@/lib/xero-booking-invoice-key");
+    const invoiceId = "race-3750-mid-create-invoice";
+    try {
+      const key = buildXeroBookingInvoiceCorrelationKey(BOOKING_ID);
+      const operation = await startXeroSyncOperation({
+        direction: "OUTBOUND",
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: PAYMENT_ID,
+        idempotencyKey: key,
+        correlationKey: key,
+        requestPayload: { invoices: [] },
+      });
+      // Its link is saved after the correction committed: the worth read back
+      // holds the removal and the fee; the invoice bills the pre-correction lines.
+      const atLink = await gap.persistPrimaryInvoiceLink({
+        operationId: operation.id,
+        paymentId: PAYMENT_ID,
+        xeroInvoiceNumber: null,
+        billed: gap.primaryInvoiceBilledFee(invoiceId, builtLines),
+        built: { worthCents: before.finalPriceCents, lineTotalCents: 4 * STORED_NIGHT_CENTS },
+        primaryInvoiceCashCents: 0,
+        primaryInvoiceAttemptedCashCents: 0,
+      });
+      const after = await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { finalPriceCents: true } });
+      expect(atLink.worth).toEqual({
+        atBuildCents: before.finalPriceCents,
+        builtTotalCents: 4 * STORED_NIGHT_CENTS,
+        atLinkCents: after.finalPriceCents + fee,
+      });
+
+      // The fee-only check (#3955) billed the fee on top of an invoice still
+      // billing the removed guest. Measured on worth, the invoice bills more
+      // than the booking is worth: the treasurer's task, and nothing billed.
+      const result = await gap.queuePrimaryInvoiceWorthGap({ bookingId: BOOKING_ID, atLink });
+      expect(result.gapCents).toBe(after.finalPriceCents + fee - before.finalPriceCents);
+      expect(result.gapCents).toBeLessThan(0);
+      expect(result.reviewOperationId).not.toBeNull();
+      expect(
+        await prisma.xeroSyncOperation.count({ where: { localModel: "BookingModification", localId: modification.id } }),
+      ).toBe(0);
+      expect(
+        await prisma.xeroSyncOperation.findUniqueOrThrow({
+          where: { id: result.reviewOperationId! },
+          select: { status: true, replayable: true, lastErrorCode: true },
+        }),
+      ).toEqual({ status: "FAILED", replayable: false, lastErrorCode: "PRIMARY_INVOICE_OVERBILLED" });
+    } finally {
+      await prisma.xeroObjectLink.deleteMany({ where: { localModel: "Payment", localId: PAYMENT_ID } });
+    }
+  }, 60_000);
+
   it("a nights-only change is charged the same-day share of the nights it removes, never the ordinary late fee (owner, 7 Oct)", async () => {
     // A tier that would make moving check-in one day later a "more lenient"
     // move, so the ordinary late-change fee would charge a share of the WHOLE

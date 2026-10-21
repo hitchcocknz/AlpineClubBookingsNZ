@@ -331,6 +331,13 @@ import "./booking-ledger-census-capacity-race.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-3750-` fixtures.
 import "./booking-change-request-execution.realdb.test";
+// #3980 reuses it to prove an edit racing the booking's primary Xero invoice
+// create: a price increase committed mid-create is billed once on a
+// supplementary invoice anchored on the edit, a reduction raises one Xero
+// Operations task, and an edit arriving while the link's save holds the
+// Payment row is refused whole. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
+// it owns and cleans its own `race-3980-` fixtures.
+import "./primary-invoice-edit-race.realdb.test";
 // #3854 reuses it to prove a group organiser's settlement posts its children's
 // money to the booking ledger through the real card settle, the Internet Banking
 // invoice's inbound reconcile, the organiser cancel's refund plan and #3653's
