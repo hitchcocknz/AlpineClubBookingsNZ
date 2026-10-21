@@ -1290,12 +1290,16 @@ on `manuallyResolvedAt`.
   per-payment block, so a later refund beyond it gets its own note, sized from
   the same coverage, and the hand-made note is never covered twice. A resolved
   row whose note a link records VOIDED or DELETED covers nothing (#4250,
-  `refundNoteIdSets(...).cancelled`): Xero no longer holds that note, so the
-  nightly card self-heal sees the gap and raises a fresh note under an
-  after-void key (`INV-ADDPAY-041`). Its id and key are still reported to the
-  fences, and its amount is never read. A resolved
-  row whose amount cannot be read makes the enqueue refuse loudly (error log,
-  "raise it by hand"). `readRefundCreditNoteGap` is the one reader of the gap
+  `refundNoteIdSets(...).cancelled`, read in the same query as the live
+  notes): Xero no longer holds that note, so the nightly card self-heal sees
+  the gap and raises a fresh note (`INV-ADDPAY-041`). Its id is still
+  reported, but never its key: a re-raise's key can equal it when the note
+  executed at another watermark than it was queued at. Its amount is never
+  read. Owner decision (21 Oct 2026): a voided card refund note is raised
+  again automatically, even one resolved in Xero, so officers are told not to
+  replace it by hand as well, which would duplicate it. A resolved row whose
+  amount cannot be read, unless its note is voided or deleted (#4250), makes
+  the enqueue refuse loudly (error log, "raise it by hand"). `readRefundCreditNoteGap` is the one reader of the gap
   for the self-heal list and the booking page. No new booking invoice is queued
   while the payment's latest invoice create is resolved, and the
   missing-invoices list behind **Queue all** leaves those out. Single-booking
@@ -1424,7 +1428,8 @@ document automatically** — that judgement stays with the operator.
    every refund-note link (active/inactive, recorded or payload-recovered
    amount, recorded Xero status) and the plan. Active coverage counts notes
    an officer resolved in Xero, as the enqueue does (`INV-INT-025`), and a
-   resolved note whose amount cannot be read blocks the payment. The plan: reactivations (oldest first,
+   resolved note whose amount cannot be read blocks the payment, unless its
+   note is voided or deleted (#4250). The plan: reactivations (oldest first,
    never past the cash target), active links mirroring notes already
    VOIDED/DELETED in Xero (always deactivated — a cancelled note is never
    coverage), and what still needs manual review. A payment whose cash

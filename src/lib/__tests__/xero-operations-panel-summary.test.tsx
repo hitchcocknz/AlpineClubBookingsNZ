@@ -2,7 +2,7 @@
 
 import { fireEvent, render, screen } from "@/lib/__tests__/support/club-time-render";
 import { describe, expect, it, vi } from "vitest";
-import { OperationItem } from "@/app/(admin)/admin/xero/_components/operations-panel";
+import { OperationItem, resolveDialogDescription } from "@/app/(admin)/admin/xero/_components/operations-panel";
 import type { XeroOperation } from "@/app/(admin)/admin/xero/_components/types";
 
 function makeOperation(overrides: Partial<XeroOperation> = {}): XeroOperation {
@@ -127,5 +127,17 @@ describe("OperationItem Mark failed (#3462)", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Mark failed" }));
     expect(onMarkFailed).not.toHaveBeenCalled();
+  });
+});
+
+describe("the resolve dialog's text (#4250, owner decision 21 Oct 2026)", () => {
+  it("tells an officer resolving a credit note not to replace a voided card refund note by hand", () => {
+    expect(resolveDialogDescription("CREDIT_NOTE")).toContain(
+      "If you later void a card refund's credit note in Xero, don't make a replacement by hand: the app raises a fresh one overnight.",
+    );
+  });
+
+  it("says nothing about credit notes when resolving anything else", () => {
+    expect(resolveDialogDescription("INVOICE")).toBe("How was this resolved in Xero? This drops it off the active failure list.");
   });
 });
