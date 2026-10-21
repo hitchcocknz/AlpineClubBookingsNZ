@@ -2588,14 +2588,14 @@ describe("canAskCardForReviewCharge (#3947)", () => {
   });
 
   it.each([
-    ["a settled credit-paid ($0) card payment", "PAID", payment(), true],
-    ["a settled captured card payment", "CONFIRMED", payment({ amountCents: 15000 }), true],
-    ["a PAYMENT_PENDING credit-paid booking", "PAYMENT_PENDING", payment(), true],
-    ["a cancelled booking with money captured on a card", "CANCELLED", payment({ amountCents: 15000 }), true],
-    ["a cancelled credit-paid booking", "CANCELLED", payment(), false],
-    ["a settled $0 internet-banking payment", "PAID", payment({ source: PaymentSource.INTERNET_BANKING }), false],
-    ["a settled booking whose card payment never captured", "PAYMENT_PENDING", payment({ status: "PENDING" }), false],
-  ])("%s (%s) -> %s", (_label, status, row, expected) => {
+    ["asks: a settled credit-paid ($0) card payment", "PAID", payment(), true],
+    ["asks: a settled captured card payment", "CONFIRMED", payment({ amountCents: 15000 }), true],
+    ["asks: a PAYMENT_PENDING credit-paid booking", "PAYMENT_PENDING", payment(), true],
+    ["asks: a cancelled booking with money captured on a card", "CANCELLED", payment({ amountCents: 15000 }), true],
+    ["refuses: a cancelled credit-paid booking", "CANCELLED", payment(), false],
+    ["refuses: a settled $0 internet-banking payment", "PAID", payment({ source: PaymentSource.INTERNET_BANKING }), false],
+    ["refuses: a settled booking whose card payment never captured", "PAYMENT_PENDING", payment({ status: "PENDING" }), false],
+  ])("%s", (_label, status, row, expected) => {
     expect(canAskCardForReviewCharge({ status, payment: row })).toBe(expected);
   });
 
