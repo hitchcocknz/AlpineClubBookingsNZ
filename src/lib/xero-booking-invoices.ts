@@ -96,11 +96,7 @@ import {
 import { reconcileBookingMoney } from "@/lib/booking-money-reconciliation";
 import { asRecord } from "@/lib/xero-json";
 import { bookingWorthCents, isCapturedPaymentStatus, recordedChangeFeeCents } from "@/lib/booking-payment-state";
-import {
-  CHANGE_FEE_LINE_DESCRIPTION,
-  changeFeeLineItem,
-  invoiceLineItemsTotalCents,
-} from "@/lib/xero-modification-line-items";
+import { CHANGE_FEE_LINE_DESCRIPTION, changeFeeLineItem, invoiceLineItemsTotalCents } from "@/lib/xero-modification-line-items";
 import {
   cardSettleAllocatesAppliedCredit,
   cardSettleAppliedCreditCents,
@@ -652,14 +648,9 @@ export async function createXeroInvoiceForBooking(
   // the reasoning is on the helper.
   const feeOwedCents = recordedChangeFeeCents(booking.payment);
   if (feeOwedCents > 0) lineItems.push(changeFeeLineItem(feeOwedCents, hutFeeMapping));
-  // #3980: what this read says the booking is worth, and what these lines bill,
-  // stored with the link so the gap check can tell an edit that landed while
-  // this create was in flight from how the lines price the booking.
+  // #3980: the worth this read gives and what its lines bill, stored with the link.
   const builtFrom = {
-    worthCents: bookingWorthCents({
-      finalPriceCents: booking.finalPriceCents,
-      changeFeeCents: booking.payment.changeFeeCents,
-    }),
+    worthCents: bookingWorthCents({ finalPriceCents: booking.finalPriceCents, changeFeeCents: booking.payment.changeFeeCents }),
     lineTotalCents: invoiceLineItemsTotalCents(lineItems),
   };
 

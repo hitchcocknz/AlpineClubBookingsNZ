@@ -101,3 +101,35 @@ export async function claimPrimaryInvoiceStillUnlinked(
     throw new PrimaryInvoiceRaisedDuringEditError(input.refusalMessage);
   }
 }
+
+/**
+ * The edit's write on its payment row, made once by `applyPaymentAdjustments`
+ * after its arms: read no invoice link, the claim, carrying the fee the edit
+ * records (`changeFeeCents`, 0 for none); read one, the fee alone, as every
+ * edit recorded it before #3980. Returns whether the edit settled against the
+ * primary invoice, which the door writes to its history row.
+ */
+export async function writeEditOnPayment(
+  tx: Pick<Prisma.TransactionClient, "payment">,
+  input: {
+    payment: { id: string; xeroInvoiceId: string | null } | null | undefined;
+    changeFeeCents: number;
+    refusalMessage?: string;
+  },
+): Promise<boolean> {
+  const settled = settlesAgainstPrimaryInvoice(input.payment);
+  if (!input.payment) return settled;
+  if (settled) {
+    await claimPrimaryInvoiceStillUnlinked(tx, {
+      paymentId: input.payment.id,
+      changeFeeIncrementCents: input.changeFeeCents,
+      refusalMessage: input.refusalMessage,
+    });
+  } else if (input.changeFeeCents > 0) {
+    await tx.payment.update({
+      where: { id: input.payment.id },
+      data: { changeFeeCents: { increment: input.changeFeeCents } },
+    });
+  }
+  return settled;
+}
