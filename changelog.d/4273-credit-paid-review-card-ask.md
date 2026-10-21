@@ -14,3 +14,6 @@
   billed on a Xero invoice that is still on its way to Xero (queued, being
   sent, or failed and not yet resolved), a later one goes on that invoice
   rather than to the card, so the member is not asked twice for the same money.
+  One case is still open: an officer requeuing a failed invoice after a later
+  review of the same change has raised a new one can bill that change twice
+  (#4274).

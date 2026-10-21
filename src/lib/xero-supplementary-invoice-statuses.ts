@@ -66,7 +66,9 @@ export function outstandingSupplementaryInvoiceOperationsWhere(anchor: {
  * (`isResolvedInXero`, `INV-INT-025`; the query side spells that
  * `manuallyResolvedAt: null`). Either way the anchor's invoice is still on its
  * way, which is what `chooseEditReviewChargeRoute` needs to know before it
- * offers a later share of the same edit the card.
+ * offers a later share of the same edit the card. NOT closed here: neither the
+ * restate nor the enqueue reads FAILED, so a later share's invoice is a NEW
+ * row, and requeuing the failed one beside it bills the edit twice (#4274).
  *
  * `PARTIAL` is deliberately absent: the handler finishes `PARTIAL` only after
  * creating the invoice, and writes its `SUPPLEMENTARY_INVOICE` link in that same

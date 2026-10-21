@@ -2097,15 +2097,14 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   (`canAskCardForReviewCharge`) nor an issued Xero invoice is REFUSED before the
   claim, with the task left OPEN. The Xero leg is the same choke point with a
   POSITIVE `priceDiffCents`, the only place the direction becomes a sign.
-- **Which instrument a charge uses** (#3947, owner decision 15 Oct 2026). The
-  card, when `canAskCardForReviewCharge` says there is one to ask: the edit
-  doors' `canAskCardForIncrease` (#3502), so a settled booking paid wholly with
-  credit is card-asked, Xero or not, plus captured card money on a booking that
-  has left the settled statuses (today's route, pending #4272). Otherwise the
-  issued invoice. ONE INSTRUMENT PER EDIT: a share whose edit has no card
-  request but a supplementary invoice queued, sending, or failed and not yet
-  resolved joins that invoice; a card ask beside it would bill the member
-  twice.
+- **Which instrument a charge uses** (#3947; owner decisions 15 and 22 Oct
+  2026). The card when `canAskCardForReviewCharge` says so: the edit doors'
+  `canAskCardForIncrease`, so a settled credit-paid booking too, Xero or not,
+  plus captured card money on an unsettled booking (pending #4272). Otherwise
+  the issued invoice. ONE INSTRUMENT PER EDIT: a share whose edit has no card
+  request but an invoice queued, sending, or failed and unresolved joins it,
+  never the card. The invoice route queues its invoice inside the completion's
+  transaction, so the next share always sees it.
 
 ## INV-PAY-062
 
