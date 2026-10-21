@@ -387,13 +387,7 @@ export async function recheckPrimaryInvoiceWorthGap(input: {
   bookingId: string;
   xeroInvoiceId: string;
   createdByMemberId?: string;
-  /**
-   * Review round 2 F6: what a create whose save found this invoice ALREADY
-   * linked - by another writer, which stores no figures - built and was billed.
-   * With no stored figures the gap is measured from these against the worth
-   * now, and handed to the treasurer rather than billed: the worth now may
-   * hold edits that read that link and billed themselves.
-   */
+  /** Round 2 F6: a create's own figures, where another writer linked this invoice first (`reviewUnstoredRelink`). */
   unstoredSave?: { built: { worthCents: number; lineTotalCents: number }; billedTotalCents: number };
 }): Promise<PrimaryInvoiceWorthGapResult> {
   const stored = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.xeroInvoiceId);

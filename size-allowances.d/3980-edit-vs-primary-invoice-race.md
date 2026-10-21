@@ -35,3 +35,15 @@ lines: 2390
 reason: the repair pass decides per edit, inside its one loop, which documents
   an edit expects; a marked edit's "expects none of its own" has to sit beside
   the two arms it switches off, and the reason it is safe is written there.
+
+file: src/lib/xero-booking-invoices.ts
+lines: 1657
+reason: the create's own figures go to the link's save and, where another
+  writer linked the same invoice first, to the re-check that measures them;
+  both calls sit where the create's read, lines and invoice already are.
+
+file: src/lib/member-guest-consent-service.ts
+lines: 1396
+reason: the consent removal mints its re-issued ask and queues its Xero leg
+  here, after its commit; the minted intent has to travel from the one to the
+  other in this function so a gap invoice waiting on that ask is settled.
