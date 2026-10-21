@@ -4,6 +4,7 @@ import { getRemainingRefundableCentsNetOf } from "@/lib/booking-payment-state";
 import { sumInternetBankingLateCashCreditCents } from "@/lib/internet-banking-late-cash-credit";
 import { openCardRefundOwedCents, type CardRefundOwedPaymentRow } from "@/lib/open-card-refund-owed";
 import { BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX, isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
+import type { BankTransferRefundPayee } from "@/lib/group-organiser-paid";
 
 /**
  * #3213 (epic #2797): WHICH FINANCE-QUEUE ITEMS CAN BE SETTLED AT ALL, and the
@@ -385,6 +386,25 @@ export const EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE =
 
 export const EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE =
   "This booking has been cancelled since this edit refund was dismissed, and the cancellation's refund was worked out without it. Putting it back on the queue would promise the member money the cancellation already accounted for. If more is owed, raise it against the cancelled booking, for example as a refund appeal.";
+
+/**
+ * #3949 (`INV-PAY-136`): the same two refusals on a joiner's booking the group
+ * organiser paid for by internet banking, whose refunds go back to the
+ * organiser (`bankTransferRefundPayee`). The rule is unchanged: the group
+ * cancel nets an open edit refund out of the organiser's refund just as a
+ * member's cancel does.
+ */
+export function editRefundHandBackDismissAfterCancelMessage(payee: BankTransferRefundPayee): string {
+  return payee === "organiser"
+    ? "This group booking has been cancelled since this edit refund was raised, and the cancellation's refund to the group organiser was worked out on the basis that this money goes back to the organiser. Send it to the organiser and mark it paid back. If the club has decided not to pay it, that changes the cancellation's own figures, so take it to the treasurer to correct the cancelled booking rather than dismissing the task here."
+    : EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE;
+}
+
+export function editRefundHandBackReopenAfterCancelMessage(payee: BankTransferRefundPayee): string {
+  return payee === "organiser"
+    ? "This group booking has been cancelled since this edit refund was dismissed, and the cancellation's refund to the group organiser was worked out without it. Putting it back on the queue would promise the organiser money the cancellation already accounted for. If more is owed, raise it against the cancelled booking, for example as a refund appeal."
+    : EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE;
+}
 
 /**
  * #3827 (`INV-PAY-117`): the same question as a query fragment, for the server

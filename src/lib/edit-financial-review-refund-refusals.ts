@@ -95,6 +95,15 @@ export const REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE =
   "That is more than this booking's payment still holds once the refunds already promised back by hand are counted - settle or dismiss those refund tasks first, or confirm a smaller amount.";
 
 /**
+ * #3949 (`INV-PAY-136`): the cap of a hand-back paid back to the group
+ * organiser out of the group's internet-banking payment. The joiner's share of
+ * that payment, less what has already gone back on it and the other refunds
+ * still promised on it, is all this task can record.
+ */
+export const GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE =
+  "That is more than the group organiser's payment still holds for this booking once its earlier refunds and the other refunds promised back on it are counted - check the booking's payment, then settle or dismiss the other refund tasks first.";
+
+/**
  * #3791 (owner decision 2): a review completed after the booking was cancelled
  * nets its share against the credit the cancellation already restored, which
  * means re-running the cancellation's tier on what would have been applied had

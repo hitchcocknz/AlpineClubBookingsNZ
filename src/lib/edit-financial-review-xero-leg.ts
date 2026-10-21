@@ -37,10 +37,25 @@ export function refundMethodForEditReviewRoute(
     case "account-credit":
       return "account-credit";
     case "local-allocation":
+    case "group-settlement-mirror": // #3949: a bank transfer to the group organiser
       return "internet-banking";
     default:
       return "card";
   }
+}
+
+/**
+ * #3949 (`INV-PAY-136`): DID THIS COMPLETION SEND MONEY BACK BY BANK TRANSFER,
+ * recorded inside its own transaction? The ordinary hand-back
+ * (`local-allocation`, on the payment's transactions) and a group child's
+ * (`group-settlement-mirror`, on its mirror) alike: both post the
+ * `BANK_REFUND` line, both are the `REFUNDED` event's money, and both owe a
+ * refund request its own note. The one test, so neither is left out of one.
+ */
+export function isBankTransferHandBackRoute(
+  route: EditReviewSettlementRoute | null,
+): route is Extract<EditReviewSettlementRoute, { kind: "local-allocation" | "group-settlement-mirror" }> {
+  return route?.kind === "local-allocation" || route?.kind === "group-settlement-mirror";
 }
 
 /**
@@ -296,7 +311,7 @@ export function refundRequestCreditNoteAsk({
 }): { paymentId: string; refundRequestId: string; amountCents: number } | null {
   if (
     !refundRequestId ||
-    route?.kind !== "local-allocation" ||
+    !isBankTransferHandBackRoute(route) ||
     cancellationHandBackInvoiceId === null ||
     amountCents === null ||
     amountCents <= 0

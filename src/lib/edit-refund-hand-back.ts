@@ -15,7 +15,7 @@ import {
   OPEN_NON_CANCELLATION_HAND_BACKS_SELECT,
   refundRequestHandBackOccurrenceKey,
 } from "@/lib/manual-refund-task-settlement-rules";
-import { REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
+import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE, REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
 import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
 import { openCardRefundOwedCents } from "@/lib/open-card-refund-owed";
 import { sumInternetBankingMintedCentsForBookings } from "@/lib/internet-banking-late-cash-credit";
@@ -175,10 +175,12 @@ export type OpenNonCancellationHandBackDb = Pick<PrismaClient, "manualRefundTask
 export async function openNonCancellationHandBackCents(
   db: OpenNonCancellationHandBackDb,
   paymentId: string | null | undefined,
+  /** #3949: a hand-back sizing its OWN completion leaves itself out. */
+  excludeTaskId?: string,
 ): Promise<number> {
   if (!paymentId) return 0;
   const open = await db.manualRefundTask.aggregate({
-    where: { paymentId, ...OPEN_NON_CANCELLATION_HAND_BACKS_SELECT.where },
+    where: { paymentId, ...OPEN_NON_CANCELLATION_HAND_BACKS_SELECT.where, ...(excludeTaskId ? { NOT: { id: excludeTaskId } } : {}) },
     _sum: { amountCents: true },
   });
   return open._sum.amountCents ?? 0;
@@ -223,6 +225,30 @@ export async function assertByHandReviewRefundWithinUnpromisedCash(
   });
   if (amountCents > (await refundableCashNetOfOpenHandBacks(db, payment))) {
     throw new ManualBookingPaymentError(REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE, 400);
+  }
+}
+
+/**
+ * #3949 (`INV-PAY-136`): an edit's or an approved appeal's hand-back on a
+ * joiner's booking the organiser paid for by internet banking completes onto
+ * the child's mirror (`group-settlement-mirror-hand-back.ts`), which no
+ * `PaymentTransaction` backs, so the ledger cap inside
+ * `applyLocalRefundAllocation` cannot guard it. This is its cap, before the
+ * claim and under the completion's `lock(1)` and the Payment row: what the
+ * child's payment still holds, less every OTHER open edit or appeal hand-back
+ * on it (this task's own amount is the one being settled).
+ */
+export async function assertGroupMirrorHandBackWithinUnpromisedCash(
+  db: OpenNonCancellationHandBackDb & Pick<PrismaClient, "payment">,
+  { paymentId, taskId, amountCents }: { paymentId: string; taskId: string; amountCents: number },
+): Promise<void> {
+  const payment = await db.payment.findUnique({
+    where: { id: paymentId },
+    select: { status: true, amountCents: true, refundedAmountCents: true },
+  });
+  const promisedCents = await openNonCancellationHandBackCents(db, paymentId, taskId);
+  if (amountCents > getRemainingRefundableCentsNetOf(payment, promisedCents)) {
+    throw new ManualBookingPaymentError(GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE, 400);
   }
 }
 
