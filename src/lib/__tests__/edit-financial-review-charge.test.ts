@@ -248,6 +248,8 @@ vi.mock("@/lib/member-credit", () => ({
 import { resolveManualRefundTask } from "@/lib/manual-refund-task-resolution";
 import { syncEditFinancialReviewChargeRequest } from "@/lib/edit-financial-review-charge";
 import { recordUncollectedEditReviewChargeShare } from "@/lib/edit-financial-review-charge-request";
+import { EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY } from "@/lib/edit-financial-review-charge-recovery";
+import { canAskCardForReviewCharge } from "@/lib/booking-payment-state";
 import {
   REVIEW_CHARGE_ANCHOR_MISSING_MESSAGE,
   REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
@@ -2394,5 +2396,210 @@ describe("#3371: a later share joins a request that carried a balance", () => {
     // reviews come to, so the two figures do not read as a contradiction.
     expect(entry.details).toContain("$260.00");
     expect(entry.details).toContain("carried into this request");
+  });
+});
+
+/**
+ * #3947 (owner decision 15 Oct 2026): a booking paid WHOLLY WITH ACCOUNT CREDIT
+ * carries `{ amountCents: 0, SUCCEEDED, STRIPE }` and no PaymentIntent. Before
+ * this, the review charge asked `hasCapturedPayment`, whose `amountCents > 0`
+ * clause answered "no card": with no issued invoice the officer was refused,
+ * and with one the charge went to a Xero supplementary invoice. The edit doors
+ * have asked the card for such a booking since #3502; the review charge now
+ * asks the same question (`canAskCardForReviewCharge`) at BOTH sites - the
+ * chooser before the claim and the sync's mint after the commit - so the route
+ * chosen as "card" is minted for rather than left to a replay that never raises.
+ */
+describe("#3947: a booking paid wholly with credit is asked by card", () => {
+  /** The review task on a settled, credit-paid booking; `payment` overrides its row. */
+  function creditPaidTask({
+    status = "PAID",
+    payment = {},
+  }: { status?: string; payment?: Record<string, unknown> } = {}) {
+    return cardReviewTask({
+      booking: {
+        ...cardReviewTask().booking,
+        status,
+        payment: {
+          id: "payment-1",
+          status: "SUCCEEDED",
+          amountCents: 0,
+          refundedAmountCents: 0,
+          xeroInvoiceId: null,
+          source: PaymentSource.STRIPE,
+          // Credit paid it: no card was ever taken, so there may be no customer.
+          stripeCustomerId: null,
+          ...payment,
+        },
+      },
+    });
+  }
+
+  /** The sync's post-commit re-read of the same payment and its booking. */
+  function creditPaidReread(status = "PAID") {
+    return {
+      id: "payment-1",
+      status: PaymentStatus.SUCCEEDED,
+      amountCents: 0,
+      refundedAmountCents: 0,
+      source: PaymentSource.STRIPE,
+      stripeCustomerId: null,
+      booking: { status },
+      additionalAmountCents: 0,
+      additionalPaymentStatus: null,
+    };
+  }
+
+  beforeEach(() => {
+    mocks.paymentFindUnique.mockResolvedValue(creditPaidReread());
+  });
+
+  it("mints a card ask with Xero OFF (no issued invoice), where it used to be refused", async () => {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(creditPaidTask());
+
+    const result = await charge();
+
+    expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
+    const call = mint();
+    expect(call.amountCents).toBe(20000);
+    expect(call.row).toMatchObject({
+      paymentId: "payment-1",
+      kind: PaymentTransactionKind.ADDITIONAL,
+      amountCents: 20000,
+      status: PaymentStatus.PENDING,
+    });
+    // No customer on a credit-paid payment, so the minter makes one for the member.
+    expect(mocks.findOrCreateCustomer).toHaveBeenCalledWith(
+      expect.objectContaining({ memberId: "member-1", email: "grace@example.test" }),
+    );
+    expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
+    // Raised inline: no debt is left for a replay to carry.
+    expect(mocks.enqueueEditFinancialReviewChargeRecovery).not.toHaveBeenCalled();
+    expect(mocks.manualRefundTaskUpdateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("mints a card ask with an ISSUED invoice too, rather than billing a supplementary invoice", async () => {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(
+      creditPaidTask({ payment: { xeroInvoiceId: "xero-inv-1" } }),
+    );
+
+    const result = await charge();
+
+    expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
+    expect(mint().amountCents).toBe(20000);
+    expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
+    expect(mocks.enqueueEditFinancialReviewChargeRecovery).not.toHaveBeenCalled();
+    // The invoice leg waits on the card ask, as on any card-route charge.
+    const xero = mocks.queueXeroBookingEditSettlement.mock.calls[0][0];
+    expect(xero.priceDiffCents).toBe(20000);
+    expect(xero.requiresAdditionalStripePayment).toBe(true);
+    expect(xero.additionalPaymentIntentId).toBe("pi_additional_1");
+  });
+
+  it("the recovery replay's re-entry raises it and may close its row", async () => {
+    // `payment-recovery.ts` re-enters the sync with the frozen invoice answer
+    // (here `null`, the replay's own re-entry) and closes the row only on an
+    // outcome `EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY` allows. Before #3947 the
+    // sync's own guard answered "no card" for this payment, so the outcome was
+    // `not-raised` on every replay until the row died FAILED.
+    mocks.paymentTransactionFindFirst.mockResolvedValue(null);
+
+    const synced = await syncEditFinancialReviewChargeRequest({
+      format: CLUB_FORMAT_TEST,
+      bookingId: "booking-1",
+      bookingModificationId: "mod-1",
+      paymentId: "payment-1",
+      member: {
+        id: "member-1",
+        email: "grace@example.test",
+        name: "Grace Hopper",
+        stripeCustomerId: null,
+      },
+      hasIssuedXeroInvoice: null,
+    });
+
+    expect(synced).toMatchObject({
+      outcome: "raised",
+      paymentIntentId: "pi_additional_1",
+      totalCents: 20000,
+    });
+    expect(EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY[synced.outcome]).toBe(true);
+    expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueEditFinancialReviewChargeRecovery).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: an internet-banking booking re-priced to $0 is NOT asked by card", async () => {
+    // `source` is half the question: a hand-settled $0 row has no card behind it.
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(
+      creditPaidTask({ payment: { source: PaymentSource.INTERNET_BANKING } }),
+    );
+
+    await expect(charge()).rejects.toMatchObject({
+      status: 409,
+      message: REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
+    });
+    expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a $0 payment on a booking that has left the settled statuses is still refused", async () => {
+    // The decision covered SETTLED credit-paid bookings, the edit doors' rule.
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(
+      creditPaidTask({ status: "CANCELLED" }),
+    );
+
+    await expect(charge()).rejects.toMatchObject({
+      status: 409,
+      message: REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
+    });
+    expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+  });
+
+  it("CONTROL: a CANCELLED booking holding money captured on a card keeps the card route it had", async () => {
+    // Nothing that was card-asked before #3947 stops being asked: the helper
+    // keeps the captured-card clause for a booking outside the settled statuses.
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(
+      cardReviewTask({ booking: { ...cardReviewTask().booking, status: "CANCELLED" } }),
+    );
+    mocks.paymentFindUnique.mockResolvedValue({
+      id: "payment-1",
+      status: PaymentStatus.SUCCEEDED,
+      amountCents: 15000,
+      refundedAmountCents: 0,
+      source: PaymentSource.STRIPE,
+      stripeCustomerId: "cus_1",
+      booking: { status: "CANCELLED" },
+    });
+
+    const result = await charge();
+
+    expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
+    expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
+  });
+});
+
+describe("canAskCardForReviewCharge (#3947)", () => {
+  const payment = (overrides: Record<string, unknown> = {}) => ({
+    status: "SUCCEEDED",
+    amountCents: 0,
+    refundedAmountCents: 0,
+    source: PaymentSource.STRIPE,
+    ...overrides,
+  });
+
+  it.each([
+    ["a settled credit-paid ($0) card payment", "PAID", payment(), true],
+    ["a settled captured card payment", "CONFIRMED", payment({ amountCents: 15000 }), true],
+    ["a PAYMENT_PENDING credit-paid booking", "PAYMENT_PENDING", payment(), true],
+    ["a cancelled booking with money captured on a card", "CANCELLED", payment({ amountCents: 15000 }), true],
+    ["a cancelled credit-paid booking", "CANCELLED", payment(), false],
+    ["a settled $0 internet-banking payment", "PAID", payment({ source: PaymentSource.INTERNET_BANKING }), false],
+    ["a settled booking whose card payment never captured", "PAYMENT_PENDING", payment({ status: "PENDING" }), false],
+  ])("%s (%s) -> %s", (_label, status, row, expected) => {
+    expect(canAskCardForReviewCharge({ status, payment: row })).toBe(expected);
+  });
+
+  it("answers no for a booking with no payment", () => {
+    expect(canAskCardForReviewCharge({ status: "PAID", payment: null })).toBe(false);
   });
 });
