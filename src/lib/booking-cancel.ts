@@ -56,7 +56,7 @@ import {
   markBookingCancellationRefundRecoverySucceeded,
   recordBookingCancellationRefundRecoveryInlineError,
 } from "@/lib/payment-recovery";
-import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
+import { organiserInternetBankingMirrorCaptured, paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-executor";
 import {
   findGroupCancellationChildDebt,
@@ -1060,7 +1060,7 @@ async function performBookingCancellation(
     // never-captured payments flip to FAILED. See paymentHasCaptureEvidence
     // for why the ledger decides, never the aggregate mirror alone.
     const paymentCaptured = booking.payment
-      ? await paymentHasCaptureEvidence(booking.payment)
+      ? await paymentHasCaptureEvidence({ ...booking, payment: booking.payment })
       : false;
 
     if (booking.payment) {
@@ -1136,7 +1136,7 @@ async function performBookingCancellation(
       }
 
       const freshPaymentCaptured = fresh.payment
-        ? await paymentHasCaptureEvidence(fresh.payment, tx)
+        ? await paymentHasCaptureEvidence({ ...fresh, payment: fresh.payment }, tx)
         : false;
 
       const paymentUpdateData: {
@@ -2699,7 +2699,9 @@ export async function paymentEligibleForPaidCancelPath(
   if (payment.status !== "PARTIALLY_REFUNDED") {
     return false;
   }
-  if (paidByOrganiserCard({ ...booking, payment })) {
+  // #3949 review H1: so is one the organiser paid for by Internet Banking, whose mirror a paid-back hand-back left
+  // PARTIALLY_REFUNDED with no ledger row; read as unpaid, the cancel would flip it FAILED.
+  if (paidByOrganiserCard({ ...booking, payment }) || organiserInternetBankingMirrorCaptured({ ...booking, payment })) {
     return true;
   }
   const capturedTransaction = await db.paymentTransaction.findFirst({
@@ -2721,14 +2723,16 @@ export async function paymentEligibleForPaidCancelPath(
 // FAILED); then the pre-ledger STRIPE mirror. The combination's one home is
 // `paymentShowsCaptureEvidence`.
 export async function paymentHasCaptureEvidence(
-  payment: {
-    id: string;
-    source: string;
-    status: string;
-    refundedAmountCents: number;
+  booking: {
+    organiserSettled: boolean;
+    parentBookingId: string | null;
+    payment: { id: string; source: string; status: string; refundedAmountCents: number };
   },
   db: Prisma.TransactionClient | typeof prisma = prisma
 ) {
+  const { payment } = booking;
+  // #3949 review H1: an organiser's Internet Banking settle mirror is the capture (`organiserInternetBankingMirrorCaptured`).
+  if (organiserInternetBankingMirrorCaptured(booking)) return true;
   const capturedTransaction = await db.paymentTransaction.findFirst({
     where: {
       paymentId: payment.id,

@@ -10,7 +10,7 @@ import {
   calculateModificationSettlementOptions,
   organiserChildChargeRefusal,
 } from "@/lib/booking-modify-settlement";
-import { paymentEligibleForPaidCancelPath } from "@/lib/booking-cancel";
+import { paymentEligibleForPaidCancelPath, paymentHasCaptureEvidence } from "@/lib/booking-cancel";
 import { ORGANISER_CHILD_CHARGE_REFUSAL } from "@/lib/group-organiser-paid";
 import type { BookingModificationSettlementOptions } from "@/lib/booking-modify-settlement";
 import { noReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
@@ -283,7 +283,9 @@ describe("an organiser child's reduction at the edit door (#3653)", () => {
         noLedger,
       ),
     ).resolves.toBe(false);
-    // An Internet Banking organiser child is not paid by card: ledger rules.
+    // #3949 review H1: nor does one the organiser paid for by Internet Banking, whose
+    // mirror a paid-back hand-back left partly refunded: read as unpaid, the cancel
+    // would flip the organiser's share FAILED.
     await expect(
       paymentEligibleForPaidCancelPath(
         {
@@ -291,6 +293,13 @@ describe("an organiser child's reduction at the edit door (#3653)", () => {
           parentBookingId: "organiser_booking",
           payment: { ...partlyRefunded, source: PaymentSource.INTERNET_BANKING },
         },
+        noLedger,
+      ),
+    ).resolves.toBe(true);
+    // An ordinary Internet Banking booking in that shape is still the ledger's to answer.
+    await expect(
+      paymentEligibleForPaidCancelPath(
+        { organiserSettled: false, parentBookingId: null, payment: { ...partlyRefunded, source: PaymentSource.INTERNET_BANKING } },
         noLedger,
       ),
     ).resolves.toBe(false);
@@ -301,6 +310,21 @@ describe("an organiser child's reduction at the edit door (#3653)", () => {
         noLedger,
       ),
     ).resolves.toBe(false);
+  });
+
+  it("#3949 review H1: an Internet Banking organiser child's mirror is capture evidence, refunded in full or not; an ordinary one's is not", async () => {
+    const noLedger = { paymentTransaction: { findFirst: vi.fn().mockResolvedValue(null) } } as unknown as Parameters<typeof paymentHasCaptureEvidence>[1];
+    const child = (status: PaymentStatus, organiserSettled = true) => ({
+      organiserSettled,
+      parentBookingId: organiserSettled ? "organiser_booking" : null,
+      payment: { id: "payment_1", source: PaymentSource.INTERNET_BANKING, status, refundedAmountCents: 1500 },
+    });
+    for (const status of [PaymentStatus.SUCCEEDED, PaymentStatus.PARTIALLY_REFUNDED, PaymentStatus.REFUNDED]) {
+      await expect(paymentHasCaptureEvidence(child(status), noLedger), status).resolves.toBe(true);
+    }
+    await expect(paymentHasCaptureEvidence(child(PaymentStatus.PENDING), noLedger)).resolves.toBe(false);
+    // The folded never-paid Internet Banking mirror (#3630) is still not cash.
+    await expect(paymentHasCaptureEvidence(child(PaymentStatus.PARTIALLY_REFUNDED, false), noLedger)).resolves.toBe(false);
   });
 
   it("every door that settles an edit through applyPaymentAdjustments writes the child's refund debt before it commits", () => {

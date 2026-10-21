@@ -143,7 +143,7 @@ export async function GET(
       // tiered as the cancel tiers it - the same helper, so the two agree.
       const todayAtClub = (await clubTime()).today();
       const tiered =
-        booking.payment && bookingOwner(booking).memberId && (await paymentHasCaptureEvidence(booking.payment))
+        booking.payment && bookingOwner(booking).memberId && (await paymentHasCaptureEvidence({ ...booking, payment: booking.payment }))
           ? await refundedPaymentCreditRestore(prisma, { bookingId: booking.id, booking: { ...booking, payment: booking.payment },
               openNonCancellationHandBackCents: sumOpenNonCancellationHandBackCents(booking.payment.manualRefundTasks), todayAtClub })
           : null;

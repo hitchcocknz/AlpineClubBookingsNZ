@@ -19,6 +19,8 @@
  */
 import type { PaymentStatus } from "@prisma/client";
 
+import { isCapturedPaymentStatus } from "@/lib/booking-payment-state";
+
 export const ORGANISER_PAID_SETTLEMENT_STATUSES = [
   "SUCCEEDED",
   "PARTIALLY_REFUNDED",
@@ -118,4 +120,25 @@ export type BankTransferRefundPayee = "member" | "organiser";
 
 export function bankTransferRefundPayee(booking: Parameters<typeof paidByOrganiserInternetBanking>[0]): BankTransferRefundPayee {
   return paidByOrganiserInternetBanking(booking) ? "organiser" : "member";
+}
+
+/**
+ * #3949 review H1 (`INV-PAY-136`): THE SETTLE'S MIRROR IS THE CAPTURE on a
+ * joiner's booking the organiser paid for by Internet Banking. No
+ * `PaymentTransaction` backs it and its source is not STRIPE, so neither half of
+ * the cancel's capture evidence (`paymentShowsCaptureEvidence`) can see it; yet
+ * its money is real - it is the joiner's share of the organiser's group payment,
+ * and a paid-back edit or appeal hand-back (or the group cancel) leaves it
+ * PARTIALLY_REFUNDED or REFUNDED, never uncaptured. A cancel that read it as
+ * never captured would flip it FAILED and erase the organiser's share. The card
+ * twin needs none of this: its STRIPE mirror already shows capture.
+ */
+export function organiserInternetBankingMirrorCaptured(booking: {
+  organiserSettled: boolean;
+  parentBookingId: string | null;
+  payment: { source: string; status: string } | null;
+}): boolean {
+  return (
+    paidByOrganiserInternetBanking(booking) && booking.payment !== null && isCapturedPaymentStatus(booking.payment.status)
+  );
 }

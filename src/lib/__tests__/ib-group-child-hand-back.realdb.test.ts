@@ -256,6 +256,37 @@ const money = async (bookingId: string) =>
     expect((await payment(child!)).refundedAmountCents).toBe(GROUP_CHILD_CENTS / 2);
   }, 300_000);
 
+  it("review H1: a joiner's own cancel after a paid edit hand-back never flips the organiser's payment FAILED; a later group cancel still reconciles", async () => {
+    const g = await settledGroup("joiner-cancel");
+    const [edited, other] = g.children;
+    await complete(await editHandBack(edited!, "m1"));
+    const { cancelBooking } = await import("@/lib/booking-cancel");
+    const cancel = () => cancelBooking(edited!, NAMES.officerId, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    // A refund due: the cancel takes the paid path, as it does for a child nobody refunded yet, and is
+    // refused there whole (where a joiner's own refund goes is the owner's open question on #3949).
+    await expect(cancel()).rejects.toThrow(/exceeds captured/);
+    expect(await payment(edited!)).toEqual({ status: "PARTIALLY_REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: EDIT_CENTS });
+    expect((await prisma.booking.findUniqueOrThrow({ where: { id: edited! } })).status).toBe("PAID");
+
+    // No refund due: the cancel commits, and the mirror is the organiser's money still - never FAILED.
+    await prisma.cancellationPolicy.updateMany({ where: { lodgeId: NAMES.lodgeId }, data: { refundPercentage: 0 } });
+    try {
+      expect(await cancel()).toMatchObject({ status: 200 });
+    } finally {
+      await prisma.cancellationPolicy.updateMany({ where: { lodgeId: NAMES.lodgeId }, data: { refundPercentage: 50 } });
+    }
+    expect(await payment(edited!)).toEqual({ status: "PARTIALLY_REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: EDIT_CENTS });
+    expect((await prisma.booking.findUniqueOrThrow({ where: { id: edited! } })).status).toBe("CANCELLED");
+
+    await cancelGroupHistory(NAMES, g);
+    expect((await payment(other!)).refundedAmountCents).toBe(GROUP_CHILD_CENTS / 2);
+    const report = await census();
+    for (const id of g.children) expect(about(report, id!).coverage, id).toEqual([]);
+    for (const id of g.children) expect(about(report, id!).disagreements, id).toEqual([]);
+    expect(about(report, other!)).toEqual(NOTHING);
+  }, 300_000);
+
   it("a group cancel after a completed edit hand-back sizes the plan net of it and mirrors both, live and on a re-drive interrupted after its plan froze", async () => {
     for (const interrupted of [false, true]) {
       const g = await settledGroup(interrupted ? "resume-after-hand-back" : "cancel-after-hand-back");
