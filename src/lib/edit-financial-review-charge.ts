@@ -17,6 +17,7 @@ import {
 import {
   findEditReviewChargeRequest,
   hasIssuedSupplementaryInvoice,
+  recordShortEditReviewChargeInvoice,
   sumEditReviewChargeSharesCents,
   type EditReviewChargeStore,
 } from "@/lib/edit-financial-review-charge-request";
@@ -29,6 +30,13 @@ import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { enqueueEditFinancialReviewChargeRecovery } from "@/lib/payment-recovery";
 import { isCapturedTransactionStatus } from "@/lib/payment-transactions";
 import { supplementaryInvoiceStillComingWhere } from "@/lib/xero-supplementary-invoice-statuses";
+import {
+  enqueueEditReviewChargeInvoiceInTransaction,
+  kickQueuedXeroOutboxOperationsIfConnected,
+  type XeroSupplementaryInvoiceEnqueueOutcome,
+} from "@/lib/xero-operation-outbox";
+import type { Prisma } from "@prisma/client";
+import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
 import type { ClubFormat } from "@/lib/club-format";
 
 // #3402: the sync moved to its own module with the raise claim around it;
@@ -353,6 +361,123 @@ async function hasReviewChargeInvoiceStillComing({
     select: { id: true },
   });
   return queued !== null;
+}
+
+/** #3947: the invoice route's invoice, as queued inside the completion's transaction. */
+export type QueuedEditReviewChargeInvoice = {
+  queueOperationId: string | null;
+  outcome: XeroSupplementaryInvoiceEnqueueOutcome;
+  /** The edit's combined total the invoice was asked to bill. */
+  totalCents: number;
+};
+
+/**
+ * #3947 (owner decision 22 Oct 2026, option 2): THE `invoice` ROUTE'S INVOICE IS
+ * QUEUED INSIDE THE COMPLETION'S TRANSACTION, the in-transaction outbox pattern
+ * the refund notes use (`queueRefundRequestCreditNoteInTransaction`,
+ * `queueCancelledBookingHandBackNoteInTransaction`).
+ *
+ * WHY. On this route the supplementary invoice IS the ask. Queued after the
+ * commit, it left a window in which the share was COMPLETED and its edit had no
+ * invoice in the outbox, so a second share of the same edit, chosen in that
+ * window, read no invoice still coming and took the card: a card ask for the
+ * edit's total beside the invoice that then went out. Queued here, the invoice
+ * commits with the share, and the next share - serialised behind this one on
+ * `lock(1)` - always sees it (`supplementaryInvoiceStillComingWhere`).
+ *
+ * WHAT. The decision every caller of the enqueue makes (link-check ->
+ * queued-check -> raise-or-create, under the per-anchor key), for the edit's
+ * combined total re-derived on THIS transaction, which already holds this share's
+ * claim. It replaces, for this route only, the post-commit restate-then-enqueue
+ * in `dispatchEditReviewXeroSettlement`; the ordinary edit path's
+ * `queueXeroBookingEditSettlement` is untouched.
+ *
+ * LOCK ORDER. Called LAST in the completion's transaction, after every other
+ * lock it takes: `lock(1)` -> ... -> the per-anchor supplementary-invoice key.
+ * Nothing holding that key takes another, so no cycle (`INV-LOCK-002`,
+ * docs/CONCURRENCY_AND_LOCKING.md). No provider call: only the outbox row is
+ * written here, and `finishEditReviewChargeInvoice` kicks it after the commit.
+ *
+ * A write that fails here rolls the completion back and leaves the task OPEN,
+ * which is the point of the pattern: the share never commits without its ask.
+ */
+export async function queueEditReviewChargeInvoiceInTransaction({
+  bookingId,
+  route,
+  hasIssuedXeroInvoice,
+  createdByMemberId,
+  store,
+}: {
+  bookingId: string;
+  route: EditReviewSettlementRoute | null;
+  hasIssuedXeroInvoice: boolean;
+  createdByMemberId: string;
+  store: Prisma.TransactionClient;
+}): Promise<QueuedEditReviewChargeInvoice | null> {
+  // The `invoice` route reaches here only with an issued primary invoice (the
+  // chooser refuses otherwise); the guard keeps the ordinary dispatch's own
+  // rule that an edit with no primary invoice has nothing to supplement.
+  if (route?.kind !== "additional-charge" || route.collectVia !== "invoice" || !hasIssuedXeroInvoice) {
+    return null;
+  }
+  const totalCents = await sumEditReviewChargeSharesCents({
+    bookingId,
+    bookingModificationId: route.bookingModificationId,
+    store,
+  });
+  if (totalCents <= 0) return null;
+  const queued = await enqueueEditReviewChargeInvoiceInTransaction(
+    { bookingId, bookingModificationId: route.bookingModificationId, totalCents, createdByMemberId },
+    store,
+  );
+  return { queueOperationId: queued.queueOperationId, outcome: queued.outcome, totalCents };
+}
+
+/**
+ * #3947: after the commit, what the post-commit dispatch used to do once its
+ * enqueue answered: start the outbox, and record a share the invoice could not
+ * take (`recordShortEditReviewChargeInvoice`, the one function that decides what
+ * is short - a second ask for `short-sent`, a recorded shortfall for
+ * `short-in-flight`, nothing for `covers-total`). Best-effort, as that leg was: a
+ * Xero outage must not undo a completion whose ask is already durable.
+ */
+export async function finishEditReviewChargeInvoice({
+  queued,
+  bookingId,
+  taskId,
+  bookingModificationId,
+  shareCents,
+  memberId,
+  actingMemberId,
+  format,
+}: {
+  queued: QueuedEditReviewChargeInvoice;
+  bookingId: string;
+  taskId: string;
+  bookingModificationId: string;
+  shareCents: number | null;
+  memberId: string | null;
+  actingMemberId: string;
+  format: ClubFormat;
+}): Promise<void> {
+  if (queued.queueOperationId) {
+    await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 }).catch((err) =>
+      logger.error({ err, bookingId, taskId }, "Failed to kick the Xero outbox after a review charge's invoice was queued"),
+    );
+  }
+  await recordShortEditReviewChargeInvoice({
+    outcome: queued.outcome,
+    bookingId,
+    format,
+    bookingModificationId,
+    reviewTaskId: taskId,
+    shareCents,
+    memberId,
+    totalCents: queued.totalCents,
+    createdByMemberId: actingMemberId,
+  }).catch((err) =>
+    logger.error({ err, bookingId, taskId }, "Failed to record a review charge share its queued invoice could not take"),
+  );
 }
 
 /**

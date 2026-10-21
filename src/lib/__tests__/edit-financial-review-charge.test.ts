@@ -43,6 +43,8 @@ const mocks = vi.hoisted(() => ({
   paymentFindUnique: vi.fn(),
   xeroObjectLinkFindFirst: vi.fn(),
   xeroSyncOperationFindFirst: vi.fn(),
+  enqueueChargeInvoiceInTransaction: vi.fn(),
+  kickOutbox: vi.fn(),
   bookingGuestFindUnique: vi.fn(),
   bookingFindUnique: vi.fn(),
   bookingUpdateMany: vi.fn(),
@@ -211,6 +213,10 @@ vi.mock("@/lib/xero-booking-edit-settlement", () => ({
     mocks.queueXeroBookingEditSettlement(...a),
 }));
 vi.mock("@/lib/xero-operation-outbox", () => ({
+  // #3947 (option 2): the invoice route's invoice, queued in the completion's transaction.
+  enqueueEditReviewChargeInvoiceInTransaction: (...a: unknown[]) =>
+    mocks.enqueueChargeInvoiceInTransaction(...a),
+  kickQueuedXeroOutboxOperationsIfConnected: (...a: unknown[]) => mocks.kickOutbox(...a),
   restatePendingSupplementaryInvoiceAmount: (...a: unknown[]) =>
     mocks.restatePendingSupplementaryInvoiceAmount(...a),
   enqueueXeroSecondSupplementaryInvoiceOperation: (...a: unknown[]) =>
@@ -279,6 +285,8 @@ const tx = {
   manualRefundTask: {
     findUnique: (...a: unknown[]) => mocks.manualRefundTaskFindUnique(...a),
     updateMany: (...a: unknown[]) => mocks.manualRefundTaskUpdateMany(...a),
+    // #3947 (option 2): the invoice route derives the edit's total on this transaction.
+    findMany: (...a: unknown[]) => mocks.manualRefundTaskFindMany(...a),
   },
   memberCredit: {
     findUnique: (...a: unknown[]) => mocks.memberCreditFindUnique(...a),
@@ -524,6 +532,14 @@ beforeEach(() => {
   mocks.xeroObjectLinkFindFirst.mockResolvedValue(null);
   // ...and no supplementary invoice queued for it either (#3947 review).
   mocks.xeroSyncOperationFindFirst.mockResolvedValue(null);
+  // #3947 (option 2): the in-transaction enqueue's ordinary answer - it queued
+  // the edit's invoice, which covers the total it was asked for.
+  mocks.enqueueChargeInvoiceInTransaction.mockResolvedValue({
+    queueOperationId: "op-invoice-1",
+    outcome: "covers-total",
+    message: "Xero supplementary invoice queued for background processing.",
+  });
+  mocks.kickOutbox.mockResolvedValue(undefined);
   // One share settled: this completion's own.
   mocks.manualRefundTaskFindMany.mockResolvedValue([settledShare()]);
   mocks.paymentFindUnique.mockResolvedValue({
@@ -932,10 +948,20 @@ describe("a completed review that asks the member for money (#3170)", () => {
     // additional-payment chasing carries it from there.
     expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
     expect(result.additionalPaymentIntentId).toBeNull();
-    const xero = mocks.queueXeroBookingEditSettlement.mock.calls[0][0];
-    expect(xero.priceDiffCents).toBe(20000);
-    expect(xero.requiresAdditionalStripePayment).toBe(false);
-    expect(xero.additionalPaymentIntentId).toBeNull();
+    // #3947 (option 2): queued INSIDE the completion's transaction, for the
+    // edit's total, and only kicked after the commit - never re-dispatched.
+    expect(mocks.enqueueChargeInvoiceInTransaction).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueChargeInvoiceInTransaction).toHaveBeenCalledWith(
+      { bookingId: "booking-1", bookingModificationId: "mod-1", totalCents: 20000, createdByMemberId: "admin-1" },
+      tx,
+    );
+    // Queued after the claim, never ahead of it.
+    expect(mocks.enqueueChargeInvoiceInTransaction.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.manualRefundTaskUpdateMany.mock.invocationCallOrder[0],
+    );
+    expect(mocks.kickOutbox).toHaveBeenCalledTimes(1);
+    expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+    expect(mocks.restatePendingSupplementaryInvoiceAmount).not.toHaveBeenCalled();
   });
 
   it("refuses a charge on a task kind that can only ever owe the member", async () => {
@@ -2598,6 +2624,17 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
       ]);
     });
 
+    /** The edit's one invoice was asked, inside the completion, for this total - and nothing re-dispatched it. */
+    function expectInvoiceAskedFor(totalCents: number) {
+      expect(mocks.enqueueChargeInvoiceInTransaction).toHaveBeenCalledTimes(1);
+      expect(mocks.enqueueChargeInvoiceInTransaction.mock.calls[0][0]).toMatchObject({
+        bookingModificationId: "mod-1",
+        totalCents,
+      });
+      expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+      expect(mocks.restatePendingSupplementaryInvoiceAmount).not.toHaveBeenCalled();
+    }
+
     /** B stayed on the invoice route: no card ask of any kind. */
     function expectNoCardAsk(result: { additionalPaymentIntentId: string | null }) {
       expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
@@ -2607,7 +2644,6 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
 
     it("a QUEUED invoice: B joins it, and the restate bills $100 on that one invoice", async () => {
       outboxRows = [shareAInvoice({ status: "PENDING" })];
-      mocks.restatePendingSupplementaryInvoiceAmount.mockResolvedValue({ restated: 1, alreadyCovering: 0 });
 
       const result = await charge({ confirmedAmountCents: 4000 });
 
@@ -2617,11 +2653,9 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
         select: { id: true },
       });
       expectNoCardAsk(result);
-      await flushDispatch();
-      expect(mocks.restatePendingSupplementaryInvoiceAmount).toHaveBeenCalledWith(
-        expect.objectContaining({ bookingModificationId: "mod-1", priceDiffCents: 10000 }),
-      );
-      expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+      // ...and the edit's one invoice is asked for $100, from inside B's own
+      // transaction (the enqueue raises A's queued row; option 2).
+      expectInvoiceAskedFor(10000);
     });
 
     it("a RUNNING invoice (round 2, F1): B still stays off the card", async () => {
@@ -2630,14 +2664,22 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
       // short-in-flight and the existing short-ask audit records the $40. A
       // card ask for $100 here would leave the member asked $160 for $100.
       outboxRows = [shareAInvoice({ status: "RUNNING" })];
+      mocks.enqueueChargeInvoiceInTransaction.mockResolvedValue({
+        queueOperationId: "op-share-a-invoice",
+        outcome: "short-in-flight",
+        message: "Xero supplementary invoice for this change is already being sent and could not be raised.",
+      });
 
       const result = await charge({ confirmedAmountCents: 4000 });
 
       expectNoCardAsk(result);
-      await flushDispatch();
-      const xero = mocks.queueXeroBookingEditSettlement.mock.calls[0][0];
-      expect(xero.requiresAdditionalStripePayment).toBe(false);
-      expect(xero.priceDiffCents).toBe(10000);
+      expectInvoiceAskedFor(10000);
+      // The enqueue's verdict reaches the one short-ask recorder after the commit.
+      expect(
+        mocks.createAuditLog.mock.calls.some(
+          ([entry]) => entry.action === "booking.editFinancialReview.chargeShareUncollected",
+        ),
+      ).toBe(true);
     });
 
     it("a RUNNING invoice the cooldown hands back to PENDING (round 2, F1): B's leg raises THAT invoice, beside no card ask", async () => {
@@ -2646,19 +2688,17 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
       // $100. Had B taken the card, that would be a $100 invoice beside a $100
       // card ask.
       outboxRows = [shareAInvoice({ status: "RUNNING" })];
-      mocks.restatePendingSupplementaryInvoiceAmount.mockImplementation(async () => {
-        outboxRows = [shareAInvoice({ status: "PENDING" })];
-        return { restated: 1, alreadyCovering: 0 };
+      // By the time B's enqueue decides, the cooldown has handed A's row back,
+      // so the enqueue raises it to the edit's total.
+      mocks.enqueueChargeInvoiceInTransaction.mockImplementation(async () => {
+        outboxRows = [shareAInvoice({ status: "PENDING", requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", priceDiffCents: 10000 } })];
+        return { queueOperationId: "op-share-a-invoice", outcome: "covers-total", message: "raised" };
       });
 
       const result = await charge({ confirmedAmountCents: 4000 });
 
       expectNoCardAsk(result);
-      await flushDispatch();
-      expect(mocks.restatePendingSupplementaryInvoiceAmount).toHaveBeenCalledWith(
-        expect.objectContaining({ bookingModificationId: "mod-1", priceDiffCents: 10000 }),
-      );
-      expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+      expectInvoiceAskedFor(10000);
     });
 
     it("a FAILED invoice nobody has resolved (round 2, F2): B stays off the card, so a Requeue cannot land beside a card ask", async () => {
@@ -2678,6 +2718,9 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
 
       expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
       expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
+      // The card route queues no invoice inside the completion (option 2 is the
+      // invoice route's alone); its invoice waits on the card request as before.
+      expect(mocks.enqueueChargeInvoiceInTransaction).not.toHaveBeenCalled();
     });
 
     it("CONTROL: another edit's invoice, or none, leaves B on the card", async () => {

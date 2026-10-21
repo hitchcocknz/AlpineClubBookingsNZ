@@ -1505,6 +1505,23 @@ export async function enqueueXeroSupplementaryInvoiceOperation(
 }
 
 /**
+ * #3947 (owner decision 22 Oct 2026): a review charge's `invoice` route queues the
+ * edit's invoice for its combined total, unpaid (it IS the ask), inside the
+ * completion's transaction - so the next share, behind it on `lock(1)`, sees it.
+ * The same anchor-locked decision as every caller; the kick is after the commit.
+ */
+export async function enqueueEditReviewChargeInvoiceInTransaction(
+  params: { bookingId: string; bookingModificationId: string; totalCents: number; createdByMemberId: string },
+  store: Prisma.TransactionClient,
+) {
+  return enqueueSupplementaryInvoiceForAnchor(
+    { bookingId: params.bookingId, bookingModificationId: params.bookingModificationId, priceDiffCents: params.totalCents, changeFeeCents: 0 },
+    { createdByMemberId: params.createdByMemberId, paymentIntentId: null, waitForConfirmedAdditionalPayment: false, recordPayment: false },
+    store,
+  );
+}
+
+/**
  * The one implementation behind both entry points, so there is still exactly one
  * place that answers "does this ask already have an invoice going out?".
  *
@@ -1522,7 +1539,9 @@ async function enqueueSupplementaryInvoiceForAnchor(
      * reasoning lives.
      */
     shortfallReviewTaskId?: string;
-  }
+  },
+  /** #3947: the caller's transaction (`enqueueEditReviewChargeInvoiceInTransaction`); absent, its own. */
+  store?: Prisma.TransactionClient,
 ) {
   const {
     bookingId,
@@ -1543,7 +1562,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
     };
   }
 
-  const booking = await prisma.booking.findUnique({
+  const booking = await (store ?? prisma).booking.findUnique({
     where: { id: bookingId },
     select: {
       id: true,
@@ -1601,7 +1620,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
    * billed rather than silently dropped. That function refuses to LOWER, so a
    * stale, smaller total arriving second changes nothing.
    */
-  return prisma.$transaction(async (tx) => {
+  const decide = async (tx: Prisma.TransactionClient) => {
     await lockSupplementaryInvoiceAnchor(tx, localId);
 
     const existingLink = await tx.xeroObjectLink.findFirst({
@@ -1714,7 +1733,9 @@ async function enqueueSupplementaryInvoiceForAnchor(
         ? "Xero supplementary invoice is waiting for confirmed additional payment."
         : "Xero supplementary invoice queued for background processing.",
     };
-  });
+  };
+  // #3947: a caller's transaction holds lock(1); this key comes after it, last.
+  return store ? decide(store) : prisma.$transaction(decide);
 }
 
 /**
