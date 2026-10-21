@@ -28,7 +28,7 @@ import logger from "@/lib/logger";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { enqueueEditFinancialReviewChargeRecovery } from "@/lib/payment-recovery";
 import { isCapturedTransactionStatus } from "@/lib/payment-transactions";
-import { restatableSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
+import { supplementaryInvoiceStillComingWhere } from "@/lib/xero-supplementary-invoice-statuses";
 import type { ClubFormat } from "@/lib/club-format";
 
 // #3402: the sync moved to its own module with the raise claim around it;
@@ -281,20 +281,20 @@ export async function chooseEditReviewChargeRoute({
   }
 
   // #3947 review: ONE INSTRUMENT PER EDIT. A share of an edit whose earlier
-  // share took the `invoice` route - its supplementary invoice still queued,
-  // and no card request for this edit - stays on that route, so the Xero leg's
-  // restate bills both shares on the one invoice. Taking the card here would
-  // mint an ask for the edit's whole total while the restate raised the queued
-  // invoice to the same total: the member billed twice. Before #3947 a
-  // credit-paid booking's shares all took the invoice route; this is the
-  // transition #3947 opens. A card-route edit's own queued invoice always has
-  // a card request beside it (the leg defers it until one exists), so it never
-  // reaches this check.
+  // share took the `invoice` route - its supplementary invoice still coming
+  // (queued, being sent, or failed and not resolved), and no card request for
+  // this edit - stays on that route, so the Xero leg bills both shares on the
+  // one invoice. Taking the card here would mint an ask for the edit's whole
+  // total beside an invoice that bills at least the earlier share: the member
+  // billed twice. Before #3947 a credit-paid booking's shares all took the
+  // invoice route; this is the transition #3947 opens. A card-route edit's own
+  // invoice always has a card request beside it (the leg defers it until one
+  // exists), so it never reaches this check.
   const joinsQueuedInvoice =
     canChargeCard &&
     existing === null &&
     hasIssuedXeroInvoice &&
-    (await hasRestatableReviewChargeInvoice({ bookingModificationId, store }));
+    (await hasReviewChargeInvoiceStillComing({ bookingModificationId, store }));
 
   if (canChargeCard && !joinsQueuedInvoice && bookingPayment && member) {
     return {
@@ -332,12 +332,13 @@ export async function chooseEditReviewChargeRoute({
 
 
 /**
- * #3947 review: whether this edit has a supplementary invoice a restate can
- * still raise - `restatePendingSupplementaryInvoiceAmount`'s own read
- * (`restatableSupplementaryInvoiceOperationsWhere`), asked on the chooser's
- * transaction, so the route and the restate cannot disagree about it.
+ * #3947 review: whether this edit's supplementary invoice is still coming
+ * (`supplementaryInvoiceStillComingWhere`): the enqueue's own outstanding read
+ * (round 2: `RUNNING` included, which the restate's narrower set missed) plus a
+ * FAILED row nobody has resolved, which a Requeue would still send. Asked on
+ * the chooser's transaction.
  */
-async function hasRestatableReviewChargeInvoice({
+async function hasReviewChargeInvoiceStillComing({
   bookingModificationId,
   store,
 }: {
@@ -345,7 +346,7 @@ async function hasRestatableReviewChargeInvoice({
   store: EditReviewChargeStore;
 }): Promise<boolean> {
   const queued = await store.xeroSyncOperation.findFirst({
-    where: restatableSupplementaryInvoiceOperationsWhere({
+    where: supplementaryInvoiceStillComingWhere({
       localModel: "BookingModification",
       localId: bookingModificationId,
     }),

@@ -251,7 +251,7 @@ import { syncEditFinancialReviewChargeRequest } from "@/lib/edit-financial-revie
 import { recordUncollectedEditReviewChargeShare } from "@/lib/edit-financial-review-charge-request";
 import { EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY } from "@/lib/edit-financial-review-charge-recovery";
 import { canAskCardForReviewCharge } from "@/lib/booking-payment-state";
-import { restatableSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
+import { supplementaryInvoiceStillComingWhere } from "@/lib/xero-supplementary-invoice-statuses";
 import {
   REVIEW_CHARGE_ANCHOR_MISSING_MESSAGE,
   REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
@@ -2536,74 +2536,175 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
     expect(mocks.enqueueEditFinancialReviewChargeRecovery).not.toHaveBeenCalled();
   });
 
-  it("a later share JOINS an earlier share's queued invoice rather than minting a card ask for the total (review round 1)", async () => {
-    // Share A ($60) settled before #3947 took the invoice route; its
-    // supplementary invoice is still queued, unissued, and no card request
-    // exists for this edit. Share B ($40) must stay on that route, so the
-    // restate bills $100 on ONE invoice. A card ask for $100 beside a $100
-    // invoice would bill the member twice.
-    mocks.manualRefundTaskFindUnique.mockResolvedValue(
-      creditPaidTask({ payment: { xeroInvoiceId: "xero-inv-1" } }),
-    );
-    mocks.manualRefundTaskFindMany.mockResolvedValue([
-      settledShare({ id: "task-a", amountCents: 6000 }),
-      settledShare({ id: "task-1", amountCents: 4000 }),
-    ]);
-    mocks.xeroSyncOperationFindFirst.mockResolvedValue({ id: "op-share-a-invoice" });
-    mocks.restatePendingSupplementaryInvoiceAmount.mockResolvedValue({ restated: 1, alreadyCovering: 0 });
+  /**
+   * #3947 review rounds 1 and 2: ONE INSTRUMENT PER EDIT. The outbox read is
+   * answered by EVALUATING the chooser's own `where` against these rows, so a
+   * chooser that asked a narrower question (round 1's restatable set, which
+   * missed RUNNING and FAILED) finds nothing and fails these tests, rather than
+   * a stub agreeing with whatever it was asked.
+   */
+  describe("one instrument per edit (review rounds 1 and 2)", () => {
+    type OutboxRow = Record<string, unknown>;
+    let outboxRows: OutboxRow[] = [];
 
-    const result = await charge({ confirmedAmountCents: 4000 });
+    function matches(row: OutboxRow, where: Record<string, unknown>): boolean {
+      return Object.entries(where).every(([key, condition]) => {
+        if (key === "OR") {
+          return (condition as Record<string, unknown>[]).some((arm) => matches(row, arm));
+        }
+        if (condition !== null && typeof condition === "object" && "in" in condition) {
+          return (condition as { in: unknown[] }).in.includes(row[key]);
+        }
+        if (condition !== null && typeof condition === "object" && "path" in condition) {
+          const { path, equals } = condition as { path: string[]; equals: unknown };
+          return (row[key] as Record<string, unknown> | undefined)?.[path[0]] === equals;
+        }
+        return (row[key] ?? null) === condition;
+      });
+    }
 
-    // The chooser asked the restate's OWN read, for this edit.
-    expect(mocks.xeroSyncOperationFindFirst).toHaveBeenCalledWith({
-      where: restatableSupplementaryInvoiceOperationsWhere({
+    /** Share A's supplementary invoice for this edit, in the given state. */
+    function shareAInvoice(overrides: OutboxRow = {}): OutboxRow {
+      return {
+        id: "op-share-a-invoice",
+        direction: "OUTBOUND",
+        entityType: "INVOICE",
+        operationType: "CREATE",
         localModel: "BookingModification",
         localId: "mod-1",
-      }),
-      select: { id: true },
+        queueType: "SUPPLEMENTARY_INVOICE",
+        requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", priceDiffCents: 6000 },
+        status: "PENDING",
+        manuallyResolvedAt: null,
+        ...overrides,
+      };
+    }
+
+    beforeEach(() => {
+      outboxRows = [];
+      mocks.xeroSyncOperationFindFirst.mockImplementation(
+        async ({ where }: { where: Record<string, unknown> }) =>
+          outboxRows.find((row) => matches(row, where)) ?? null,
+      );
+      // Share A ($60) settled before #3947 on the invoice route; this is share
+      // B ($40) of the same edit, on a credit-paid booking with an issued
+      // invoice and no card request for the edit.
+      mocks.manualRefundTaskFindUnique.mockResolvedValue(
+        creditPaidTask({ payment: { xeroInvoiceId: "xero-inv-1" } }),
+      );
+      mocks.manualRefundTaskFindMany.mockResolvedValue([
+        settledShare({ id: "task-a", amountCents: 6000 }),
+        settledShare({ id: "task-1", amountCents: 4000 }),
+      ]);
     });
-    // No card ask at all...
-    expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
-    expect(mocks.updatePaymentIntentAmount).not.toHaveBeenCalled();
-    expect(result.additionalPaymentIntentId).toBeNull();
-    // ...and the one queued invoice raised to the edit's total, with no second.
-    await flushDispatch();
-    expect(mocks.restatePendingSupplementaryInvoiceAmount).toHaveBeenCalledWith(
-      expect.objectContaining({ bookingModificationId: "mod-1", priceDiffCents: 10000 }),
-    );
-    expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
-  });
 
-  it("CONTROL: with no invoice queued for the edit, the same share takes the card", async () => {
-    mocks.manualRefundTaskFindUnique.mockResolvedValue(
-      creditPaidTask({ payment: { xeroInvoiceId: "xero-inv-1" } }),
-    );
-    mocks.xeroSyncOperationFindFirst.mockResolvedValue(null);
+    /** B stayed on the invoice route: no card ask of any kind. */
+    function expectNoCardAsk(result: { additionalPaymentIntentId: string | null }) {
+      expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+      expect(mocks.updatePaymentIntentAmount).not.toHaveBeenCalled();
+      expect(result.additionalPaymentIntentId).toBeNull();
+    }
 
-    const result = await charge();
+    it("a QUEUED invoice: B joins it, and the restate bills $100 on that one invoice", async () => {
+      outboxRows = [shareAInvoice({ status: "PENDING" })];
+      mocks.restatePendingSupplementaryInvoiceAmount.mockResolvedValue({ restated: 1, alreadyCovering: 0 });
 
-    expect(mocks.xeroSyncOperationFindFirst).toHaveBeenCalledTimes(1);
-    expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
-    expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
-  });
+      const result = await charge({ confirmedAmountCents: 4000 });
 
-  it("CONTROL: a card-route edit's own waiting invoice does not move its next share off the card", async () => {
-    // The card route's supplementary invoice waits on its request, so a card
-    // request ALWAYS exists beside it; the chooser does not even ask.
-    mocks.manualRefundTaskFindUnique.mockResolvedValue(
-      creditPaidTask({ payment: { xeroInvoiceId: "xero-inv-1" } }),
-    );
-    mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow());
-    mocks.xeroSyncOperationFindFirst.mockResolvedValue({ id: "op-waiting-on-card" });
-    mocks.manualRefundTaskFindMany.mockResolvedValue([
-      settledShare({ id: "task-a", amountCents: 20000 }),
-      settledShare({ id: "task-1", amountCents: 3000 }),
-    ]);
+      // The chooser asked the shared read, for this edit.
+      expect(mocks.xeroSyncOperationFindFirst).toHaveBeenCalledWith({
+        where: supplementaryInvoiceStillComingWhere({ localModel: "BookingModification", localId: "mod-1" }),
+        select: { id: true },
+      });
+      expectNoCardAsk(result);
+      await flushDispatch();
+      expect(mocks.restatePendingSupplementaryInvoiceAmount).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingModificationId: "mod-1", priceDiffCents: 10000 }),
+      );
+      expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+    });
 
-    await charge({ confirmedAmountCents: 3000 });
+    it("a RUNNING invoice (round 2, F1): B still stays off the card", async () => {
+      // The outbox is sending A's $60 right now. The restate cannot raise a
+      // RUNNING row, so B's leg falls to the enqueue, which answers
+      // short-in-flight and the existing short-ask audit records the $40. A
+      // card ask for $100 here would leave the member asked $160 for $100.
+      outboxRows = [shareAInvoice({ status: "RUNNING" })];
 
-    expect(mocks.xeroSyncOperationFindFirst).not.toHaveBeenCalled();
-    expect(mocks.updatePaymentIntentAmount).toHaveBeenCalledWith("pi_additional_1", 23000);
+      const result = await charge({ confirmedAmountCents: 4000 });
+
+      expectNoCardAsk(result);
+      await flushDispatch();
+      const xero = mocks.queueXeroBookingEditSettlement.mock.calls[0][0];
+      expect(xero.requiresAdditionalStripePayment).toBe(false);
+      expect(xero.priceDiffCents).toBe(10000);
+    });
+
+    it("a RUNNING invoice the cooldown hands back to PENDING (round 2, F1): B's leg raises THAT invoice, beside no card ask", async () => {
+      // Chosen while RUNNING; by B's post-commit leg a Xero cooldown has
+      // returned A's un-attempted row to PENDING, so the restate raises it to
+      // $100. Had B taken the card, that would be a $100 invoice beside a $100
+      // card ask.
+      outboxRows = [shareAInvoice({ status: "RUNNING" })];
+      mocks.restatePendingSupplementaryInvoiceAmount.mockImplementation(async () => {
+        outboxRows = [shareAInvoice({ status: "PENDING" })];
+        return { restated: 1, alreadyCovering: 0 };
+      });
+
+      const result = await charge({ confirmedAmountCents: 4000 });
+
+      expectNoCardAsk(result);
+      await flushDispatch();
+      expect(mocks.restatePendingSupplementaryInvoiceAmount).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingModificationId: "mod-1", priceDiffCents: 10000 }),
+      );
+      expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+    });
+
+    it("a FAILED invoice nobody has resolved (round 2, F2): B stays off the card, so a Requeue cannot land beside a card ask", async () => {
+      outboxRows = [shareAInvoice({ status: "FAILED", manuallyResolvedAt: null })];
+
+      const result = await charge({ confirmedAmountCents: 4000 });
+
+      expectNoCardAsk(result);
+    });
+
+    it("CONTROL: a FAILED invoice an officer marked resolved in Xero is done, so B takes the card", async () => {
+      outboxRows = [
+        shareAInvoice({ status: "FAILED", manuallyResolvedAt: new Date("2026-06-30T00:00:00.000Z") }),
+      ];
+
+      const result = await charge({ confirmedAmountCents: 4000 });
+
+      expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
+      expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
+    });
+
+    it("CONTROL: another edit's invoice, or none, leaves B on the card", async () => {
+      outboxRows = [shareAInvoice({ localId: "mod-other" })];
+
+      const result = await charge({ confirmedAmountCents: 4000 });
+
+      expect(mocks.xeroSyncOperationFindFirst).toHaveBeenCalledTimes(1);
+      expect(mocks.createPaymentIntent).toHaveBeenCalledTimes(1);
+      expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
+    });
+
+    it("CONTROL: a card-route edit's own waiting invoice does not move its next share off the card", async () => {
+      // The card route's supplementary invoice waits on its request, so a card
+      // request ALWAYS exists beside it; the chooser does not even ask.
+      mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow());
+      outboxRows = [shareAInvoice({ status: "WAITING_PAYMENT" })];
+      mocks.manualRefundTaskFindMany.mockResolvedValue([
+        settledShare({ id: "task-a", amountCents: 20000 }),
+        settledShare({ id: "task-1", amountCents: 3000 }),
+      ]);
+
+      await charge({ confirmedAmountCents: 3000 });
+
+      expect(mocks.xeroSyncOperationFindFirst).not.toHaveBeenCalled();
+      expect(mocks.updatePaymentIntentAmount).toHaveBeenCalledWith("pi_additional_1", 23000);
+    });
   });
 
   it("CONTROL: an internet-banking booking re-priced to $0 is NOT asked by card", async () => {

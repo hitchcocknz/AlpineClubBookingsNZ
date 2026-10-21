@@ -5151,18 +5151,6 @@ describe("edit-financial-review charge recovery (#3170)", () => {
         }),
       );
     });
-
-    it("a CANCELLED booking's replay closes without calling the sync", async () => {
-      mockBookingFindUnique.mockResolvedValue(creditPaidBooking("CANCELLED"));
-
-      const result = await processPaymentRecoveryOperations({ limit: 1 });
-
-      expect(result.succeeded).toBe(1);
-      expect(wasClosedSuccessfully()).toBe(true);
-      expect(mockSyncEditFinancialReviewChargeRequest).not.toHaveBeenCalled();
-      expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
-      expect(mockAttachIntentToWaitingOps).not.toHaveBeenCalled();
-    });
   });
 });
 

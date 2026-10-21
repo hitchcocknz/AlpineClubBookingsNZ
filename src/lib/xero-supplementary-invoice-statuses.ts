@@ -20,6 +20,75 @@ export const OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES = [
 ] as const;
 
 /**
+ * The supplementary-invoice outbox operations of ONE anchor, any status: the
+ * shape the enqueue's "is an invoice already going out?" read narrows by status
+ * (`outstandingSupplementaryInvoiceOperationsWhere`). Matched on the immutable
+ * `queueType` column, as the enqueue always has. #3947 review round 2 named it
+ * so the review charge's route chooser asks the same question of the same rows.
+ */
+export function supplementaryInvoiceAnchorOperationsWhere({
+  localModel,
+  localId,
+}: {
+  localModel: XeroSupplementaryInvoiceAnchorModel;
+  localId: string;
+}): Prisma.XeroSyncOperationWhereInput {
+  return {
+    direction: "OUTBOUND",
+    entityType: "INVOICE",
+    operationType: "CREATE",
+    localModel,
+    localId,
+    queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
+  };
+}
+
+/**
+ * THE ENQUEUE'S QUESTION (`enqueueXeroSupplementaryInvoiceOperation`): an
+ * invoice for this anchor that is still going to be sent - queued, waiting on a
+ * payment, or being sent right now. Finding one, the enqueue raises it rather
+ * than queueing a second.
+ */
+export function outstandingSupplementaryInvoiceOperationsWhere(anchor: {
+  localModel: XeroSupplementaryInvoiceAnchorModel;
+  localId: string;
+}): Prisma.XeroSyncOperationWhereInput {
+  return {
+    ...supplementaryInvoiceAnchorOperationsWhere(anchor),
+    status: { in: [...OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES] },
+  };
+}
+
+/**
+ * #3947 review round 2: an invoice for this anchor that is OUTSTANDING (the
+ * enqueue's question, above) OR that FAILED and an officer has not marked
+ * resolved in Xero - a row the operations panel can still Requeue
+ * (`isResolvedInXero`, `INV-INT-025`; the query side spells that
+ * `manuallyResolvedAt: null`). Either way the anchor's invoice is still on its
+ * way, which is what `chooseEditReviewChargeRoute` needs to know before it
+ * offers a later share of the same edit the card.
+ *
+ * `PARTIAL` is deliberately absent: the handler finishes `PARTIAL` only after
+ * creating the invoice, and writes its `SUPPLEMENTARY_INVOICE` link in that same
+ * completion, so the chooser's issued-link refusal has already answered.
+ */
+export function supplementaryInvoiceStillComingWhere(anchor: {
+  localModel: XeroSupplementaryInvoiceAnchorModel;
+  localId: string;
+}): Prisma.XeroSyncOperationWhereInput {
+  return {
+    OR: [
+      outstandingSupplementaryInvoiceOperationsWhere(anchor),
+      {
+        ...supplementaryInvoiceAnchorOperationsWhere(anchor),
+        status: "FAILED",
+        manuallyResolvedAt: null,
+      },
+    ],
+  };
+}
+
+/**
  * THE ONE CHANGE-SCOPED READ THAT MATCHES ON THE PAYLOAD, not on the anchor -
  * and therefore the one that could see a second ask (#3193 fix round).
  *
@@ -64,8 +133,7 @@ export function waitingSupplementaryInvoiceOperationsWhere(
  * write must use the SAME set - a filter on one and not the other is a
  * check-then-act, which is how a restate came to rewrite an operation the outbox
  * had already moved on (#3170 fix round, F3). Moved here from
- * `xero-operation-outbox.ts` by #3947, with the read below, so the review
- * charge's route chooser asks the restate's own question.
+ * `xero-operation-outbox.ts` by #3947 with the read below.
  */
 export const RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES = [
   "PENDING",
@@ -75,10 +143,9 @@ export const RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES = [
 /**
  * THE supplementary invoices queued for this anchor that a restate may still
  * raise: the read `restatePendingSupplementaryInvoiceAmount` makes before it
- * writes, and (#3947) the read `chooseEditReviewChargeRoute` makes to keep a
- * later share of an edit on the `invoice` route when an earlier share's invoice
- * is still queued - so the restate bills both shares on ONE instrument instead
- * of a card ask and an invoice each billing the edit's total.
+ * writes. Narrower than the enqueue's outstanding set by `RUNNING`, which can
+ * no longer be restated; the review charge's route chooser asks the enqueue's
+ * wider question instead (#3947 review round 2).
  */
 export function restatableSupplementaryInvoiceOperationsWhere({
   localModel,

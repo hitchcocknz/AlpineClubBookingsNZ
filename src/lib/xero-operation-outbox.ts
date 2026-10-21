@@ -112,6 +112,7 @@ import {
 import { linkReviewTaskId, queuedReviewTaskId, reviewTaskKeyParts } from "@/lib/xero-review-task-key";
 import {
   OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES,
+  outstandingSupplementaryInvoiceOperationsWhere,
   RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES,
   restatableSupplementaryInvoiceOperationsWhere,
   waitingSupplementaryInvoiceOperationsWhere,
@@ -1633,18 +1634,9 @@ async function enqueueSupplementaryInvoiceForAnchor(
       };
     }
 
+    // #3947 review round 2: named, and shared with the review charge's chooser.
     const existingQueuedOperation = await tx.xeroSyncOperation.findFirst({
-      where: {
-        direction: "OUTBOUND",
-        entityType: "INVOICE",
-        operationType: "CREATE",
-        localModel,
-        localId,
-        queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-        status: {
-          in: [...OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES],
-        },
-      },
+      where: outstandingSupplementaryInvoiceOperationsWhere({ localModel, localId }),
       orderBy: {
         createdAt: "desc",
       },
