@@ -7,6 +7,7 @@ import {
 import {
   buildAdditionalOwedWhere,
   buildUnpaidFinishedStaysHref,
+  buildUnpaidFinishedStaysStatusWhere,
   buildUnpaidFinishedStaysWhere,
   buildUnsettledAdditionalFinishedStaysHref,
   buildUnsettledAdditionalFinishedStaysWhere,
@@ -25,12 +26,24 @@ const GIVEN_DAY = parseDateOnly("2026-07-01");
 // queue definition changed — update every consuming surface (and its docs)
 // together.
 describe("unpaid finished stays helpers", () => {
-  it("matches non-deleted PAYMENT_PENDING bookings with check-out on or before the given day", () => {
+  it("matches non-deleted bookings still owing their price with check-out on or before the given day", () => {
     expect(buildUnpaidFinishedStaysWhere(GIVEN_DAY)).toEqual({
       deletedAt: null,
-      status: "PAYMENT_PENDING",
       checkOut: { lte: GIVEN_DAY },
+      OR: [
+        { status: "PAYMENT_PENDING" },
+        // #4019: an approved member whole-lodge booking with no Payment row owes
+        // its price until the member chooses how to pay; with a Payment row it
+        // carries a receivable or a capture and is chased elsewhere.
+        { status: "CONFIRMED", wholeLodgeHold: true, payment: null },
+      ],
     });
+  });
+
+  it("is the fragment the bookings-list unpaid=finished filter composes with the URL's check-out bound", () => {
+    expect(buildUnpaidFinishedStaysWhere(GIVEN_DAY)).toMatchObject(
+      buildUnpaidFinishedStaysStatusWhere(),
+    );
   });
 
   it("keeps the cutoff inclusive of the given day only", () => {
@@ -48,7 +61,7 @@ describe("unpaid finished stays helpers", () => {
     const dayKey = formatDateOnly(GIVEN_DAY);
 
     expect(buildUnpaidFinishedStaysHref(dayKey)).toBe(
-      `/admin/bookings?status=PAYMENT_PENDING&checkOutTo=${dayKey}`,
+      `/admin/bookings?unpaid=finished&checkOutTo=${dayKey}`,
     );
   });
 });
@@ -92,9 +105,15 @@ describe("unsettled finished-stay additions helpers", () => {
     const additionsStatuses = (
       buildAdditionalOwedWhere().status as { in: string[] }
     ).in;
-    const primaryStatus = buildUnpaidFinishedStaysWhere(GIVEN_DAY).status;
+    // PAYMENT_PENDING is the primary queue's; the whole-lodge branch is CONFIRMED,
+    // which the additions queue also names, but a booking with NO Payment row
+    // can carry no additional transaction, so the two never count one booking twice.
+    const primaryStatuses = (
+      buildUnpaidFinishedStaysWhere(GIVEN_DAY).OR as Array<{ status: string }>
+    ).map((o) => o.status);
 
-    expect(additionsStatuses).not.toContain(primaryStatus);
+    expect(additionsStatuses).not.toContain("PAYMENT_PENDING");
+    expect(primaryStatuses).toContain("PAYMENT_PENDING");
   });
 
   it("builds the bookings-list deep link both surfaces share", () => {

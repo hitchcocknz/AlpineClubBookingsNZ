@@ -3640,7 +3640,12 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
         where: { id: "booking-wl" },
         data: { status: BookingStatus.PAID },
       });
-      expect(mockedEnqueueInvoice).not.toHaveBeenCalled();
+      // #4264 review F2: PAID still raises the revenue invoice, as every other
+      // route to PAID does, so Xero has something to allocate against.
+      expect(mockedEnqueueInvoice).toHaveBeenCalledWith("booking-wl", {
+        createdByMemberId: "admin-1",
+        invoiceEmailDelivery: null,
+      });
     });
 
     it("applies nothing, and still approves, when the member asked but holds no credit", async () => {

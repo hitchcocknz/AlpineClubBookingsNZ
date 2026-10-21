@@ -1,3 +1,4 @@
+import { isUnpaidConfirmedWholeLodge } from "@/lib/booking-payment-flow";
 import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment-state";
 import {
   type AgeTier,
@@ -967,8 +968,14 @@ export async function modifyBookingDates({
     // booking own stored figure there, so a clamp against it could only act on a
     // state this edit did not create — and settling it at $0 would be a
     // financial statement about an amount nobody has worked out.
+    // #4019: see `isUnpaidConfirmedWholeLodge` - an approved member whole-lodge
+    // booking with no Payment row reprices like a PAYMENT_PENDING one.
+    const unpaidConfirmedWholeLodge = isUnpaidConfirmedWholeLodge(booking);
     const isRepriceablePrePayment =
-      !parked && (newStatus === "PENDING" || newStatus === "PAYMENT_PENDING");
+      !parked &&
+      (newStatus === "PENDING" ||
+        newStatus === "PAYMENT_PENDING" ||
+        (newStatus === "CONFIRMED" && unpaidConfirmedWholeLodge));
     const appliedBeforeClamp = isRepriceablePrePayment
       ? await deriveBookingAppliedCreditCents(bookingId, tx)
       : 0;
@@ -994,7 +1001,11 @@ export async function modifyBookingDates({
         changeFeeCents: recordedChangeFeeCents,
         appliedCreditCents: clampedCredit.appliedCreditCents,
       });
-      if (effectivePriceCents === 0 && newStatus === "PAYMENT_PENDING") {
+      if (
+        effectivePriceCents === 0 &&
+        (newStatus === "PAYMENT_PENDING" ||
+          (newStatus === "CONFIRMED" && unpaidConfirmedWholeLodge))
+      ) {
         newStatus = "PAID";
         zeroDollarAutoPaid = true;
         // #2265 (#2319). Same as the batch-modify sibling in

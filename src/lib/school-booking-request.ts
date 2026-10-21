@@ -22,6 +22,7 @@
  * only SHA-256 token hashes are stored, and external calls (email, Xero outbox)
  * run after the transaction commits.
  */
+import { memberWholeLodgeChoosesPaymentMethod } from "@/lib/booking-payment-flow";
 import { randomBytes } from "crypto";
 import { hash } from "bcryptjs";
 import {
@@ -2254,7 +2255,10 @@ export async function approveMemberWholeLodgeRequest(input: {
     isEffectiveModuleEnabled("xeroIntegration"),
     isEffectiveModuleEnabled("internetBankingPayments"),
   ]);
-  const memberChoosesPaymentMethod = xeroModuleOn && internetBankingModuleOn;
+  const memberChoosesPaymentMethod = memberWholeLodgeChoosesPaymentMethod({
+    xeroIntegration: xeroModuleOn,
+    internetBankingPayments: internetBankingModuleOn,
+  });
   const initialRequest = await prisma.bookingRequest.findUnique({
     where: { id: input.requestId },
   });
@@ -2780,8 +2784,9 @@ export async function approveMemberWholeLodgeRequest(input: {
       // exception door, because that officer IS the authority the door leads to.
       // Their remedies are to put a qualifying adult member in the party, move the
       // request to another lodge, or change the lodge's setting.
-      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
-
+      // #4264 review F4 (INV-LOCK-002): the member-credit tier is taken BEFORE
+      // the hosting reconcile below, which may take Member rows and the
+      // coverage keys; the guide orders member-credit ahead of both.
       let paymentReference: string | null = null;
       let appliedCreditCents = 0;
       let settledByCredit = false;
@@ -2853,6 +2858,9 @@ export async function approveMemberWholeLodgeRequest(input: {
           },
         });
       }
+
+      await reconcileAdultMemberHostingReviewWithSiblings(booking.id, tx);
+
 
       await tx.bookingRequest.update({
         where: { id: request.id },
@@ -2995,13 +3003,40 @@ export async function approveMemberWholeLodgeRequest(input: {
       },
     });
 
-    if (memberChoosesPaymentMethod) {
+    if (memberChoosesPaymentMethod && conversion.settledByCredit) {
+      // The credit covered the whole price (or the officer priced it at $0), so
+      // the booking is PAID with no card intent and no receivable - but Xero
+      // still needs the revenue invoice to allocate the credit note against,
+      // exactly as booking-create's $0 branch queues one (#4264 review F2).
+      // The invoice op first, then the #1620 applied-credit allocation, which
+      // on this path DOES have ledger rows to allocate.
+      invoiceMode = "paid";
+      try {
+        const queuedInvoice = await enqueueXeroBookingInvoiceOperation(
+          conversion.bookingId,
+          { createdByMemberId: input.adminMemberId, invoiceEmailDelivery: null },
+        );
+        const queuedAllocation =
+          await enqueueXeroAppliedCreditAllocationOperation(
+            conversion.bookingId,
+            { createdByMemberId: input.adminMemberId },
+          );
+        if (queuedInvoice.queueOperationId || queuedAllocation.queueOperationId) {
+          await kickQueuedXeroOutboxOperationsIfConnected({ limit: 2 });
+        }
+      } catch (err) {
+        logger.error(
+          { err, bookingId: conversion.bookingId },
+          "Failed to queue the Xero invoice for a credit-settled member whole-lodge booking",
+        );
+      }
+    } else if (memberChoosesPaymentMethod) {
       // Nothing to invoice: there is no receivable. The member's card intent
       // is minted by the Complete Payment card, and the Internet Banking
-      // switch raises the invoice — plus the #1620 applied-credit allocation
-      // for any credit applied above — through the one switch route every
-      // card booking uses. A fully-credit-covered booking is already PAID.
-      invoiceMode = conversion.settledByCredit ? "paid" : "member";
+      // switch raises the invoice - plus the #1620 applied-credit allocation
+      // for any credit applied above - through the one switch route every
+      // card booking uses.
+      invoiceMode = "member";
     } else if (xeroModuleOn) {
       // LEGACY: invoice the receivable, exactly as the school path and every
       // other INTERNET_BANKING creator does. Without this the PENDING Payment

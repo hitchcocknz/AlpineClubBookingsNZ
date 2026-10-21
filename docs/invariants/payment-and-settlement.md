@@ -983,10 +983,30 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   while the path applies no credit — and the LEGACY branch (either module off)
   still applies none, which the #2328 module guard now pins by position: the
   module's one `applyCreditToBooking` call sits inside the member-choice branch,
-  before the legacy mint. The member-choice branch (#4019) writes
-  NO receivable at approval, so there is no figure for it to get wrong; the
-  receivable is minted later by the Internet Banking switch route at the
-  effective price, from the same ledger read, exactly as `booking-create` does.
+  before the legacy mint. The member-choice branch (#4019) mints no receivable
+  at approval; the switch route mints it later at the effective price
+  ([`INV-PAY-136`](#inv-pay-136)).
+
+
+## INV-PAY-136
+
+**Related: `INV-PAY-059`, `INV-MOD-012`, `INV-LOCK-002`.**
+
+- **An approved member whole-lodge booking that owes its price with no Payment
+  row reprices like a PAYMENT_PENDING one** (#4019). Until the member chooses
+  how to pay it is CONFIRMED, held and unminted, which `isUnpaidConfirmedWholeLodge`
+  (`booking-payment-flow.ts`) names once: the `INV-MOD-012` applied-credit clamp
+  and the $0 auto-settle in both modification paths reach it, so a price cut
+  after approval gives the excess credit back and settles a covered booking
+  PAID; its SQL twin in `unpaid-finished-stays.ts` puts an approved booking
+  never paid on the dashboard card and the sidebar badge.
+- **A credit-covered or $0 approval settles PAID and still queues the Xero
+  revenue invoice and the applied-credit allocation**, as every route to PAID
+  does; Xero then has the invoice to allocate the credit note against.
+- **The approval takes the member-credit lock before its hosting reconcile**
+  (`INV-LOCK-002`: member-credit precedes Member rows and the coverage keys).
+- Pinned by `booking-modify-credit-clamp.test.ts`, `unpaid-finished-stays.test.ts`,
+  `school-booking-request.test.ts` (the $0 approval queues the invoice).
 
 ## INV-PAY-023
 
