@@ -74,7 +74,7 @@
       "reachedThrough": "prisma > @prisma/dev"
     },
     {
-      "copy": "vite@8.3.0",
+      "copy": "vite@8.3.4",
       "files": [
         "dist/node/chunks/node.js"
       ],
