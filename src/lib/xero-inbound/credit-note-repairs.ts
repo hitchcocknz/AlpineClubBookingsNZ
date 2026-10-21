@@ -10,6 +10,7 @@ import { buildBookingAppliedCreditDescription, getAmountCentsFromAllocationMetad
 import { isIncludedRefundCreditNoteStatus } from "@/lib/xero-refund-note-status";
 import { findActiveXeroObjectLinks } from "./object-links";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
+import { floorBankTransferRefundedTotal } from "./credit-note-bank-transfer-floor";
 import { createAuditLog } from "@/lib/audit";
 import { lockMemberCreditLedger } from "@/lib/member-credit";
 import { repairLegacyAppliedCreditNoteAllocationsForBooking } from "@/lib/xero-applied-credit-allocation-repair";
@@ -448,6 +449,8 @@ export async function repairRefundedPaymentBusinessState(input: {
       });
       effectiveRefundedTotalCents = payment.refundedAmountCents;
     }
+    // #4162 (`INV-ADDPAY-021`): never below a bank-transfer payment's own refund detail; less is alerted, not applied.
+    effectiveRefundedTotalCents = await floorBankTransferRefundedTotal({ payment, xeroDerivedCents: effectiveRefundedTotalCents, creditNoteId: input.creditNoteId, format });
     // #3653 (`INV-PAY-114`): a Xero note never raises an organiser child's cash
     // mirror past the refunds Stripe recorded for it.
     if (isStripePayment && payment.booking.organiserSettled) {

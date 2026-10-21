@@ -248,6 +248,10 @@ const PURE_CALLEES = [
   // Payment row first - in the caller's locked release transaction, or a short
   // one of its own (`withStoreTransaction`). It resolves no club day.
   "src/lib/saved-card-charge-settle.ts",
+  // #4162: the unwind of a voided bank-transfer refund note's allocation, run on
+  // the nightly follow-up's transaction under `lock(1)` and the Payment row
+  // (`withStoreTransaction`). It resolves no club day.
+  "src/lib/refund-allocation-unwind.ts",
 ] as const;
 
 /**

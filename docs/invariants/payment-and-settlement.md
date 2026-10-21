@@ -3391,9 +3391,10 @@ _Split from `INV-PAY-057` (#3220)._
 - **The primary invoice bills the recorded fee in full.** Its link is saved
   in one transaction with what it billed, the fee then recorded and its Stripe
   cash (capped so unallocated ledger credit fits). A supplementary invoice,
-  anchored on a correction routing its fee there, bills the gap, paid from
-  cash the primary left, else unpaid; untaken cash is logged. Retries re-check
-  stored figures without re-queuing.
+  anchored on its routing correction, bills the gap, paid from cash the
+  primary left, else unpaid; untaken cash is logged. Retries re-check stored
+  figures without re-queuing; PARTIAL repairs record the attempted payment
+  (#4010).
 - Limits: a capture recorded for its intent is not re-checked against a later
   fee; a fee the ordinary settled edit (#3980, `applyPaymentAdjustments`)
   records mid-create, before the link is saved, is unclaimed: logged, not

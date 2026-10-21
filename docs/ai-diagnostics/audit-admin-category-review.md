@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  506
+row-producing sites:  508
 uncategorised:        0
-category values: admin 108, booking 108, xero 40, family 35, payment 58,
+category values: admin 108, booking 108, xero 40, family 35, payment 60,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -836,7 +836,7 @@ lost-record recovery adds `booking.payment.auto_refund_record_recovered`, also
 late-capture handler marked as its own but refunded some other way, named for
 the same people instead of being noted in Xero.
 
-#4219 then added one more (`xero` 39 -> 40, 505 -> 506, MEASURED with
+#4219 then added one more (`xero` 39 -> 40, 507 -> 508, MEASURED with
 `pnpm run audit:census`): `xero.credit_note.spent_outside_app_converged`, the credit-ledger
 convergence's own row, filed `xero` beside the other Xero rows.
 
@@ -844,6 +844,12 @@ convergence's own row, filed `xero` beside the other Xero rows.
 `pnpm run audit:census`): `booking-payment.capacity-race.refunded-total-corrected`,
 a capacity race's card charge corrected to its refund rows before its hand-back
 (the owner's guarded recalculation), filed `payment` beside the close it enables.
+
+#4162 then added two (`payment` 58 -> 60, 505 -> 507, MEASURED with
+`pnpm run audit:census`): `booking-payment.bank-refund.void-undone`, the nightly
+undo of a voided bank-transfer refund note, and `.void-answered`, a person's
+answer to one the undo could not match - both the payment's figures, filed
+`payment` for the people who reconcile it.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a
