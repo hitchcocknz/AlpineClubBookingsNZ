@@ -1870,7 +1870,7 @@ booking's whole worth (`bookingWorthCents`: `finalPriceCents` plus the
 recorded fee), not its fee alone:
 
 - **Every writer that settles against the primary invoice claims it**
-  (`INV-PAY-137`). A writer that changes the booking's worth and read no
+  (`INV-PAY-136`). A writer that changes the booking's worth and read no
   invoice link raises no document of its own, so it confirms the link is still
   unset with one guarded write on the payment row (`writeEditOnPayment`,
   `booking-primary-invoice-claim.ts`): `updateMany where {id, xeroInvoiceId:

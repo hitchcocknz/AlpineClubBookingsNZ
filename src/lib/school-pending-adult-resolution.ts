@@ -198,7 +198,7 @@ export async function resolveAcceptedSchoolPendingAdults(input: {
       totalPriceCents, discountCents: 0, promoAdjustmentCents: 0,
       finalPriceCents: bookingFinalPriceCents({ totalPriceCents, promoAdjustmentCents: 0 }),
     } });
-    // #3980 review C4 (`INV-PAY-137`): a re-price that read no primary invoice
+    // #3980 review C4 (`INV-PAY-136`): a re-price that read no primary invoice
     // link claims it on the payment row, as an edit does; refused if it moved.
     await writeEditOnPayment(tx, { payment: hold.payment, changeFeeCents: 0 }).catch((err: unknown) => {
       if (err instanceof PrimaryInvoiceRaisedDuringEditError) {

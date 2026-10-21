@@ -341,7 +341,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-133` | Ledger rows order by createdAt, then insertionSeq |
 | `INV-PAY-134` | A cancel's card refund is recorded once, by the close making it |
 | `INV-PAY-135` | A capacity race's unrefunded rest is a hand-back task to check |
-| `INV-PAY-137` | An edit racing the primary invoice create is refused or measured |
+| `INV-PAY-136` | An edit racing the primary invoice create is refused or measured |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |

@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { stripComments } from "@/lib/__tests__/support/strip-comments";
 
 /**
- * #3980 (`INV-PAY-137`, `INV-LOCK-003`'s spirit for a row-lock site): the
+ * #3980 (`INV-PAY-136`, `INV-LOCK-003`'s spirit for a row-lock site): the
  * inventory of the edit's claim on the Payment row. Every ordinary edit door
  * that read no primary invoice link claims it and marks its history row, and
  * the only `xeroInvoiceId: null` guard on a payment write is the claim's.

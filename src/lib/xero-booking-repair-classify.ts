@@ -499,7 +499,7 @@ export function classifyBookingContext(
      */
     const modificationNetAmountCents = getModificationNetAmountCents(modification);
     /**
-     * #3980 (review R1, `INV-PAY-137`): an edit that settled against the
+     * #3980 (review R1, `INV-PAY-136`): an edit that settled against the
      * primary invoice - it read no invoice link - expects no Xero document of
      * its own. The invoice raised after it billed it, or, where the edit landed
      * while that invoice was being raised, the create's gap check billed the

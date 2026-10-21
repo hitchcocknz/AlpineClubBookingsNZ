@@ -1,5 +1,5 @@
 /**
- * #3980 (`INV-PAY-137`): AN EDIT THAT READ "NO PRIMARY INVOICE YET" CONFIRMS IT
+ * #3980 (`INV-PAY-136`): AN EDIT THAT READ "NO PRIMARY INVOICE YET" CONFIRMS IT
  * ON THE PAYMENT ROW, AND SAYS SO ON ITS HISTORY ROW.
  *
  * An edit decides whether to adjust the booking's primary Xero invoice from the

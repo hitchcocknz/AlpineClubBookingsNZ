@@ -5258,7 +5258,7 @@ commits between them is counted on both sides or neither.
 An edit decides whether to adjust a booking's primary Xero invoice from the
 invoice link it read, but the invoice create (`createXeroInvoiceForBooking`)
 reads the booking once, calls Xero, and saves the link seconds later, outside
-every lock. The two are ordered on the **Payment row** alone (`INV-PAY-137`):
+every lock. The two are ordered on the **Payment row** alone (`INV-PAY-136`):
 
 - **The claim.** Every writer that changes a booking's worth and read no
   invoice link makes one guarded write in its own transaction,

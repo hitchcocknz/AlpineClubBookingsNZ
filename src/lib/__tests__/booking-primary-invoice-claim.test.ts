@@ -18,7 +18,7 @@ import type { CalendarDate } from "@/lib/club-time";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 
 /**
- * #3980 (`INV-PAY-137`, owner decision 21 Oct 2026: "refuse, and bill the
+ * #3980 (`INV-PAY-136`, owner decision 21 Oct 2026: "refuse, and bill the
  * gap"): an edit that read no primary invoice link confirms it with one guarded
  * write on the payment row, carrying its fee, or is refused whole with a
  * transient 409; its history row records that it settled against the primary
