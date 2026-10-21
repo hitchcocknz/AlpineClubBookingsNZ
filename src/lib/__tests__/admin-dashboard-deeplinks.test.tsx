@@ -186,18 +186,22 @@ describe("admin dashboard deep links", () => {
 
     expect(html).toContain("Unpaid Finished Stays");
     expect(html).toContain(
-      `href="/admin/bookings?status=PAYMENT_PENDING&amp;checkOutTo=${todayKey}"`,
+      `href="/admin/bookings?unpaid=finished&amp;checkOutTo=${todayKey}"`,
     );
     expect(html).toContain("3 bookings still payment pending after check-out");
 
-    // The count uses the finished-stay predicate (#1709): PAYMENT_PENDING
-    // with check-out on or before NZ today, excluding soft-deleted bookings.
+    // The count uses the finished-stay predicate (#1709): still owing its price
+    // (PAYMENT_PENDING, or #4019's approved whole-lodge booking with no Payment
+    // row) with check-out on or before NZ today, excluding soft-deleted bookings.
     expect(vi.mocked(prisma.booking.count).mock.calls).toContainEqual([
       {
         where: {
           deletedAt: null,
-          status: "PAYMENT_PENDING",
           checkOut: { lte: getTodayDateOnly(ENVIRONMENT_CLUB_ZONE) },
+          OR: [
+            { status: "PAYMENT_PENDING" },
+            { status: "CONFIRMED", wholeLodgeHold: true, payment: null },
+          ],
         },
       },
     ]);

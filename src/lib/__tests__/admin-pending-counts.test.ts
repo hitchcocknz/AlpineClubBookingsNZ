@@ -105,10 +105,11 @@ describe("getAdminPendingCounts", () => {
       async ({
         where,
       }: {
-        where: { status?: unknown; payment?: unknown; checkOut?: { gt?: Date } };
+        where: { OR?: unknown; payment?: unknown; checkOut?: { gt?: Date } };
       }) => {
         if (where.payment) return where.checkOut?.gt ? 15 : 13;
-        return where.status === "PAYMENT_PENDING" ? 12 : 5;
+        // The unpaid-finished-stays queue is the one OR-shaped where (#4019).
+        return where.OR ? 12 : 5;
       },
     );
     mocks.bookingChangeRequestCount.mockResolvedValue(6);
@@ -202,8 +203,11 @@ describe("getAdminPendingCounts", () => {
     expect(mocks.bookingCount).toHaveBeenCalledWith({
       where: {
         deletedAt: null,
-        status: "PAYMENT_PENDING",
         checkOut: { lte: CLUB_DAY },
+        OR: [
+          { status: "PAYMENT_PENDING" },
+          { status: "CONFIRMED", wholeLodgeHold: true, payment: null },
+        ],
       },
     });
     // Unsettled finished-stay additions (#1723 path 2): mirrors the sibling
