@@ -3363,7 +3363,8 @@ _Split from `INV-PAY-057` (#3220)._
   builder's own row, the retry and repair leg, and the repair tool. It reads the
   note back and records what Xero shows (paid, allocated, or part-paid with
   `refundPaymentRemainingCents`) without a second payment. It skips a note
-  whose own operation was resolved by hand; an unreadable resolved row refuses.
+  whose own operation was resolved by hand; an unreadable resolved row refuses,
+  unless its note is voided or deleted (#4250).
   Otherwise it pays under the one note-keyed key, dated the note's day. A failed
   payment re-reads the note, else completes PARTIAL.
 - **What this does not cover, and why.** A replay that a recorded note already
