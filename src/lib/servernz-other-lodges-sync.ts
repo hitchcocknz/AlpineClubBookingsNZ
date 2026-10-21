@@ -320,9 +320,21 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
   // removed (owner decision): the row stays for the bookings and requests that
   // name it. A server that sends no list hides nothing.
   const deletedIds = new Set(pull.deletedLodgeIds ?? []);
+  // Only the deleted ids this club HOLDS are visited one by one: a whole-registry
+  // pull repeats every deletion ever made, and hiding a lodge that was never
+  // here (or is hidden already) would be a round trip per id under the claim.
+  const heldDeleted =
+    deletedIds.size === 0
+      ? []
+      : (await prisma.otherLodge.findMany({
+          where: { centralId: { in: [...deletedIds] }, hiddenAt: null },
+          select: { centralId: true },
+        }))
+          .map((row) => row.centralId)
+          .filter((id): id is string => id !== null && deletedIds.has(id));
   const hiddenLodges: string[] = [];
   let unlinkedLodges = 0;
-  for (const centralId of deletedIds) {
+  for (const centralId of heldDeleted) {
     const outcome = await hideDeletedLodge(centralId);
     if (outcome.hidden !== null) hiddenLodges.push(outcome.hidden);
     unlinkedLodges += outcome.unlinked;

@@ -125,11 +125,12 @@ export const distributedLodgeSchema = z
 const MAX_LODGES_PER_PULL = 5_000;
 
 /**
- * Upper bound on one pull's deletions (#58). Deletions are never undone, and a
- * whole-registry pull carries all of them, so the list only grows: bounded
- * apart from, and well above, the live lodges.
+ * Upper bound on one pull's deletions (#58): the same bound as the live lodges.
+ * A whole-registry pull carries every deletion ever made, but the download only
+ * acts on the ids it holds locally, and the list is bound to one `IN (...)`
+ * (Postgres allows at most 65,535 bound parameters), so it stays small.
  */
-const MAX_DELETED_LODGES_PER_PULL = 100_000;
+const MAX_DELETED_LODGES_PER_PULL = MAX_LODGES_PER_PULL;
 
 // No exported alias for a single distributed lodge: nothing names one on its
 // own, and callers reach them through `OtherLodgesPullResult["lodges"]`.
