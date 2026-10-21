@@ -49,7 +49,7 @@ export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
 }
 
 /**
- * #3980 (`INV-PAY-119`): the booking's worth (`bookingWorthCents`: its
+ * #3980 (`INV-PAY-136`): the booking's worth (`bookingWorthCents`: its
  * `finalPriceCents` plus the recorded change fee) at two instants, and what the
  * create asked Xero to bill.
  *

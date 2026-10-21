@@ -1501,6 +1501,41 @@ refunded total it corrects).
     `booking-ledger-projection-census.test.ts` and
     `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
+## INV-PAY-136
+
+**Related: `INV-PAY-119`** (worth, and what the primary invoice bills).
+
+- **An edit racing the primary invoice create is refused, or measured and
+  billed or handed on** (#3980; owner, 21 Oct 2026).
+- **Who claims.** A writer that changes a booking's worth and read no invoice
+  link makes one guarded `Payment` write (`writeEditOnPayment`: `updateMany
+  where {id, xeroInvoiceId: null}`, carrying its fee) or is refused whole,
+  409 "try again": the date, batch (finished-stay correction included),
+  guest-removal and acceptance re-price doors through
+  `applyPaymentAdjustments`, the guests route, the review price re-base and
+  school pending-adult naming. The doors mark their history row with how they
+  settled.
+- **What is measured.** The create reads the booking and its marked edits in
+  one REPEATABLE READ snapshot. Its link save is guarded on the link being
+  unset (a second save of the same invoice re-checks the stored figures) and
+  stores, in one transaction, what Xero billed, the worth and line total built
+  from, and the worth read after the row write. Gap: worth moved since the
+  build plus built less billed.
+- **What follows.** A shortfall goes on one supplementary invoice, signed as an
+  edit's, anchored on the newest marked edit that moved money and has no
+  financial review, waiting on that edit's card ask where it asked. An
+  overcharge, or an unanchored shortfall, is one Xero Operations task, naming
+  how the racing reductions settled. Never an automatic credit note.
+- **Limits.** The other link writers (the inbound "invoice paid" match and
+  settle, the inbound payment link, the reconcile mirror, an operator's field
+  repair) store no figures, so an edit just before them is unmeasured. The
+  credit election changes no price and does not claim. A booking with no
+  payment row has nothing to claim.
+- Pinned by `primary-invoice-edit-race.realdb.test.ts`,
+  `primary-invoice-claim-call-sites.test.ts`,
+  `xero-primary-invoice-fee-gap.test.ts` and
+  `booking-primary-invoice-claim.test.ts`.
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the
@@ -3387,15 +3422,12 @@ _Split from `INV-PAY-057` (#3220)._
 - A finished-stay correction's fee on a stay with nothing captured is recorded
   on the payment and posts its `CHANGE_FEE` line under its modification's key
   at the settle, counting as income once captured.
-- **The primary invoice bills worth as the create read it** (#3980). An edit
-  reading no invoice link claims the payment row, with its fee, or is refused
-  (409, retry); its history row is marked. The link's transaction stores what
-  was billed, worth then, the build's worth and line total, and Stripe cash
-  (capped so ledger credit fits). Gap: worth moved since the build plus built
-  less billed. A shortfall goes on a supplementary invoice anchored on a
-  marked edit, paid from leftover cash or unpaid; an overcharge or unanchored
-  shortfall is a Xero Operations task. Retries re-check stored figures;
-  PARTIAL repairs record the attempted payment (#4010).
+- **The primary invoice bills worth as the create read it**; an edit racing
+  its create is refused or measured (`INV-PAY-136`). The link's transaction
+  stores what was billed and Stripe cash (capped so ledger credit fits); a
+  shortfall's supplementary invoice is paid from leftover cash, else unpaid.
+  Retries re-check stored figures; PARTIAL repairs record the attempted
+  payment (#4010).
 - Limits: a capture is not re-checked against a later fee; an invoice linked
   without stored figures is unchecked.
 - Pinned by `amount-owed-one-home.test.ts`,

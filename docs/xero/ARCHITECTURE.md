@@ -1869,30 +1869,40 @@ same idempotency key, which returns the original invoice
 booking's whole worth (`bookingWorthCents`: `finalPriceCents` plus the
 recorded fee), not its fee alone:
 
-- **Every edit that settles against the primary invoice claims it.** An edit
-  that read no invoice link raises no document of its own, so it confirms the
-  link is still unset with one guarded write on the payment row
-  (`claimPrimaryInvoiceStillUnlinked`, `booking-primary-invoice-claim.ts`):
-  `updateMany where {id, xeroInvoiceId: null}`, carrying its fee increment
-  where it records one and an increment of 0 otherwise. A count other than 1
-  refuses the whole edit with `PrimaryInvoiceRaisedDuringEditError` (409,
-  "please try again"; a finished-stay correction says "approve it again"). The
-  error is the transient race refusal, so a guest-consent decline or expiry
-  rolls back rather than ending BLOCKED. On the retry the edit reads the link
-  and adjusts the invoice like any edit. The edit's history row is marked
-  `primaryInvoiceSettlement.settledAgainstPrimaryInvoice`. Every door makes the
-  claim: date change, batch edit (and the finished-stay correction through it),
-  guest removal, guest acceptance re-price — all through
-  `applyPaymentAdjustments` — and the guests route's own settle step.
-- **Measured at the link.** The create stores what its own read said the
-  booking was worth and the total of the lines it sent. It saves the
-  payment's link and, in the same transaction, writes onto its operation's
-  payload what the returned invoice billed (its fee lines and its total), the
-  fee the payment held at that instant, read back from the link's own row
-  update, the booking's worth read after that update, and the Stripe cash
-  recorded against the invoice (`primaryInvoiceCashCents`), computed once. The
-  update's row lock orders the save against every edit's claim: an edit that
-  claimed first is in the worth read back, one that claims after is refused.
+- **Every writer that settles against the primary invoice claims it**
+  (`INV-PAY-136`). A writer that changes the booking's worth and read no
+  invoice link raises no document of its own, so it confirms the link is still
+  unset with one guarded write on the payment row (`writeEditOnPayment`,
+  `booking-primary-invoice-claim.ts`): `updateMany where {id, xeroInvoiceId:
+  null}`, carrying its fee increment where it records one and an increment of
+  0 otherwise. A count other than 1 refuses the whole change with
+  `PrimaryInvoiceRaisedDuringEditError` (409, "please try again"; a
+  finished-stay correction says "approve it again"). The error is the
+  transient race refusal, so a guest-consent decline or expiry rolls back
+  rather than ending BLOCKED. On the retry the change reads the link and
+  adjusts the invoice like any edit. The writers: the date change, batch edit
+  (and the finished-stay correction through it), guest removal and guest
+  acceptance re-price, all through `applyPaymentAdjustments`; the guests
+  route's own settle step; the review price re-base; and the school
+  pending-adult naming. The edit doors mark their history row
+  `primaryInvoiceSettlement`, with how the edit settled (refund, credit,
+  applied credit given back, unpaid-ask offset) and what it asked the card for.
+  The credit election changes no price, so it does not claim.
+- **Measured at the link.** The create reads the booking and the edits already
+  marked, in one REPEATABLE READ transaction (`xero-primary-invoice-read.ts`),
+  so the worth it records as built from and the lines it sends describe the
+  same booking even if an edit commits between the reads. It saves the
+  payment's link with a write guarded on the link being unset and, in the same
+  transaction, writes onto its operation's payload what the returned invoice
+  billed (its fee lines and its total), the fee the payment held, read back
+  under the row lock, the booking's worth read after the row write, the edits
+  marked at build, and the Stripe cash recorded against the invoice
+  (`primaryInvoiceCashCents`), computed once. The row lock orders the save
+  against every claim: a claim made first is in the worth read back, one made
+  after is refused. A second save of the SAME invoice (a run reset from stale
+  RUNNING and retried, or two runs at once) finds the link already set, stores
+  nothing and re-checks from the first save's figures, so an edit properly
+  billed against the linked invoice is never measured into a gap.
 - **The gap is what moved** (`primaryInvoiceWorthGap`): the worth at the link
   less the worth built from, plus the total sent less the total Xero billed.
   The first term is an edit that landed mid-create; the second a replay
@@ -1900,34 +1910,51 @@ recorded fee), not its fee alone:
   A booking whose lines already price it differently from its headline
   (`reconcileBookingMoney`) shows no gap from that, since it is not a race. A
   record written before #3980 is measured on its fee alone.
-- **A shortfall is billed on a supplementary invoice.** It is anchored on the
-  newest edit marked as settled against the primary invoice, or on a
-  correction that routed its fee there (`feeOnPrimaryInvoice`, #3955); none of
-  those raised a document of its own. Its lines are the fee recorded since the
-  build as a change fee and the rest as price, never more fee than the gap. It
-  is raised unpaid, like any edit's supplementary invoice, unless a captured
-  Stripe payment holds it: the primary's Stripe payment is capped
-  (`primaryInvoiceStripeCashCents`) so the applied credit the card settle then
-  allocates still fits on it — the allocation engine's own ledger figure
-  (`cardSettleAppliedCreditCents`, `unallocatedAppliedCents`), never the
-  payment's `creditAppliedCents` mirror, which is only the settle's gate. The
-  cash left over after the stored `primaryInvoiceCashCents` must cover the
-  shortfall. Captured cash that neither invoice takes is logged with both
-  figures and recorded on the create's operation
-  (`primaryInvoiceCashShortfall`). Any enqueue outcome other than a fresh
-  operation is logged as an error.
+- **A shortfall is billed on a supplementary invoice**
+  (`xero-primary-invoice-gap-anchors.ts`). It is anchored on the newest marked
+  edit that moved money (a price or fee change) and has no edit-financial
+  review, or on a correction that routed its fee there (`feeOnPrimaryInvoice`,
+  #3955); none of those raised a document of its own, and a reviewed edit's own
+  review charge is anchored on it, so it is never the gap's anchor. Its lines
+  are the fee recorded since the build as a change fee and the rest as price,
+  signed as an edit's are (#1356). Where the anchor asked the member's card,
+  the invoice waits on that ask's payment intent and records the payment when
+  the capture releases it, like the edit's own supplementary invoice would; an
+  ask not yet minted when the check runs leaves it waiting on no intent, and
+  the door's Xero leg (`queueXeroBookingEditSettlement`) or the mint's
+  recovery attaches the intent once it exists, the check looking again after
+  queueing so whichever runs second sees the other. Otherwise it is raised
+  unpaid, unless a captured Stripe payment holds it: the primary's Stripe
+  payment is capped (`primaryInvoiceStripeCashCents`) so the applied credit the
+  card settle then allocates still fits on it — the allocation engine's own
+  ledger figure (`cardSettleAppliedCreditCents`, `unallocatedAppliedCents`),
+  never the payment's `creditAppliedCents` mirror, which is only the settle's
+  gate. The cash left over after the stored `primaryInvoiceCashCents` must cover
+  the shortfall. Captured cash that neither invoice takes is logged with both
+  figures and recorded on the create's operation (`primaryInvoiceCashShortfall`).
+  Any enqueue outcome other than a fresh operation is logged as an error. A
+  later reduction that retires the asking edit's unpaid ask counts the gap
+  invoice as supplementary money (`unpaid-ask-billing-evidence.ts`), not money
+  the primary invoice billed.
 - **An overcharge is a Xero Operations task** (owner, 21 Oct 2026). An invoice
   billing more than the booking was worth at its link, or a shortfall no
-  marked edit anchors, is not corrected automatically: no credit note is
-  raised. The check writes one `XeroSyncOperation`
+  qualifying marked edit anchors, is not corrected automatically: no credit
+  note is raised. The check writes one `XeroSyncOperation`
   (`xero-primary-invoice-review-task.ts`): `entityType` `REVIEW`,
   `operationType` `PRIMARY_INVOICE_WORTH_GAP`, on the booking, FAILED and not
-  replayable, with the gap and figures on its payload and a plain-English
-  `lastErrorMessage`. It shows in the panel as an active failure, Retry
-  refuses it, and the treasurer closes it with **Resolve (fixed in Xero)**
-  (`INV-INT-025`) once they have acted. Its own correlation key, one per
-  booking, invoice and direction, means a re-run raises no second task and no
-  invoice or credit-note query mistakes it for a document's operation.
+  replayable, with the gap and figures on its payload and a plain-English,
+  redacted `lastErrorMessage`. An overcharge's message and figures say how the
+  reductions that landed mid-create (marked since the create's snapshot) were
+  settled - refund paid out, account credit, applied credit given back, unpaid
+  ask taken off - so the treasurer accounts for the refund too. It shows in
+  the panel as an active failure, Retry refuses it, and the treasurer closes it
+  with **Resolve (fixed in Xero)** (`INV-INT-025`) once they have acted. Its own
+  correlation key, one per booking, invoice and direction, means a re-run
+  raises no second task and no invoice or credit-note query mistakes it for a
+  document's operation. The booking-vs-Xero repair pass expects no invoice or
+  note of a marked edit's own (`xero-booking-repair-classify.ts`), so it never
+  raises one beside the task, nor says the invoice "already bills" an edit that
+  landed mid-create.
 - **Retry-safe.** A run that dies after saving the link is re-driven through
   the create's "invoice already exists" exit, which re-runs the check from the
   stored figures alone (`recheckPrimaryInvoiceWorthGap`). A shortfall already
@@ -1955,10 +1982,15 @@ recorded fee), not its fee alone:
   repair.
 - **Limits.** An edit on a booking with no payment row has nothing to claim;
   the create needs a payment row to run at all, and the edit is marked, so one
-  that commits before the link is still in the worth read back. An invoice
-  linked without stored figures (before #3955, or outside the create) is not
-  checked; the retry warns when its payment records a fee. A record from
-  before #3980 is checked for its fee only.
+  that commits before the link is still in the worth read back. Only the
+  create's save stores figures: the other writers that set the link (the
+  inbound "invoice paid" match and its settle, the inbound payment's link, the
+  reconcile mirror of a primary transaction's invoice, an operator's field
+  repair) take the same row, so a later claim is refused, but an edit that
+  claimed just before one of them is not measured. An invoice linked without
+  stored figures (before #3955, or by those writers) is not checked; the retry
+  warns when its payment records a fee. A record from before #3980 is checked
+  for its fee only.
 
 ## Booking-page supplementary invoice observations (#4047)
 

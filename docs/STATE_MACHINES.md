@@ -700,7 +700,7 @@ uncollected review-raised request -> WITHDRAWN by a finance officer (#3528)
 negative delta -> first cancels or shrinks an unpaid price ask (#3954), then
   Stripe refund or source-linked member credit for what is left
 admin review path -> REQUESTED -> APPROVED or REJECTED
-edit read no primary invoice link (#3980, INV-PAY-119)
+edit read no primary invoice link (#3980, INV-PAY-136)
   -> claims the payment row: updateMany where {id, xeroInvoiceId: null}
      count 1 -> commits, history row marked settledAgainstPrimaryInvoice
      count 0 -> 409 "please try again", nothing applied; the retry reads the
@@ -3592,9 +3592,12 @@ retry of an outbox-run row (group invoice and its VOIDs, kept late capture,
   invoice is also refused when its charge already has a Xero invoice or needs
   none (#3971)
 primary booking invoice create saves its link -> worth gap check (#3980,
-  INV-PAY-119), and again on its "invoice already exists" replay
-  shortfall anchored on an edit marked settledAgainstPrimaryInvoice
-    -> supplementary invoice operation queued PENDING (once per anchor set)
+  INV-PAY-136), and again on its "invoice already exists" replay
+  a second save of the same invoice stores nothing -> re-check from the first's
+  shortfall anchored on a marked edit that moved money, with no review
+    -> supplementary invoice operation queued PENDING (once per anchor set),
+       or WAITING_PAYMENT on the anchor's card ask (its intent attached when
+       minted) -> released PENDING by that capture
   overcharge, or a shortfall no marked edit anchors -> REVIEW operation
     PRIMARY_INVOICE_WORTH_GAP written FAILED, replayable false (Retry
     refused) -> treasurer acts in Xero, then Resolve (fixed in Xero); one per

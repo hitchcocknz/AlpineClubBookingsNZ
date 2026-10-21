@@ -1,5 +1,5 @@
 /**
- * #3955 review X4 and #3980 (`INV-PAY-119`): the primary invoice bills the
+ * #3955 review X4 (`INV-PAY-119`) and #3980 (`INV-PAY-136`): the primary invoice bills the
  * booking as the create read it - its guests, promotion lines and the change
  * fee recorded on the payment - but it is built before Xero is asked for
  * anything, and its link is saved seconds later. Two things can leave it
@@ -307,7 +307,7 @@ async function readPrimaryInvoiceFeeAtLink(
 }
 
 /**
- * #3980 (`INV-PAY-119`): how far the primary invoice falls short of what the
+ * #3980 (`INV-PAY-136`): how far the primary invoice falls short of what the
  * booking was worth when its link was saved - positive when it bills too
  * little, negative when it bills too much.
  *

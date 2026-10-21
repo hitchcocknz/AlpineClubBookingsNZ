@@ -5258,56 +5258,72 @@ commits between them is counted on both sides or neither.
 An edit decides whether to adjust a booking's primary Xero invoice from the
 invoice link it read, but the invoice create (`createXeroInvoiceForBooking`)
 reads the booking once, calls Xero, and saves the link seconds later, outside
-every lock. The two are ordered on the **Payment row** alone (`INV-PAY-119`):
+every lock. The two are ordered on the **Payment row** alone (`INV-PAY-136`):
 
-- **The edit's claim.** Every edit door that read no invoice link
-  (`settlesAgainstPrimaryInvoice`) makes one guarded write in its own
-  transaction, `claimPrimaryInvoiceStillUnlinked`
-  (`src/lib/booking-primary-invoice-claim.ts`): `payment.updateMany where {id,
-  xeroInvoiceId: null}`, carrying the fee increment the edit records (else an
-  increment of 0). `applyPaymentAdjustments` makes it for the date, batch,
-  guest-removal and acceptance doors (and the finished-stay correction through
-  the batch door); the guests route makes it in its own settle step. A count
-  other than 1 throws `PrimaryInvoiceRaisedDuringEditError`, a transient 409,
-  and the whole edit rolls back.
-- **The link's save.** `persistPrimaryInvoiceLink` updates the Payment row
-  first, then reads the booking's `finalPriceCents` in a later statement of
-  the same transaction, then writes its figures onto its own operation row.
+- **The claim.** Every writer that changes a booking's worth and read no
+  invoice link makes one guarded write in its own transaction,
+  `writeEditOnPayment` (`src/lib/booking-primary-invoice-claim.ts`):
+  `payment.updateMany where {id, xeroInvoiceId: null}`, carrying the fee
+  increment the edit records (else an increment of 0). `applyPaymentAdjustments`
+  makes it for the date, batch, guest-removal and acceptance doors (and the
+  finished-stay correction through the batch door); the guests route, the
+  review price re-base (`booking-review-price-rebase.ts`) and the school
+  pending-adult naming (`school-pending-adult-resolution.ts`) make it
+  themselves. A count other than 1 refuses the whole change with a 409 and it
+  rolls back. The credit election changes no price and makes none.
+- **The link's save.** `persistPrimaryInvoiceLink` writes the link with an
+  `updateMany` guarded on it being unset, then reads the fee and the booking's
+  `finalPriceCents` in later statements of the same transaction, then writes
+  its figures onto its own operation row. Finding the link already set, it
+  reads the row: the same invoice is a second save (a stale-RUNNING reset
+  retried, or two runs at once) and stores nothing, so the first save's figures
+  stand and the create re-checks from them; a different invoice is overwritten
+  and measured, as before.
 - **Why it holds.** Whichever writes the Payment row second waits for the
-  other's commit and then sees it. An edit that claimed first has committed
-  every booking write with its claim, so the link's later read of the booking
-  holds it; one that claims second re-evaluates its `xeroInvoiceId: null`
-  predicate after the wait (Read Committed), matches nothing, and is refused.
-  An edit that committed before the create's read is in the invoice's lines.
-  The create then bills, or hands to the treasurer, any gap between the worth
-  it read back and what Xero billed (`queuePrimaryInvoiceWorthGap`).
+  other's commit and then sees it. A claim made first has committed every
+  booking write with it, so the save's later read of the booking holds it; a
+  claim made second re-evaluates its `xeroInvoiceId: null` predicate after the
+  wait (Read Committed), matches nothing, and is refused. Two saves of one
+  invoice serialise the same way, and the second finds the link set. An edit
+  that committed before the create's read is in the invoice's lines; the
+  create's read is one REPEATABLE READ snapshot (`xero-primary-invoice-read.ts`),
+  so an edit committing between its statements is in all of them or none.
 
 **Order.** The edit doors already take global `lock(1)`, then
 `acquireLodgeCapacityLock`, then any member keys, and write the Payment row
 inside that (`INV-LOCK-002`); the claim is one more Payment-row write in that
-position. The link's save takes no advisory key and no lock after the Payment
-row but its own operation row, which no edit writes, so there is no cycle. No
-new advisory key, no raw row lock and no migration: it is an ordinary
-status-guarded `updateMany`, like the finished-stay fee write it generalises
+position, as it is for the re-base and the school naming under their own keys.
+The link's save takes no advisory key and no lock after the Payment row but its
+own operation row, which no edit writes, so there is no cycle. No new advisory
+key, no raw row lock and no migration: it is an ordinary status-guarded
+`updateMany`, like the finished-stay fee write it generalises
 (`recordFinishedStayFeeOwed`, #3955), which still runs and now always matches
 behind the claim. A long edit holding the Payment row can make the link's save
 wait past its transaction budget; the create then fails and its retry replays
 Xero's idempotency key, gets the same invoice back and saves the link.
 
-**Not covered.** An edit on a booking with no Payment row has nothing to claim.
-The create needs a Payment row to run, and such an edit is still marked, so one
-that commits before the link is in the worth read back. The inbound "invoice
-paid" match (`xero-inbound/invoice-paid-effects.ts`) is the other writer that
-links a payment, guarded on `xeroInvoiceId: null` too, so it orders against the
-claim the same way; it stores no figures, so an edit that claimed just before it
-is not measured, like any invoice linked without stored figures. The census
-`primary-invoice-claim-call-sites.test.ts` lists both guarded writers and every
-door that claims.
+**The other link writers.** Five more writes set `Payment.xeroInvoiceId`, and
+each takes the same row, so a claim queued behind one finds the link and is
+refused: the inbound "invoice paid" match (guarded on an unset link) and its
+settle (`xero-inbound/invoice-paid-effects.ts`, an unguarded update under
+`lock(1)`), the inbound payment's canonical link (`xero-inbound/payment.ts`,
+where none is set), the reconcile mirror of a primary transaction's invoice
+(`payment-transactions.ts`) and an operator's field repair
+(`xero-booking-repair-passes.ts`). None stores figures, so an edit that claimed
+just before one of them is not measured, like any invoice linked without stored
+figures. The census `primary-invoice-claim-call-sites.test.ts` lists every
+write that sets the link and every writer that claims.
+
+**Not covered.** A change on a booking with no Payment row has nothing to
+claim. The create needs a Payment row to run, and such an edit is still marked,
+so one that commits before the link is in the worth read back.
 
 Proved against PostgreSQL in `primary-invoice-edit-race.realdb.test.ts`: the
 create held between its read and its link save while a price increase and a
-reduction commit (gap invoice, treasurer task), and an edit arriving while the
-link's save holds the row (refused).
+reduction commit (gap invoice, treasurer task); an edit paused right after its
+claim, with the create's real link save seen queued behind it (by
+`pg_blocking_pids`) and, once the edit commits, reading its worth back; and an
+edit queued behind a held link save, refused.
 
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 

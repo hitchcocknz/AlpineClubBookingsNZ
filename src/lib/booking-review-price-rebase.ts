@@ -495,7 +495,7 @@ export async function rebaseBookingPriceFromStrands({
   if (rebased.count !== 1) {
     throw new ManualBookingPaymentError(REBASE_RACED_MESSAGE, 409);
   }
-  // #3980 review C4 (`INV-PAY-119`): a re-price that read no primary invoice
+  // #3980 review C4 (`INV-PAY-136`): a re-price that read no primary invoice
   // link claims it on the payment row, as an edit does, so it never lands
   // between the invoice create's read and its link save unseen. It writes no
   // history row, so a gap it leaves is the treasurer's task, not billed.
