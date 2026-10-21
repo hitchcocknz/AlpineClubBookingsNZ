@@ -95,8 +95,12 @@ import {
 } from "@/lib/booking-money-build-up";
 import { reconcileBookingMoney } from "@/lib/booking-money-reconciliation";
 import { asRecord } from "@/lib/xero-json";
-import { isCapturedPaymentStatus, recordedChangeFeeCents } from "@/lib/booking-payment-state";
-import { CHANGE_FEE_LINE_DESCRIPTION, changeFeeLineItem } from "@/lib/xero-modification-line-items";
+import { bookingWorthCents, isCapturedPaymentStatus, recordedChangeFeeCents } from "@/lib/booking-payment-state";
+import {
+  CHANGE_FEE_LINE_DESCRIPTION,
+  changeFeeLineItem,
+  invoiceLineItemsTotalCents,
+} from "@/lib/xero-modification-line-items";
 import {
   cardSettleAllocatesAppliedCredit,
   cardSettleAppliedCreditCents,
@@ -105,8 +109,8 @@ import {
   primaryInvoiceBilledFee,
   primaryInvoiceStripeCashCents,
   primaryInvoiceStripePaymentReference,
-  queuePrimaryInvoiceChangeFeeGap,
-  recheckPrimaryInvoiceChangeFeeGap,
+  queuePrimaryInvoiceWorthGap,
+  recheckPrimaryInvoiceWorthGap,
   unrecordedPrimaryInvoiceCash,
 } from "@/lib/xero-primary-invoice-fee-gap";
 import { PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON } from "@/lib/xero-primary-invoice-fee-at-link";
@@ -415,10 +419,10 @@ export async function createXeroInvoiceForBooking(
       xeroObjectUrl: buildXeroInvoiceUrl(booking.payment.xeroInvoiceId),
       role: "PRIMARY_INVOICE",
     });
-    // #3955 review X4 (round 3): a prior run that persisted the link but died
-    // before or inside its change-fee gap check re-runs it here, from what the
-    // invoice billed as recorded before the link was persisted. Idempotent.
-    await recheckPrimaryInvoiceChangeFeeGap({
+    // #3955 review X4 (round 3), #3980: a prior run that persisted the link but
+    // died before or inside its gap check re-runs it here, from what the invoice
+    // billed and the booking's worth as recorded with the link. Idempotent.
+    await recheckPrimaryInvoiceWorthGap({
       bookingId,
       xeroInvoiceId: booking.payment.xeroInvoiceId,
       createdByMemberId: options?.createdByMemberId,
@@ -648,6 +652,16 @@ export async function createXeroInvoiceForBooking(
   // the reasoning is on the helper.
   const feeOwedCents = recordedChangeFeeCents(booking.payment);
   if (feeOwedCents > 0) lineItems.push(changeFeeLineItem(feeOwedCents, hutFeeMapping));
+  // #3980: what this read says the booking is worth, and what these lines bill,
+  // stored with the link so the gap check can tell an edit that landed while
+  // this create was in flight from how the lines price the booking.
+  const builtFrom = {
+    worthCents: bookingWorthCents({
+      finalPriceCents: booking.finalPriceCents,
+      changeFeeCents: booking.payment.changeFeeCents,
+    }),
+    lineTotalCents: invoiceLineItemsTotalCents(lineItems),
+  };
 
   // Read once, outside the closure: `buildInvoice` runs for the recorded
   // request payload and again on every contact-repair attempt, and both must
@@ -1159,13 +1173,15 @@ export async function createXeroInvoiceForBooking(
 
     // Store the Xero invoice ID and number on the payment record, and — in the
     // same transaction — what the invoice billed, the change fee the payment
-    // held at that instant and the cash above (#3955 review X4, round 4
-    // finding 1). The gap check and its retry read only those figures.
+    // held at that instant, the booking's worth then and the cash above (#3955
+    // review X4, round 4 finding 1; #3980). The gap check and its retry read
+    // only those figures.
     const feeAtLink = await persistPrimaryInvoiceLink({
       operationId: operationId!,
       paymentId: booking.payment.id,
       xeroInvoiceNumber: createdInvoice.invoiceNumber ?? null,
       billed: primaryInvoiceBilledFee(createdInvoice.invoiceID, createdInvoice.lineItems ?? lineItems),
+      built: builtFrom,
       primaryInvoiceCashCents,
       primaryInvoiceAttemptedCashCents: shouldRecordStripeInvoicePayment ? invoicePaymentCents : 0,
     });
@@ -1181,12 +1197,13 @@ export async function createXeroInvoiceForBooking(
       },
     });
 
-    // #3955 review X4: an invoice built before a fee was recorded (an edit
-    // committed while this create was in flight, or a lost response replayed
-    // under the same idempotency key, which returns the ORIGINAL invoice) bills
-    // less fee than the payment records; the gap goes on a supplementary
-    // invoice rather than being lost.
-    const feeGap = await queuePrimaryInvoiceChangeFeeGap({
+    // #3955 review X4, #3980: an invoice built before the booking last changed
+    // (an edit committed while this create was in flight, or a lost response
+    // replayed under the same idempotency key, which returns the ORIGINAL
+    // invoice) bills other than the booking was worth at the link. A shortfall
+    // goes on a supplementary invoice; an overcharge, or a shortfall no edit
+    // anchors, becomes a Xero Operations task for the treasurer.
+    const worthGap = await queuePrimaryInvoiceWorthGap({
       bookingId,
       atLink: feeAtLink,
       createdByMemberId: options?.createdByMemberId,
@@ -1196,7 +1213,7 @@ export async function createXeroInvoiceForBooking(
     const primaryInvoiceCashShortfall = unrecordedPrimaryInvoiceCash({
       netCapturedCents,
       primaryInvoiceCashCents,
-      gapInvoiceCashCents: feeGap.cashTakenCents,
+      gapInvoiceCashCents: worthGap.cashTakenCents,
     });
     if (primaryInvoiceCashShortfall) {
       logger.warn(

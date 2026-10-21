@@ -558,7 +558,7 @@ export function bookingWorthCents(input: {
  * (`hasIssuedPrimaryXeroInvoice`), and no booking-payment writer clears that
  * link once set. An edit racing an in-flight create is the one gap, and the
  * create closes it by comparing what it billed with this figure once it has
- * persisted its link (`queuePrimaryInvoiceChangeFeeGap`).
+ * persisted its link (`queuePrimaryInvoiceWorthGap`).
  */
 export function recordedChangeFeeCents(
   payment: { changeFeeCents: number | null } | null | undefined,

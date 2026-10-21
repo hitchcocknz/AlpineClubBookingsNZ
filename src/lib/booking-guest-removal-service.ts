@@ -39,6 +39,7 @@ import {
   type RetiredAdditionalAsk,
 } from "@/lib/additional-ask-reduction";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
+import { primaryInvoiceSettlementHistory } from "@/lib/booking-primary-invoice-claim";
 import type { HostingCoverageOverrideInput } from "@/lib/adult-member-hosting-same-owner";
 import {
   hostingCoverageActorOptions,
@@ -1200,6 +1201,8 @@ export async function removeBookingGuestInTransaction({
         ...creditGiveBackHistory(paymentImpact.appliedCreditGiveBack),
         // #3954: what an unpaid ask took of this reduction, for the Xero repair pass.
         ...unpaidAskOffsetHistory(paymentImpact),
+        // #3980: read no invoice link, so the primary invoice bills it (the gap's anchor).
+        ...primaryInvoiceSettlementHistory(paymentImpact.settledAgainstPrimaryInvoice),
         // #2390: the same sentence the member saw when they made the edit,
         // kept on the booking's own history so "why was I charged that?" has
         // an answer months later. Absent unless a cap left somebody out.

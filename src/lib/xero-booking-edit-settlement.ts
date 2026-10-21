@@ -529,8 +529,13 @@ export interface CompleteDeferredXeroSupplementaryInvoiceInput {
  * DIFFERENT question - "does this booking have a primary invoice NOW" - and on a
  * booking whose primary invoice was still queued when the edit committed the two
  * answers differ. There the edit classified `none` and queued nothing, correctly,
- * because the primary invoice reads the booking's CURRENT state when the worker
- * finally mints it and therefore bills the edit itself. A replay deriving `true`
+ * because the edit settled against the primary invoice (#3980, `INV-PAY-119`):
+ * committed before the create read the booking, the invoice bills it itself;
+ * committed after that read but before the link was saved, the create bills
+ * the difference on a supplementary invoice anchored on the edit, or raises a
+ * Xero Operations task for a reduction (`queuePrimaryInvoiceWorthGap`); and an
+ * edit arriving after the link is refused by its claim on the payment row
+ * (`claimPrimaryInvoiceStillUnlinked`) and retried against the invoice. A replay deriving `true`
  * would add a supplementary invoice on top of that, and the club would record
  * more income than the booking is worth plus a receivable nobody owes. So the
  * caller freezes the value on the recovery row (`PaymentRecoveryOperation.

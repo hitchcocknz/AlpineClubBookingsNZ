@@ -17,6 +17,8 @@ const mocks = vi.hoisted(() => {
     // transaction's own, so the global read of the email instruction below
     // stays countable.
     xeroSyncOperation: { update: vi.fn(), findUnique: vi.fn().mockResolvedValue({ requestPayload: {} }) },
+    // #3980: and with the booking's worth, read after the link's own update.
+    booking: { findUniqueOrThrow: vi.fn().mockResolvedValue({ finalPriceCents: 0 }) },
   };
 
   const prisma = {
@@ -38,6 +40,7 @@ const mocks = vi.hoisted(() => {
     member: tx.member,
     booking: {
       findUnique: vi.fn(),
+      findUniqueOrThrow: tx.booking.findUniqueOrThrow,
     },
     // #3530: a modification credit note reads its row's stored lines; none
     // here, so every note in this suite renders its single line as before.
@@ -195,15 +198,15 @@ vi.mock("xero-node", () => ({
 // and when — the figures are saved with the link, in one transaction, and a
 // retry through the "invoice already exists" exit re-runs the check.
 const feeGap = vi.hoisted(() => ({
-  queuePrimaryInvoiceChangeFeeGap: vi.fn(async () => ({
+  queuePrimaryInvoiceWorthGap: vi.fn(async () => ({
     gapCents: 0,
     queueOperationId: null as string | null,
     alreadyQueued: false,
     cashTakenCents: 0,
   })),
-  recheckPrimaryInvoiceChangeFeeGap: vi.fn(),
+  recheckPrimaryInvoiceWorthGap: vi.fn(),
 }));
-const { queuePrimaryInvoiceChangeFeeGap } = feeGap;
+const { queuePrimaryInvoiceWorthGap } = feeGap;
 vi.mock("@/lib/xero-primary-invoice-fee-gap", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/xero-primary-invoice-fee-gap")),
   ...feeGap,
@@ -543,8 +546,13 @@ describe("createXeroInvoiceForBooking", () => {
         invoices: [{ invoiceID: "inv_1", invoiceNumber: "INV-1", total: 0, status: "PAID", lineItems: returnedLines }],
       },
     });
-    // The link's own row update reads back the fee recorded at that instant.
-    mocks.prisma.payment.update.mockResolvedValueOnce({ changeFeeCents: 3_000 });
+    // The create read a 100.00 booking with no fee and built one 100.00 line.
+    const fixture = await mocks.prisma.booking.findUnique();
+    mocks.prisma.booking.findUnique.mockResolvedValueOnce({ ...fixture, finalPriceCents: 10_000 });
+    // The link's own row update reads back the fee recorded at that instant,
+    // and (#3980) the booking's price after it.
+    mocks.prisma.payment.update.mockResolvedValueOnce({ changeFeeCents: 3_000, bookingId: "booking_1" });
+    mocks.prisma.booking.findUniqueOrThrow.mockResolvedValueOnce({ finalPriceCents: 10_000 });
     await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
     const atLink = {
       xeroInvoiceId: "inv_1",
@@ -554,31 +562,32 @@ describe("createXeroInvoiceForBooking", () => {
       // Nothing captured, so no cash on the invoice.
       primaryInvoiceCashCents: 0,
       primaryInvoiceAttemptedCashCents: 0,
+      worth: { atBuildCents: 10_000, builtTotalCents: 10_000, atLinkCents: 13_000 },
     };
     expect(mocks.prisma.payment.update).toHaveBeenCalledWith({
       where: { id: "pay_1" },
       data: { xeroInvoiceId: "inv_1", xeroInvoiceNumber: "INV-1" },
-      select: { changeFeeCents: true },
+      select: { changeFeeCents: true, bookingId: true },
     });
     expect(mocks.prisma.xeroSyncOperation.update).toHaveBeenCalledWith({
       where: { id: "op_1" },
       data: { requestPayload: expect.objectContaining({ primaryInvoiceBilledFee: atLink }) },
     });
-    expect(queuePrimaryInvoiceChangeFeeGap).toHaveBeenCalledWith(
+    expect(queuePrimaryInvoiceWorthGap).toHaveBeenCalledWith(
       expect.objectContaining({ bookingId: "booking_1", atLink }),
     );
     expect(mocks.prisma.payment.update.mock.invocationCallOrder[0]).toBeLessThan(
-      queuePrimaryInvoiceChangeFeeGap.mock.invocationCallOrder[0],
+      queuePrimaryInvoiceWorthGap.mock.invocationCallOrder[0],
     );
   });
 
   it("#3955 round 3: a gap check that throws after the link is persisted is re-run by the retry", async () => {
-    queuePrimaryInvoiceChangeFeeGap.mockRejectedValueOnce(new Error("connection reset"));
+    queuePrimaryInvoiceWorthGap.mockRejectedValueOnce(new Error("connection reset"));
     await expect(createXeroInvoiceForBooking("booking_1", { syncOperationId: "op_1" })).rejects.toThrow(
       "connection reset",
     );
     expect(mocks.failXeroSyncOperation).toHaveBeenCalled();
-    expect(feeGap.recheckPrimaryInvoiceChangeFeeGap).not.toHaveBeenCalled();
+    expect(feeGap.recheckPrimaryInvoiceWorthGap).not.toHaveBeenCalled();
 
     // Retry: the link was persisted, so the create takes its "invoice already
     // exists" exit — which must re-run the check rather than lose the fee.
@@ -592,7 +601,7 @@ describe("createXeroInvoiceForBooking", () => {
       createXeroInvoiceForBooking("booking_1", { syncOperationId: "op_1", createdByMemberId: "officer_1" }),
     ).resolves.toBe("inv_1");
     expect(mocks.xeroClientInstance.accountingApi.createInvoices).not.toHaveBeenCalled();
-    expect(feeGap.recheckPrimaryInvoiceChangeFeeGap).toHaveBeenCalledWith({
+    expect(feeGap.recheckPrimaryInvoiceWorthGap).toHaveBeenCalledWith({
       bookingId: "booking_1",
       xeroInvoiceId: "inv_1",
       createdByMemberId: "officer_1",
@@ -754,7 +763,7 @@ describe("createXeroInvoiceForBooking", () => {
 
       // A gap invoice that records the 5.00 as paid takes it: nothing to report.
       mocks.logger.warn.mockClear();
-      queuePrimaryInvoiceChangeFeeGap.mockResolvedValueOnce({
+      queuePrimaryInvoiceWorthGap.mockResolvedValueOnce({
         gapCents: 500,
         queueOperationId: "op_gap",
         alreadyQueued: false,
@@ -784,7 +793,7 @@ describe("createXeroInvoiceForBooking", () => {
       });
 
       await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
-      expect(queuePrimaryInvoiceChangeFeeGap).toHaveBeenCalledWith(
+      expect(queuePrimaryInvoiceWorthGap).toHaveBeenCalledWith(
         expect.objectContaining({ atLink: expect.objectContaining({ primaryInvoiceCashCents: 8_000 }) }),
       );
       expect(mocks.completeXeroSyncOperation).toHaveBeenLastCalledWith(
@@ -833,7 +842,7 @@ describe("createXeroInvoiceForBooking", () => {
           ]),
         }),
       );
-      expect(queuePrimaryInvoiceChangeFeeGap).toHaveBeenCalledWith(
+      expect(queuePrimaryInvoiceWorthGap).toHaveBeenCalledWith(
         expect.objectContaining({ atLink: expect.objectContaining({ primaryInvoiceCashCents: 8_000 }) }),
       );
     });
@@ -917,7 +926,7 @@ describe("createXeroInvoiceForBooking", () => {
 
         await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
         expect(mocks.xeroClientInstance.accountingApi.createPayment).not.toHaveBeenCalled();
-        expect(queuePrimaryInvoiceChangeFeeGap).toHaveBeenCalledWith(
+        expect(queuePrimaryInvoiceWorthGap).toHaveBeenCalledWith(
           expect.objectContaining({ atLink: expect.objectContaining({ primaryInvoiceCashCents: 8_000 }) }),
         );
         expect(mocks.logger.warn).toHaveBeenCalledWith(
@@ -942,7 +951,7 @@ describe("createXeroInvoiceForBooking", () => {
         });
 
         await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
-        expect(queuePrimaryInvoiceChangeFeeGap).toHaveBeenCalledWith(
+        expect(queuePrimaryInvoiceWorthGap).toHaveBeenCalledWith(
           expect.objectContaining({ atLink: expect.objectContaining({ primaryInvoiceCashCents: 8_000 }) }),
         );
         expect(mocks.logger.warn).not.toHaveBeenCalledWith(
@@ -961,7 +970,7 @@ describe("createXeroInvoiceForBooking", () => {
         retryInvoice({ amountPaid: 0, payments: [] });
 
         await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
-        expect(queuePrimaryInvoiceChangeFeeGap).toHaveBeenCalledWith(
+        expect(queuePrimaryInvoiceWorthGap).toHaveBeenCalledWith(
           expect.objectContaining({ atLink: expect.objectContaining({ primaryInvoiceCashCents: 0 }) }),
         );
         expect(mocks.logger.warn).not.toHaveBeenCalledWith(
@@ -1162,7 +1171,7 @@ describe("createXeroInvoiceForBooking", () => {
         xeroInvoiceId: "inv_1",
         xeroInvoiceNumber: "INV-1",
       },
-      select: { changeFeeCents: true },
+      select: { changeFeeCents: true, bookingId: true },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
       "op_1",

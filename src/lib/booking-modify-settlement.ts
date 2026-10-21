@@ -60,6 +60,10 @@ import { clearStaleCreditElection } from "@/lib/booking-credit-election";
 import { refundableCashNetOfOpenHandBacks } from "@/lib/edit-refund-hand-back";
 import { ApiError } from "@/lib/api-error";
 import {
+  claimPrimaryInvoiceStillUnlinked,
+  settlesAgainstPrimaryInvoice,
+} from "@/lib/booking-primary-invoice-claim";
+import {
   OrganiserChildRefundRefusedError,
   planOrganiserChildModificationRefund,
   type CombinedCardSettlement,
@@ -106,6 +110,13 @@ export type PaymentAdjustmentResult = {
   organiserChildRefund: { settlement: CombinedCardSettlement; amountCents: number } | null;
   /** #3954 round 6: the waiting re-issues this increase folded into its ask, for its history (`unpaidAskOffsetHistory`). */
   foldedReissuedAsks: FoldedReissuedAsks;
+  /**
+   * #3980: the edit read no primary invoice link and claimed that on the
+   * payment row (`claimPrimaryInvoiceStillUnlinked`), so it settled against the
+   * primary invoice. The door writes it to its history row
+   * (`primaryInvoiceSettlementHistory`), the anchor of any gap that invoice bills.
+   */
+  settledAgainstPrimaryInvoice: boolean;
 } & UnpaidAskSettlement; // #3954: what the reduction did to the unpaid ask
 
 /**
@@ -220,6 +231,7 @@ export async function applyPaymentAdjustments(
     appliedCreditReturnedByCaller = false,
     reductionUntiered = false,
     changeFeeRecordedByCaller = false,
+    primaryInvoiceRaisedMessage,
   }: {
     booking: LoadedBookingForModify;
     priceDiffCents: number;
@@ -249,6 +261,8 @@ export async function applyPaymentAdjustments(
     reductionUntiered?: boolean;
     /** #3954 x #3750: the caller records the fee on the amount owed (`recordFinishedStayFeeOwed`). */
     changeFeeRecordedByCaller?: boolean;
+    /** #3980: the claim's refusal, worded for a caller whose actor retries differently. */
+    primaryInvoiceRaisedMessage?: string;
   },
 ): Promise<PaymentAdjustmentResult> {
   const inSettledStatus = isSettledBookingStatus(booking.status);
@@ -266,6 +280,9 @@ export async function applyPaymentAdjustments(
     (hasSettledPayment && booking.payment?.source === PaymentSource.STRIPE) ||
     zeroDollarCardIncrease;
   const hasIssuedXeroInvoice = hasIssuedPrimaryXeroInvoice(booking);
+  // #3980: read no invoice link, so the primary invoice bills this edit (claimed below).
+  const settledAgainstPrimaryInvoice = settlesAgainstPrimaryInvoice(booking.payment);
+  let claimedFeeIncrementCents = 0;
   // #3827 (`INV-PAY-117`): net of edit refunds already promised back by hand.
   const remainingRefundableCents = await refundableCashNetOfOpenHandBacks(tx, booking.payment);
 
@@ -403,14 +420,31 @@ export async function applyPaymentAdjustments(
     }
 
     // #3954 x #3750: once - a caller that records it on the amount owed did.
+    // #3980: an edit that read no invoice link records it through the claim below.
     if (changeFeeCents > 0 && !changeFeeRecordedByCaller) {
-      await tx.payment.update({
-        where: { id: booking.payment.id },
-        data: { changeFeeCents: { increment: changeFeeCents } },
-      });
+      if (settledAgainstPrimaryInvoice) {
+        claimedFeeIncrementCents = changeFeeCents;
+      } else {
+        await tx.payment.update({
+          where: { id: booking.payment.id },
+          data: { changeFeeCents: { increment: changeFeeCents } },
+        });
+      }
     }
   } else if (xeroAdditionalAmountCents > 0) {
     additionalAmountCents = xeroAdditionalAmountCents;
+  }
+
+  // #3980 (`INV-PAY-119`): an edit that read no invoice link settles against
+  // the primary invoice, so it confirms the link is still unset on the payment
+  // row - with its fee, where it records one - or is refused whole (409). The
+  // row lock orders it against the invoice create's link save.
+  if (settledAgainstPrimaryInvoice && booking.payment) {
+    await claimPrimaryInvoiceStillUnlinked(tx, {
+      paymentId: booking.payment.id,
+      changeFeeIncrementCents: claimedFeeIncrementCents,
+      refusalMessage: primaryInvoiceRaisedMessage,
+    });
   }
 
   // #3653: refused here, before the edit commits, when the organiser's combined
@@ -439,6 +473,7 @@ export async function applyPaymentAdjustments(
     appliedCreditGiveBack: creditGiveBack,
     organiserChildRefund,
     foldedReissuedAsks,
+    settledAgainstPrimaryInvoice,
     ...unpaidAskSettlement,
   };
 }

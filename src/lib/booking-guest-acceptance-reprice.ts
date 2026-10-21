@@ -64,6 +64,7 @@ import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 import { queueXeroBookingEditSettlement } from "@/lib/xero-booking-edit-settlement";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
+import { primaryInvoiceSettlementHistory } from "@/lib/booking-primary-invoice-claim";
 
 /**
  * #3827 (D-3813-4): A GUEST'S ACCEPTANCE RE-PRICES THE BOOKING'S CODES.
@@ -492,6 +493,8 @@ export async function repriceBookingAfterGuestAcceptance(
         policyRetainedAmountCents: paymentImpact.policyRetainedAmountCents,
         // #3954: what an unpaid ask took of this reduction, for the Xero repair pass.
         ...unpaidAskOffsetHistory(adjusted),
+        // #3980: read no invoice link, so the primary invoice bills it (the gap's anchor).
+        ...primaryInvoiceSettlementHistory(adjusted.settledAgainstPrimaryInvoice),
         ...(promo.promoCoverage ? { promoCoverageNote: promo.promoCoverage.message } : {}),
       },
       priceDiffCents,

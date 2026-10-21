@@ -72,6 +72,11 @@ import {
 } from "@/lib/additional-payment-ask";
 import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
 import { NO_FOLDED_REISSUED_ASKS, NO_UNPAID_ASK_SETTLEMENT, unpaidAskOffsetHistory, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
+import {
+  claimPrimaryInvoiceStillUnlinked,
+  primaryInvoiceSettlementHistory,
+  settlesAgainstPrimaryInvoice,
+} from "@/lib/booking-primary-invoice-claim";
 import { additionalAmountToName, createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
@@ -1084,6 +1089,19 @@ export async function POST(
         additionalAmountCents = priceDiffCents;
       }
 
+      // #3980 (`INV-PAY-119`): this door settles for itself, so it makes the
+      // ordinary edit's claim itself. Read no invoice link, it confirms the link
+      // is still unset on the payment row (no fee: a guest add charges none) or
+      // is refused whole (409, try again); the row lock orders it against the
+      // invoice create's link save. Marked on its history row below.
+      const settledAgainstPrimaryInvoice = settlesAgainstPrimaryInvoice(booking.payment);
+      if (settledAgainstPrimaryInvoice && booking.payment) {
+        await claimPrimaryInvoiceStillUnlinked(tx, {
+          paymentId: booking.payment.id,
+          changeFeeIncrementCents: 0,
+        });
+      }
+
       // This route only adds guests, so the no-adult rule can only change
       // from flagged → cleared (by adding an adult). When that happens, wipe
       // the review state IN PLACE: the booking keeps its status. It cannot be
@@ -1224,6 +1242,8 @@ export async function POST(
             ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
             // #3954 round 6: the waiting re-issues this add folded into its ask.
             ...unpaidAskOffsetHistory({ ...NO_UNPAID_ASK_SETTLEMENT, foldedReissuedAsks }),
+            // #3980: read no invoice link, so the primary invoice bills it (the gap's anchor).
+            ...primaryInvoiceSettlementHistory(settledAgainstPrimaryInvoice),
           },
           priceDiffCents,
           changeFeeCents: 0,

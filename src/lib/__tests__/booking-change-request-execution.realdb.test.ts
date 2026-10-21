@@ -1312,6 +1312,12 @@ function deferred() {
         correlationKey: key,
         requestPayload: { invoices: [] },
       });
+      // #3980: the lines it sent, and the booking it read: the correction's
+      // price without its fee, which is the one thing it missed.
+      const { finalPriceCents } = await prisma.booking.findUniqueOrThrow({
+        where: { id: BOOKING_ID },
+        select: { finalPriceCents: true },
+      });
       await gap.persistPrimaryInvoiceLink({
         operationId: operation.id,
         paymentId: PAYMENT_ID,
@@ -1319,6 +1325,7 @@ function deferred() {
         billed: gap.primaryInvoiceBilledFee(invoiceId, [
           { description: "Original Guest", quantity: 1, unitAmount: (2 * STORED_NIGHT_CENTS) / 100 },
         ]),
+        built: { worthCents: finalPriceCents, lineTotalCents: 2 * STORED_NIGHT_CENTS },
         // Unpaid: no Stripe cash on the invoice.
         primaryInvoiceCashCents: 0,
         primaryInvoiceAttemptedCashCents: 0,
@@ -1379,6 +1386,11 @@ function deferred() {
         correlationKey: key,
         requestPayload: { invoices: [] },
       });
+      // #3980: it read the corrected booking, fee and all, and billed it.
+      const { finalPriceCents } = await prisma.booking.findUniqueOrThrow({
+        where: { id: BOOKING_ID },
+        select: { finalPriceCents: true },
+      });
       const atLink = await gap.persistPrimaryInvoiceLink({
         operationId: operation.id,
         paymentId: PAYMENT_ID,
@@ -1387,6 +1399,7 @@ function deferred() {
           { description: "Original Guest", quantity: 1, unitAmount: (2 * STORED_NIGHT_CENTS) / 100 },
           { description: CHANGE_FEE_LINE_DESCRIPTION, quantity: 1, unitAmount: fee / 100 },
         ]),
+        built: { worthCents: finalPriceCents + fee, lineTotalCents: 2 * STORED_NIGHT_CENTS + fee },
         primaryInvoiceCashCents: 0,
         primaryInvoiceAttemptedCashCents: 0,
       });

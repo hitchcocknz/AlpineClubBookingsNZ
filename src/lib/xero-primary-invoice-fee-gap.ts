@@ -1,35 +1,40 @@
 /**
- * #3955 review X4 (`INV-PAY-119`): the primary invoice bills the change fee
- * recorded on the payment (`recordedChangeFeeCents`), but it is built before
- * Xero is asked for anything. Two things can leave it billing less:
+ * #3955 review X4 and #3980 (`INV-PAY-119`): the primary invoice bills the
+ * booking as the create read it - its guests, promotion lines and the change
+ * fee recorded on the payment - but it is built before Xero is asked for
+ * anything, and its link is saved seconds later. Two things can leave it
+ * billing something other than what the booking is worth:
  *
- *  - a finished-stay correction that recorded a fee on the unpaid booking while
- *    the create was in flight (its lines were already built); and
+ *  - an edit that read no invoice link and committed while the create was in
+ *    flight - an ordinary edit, a guest add or removal, an acceptance re-price,
+ *    or a finished-stay correction (its lines were already built); and
  *  - a lost response retried under the same idempotency key, which makes Xero
  *    hand back the ORIGINAL invoice whatever the retry's payload now says.
  *
- * THE FIGURE IS TAKEN AT THE LINK (#3955 round 4, finding 1). The gap is the
- * fee the payment recorded AT THE MOMENT its invoice link was saved, less what
- * the invoice billed — never the fee it records later. A fee recorded after
- * the link (an ordinary edit's increment, with its own credit note or
- * supplementary invoice) is billed by that edit's own document, so counting it
+ * THE FIGURES ARE TAKEN AT THE LINK (#3955 round 4, finding 1). The gap is
+ * measured from what the booking was worth AT THE MOMENT its invoice link was
+ * saved, never from what it is worth later: an edit after the link reads the
+ * link and bills or credits its own change on its own document, so counting it
  * here would bill it twice. {@link persistPrimaryInvoiceLink} saves the link,
- * reads the fee back from that same row update, and records both figures on
- * the create operation in ONE transaction: the update's row lock orders it
- * against a correction's claimed fee write (`recordFinishedStayFeeOwed`), so
- * the figure read back holds every fee routed to this invoice and none after.
+ * reads the fee back from that same row update and the booking's worth after
+ * it, and records them on the create operation in ONE transaction. The
+ * update's row lock orders it against every edit's claim on the payment row
+ * (`claimPrimaryInvoiceStillUnlinked`, `recordFinishedStayFeeOwed`): an edit
+ * that claimed first is in the figures, one that claims after is refused.
  *
  * RETRY-SAFE (#3955 round 3, finding 2). A run that dies after the link is
  * saved is re-driven through the create's "invoice already exists" exit, which
  * re-runs the check from the stored figures alone
- * ({@link recheckPrimaryInvoiceChangeFeeGap}). A gap already queued on one of
- * its anchors is not queued again.
+ * ({@link recheckPrimaryInvoiceWorthGap}). A gap already queued on one of its
+ * anchors is not queued again, and a task already raised is not raised again.
  */
 import { PaymentSource } from "@prisma/client";
 import type { Invoice, LineItem, Payment as XeroPayment } from "xero-node";
 
-import { hasCapturedPayment, recordedChangeFeeCents } from "@/lib/booking-payment-state";
+import { bookingWorthCents, hasCapturedPayment, recordedChangeFeeCents } from "@/lib/booking-payment-state";
 import { FEE_ON_PRIMARY_INVOICE_PATH } from "@/lib/booking-finished-stay-correction";
+import { SETTLED_AGAINST_PRIMARY_INVOICE_PATH } from "@/lib/booking-primary-invoice-claim";
+import { raisePrimaryInvoiceReviewTask } from "@/lib/xero-primary-invoice-review-task";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
@@ -186,18 +191,28 @@ export function unrecordedPrimaryInvoiceCash(input: {
   return { netCapturedCents, invoicePaymentCents: primaryInvoiceCashCents, gapInvoiceCashCents, unrecordedCashCents };
 }
 
+
 /**
  * Saves the payment's invoice link and, in the SAME transaction, records on
- * the create operation what the invoice billed and the fee the payment held
- * at that instant — read back from the link's own row update. Either both
- * commit or neither does, so every saved link has its figures, and no later
- * fee can be mistaken for one the invoice should have billed.
+ * the create operation what the invoice billed, the fee the payment held at
+ * that instant - read back from the link's own row update - and (#3980) what
+ * the booking was then worth, read after that update. Either both commit or
+ * neither does, so every saved link has its figures, and no later fee or edit
+ * can be mistaken for one the invoice should have billed.
+ *
+ * The update takes the payment's row lock first. An edit that read no invoice
+ * link claims that row too (`claimPrimaryInvoiceStillUnlinked`), so it either
+ * committed before the update - and the worth read after it holds the edit -
+ * or it claims after, finds the link and is refused. The worth is read in a
+ * statement after the update, so it sees every edit that committed first.
  */
 export async function persistPrimaryInvoiceLink(input: {
   operationId: string;
   paymentId: string;
   xeroInvoiceNumber: string | null;
   billed: PrimaryInvoiceBilledFee;
+  /** #3980: what the create's own read said the booking was worth, and the total of the lines it sent. */
+  built: { worthCents: number; lineTotalCents: number };
   /** The Stripe cash recorded against this invoice, computed once by the create. */
   primaryInvoiceCashCents: number;
   /** The Stripe payment the create itself tried to write: what a repair records (#4010). */
@@ -207,13 +222,25 @@ export async function persistPrimaryInvoiceLink(input: {
     const linked = await tx.payment.update({
       where: { id: input.paymentId },
       data: { xeroInvoiceId: input.billed.xeroInvoiceId, xeroInvoiceNumber: input.xeroInvoiceNumber },
-      select: { changeFeeCents: true },
+      select: { changeFeeCents: true, bookingId: true },
+    });
+    const booking = await tx.booking.findUniqueOrThrow({
+      where: { id: linked.bookingId },
+      select: { finalPriceCents: true },
     });
     const atLink: PrimaryInvoiceFeeAtLink = {
       ...input.billed,
       recordedChangeFeeCentsAtLink: recordedChangeFeeCents(linked),
       primaryInvoiceCashCents: input.primaryInvoiceCashCents,
       primaryInvoiceAttemptedCashCents: input.primaryInvoiceAttemptedCashCents,
+      worth: {
+        atBuildCents: input.built.worthCents,
+        builtTotalCents: input.built.lineTotalCents,
+        atLinkCents: bookingWorthCents({
+          finalPriceCents: booking.finalPriceCents,
+          changeFeeCents: linked.changeFeeCents,
+        }),
+      },
     };
     const operation = await tx.xeroSyncOperation.findUnique({
       where: { id: input.operationId },
@@ -250,7 +277,50 @@ async function readPrimaryInvoiceFeeAtLink(
   return parsePrimaryInvoiceFeeAtLink(operation?.requestPayload, xeroInvoiceId);
 }
 
-export type PrimaryInvoiceChangeFeeGapResult = {
+/**
+ * #3980 (`INV-PAY-119`): how far the primary invoice falls short of what the
+ * booking was worth when its link was saved - positive when it bills too
+ * little, negative when it bills too much.
+ *
+ * MEASURED AS WHAT MOVED, NOT AS A RAW DIFFERENCE. The gap is
+ *
+ *   (worth at the link - worth the create built from)
+ *     + (total the create sent - total Xero billed)
+ *
+ * The first term is every edit that committed after the create read the
+ * booking and before the link was saved. The second is a lost response replayed
+ * under the same idempotency key, which hands back the ORIGINAL invoice
+ * whatever this run sent. Both totals are net of the promotion lines, which
+ * are lines on the invoice like any other. Equivalently, it is the worth at the
+ * link less what Xero billed, net of how the create's own lines priced the
+ * booking it read: a booking whose stored build-up already disagrees with its
+ * headline (`reconcileBookingMoney`), or whose promotion line is the build-up
+ * figure, bills that difference on every invoice it ever has, and it is not a
+ * race; measuring the raw difference would bill it, or raise it as a task, on
+ * every such booking.
+ *
+ * The fee share is the change fee recorded at the link less the fee lines
+ * Xero billed: what the gap invoice bills as a fee, the rest as price.
+ *
+ * A record written before #3980 has no worth figures and is measured on its
+ * fee alone, as it was.
+ */
+export function primaryInvoiceWorthGap(atLink: PrimaryInvoiceFeeAtLink): {
+  gapCents: number;
+  feeGapCents: number;
+  measuredOn: "worth" | "fee";
+} {
+  const feeGapCents = atLink.recordedChangeFeeCentsAtLink - atLink.billedChangeFeeCents;
+  if (!atLink.worth) return { gapCents: feeGapCents, feeGapCents, measuredOn: "fee" };
+  const { atBuildCents, builtTotalCents, atLinkCents } = atLink.worth;
+  return {
+    gapCents: atLinkCents - atBuildCents + (builtTotalCents - atLink.billedTotalCents),
+    feeGapCents,
+    measuredOn: "worth",
+  };
+}
+
+export type PrimaryInvoiceWorthGapResult = {
   gapCents: number;
   queueOperationId: string | null;
   /** The gap was already queued by an earlier run of this check. */
@@ -261,30 +331,33 @@ export type PrimaryInvoiceChangeFeeGapResult = {
    * a document takes (#3955 round 5, finding 3).
    */
   cashTakenCents: number;
+  /** #3980: the Xero Operations task raised for a gap nothing can bill automatically, or null. */
+  reviewOperationId: string | null;
 };
 
-const NO_GAP: PrimaryInvoiceChangeFeeGapResult = {
+const NO_GAP: PrimaryInvoiceWorthGapResult = {
   gapCents: 0,
   queueOperationId: null,
   alreadyQueued: false,
   cashTakenCents: 0,
+  reviewOperationId: null,
 };
 
 /**
  * The create's "invoice already exists" exit re-runs the check from the
- * figures stored with the link — never the fee the payment records now, which
- * may include a later edit's fee billed on that edit's own document.
+ * figures stored with the link — never the fee or price the booking records
+ * now, which may include a later edit billed on that edit's own document.
  *
  * An invoice with no stored figures was linked before this check existed, or
  * outside the create; there is nothing to compare, so nothing is billed. That
  * is loud when the payment records a fee, because such a fee may be unbilled
  * (`INV-PAY-119`'s limit; #3955 round 4, finding 2).
  */
-export async function recheckPrimaryInvoiceChangeFeeGap(input: {
+export async function recheckPrimaryInvoiceWorthGap(input: {
   bookingId: string;
   xeroInvoiceId: string;
   createdByMemberId?: string;
-}): Promise<PrimaryInvoiceChangeFeeGapResult> {
+}): Promise<PrimaryInvoiceWorthGapResult> {
   const atLink = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.xeroInvoiceId);
   if (!atLink) {
     const payment = await prisma.payment.findUnique({
@@ -295,12 +368,12 @@ export async function recheckPrimaryInvoiceChangeFeeGap(input: {
     if (recordedCents > 0) {
       logger.warn(
         { bookingId: input.bookingId, xeroInvoiceId: input.xeroInvoiceId, recordedChangeFeeCents: recordedCents },
-        "The booking's primary Xero invoice has no change-fee figures from its link, so whether it billed the fee its payment records is not checked (#3955 X4)",
+        "The booking's primary Xero invoice has no figures from its link, so whether it billed what the booking is worth is not checked (#3955 X4, #3980)",
       );
     }
     return NO_GAP;
   }
-  return queuePrimaryInvoiceChangeFeeGap({
+  return queuePrimaryInvoiceWorthGap({
     bookingId: input.bookingId,
     atLink,
     createdByMemberId: input.createdByMemberId,
@@ -308,64 +381,99 @@ export async function recheckPrimaryInvoiceChangeFeeGap(input: {
 }
 
 /**
- * Bills the gap between the fee the payment recorded when the invoice link was
- * saved and the fee the primary invoice billed — both from `atLink`, never a
- * fresh read of the fee.
- *
- * THE ANCHOR is a finished-stay correction that routed its fee to the primary
- * invoice (`feeOnPrimaryInvoice`): one made while no invoice was linked, whose
- * claimed fee write (`recordFinishedStayFeeOwed`) therefore committed before
- * the link was saved. None of those raised a document of its own, so a
- * supplementary invoice on one of them is this gap's and nothing else's —
- * which is also how a re-run knows the gap is already queued, and why it never
- * raises another edit's queued figure. The ordinary settled edit's fee write is
- * not claimed against the link (`INV-PAY-119`, #3980), so a gap no correction
- * explains has no anchor and is reported, not billed.
+ * The edits a primary invoice's gap is anchored on: the ones that settled
+ * against it, because they read no invoice link and so raised no document of
+ * their own. An ordinary edit says so with #3980's marker
+ * ({@link SETTLED_AGAINST_PRIMARY_INVOICE_PATH}); a finished-stay correction
+ * that routed its fee to the primary invoice says so with #3955's
+ * ({@link FEE_ON_PRIMARY_INVOICE_PATH}), which rows written before #3980 carry
+ * alone. Newest first.
  */
-export async function queuePrimaryInvoiceChangeFeeGap(input: {
-  bookingId: string;
-  atLink: PrimaryInvoiceFeeAtLink;
-  createdByMemberId?: string;
-}): Promise<PrimaryInvoiceChangeFeeGapResult> {
-  const { bookingId, atLink } = input;
-  const gapCents = atLink.recordedChangeFeeCentsAtLink - atLink.billedChangeFeeCents;
-  const context = {
-    bookingId,
-    xeroInvoiceId: atLink.xeroInvoiceId,
-    billedCents: atLink.billedChangeFeeCents,
-    recordedChangeFeeCentsAtLink: atLink.recordedChangeFeeCentsAtLink,
-  };
-  if (gapCents <= 0) {
-    if (gapCents < 0) {
-      // No writer lowers a recorded fee, so an invoice billing MORE than the
-      // payment recorded was built from figures that no longer stand. Loud,
-      // not corrected: a credit note is a treasurer's decision.
-      logger.error(
-        context,
-        "The booking's primary Xero invoice bills more change fee than its payment records (#3955 X4)",
-      );
-    }
-    return NO_GAP;
-  }
-
+async function primaryInvoiceGapAnchors(bookingId: string): Promise<string[]> {
   const anchors = await prisma.bookingModification.findMany({
     where: {
       bookingId,
-      changeFeeCents: { gt: 0 },
-      newData: { path: [...FEE_ON_PRIMARY_INVOICE_PATH], equals: true },
+      OR: [
+        { newData: { path: [...SETTLED_AGAINST_PRIMARY_INVOICE_PATH], equals: true } },
+        { changeFeeCents: { gt: 0 }, newData: { path: [...FEE_ON_PRIMARY_INVOICE_PATH], equals: true } },
+      ],
     },
     orderBy: { createdAt: "desc" },
     select: { id: true },
   });
-  if (anchors.length === 0) {
-    logger.error(
-      { ...context, gapCents },
-      "The booking's primary Xero invoice bills less change fee than its payment records, and no finished-stay correction routed a fee to it to anchor the remainder on (#3955 X4, #3980)",
+  return anchors.map((anchor) => anchor.id);
+}
+
+/**
+ * Bills, or hands to the treasurer, the gap between what the booking was worth
+ * when the invoice link was saved and what the primary invoice billed
+ * ({@link primaryInvoiceWorthGap}) — all from `atLink`, never a fresh read.
+ *
+ *  - A POSITIVE gap goes on a supplementary invoice anchored on the newest
+ *    edit that settled against the primary invoice
+ *    ({@link primaryInvoiceGapAnchors}). Such an edit raised no document of its
+ *    own, so an invoice anchored on one is this gap's and nothing else's -
+ *    which is also how a re-run knows the gap is already queued, and why it
+ *    never raises another edit's queued figure. Its lines are the fee share as
+ *    a change fee and the rest as price, signed as an edit's are (#1356).
+ *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
+ *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
+ *    credit note is raised automatically (owner, 21 Oct 2026).
+ */
+export async function queuePrimaryInvoiceWorthGap(input: {
+  bookingId: string;
+  atLink: PrimaryInvoiceFeeAtLink;
+  createdByMemberId?: string;
+}): Promise<PrimaryInvoiceWorthGapResult> {
+  const { bookingId, atLink } = input;
+  const { gapCents, feeGapCents, measuredOn } = primaryInvoiceWorthGap(atLink);
+  const context = {
+    bookingId,
+    xeroInvoiceId: atLink.xeroInvoiceId,
+    measuredOn,
+    billedTotalCents: atLink.billedTotalCents,
+    billedChangeFeeCents: atLink.billedChangeFeeCents,
+    recordedChangeFeeCentsAtLink: atLink.recordedChangeFeeCentsAtLink,
+    ...(atLink.worth
+      ? {
+          worthCentsAtBuild: atLink.worth.atBuildCents,
+          builtTotalCents: atLink.worth.builtTotalCents,
+          worthCentsAtLink: atLink.worth.atLinkCents,
+        }
+      : {}),
+  };
+  if (gapCents === 0) return NO_GAP;
+
+  const raiseReview = async (kind: "OVERBILLED" | "UNDERBILLED", message: string) => {
+    logger.error({ ...context, gapCents }, message);
+    const review = await raisePrimaryInvoiceReviewTask({
+      kind,
+      bookingId,
+      xeroInvoiceId: atLink.xeroInvoiceId,
+      gapCents,
+      figures: context,
+      createdByMemberId: input.createdByMemberId,
+    });
+    return { ...NO_GAP, gapCents, reviewOperationId: review.operationId };
+  };
+
+  if (gapCents < 0) {
+    // An edit lowered what the booking is worth after the create read it, so
+    // the invoice bills more than is owed. A credit note is the treasurer's.
+    return raiseReview(
+      "OVERBILLED",
+      "The booking's primary Xero invoice bills more than the booking was worth when its link was saved; a Xero Operations task asks the treasurer to correct it (#3980)",
     );
-    return { gapCents, queueOperationId: null, alreadyQueued: false, cashTakenCents: 0 };
   }
 
-  const anchorIds = anchors.map((anchor) => anchor.id);
+  const anchorIds = await primaryInvoiceGapAnchors(bookingId);
+  if (anchorIds.length === 0) {
+    return raiseReview(
+      "UNDERBILLED",
+      "The booking's primary Xero invoice bills less than the booking was worth when its link was saved, and no edit settled against it to anchor the remainder on; a Xero Operations task asks the treasurer to bill it (#3980)",
+    );
+  }
+
   const [earlierOperation, earlierLink] = await Promise.all([
     prisma.xeroSyncOperation.findFirst({
       where: {
@@ -397,9 +505,15 @@ export async function queuePrimaryInvoiceChangeFeeGap(input: {
         : 0;
     logger.info(
       { ...context, gapCents, queueOperationId: earlierOperation?.id ?? null },
-      "The booking's primary Xero invoice change-fee gap is already queued (#3955 X4)",
+      "The booking's primary Xero invoice gap is already queued (#3955 X4, #3980)",
     );
-    return { gapCents, queueOperationId: earlierOperation?.id ?? null, alreadyQueued: true, cashTakenCents };
+    return {
+      ...NO_GAP,
+      gapCents,
+      queueOperationId: earlierOperation?.id ?? null,
+      alreadyQueued: true,
+      cashTakenCents,
+    };
   }
 
   // Raised UNPAID like any edit's supplementary invoice, unless a captured
@@ -421,11 +535,14 @@ export async function queuePrimaryInvoiceChangeFeeGap(input: {
   const recordPayment =
     payment?.source === PaymentSource.STRIPE && hasCapturedPayment(payment) && leftOverCashCents >= gapCents;
 
+  // The fee share as a change fee, the rest as price; the fee share never
+  // exceeds the gap, so neither part is negative and the two sum to it.
+  const changeFeeCents = Math.min(gapCents, Math.max(0, feeGapCents));
   const queued = await enqueueXeroSupplementaryInvoiceOperation(
     {
       bookingId,
-      priceDiffCents: 0,
-      changeFeeCents: gapCents,
+      priceDiffCents: gapCents - changeFeeCents,
+      changeFeeCents,
       bookingModificationId: anchorIds[0],
     },
     { createdByMemberId: input.createdByMemberId, recordPayment },
@@ -444,18 +561,18 @@ export async function queuePrimaryInvoiceChangeFeeGap(input: {
   if (queued.outcome !== "covers-total" || !queued.queueOperationId) {
     logger.error(
       outcome,
-      "The booking's primary Xero invoice bills less change fee than its payment records, and the supplementary invoice for the remainder was not queued (#3955 X4)",
+      "The booking's primary Xero invoice bills less than the booking was worth at its link, and the supplementary invoice for the remainder was not queued (#3955 X4, #3980)",
     );
-    return { gapCents, queueOperationId: queued.queueOperationId, alreadyQueued: false, cashTakenCents: 0 };
+    return { ...NO_GAP, gapCents, queueOperationId: queued.queueOperationId };
   }
   logger.warn(
     outcome,
-    "The booking's primary Xero invoice was built before a change fee was recorded; the remainder is billed on a supplementary invoice (#3955 X4)",
+    "The booking's primary Xero invoice was built before the booking last changed; the remainder is billed on a supplementary invoice (#3955 X4, #3980)",
   );
   return {
+    ...NO_GAP,
     gapCents,
     queueOperationId: queued.queueOperationId,
-    alreadyQueued: false,
     cashTakenCents: recordPayment ? gapCents : 0,
   };
 }
