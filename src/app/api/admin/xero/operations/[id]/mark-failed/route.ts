@@ -88,8 +88,11 @@ export async function POST(
 
     return NextResponse.json({
       ok: true,
+      // #4256: an interrupted PARTIAL repair goes back to PARTIAL, not FAILED.
       message:
-        "Xero operation marked failed with an audit record. Fix the cause, then retry or requeue it.",
+        result.returnedTo === "PARTIAL"
+          ? "The interrupted repair was returned to PARTIAL with an audit record. Retry it to repair it again."
+          : "Xero operation marked failed with an audit record. Fix the cause, then retry or requeue it.",
     });
   } catch (error) {
     logger.error({ err: error, operationId: id }, "Failed to mark stale Xero operation failed");
