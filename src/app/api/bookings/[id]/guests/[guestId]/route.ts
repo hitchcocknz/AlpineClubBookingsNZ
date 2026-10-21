@@ -366,7 +366,7 @@ export async function DELETE(
         financialReviewPending: result.financialReviewPending,
         refundDestination: refund.refundDestination,
         // D-3813-6: an internet-banking refund is the club's to send.
-        refundByBankTransfer: editRefundBankTransferPayee(result, result.booking), // #3949: or the group organiser,
+        refundByBankTransfer: editRefundBankTransferPayee(result, result.booking), // #3949: the member or the group organiser
         lodgeId: result.booking.lodgeId,
         // Removing a guest can raise the price when it invalidates a group
         // promo the remaining guests relied on. Surface the increase when a

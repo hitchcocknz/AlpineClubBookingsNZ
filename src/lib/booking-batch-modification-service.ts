@@ -2911,7 +2911,7 @@ async function dispatchBatchPostTransactionSideEffects({
     addedGuests: result.addedGuests, // #4030: named in the change rows
     financialReviewPending,
     refundDestination,
-    refundByBankTransfer: editRefundBankTransferPayee(result, result.booking), // #3949: or the group organiser,
+    refundByBankTransfer: editRefundBankTransferPayee(result, result.booking), // #3949: the member or the group organiser
     lodgeId: result.booking.lodgeId,
   }, format).catch((err) =>
     logger.error(

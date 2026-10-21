@@ -1775,7 +1775,7 @@ async function dispatchDatePostTransactionSideEffects({
       promoCoverageNote: result.promoCoverage?.message ?? null,
       financialReviewPending,
       refundDestination,
-      refundByBankTransfer: editRefundBankTransferPayee(result, result.booking), // #3949: or the group organiser,
+      refundByBankTransfer: editRefundBankTransferPayee(result, result.booking), // #3949: the member or the group organiser
       lodgeId: result.booking.lodgeId,
     }, format).catch((err) =>
       logger.error({ err, bookingId }, "Failed to send booking modified email"),
