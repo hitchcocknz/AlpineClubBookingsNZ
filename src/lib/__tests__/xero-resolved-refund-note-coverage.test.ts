@@ -18,11 +18,13 @@ const NOTE_ID = "note-n1";
 
 type Link = { xeroObjectId: string; active: boolean; metadata: unknown };
 
+type Row = { id: string; correlationKey: string | null; requestPayload: unknown; xeroObjectId: string | null };
+
 /** The two reads the reader makes, over in-memory rows; links honour the `active` and `xeroObjectId` filters. */
-function fakeDb(requestPayload: unknown, links: Link[]) {
+function fakeDb(requestPayload: unknown, links: Link[], rows?: Row[]) {
   return {
     xeroSyncOperation: {
-      findMany: vi.fn(async () => [{ id: "row-n1", correlationKey: "key-n1", requestPayload, xeroObjectId: NOTE_ID }]),
+      findMany: vi.fn(async () => rows ?? [{ id: "row-n1", correlationKey: "key-n1", requestPayload, xeroObjectId: NOTE_ID }]),
     },
     xeroObjectLink: {
       findMany: vi.fn(async ({ where }: { where: { active?: boolean; xeroObjectId?: { in: string[] } } }) =>
@@ -62,20 +64,42 @@ describe("readResolvedRefundCreditNoteCoverage: a resolved row by its note's lin
     ["DELETED", false],
     // A mirror still active from before #4091: the link counts nothing either (`recoverRefundCreditNoteLinkAmountCents`).
     ["VOIDED", true],
-  ] as const)("MUTATION: a link recording the note %s (active: %s) - covers nothing, still reported to the fences", async (status, active) => {
+  ] as const)("MUTATION: a link recording the note %s (active: %s) - covers nothing; its id is reported, never its key", async (status, active) => {
     const coverage = await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, fakeDb(READABLE, [link(active, status)]));
-    expect(coverage).toEqual({ coveredCents: 0, correlationKeys: ["key-n1"], operationIds: ["row-n1"], unreadableOperationIds: [] });
+    // Review (money P2): a re-raise's key can equal the voided row's, so no key fence may see it.
+    expect(coverage).toEqual({ coveredCents: 0, correlationKeys: [], operationIds: ["row-n1"], unreadableOperationIds: [] });
   });
 
   it("an unreadable amount: refused when the note may be live, never once Xero voided it", async () => {
     expect((await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, fakeDb(UNREADABLE, []))).unreadableOperationIds).toEqual(["row-n1"]);
     const voided = await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, fakeDb(UNREADABLE, [link(false, "VOIDED")]));
-    expect(voided).toEqual({ coveredCents: 0, correlationKeys: ["key-n1"], operationIds: ["row-n1"], unreadableOperationIds: [] });
+    expect(voided).toEqual({ coveredCents: 0, correlationKeys: [], operationIds: ["row-n1"], unreadableOperationIds: [] });
   });
 
   it("a legacy row whose payload says account credit is never reported, voided or not", async () => {
     const payload = { creditNotes: [{ lineItems: [{ unitAmount: 250 }] }] };
     const coverage = await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, fakeDb(payload, [link(false, "VOIDED")]));
     expect(coverage.operationIds).toEqual([]);
+  });
+
+  it("MUTATION: reads the payment's refund-note links once, whatever the rows (review, concurrency F1)", async () => {
+    const db = fakeDb(READABLE, [link(false, "VOIDED")], [
+      { id: "row-n1", correlationKey: "key-n1", requestPayload: READABLE, xeroObjectId: NOTE_ID },
+      { id: "row-n2", correlationKey: "key-n2", requestPayload: READABLE, xeroObjectId: "note-n2" },
+    ]);
+    await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, db);
+    expect((db as unknown as { xeroObjectLink: { findMany: ReturnType<typeof vi.fn> } }).xeroObjectLink.findMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("MUTATION: each reported key's id sits at its index; rows reported without a key follow (the enqueue's fence reads by index)", async () => {
+    const coverage = await readResolvedRefundCreditNoteCoverage(PAYMENT_ID, fakeDb(READABLE, [link(false, "VOIDED")], [
+      { id: "row-voided", correlationKey: "key-voided", requestPayload: READABLE, xeroObjectId: NOTE_ID },
+      { id: "row-keyless", correlationKey: null, requestPayload: READABLE, xeroObjectId: null },
+      { id: "row-live", correlationKey: "key-live", requestPayload: READABLE, xeroObjectId: null },
+    ]));
+    expect(coverage.correlationKeys).toEqual(["key-live"]);
+    expect(coverage.operationIds[coverage.correlationKeys.indexOf("key-live")]).toBe("row-live");
+    expect(coverage.operationIds).toEqual(["row-live", "row-voided", "row-keyless"]);
+    expect(coverage.coveredCents).toBe(50_000);
   });
 });

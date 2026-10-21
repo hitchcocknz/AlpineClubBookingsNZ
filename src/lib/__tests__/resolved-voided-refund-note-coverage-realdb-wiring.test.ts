@@ -18,7 +18,8 @@ describe("the resolved-then-voided refund note's real-database proof stays wired
     expect(harness).toContain('import "./resolved-voided-refund-note-coverage.realdb.test";');
     const suite = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/resolved-voided-refund-note-coverage.realdb.test.ts"), "utf8");
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
-    expect(suite).toContain("covers nothing, and is still reported to the fences");
+    expect(suite).toContain("covers nothing; its id is still reported, never its key");
+    expect(suite).toContain("the re-raise takes its old key and is still queued");
     expect(suite).toContain("the nightly card self-heal lists the $250 gap and queues a fresh card note under an after-void key");
   });
 });

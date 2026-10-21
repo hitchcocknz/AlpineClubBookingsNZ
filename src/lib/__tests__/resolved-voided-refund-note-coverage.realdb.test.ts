@@ -12,11 +12,13 @@
  * - the shared reader (`readResolvedRefundCreditNoteCoverage`) and the
  *   payment-wide sum count 0 for that row, while a resolved row whose note is
  *   live (an active link) or unlinked still covers the refund, once;
- * - its id and key are still reported (the fences are unchanged), and an
+ * - its id is still reported but never its key (review, money P2), and an
  *   unreadable amount on it no longer refuses anything;
  * - the self-heal's list (`getRefundsMissingXeroCreditNotes`) shows the $250
  *   gap, and the enqueue the cron makes from it (`reconcileCreditBalances`'s
- *   card ask) queues a fresh card note under an after-void key naming N1.
+ *   card ask) queues a fresh card note under an after-void key naming N1 -
+ *   or, when N1 executed at another watermark than it was queued at, under
+ *   N1's own row's key, which no fence then refuses.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
@@ -131,12 +133,12 @@ let n1Key: string;
     }
 
     /** N1's refund-note link: live, or as an inbound void leaves it (#4091) - inactive, its status recorded. */
-    async function n1Link(state: "live" | "VOIDED" | "DELETED") {
+    async function n1Link(state: "live" | "VOIDED" | "DELETED", executedWatermarkCents = REFUND_CENTS) {
       await prisma.xeroObjectLink.create({
         data: {
           localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE_ID, role: "REFUND_CREDIT_NOTE",
           active: state === "live",
-          metadata: { amountCents: REFUND_CENTS, watermarkCents: REFUND_CENTS, status: state === "live" ? "AUTHORISED" : state },
+          metadata: { amountCents: REFUND_CENTS, watermarkCents: executedWatermarkCents, status: state === "live" ? "AUTHORISED" : state },
         },
       });
     }
@@ -198,7 +200,7 @@ let n1Key: string;
       expect(await selfHealRow()).toBeNull();
     });
 
-    it.each(["VOIDED", "DELETED"] as const)("MUTATION: a resolved row whose note Xero %s covers nothing, and is still reported to the fences", async (status) => {
+    it.each(["VOIDED", "DELETED"] as const)("MUTATION: a resolved row whose note Xero %s covers nothing; its id is still reported, never its key", async (status) => {
       await resolvedN1Row();
       await n1Link(status);
 
@@ -206,7 +208,7 @@ let n1Key: string;
       expect(resolved.coveredCents).toBe(0);
       expect(totalCents).toBe(0);
       expect(resolved.operationIds).toEqual([ROW_ID]);
-      expect(resolved.correlationKeys).toEqual([n1Key]);
+      expect(resolved.correlationKeys).toEqual([]);
       expect(resolved.unreadableOperationIds).toEqual([]);
       // One refund's own rows, asked the same way (`sumRefundCreditNoteCoverageOfRowsCents`).
       expect(await fences.sumRefundCreditNoteCoverageOfRowsCents(PAYMENT_ID, { id: ROW_ID })).toBe(0);
@@ -250,6 +252,35 @@ let n1Key: string;
       // A second night's replay is the same queued row, not a second note.
       const replay = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, REFUND_CENTS);
       expect(replay.queueOperationId).toBe(queued.queueOperationId);
+    });
+
+    it("MUTATION (review, money P2): the voided note executed at another watermark than it was queued at - the re-raise takes its old key and is still queued", async () => {
+      // Queued at $250 (its key), executed at $200 (its link): the after-void
+      // suffix names a note whose recorded watermark equals the re-raise's, so
+      // here it names none and the re-raise's key is N1's own row's.
+      await resolvedN1Row();
+      await n1Link("VOIDED", 20_000);
+
+      const row = await selfHealRow();
+      expect(row).toMatchObject({ uncoveredCents: REFUND_CENTS });
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, REFUND_CENTS);
+      expect(queued).not.toHaveProperty("resolvedInXeroOperationId");
+      expect(queued.queueOperationId).toEqual(expect.any(String));
+      expect(queued.queueOperationId).not.toBe(ROW_ID);
+      const fresh = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: queued.queueOperationId! }, select: { status: true, correlationKey: true } });
+      expect(fresh).toEqual({ status: "PENDING", correlationKey: n1Key });
+    });
+
+    it("a voided note's resolved row with an unreadable amount: the self-heal still lists the gap and queues the re-raise", async () => {
+      await resolvedN1Row("unreadable");
+      await n1Link("VOIDED");
+
+      expect(await selfHealRow()).toMatchObject({ uncoveredCents: REFUND_CENTS });
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, REFUND_CENTS);
+      expect(queued).not.toHaveProperty("resolvedInXeroOperationId");
+      expect(queued.queueOperationId).toEqual(expect.any(String));
     });
   },
 );
