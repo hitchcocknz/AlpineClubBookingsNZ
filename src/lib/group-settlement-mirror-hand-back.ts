@@ -7,7 +7,7 @@ import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financia
 import { assertGroupMirrorHandBackWithinUnpromisedCash } from "@/lib/edit-refund-hand-back";
 import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import { mirrorPlanRefundedCents } from "@/lib/group-settlement-refund-plan";
-import { isEditRefundHandBackTask, isRefundRequestHandBackTask } from "@/lib/manual-refund-task-settlement-rules";
+import { isEditRefundHandBackTask, isRefundRequestHandBackTask, NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
@@ -173,7 +173,8 @@ export async function readGroupChildMirrorForPlanReplay(
     select: { amountCents: true, refundedAmountCents: true },
   });
   const paidBack = await tx.manualRefundTask.findMany({
-    where: { paymentId, kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED" },
+    // The edit's and appeal's hand-backs (`INV-PAY-117`'s positive fragment), paid back.
+    where: { paymentId, status: "COMPLETED", ...NON_CANCELLATION_HAND_BACK_WHERE },
     select: { kind: true, status: true, occurrenceKey: true, paymentId: true, amountCents: true },
   });
   return {
