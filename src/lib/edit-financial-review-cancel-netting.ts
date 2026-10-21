@@ -23,7 +23,7 @@ import {
   reviewRefundOverPromisedMessage,
 } from "@/lib/edit-financial-review-refund-refusals";
 import { editReviewHandBackLinesWhere } from "@/lib/edit-financial-review-charge-shape";
-import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
+import { paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import type { ClubFormat } from "@/lib/club-format";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import {
@@ -269,7 +269,9 @@ export async function capturedShareOwedAfterCancellation({
     where: { id: bookingId },
     select: { organiserSettled: true, parentBookingId: true, payment: { select: { source: true } } },
   });
-  if (paidByOrganiserCard(owner)) throw new ManualBookingPaymentError(REVIEW_CANCELLATION_ORGANISER_PAID_MESSAGE, 409);
+  // #3949 review: so is one the organiser paid for by Internet Banking - its cancellation froze no figures to net
+  // against, and no part of its share may become the joiner's credit (`INV-PAY-136`).
+  if (paidByOrganiserCard(owner) || paidByOrganiserInternetBanking(owner)) throw new ManualBookingPaymentError(REVIEW_CANCELLATION_ORGANISER_PAID_MESSAGE, 409);
   const cancelled = await store.bookingEvent.findFirst({
     where: { bookingId, type: BookingEventType.CANCELLED },
     orderBy: { occurredAt: "desc" },

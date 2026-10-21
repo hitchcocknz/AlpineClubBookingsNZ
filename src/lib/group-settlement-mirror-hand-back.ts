@@ -10,6 +10,11 @@ import { mirrorPlanRefundedCents } from "@/lib/group-settlement-refund-plan";
 import { isEditRefundHandBackTask, isRefundRequestHandBackTask, NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
+import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
+import logger from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
+import { formatCents } from "@/lib/utils";
+import type { ClubFormat } from "@/lib/club-format";
 import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
 
 /**
@@ -37,6 +42,10 @@ import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-sett
  * group cancel and its replay read to decide whether the settlement's own
  * refund is still to be made, and a bank transfer for one joiner is not that.
  *
+ * Xero: no note is queued - the child has no invoice of its own - and the
+ * officers are alerted after the commit to credit the group's combined invoice by
+ * hand (`alertGroupMirrorRefundXeroByHand`, review M1).
+ *
  * Locks: none of its own. The completion already holds `lock(1)` for these two
  * keys (`resolveManualRefundTask#1`); the route takes the `Payment` row
  * (`lockPaymentForRefundedTotal`) next, before the cap read, so the cap and the
@@ -48,8 +57,9 @@ import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-sett
  * recorded inside its own transaction? The ordinary hand-back
  * (`local-allocation`, on the payment's transactions) and a group child's
  * (`group-settlement-mirror`, on its mirror) alike: both post the
- * `BANK_REFUND` line, both are the `REFUNDED` event's money, and both owe a
- * refund request its own note. The one test, so neither is left out of one.
+ * `BANK_REFUND` line and both are the `REFUNDED` event's money. The one test,
+ * so neither is left out of one. (Only the ledger route owes a refund request
+ * its own Xero note: the mirror route's note is the treasurer's, review M1.)
  */
 export function isBankTransferHandBackRoute(
   route: EditReviewSettlementRoute | null,
@@ -62,7 +72,7 @@ export type GroupSettlementMirrorRoute = {
   kind: "group-settlement-mirror";
   /** The child's payment mirror, which the refund is recorded on. */
   paymentId: string;
-  /** No edit-review anchor: the edit's own Xero note already corrected the invoice. */
+  /** No edit-review anchor: such a child has no invoice of its own for a modification note to correct (review M1). */
   bookingModificationId: null;
   /** What goes back to the organiser by bank transfer. */
   refundCents: number;
@@ -101,10 +111,6 @@ export function isGroupSettlementMirrorHandBack(task: MirrorHandBackTask): boole
  * The route, or null when the task is not one of these (the caller then keeps
  * its ordinary route). Before the claim, inside the completion's transaction:
  * a refusal here leaves the task OPEN.
- *
- * A child payment that DOES carry a `PaymentTransaction` is left on the ledger
- * route: there the transactions are the record, and a mirror written beside
- * them would be undone by the next aggregate reconcile.
  */
 export async function chooseGroupSettlementMirrorRoute({
   task,
@@ -116,10 +122,54 @@ export async function chooseGroupSettlementMirrorRoute({
   store: Prisma.TransactionClient;
 }): Promise<GroupSettlementMirrorRoute | null> {
   if (!isGroupSettlementMirrorHandBack(task) || task.paymentId === null) return null;
-  const paymentId = task.paymentId;
-  if ((await store.paymentTransaction.count({ where: { paymentId } })) > 0) return null;
+  return mirrorRouteOnUnbackedPayment({ taskId: task.id, paymentId: task.paymentId, amountCents, store });
+}
+
+/**
+ * #3949 review: an EDIT FINANCIAL REVIEW's refund on such a child, which took
+ * the by-hand ledger route and was refused the same way. Its share goes back to
+ * the organiser onto the mirror too. `paymentId` is the payment the review's
+ * refund comes out of (`editReviewRefundSettlementPayment`); it must be the
+ * child's own mirror. A cancelled child never reaches here: its netting refuses
+ * an organiser-paid booking first (`capturedShareOwedAfterCancellation`), so no
+ * part of the share can become the joiner's account credit.
+ */
+export async function chooseReviewGroupSettlementMirrorRoute({
+  task,
+  paymentId,
+  amountCents,
+  store,
+}: {
+  task: { id: string; booking: MirrorHandBackTask["booking"] };
+  paymentId: string;
+  amountCents: number;
+  store: Prisma.TransactionClient;
+}): Promise<GroupSettlementMirrorRoute | null> {
+  if (!paidByOrganiserInternetBanking(task.booking) || task.booking.payment?.id !== paymentId) return null;
+  return mirrorRouteOnUnbackedPayment({ taskId: task.id, paymentId, amountCents, store });
+}
+
+/**
+ * The `Payment` row first (review C1: the transaction count is then read under
+ * it too), then: a child payment that DOES carry a `PaymentTransaction` is left
+ * on the ledger route - there the transactions are the record, and a mirror
+ * written beside them would be undone by the next aggregate reconcile - and
+ * otherwise the cap, before the claim.
+ */
+async function mirrorRouteOnUnbackedPayment({
+  taskId,
+  paymentId,
+  amountCents,
+  store,
+}: {
+  taskId: string;
+  paymentId: string;
+  amountCents: number;
+  store: Prisma.TransactionClient;
+}): Promise<GroupSettlementMirrorRoute | null> {
   await lockPaymentForRefundedTotal(store, paymentId);
-  await assertGroupMirrorHandBackWithinUnpromisedCash(store, { paymentId, taskId: task.id, amountCents });
+  if ((await store.paymentTransaction.count({ where: { paymentId } })) > 0) return null;
+  await assertGroupMirrorHandBackWithinUnpromisedCash(store, { paymentId, taskId, amountCents });
   return { kind: "group-settlement-mirror", paymentId, bookingModificationId: null, refundCents: amountCents, creditBackCents: 0 };
 }
 
@@ -181,4 +231,54 @@ export async function readGroupChildMirrorForPlanReplay(
     ...payment,
     planShareWritten: mirrorPlanShareWritten(payment.refundedAmountCents, groupChildHandBacksFromRows(paymentId, paidBack)),
   };
+}
+
+/**
+ * #3949 review M1 (`INV-PAY-136`): THE APP RAISES NO XERO NOTE FOR SUCH A
+ * REFUND, SO IT TELLS THE TREASURER TO. A joiner's booking the organiser paid
+ * for by Internet Banking has no invoice of its own: the money was taken on the
+ * group's ONE combined invoice, addressed to the organiser. The refund note
+ * machinery credits the payment's own invoice under the booking's own contact
+ * (`createXeroCreditNote`), and keeps one note per non-card payment, so it can
+ * place neither this refund nor a later group cancel's beside it correctly. So
+ * no note is queued (an edit's never was; an appeal's needs an invoice the child
+ * lacks), and after the commit the officers get the existing Xero alert naming
+ * the refund, the organiser and the combined invoice, to credit by hand and
+ * record the bank refund against. Best-effort, after the commit; never throws -
+ * the completed task and its audit row are the durable record.
+ */
+export async function alertGroupMirrorRefundXeroByHand({
+  bookingId,
+  taskId,
+  refundCents,
+  format,
+}: {
+  bookingId: string;
+  taskId: string;
+  refundCents: number;
+  format: ClubFormat;
+}): Promise<void> {
+  try {
+    const child = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { parentBookingId: true, member: { select: { firstName: true, lastName: true } } },
+    });
+    const group = child?.parentBookingId
+      ? await prisma.groupBooking.findUnique({
+          where: { organiserBookingId: child.parentBookingId },
+          select: { organiserMember: { select: { firstName: true, lastName: true } }, settlement: { select: { xeroInvoiceNumber: true } } },
+        })
+      : null;
+    const name = (person: { firstName: string; lastName: string } | null | undefined, fallback: string) =>
+      person ? `${person.firstName} ${person.lastName}` : fallback;
+    const invoice = group?.settlement?.xeroInvoiceNumber ? `invoice ${group.settlement.xeroInvoiceNumber}` : "its combined invoice";
+    await sendAdminXeroSyncErrorAlert({
+      errorType: "GROUP_ORGANISER_REFUND_NOTE_BY_HAND",
+      operation: `Refund credit note for booking ${bookingId} (paid back to the group organiser)`,
+      errorMessage: `${formatCents(refundCents, format)} was paid back by bank transfer to the group organiser (${name(group?.organiserMember, "the organiser")}) for ${name(child?.member, "a joiner")}'s place in a group the organiser paid for by internet banking (refund task ${taskId}). The app cannot raise this refund's Xero credit note: that booking has no invoice of its own, and the money was taken on the group's ${invoice}. In Xero, raise a credit note for ${formatCents(refundCents, format)} to the organiser against that invoice and record the bank refund against it.`,
+      timestamp: new Date(),
+    });
+  } catch (err) {
+    logger.error({ err, bookingId, taskId }, "Failed to send the group organiser refund's Xero-by-hand alert (#3949)");
+  }
 }

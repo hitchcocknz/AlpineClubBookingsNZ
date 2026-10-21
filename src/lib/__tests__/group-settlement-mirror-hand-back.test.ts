@@ -10,13 +10,26 @@ import { describe, expect, it, vi } from "vitest";
  * `ib-group-child-hand-back.realdb.test.ts`.
  */
 
+const mocks = vi.hoisted(() => ({
+  bookingFindUnique: vi.fn(async (): Promise<unknown> => null),
+  groupBookingFindUnique: vi.fn(async (): Promise<unknown> => null),
+  sendAdminXeroSyncErrorAlert: vi.fn(async (_input: unknown) => ({})),
+}));
 vi.mock("server-only", () => ({}));
-vi.mock("@/lib/prisma", () => ({ prisma: {} }));
+vi.mock("@/lib/prisma", () => ({
+  prisma: {
+    booking: { findUnique: (...a: unknown[]) => mocks.bookingFindUnique(...(a as [])) },
+    groupBooking: { findUnique: (...a: unknown[]) => mocks.groupBookingFindUnique(...(a as [])) },
+  },
+}));
+vi.mock("@/lib/email", () => ({ sendAdminXeroSyncErrorAlert: (input: unknown) => mocks.sendAdminXeroSyncErrorAlert(input) }));
 
 import { bankTransferRefundPayee, paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import {
+  alertGroupMirrorRefundXeroByHand,
   applyGroupSettlementMirrorRefund,
   chooseGroupSettlementMirrorRoute,
+  chooseReviewGroupSettlementMirrorRoute,
   isBankTransferHandBackRoute,
   isGroupSettlementMirrorHandBack,
   type GroupSettlementMirrorRoute,
@@ -25,6 +38,7 @@ import { refundMethodForEditReviewRoute, refundRequestCreditNoteAsk } from "@/li
 import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
 import { editRefundBankTransferPayee } from "@/lib/edit-refund-hand-back";
 import { editRefundHandBackReason, refundRequestHandBackReason } from "@/lib/manual-refund-task-copy";
+import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { bookingModifiedRefundSentence, organiserByHandRefundSentence, refundRequestApprovedRefundSentence } from "@/lib/booking-modified-email-copy";
 
 const GROUP_CHILD = { organiserSettled: true, parentBookingId: "organiser-booking", payment: { id: "pay-1", source: "INTERNET_BANKING" } };
@@ -118,7 +132,9 @@ describe("which hand-backs complete onto a group child's mirror", () => {
   it("leaves a payment some transaction backs, and every other task, to its ordinary route", async () => {
     const backed = store({ transactions: 1 });
     expect(await chooseGroupSettlementMirrorRoute({ task: task("edit-refund-hand-back:mod-1"), amountCents: 100, store: backed as never })).toBeNull();
-    expect(backed.$executeRaw).not.toHaveBeenCalled();
+    // Review C1: the count is read under the Payment row, taken first.
+    expect(backed.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(backed.paymentTransaction.count.mock.invocationCallOrder[0]!);
+    expect(backed.payment.findUnique).not.toHaveBeenCalled();
     const other = store();
     expect(await chooseGroupSettlementMirrorRoute({ task: task(null), amountCents: 100, store: other as never })).toBeNull();
     expect(other.paymentTransaction.count).not.toHaveBeenCalled();
@@ -138,22 +154,55 @@ describe("which hand-backs complete onto a group child's mirror", () => {
   });
 });
 
+describe("review: an edit financial review's refund on such a child (#3949 review)", () => {
+  const review = { id: "review-1", booking: GROUP_CHILD };
+  const db = () => ({
+    $executeRaw: vi.fn(async () => 1),
+    paymentTransaction: { count: vi.fn(async () => 0) },
+    payment: { findUnique: vi.fn(async () => ({ status: "SUCCEEDED", amountCents: 10_000, refundedAmountCents: 0 })) },
+    manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })) },
+  });
+
+  it("goes to the organiser onto the mirror, out of the child's own payment only", async () => {
+    await expect(chooseReviewGroupSettlementMirrorRoute({ task: review, paymentId: "pay-1", amountCents: 2_000, store: db() as never })).resolves.toMatchObject({
+      kind: "group-settlement-mirror",
+      paymentId: "pay-1",
+      refundCents: 2_000,
+    });
+    expect(await chooseReviewGroupSettlementMirrorRoute({ task: review, paymentId: "pay-other", amountCents: 2_000, store: db() as never })).toBeNull();
+    expect(await chooseReviewGroupSettlementMirrorRoute({ task: { ...review, booking: { ...GROUP_CHILD, organiserSettled: false } }, paymentId: "pay-1", amountCents: 2_000, store: db() as never })).toBeNull();
+  });
+});
+
+describe("review M1: the officers are told to credit the group's invoice by hand", () => {
+  it("names the amount, the organiser, the joiner and the combined invoice, after the commit; never throws", async () => {
+    mocks.bookingFindUnique.mockResolvedValueOnce({ parentBookingId: "org-b", member: { firstName: "Sam", lastName: "Joiner" } });
+    mocks.groupBookingFindUnique.mockResolvedValueOnce({ organiserMember: { firstName: "Olive", lastName: "Organiser" }, settlement: { xeroInvoiceNumber: "INV-0042" } });
+    await alertGroupMirrorRefundXeroByHand({ bookingId: "b1", taskId: "t1", refundCents: 1_500, format: CLUB_FORMAT_TEST });
+    const sent = mocks.sendAdminXeroSyncErrorAlert.mock.calls.at(-1)![0] as { errorType: string; errorMessage: string };
+    expect(sent.errorType).toBe("GROUP_ORGANISER_REFUND_NOTE_BY_HAND");
+    expect(sent.errorMessage).toContain("$15.00 was paid back by bank transfer to the group organiser (Olive Organiser) for Sam Joiner's place");
+    expect(sent.errorMessage).toContain("invoice INV-0042");
+    mocks.sendAdminXeroSyncErrorAlert.mockRejectedValueOnce(new Error("mail down"));
+    await expect(alertGroupMirrorRefundXeroByHand({ bookingId: "b1", taskId: "t1", refundCents: 1_500, format: CLUB_FORMAT_TEST })).resolves.toBeUndefined();
+  });
+});
+
 describe("the route reads as a bank transfer everywhere a hand-back does", () => {
   const route: GroupSettlementMirrorRoute = { kind: "group-settlement-mirror", paymentId: "pay-1", bookingModificationId: null, refundCents: 1_500, creditBackCents: 0 };
 
-  it("is the internet-banking method, a bank-transfer hand-back, and owes an appeal its own note", () => {
+  it("is the internet-banking method and a bank-transfer hand-back, and queues no appeal note (review M1: no invoice of its own)", () => {
     expect(refundMethodForEditReviewRoute(route)).toBe("internet-banking");
     expect(isBankTransferHandBackRoute(route)).toBe(true);
     expect(isBankTransferHandBackRoute({ ...route, kind: "local-allocation" } as never)).toBe(true);
     expect(isBankTransferHandBackRoute({ kind: "account-credit" } as never)).toBe(false);
     expect(isBankTransferHandBackRoute(null)).toBe(false);
-    expect(refundRequestCreditNoteAsk({ route, cancellationHandBackInvoiceId: "inv-1", amountCents: 1_500, refundRequestId: "req-1" })).toEqual({
+    expect(refundRequestCreditNoteAsk({ route, cancellationHandBackInvoiceId: "inv-1", amountCents: 1_500, refundRequestId: "req-1" })).toBeNull();
+    expect(refundRequestCreditNoteAsk({ route: { ...route, kind: "local-allocation" } as never, cancellationHandBackInvoiceId: "inv-1", amountCents: 1_500, refundRequestId: "req-1" })).toEqual({
       paymentId: "pay-1",
       refundRequestId: "req-1",
       amountCents: 1_500,
     });
-    // No invoice, no note (a permanently failing outbox row otherwise), as for any appeal.
-    expect(refundRequestCreditNoteAsk({ route, cancellationHandBackInvoiceId: null, amountCents: 1_500, refundRequestId: "req-1" })).toBeNull();
   });
 });
 

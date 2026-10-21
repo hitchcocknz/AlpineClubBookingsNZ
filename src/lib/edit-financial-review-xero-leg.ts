@@ -15,7 +15,6 @@ import {
 } from "@/lib/xero-operation-outbox";
 import { enqueueXeroRefundRequestCreditNoteOperation } from "@/lib/xero-refund-request-credit-note-outbox";
 import { isCancelCardShortfallTask, isNonCancellationHandBackTask, refundRequestIdOfHandBack } from "@/lib/manual-refund-task-settlement-rules";
-import { isBankTransferHandBackRoute } from "@/lib/group-settlement-mirror-hand-back";
 import type { RefundMethod } from "@/lib/xero-refund-method";
 import type { ClubFormat } from "@/lib/club-format";
 
@@ -298,7 +297,7 @@ export function refundRequestCreditNoteAsk({
 }): { paymentId: string; refundRequestId: string; amountCents: number } | null {
   if (
     !refundRequestId ||
-    !isBankTransferHandBackRoute(route) ||
+    route?.kind !== "local-allocation" || // #3949 review M1: a group child's mirror route raises no note (`alertGroupMirrorRefundXeroByHand`)
     cancellationHandBackInvoiceId === null ||
     amountCents === null ||
     amountCents <= 0
