@@ -260,7 +260,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   which was a live defect:
 
   - **Net, never gross.** `paidAmountCents = amountCents - refundedAmountCents`.
-    The manual-settle path was made net-correct in July 2026; the edit path and
+    The manual-settle path was net-correct; the edit path and
     the payments board were not. `/admin/payments` rendered gross beside a
     "Partially refunded" chip, so a $130 capture with $65 refunded read as "paid
     $130" and a booking officer sized the balance at `430 - 130 = 300` when the
@@ -273,7 +273,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     (`queueSupersededAdditionalIntentCancellations`), so an ask sized on one
     edit's own delta deletes the unpaid balance of the ask it replaces. Two
     consecutive +$70 edits on a $130 paid booking asked $70 and lost $70,
-    permanently and silently. The ask is therefore the edit's own net PLUS the unpaid balance of the ask it
+    silently. The ask is therefore the edit's own net PLUS the unpaid balance of the ask it
     supersedes, which is `sizeAdditionalAsk` in
     `src/lib/additional-payment-ask.ts` — the one home for all of this
     arithmetic, and the module the census guard and the operator SQL are both
@@ -283,9 +283,10 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     edit doors sent its increase to a Xero supplementary invoice that, with Xero
     off or the primary invoice not yet raised, did not exist: an `unasked`
     residual. Every door now asks `canAskCardForIncrease`
-    (`booking-payment-state.ts`) and asks the card, fee recorded; reductions
-    still read `hasCapturedPayment`. No further credit is drawn ([INV-PAY-002]).
-    Rows grown earlier are reported by the census, never back-billed.
+    (`booking-payment-state.ts`) and asks the card, fee recorded, as does a
+    review charge ([INV-PAY-112]); reductions still read `hasCapturedPayment`.
+    No further credit is drawn ([INV-PAY-002]). Rows grown earlier are reported
+    by the census, never back-billed.
 
   **WHY THE ASK IS NOT READ STRAIGHT OFF THE PRICE.** `finalPriceCents - net paid
   - creditAppliedCents` is the same figure wherever the ledger is clean (the
@@ -2212,6 +2213,10 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   - **A lease, never a lock**: nothing is held across Stripe and no advisory key
     is taken; an expired token is taken over, safe because the derived total
     only grows and a raise is absolute.
+  - **One card question** (#3947): the route chooser and the mint both ask
+    `canAskCardForReviewCharge`, so a settled credit-paid ($0) booking is
+    card-asked, Xero or not, and no card route mints nothing into a replay
+    that can never raise.
   - **Stated limits**, ordering and interleavings:
     [`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md).
   - Home: `edit-financial-review-charge-raise-claim.ts`,

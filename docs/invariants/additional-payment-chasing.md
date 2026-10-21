@@ -58,16 +58,16 @@ admin surface showed one. These rules now hold:
   owner of a cancelled booking could open the booking, be offered "pay this
   extra", fetch a live client secret and complete the charge; the late-capture
   backstop (#1350) auto-refunded and alerted, but the member had still been
-  charged for a booking that no longer existed.
+  charged for a booking that no longer existed. A credit-paid booking's card ask
+  ([INV-PAY-047], #3947) needs a settled status, and every one is on this list.
 
   **The rule is about a RETIRED OBLIGATION, of which a cancelled booking is one
   case and a SUPERSEDED ask is the other (#3340).** A booking edit that raises a
   new extra retires the extra before it: minting the replacement ADDITIONAL
   PaymentIntent queues every other outstanding one on that payment for
   cancellation. Until #3340 the cancellation was only *enqueued* for the
-  five-minute recovery cron, so the retired intent stayed confirmable — measured
-  at 4 minutes 5 seconds in the live case, and a member's card confirm landed
-  inside it. The same shape as a cancelled booking, and the same harm: a member
+  five-minute recovery cron, so the retired intent stayed confirmable, and a
+  member's card confirm landed inside it. The same shape as a cancelled booking, and the same harm: a member
   charged against an obligation the club had already withdrawn.
 
   Three things close it, and all three are needed because each alone leaves the
@@ -83,10 +83,9 @@ admin surface showed one. These rules now hold:
   **"Cancelled at mint" is BEST-EFFORT, and the queued operation is the durable
   guarantee.** The immediate attempt cannot run when the recovery row is not
   claimable — most often because a FIRST cancel attempt failed and left it in a
-  five-minute backoff, which is the window the live incident was measured in. The
-  retired intent then stays confirmable until the cron reaches it, and a capture
-  landing in that window is caught by the compensating refund below rather than
-  prevented. Every declined immediate attempt is logged with the intent it left
+  five-minute backoff. The retired intent then stays confirmable until the cron
+  reaches it, and a capture landing in that window is caught by the
+  compensating refund below rather than prevented. Every declined immediate attempt is logged with the intent it left
   live, so such a charge can be explained rather than investigated from scratch.
 
   When a capture does land on a retired intent anyway, the refund that follows is

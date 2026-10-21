@@ -1,0 +1,13 @@
+- **When an officer settles a booking-change review as money the member owes,
+  a booking paid entirely with account credit is now asked by card (#3947).**
+  A booking paid wholly with credit has no card payment behind it. Before this,
+  settling such a review as money owed was refused when the booking had no Xero
+  invoice, and the officer had to collect the money by hand. When the booking did
+  have an invoice, the amount went onto a supplementary Xero invoice instead.
+
+  The member is now asked to pay the extra by card, whether or not Xero is
+  connected. This is the rule ordinary booking edits have followed since #3502,
+  and the background retry that takes over when Stripe is briefly unavailable
+  follows it too. Bookings that already had money taken by card are asked the
+  same way as before, and a booking paid by internet banking is still billed
+  through its invoice.
