@@ -122,7 +122,7 @@ export function valueStrandNights(
       return { rule: "R1_STORED_ROWS", flag: null, nights: [], totalCents: 0 };
     }
     throw new RangeError(
-      `valueStrandNights: a strand holding no nights cannot carry ${guestTotalCents} cents (INV-MOD-028).`,
+      "valueStrandNights: a strand holding no nights cannot carry a non-zero stored total (INV-MOD-028).",
     );
   }
 
