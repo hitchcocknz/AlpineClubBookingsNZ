@@ -6,7 +6,10 @@
   payment's account-credit note, or a booking change's credit note on its
   invoice, the booking system recounted the payment's refunded total and left
   out only the cash the refund requests had paid back. The payment then showed
-  less refunded than the club had actually paid back.
+  less refunded than the club had actually paid back. Since the bank-transfer
+  floor (#4162) the total no longer drops below what the club recorded, but
+  the same recount raised a false "refund ledger divergence" alert instead, and
+  a payment it had already lowered stayed low.
 
   The recount now also counts every refund request the treasurer has marked
   paid back, at the amount recorded then. It does this while the request's

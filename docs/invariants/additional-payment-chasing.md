@@ -670,7 +670,8 @@ detail, line and total together (`INV-ADDPAY-042`).
   recount adds what each request's completed hand-back recorded
   (`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`), never its note, which may
   be queued or voided, or never queued (completed before the invoice), and
-  never the canonical note. It reads them after the payment row, so a
+  never the canonical note, so the floor never alerts on it and a total
+  dropped before #4215 is raised back. It reads them after the payment row, so a
   completion in between loses the claim and the repair re-runs. The booking
   repair tool nets the same figure from the cash a cancellation's note answers
   (`readPaidBackRefundRequests`, #4231), and queues a request's own note its
