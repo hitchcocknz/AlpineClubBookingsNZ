@@ -68,6 +68,7 @@ import {
   CARD_REFUND_OPERATION_WHERE,
   cardRefundPaymentBeforeFailure,
   cardRefundSliceFilledBy,
+  isOpenCardRefundOperationStatus,
   parseRefundAllocationPlan,
 } from "@/lib/open-card-refund-owed";
 import {
@@ -213,7 +214,7 @@ async function findOwner(
   const refundId = refund.id;
   const rows = await tx.paymentRecoveryOperation.findMany({ where: { paymentId: payment.id, ...CARD_REFUND_OPERATION_WHERE } });
   if (rows.some((row) => row.idempotencyKey === buildCardRefundFailedLaterRecoveryKey(refundId))) return "owed";
-  const open = rows.filter((row) => row.status !== PaymentRecoveryOperationStatus.SUCCEEDED);
+  const open = rows.filter((row) => isOpenCardRefundOperationStatus(row.status));
   for (const row of open) {
     const plan = parseRefundAllocationPlan(row.allocationPlan) ?? [];
     if (plan.some((slice) => slice.failedRefundIds?.includes(refundId))) return "owed";

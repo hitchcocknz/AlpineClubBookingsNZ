@@ -59,6 +59,39 @@ describe("classifyUnpaidAskBilling", () => {
     ).toEqual({ supplementaryInvoicedCents: 0, established: true });
   });
 
+  /**
+   * #3980 (round 3, the orchestrator's call): an increase that read no invoice
+   * and landed mid-create has its money on the primary invoice's GAP invoice,
+   * raised (never parked) by the create's check. A reduction that retires its
+   * unpaid ask must read that money as already invoiced and credit the offset
+   * - never re-invoice it: decision A's re-issue invoice bills only money a
+   * PARKED invoice held and the retire cancelled, and the gap invoice is
+   * neither parked nor cancelled. Counting it as supplementary money would
+   * raise a second invoice for what the open gap invoice still bills.
+   */
+  it("MUTATION #3980: an ask whose money a raised gap invoice bills is credited by note, never invoiced again", async () => {
+    const { splitUnpaidAskOffsetForXero } = await import("@/lib/additional-payment-ask");
+    const asked = row({ amountCents: 10_000, hadIssuedXeroInvoice: false, bookingModificationId: "mod_increase" });
+    const evidence = classifyUnpaidAskBilling({
+      rows: [asked],
+      retired: NOTHING_RETIRED,
+      modifications: [{ ...increase, priceDiffCents: 10_000 }],
+      intentMinters: NO_MINTERS,
+    });
+    expect(evidence).toEqual({ supplementaryInvoicedCents: 0, established: true });
+    // A 40.00 reduction set against the 100.00 ask: the 40.00 is credited, the
+    // smaller 60.00 ask is collected by card, and no second invoice is raised.
+    expect(
+      splitUnpaidAskOffsetForXero({
+        offsetCents: 4_000,
+        askLeftCents: 6_000,
+        supplementaryInvoicedCents: evidence.supplementaryInvoicedCents,
+        primaryInvoiceIssued: true,
+        billedByPrimaryEstablished: evidence.established,
+      }),
+    ).toEqual({ reissuedAskInvoiceCents: 0, reissuedAskInvoiceUnsureCents: 0, billedOffsetCents: 4_000, billedOffsetUnsureCents: 0 });
+  });
+
   it("MUTATION: a row a recovery minted reads that recovery's frozen answer, not the row's own or when it was written", () => {
     // The under-credit shape: the edit saw no invoice, its mint failed, the
     // primary invoice was raised (billing the edit), then the recovery minted.

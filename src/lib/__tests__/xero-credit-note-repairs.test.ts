@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   paymentTransactionAggregate: vi.fn(),
   paymentUpdateMany: vi.fn(),
   paymentFindUnique: vi.fn(),
+  manualRefundTaskFindMany: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -46,6 +47,9 @@ vi.mock("@/lib/prisma", () => ({
       // #4162: the bank-transfer floor reads the payment's own refund detail.
       aggregate: mocks.paymentTransactionAggregate,
     },
+    manualRefundTask: {
+      findMany: mocks.manualRefundTaskFindMany,
+    },
   },
 }));
 
@@ -59,6 +63,7 @@ vi.mock("@/lib/logger", () => ({
 
 import { repairRefundedPaymentBusinessState } from "@/lib/xero-inbound/credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "@/lib/xero-inbound/modification-note-refunds";
+import { COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 
 // #3979: the repair writes through a claim on what it read
 // (`updateMany` keyed on id, status and refunded total). These suites assert the
@@ -69,6 +74,8 @@ beforeEach(() => {
     return { count: 1 };
   });
   mocks.paymentTransactionFindMany.mockResolvedValue([]);
+  // #4215: no refund request paid back unless a suite says so.
+  mocks.manualRefundTaskFindMany.mockResolvedValue([]);
   // No refund detail by default, so the #4162 floor has nothing to keep.
   mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 0 } });
 });
@@ -76,6 +83,7 @@ beforeEach(() => {
 function payment(overrides: Record<string, unknown> = {}) {
   return {
     id: "pay-1",
+    bookingId: "booking-1",
     amountCents: 10000,
     refundedAmountCents: 0,
     status: PaymentStatus.SUCCEEDED,
@@ -97,6 +105,7 @@ async function runRepair(input: {
     total: number | null;
     appliedAmount?: number | null;
     remainingCredit?: number | null;
+    creditNoteNumber?: string;
   };
 }) {
   mocks.paymentFindMany.mockResolvedValue([input.paymentRow]);
@@ -110,6 +119,7 @@ async function runRepair(input: {
       total: input.creditNote.total,
       appliedAmount: input.creditNote.appliedAmount ?? null,
       remainingCredit: input.creditNote.remainingCredit ?? null,
+      creditNoteNumber: input.creditNote.creditNoteNumber,
     } as never,
     directPaymentIds: [input.paymentRow.id as string],
     modificationRefundAmountsByPaymentId: new Map(),
@@ -203,12 +213,34 @@ describe("repairRefundedPaymentBusinessState raise-only Stripe ledger floor (#13
     mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 5000 } });
     const result = await runRepair({
       paymentRow: payment({ source: PaymentSource.INTERNET_BANKING, refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED }),
-      creditNote: { status: "VOIDED", total: 50 },
+      creditNote: { status: "VOIDED", total: 50, creditNoteNumber: "CN-0042" },
     });
 
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(result).toEqual({ matchedPayments: 1, updatedPayments: 0 });
     expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({ errorType: "refund-ledger-divergence" }));
+    // #4230: where to look (payment, booking, note), the recount's total against the recorded refunds, and what to do.
+    const { BANK_TRANSFER_REFUND_SHORTFALL_ADVICE } = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
+    expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorMessage: `Bank-transfer payment pay-1 on booking booking-1: the refunds Xero accounts for on it add up to $0.00, less than the refunds the club recorded on it ($50.00). The recorded refunds were kept. Found when credit note CN-0042 changed in Xero. ${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}`,
+      }),
+    );
+    expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).toMatch(/no Xero credit note of its own.*raise a credit note by hand only for a refund whose credit note was never raised\. Never raise one by hand for a refund whose credit note was voided/);
+    expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).not.toMatch(/#\d/);
+  });
+
+  it("#4230: with no note number from Xero, the alert names the payment and booking and leaves the note out", async () => {
+    mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 5000 } });
+    await runRepair({
+      paymentRow: payment({ source: PaymentSource.INTERNET_BANKING, refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED }),
+      creditNote: { status: "AUTHORISED", total: 30 },
+    });
+    expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorMessage: expect.stringMatching(/^Bank-transfer payment pay-1 on booking booking-1: the refunds Xero accounts for on it add up to \$30\.00, less than the refunds the club recorded on it \(\$50\.00\)\. The recorded refunds were kept\. A refund/),
+      }),
+    );
   });
 
   it("#4162: lowers a bank-transfer total to its detail, never below it", async () => {
@@ -239,6 +271,115 @@ describe("repairRefundedPaymentBusinessState raise-only Stripe ledger floor (#13
     });
     expect(result).toEqual({ matchedPayments: 1, updatedPayments: 1 });
     expect(mocks.notifyXeroSyncError).toHaveBeenCalledTimes(1);
+  });
+});
+
+// -----------------------------------------------------------------------------
+// #4215 (`INV-PAY-118`): a refund request paid back by bank transfer moved the
+// refunded total by its own amount and carries its own note, never the
+// canonical one. A recount triggered by the canonical note keeps that cash,
+// read from the request's completed hand-back - however its note stands.
+// -----------------------------------------------------------------------------
+describe("#4215: a refund request's paid-back cash survives a canonical-note recount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.paymentUpdate.mockResolvedValue({});
+  });
+
+  const bankPayment = payment({
+    source: PaymentSource.INTERNET_BANKING,
+    amountCents: 20000,
+    refundedAmountCents: 15000,
+    status: PaymentStatus.PARTIALLY_REFUNDED,
+  });
+
+  it("MUTATION: keeps the request's $50 beside the canonical note's $100 - no write", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_1" }]);
+
+    const result = await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
+
+    // Before #4215 this wrote 10000: the request's cash dropped out.
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+    expect(result).toEqual({ matchedPayments: 1, updatedPayments: 0 });
+  });
+
+  it("reads the completed refund-request hand-backs of the repaired payments, and no other task", async () => {
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
+
+    expect(mocks.manualRefundTaskFindMany).toHaveBeenCalledWith({
+      where: { paymentId: { in: ["pay-1"] }, ...COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE },
+      select: { paymentId: true, amountCents: true, kind: true, occurrenceKey: true },
+    });
+    expect(COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE).toEqual({
+      kind: "CANCELLED_BOOKING_HAND_BACK",
+      status: "COMPLETED",
+      occurrenceKey: { startsWith: "refund-request-hand-back:" },
+    });
+  });
+
+  it("reads the requests after the payment row, so a completion between the reads loses the claim instead of being dropped", async () => {
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
+
+    const paymentRead = mocks.paymentFindMany.mock.invocationCallOrder[0]!;
+    const requestRead = mocks.manualRefundTaskFindMany.mock.invocationCallOrder[0]!;
+    expect(requestRead).toBeGreaterThan(paymentRead);
+  });
+
+  it("sums every request on the payment, and never one on another payment", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([
+      { paymentId: "pay-1", amountCents: 3000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_2" },
+      { paymentId: "pay-1", amountCents: 2000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_3" },
+      { paymentId: "pay-other", amountCents: 4000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_4" },
+    ]);
+
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
+
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("an edit's note reconciled on the payment's invoice keeps the request's cash too", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_5" }]);
+    mocks.paymentFindMany.mockResolvedValue([{ ...bankPayment, refundedAmountCents: 7000 }]);
+    mocks.xeroObjectLinkFindMany.mockResolvedValue([]);
+
+    await repairRefundedPaymentBusinessState({
+      creditNoteId: "cn-edit",
+      creditNote: { status: "AUTHORISED", total: 20 } as never,
+      directPaymentIds: [],
+      modificationRefundAmountsByPaymentId: new Map([["pay-1", 2000]]),
+    });
+
+    // Before #4215 this wrote 2000: the edit's $20 alone.
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("the canonical note voided with no refund detail recorded: the Xero-derived figure is the request's cash alone, never the note's", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_6" }]);
+
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "VOIDED", total: 100 } });
+
+    // The default detail is $0, so the #4162 floor has nothing to keep: this pins the recount's own sum.
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({ where: { id: "pay-1" }, data: { refundedAmountCents: 5000 } });
+  });
+
+  it("the canonical note voided beside a recorded detail: the #4162 floor keeps the detail for the nightly follow-up", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_6" }]);
+    mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 15000 } });
+
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("a total past the amount paid is clamped and reads REFUNDED", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 15000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_7" }]);
+
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "PAID", total: 100 } });
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "pay-1" },
+      data: { refundedAmountCents: 20000, status: PaymentStatus.REFUNDED },
+    });
   });
 });
 

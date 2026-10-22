@@ -331,6 +331,13 @@ import "./booking-ledger-census-capacity-race.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-3750-` fixtures.
 import "./booking-change-request-execution.realdb.test";
+// #3980 reuses it to prove an edit racing the booking's primary Xero invoice
+// create: a price increase committed mid-create is billed once on a
+// supplementary invoice anchored on the edit, a reduction raises one Xero
+// Operations task, and an edit arriving while the link's save holds the
+// Payment row is refused whole. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
+// it owns and cleans its own `race-3980-` fixtures.
+import "./primary-invoice-edit-race.realdb.test";
 // #3854 reuses it to prove a group organiser's settlement posts its children's
 // money to the booking ledger through the real card settle, the Internet Banking
 // invoice's inbound reconcile, the organiser cancel's refund plan and #3653's
@@ -362,6 +369,20 @@ import "./xero-refund-request-note-void.realdb.test";
 // the void's row and re-reads it. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
 // it owns and cleans its own `race-4223-` fixtures.
 import "./xero-canonical-refund-note-void-race.realdb.test";
+// #4215 reuses it to prove the inbound repair of a bank-transfer payment's
+// canonical refund note keeps the cash a refund request paid back through the
+// real completion - queued, raised or voided, and with the canonical note
+// voided. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
+// own `race-4215-` fixtures.
+import "./xero-bt-repair-request-cash.realdb.test";
+// #4230 reuses it to pin the bank-transfer recount: a group organiser's
+// hand-back moves no payment's total; the recount never writes the charge rows
+// the #4162 floor keeps; a later refund absorbed into the canonical note (#4287)
+// is kept by the floor and alerted; which void states reach that alert; and the
+// deploy note's read-only query.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4230-` fixtures.
+import "./xero-bt-recount-handbacks.realdb.test";
 // #4098 reuses it to prove closing a subscription charge as already paid: two
 // closes at once close it once (one audit row, each voidGeneration bumped
 // once), and a manual reversal committing while the close waits for the
@@ -443,6 +464,13 @@ import "./resolved-voided-refund-note-coverage.realdb.test";
 // failed write gives the row back PARTIAL. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4256-` fixtures.
 import "./xero-partial-repair-claim.realdb.test";
+// #4291 reuses it to prove a refund note Xero voided still recounts the payment
+// whose mirror the void turned off: the retry of a void event that died after
+// its link write finishes the recount, the mirror stays off and the pointer
+// released, and neither a live read nor a mirror retired unvoided resolves.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4291-` fixtures.
+import "./xero-voided-note-recount.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
