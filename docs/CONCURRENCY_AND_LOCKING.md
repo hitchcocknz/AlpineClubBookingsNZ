@@ -5550,10 +5550,11 @@ of a missing mirror, for VOIDED and DELETED, and proves the caller's rollback
 leaves neither the mirror nor its reservation. Its three-writer proof uses
 the real retry, the shared Payment-row lock, and the actual
 `enqueueXeroRefundCreditNoteOperation` existing-note branch: both statusless
-writes finish, the note remains inactive and VOIDED, and the enqueue releases
-the pointer while holding its own Payment row. A separate busy-Payment
-case proves the inactive mirror commits while the pointer stays put, then
-the existing nightly heal selects that inactive shape and releases it.
+writes finish, the note remains inactive and VOIDED, and the final pointer is
+null. This schedule does not force which waiter acquires the link first after
+the inbound commit. A separate busy-Payment case forces the nonblocking branch
+and proves fresh metadata commits while the pointer stays put; the existing
+nightly heal then selects that inactive shape and releases it.
 
 **Mixed releases.** The own-row-first order is consistent within this release;
 the old canonical writer takes siblings before its own row. Running both on

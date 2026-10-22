@@ -286,6 +286,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const { cleanupStaleCanonicalXeroObjectLinks } = await import("@/lib/xero-hardening-canonical-links");
       const metadata = { amountCents: 20_000, watermarkCents: 20_000, status: "VOIDED", total: 200 };
       await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID }, data: { active: false, metadata } });
+      const committedMetadata = { ...metadata, retryCommitProbe: "busy-payment-committed" };
       let release!: () => void;
       const mayCommit = new Promise<void>((resolve) => (release = resolve));
       let locked!: () => void;
@@ -295,17 +296,18 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         locked();
         await mayCommit;
       }, { timeout: 30_000 });
-      // A blocking-lock mutation is released before the transaction expires,
-      // then fails the elapsed-time assertion rather than hanging teardown.
+      // A blocking-lock mutation fails the transaction or elapsed-time check;
+      // the backstop still releases the holder so teardown cannot hang.
       const backstop = setTimeout(release, 10_000);
       try {
         await Promise.race([paymentLocked, holder.then(() => { throw new Error("Payment holder ended before locking"); })]);
         const startedAt = process.hrtime.bigint();
         await upsertXeroObjectLink({
           localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE, role: "REFUND_CREDIT_NOTE",
+          metadata: { retryCommitProbe: committedMetadata.retryCommitProbe },
         });
         expect(realElapsedMs(startedAt)).toBeLessThan(5_000);
-        expect(await state()).toEqual({ active: false, metadata, pointer: NOTE });
+        expect(await state()).toEqual({ active: false, metadata: committedMetadata, pointer: NOTE });
       } finally {
         clearTimeout(backstop);
         release();
@@ -315,7 +317,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const healed = await cleanupStaleCanonicalXeroObjectLinks();
       expect(healed.pointedInactiveCancelledRefundNoteMirrors).toBeGreaterThanOrEqual(1);
       expect(healed.releasedInactiveRefundNotePointers).toBeGreaterThanOrEqual(1);
-      expect(await state()).toEqual({ active: false, metadata, pointer: null });
+      expect(await state()).toEqual({ active: false, metadata: committedMetadata, pointer: null });
     });
   },
 );
