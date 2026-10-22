@@ -2313,7 +2313,8 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     transaction backs keeps the ledger route.
   - **Not while the organiser's group cancel is part-way through**
     (`groupCancelInProgress`): no hand-back is completed or raised, and no
-    edit changes the price.
+    edit, the guest-add door included, changes the price or charges a change
+    fee; the quote shows that refusal.
   - **No Xero note yet** (#4292): admins credit the group's invoice by hand.
   - **The mirror is capture evidence** (`paymentShowsCaptureEvidence`, Net
     Collected's included): never read as unpaid or flipped FAILED.

@@ -2211,8 +2211,9 @@ decision, 22 Oct 2026: the organiser is refunded, never the joiner's credit);
 on a cancelled one it is refused, task OPEN. While the organiser's group cancel
 is part-way through (the group CANCELLED, this child not yet claimed) a
 completion is refused, task OPEN, no edit or appeal raises a new one, and no
-edit changes the child's price whatever settlement it chose (the change is
-refused whole), so the organiser is never paid twice. No Xero
+edit (adding a guest included) changes the child's price or charges a change
+fee, whatever settlement it chose (the change is refused whole), so the
+organiser is never paid twice. No Xero
 note is queued until #4292: after the commit admins are alerted to credit the
 group's invoice by hand. See
 [`INV-PAY-136`](invariants/payment-and-settlement.md#inv-pay-136).
