@@ -1,4 +1,3 @@
-import type { Prisma } from "@prisma/client";
 import type { ClubFormat } from "@/lib/club-format";
 import { readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { formatCents } from "@/lib/utils";
@@ -10,28 +9,6 @@ import { readJsonRecord } from "./xero-booking-repair-utils";
 /** #4215 (`INV-PAY-118`): the cash this booking's payment paid back on refund requests, which no cancellation note answers. */
 export function paidBackRefundRequestCents(context: Pick<BookingClassificationContext, "paidBackRefundRequests">): number {
   return context.paidBackRefundRequests.reduce((sum, request) => sum + request.amountCents, 0);
-}
-
-/**
- * #4231: the payments, of these, that ever had a refund note linked
- * (`REFUND_CREDIT_NOTE`), active or not - the loader's own links are the
- * active ones only, and a deactivated link is still a note Xero may hold.
- */
-export async function readPaymentsEverRefundNoted(
-  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
-  paymentIds: readonly string[],
-): Promise<Set<string>> {
-  if (paymentIds.length === 0) return new Set();
-  const links =
-    (await db.xeroObjectLink.findMany({
-      where: { localModel: "Payment", localId: { in: [...paymentIds] }, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
-      select: { localModel: true, localId: true, xeroObjectType: true, role: true },
-    })) ?? [];
-  return new Set(
-    links
-      .filter((link) => link.localModel === "Payment" && link.xeroObjectType === "CREDIT_NOTE" && link.role === "REFUND_CREDIT_NOTE" && paymentIds.includes(link.localId))
-      .map((link) => link.localId),
-  );
 }
 
 /** Each request's amount in the club's format, for the finding's wording; set after the load. */
@@ -119,14 +96,18 @@ export function addRefundRequestNoteNotQueuedFindings({
 
   for (const request of missing) {
     const amount = request.amountLabel ?? "the amount in this finding's details";
-    const opening = `Refund request ${request.refundRequestId} was paid back by bank transfer (${amount}) before the booking had a Xero invoice, so its own refund credit note was never queued.`;
+    // #4231 lens round 4 (F1): the check that prevents a second credit comes first.
+    const opening =
+      `First check this invoice in Xero for a credit already raised for this request (${amount}). ` +
+      "If there is one, nothing more is needed: do not raise another. The app cannot record a credit raised by hand for a request's note it never queued, so this finding stays. " +
+      `Refund request ${request.refundRequestId} was paid back by bank transfer (${amount}) before the booking had a Xero invoice, so its own refund credit note was never queued.`;
     const details = { paymentId: payment.id, refundRequestId: request.refundRequestId, refundAmountCents: request.amountCents };
     if (cancellationNote) {
       const reason =
-        `${opening} This payment already has a cancellation refund credit note, and one raised before this release may already include the request's ${amount}. ` +
-        "Check in Xero: compare that note's lines with the cancellation's own refund (the booking's cancellation in the app, or its refund lines in Xero). " +
+        `${opening} This payment may have a cancellation refund credit note (one that was voided, or never reached Xero, holds nothing), and one raised before this release may already include the request's ${amount}. ` +
+        "Compare that note's lines in Xero with the cancellation's own refund (the booking's cancellation in the app, or its refund lines in Xero). " +
         `If the request's ${amount} is in it, edit the note in place to the cancellation's own refund - remove its allocations and refund payments first, then record them again; never void it - and then raise the request's own credit note by hand in Xero. ` +
-        `If it is not, raise the request's own credit note by hand in Xero. The app has no resolved-in-Xero record for a request's note it never queued, so this finding stays after the credit is raised.`;
+        "If it is not, and no credit for the request exists yet, raise the request's own credit note by hand in Xero.";
       const action = addAction(actionMap, buildManualReviewAction(context.booking.id, reason));
       addFinding(findings, { code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review", summary: reason, safeToAutoApply: false, details, actionKeys: [action.key] });
       continue;
@@ -142,7 +123,7 @@ export function addRefundRequestNoteNotQueuedFindings({
     addFinding(findings, {
       code: "REFUND_REQUEST_NOTE_NOT_QUEUED",
       severity: "critical",
-      summary: `${opening} Check Xero for a credit raised by hand for this request before applying this action by its key.`,
+      summary: `${opening} If no credit for the request exists yet, apply this action by its key to queue the request's own credit note.`,
       safeToAutoApply: false,
       details,
       actionKeys: [action.key],

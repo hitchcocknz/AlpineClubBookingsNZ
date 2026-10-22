@@ -549,14 +549,14 @@ export interface BookingClassificationContext {
   /**
    * #4215 (`INV-PAY-118`): the refund requests this booking's payment paid
    * back (`readPaidBackRefundRequests`). Their cash no cancellation note
-   * answers, and each queues its own note (#4231). The inbound recount reads
+   * answers; each has its own note, which the repair tool may offer (#4231). The inbound recount reads
    * the same rows.
    */
   paidBackRefundRequests: Array<PaidBackRefundRequest & { amountLabel?: string }>;
   /**
    * #4231: whether this booking's payment ever had a refund note linked
-   * (`REFUND_CREDIT_NOTE`), active or not (`readPaymentsEverRefundNoted`). Read
-   * only for a payment with a paid-back refund request.
+   * (`REFUND_CREDIT_NOTE`), active or not (`refundNoteSetsForPayments`, the
+   * same read as `cancelledRefundNoteIds`).
    */
   everRefundNoteLinked: boolean;
   /**

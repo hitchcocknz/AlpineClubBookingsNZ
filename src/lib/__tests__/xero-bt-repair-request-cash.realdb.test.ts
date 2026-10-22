@@ -339,6 +339,22 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await requestNoteRows()).toEqual([{ key: REQUEST_KEY, cents: 5_000 }]);
     });
 
+    it("MUTATION (gate: link role): an account-credit note's link and another request's own note link are no cancellation note - the request's note is still offered", async () => {
+      await seed({ invoiced: false });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: INVOICE_ID } });
+      for (const [id, role, metadata] of [
+        ["cn-race-4215-account", "ACCOUNT_CREDIT_NOTE", { amountCents: 2_000 }],
+        ["cn-race-4215-other-request", "REFUND_REQUEST_CREDIT_NOTE", { amountCents: 2_000, refundRequestId: `${REQUEST_ID}-other` }],
+      ] as const) {
+        await prisma.xeroObjectLink.create({
+          data: { localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: id, role, active: true, metadata },
+        });
+      }
+
+      // The real loader's one read is by role: neither link makes a cancellation note.
+      expect(await repairToolOnRefundNote()).toEqual({ queued: [], review: true, requestNotes: [5_000] });
+    });
+
     it("MUTATION (gate: link, active or not): a cancellation note whose link was deactivated still sends the request to a person", async () => {
       await seed({ invoiced: false });
       await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: INVOICE_ID } });

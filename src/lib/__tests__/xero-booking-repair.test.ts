@@ -488,7 +488,10 @@ function createDependencies(state: {
         findMany: vi.fn().mockResolvedValue(state.bookings),
       },
       xeroObjectLink: {
-        findMany: vi.fn().mockResolvedValue(links),
+        // A read naming one role (the refund-note sets, #4231) gets that role's links only, as the real query does.
+        findMany: vi.fn().mockImplementation(async ({ where }: any = {}) =>
+          typeof where?.role === "string" ? links.filter((link: any) => link.role === where.role) : links,
+        ),
       },
       xeroSyncOperation: {
         findMany: vi.fn().mockResolvedValue(operations),
@@ -8060,7 +8063,9 @@ describe("a refund request's own note never answers for the payment's refund not
           code: "REFUND_REQUEST_NOTE_NOT_QUEUED",
           severity: "critical",
           safeToAutoApply: false,
-          summary: expect.stringMatching(/^Refund request rr_1 was paid back by bank transfer \(\$30\.00\).*Check Xero for a credit raised by hand/),
+          summary: expect.stringMatching(
+            /^First check this invoice in Xero for a credit already raised for this request \(\$30\.00\)\. If there is one, nothing more is needed: do not raise another\..*Refund request rr_1 was paid back.*If no credit for the request exists yet, apply this action by its key/,
+          ),
           actions: [expect.objectContaining({ key: "queue:refund-request-credit-note:payment_1:rr_1" })],
         }),
       );
@@ -8124,7 +8129,7 @@ describe("a refund request's own note never answers for the payment's refund not
       severity: "manual_review",
       safeToAutoApply: false,
       summary: expect.stringMatching(
-        /Refund request rr_1 .*\$30\.00.*may already include the request's \$30\.00.*compare that note's lines with the cancellation's own refund.*edit the note in place.*never void it.*raise the request's own credit note by hand in Xero.*If it is not, raise the request's own credit note by hand/,
+        /^First check this invoice in Xero for a credit already raised for this request \(\$30\.00\)\. If there is one, nothing more is needed: do not raise another\..*Refund request rr_1 .*may have a cancellation refund credit note \(one that was voided, or never reached Xero, holds nothing\).*may already include the request's \$30\.00.*Compare that note's lines in Xero with the cancellation's own refund.*edit the note in place.*never void it.*raise the request's own credit note by hand in Xero.*If it is not, and no credit for the request exists yet, raise the request's own credit note by hand/,
       ),
     });
     const expectPerson = (booking: Awaited<ReturnType<typeof run>>) => {
@@ -8157,11 +8162,13 @@ describe("a refund request's own note never answers for the payment's refund not
       expectPerson(await run({ operations: [], links: [cancellationNoteLink({ active: false, metadata: { amountCents: 7000, status: "VOIDED" } })], payment: { refundedAmountCents: 10000 } }));
     });
 
-    it("MUTATION (gate: create row): a cancellation note's create row alone - FAILED, queued or a legacy row naming no queue type - gets a person", async () => {
+    it("MUTATION (gate: create row): a cancellation note's create row alone - FAILED, queued, CANCELLED or a legacy row naming no queue type - gets a person", async () => {
       for (const overrides of [
         { status: "FAILED", xeroObjectId: null, xeroObjectType: null },
         { status: "PENDING", xeroObjectId: null, xeroObjectType: null },
         { queueType: null, requestPayload: { refundAmountCents: 7000 } },
+        // Lens round 4 (F4): a withdrawn row too - the gate reads no status.
+        { status: "CANCELLED", xeroObjectId: null, xeroObjectType: null },
       ]) {
         expectPerson(await run({ operations: [cancellationNoteOp(overrides)], links: [], payment: { refundedAmountCents: 10000 } }));
       }

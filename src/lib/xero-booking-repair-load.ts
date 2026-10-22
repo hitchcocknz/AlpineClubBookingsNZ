@@ -21,7 +21,6 @@ import {
 import { buildBookingCancellationRefundIdempotencyKey } from "./payment-recovery-keys";
 import { loadFailedLaterOwedCents } from "./xero-booking-repair-failed-later";
 import { readPaidBackRefundRequests } from "@/lib/xero-inbound/refund-request-paid-back";
-import { readPaymentsEverRefundNoted } from "./xero-booking-repair-request-notes";
 import { groupOpenIntentRecoveriesByBooking, intentRecoveryKeyMaps } from "./xero-booking-repair-intent-recoveries";
 import { unallocatedAppliedCreditCentsByBooking } from "@/lib/xero-applied-credit-ledger-state";
 import {
@@ -47,7 +46,7 @@ import {
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { isPartPaymentReviewTask, NOT_NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { refundPaymentLinkWhere } from "@/lib/xero-refund-note-settlement";
-import { cancelledRefundNoteIds as cancelledRefundNoteIdsFor } from "@/lib/xero-refund-note-status";
+import { refundNoteSetsForPayments } from "@/lib/xero-refund-note-status";
 
 /** A settled edit-review charge share, carrying the booking it was raised on. */
 type EditReviewChargeShareRecord = EditReviewChargeShareRow & {
@@ -433,7 +432,6 @@ export async function loadAuditData(
   const failedLaterOwedByPaymentId = await loadFailedLaterOwedCents(deps, paymentIds);
   // #4215 (`INV-PAY-118`): the one reader the inbound recount uses too.
   const paidBackRefundRequests = await readPaidBackRefundRequests(paymentIds, deps.prisma);
-  const everRefundNoted = await readPaymentsEverRefundNoted(deps.prisma, [...new Set(paidBackRefundRequests.map((request) => request.paymentId))]);
   const unallocatedAppliedCreditByBookingId = await unallocatedAppliedCreditCentsByBooking(bookingIds, deps.prisma);
   const allocatedAppliedCreditByBookingId = new Map(
     appliedCreditAllocations.map((row) => [
@@ -452,7 +450,8 @@ export async function loadAuditData(
       : [];
 
   // #4091: refund notes Xero voided, active or not (`paymentLinks` holds active links only).
-  const cancelledRefundNoteIds = await cancelledRefundNoteIdsFor(paymentIds, deps.prisma);
+  // #4231: one read gives the voided notes and the payments ever refund-noted.
+  const { cancelled: cancelledRefundNoteIds, notedPaymentIds: refundNotedPaymentIds } = await refundNoteSetsForPayments(paymentIds, deps.prisma);
   const linksByLocalKey = new Map<string, XeroObjectLinkRecord[]>();
   for (const link of links) {
     const key = makeLocalKey(link.localModel, link.localId);
@@ -652,7 +651,7 @@ export async function loadAuditData(
     cancelledBookingHandBackPaymentIds:
       handBackPaymentIdsByBookingId.get(booking.id) ?? new Set<string>(),
     paidBackRefundRequests: paidBackRefundRequests.filter((request) => request.paymentId === booking.payment?.id),
-    everRefundNoteLinked: booking.payment ? everRefundNoted.has(booking.payment.id) : false,
+    everRefundNoteLinked: booking.payment ? refundNotedPaymentIds.has(booking.payment.id) : false,
     refundNoteUncoveredCents: booking.payment
       ? refundNoteUncoveredCentsByPaymentId.get(booking.payment.id) ?? null
       : null,
