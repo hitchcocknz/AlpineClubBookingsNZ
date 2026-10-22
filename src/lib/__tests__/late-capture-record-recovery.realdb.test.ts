@@ -525,17 +525,24 @@ function lateCaptureRefund(): Stripe.Refund {
         await releaseReaders.promise;
         return [lateCaptureRefund()];
       };
-      const racing = Promise.all([
+      const readers = [
         redeliverLateCapture(),
         redeliverLateCapture(),
         recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID),
-      ]);
+      ] as const;
+      const racing = Promise.all(readers);
+      let readinessDeadline: ReturnType<typeof setTimeout> | undefined;
       try {
         // Each reader has already observed the missing record. The real
         // under-lock claim, rather than scheduling luck, must choose one winner.
         await Promise.race([
           allReading.promise,
-          racing.then(() => { throw new Error("recovery finished before all three readers reached Stripe"); }),
+          ...readers.map((reader) => reader.then(() => {
+            throw new Error("a recovery reader finished before all three readers reached Stripe");
+          })),
+          new Promise<never>((_resolve, reject) => {
+            readinessDeadline = setTimeout(() => reject(new Error("three recovery readers did not reach Stripe")), 5_000);
+          }),
         ]);
         releaseReaders.resolve();
         const [first, second, healed] = await racing;
@@ -544,6 +551,7 @@ function lateCaptureRefund(): Stripe.Refund {
         expect(healed.unresolved).toBe(false);
         expect(stripe.listed).toBe(3);
       } finally {
+        clearTimeout(readinessDeadline);
         releaseReaders.resolve();
         await Promise.allSettled([racing]);
       }
