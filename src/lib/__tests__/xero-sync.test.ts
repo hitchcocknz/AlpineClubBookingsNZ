@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { CreditNoteSpentOutsideAppError } from "@/lib/xero-credit-note-spent-outside-app";
 import type { Prisma } from "@prisma/client";
 
 const mocks = vi.hoisted(() => ({
@@ -1271,6 +1272,36 @@ describe("failXeroSyncOperation keepCancelled", () => {
   });
 });
 
+describe("failXeroSyncOperation named errors (#4218)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.operationCount.mockResolvedValue(0);
+    mocks.operationUpdate.mockResolvedValue({ id: "op_1", status: "FAILED" });
+  });
+
+  it("records the named code for a credit note spent outside the app", async () => {
+    await failXeroSyncOperation(
+      "op_1",
+      new CreditNoteSpentOutsideAppError("only $0.00 left in Xero", "cn_1", 0, 5250)
+    );
+    expect(mocks.operationUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: "op_1" },
+        data: expect.objectContaining({
+          status: "FAILED",
+          lastErrorCode: "CREDIT_NOTE_SPENT_OUTSIDE_APP",
+        }),
+      })
+    );
+  });
+
+  it("records no named code for any other failure", async () => {
+    await failXeroSyncOperation("op_1", new Error("bad request"));
+    const { data } = mocks.operationUpdate.mock.calls[0][0];
+    expect(data.lastErrorCode).not.toBe("CREDIT_NOTE_SPENT_OUTSIDE_APP");
+  });
+});
+
 // #3462: a retry that claimed the original RUNNING abandons the claim when its
 // handler throws early - but only its own claim, never a row the handler
 // already completed or a later claim re-stamped.
@@ -1379,5 +1410,95 @@ describe("completeXeroSyncOperation keepSucceeded", () => {
       completeXeroSyncOperation("op_note", { status: "PARTIAL" }, { store: tx as never, keepSucceeded: true }),
     ).resolves.toMatchObject({ status: "PARTIAL" });
     expect(tx.xeroSyncOperation.update).not.toHaveBeenCalled();
+  });
+});
+
+// #4049: a row that succeeds no longer carries an earlier wait's or failure's
+// code and message (the operations panel showed them in red); PARTIAL keeps them.
+describe("completeXeroSyncOperation clears a stale error on success", () => {
+  function store() {
+    return {
+      xeroSyncOperation: {
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        update: vi.fn(async ({ data }: { data: Record<string, unknown> }) => ({ id: "op_note", ...data })),
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ id: "op_note", status: "SUCCEEDED" }),
+      },
+    };
+  }
+
+  it("MUTATION: a SUCCEEDED completion clears lastErrorCode and lastErrorMessage", async () => {
+    const tx = store();
+    await completeXeroSyncOperation("op_note", {}, { store: tx as never });
+    expect(tx.xeroSyncOperation.update).toHaveBeenCalledWith({
+      where: { id: "op_note" },
+      data: expect.objectContaining({ status: "SUCCEEDED", lastErrorCode: null, lastErrorMessage: null }),
+    });
+  });
+
+  it("MUTATION: the keepSucceeded claim clears them too", async () => {
+    const tx = store();
+    await completeXeroSyncOperation("op_note", { status: "SUCCEEDED" }, { store: tx as never, keepSucceeded: true });
+    expect(tx.xeroSyncOperation.updateMany).toHaveBeenCalledWith({
+      where: { id: "op_note", status: { not: "SUCCEEDED" } },
+      data: expect.objectContaining({ status: "SUCCEEDED", lastErrorCode: null, lastErrorMessage: null }),
+    });
+  });
+
+  it("a PARTIAL completion leaves them as they are", async () => {
+    const tx = store();
+    await completeXeroSyncOperation("op_note", { status: "PARTIAL" }, { store: tx as never });
+    const [{ data }] = tx.xeroSyncOperation.update.mock.calls[0] as [{ data: Record<string, unknown> }];
+    expect(data).not.toHaveProperty("lastErrorCode");
+    expect(data).not.toHaveProperty("lastErrorMessage");
+  });
+});
+
+// #4256: a retry's completion lands only on its own claim, clears the claim's
+// marker code, and a repair that stays PARTIAL can opt out of the alert.
+describe("completeXeroSyncOperation onlyIfRunningSince", () => {
+  const claimedAt = new Date("2026-06-30T23:59:00.000Z");
+  function store(count: number) {
+    return {
+      xeroSyncOperation: {
+        updateMany: vi.fn().mockResolvedValue({ count }),
+        update: vi.fn(),
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ id: "op_repair", status: "PARTIAL" }),
+      },
+    };
+  }
+
+  it("MUTATION: writes only onto that RUNNING claim, and answers null when the claim is gone", async () => {
+    const tx = store(0);
+    await expect(
+      completeXeroSyncOperation("op_repair", { status: "SUCCEEDED" }, { store: tx as never, onlyIfRunningSince: claimedAt }),
+    ).resolves.toBeNull();
+    expect(tx.xeroSyncOperation.updateMany).toHaveBeenCalledWith({
+      where: { id: "op_repair", status: "RUNNING", startedAt: claimedAt },
+      data: expect.objectContaining({ status: "SUCCEEDED" }),
+    });
+    expect(tx.xeroSyncOperation.update).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: a PARTIAL completion onto the claim clears its marker code and takes the message it is given", async () => {
+    const tx = store(1);
+    await completeXeroSyncOperation(
+      "op_repair",
+      { status: "PARTIAL", lastErrorMessage: "The invoice email still failed." },
+      { store: tx as never, onlyIfRunningSince: claimedAt },
+    );
+    expect(tx.xeroSyncOperation.updateMany.mock.calls[0][0].data).toMatchObject({
+      status: "PARTIAL",
+      lastErrorCode: null,
+      lastErrorMessage: "The invoice email still failed.",
+    });
+  });
+
+  it("MUTATION: alert false raises no repeated-failure alert for a row left PARTIAL", async () => {
+    const { maybeNotifyXeroRepeatedFailure } = await import("@/lib/xero-hardening");
+    vi.mocked(maybeNotifyXeroRepeatedFailure).mockClear();
+    await completeXeroSyncOperation("op_repair", { status: "PARTIAL" }, { store: store(1) as never, onlyIfRunningSince: claimedAt, alert: false });
+    expect(maybeNotifyXeroRepeatedFailure).not.toHaveBeenCalled();
+    await completeXeroSyncOperation("op_repair", { status: "PARTIAL" }, { store: store(1) as never, onlyIfRunningSince: claimedAt });
+    expect(maybeNotifyXeroRepeatedFailure).toHaveBeenCalledTimes(1);
   });
 });
