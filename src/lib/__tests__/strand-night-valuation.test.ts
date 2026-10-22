@@ -252,20 +252,43 @@ describe("valueStrandNights — properties", () => {
     fc.constant(undefined),
     fc.integer({ min: -50_000, max: -1 }),
   );
+  const sourceArb = fc.constantFrom(
+    undefined,
+    "SOLD",
+    "OFFICER_PRICED",
+    "RATE_DERIVED",
+    "EVEN_SPLIT",
+    "UNKNOWN",
+  ) satisfies fc.Arbitrary<HeldNightPrice["priceSource"]>;
   const strandArb = fc
     .tuple(
       fc.shuffledSubarray(ALL_DATES, { minLength: 1 }),
       fc.array(rowArb, { minLength: 14, maxLength: 14 }),
+      fc.array(sourceArb, { minLength: 14, maxLength: 14 }),
       fc.integer({ min: -100_000, max: 300_000 }),
     )
-    .map(([dates, rows, total]) => ({
-      nights: dates.map((date, i) => night(date, rows[i])),
+    .map(([dates, rows, sources, total]) => ({
+      nights: dates.map((date, i) => night(date, rows[i], sources[i])),
       total,
     }));
+  // Half the strands get the total their usable rows add up to, so R1 and R2's
+  // equality boundary are exercised and not only reached by chance.
+  const reconcilingStrandArb = strandArb.map(({ nights }) => ({
+    nights,
+    total: nights.reduce(
+      (sum, n) => (isUsable(n.priceCents) ? sum + n.priceCents : sum),
+      0,
+    ),
+  }));
+  const anyStrandArb = fc.oneof(strandArb, reconcilingStrandArb);
+
+  function isUsable(value: number | null | undefined): value is number {
+    return typeof value === "number" && Number.isInteger(value) && value >= 0;
+  }
 
   it("always values every night held, in integer cents, summing to the stored total (or $0 for a negative one)", () => {
     fc.assert(
-      fc.property(strandArb, ({ nights, total }) => {
+      fc.property(anyStrandArb, ({ nights, total }) => {
         const result = valueStrandNights(nights, total);
         const sum = result.nights.reduce((acc, n) => acc + n.valueCents, 0);
         const expected = total < 0 ? 0 : total;
@@ -284,12 +307,12 @@ describe("valueStrandNights — properties", () => {
 
   it("never moves a usable row unless the rows cannot reconcile (R1 and R2 keep every usable row)", () => {
     fc.assert(
-      fc.property(strandArb, ({ nights, total }) => {
+      fc.property(anyStrandArb, ({ nights, total }) => {
         const result = valueStrandNights(nights, total);
         if (result.rule !== "R1_STORED_ROWS" && result.rule !== "R2_FILL_UNVALUED") return;
         result.nights.forEach((valued, i) => {
           const stored = nights[i].priceCents;
-          if (typeof stored === "number" && Number.isInteger(stored) && stored >= 0) {
+          if (isUsable(stored)) {
             expect(valued).toEqual({ date: valued.date, valueCents: stored, basis: "STORED_ROW" });
           } else {
             expect(valued.basis).toBe("SPLIT");
@@ -302,7 +325,7 @@ describe("valueStrandNights — properties", () => {
 
   it("splits within one cent, with the larger shares on the earliest split nights", () => {
     fc.assert(
-      fc.property(strandArb, ({ nights, total }) => {
+      fc.property(anyStrandArb, ({ nights, total }) => {
         const result = valueStrandNights(nights, total);
         const split = result.nights
           .filter((n) => n.basis === "SPLIT")
@@ -312,6 +335,25 @@ describe("valueStrandNights — properties", () => {
           expect(split[i - 1] - split[i]).toBeGreaterThanOrEqual(0);
           expect(split[0] - split[i]).toBeLessThanOrEqual(1);
         }
+      }),
+      { numRuns: 500 },
+    );
+  });
+
+  it("picks the rule D1 states, read from the rows alone and never from their provenance", () => {
+    fc.assert(
+      fc.property(anyStrandArb, ({ nights, total }) => {
+        const usable = nights.filter((n) => isUsable(n.priceCents));
+        const rowSum = usable.reduce((sum, n) => sum + (n.priceCents as number), 0);
+        const expected =
+          total < 0
+            ? "NEGATIVE_TOTAL"
+            : usable.length === nights.length && rowSum === total
+              ? "R1_STORED_ROWS"
+              : usable.length < nights.length && rowSum <= total
+                ? "R2_FILL_UNVALUED"
+                : "R3_EVEN_SPLIT";
+        expect(valueStrandNights(nights, total).rule).toBe(expected);
       }),
       { numRuns: 500 },
     );
