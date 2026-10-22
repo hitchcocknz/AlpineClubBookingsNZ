@@ -44,7 +44,7 @@ reason: the paid-cancel gate and the cancel's capture evidence each pass the
   hand-back's own lines in the same branch.
 
 file: src/app/api/bookings/[id]/guests/route.ts
-lines: 1688
+lines: 1694
 reason: the guest-add door settles its own price change rather than through
   `applyPaymentAdjustments`, so it asks the same refusal every other edit door
   asks there - no price change of a joiner's booking the organiser paid for by
