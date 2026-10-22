@@ -328,12 +328,22 @@ describe("#4215: a refund request's paid-back cash survives a canonical-note rec
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
   });
 
-  it("the canonical note voided: only the request's cash stays (INV-ADDPAY-041)", async () => {
+  it("the canonical note voided with no refund detail recorded: the Xero-derived figure is the request's cash alone, never the note's", async () => {
     mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_6" }]);
 
     await runRepair({ paymentRow: bankPayment, creditNote: { status: "VOIDED", total: 100 } });
 
+    // The default detail is $0, so the #4162 floor has nothing to keep: this pins the recount's own sum.
     expect(mocks.paymentUpdate).toHaveBeenCalledWith({ where: { id: "pay-1" }, data: { refundedAmountCents: 5000 } });
+  });
+
+  it("the canonical note voided beside a recorded detail: the #4162 floor keeps the detail for the nightly follow-up", async () => {
+    mocks.manualRefundTaskFindMany.mockResolvedValue([{ paymentId: "pay-1", amountCents: 5000, kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "refund-request-hand-back:rr_6" }]);
+    mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 15000 } });
+
+    await runRepair({ paymentRow: bankPayment, creditNote: { status: "VOIDED", total: 100 } });
+
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
   });
 
   it("a total past the amount paid is clamped and reads REFUNDED", async () => {

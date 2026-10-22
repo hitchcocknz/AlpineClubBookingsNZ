@@ -8045,12 +8045,13 @@ describe("a refund request's own note never answers for the payment's refund not
     const requestNoteActions = (actions: Array<{ type: string; payload?: unknown }>) =>
       actions.filter((action) => action.type === "QUEUE_REFUND_REQUEST_CREDIT_NOTE");
 
-    it("MUTATION: queues the request's own note for the cash its completion recorded, keyed by the request", async () => {
+    it("MUTATION: offers the request's own note for the cash its completion recorded, keyed by the request - for an officer to confirm", async () => {
       const booking = await run({ operations: [], links: [], payment: { refundedAmountCents: 3000 } });
       expect(requestNoteActions(booking.actions)).toEqual([
         expect.objectContaining({
           key: "queue:refund-request-credit-note:payment_1:rr_1",
-          safeToAutoApply: true,
+          // Lens F1/F2: never auto-applied - a credit raised by hand in Xero is invisible here.
+          safeToAutoApply: false,
           payload: { paymentId: "payment_1", refundRequestId: "rr_1", refundAmountCents: 3000 },
         }),
       ]);
@@ -8058,6 +8059,8 @@ describe("a refund request's own note never answers for the payment's refund not
         expect.objectContaining({
           code: "REFUND_REQUEST_NOTE_NOT_QUEUED",
           severity: "critical",
+          safeToAutoApply: false,
+          summary: expect.stringContaining("Check Xero for a credit raised by hand"),
           actions: [expect.objectContaining({ key: "queue:refund-request-credit-note:payment_1:rr_1" })],
         }),
       );
@@ -8065,20 +8068,125 @@ describe("a refund request's own note never answers for the payment's refund not
       expect(booking.actions.map((action) => action.type)).not.toContain("QUEUE_REFUND_CREDIT_NOTE");
     });
 
-    it("applies through the request's own enqueue, never the payment's refund note", async () => {
-      const cancelled = cancelledInternetBanking();
-      Object.assign(cancelled.payment, { refundedAmountCents: 3000 });
-      const deps = createDependencies({
-        bookings: [cancelled],
-        links: [],
-        operations: [makePrimaryInvoiceCreateOperation()],
-        paidBackRefundRequests: paidBack,
+    it("MUTATION (lens F1): --apply alone queues nothing; the officer's --apply-action goes through the request's own enqueue, never the payment's refund note", async () => {
+      const deps = () => {
+        const cancelled = cancelledInternetBanking();
+        Object.assign(cancelled.payment, { refundedAmountCents: 3000 });
+        return createDependencies({
+          bookings: [cancelled],
+          links: [],
+          operations: [makePrimaryInvoiceCreateOperation()],
+          paidBackRefundRequests: paidBack,
+        });
+      };
+
+      const unconfirmed = deps();
+      await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: unconfirmed, scope: { all: true } });
+      expect(unconfirmed.enqueueXeroRefundRequestCreditNoteOperation).not.toHaveBeenCalled();
+
+      const confirmed = deps();
+      await runBookingXeroRepair(CLUB_FORMAT_TEST, {
+        apply: true,
+        applyActionKeys: ["queue:refund-request-credit-note:payment_1:rr_1"],
+        dependencies: confirmed,
+        scope: { all: true },
       });
+      expect(confirmed.enqueueXeroRefundRequestCreditNoteOperation).toHaveBeenCalledWith({ paymentId: "payment_1", refundRequestId: "rr_1", amountCents: 3000 });
+      expect(confirmed.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    });
 
-      await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+    // Lens F1 (probe-confirmed): before #4231 the tool, or an officer, could
+    // size the cancellation's note to the whole refunded total - a $100 note
+    // for $70 of cancellation and the request's $30. A $30 request note beside
+    // it would have Xero credit $130 against $100 handed back.
+    const cancellationNoteOp = (refundAmountCents: number | null, overrides: Record<string, unknown> = {}) =>
+      makeOperation({
+        id: "operation_cancel_note",
+        localModel: "Payment",
+        localId: "payment_1",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        status: "SUCCEEDED",
+        queueType: "REFUND_CREDIT_NOTE",
+        correlationKey: "payment:payment_1:refund-credit-note:v1",
+        idempotencyKey: "payment:payment_1:refund-credit-note:v1",
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn_cancel",
+        requestPayload: { queueType: "REFUND_CREDIT_NOTE", ...(refundAmountCents === null ? {} : { refundAmountCents }), refundMethod: "internet-banking" },
+        ...overrides,
+      });
+    const cancellationNoteLink = (metadata: Record<string, unknown>) =>
+      paymentLink({ id: "link_cancel_note", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_cancel", role: "REFUND_CREDIT_NOTE", metadata });
+    const foldedReview = expect.objectContaining({
+      code: "REFUND_REQUEST_NOTE_NOT_QUEUED",
+      severity: "manual_review",
+      safeToAutoApply: false,
+      summary: expect.stringContaining("folded into the cancellation's note"),
+    });
 
-      expect(deps.enqueueXeroRefundRequestCreditNoteOperation).toHaveBeenCalledWith({ paymentId: "payment_1", refundRequestId: "rr_1", amountCents: 3000 });
-      expect(deps.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+    it("MUTATION (lens F1): a cancellation note that already holds the request's cash gets a person, never a second credit", async () => {
+      const booking = await run({
+        operations: [cancellationNoteOp(10000)],
+        links: [cancellationNoteLink({ amountCents: 10000, status: "AUTHORISED" })],
+        payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_cancel" },
+      });
+      expect(requestNoteActions(booking.actions)).toEqual([]);
+      expect(booking.findings).toContainEqual(foldedReview);
+      expect(booking.findings.find((finding) => finding.code === "REFUND_REQUEST_NOTE_NOT_QUEUED")?.details).toMatchObject({
+        refundNotesRecordedCents: 10000,
+        cancellationOwnCashCents: 7000,
+        requestCashCents: 3000,
+      });
+    });
+
+    it("MUTATION (lens F1): the same once the recount has added the request's cash above the charge rows - the rows, not the total, are the cash", async () => {
+      const booking = await run({
+        operations: [cancellationNoteOp(10000)],
+        links: [cancellationNoteLink({ amountCents: 10000 })],
+        payment: {
+          refundedAmountCents: 13000,
+          xeroRefundCreditNoteId: "cn_cancel",
+          transactions: [{ id: "txn_1", kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: 10000, refundedAmountCents: 10000, status: "REFUNDED" }],
+        },
+      });
+      expect(requestNoteActions(booking.actions)).toEqual([]);
+      expect(booking.findings).toContainEqual(foldedReview);
+    });
+
+    it("offers the request's note beside a cancellation note sized to the cancellation's own cash", async () => {
+      const booking = await run({
+        operations: [cancellationNoteOp(7000)],
+        links: [cancellationNoteLink({ amountCents: 7000 })],
+        payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_cancel" },
+      });
+      expect(requestNoteActions(booking.actions)).toEqual([expect.objectContaining({ safeToAutoApply: false })]);
+    });
+
+    it("a cancellation note with no readable amount, or one the payment names but nothing records, gets a person", async () => {
+      const unreadable = await run({
+        operations: [cancellationNoteOp(null)],
+        links: [cancellationNoteLink({ status: "AUTHORISED" })],
+        payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_cancel" },
+      });
+      expect(requestNoteActions(unreadable.actions)).toEqual([]);
+      expect(unreadable.findings).toContainEqual(expect.objectContaining({ code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review" }));
+      const unrecorded = await run({ operations: [], links: [], payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_by_hand" } });
+      expect(requestNoteActions(unrecorded.actions)).toEqual([]);
+    });
+
+    it("a cancellation note queued but not yet sent counts by its row; one Xero voided counts nothing", async () => {
+      const queued = await run({
+        operations: [cancellationNoteOp(10000, { status: "PENDING", xeroObjectId: null, xeroObjectType: null })],
+        links: [],
+        payment: { refundedAmountCents: 10000 },
+      });
+      expect(requestNoteActions(queued.actions)).toEqual([]);
+      const voided = await run({
+        operations: [cancellationNoteOp(10000)],
+        links: [cancellationNoteLink({ amountCents: 10000, status: "VOIDED" })],
+        payment: { refundedAmountCents: 3000 },
+      });
+      expect(requestNoteActions(voided.actions)).toEqual([expect.objectContaining({ safeToAutoApply: false })]);
     });
 
     it("MUTATION (#4195, #4214): never for a request with a note row of any status - a voided note is the officer's to re-raise", async () => {

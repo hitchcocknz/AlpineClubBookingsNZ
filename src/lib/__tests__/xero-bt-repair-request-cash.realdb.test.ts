@@ -326,14 +326,39 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       // #4231: the request's $50 goes on its own note instead.
       expect(await repairToolOnRefundNote()).toEqual({ queued: [], review: false, requestNotes: [5_000] });
 
-      // Applied: one row, keyed by the request, for the cash its completion recorded.
+      // Lens F1/F2: --apply alone raises nothing - an officer checks Xero, then confirms the action by its key.
       const { runBookingXeroRepair } = await import("@/lib/xero-booking-repair");
       await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID }, apply: true });
+      expect(await requestNoteRows()).toEqual([]);
+      const confirm = { scope: { bookingId: BOOKING_ID }, apply: true, applyActionKeys: [`queue:refund-request-credit-note:${PAYMENT_ID}:${REQUEST_ID}`] };
+      await runBookingXeroRepair(CLUB_FORMAT_TEST, confirm);
       expect(await requestNoteRows()).toEqual([{ key: REQUEST_KEY, cents: 5_000 }]);
       // A row now exists, whatever becomes of it, so the tool never asks again.
       expect(await repairToolOnRefundNote()).toEqual({ queued: [], review: false, requestNotes: [] });
-      await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID }, apply: true });
+      await runBookingXeroRepair(CLUB_FORMAT_TEST, confirm);
       expect(await requestNoteRows()).toEqual([{ key: REQUEST_KEY, cents: 5_000 }]);
+    });
+
+    it("MUTATION (lens F1): a cancellation note an earlier release sized with the request's cash gets a person - the request's note is never offered beside it", async () => {
+      await seed({ invoiced: false });
+      // The invoice reached Xero, then the old tool raised one $150 note: $100 of cancellation and the request's $50.
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: INVOICE_ID, xeroRefundCreditNoteId: CANONICAL_NOTE } });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: CANONICAL_NOTE, xeroObjectNumber: "CN-4215",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 15_000, status: "PAID" },
+        },
+      });
+
+      const { runBookingXeroRepair } = await import("@/lib/xero-booking-repair");
+      const booking = (await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID } })).passes[0]!.bookings[0]!;
+      expect(booking.actions.filter((action) => action.type === "QUEUE_REFUND_REQUEST_CREDIT_NOTE")).toEqual([]);
+      expect(booking.findings).toContainEqual(
+        expect.objectContaining({ code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review", summary: expect.stringContaining("folded into the cancellation's note") }),
+      );
+      // Even an officer's confirmation of the key raises nothing: no such action exists.
+      await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID }, apply: true, applyActionKeys: [`queue:refund-request-credit-note:${PAYMENT_ID}:${REQUEST_ID}`] });
+      expect(await requestNoteRows()).toEqual([]);
     });
 
     it("a request whose own note was raised and then voided in Xero is never re-raised by the repair tool (#4195, #4214)", async () => {
