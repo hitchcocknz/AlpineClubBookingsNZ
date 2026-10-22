@@ -8,9 +8,13 @@
   again in a moment", and nothing is changed; trying again adjusts the invoice
   like any other change. A change that landed a moment earlier is caught when
   the invoice is linked: if the booking is now worth more, the difference is
-  billed automatically on a supplementary invoice, paid by the change's own
-  card payment where it asked for one; if it is worth less, the treasurer gets
-  a task in Xero Operations to check the invoice and raise a credit note by
-  hand, then choose **Resolve (fixed in Xero)**. The task says how the change
-  was settled, so any refund already paid out is accounted for too. No credit
-  note is ever raised automatically.
+  billed automatically on a supplementary invoice; if it is worth less, the
+  treasurer gets a task in Xero Operations to check the invoice and raise a
+  credit note by hand, then choose **Resolve (fixed in Xero)**. The task says
+  how the change was settled, so any refund already paid out is accounted for
+  too. No credit note is ever raised automatically.
+
+  Not yet covered: when the change asked the member's card for the extra and
+  they pay it, that payment is not recorded against the supplementary invoice
+  in Xero, which shows it owing until a treasurer matches it. Recording such a
+  payment against the right invoice follows in #3953.

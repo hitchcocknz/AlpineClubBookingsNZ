@@ -1927,23 +1927,10 @@ recorded fee), not its fee alone:
   correction that routed its fee there (`feeOnPrimaryInvoice`, #3955); none of
   those raised a document of its own. No such edit: the treasurer's task. Its
   lines are the fee recorded since the build as a change fee and the rest as
-  price, signed as an edit's are (#1356). Where the anchor's card ask is live
-  and its own money (the ask less what it carried) covers the gap
-  (`classifyAnchorAsk`), the invoice waits on that ask, `recordPayment`, like
-  the edit's own supplementary invoice would; an ask not yet minted leaves it
-  waiting on no intent. `settleParkedGapInvoice`
-  (`xero-primary-invoice-gap-ask.ts`) then settles it against the ask as it
-  now stands, under the `Payment` row lock a reduction's retire of that ask
-  takes first: it attaches a newly minted intent, raises the invoice unpaid
-  where the ask was declined, withdrawn, retired or is too small, and hands an
-  ask already captured to the one release path
-  (`releaseXeroSupplementaryInvoiceForCapturedPaymentIntent`), so the capture's
-  coverage and refund rules apply. The gap check runs it after queueing, and
-  each door's Xero leg runs it once it has minted the ask - every door that
-  mints passes its intent, the acceptance re-price and consent removal
-  included. Otherwise the invoice is raised unpaid, unless a captured Stripe
-  payment holds it: the primary's Stripe payment is capped
-  (`primaryInvoiceStripeCashCents`) so the applied credit the card settle then
+  price, signed as an edit's are (#1356). It is raised unpaid, like any
+  edit's supplementary invoice, unless a captured Stripe payment holds it: the
+  primary's Stripe payment is capped (`primaryInvoiceStripeCashCents`) so the
+  applied credit the card settle then
   allocates still fits on it — the allocation engine's own ledger figure
   (`cardSettleAppliedCreditCents`, `unallocatedAppliedCents`), never the
   payment's `creditAppliedCents` mirror, which is only the settle's gate. The
@@ -1951,9 +1938,11 @@ recorded fee), not its fee alone:
   shortfall. Captured cash that neither invoice takes is logged with both
   figures and recorded on the create's operation (`primaryInvoiceCashShortfall`).
   Any enqueue outcome other than a fresh operation is logged as an error. A
-  later reduction that retires the asking edit's unpaid ask counts the gap
-  invoice as supplementary money (`unpaid-ask-billing-evidence.ts`), not money
-  the primary invoice billed.
+  later reduction that retires the anchor's unpaid card ask reads its money as
+  already invoiced, as it reads any ask an edit made with no invoice yet
+  (`unpaid-ask-billing-evidence.ts`): its offset is credited by note and never
+  invoiced again, since the gap invoice stays open and is not the parked
+  invoice the retire cancels.
 - **An overcharge is a Xero Operations task** (owner, 21 Oct 2026). An invoice
   billing more than the booking was worth at its link, or a shortfall no
   qualifying marked edit anchors, is not corrected automatically: no credit
@@ -1999,7 +1988,11 @@ recorded fee), not its fee alone:
   credit, but that path is defensive and effectively unreachable today: every
   create that skips its payment records `paymentSkipped`, which refuses the
   repair.
-- **Limits.** An edit on a booking with no payment row has nothing to claim;
+- **Limits.** A card capture of the anchor edit's own ask is not recorded
+  against the gap invoice: the edit read no invoice, so nothing waits on that
+  ask, and the gap invoice stays owing in Xero until a treasurer matches the
+  payment - recording such a capture against the right invoice is #3953. An
+  edit on a booking with no payment row has nothing to claim;
   the create needs a payment row to run at all, and the edit is marked, so one
   that commits before the link is still in the worth read back. Only the
   create's save stores figures: the other writers that set the link (the

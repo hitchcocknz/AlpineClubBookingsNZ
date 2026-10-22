@@ -109,9 +109,9 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
 
   /**
    * Review round 2 F3: every door that mints a card ask after its commit hands
-   * the minted intent to its Xero leg, which settles a primary invoice's gap
-   * invoice waiting on that ask (`settleParkedGapInvoice`). A `null` there
-   * leaves such an invoice waiting on no intent until the reaper retires it.
+   * the minted intent to its Xero leg, so a supplementary invoice for money
+   * that ask collects waits on its payment (`classifyXeroBookingEditSettlement`).
+   * A `null` there leaves such an invoice deferred with no intent to wait on.
    */
   it("every door that mints an ask passes its intent to the Xero leg", () => {
     const doors = sourceFiles().filter(
@@ -168,7 +168,7 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
   it("the guests route, which settles for itself, makes the same write and marks its row", () => {
     const route = read(GUESTS_ROUTE);
     expect(route).toContain("await writeEditOnPayment(tx, { payment: booking.payment, changeFeeCents: 0 })");
-    expect(route).toContain("primaryInvoiceSettlementHistory({ settledAgainstPrimaryInvoice, additionalAsk })");
+    expect(route).toContain("primaryInvoiceSettlementHistory({ settledAgainstPrimaryInvoice })");
   });
 
   it("every caller of applyPaymentAdjustments is a door that marks its row", () => {

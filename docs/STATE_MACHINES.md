@@ -3597,10 +3597,8 @@ primary booking invoice create saves its link -> worth gap check (#3980,
   shortfall anchored on a marked edit outside the create's snapshot that
   moved money, with no review
     -> supplementary invoice operation queued PENDING (once per anchor set),
-       or WAITING_PAYMENT on the anchor's card ask, where its own money covers
-       the gap (its intent attached when minted) -> released PENDING by that
-       capture; the ask declined, withdrawn or retired -> PENDING unpaid
-       (settleParkedGapInvoice, under the Payment row lock)
+       paid from cash the primary left, else unpaid; a later card capture of
+       the anchor's own ask is not recorded against it (#3953)
   overcharge, or a shortfall no marked edit anchors -> REVIEW operation
     PRIMARY_INVOICE_WORTH_GAP written FAILED, replayable false (Retry
     refused) -> treasurer acts in Xero, then Resolve (fixed in Xero); one per

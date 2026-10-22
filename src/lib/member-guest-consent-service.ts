@@ -977,8 +977,8 @@ export async function finaliseMemberGuestConsentTransition(params: {
     try {
       await queueGuestRemovalXeroSettlement(outcome.xeroSettlement, {
         createdByMemberId: actorMemberId ?? undefined,
-        // #3980 review round 2 F3: the re-issued ask it minted, for a gap
-        // invoice waiting on it (`settleParkedGapInvoice`).
+        // #3980 review round 2 F3: the re-issued ask it minted, as the DELETE
+        // door passes its own, so a supplementary invoice waits on its payment.
         additionalPaymentIntentId: reissuedIntentId,
       });
     } catch (err) {

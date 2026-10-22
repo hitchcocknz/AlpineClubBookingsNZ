@@ -1520,17 +1520,17 @@ refunded total it corrects).
   build plus built less billed.
 - **What follows.** A shortfall goes on one signed supplementary invoice
   anchored on the newest marked edit outside the snapshot (and, on a replay,
-  after the first create) that moved money and has no review. It waits on
-  that edit's live card ask when the ask's own money covers the gap, settled
-  under the `Payment` row lock the ask's retire takes. Otherwise, or for an
-  overcharge, one Xero Operations task; never an automatic credit note.
-- **Limits.** The other link writers store no figures: an edit just before
-  them is unmeasured, and a create finding one's link hands any gap to the
-  treasurer. The credit election changes no price. No payment row, no claim.
+  after the first create) that moved money and has no review, paid from cash
+  the primary left, else unpaid. Otherwise, or for an overcharge, one Xero
+  Operations task; never an automatic credit note.
+- **Limits.** A card capture of the anchor's own ask is not recorded against
+  the gap invoice (#3953). The other link writers store no figures: an edit
+  just before them is unmeasured, and a create finding one's link hands any
+  gap to the treasurer. The credit election changes no price. No payment row,
+  no claim.
 - Pinned by `primary-invoice-edit-race.realdb.test.ts`,
   `primary-invoice-claim-call-sites.test.ts`,
-  `xero-primary-invoice-fee-gap.test.ts`,
-  `xero-primary-invoice-gap-ask.test.ts` and
+  `xero-primary-invoice-fee-gap.test.ts` and
   `booking-primary-invoice-claim.test.ts`.
 
 ## INV-PAY-031

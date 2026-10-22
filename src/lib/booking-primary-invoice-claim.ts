@@ -80,22 +80,13 @@ export type PrimaryInvoiceEditSettlement = {
   accountCreditAmountCents: number;
   appliedCreditGivenBackCents: number;
   unpaidAskOffsetCents: number;
-  /**
-   * Review M2: what the edit asked the member's card for of its own - the ask
-   * less what it carried from earlier asks (round 2 F2). A gap invoice anchored
-   * on an edit that asked at least the gap waits on that ask's payment, as the
-   * edit's own supplementary invoice would have, rather than being raised unpaid.
-   */
-  cardAskCents: number;
 };
 
 export type PrimaryInvoiceSettlementMarker = { settledAgainstPrimaryInvoice: true } & PrimaryInvoiceEditSettlement;
 
 /** The `newData` fields an edit writes for the marker, or none. */
 export function primaryInvoiceSettlementHistory(
-  edit: { settledAgainstPrimaryInvoice: boolean; additionalAsk?: { amountCents: number; carriedCents: number } } & Partial<
-    Omit<PrimaryInvoiceEditSettlement, "cardAskCents">
-  >,
+  edit: { settledAgainstPrimaryInvoice: boolean } & Partial<PrimaryInvoiceEditSettlement>,
 ): { primaryInvoiceSettlement?: PrimaryInvoiceSettlementMarker } {
   if (!edit.settledAgainstPrimaryInvoice) return {};
   return {
@@ -105,7 +96,6 @@ export function primaryInvoiceSettlementHistory(
       accountCreditAmountCents: edit.accountCreditAmountCents ?? 0,
       appliedCreditGivenBackCents: edit.appliedCreditGivenBackCents ?? 0,
       unpaidAskOffsetCents: edit.unpaidAskOffsetCents ?? 0,
-      cardAskCents: edit.additionalAsk ? Math.max(0, edit.additionalAsk.amountCents - edit.additionalAsk.carriedCents) : 0,
     },
   };
 }
@@ -120,7 +110,6 @@ export function recordedPrimaryInvoiceSettlement(newData: unknown): PrimaryInvoi
     accountCreditAmountCents: cents(record.accountCreditAmountCents),
     appliedCreditGivenBackCents: cents(record.appliedCreditGivenBackCents),
     unpaidAskOffsetCents: cents(record.unpaidAskOffsetCents),
-    cardAskCents: cents(record.cardAskCents),
   };
 }
 

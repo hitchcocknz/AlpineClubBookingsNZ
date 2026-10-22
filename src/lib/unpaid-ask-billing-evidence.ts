@@ -50,11 +50,6 @@ import {
   isEditFinancialReviewAdditionalIntentRecoveryKey,
   REISSUED_ASK_REASON,
 } from "@/lib/payment-recovery-keys";
-import { recordedPrimaryInvoiceSettlement } from "@/lib/booking-primary-invoice-claim";
-import {
-  readQueuedOutboxPayload,
-  XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-} from "@/lib/xero-operation-outbox-payload";
 import {
   recordedFoldedReissuedAskCents,
   recordedFoldedReissuedAskModificationIds,
@@ -80,27 +75,18 @@ type EvidenceModification = {
   createdAt: Date;
 };
 
-const NO_GAP_INVOICES: ReadonlyMap<string, number> = new Map();
-
 /** The pure reading, given what the loader read (`unpaidAskBillingEvidence`). */
 export function classifyUnpaidAskBilling({
   rows,
   retired,
   modifications,
   intentMinters,
-  gapInvoicedCents = NO_GAP_INVOICES,
 }: {
   rows: readonly UnpaidPriceAskRow[];
   retired: Pick<RetiredUnpaidAsk, "invoicedCents" | "parkedOps" | "invoiceEvidenceUnknown">;
   modifications: readonly EvidenceModification[];
   /** The recovery that minted each intent, by intent id; a door-minted row has none. */
   intentMinters: ReadonlyMap<string, IntentMinter>;
-  /**
-   * #3980 review M2: what a primary invoice's gap invoice anchored on an edit
-   * bills, by that edit's id - one that settled against the primary invoice
-   * and so answered "no invoice", but whose money the primary invoice missed.
-   */
-  gapInvoicedCents?: ReadonlyMap<string, number>;
 }): UnpaidAskBillingEvidence {
   let supplementaryInvoicedCents = retired.invoicedCents;
   let established = !retired.invoiceEvidenceUnknown;
@@ -128,14 +114,6 @@ export function classifyUnpaidAskBilling({
       const hadIssuedXeroInvoice = minter ? minter.hadIssuedXeroInvoice : row.hadIssuedXeroInvoice;
       if (hadIssuedXeroInvoice === null) established = false;
       else if (hadIssuedXeroInvoice) supplementaryInvoicedCents += ownCents;
-      else {
-        // #3980 review M2: "no invoice" meant the primary invoice billed it -
-        // except what the gap invoice anchored on the asking edit bills, which
-        // the primary invoice missed.
-        const askingEdit = minter?.modificationId ?? row.bookingModificationId ?? null;
-        const gapCents = askingEdit ? (gapInvoicedCents.get(askingEdit) ?? 0) : 0;
-        supplementaryInvoicedCents += Math.min(ownCents, Math.max(0, gapCents));
-      }
     }
     if (carriedInCents > 0) {
       const reductions = carriedReissues(row, previous, carriedInCents);
@@ -191,7 +169,7 @@ export function classifyUnpaidAskBilling({
  * the ask's rows, with their frozen invoice answers.
  */
 export async function unpaidAskBillingEvidence(
-  db: Pick<Prisma.TransactionClient, "bookingModification" | "paymentRecoveryOperation" | "xeroSyncOperation">,
+  db: Pick<Prisma.TransactionClient, "bookingModification" | "paymentRecoveryOperation">,
   {
     bookingId,
     paymentId,
@@ -234,36 +212,5 @@ export async function unpaidAskBillingEvidence(
       });
     }
   }
-  const gapInvoicedCents = await primaryInvoiceGapInvoicedCents(db, modifications);
-  return classifyUnpaidAskBilling({ rows, retired, modifications, intentMinters, gapInvoicedCents });
-}
-
-/**
- * #3980 review M2: the gap invoices anchored on the booking's marked edits -
- * any supplementary invoice on one is a gap invoice, since a marked edit raised
- * none of its own - and what each bills. A retired one (CANCELLED, as the
- * reduction's retire leaves a parked one) bills nothing.
- */
-async function primaryInvoiceGapInvoicedCents(
-  db: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
-  modifications: readonly EvidenceModification[],
-): Promise<Map<string, number>> {
-  const marked = modifications.filter((row) => recordedPrimaryInvoiceSettlement(row.newData) !== null).map((row) => row.id);
-  const billed = new Map<string, number>();
-  if (marked.length === 0) return billed;
-  const operations = await db.xeroSyncOperation.findMany({
-    where: {
-      localModel: "BookingModification",
-      localId: { in: marked },
-      queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-      status: { not: "CANCELLED" },
-    },
-    select: { localId: true, requestPayload: true },
-  });
-  for (const operation of operations) {
-    const payload = readQueuedOutboxPayload(operation.requestPayload);
-    if (!operation.localId || payload?.queueType !== XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE) continue;
-    billed.set(operation.localId, (billed.get(operation.localId) ?? 0) + payload.priceDiffCents + payload.changeFeeCents);
-  }
-  return billed;
+  return classifyUnpaidAskBilling({ rows, retired, modifications, intentMinters });
 }

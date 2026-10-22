@@ -120,7 +120,6 @@ describe("the edit's claim on the unlinked primary invoice (#3980)", () => {
       accountCreditAmountCents: 0,
       appliedCreditGivenBackCents: 1_000,
       unpaidAskOffsetCents: 2_500,
-      additionalAsk: { amountCents: 0, carriedCents: 0 },
     });
     expect(marker).toEqual({
       primaryInvoiceSettlement: {
@@ -129,7 +128,6 @@ describe("the edit's claim on the unlinked primary invoice (#3980)", () => {
         accountCreditAmountCents: 0,
         appliedCreditGivenBackCents: 1_000,
         unpaidAskOffsetCents: 2_500,
-        cardAskCents: 0,
       },
     });
     expect(recordedPrimaryInvoiceSettlement(marker)).toEqual({
@@ -137,7 +135,6 @@ describe("the edit's claim on the unlinked primary invoice (#3980)", () => {
       accountCreditAmountCents: 0,
       appliedCreditGivenBackCents: 1_000,
       unpaidAskOffsetCents: 2_500,
-      cardAskCents: 0,
     });
     expect(primaryInvoiceSettlementHistory({ settledAgainstPrimaryInvoice: false, refundAmountCents: 4_000 })).toEqual({});
     expect(recordedPrimaryInvoiceSettlement({})).toBeNull();

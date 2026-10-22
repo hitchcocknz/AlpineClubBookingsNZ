@@ -6897,7 +6897,6 @@ describe("runBookingXeroRepair - primary invoice vs edit timing (#3199)", () => 
         accountCreditAmountCents: 0,
         appliedCreditGivenBackCents: 0,
         unpaidAskOffsetCents: 0,
-        cardAskCents: 0,
       },
     },
   };

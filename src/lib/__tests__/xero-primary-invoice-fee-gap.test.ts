@@ -11,9 +11,6 @@ const mocks = vi.hoisted(() => ({
   enqueue: vi.fn(),
   review: vi.fn(),
   manualRefundTask: { findMany: vi.fn() },
-  paymentTransaction: { findFirst: vi.fn() },
-  attach: vi.fn(),
-  settle: vi.fn(),
   logger: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
 }));
 vi.mock("@/lib/prisma", () => {
@@ -25,18 +22,13 @@ vi.mock("@/lib/prisma", () => {
     xeroObjectLink: mocks.xeroObjectLink,
     booking: mocks.booking,
     manualRefundTask: mocks.manualRefundTask,
-    paymentTransaction: mocks.paymentTransaction,
   };
   // One interactive transaction: the same delegates, so a test sees what it wrote.
   return { prisma: { ...client, $transaction: vi.fn(async (run: (tx: typeof client) => unknown) => run(client)) } };
 });
-vi.mock("@/lib/xero-operation-outbox", () => ({
-  enqueueXeroSupplementaryInvoiceOperation: mocks.enqueue,
-  attachPaymentIntentToWaitingSupplementaryInvoiceOperations: mocks.attach,
-}));
+vi.mock("@/lib/xero-operation-outbox", () => ({ enqueueXeroSupplementaryInvoiceOperation: mocks.enqueue }));
 vi.mock("@/lib/logger", () => ({ default: mocks.logger }));
 vi.mock("@/lib/xero-primary-invoice-review-task", () => ({ raisePrimaryInvoiceReviewTask: mocks.review }));
-vi.mock("@/lib/xero-primary-invoice-gap-ask", () => ({ settleParkedGapInvoice: mocks.settle }));
 
 import { CHANGE_FEE_LINE_DESCRIPTION } from "@/lib/xero-modification-line-items";
 import {
@@ -92,7 +84,6 @@ describe("the primary invoice's change-fee gap (#3955 X4)", () => {
       { id: "mod_early", priceDiffCents: 0, changeFeeCents: 2_500, newData: {} },
     ]);
     mocks.manualRefundTask.findMany.mockResolvedValue([]);
-    mocks.paymentTransaction.findFirst.mockResolvedValue(null);
     mocks.xeroSyncOperation.findFirst.mockResolvedValue(null);
     mocks.xeroObjectLink.findFirst.mockResolvedValue(null);
     mocks.enqueue.mockResolvedValue({ queueOperationId: "op_gap", outcome: "covers-total" });
@@ -622,7 +613,6 @@ describe("the primary invoice's worth gap (#3980)", () => {
     mocks.payment.findUnique.mockResolvedValue({ ...unpaid, changeFeeCents: 0 });
     mocks.bookingModification.findMany.mockResolvedValue([marked("mod_edit", 8_000)]);
     mocks.manualRefundTask.findMany.mockResolvedValue([]);
-    mocks.paymentTransaction.findFirst.mockResolvedValue(null);
     mocks.xeroSyncOperation.findFirst.mockResolvedValue(null);
     mocks.xeroObjectLink.findFirst.mockResolvedValue(null);
     mocks.enqueue.mockResolvedValue({ queueOperationId: "op_gap", outcome: "covers-total" });
@@ -648,7 +638,6 @@ describe("the primary invoice's worth gap (#3980)", () => {
           accountCreditAmountCents: 0,
           appliedCreditGivenBackCents: 0,
           unpaidAskOffsetCents: 0,
-          cardAskCents: 0,
           ...settlement,
         },
       },
@@ -827,7 +816,7 @@ describe("the primary invoice's worth gap (#3980)", () => {
 
   it("MUTATION round 2 F1: anchors only on an edit that landed mid-create - never one the snapshot held, nor one before a replayed create", async () => {
     // A re-base's gap (it marks nothing) with only an old, already-invoiced edit about.
-    mocks.bookingModification.findMany.mockResolvedValue([marked("mod_old", 8_000, { cardAskCents: 8_000 })]);
+    mocks.bookingModification.findMany.mockResolvedValue([marked("mod_old", 8_000)]);
     const atLink = increaseAtLink();
     await queuePrimaryInvoiceWorthGap({
       bookingId: "booking_1",
@@ -855,70 +844,6 @@ describe("the primary invoice's worth gap (#3980)", () => {
     // The first create itself is no replay: its own edits count.
     await queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: increaseAtLink(), figuresOperationId: "op_first" });
     expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.objectContaining({ bookingModificationId: "mod_before" }), expect.anything());
-  });
-
-  const ask = (overrides: Record<string, unknown> = {}) => ({
-    stripePaymentIntentId: "pi_ask",
-    status: "PENDING",
-    withdrawnAt: null,
-    amountCents: 8_000,
-    carriedAskCents: 0,
-    ...overrides,
-  });
-  const parkedOptions = (paymentIntentId: string | null) => ({
-    createdByMemberId: undefined,
-    recordPayment: true,
-    paymentIntentId,
-    waitForConfirmedAdditionalPayment: true,
-  });
-  const unpaidOptions = { createdByMemberId: undefined, recordPayment: false };
-
-  it("MUTATION review M2 / round 2 F2/F5: parks on the anchor's live ask only when its own money covers the gap, and settles it", async () => {
-    mocks.bookingModification.findMany.mockResolvedValue([marked("mod_ask", 8_000, { cardAskCents: 8_000 })]);
-    const parkWith = async (row: Record<string, unknown> | null) => {
-      mocks.paymentTransaction.findFirst.mockResolvedValue(row);
-      mocks.settle.mockClear();
-      await queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: increaseAtLink() });
-    };
-
-    // Not yet paid, and the ask covers the gap: waits on the intent, then is settled.
-    await parkWith(ask());
-    expect(mocks.enqueue).toHaveBeenLastCalledWith(
-      expect.objectContaining({ bookingModificationId: "mod_ask", priceDiffCents: 8_000 }),
-      parkedOptions("pi_ask"),
-    );
-    expect(mocks.settle).toHaveBeenCalledWith({ bookingId: "booking_1", bookingModificationId: "mod_ask" });
-    expect(mocks.paymentTransaction.findFirst).toHaveBeenCalledWith({
-      where: { payment: { bookingId: "booking_1" }, kind: "ADDITIONAL", bookingModificationId: "mod_ask" },
-      orderBy: [{ createdAt: "desc" }, { insertionSeq: "desc" }],
-      select: { stripePaymentIntentId: true, status: true, withdrawnAt: true, amountCents: true, carriedAskCents: true },
-    });
-
-    // Already captured: still parked, and released through the one capture path (by the settle).
-    await parkWith(ask({ status: "SUCCEEDED" }));
-    expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.anything(), parkedOptions("pi_ask"));
-    expect(mocks.settle).toHaveBeenCalledTimes(1);
-
-    // A gap smaller than the ask is still covered.
-    await parkWith(ask({ amountCents: 12_000 }));
-    expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.anything(), parkedOptions("pi_ask"));
-
-    // Not minted yet: waits on no intent until the door's leg settles it.
-    await parkWith(null);
-    expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.anything(), parkedOptions(null));
-    expect(mocks.settle).toHaveBeenCalledTimes(1);
-
-    // Round 2 F2: an ask whose OWN money (less what it carried) is short of the gap never pays it.
-    await parkWith(ask({ amountCents: 9_000, carriedAskCents: 3_000 }));
-    expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.anything(), unpaidOptions);
-    expect(mocks.settle).not.toHaveBeenCalled();
-
-    // Round 2 F5: declined, or withdrawn - dead, raised as before.
-    await parkWith(ask({ status: "FAILED" }));
-    expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.anything(), unpaidOptions);
-    await parkWith(ask({ withdrawnAt: new Date() }));
-    expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.anything(), unpaidOptions);
-    expect(mocks.settle).not.toHaveBeenCalled();
   });
 
   it("round 2 F6: an invoice another writer linked first, with no figures stored, is measured from this run's and handed to the treasurer", async () => {

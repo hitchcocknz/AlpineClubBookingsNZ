@@ -34,15 +34,12 @@ import type { Invoice, LineItem, Payment as XeroPayment } from "xero-node";
 import { bookingWorthCents, hasCapturedPayment, recordedChangeFeeCents } from "@/lib/booking-payment-state";
 import { raisePrimaryInvoiceReviewTask } from "@/lib/xero-primary-invoice-review-task";
 import {
-  classifyAnchorAsk,
   primaryInvoiceGapAnchors,
   primaryInvoiceReplayCutoff,
   racingMarkedEdits,
   racingReductionSettlement,
-  readAnchorAsk,
   readMarkedPrimaryInvoiceEdits,
 } from "@/lib/xero-primary-invoice-gap-anchors";
-import { settleParkedGapInvoice } from "@/lib/xero-primary-invoice-gap-ask";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
@@ -477,9 +474,8 @@ async function reviewUnstoredRelink(input: {
  *    gap's and nothing else's - which is also how a re-run knows the gap is
  *    already queued, and why it never raises another edit's queued figure. Its
  *    lines are the fee recorded since the build as a change fee and the rest
- *    as price, signed as an edit's are (#1356). Where the anchor's live card
- *    ask covers the gap, the invoice waits on that ask and records its payment
- *    (`classifyAnchorAsk`, `settleParkedGapInvoice`).
+ *    as price, signed as an edit's are (#1356). A card capture of the
+ *    anchor's own ask is not recorded against it here: that is #3953's.
  *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
  *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
  *    credit note is raised automatically (owner, 21 Oct 2026). An overcharge's
@@ -585,11 +581,7 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     // What the earlier run decided the gap invoice takes of the cash, as it queued it.
     const earlier = readQueuedOutboxPayload(earlierOperation?.requestPayload);
     const cashTakenCents =
-      earlier?.queueType === XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE &&
-      earlier.recordPayment === true &&
-      // A gap invoice paid by the anchor's card ask took none of the primary's cash (M2).
-      !earlier.paymentIntentId &&
-      !earlier.waitForConfirmedAdditionalPayment
+      earlier?.queueType === XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE && earlier.recordPayment === true
         ? earlier.priceDiffCents + earlier.changeFeeCents
         : 0;
     logger.info(
@@ -621,19 +613,8 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   });
   const netCapturedCents = Math.max(0, (payment?.amountCents ?? 0) - (payment?.refundedAmountCents ?? 0));
   const leftOverCashCents = payment ? netCapturedCents - atLink.primaryInvoiceCashCents : 0;
-  // Review M2: an anchor that asked the member's card, an ask live and of its
-  // own at least the gap (round 2 F2), is what pays it, as its own
-  // supplementary invoice would have been - never the primary's cash. The
-  // invoice waits on the ask; `settleParkedGapInvoice` settles it below.
-  const anchorAsk = classifyAnchorAsk({
-    anchor: anchors[0]!,
-    row: await readAnchorAsk(prisma, bookingId, anchorIds[0]!),
-    gapCents,
-  });
-  const parked = anchorAsk.kind === "pending" || anchorAsk.kind === "captured" || anchorAsk.kind === "unminted";
-  const recordPayment = parked
-    ? true
-    : payment?.source === PaymentSource.STRIPE && hasCapturedPayment(payment) && leftOverCashCents >= gapCents;
+  const recordPayment =
+    payment?.source === PaymentSource.STRIPE && hasCapturedPayment(payment) && leftOverCashCents >= gapCents;
 
   // The components stay SIGNED, as an edit's own are (#1356,
   // `classifyXeroBookingEditSettlement`): the fee recorded since the build as a
@@ -647,29 +628,13 @@ export async function queuePrimaryInvoiceWorthGap(input: {
       changeFeeCents: feeGapCents,
       bookingModificationId: anchorIds[0],
     },
-    {
-      createdByMemberId: input.createdByMemberId,
-      recordPayment,
-      ...(parked
-        ? {
-            paymentIntentId: "paymentIntentId" in anchorAsk ? anchorAsk.paymentIntentId : null,
-            waitForConfirmedAdditionalPayment: true,
-          }
-        : {}),
-    },
+    { createdByMemberId: input.createdByMemberId, recordPayment },
   );
-  if (parked && queued.queueOperationId) {
-    // Settled against the ask as it now stands, under the lock the ask's
-    // retire takes (round 2 F3/F4): attached, raised unpaid, or released for
-    // a capture through the one release path (F2).
-    await settleParkedGapInvoice({ bookingId, bookingModificationId: anchorIds[0]! });
-  }
   const outcome = {
     ...context,
     gapCents,
     bookingModificationId: anchorIds[0],
     recordPayment,
-    anchorAsk: anchorAsk.kind,
     queueOperationId: queued.queueOperationId,
     enqueueOutcome: queued.outcome,
   };
@@ -691,7 +656,6 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     ...NO_GAP,
     gapCents,
     queueOperationId: queued.queueOperationId,
-    // The card ask pays it, not the cash the primary invoice left.
-    cashTakenCents: recordPayment && !parked ? gapCents : 0,
+    cashTakenCents: recordPayment ? gapCents : 0,
   };
 }
