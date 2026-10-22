@@ -107,6 +107,21 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       }
     }
 
+    /** The audit rows naming the payment for a recount reached only through its voided mirror (#4291). */
+    function voidedMirrorRecountAudits() {
+      return prisma.auditLog.findMany({
+        where: {
+          entityType: "Payment",
+          entityId: PAYMENT_ID,
+          AND: [
+            { metadata: { path: ["source"], equals: "xero-inbound-credit-note-voided-mirror-recount" } },
+            { metadata: { path: ["creditNoteId"], equals: VOIDED_NOTE } },
+          ],
+        },
+        select: { action: true, category: true, metadata: true },
+      });
+    }
+
     async function state() {
       const payment = await prisma.payment.findUniqueOrThrow({
         where: { id: PAYMENT_ID },
@@ -169,6 +184,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         links: [{ xeroObjectId: VOIDED_NOTE, active: false }],
       });
 
+      expect(await voidedMirrorRecountAudits()).toEqual([]);
+
       // The retry of the same event. Before the fix it matched no payment and
       // left the total at 15_000 for good.
       const retried = await inbound(xeroNote(VOIDED_NOTE, "VOIDED", 15_000));
@@ -178,6 +195,17 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         refundedAmountCents: 0, status: "SUCCEEDED", xeroRefundCreditNoteId: null,
         links: [{ xeroObjectId: VOIDED_NOTE, active: false }],
       });
+      // MUTATION (audit): the recount that changed the total names the payment.
+      expect(await voidedMirrorRecountAudits()).toEqual([
+        expect.objectContaining({
+          action: "xero.credit_note.reconciled",
+          category: "xero",
+          metadata: expect.objectContaining({
+            localModel: "Payment", localId: PAYMENT_ID, role: "REFUND_CREDIT_NOTE", xeroObjectType: "CREDIT_NOTE",
+            xeroObjectId: VOIDED_NOTE, xeroObjectNumber: `CN-${VOIDED_NOTE}`, bookingId: BOOKING_ID, updatedRefundedPayments: 1,
+          }),
+        }),
+      ]);
 
       // A later replay recounts again and changes nothing: never re-adopted.
       const replayed = await inbound(xeroNote(VOIDED_NOTE, "VOIDED", 15_000));
@@ -186,6 +214,63 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         refundedAmountCents: 0, status: "SUCCEEDED", xeroRefundCreditNoteId: null,
         links: [{ xeroObjectId: VOIDED_NOTE, active: false }],
       });
+      expect(await voidedMirrorRecountAudits()).toHaveLength(2);
+    });
+
+    it("MUTATION (read after the link writes): a second event whose reads straddle a concurrent void's link write still recounts the payment", async () => {
+      await bankTransferPayment(15_000, VOIDED_NOTE, [
+        { id: VOIDED_NOTE, active: true, metadata: { amountCents: 15_000, watermarkCents: 15_000, status: "AUTHORISED", total: 150 } },
+      ]);
+      const { upsertXeroObjectLink } = await import("@/lib/xero-sync");
+      const realLinkFindMany = prisma.xeroObjectLink.findMany.bind(prisma.xeroObjectLink);
+      const realPaymentFindMany = prisma.payment.findMany.bind(prisma.payment);
+      let armed = true;
+      let lookup: Promise<unknown> | null = null;
+      let firstVoidCommitted!: () => void;
+      const firstVoidCommittedP = new Promise<void>((resolve) => (firstVoidCommitted = resolve));
+      type Where = { where?: Record<string, unknown> };
+      vi.spyOn(prisma.xeroObjectLink, "findMany").mockImplementation(((args: Where) => {
+        const where = args?.where ?? {};
+        if (armed && where.xeroObjectId === VOIDED_NOTE && where.role === "REFUND_CREDIT_NOTE" && where.active === false) {
+          lookup = realLinkFindMany(args as never);
+          return lookup;
+        }
+        if (armed && where.xeroObjectId === VOIDED_NOTE && where.active === true && where.localModel === undefined) {
+          return (async () => {
+            // A voided-mirror lookup already issued beside this read (the
+            // pre-fix shape) answers first, from the state before the void.
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            if (lookup) await lookup;
+            // A concurrent event's void link write commits now: before this
+            // event's active-link read, after its lookup (if it made one).
+            await upsertXeroObjectLink({
+              localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: VOIDED_NOTE,
+              xeroObjectNumber: `CN-${VOIDED_NOTE}`, role: "REFUND_CREDIT_NOTE",
+              metadata: { status: "VOIDED", total: 150, appliedAmount: 0, remainingCredit: 0 }, mergeMetadata: true,
+            });
+            firstVoidCommitted();
+            return realLinkFindMany(args as never);
+          })();
+        }
+        return realLinkFindMany(args as never);
+      }) as never);
+      vi.spyOn(prisma.payment, "findMany").mockImplementation((async (args: Where) => {
+        // The pointer read lands after the void released the pointer.
+        if (armed && args?.where?.xeroRefundCreditNoteId === VOIDED_NOTE && !args?.where?.OR) await firstVoidCommittedP;
+        return realPaymentFindMany(args as never);
+      }) as never);
+
+      const second = await inbound(xeroNote(VOIDED_NOTE, "VOIDED", 15_000));
+      armed = false;
+
+      // Neither the active link nor the pointer named the payment; the lookup
+      // made after this event's link writes did.
+      expect(second).toMatchObject({ matchedPayments: 0, matchedRefundedPayments: 1, updatedRefundedPayments: 1 });
+      expect(await state()).toEqual({
+        refundedAmountCents: 0, status: "SUCCEEDED", xeroRefundCreditNoteId: null,
+        links: [{ xeroObjectId: VOIDED_NOTE, active: false }],
+      });
+      expect(await voidedMirrorRecountAudits()).toHaveLength(1);
     });
 
     it("MUTATION (recorded void): a superseded note's mirror, off but never recorded voided, does not resolve when Xero voids it", async () => {

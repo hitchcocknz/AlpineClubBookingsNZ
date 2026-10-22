@@ -7,10 +7,14 @@ import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync"
 import { buildCreditNoteAllocationTargets, buildSyntheticAllocationLinkId, buildXeroPaymentDisplayNumber, getCreditNoteAmountCents } from "./amounts";
 import { dedupeResolvedXeroObjectLinks, dedupeXeroObjectLinks, findActiveXeroObjectLinks, findPaymentIdsWithCancelledRefundNoteMirror, getDerivedInboundAllocationRole, recoverBookingScopedLinksFromOutboundOperations } from "./object-links";
 import { writeXeroInboundAuditLogs } from "./audit";
+import { type XeroAuditLocalLink } from "./types";
 import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance } from "./credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "./modification-note-refunds";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
 import { isIncludedRefundCreditNoteStatus, mayRecordAsCanonicalRefundNote } from "@/lib/xero-refund-note-status";
+
+/** #4291: the audit source naming a recount reached only through a voided mirror. */
+const VOIDED_MIRROR_RECOUNT_AUDIT_SOURCE = "xero-inbound-credit-note-voided-mirror-recount";
 
 export async function reconcileXeroCreditNote(creditNoteId: string) {
   const { xero, tenantId } = await getAuthenticatedXeroClient();
@@ -34,7 +38,6 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     recoveredBookingScopedLinks,
     canonicalPaymentLinks,
     canonicalAccountCreditPayments,
-    voidedMirrorPaymentIds,
   ] = await Promise.all([
     findActiveXeroObjectLinks("CREDIT_NOTE", creditNote.creditNoteID),
     recoverBookingScopedLinksFromOutboundOperations("CREDIT_NOTE", creditNote.creditNoteID),
@@ -47,13 +50,6 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       },
     }),
     resolveAccountCreditPaymentsFromMemberCredits(creditNote.creditNoteID),
-    // #4291: a cancelled note still recounts the payments whose mirror its
-    // void already turned off (the pointer released with it), and only them:
-    // a live read never resolves a voided mirror. Recount only - no link,
-    // pointer or allocation is written for them.
-    isIncludedRefundCreditNoteStatus(creditNote.status)
-      ? Promise.resolve([] as string[])
-      : findPaymentIdsWithCancelledRefundNoteMirror(creditNote.creditNoteID),
   ]);
   // #1925: applied-credit notes without CANCELLATION_REFUND provenance (e.g. an
   // admin-adjustment-minted remainder note) resolve to no account-credit payment
@@ -334,6 +330,28 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     });
   const modificationRefundAmountsByPaymentId = await resolveCurrentModificationRefunds();
 
+  // #4291: a cancelled note still recounts the payments whose mirror its void
+  // turned off (the pointer released with it), and only them: a live read
+  // never resolves a voided mirror. Read AFTER this event's link writes, so a
+  // concurrent event's void that committed while the reads above ran is seen
+  // here. Recount only - no link, pointer or allocation is written for them.
+  const voidedMirrorPaymentIds = isIncludedRefundCreditNoteStatus(creditNote.status)
+    ? []
+    : await findPaymentIdsWithCancelledRefundNoteMirror(creditNote.creditNoteID);
+  const matchedPaymentIds = new Set(paymentCandidates.map((payment) => payment.id));
+  // Audit-only entries naming the payments only this lookup found, so their
+  // recount is attributed; never handed to a link write.
+  const voidedMirrorAuditLinks: XeroAuditLocalLink[] = voidedMirrorPaymentIds
+    .filter((paymentId) => !matchedPaymentIds.has(paymentId))
+    .map((paymentId) => ({
+      localModel: "Payment",
+      localId: paymentId,
+      xeroObjectType: "CREDIT_NOTE",
+      xeroObjectId: creditNote.creditNoteID!,
+      xeroObjectNumber: creditNote.creditNoteNumber ?? null,
+      role: "REFUND_CREDIT_NOTE",
+    }));
+
   const refundedPaymentRepair = await repairRefundedPaymentBusinessState({
     creditNoteId: creditNote.creditNoteID,
     creditNote: {
@@ -398,21 +416,28 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     await upsertXeroObjectLink(link);
   }
 
+  const auditMetadata = {
+    creditNoteId: creditNote.creditNoteID,
+    creditNoteNumber: creditNote.creditNoteNumber ?? null,
+    matchedPayments: paymentCandidates.length,
+    matchedAccountCreditPayments: accountCreditPayments.length,
+    updatedPayments,
+    updatedCredits,
+    updatedRefundedPayments: refundedPaymentRepair.updatedPayments,
+    createdAppliedCredits: accountCreditAllocationRepair.createdAppliedCredits,
+    updatedAppliedCredits: accountCreditAllocationRepair.updatedAppliedCredits,
+    updatedAppliedPayments: accountCreditAllocationRepair.updatedAppliedPayments,
+  };
   await writeXeroInboundAuditLogs({
     source: "xero-inbound-credit-note",
     links: [...resolvedCreditNoteLinks, ...allocationLinks, ...refundPaymentLinks],
-    metadata: {
-      creditNoteId: creditNote.creditNoteID,
-      creditNoteNumber: creditNote.creditNoteNumber ?? null,
-      matchedPayments: paymentCandidates.length,
-      matchedAccountCreditPayments: accountCreditPayments.length,
-      updatedPayments,
-      updatedCredits,
-      updatedRefundedPayments: refundedPaymentRepair.updatedPayments,
-      createdAppliedCredits: accountCreditAllocationRepair.createdAppliedCredits,
-      updatedAppliedCredits: accountCreditAllocationRepair.updatedAppliedCredits,
-      updatedAppliedPayments: accountCreditAllocationRepair.updatedAppliedPayments,
-    },
+    metadata: auditMetadata,
+  });
+  // #4291: the payments recounted only through their voided mirror.
+  await writeXeroInboundAuditLogs({
+    source: VOIDED_MIRROR_RECOUNT_AUDIT_SOURCE,
+    links: voidedMirrorAuditLinks,
+    metadata: auditMetadata,
   });
 
   return {
