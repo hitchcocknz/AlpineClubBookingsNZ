@@ -47,7 +47,8 @@ import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-sett
  *
  * Xero: no note is queued - the child has no invoice of its own - and the
  * officers are alerted after the commit to credit the group's combined invoice by
- * hand (`alertGroupMirrorRefundXeroByHand`, review M1).
+ * hand (`alertGroupMirrorRefundXeroByHand`, review M1). An interim: #4292 makes
+ * that note automatic (owner decision, 22 Oct 2026).
  *
  * Locks: none of its own. The completion already holds `lock(1)` for these two
  * keys (`resolveManualRefundTask#1`); the route takes the `Payment` row
@@ -322,7 +323,7 @@ export async function alertGroupMirrorRefundXeroByHand({
     await sendAdminXeroSyncErrorAlert({
       errorType: "GROUP_ORGANISER_REFUND_NOTE_BY_HAND",
       operation: `Refund credit note for booking ${bookingId} (paid back to the group organiser)`,
-      errorMessage: `${formatCents(refundCents, format)} was paid back by bank transfer to the group organiser (${name(group?.organiserMember, "the organiser")}) for ${name(child ? bookingOwner(child).member : null, "a joiner")}'s place in a group the organiser paid for by internet banking (refund task ${taskId}). The app cannot raise this refund's Xero credit note: that booking has no invoice of its own, and the money was taken on the group's ${invoice}. In Xero, raise a credit note for ${formatCents(refundCents, format)} to the organiser against that invoice and record the bank refund against it.`,
+      errorMessage: `${formatCents(refundCents, format)} was paid back by bank transfer to the group organiser (${name(group?.organiserMember, "the organiser")}) for ${name(child ? bookingOwner(child).member : null, "a joiner")}'s place in a group the organiser paid for by internet banking (refund task ${taskId}). Until #4292 the app does not raise this refund's Xero credit note: that booking has no invoice of its own, and the money was taken on the group's ${invoice}. In Xero, raise a credit note for ${formatCents(refundCents, format)} to the organiser against that invoice and record the bank refund against it.`,
       timestamp: new Date(),
     });
   } catch (err) {

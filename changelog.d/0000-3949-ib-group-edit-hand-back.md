@@ -12,15 +12,17 @@
   joiner's email says the club will refund the group organiser directly. Tasks
   already stuck can simply be marked paid back now; nothing needs migrating.
 
-  The app cannot raise this refund's Xero credit note (the joiner's booking has
-  no invoice of its own), so marking it paid back emails admins to credit the
-  group's combined invoice by hand. A price review settled as money owed back on
+  Until #4292 the app does not raise this refund's Xero credit note (the
+  joiner's booking has no invoice of its own), so marking it paid back emails
+  admins to credit the group's combined invoice by hand. A price review settled as money owed back on
   such a booking goes to the organiser the same way. A joiner's own cancellation
   after such a refund no longer marks the organiser's payment as never made.
 
   A joiner cancelling their own place on such a group with a refund due used to
   be refused; the cancel now goes ahead and raises the same kind of task, so the
   refund goes back to the organiser by bank transfer rather than to the joiner.
+  It is worked out on the club's card refund tiers, as every refund to the
+  organiser is, and admins get the "Manual refund needed" email for it.
 
   A later cancellation of the group by the organiser counts a refund already
   paid this way exactly once. Dismissing a change's refund after the group is

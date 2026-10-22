@@ -242,19 +242,26 @@ transfer", the paid-back dialog says the money goes back to the group
 organiser, and the joiner's email says the club will refund the group organiser
 directly. Send it to the organiser and mark it paid back as above; that records
 the refund against the joiner's share of the group payment, and the group's own
-settlement is left as it was. The app raises no Xero credit note for these (the joiner's booking has no
-invoice of its own; the money was taken on the group's combined invoice), so once
-you mark one paid back the finance contacts get a **Xero Sync Error** email naming the amount,
+settlement is left as it was. Until #4292 ships automatic notes, the app raises
+no Xero credit note for these (the joiner's booking has no invoice of its own;
+the money was taken on the group's combined invoice), so once you mark one paid
+back the finance contacts get a **Xero Sync Error** email naming the amount,
 the organiser and the invoice: in Xero, raise a credit note for that amount to
 the organiser against the group's invoice and record the bank refund against it.
 When the joiner cancels their own place with a refund due, the cancel raises
-one of these tasks too, for the policy's refund, to the organiser (never account
-credit for the joiner). A price review on such a booking that the club settles
-as money owed back goes to the organiser the same way; once the group is cancelled, such a review is
-refused and has to be settled by hand and dismissed. The rules above are
-unchanged: once the organiser has cancelled the group, a change's task can only
-be marked paid back, while an appeal's can still be dismissed with a note. Tasks
-raised before this change, which could not be marked paid back at all, now can.
+one of these tasks too, for the policy's card-tier refund, to the organiser
+(never account credit for the joiner), and admins get the **Manual refund
+needed** email saying the refund goes to the organiser (a customised message
+shows that through `{{handBackNote}}`, as below). A price review on
+such a booking that the club settles as money owed back goes to the organiser
+the same way. Once the joiner's booking is cancelled, by the joiner or by the
+organiser's cancellation of the group, such a review is refused and has to be
+settled by hand and dismissed. While the organiser's cancellation of the group
+is still part-way through, marking one of these paid back is refused; try again
+once it has finished. The rules above are unchanged: once the organiser has
+cancelled the group, a change's task can only be marked paid back, while an
+appeal's can still be dismissed with a note. Tasks raised before this change,
+which could not be marked paid back at all, now can.
 
 **The same task for a group paid by internet banking (#4042).** When the
 organiser of a group they paid for with one internet banking settlement

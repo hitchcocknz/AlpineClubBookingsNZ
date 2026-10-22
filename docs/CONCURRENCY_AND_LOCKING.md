@@ -3584,6 +3584,11 @@ the same row, so the two serialise on the global key. Its recovery replay
 `Payment` row before it reads whether the plan's share is written
 (`readGroupChildMirrorForPlanReplay`): a completion holds the row before its
 claim, so the replay reads the refunded total and the paid-back task together.
+The organiser cancel freezes its plan outside the lock and claims each child
+under `lock(1)` after it; a completion, under the same `lock(1)`, is refused
+while the group is CANCELLED and the child not yet claimed
+(`assertGroupCancelNotInProgress`), so the plan it froze cannot also be paid by
+hand. The replay plans nothing for a child the cancel did not claim.
 
 **#3791 adds the per-member credit-ledger lock to that completion, after
 `lock(1)`, the claim and the closure's re-price**, on the account-credit route

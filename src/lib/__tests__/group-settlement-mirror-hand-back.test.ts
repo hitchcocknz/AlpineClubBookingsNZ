@@ -203,6 +203,7 @@ describe("review M1: the officers are told to credit the group's invoice by hand
     expect(sent.errorType).toBe("GROUP_ORGANISER_REFUND_NOTE_BY_HAND");
     expect(sent.errorMessage).toContain("$15.00 was paid back by bank transfer to the group organiser (Olive Organiser) for Sam Joiner's place");
     expect(sent.errorMessage).toContain("invoice INV-0042");
+    expect(sent.errorMessage).toContain("Until #4292 the app does not raise this refund's Xero credit note");
     mocks.sendAdminXeroSyncErrorAlert.mockRejectedValueOnce(new Error("mail down"));
     await expect(alertGroupMirrorRefundXeroByHand({ bookingId: "b1", taskId: "t1", refundCents: 1_500, format: CLUB_FORMAT_TEST })).resolves.toBeUndefined();
   });
