@@ -309,7 +309,7 @@ const money = async (bookingId: string) =>
     }
   }, 300_000);
 
-  it("review rounds 3 and 4: between the group cancel's plan and its claim a completion is refused and no new hand-back is raised, so the organiser is never paid twice; after the resume claims the child it pays", async () => {
+  it("review rounds 3-5: between the group cancel's plan and its claim a completion is refused, no new hand-back is raised and the price does not change, so the organiser is never paid twice; after the resume claims the child it pays", async () => {
     const g = await settledGroup("mid-cancel");
     const [edited, other] = g.children;
     const taskId = await editHandBack(edited!, "m1");
@@ -342,6 +342,22 @@ const money = async (bookingId: string) =>
     }))).rejects.toMatchObject(refused);
     expect(await prisma.manualRefundTask.count({ where: { bookingId: edited! } })).toBe(1);
 
+    // Review round 5: nor is the price changed at all - here an edit that chose account credit, as the options
+    // offered before round 5, which would have handed the joiner credit the claim then paid the organiser again.
+    const { applyPaymentAdjustments } = await import("@/lib/booking-modify-settlement");
+    const { noReductionAgainstUnpaidAsk } = await import("@/lib/additional-ask-reduction");
+    const { GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE } = await import("@/lib/group-cancel-in-progress");
+    const { requireCalendarDate } = await import("@/lib/club-time");
+    await expect(underLock(async (tx) => applyPaymentAdjustments(tx, {
+      booking: (await tx.booking.findUniqueOrThrow({ where: { id: edited! }, include: { payment: true, guests: true } })) as never,
+      priceDiffCents: -1_000, changeFeeCents: 0, reduction: noReductionAgainstUnpaidAsk(-1_000),
+      settlementOptions: { basisAmountCents: 1_000, cardRefundAmountCents: 500, cardRefundPercentage: 50, accountCreditAmountCents: 1_000, accountCreditPercentage: 100,
+        daysUntilCheckIn: 30, requiresSettlementMethod: true, returnsToOrganiser: false, organiserRefundByBankTransfer: false },
+      settlementMethod: "credit", todayAtClub: requireCalendarDate("2026-07-01"), format: CLUB_FORMAT_TEST,
+    }))).rejects.toMatchObject({ status: 409, message: GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE });
+    expect(await prisma.memberCredit.count({ where: { sourceBookingId: edited! } })).toBe(0);
+    expect((await payment(edited!)).refundedAmountCents).toBe(0);
+
     // The reaper's resume claims the children, then the hand-back is paid on top of the plan - once each.
     await cancelGroupHistory(NAMES, g);
     await complete(taskId);
@@ -351,6 +367,29 @@ const money = async (bookingId: string) =>
     const report = await census();
     expect(about(report, edited!)).toEqual(PAID_BACK);
     expect(about(report, other!)).toEqual(NOTHING);
+  }, 300_000);
+
+  it("review round 5: a reduction on a live child is offered only the organiser's one disposition - no account credit for the joiner", async () => {
+    const g = await settledGroup("options");
+    const [joiner] = g.children;
+    const { calculateModificationSettlementOptions } = await import("@/lib/booking-modify-settlement");
+    const { noReductionAgainstUnpaidAsk } = await import("@/lib/additional-ask-reduction");
+    const { requireCalendarDate } = await import("@/lib/club-time");
+    const booking = await prisma.booking.findUniqueOrThrow({ where: { id: joiner! }, include: { payment: true, guests: true } });
+    // The card and credit tiers apart, so a credit-tier figure could not pass for the card tier's.
+    await prisma.cancellationPolicy.updateMany({ where: { lodgeId: NAMES.lodgeId }, data: { creditRefundPercentage: 75 } });
+    try {
+      const options = await calculateModificationSettlementOptions({
+        booking: booking as never, netChargeCents: -EDIT_CENTS, reduction: noReductionAgainstUnpaidAsk(-EDIT_CENTS),
+        db: prisma, todayAtClub: requireCalendarDate("2026-07-01"),
+      });
+      expect(options).toMatchObject({
+        returnsToOrganiser: true, organiserRefundByBankTransfer: true, requiresSettlementMethod: false,
+        accountCreditAmountCents: 0, cardRefundPercentage: 50, cardRefundAmountCents: EDIT_CENTS / 2,
+      });
+    } finally {
+      await prisma.cancellationPolicy.updateMany({ where: { lodgeId: NAMES.lodgeId }, data: { creditRefundPercentage: null } });
+    }
   }, 300_000);
 
   it("a group cancel after a completed edit hand-back sizes the plan net of it and mirrors both, live and on a re-drive interrupted after its plan froze", async () => {

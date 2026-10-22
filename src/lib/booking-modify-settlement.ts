@@ -46,10 +46,7 @@ import {
   isSettledBookingStatus,
   recordedChangeFeeCents,
 } from "@/lib/booking-payment-state";
-import {
-  type BookingModificationSettlementMethod,
-  type LoadedBookingForModify,
-} from "@/lib/booking-modify-validation";
+import { type BookingModificationSettlementMethod, type LoadedBookingForModify } from "@/lib/booking-modify-validation";
 import { type GuestPlan } from "@/lib/booking-modify-plan";
 import { calculateBookingHoldDecision } from "@/lib/policies/booking-route-decisions";
 import {
@@ -65,6 +62,7 @@ import {
   type CombinedCardSettlement,
 } from "@/lib/organiser-child-refund";
 import { ORGANISER_CHILD_CHARGE_REFUSAL, paidByOrganiserCard } from "@/lib/group-organiser-paid";
+import { refuseOrganiserBankChildPriceChangeInGroupCancel } from "@/lib/group-cancel-in-progress";
 
 export type PaymentAdjustmentResult = {
   refundAmountCents: number;
@@ -166,7 +164,7 @@ function resolveSelectedSettlementAmount({
   if (settlementOptions.returnsToOrganiser) {
     if (settlementMethod === "credit") {
       throw new ApiError(
-        "This booking was paid for by the group organiser, so a reduction goes back to the organiser's card and cannot be held as account credit.",
+        "This booking was paid for by the group organiser, so a reduction goes back to the organiser and cannot be held as account credit.",
         400,
       );
     }
@@ -251,6 +249,8 @@ export async function applyPaymentAdjustments(
     changeFeeRecordedByCaller?: boolean;
   },
 ): Promise<PaymentAdjustmentResult> {
+  // #3949 review round 5: the one place a price change is refused mid group cancel (every door settles through here).
+  await refuseOrganiserBankChildPriceChangeInGroupCancel(tx, booking, priceDiffCents + changeFeeCents);
   const inSettledStatus = isSettledBookingStatus(booking.status);
   const hasSettledPayment =
     inSettledStatus && hasCapturedPayment(booking.payment);

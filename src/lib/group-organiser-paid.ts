@@ -67,9 +67,10 @@ export const ORGANISER_CARD_APPEAL_PENDING_MEMBER_NOTE =
  * organiser-settled child whose payment mirror came from the group's combined
  * Stripe payment. Its reductions and cancellation go back to the organiser's
  * card, never to the joiner as account credit. A child the organiser settled
- * by Internet Banking is not one: no card money moved, and its group-invoice
- * settlement belongs to #3642. The settle path writes the child's mirror with
- * the settlement's source, so the mirror's source is the answer here.
+ * by Internet Banking is not one - no card money moved; it is
+ * `paidByOrganiserInternetBanking`, and `paidByOrganiser` asks either. The
+ * settle path writes the child's mirror with the settlement's source, so the
+ * mirror's source is the answer here.
  */
 export function paidByOrganiserCard(booking: {
   organiserSettled: boolean;
@@ -106,6 +107,20 @@ export function paidByOrganiserInternetBanking(booking: {
     booking.parentBookingId != null &&
     booking.payment?.source === "INTERNET_BANKING"
   );
+}
+
+/**
+ * #3949 review round 5 (`INV-PAY-114`, `INV-PAY-136`): a joiner's booking the
+ * group organiser paid for, by card or by Internet Banking - the one test for
+ * "its money back is the organiser's, never the joiner's account credit". A
+ * reduction's options then offer the organiser's one disposition
+ * (`returnsToOrganiser`), and the consent-expiry sweep elects no credit for it.
+ * HOW it goes back stays with the two predicates: the organiser's card
+ * (`paidByOrganiserCard`) or a bank-transfer hand-back
+ * (`paidByOrganiserInternetBanking`).
+ */
+export function paidByOrganiser(booking: Parameters<typeof paidByOrganiserInternetBanking>[0]): boolean {
+  return paidByOrganiserCard(booking) || paidByOrganiserInternetBanking(booking);
 }
 
 /**

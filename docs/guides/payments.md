@@ -235,7 +235,11 @@ and it can be dismissed (with a note) if the club settles it another way.
 
 **On a joiner's booking the group organiser paid for by internet banking
 (#3949).** Both tasks above can be raised on such a booking: a joiner's change
-that lowers the price, or an approved appeal on their place. The money came
+that lowers the price, or an approved appeal on their place. A change that
+lowers the price offers no choice of card or account credit: the refund, at the
+card refund tier, always goes back to the organiser this way, and the joiner is
+never given account credit for it (a guest whose consent lapses is removed the
+same way). The money came
 from the organiser's one group payment, so it goes back to the **organiser**,
 not the joiner: the task's reason says "to the group organiser by bank
 transfer", the paid-back dialog says the money goes back to the group
@@ -261,9 +265,9 @@ another way and dismiss the review with a note. Once the joiner's booking is can
 organiser's cancellation of the group, such a review is refused and has to be
 settled by hand and dismissed. While the organiser's cancellation of the group
 is still part-way through, marking one of these paid back is refused: mark it
-once the cancellation has finished. A change or an approved appeal that would
-raise a new one is refused too; once the booking shows as cancelled, decide
-whether anything more is owed. The rules above are unchanged: once the organiser has
+once the cancellation has finished. Any change to the booking's price, and an
+approved appeal that would raise a new one, is refused too; once the booking
+shows as cancelled, decide whether anything more is owed. The rules above are unchanged: once the organiser has
 cancelled the group, a change's task can only be marked paid back, while an
 appeal's can still be dismissed with a note. Tasks raised before this change,
 which could not be marked paid back at all, now can.

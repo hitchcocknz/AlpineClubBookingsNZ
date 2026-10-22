@@ -24,6 +24,10 @@
   It is worked out on the club's card refund tiers, as every refund to the
   organiser is, and admins get the "Manual refund needed" email for it.
 
+  A change that lowers the price of such a place no longer offers the joiner
+  account credit: the refund, at the card refund tier, always goes back to the
+  organiser by bank transfer, as it does for a group paid by card.
+
   A later cancellation of the group by the organiser counts a refund already
   paid this way exactly once. Dismissing a change's refund after the group is
   cancelled is still refused, as before, and the refusal now names the

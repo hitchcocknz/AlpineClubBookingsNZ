@@ -3589,7 +3589,10 @@ under `lock(1)` after it; a completion, and an edit's or appeal's raise of a
 new hand-back to the organiser, each under its own `lock(1)`, is refused while
 the group is CANCELLED and the child not yet claimed (`groupCancelInProgress`,
 the child's status read under that lock), so the plan it froze cannot also be
-paid by hand. The replay plans nothing for a child the cancel did not claim.
+paid by hand. Any price change of such a child is refused the same way, in
+`applyPaymentAdjustments` under the edit door's `lock(1)` with the booking
+re-read after it, so an account-credit choice cannot pay the joiner either.
+The replay plans nothing for a child the cancel did not claim.
 
 **#3791 adds the per-member credit-ledger lock to that completion, after
 `lock(1)`, the claim and the closure's re-price**, on the account-credit route

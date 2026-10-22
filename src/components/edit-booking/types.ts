@@ -257,8 +257,10 @@ export interface SettlementOptions {
   accountCreditPercentage: number;
   daysUntilCheckIn: number;
   requiresSettlementMethod: boolean;
-  /** #3653: paid for by the group organiser; the reduction goes back to their card. */
+  /** #3653, #3949: paid for by the group organiser; the reduction goes back to them. */
   returnsToOrganiser: boolean;
+  /** #3949: by bank transfer, the organiser having paid by Internet Banking; else to their card. */
+  organiserRefundByBankTransfer: boolean;
 }
 
 export interface QuoteResult {

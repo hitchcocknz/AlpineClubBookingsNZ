@@ -1601,8 +1601,8 @@ Internet Banking path) and **`INV-PAY-103`** (the one card-refund writer).
 
 - **A child the organiser paid for by card is refunded out of the group's
   combined payment, one Stripe refund per child, and nothing is called
-  refunded until Stripe answered** (#3653). An Internet Banking child keeps
-  the ordinary options.
+  refunded until Stripe answered** (#3653). An Internet Banking child is
+  `INV-PAY-136`'s.
   - **The debt is written first**, under `lock(1)`: one
     `PaymentRecoveryOperation` per refund, keyed `organiser_child_refund_*`,
     amount frozen, counted against the child's payment and the combined
@@ -2300,37 +2300,36 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 
 - **A refund on a joiner the organiser paid for by Internet Banking goes back
   to the organiser, onto the child's mirror** (#3949; owner decisions, 15-22 Oct
-  2026): an edit's or approved appeal's hand-back, a refund-direction edit
-  review, and the joiner's own cancel, which raises a hand-back on the card tier
-  (`cancelRefundDisposition`, shared with its preview), never the joiner's
-  credit. `paidByOrganiserInternetBanking` is the one test. The mirror has no
+  2026), on the card tier, never as the joiner's credit: an edit's reduction
+  (`returnsToOrganiser`, `paidByOrganiser`), an approved appeal, a
+  refund-direction review, and the joiner's own cancel
+  (`cancelRefundDisposition`, shared with its preview), each by a hand-back.
+  `paidByOrganiserInternetBanking` is the one test. The mirror has no
   `PaymentTransaction`, so `applyLocalRefundAllocation` cannot carry it.
   - **Completing it** (`group-settlement-mirror-hand-back.ts`) takes `lock(1)`,
-    then the `Payment` row; caps at what the payment still holds less every
-    OTHER open hand-back; raises `refundedAmountCents` and posts the
-    `BANK_REFUND` line and `REFUNDED` event. The `GroupBookingSettlement` is
-    untouched. A payment a transaction backs keeps the ledger route.
+    then the `Payment` row; caps at what the payment holds less every OTHER
+    open hand-back; raises `refundedAmountCents`, posts `BANK_REFUND` and
+    `REFUNDED`. The `GroupBookingSettlement` is untouched. A payment a
+    transaction backs keeps the ledger route.
   - **Not while the organiser's group cancel is part-way through**
-    (`groupCancelInProgress`): no such hand-back is completed, nor raised by
-    an edit or appeal.
-  - **No Xero note yet** (#4292): admins are alerted to credit the group's
-    combined invoice by hand.
-  - **The mirror is capture evidence** (`paymentShowsCaptureEvidence`, the one
-    entry point, Net Collected's included): never read as unpaid or flipped
-    FAILED.
-  - **A review on a cancelled child is refused**, in the bank transfer's own
-    words; a charge-direction review on any such child, in the organiser's. Dismissal and reopening are unchanged; their refusals name the
-    organiser.
+    (`groupCancelInProgress`): no hand-back is completed or raised, and no
+    edit changes the price.
+  - **No Xero note yet** (#4292): admins credit the group's invoice by hand.
+  - **The mirror is capture evidence** (`paymentShowsCaptureEvidence`, Net
+    Collected's included): never read as unpaid or flipped FAILED.
+  - **Refused:** a review on a cancelled child, and a charge-direction review
+    on any, each in its own words. Dismissal and reopening are unchanged;
+    their refusals name the organiser.
   - **The group cancel's plan and replay** subtract every paid-back mirror
-    write (`mirrorPlanShareWritten`), and plan nothing for a child the cancel
-    did not claim.
+    write (`mirrorPlanShareWritten`), and plan nothing for an unclaimed child.
   - **The task's reason, dialog and alert, and the member's emails, name the
     organiser.**
 - Proven by `group-settlement-mirror-hand-back.test.ts`,
   `manual-refund-task.test.ts`, `manual-refund-task-reopen.test.ts`,
   `organiser-child-refund-edit.test.ts`, `group-cancel.test.ts`,
   `booking-ledger-projection-census-group.test.ts`, `booking-cancel.test.ts`,
-  `organiser-by-hand-tiers.test.ts`, `cancel-refund-method.test.ts` and
+  `organiser-by-hand-tiers.test.ts`, `cancel-refund-method.test.ts`,
+  `member-guest-consent-service.test.ts` and
   `ib-group-child-hand-back.realdb.test.ts`.
 
 ## INV-PAY-120
