@@ -76,6 +76,9 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
 
   it("names the payment source, the note roles, the queue type and the row shapes the code uses", () => {
     const arm = readFileSync(resolve(REPO_ROOT, "src/lib/xero-booking-repair-request-notes.ts"), "utf8");
+    // The payment's refund-note links are read by the one shared read (#4231 lens F3).
+    const linkRead = readFileSync(resolve(REPO_ROOT, "src/lib/xero-refund-note-status.ts"), "utf8");
+    const refundNoteWhere = 'where: { localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" }';
     expect(new Set(all(note, /p\.source = '([^']*)'/g))).toEqual(new Set([PaymentSource.INTERNET_BANKING]));
     // The request note's role is the code's constant; the payment's own refund note's is the role the arm reads.
     const roles = new Set([...all(note, /\.role = '([^']*)'/g), ...all(note, /\.role IN \(([^)]*)\)/g).flatMap((list) => list.split(", ").map((item) => item.slice(1, -1)))]);
@@ -84,7 +87,7 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
       expect(["REFUND_CREDIT_NOTE", "ACCOUNT_CREDIT_NOTE"]).toContain(role);
     }
     expect(roles).toContain(REFUND_REQUEST_CREDIT_NOTE_ROLE);
-    expect(arm).toContain('role: "REFUND_CREDIT_NOTE"');
+    expect(linkRead).toContain(refundNoteWhere);
     // The value compared, and the one a legacy row naming no queue type is read as (the arm counts it).
     const queueTypes = [...note.matchAll(/->>'queueType'(?:, '([^']*)')?\) = '([^']*)'/g)].flatMap((match) => [match[1], match[2]].filter(Boolean) as string[]);
     expect(queueTypes.length).toBeGreaterThan(0);
@@ -99,7 +102,7 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
     }
     for (const objectType of all(note, /"xeroObjectType" = '([^']*)'/g)) {
       expect(objectType).toBe("CREDIT_NOTE");
-      expect(arm).toContain(`xeroObjectType: "${objectType}"`);
+      expect(refundNoteWhere).toContain(`xeroObjectType: "${objectType}"`);
     }
   });
 });
