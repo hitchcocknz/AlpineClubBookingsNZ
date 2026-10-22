@@ -792,6 +792,59 @@ describe("Stripe webhook Xero alerting", () => {
     );
   });
 
+  it.each([
+    {
+      label: "the recorded settler is this capture although the intent pointer has moved to a later row",
+      payment: { status: "SUCCEEDED", stripePaymentIntentId: "pi_later_row", settledByTransactionId: "txn-1", changeFeeCents: 2500 },
+      settled: true,
+    },
+    {
+      label: "the pointer names this intent but the recorded settler is another row",
+      payment: { status: "SUCCEEDED", stripePaymentIntentId: "pi_settled", settledByTransactionId: "txn-other", changeFeeCents: 2500 },
+      settled: false,
+    },
+  ])("#4211: the already-settled check reads the recorded settler before the intent pointer ($label)", async ({ payment, settled }) => {
+    mockConstructWebhookEvent.mockReturnValue({
+      id: "evt_redelivered_4211",
+      type: "payment_intent.succeeded",
+      data: { object: { id: "pi_settled", amount: 15000, metadata: { bookingId: "booking-1" }, payment_method: "pm_123" } },
+    } as any);
+    mockFindPaymentTransactionByIntentId.mockResolvedValue({
+      id: "txn-1",
+      paymentId: "payment-1",
+      bookingId: "booking-1",
+      kind: "PRIMARY",
+      amountCents: 15000,
+      status: "SUCCEEDED",
+    });
+    mockBookingFindUnique.mockResolvedValue({
+      id: "booking-1",
+      status: "COMPLETED",
+      checkIn: new Date("2026-06-01"),
+      checkOut: new Date("2026-06-03"),
+      finalPriceCents: 15000,
+      discountCents: 0,
+      guests: [{ id: "g1" }],
+      member: { firstName: "Alice", lastName: "Example", email: "alice@example.com" },
+      payment,
+      promoRedemption: null,
+    });
+    mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "already_paid", booking: { id: "booking-1" } });
+
+    const response = await POST(makeRequest());
+
+    if (settled) {
+      // Not re-checked against the later fee: handed to the settle, which keeps it.
+      expect(response.status).toBe(200);
+      expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalled();
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    } else {
+      // Not the settlement: compared with what the booking owes now, and refused.
+      expect(response.status).toBe(500);
+      expect(mockMarkBookingPaymentSucceeded).not.toHaveBeenCalled();
+    }
+  });
+
   it("uses the deduplicated notifier when credit note creation fails after a refund webhook", async () => {
     mockConstructWebhookEvent.mockReturnValue({
       id: "evt_refund",

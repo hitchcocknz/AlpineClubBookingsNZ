@@ -559,11 +559,16 @@ async function handlePaymentIntentSucceeded(
   // later fee, a later edit): comparing it again would refuse a payment that
   // was taken and recorded, and Stripe would retry it for ever. Its own
   // transaction row SUCCEEDED (a refunded one reads REFUNDED, and the settle
-  // refuses it) and the payment pointing at it is the evidence; the settle
-  // below answers it `already_paid` without re-checking the amount.
+  // refuses it) and the payment naming it is the evidence; the settle below
+  // answers it `already_paid` without re-checking the amount. #4211: named by
+  // the recorded settler when there is one (the intent pointer follows the
+  // latest row, not the settlement), else by the pointer.
+  const recordedSettlerId = bookingRecord?.payment?.settledByTransactionId;
   const alreadySettledWithThisIntent =
     paymentTransaction.status === PaymentStatus.SUCCEEDED &&
-    bookingRecord?.payment?.stripePaymentIntentId === paymentIntent.id;
+    (recordedSettlerId
+      ? recordedSettlerId === paymentTransaction.id
+      : bookingRecord?.payment?.stripePaymentIntentId === paymentIntent.id);
   const expectedOwedCents =
     bookingRecord && !alreadySettledWithThisIntent
       ? bookingAmountOwedCents({
