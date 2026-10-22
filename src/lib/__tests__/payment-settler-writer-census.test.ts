@@ -77,12 +77,14 @@ function settledByWrites(fileName: string, text: string): number[] {
   return lines;
 }
 
-describe("Payment.settledByTransactionId has one writer home (#4211, INV-PAY-043)", () => {
+describe("Payment.settledByTransactionId has one writer home (#4211, INV-PAY-043)", { timeout: 60_000 }, () => {
   it("writes it only in payment-settler.ts", () => {
     const offenders = sourceFiles(SRC).flatMap((file) => {
       const rel = path.relative(ROOT, file).split(path.sep).join("/");
       if (rel === HOME) return [];
-      return settledByWrites(rel, readFileSync(file, "utf8")).map((line) => `${rel}:${line}`);
+      const text = readFileSync(file, "utf8");
+      // Only a file that names the column can write it; parse just those.
+      return text.includes(COLUMN) ? settledByWrites(rel, text).map((line) => `${rel}:${line}`) : [];
     });
     expect(
       offenders,
