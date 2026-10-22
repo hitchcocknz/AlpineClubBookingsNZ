@@ -68,7 +68,7 @@ import {
   markGroupSettlementIntentRefunded,
 } from "@/lib/group-settlement";
 import { adoptSavedCardChargeAttemptForIntent } from "@/lib/saved-card-charge-settle";
-import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
+import { BookingStatus, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 import { isCapturedTransactionStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { keyAfterStripeRefusals, refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 import { formatCents } from "@/lib/utils";
@@ -558,11 +558,11 @@ async function handlePaymentIntentSucceeded(
   // with is not a stale intent, whatever the booking has come to owe since (a
   // later fee, a later edit): comparing it again would refuse a payment that
   // was taken and recorded, and Stripe would retry it for ever. Its own
-  // transaction row SUCCEEDED (a refunded one reads REFUNDED, and the settle
-  // refuses it) and the payment naming it - #4211: its recorded settler, else its intent pointer (which follows
-  // the latest row) - is the evidence; the settle answers it `already_paid` without re-checking the amount.
-  const settler = bookingRecord?.payment?.settledByTransactionId, settled = paymentTransaction.status === PaymentStatus.SUCCEEDED;
-  const alreadySettledWithThisIntent = settled && (settler ? settler === paymentTransaction.id : bookingRecord?.payment?.stripePaymentIntentId === paymentIntent.id);
+  // #4211: the recorded settler at any status, else a SUCCEEDED row the intent pointer (the latest row) names;
+  // and on a booking already PAID, any capture of its payment - the settle there only keeps or refunds it (#1992),
+  // never settles on its amount. An unpaid booking keeps the #1161 check: there a stale amount would settle it.
+  const payment = bookingRecord?.payment, settler = payment?.settledByTransactionId;
+  const alreadySettledWithThisIntent = (settler ? settler === paymentTransaction.id : paymentTransaction.status === PaymentStatus.SUCCEEDED && payment?.stripePaymentIntentId === paymentIntent.id) || (bookingRecord?.status === BookingStatus.PAID && !!payment && paymentTransaction.paymentId === payment.id);
   const expectedOwedCents =
     bookingRecord && !alreadySettledWithThisIntent
       ? bookingAmountOwedCents({
@@ -631,7 +631,7 @@ async function handlePaymentIntentSucceeded(
     return;
   }
 
-  logger.info({ bookingId, paymentIntentId: paymentIntent.id }, "Booking paid via PaymentIntent");
+  logger.info({ bookingId, paymentIntentId: paymentIntent.id, outcome: reconciliation.outcome }, `PaymentIntent reconciled: ${reconciliation.outcome}`);
 
   // Send confirmation email only on a fresh transition to PAID. An
   // "already_paid" outcome means the synchronous confirm-payment route (or a
