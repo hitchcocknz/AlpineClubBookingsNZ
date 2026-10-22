@@ -31,7 +31,7 @@ reason: its history row carries the marker the gap check anchors on; the row
   is written inline here and nowhere else.
 
 file: src/lib/xero-booking-repair-classify.ts
-lines: 2390
+lines: 2392
 reason: the repair pass decides per edit, inside its one loop, which documents
   an edit expects; a marked edit's "expects none of its own" has to sit beside
   the two arms it switches off, and the reason it is safe is written there.
