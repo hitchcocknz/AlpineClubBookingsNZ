@@ -41,8 +41,10 @@ export const REVIEW_CHARGE_ORGANISER_PAID_MESSAGE =
  * #3170: the officer said the club is owed, and there is no way to ask for it.
  *
  * The club collects a price increase in exactly two ways: an additional card
- * payment against a captured Stripe payment, or a supplementary invoice on a
- * booking that already has one. A booking with neither has no instrument at all -
+ * payment, when the booking has a card to ask (`canAskCardForReviewCharge`,
+ * which since #3947 includes a settled booking paid wholly with credit), or a
+ * supplementary invoice on a booking whose Xero invoice has been issued. A
+ * booking with neither has no instrument at all -
  * inventing one here would be the fourth settlement mechanism the epic forbids,
  * and pretending the money was collected would be the "claims money moved"
  * failure `INV-PAY-051` exists to stop.
