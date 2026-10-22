@@ -2102,8 +2102,8 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   `canAskCardForIncrease`, so a settled credit-paid booking too, Xero or not,
   plus captured card money on an unsettled booking (pending #4272). Otherwise
   the issued invoice. ONE INSTRUMENT PER EDIT: a share whose edit has no card
-  request but an invoice queued, sending, retried, or failed and unresolved joins it;
-  one issued, or resolved by hand in Xero, refuses it. The invoice route queues
+  request but an invoice queued, sending, retried, or failed and unresolved
+  joins it; one issued, or resolved by hand in Xero, refuses it. The invoice route queues
   its invoice inside the completion's transaction, and "coming" is read before
   "issued", so no later share misses it.
 
