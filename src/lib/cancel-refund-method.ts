@@ -5,7 +5,8 @@
  * A captured internet banking payment has no card charge to reverse, so its
  * cancellation refund is always held as account credit. The cancel path
  * applies this before it tiers the refund; the cancel preview returns it so
- * the dialog offers only what will happen. Pure, so both can import it.
+ * the dialog offers only what will happen. Pure, so both can import it. Both
+ * read it through `cancelRefundDisposition` below (#3949 review rounds 3-4).
  */
 import { PaymentSource } from "@prisma/client";
 

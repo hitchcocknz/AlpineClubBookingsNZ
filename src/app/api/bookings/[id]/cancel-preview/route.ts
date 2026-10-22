@@ -17,7 +17,7 @@ import { memberCancelRefusal } from "@/lib/booking-cancel-eligibility";
 import logger from "@/lib/logger";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { hasAdminAreaAccess } from "@/lib/admin-permissions";
-import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
+import { cancelRefundDisposition } from "@/lib/cancel-refund-method";
 import { cancelPreviewCardShortfall } from "@/lib/cancel-card-refund-shortfall-preview";
 import { paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import {
@@ -237,7 +237,7 @@ export async function GET(
       // The method the cancel will use whatever is chosen (an internet banking
       // payment refunds as account credit), from the cancel path's own home,
       // so the dialog offers only that option.
-      refundMethodForced: forcedCancelRefundMethod(booking.payment.source, organiserCard !== null, organiserByBank), // #3949: organiser by bank
+      refundMethodForced: cancelRefundDisposition({ paymentSource: booking.payment.source, organiserCard: organiserCard !== null, organiserByBank, manuallyMarkedPaid: booking.payment.manuallyMarkedPaidAt !== null, requested: "card" }).forced, // #3949: the cancel's own helper
     });
   } catch (error) {
     logger.error({ err: error }, "Error generating cancel preview");

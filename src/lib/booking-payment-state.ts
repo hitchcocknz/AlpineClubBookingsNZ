@@ -409,10 +409,16 @@ export function paymentShowsCaptureEvidence(
    * capture evidence comes through here and must say whose payment it is.
    */
   booking: { organiserSettled: boolean; parentBookingId: string | null },
+  /**
+   * #3949 review round 4: false for the paid-cancel gate (`paymentEligibleForPaidCancelPath`), which never trusts
+   * the pre-ledger STRIPE mirror (#1491: its refund executors allocate against ledger rows), yet asks the rest of
+   * the evidence here rather than spelling the organiser's mirror itself.
+   */
+  { preLedgerStripeMirror = true }: { preLedgerStripeMirror?: boolean } = {},
 ): boolean {
   return (
     hasCapturedLedgerRow ||
-    stripeRefundMirrorShowsCapture(payment) ||
+    (preLedgerStripeMirror && stripeRefundMirrorShowsCapture(payment)) ||
     organiserInternetBankingMirrorCaptured({ ...booking, payment })
   );
 }

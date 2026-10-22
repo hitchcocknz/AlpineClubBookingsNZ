@@ -95,7 +95,7 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
 import { keepRefusedPrePersistedRefundOwed, markCancellationAttempt } from "@/lib/refused-card-refund-retry";
 import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
-import { organiserInternetBankingMirrorCaptured, paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
+import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
 // module the member-facing doors also read — one home, no copy.
@@ -2705,7 +2705,7 @@ export async function paymentEligibleForPaidCancelPath(
   booking: {
     organiserSettled: boolean;
     parentBookingId: string | null;
-    payment: { id: string; status: string; source: string } | null | undefined;
+    payment: { id: string; status: string; source: string; refundedAmountCents: number } | null | undefined;
   },
   db: Prisma.TransactionClient | typeof prisma = prisma
 ) {
@@ -2719,9 +2719,7 @@ export async function paymentEligibleForPaidCancelPath(
   if (payment.status !== "PARTIALLY_REFUNDED") {
     return false;
   }
-  // #3949 review H1: so is one the organiser paid for by Internet Banking, whose mirror a paid-back hand-back left
-  // PARTIALLY_REFUNDED with no ledger row; read as unpaid, the cancel would flip it FAILED.
-  if (paidByOrganiserCard({ ...booking, payment }) || organiserInternetBankingMirrorCaptured({ ...booking, payment })) {
+  if (paidByOrganiserCard({ ...booking, payment })) {
     return true;
   }
   const capturedTransaction = await db.paymentTransaction.findFirst({
@@ -2733,7 +2731,9 @@ export async function paymentEligibleForPaidCancelPath(
     },
     select: { id: true },
   });
-  return Boolean(capturedTransaction);
+  // The one capture-evidence entry point, less the pre-ledger STRIPE mirror this gate never trusts. #3949 H1: it reads an
+  // IB organiser child's mirror (PARTIALLY_REFUNDED by a paid-back hand-back, no ledger row) as captured, never FAILED.
+  return paymentShowsCaptureEvidence(payment, Boolean(capturedTransaction), booking, { preLedgerStripeMirror: false });
 }
 
 // #1473/#1491: capture evidence for cancel-time decisions. Ledger truth

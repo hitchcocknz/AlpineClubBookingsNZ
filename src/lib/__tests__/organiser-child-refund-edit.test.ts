@@ -269,6 +269,8 @@ describe("an organiser child's reduction at the edit door (#3653)", () => {
       id: "payment_1",
       status: PaymentStatus.PARTIALLY_REFUNDED,
       source: PaymentSource.STRIPE,
+      // The mirror the pre-ledger STRIPE half of the capture evidence would trust; this gate never does (#1491).
+      refundedAmountCents: 1_000,
     };
     await expect(
       paymentEligibleForPaidCancelPath(
