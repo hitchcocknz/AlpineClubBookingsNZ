@@ -72,6 +72,8 @@ const EARLIER = new Date("2026-06-14T00:00:00.000Z");
 const TIED_AT = new Date("2026-06-15T00:00:00.000Z");
 /** #4221 round 5: what a capture holds again that nothing owes back (a hand refund that failed later). */
 const HELD_UNOWED = 3_000;
+const RAISED_AGAIN_AT = new Date("2026-06-16T00:00:00.000Z");
+const RESENT_AT = new Date("2026-06-17T00:00:00.000Z");
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
@@ -514,6 +516,11 @@ function capturesOnPayment() {
       // resent's row has not closed (a worker that crashed before its close);
       // dashboard's is dead, paid by a refund in the Stripe dashboard.
       const resentCents = PRICE_CENTS - HELD_UNOWED;
+      // Their superseded refunds closed before the failed-later rows were raised.
+      await prisma.paymentRecoveryOperation.updateMany({
+        where: { id: { in: [refundOp("resent"), refundOp("dashboard")] } },
+        data: { createdAt: EARLIER, succeededAt: TIED_AT },
+      });
       for (const [name, state] of [
         ["resent", { status: "PROCESSING" as const, attempts: 1 }],
         ["dashboard", { status: "PENDING" as const, attempts: 5 }],
@@ -526,6 +533,9 @@ function capturesOnPayment() {
             id: `race-4177-op-4221-failed-${name}`,
             type: "REFUND_BOOKING_MODIFICATION",
             amountCents: resentCents,
+            // Raised after its superseded refund closed, and before Stripe made
+            // the re-send: explicit, so the attribution never reads a tie.
+            createdAt: RAISED_AGAIN_AT,
             nextRetryAt: TIED_AT,
             paymentIntentId: intent(name),
             idempotencyKey: key,
@@ -546,6 +556,7 @@ function capturesOnPayment() {
             amountCents: amountCents as number,
             currency: "nzd",
             status: status as string,
+            createdAt: RESENT_AT,
           })),
         });
       }
