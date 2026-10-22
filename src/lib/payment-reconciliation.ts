@@ -37,7 +37,7 @@ import {
 import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
 import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
 import { alertCaptureKeptWithoutRecordedSettler, judgeCaptureOnPaidBooking } from "@/lib/duplicate-capture-guard";
-import { findSettlingInternetBankingTransactionId, recordSettlingTransaction } from "@/lib/payment-settler";
+import { CLEAR_SETTLING_TRANSACTION, findSettlingInternetBankingTransactionId, recordSettlingTransaction } from "@/lib/payment-settler";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
 import {
@@ -116,7 +116,12 @@ export type MarkBookingPaymentSucceededResult = {
     // settled by the other capture, so callers that only branch on the
     // cancelled_* outcomes keep treating these as "settled".
     | "duplicate_capture_refunded"
-    | "duplicate_capture_refund_failed";
+    | "duplicate_capture_refund_failed"
+    // #4211 (`INV-PAY-043`): a different capture on a PAID booking with no
+    // usable record of its settler, beside another payment holding money -
+    // KEPT, nothing refunded, the admins asked to check by hand. Settled like
+    // the two above: no confirmation email, no invoice of its own.
+    | "duplicate_capture_kept";
   bookingId: string;
   bumpedBookingIds: string[];
   refundError?: string;
@@ -1067,7 +1072,7 @@ async function settleBookingPaymentInTransaction(
         const verdict = await judgeCaptureOnPaidBooking(tx, {
           bookingId: booking.id,
           paymentId: payment.id,
-          settledByTransactionId: payment.settledByTransactionId,
+          recordedSettlerId: payment.settledByTransactionId,
           paymentIntentId: settlement.paymentIntentId,
           amountCents: settlement.amountCents,
         });
@@ -1092,11 +1097,12 @@ async function settleBookingPaymentInTransaction(
         }
         if (verdict.verdict === "keep_unrecorded_settler") {
           return {
-            outcome: "already_paid" as const,
+            outcome: "duplicate_capture_kept" as const,
             booking,
             paymentId: payment.id,
             bumpedBookingIds: [] as string[],
-            unrecordedSettlerOtherIntentId: verdict.otherPaymentIntentId,
+            otherPaymentIntentId: verdict.otherPaymentIntentId,
+            keptReason: verdict.reason,
           };
         }
       }
@@ -1872,9 +1878,10 @@ export async function markBookingPaymentSucceeded({
     });
   }
 
-  if (reconciliation.outcome === "already_paid" && "unrecordedSettlerOtherIntentId" in reconciliation) {
+  if (reconciliation.outcome === "duplicate_capture_kept") {
     const owner = bookingOwner(reconciliation.booking).member;
-    await alertCaptureKeptWithoutRecordedSettler({ booking: reconciliation.booking, memberName: `${owner.firstName} ${owner.lastName}`, paymentIntentId, amountCents, otherPaymentIntentId: reconciliation.unrecordedSettlerOtherIntentId ?? null, format });
+    await alertCaptureKeptWithoutRecordedSettler({ booking: reconciliation.booking, memberName: `${owner.firstName} ${owner.lastName}`, paymentIntentId, amountCents, otherPaymentIntentId: reconciliation.otherPaymentIntentId, reason: reconciliation.keptReason, format });
+    return { outcome: "duplicate_capture_kept", bookingId, bumpedBookingIds: [] };
   }
 
   if (reconciliation.outcome === "duplicate_capture") {
@@ -2758,7 +2765,7 @@ export async function reverseManualBookingPayment({
         manuallyMarkedPaidByMemberId: null,
         manualPaymentNote: null,
         manuallyMarkedPaidPreviousStatus: null,
-        settledByTransactionId: null, // #4211: the cash row it named is no longer settled
+        ...CLEAR_SETTLING_TRANSACTION, // #4211: the cash row it named is no longer settled
         ...(clearInternetBankingHold ? { internetBankingHoldUntil: null } : {}),
       },
     });

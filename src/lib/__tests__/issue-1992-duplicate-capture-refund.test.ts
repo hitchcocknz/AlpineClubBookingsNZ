@@ -58,6 +58,8 @@ const mocks = vi.hoisted(() => ({
   deriveBookingAppliedCreditCents: vi.fn(),
   sendAdminPaymentFailureAlert: vi.fn(),
   sendAdminDuplicateCaptureRefundAlert: vi.fn(),
+  sendAdminDuplicateCaptureKeptAlert: vi.fn(),
+  releaseAlertCooldown: vi.fn(),
   reconcileBedAllocationsForBooking: vi.fn(),
   recordBookingEvent: vi.fn(),
   recordDuplicateCaptureRefundEvent: vi.fn(),
@@ -112,6 +114,11 @@ vi.mock("@/lib/duplicate-capture-ownership", () => ({
     mocks.listDuplicateCaptureRefundIntentIds(...args),
 }));
 
+// #4211: the kept-capture alert's claim, given back when the send throws.
+vi.mock("@/lib/alert-cooldown", () => ({
+  releaseAlertCooldown: (...args: unknown[]) => mocks.releaseAlertCooldown(...args),
+}));
+
 // #4211: the kept-capture alert's once-a-day window.
 vi.mock("@/lib/alert-cooldown-fail-open", () => ({
   SETTLEMENT_MONEY_ALERT_REPEAT_MS: 24 * 60 * 60 * 1000,
@@ -138,6 +145,8 @@ vi.mock("@/lib/member-credit", () => ({
 vi.mock("@/lib/email", () => ({
   sendAdminPaymentFailureAlert: (...args: unknown[]) =>
     mocks.sendAdminPaymentFailureAlert(...args),
+  sendAdminDuplicateCaptureKeptAlert: (...args: unknown[]) =>
+    mocks.sendAdminDuplicateCaptureKeptAlert(...args),
   sendAdminDuplicateCaptureRefundAlert: (...args: unknown[]) =>
     mocks.sendAdminDuplicateCaptureRefundAlert(...args),
 }));
@@ -464,6 +473,8 @@ beforeEach(() => {
   mocks.restoreCreditFromBooking.mockResolvedValue(undefined);
   mocks.deriveBookingAppliedCreditCents.mockResolvedValue(0);
   mocks.sendAdminPaymentFailureAlert.mockResolvedValue(undefined);
+  mocks.sendAdminDuplicateCaptureKeptAlert.mockResolvedValue(undefined);
+  mocks.releaseAlertCooldown.mockResolvedValue(undefined);
   mocks.sendAdminDuplicateCaptureRefundAlert.mockResolvedValue(undefined);
   mocks.recordBookingEvent.mockResolvedValue(undefined);
   mocks.recordDuplicateCaptureRefundEvent.mockResolvedValue(undefined);
@@ -800,12 +811,11 @@ describe("#1992 duplicate-capture auto-refund", () => {
     function expectSettledBy(settledPaymentIntentId: string | null) {
       expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
       expect(mocks.sendAdminDuplicateCaptureRefundAlert).not.toHaveBeenCalled();
-      expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
         expect.objectContaining({
           paymentIntentId: DUPLICATE_PI,
-          errorMessage: expect.stringContaining(
-            settledPaymentIntentId ? `card payment ${settledPaymentIntentId} on it` : "a cash or bank payment on it",
-          ),
+          otherPaymentIntentId: settledPaymentIntentId,
+          reason: "not-recorded",
         }),
         CLUB_FORMAT_TEST,
       );
@@ -838,7 +848,7 @@ describe("#1992 duplicate-capture auto-refund", () => {
 
       const result = await settleDuplicate();
 
-      expect(result.outcome).toBe("already_paid");
+      expect(result.outcome).toBe("duplicate_capture_kept");
       expectSettledBy(OLDER_PI);
       // (c′) re-checks the chosen settlement, never the later capture.
       const recheckedIntents = mocks.paymentRecoveryOperationFindFirst.mock.calls.map(
@@ -889,7 +899,7 @@ describe("#1992 duplicate-capture auto-refund", () => {
 
         const result = await settleDuplicate();
 
-        expect(result.outcome).toBe("already_paid");
+        expect(result.outcome).toBe("duplicate_capture_kept");
         expectSettledBy(settledBy);
       },
     );
@@ -1136,6 +1146,8 @@ describe("#1992 duplicate-capture auto-refund", () => {
       expect(result.outcome).toBe("already_paid");
       expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
       expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+      // #4211: a capture superseded machinery owns is no unknown settlement either.
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
     });
 
     it("guard (c′) belt-and-braces: even if the candidate slips the (b′) notIn exclusion, the direct intent-id re-check suppresses the refund", async () => {
@@ -1159,6 +1171,7 @@ describe("#1992 duplicate-capture auto-refund", () => {
       expect(result.outcome).toBe("already_paid");
       expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
       expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
       // (c′) query shape: direct lookup by the CANDIDATE's intent id (X, the
       // matched "settlement"), the same live-status/type filter as (b′).
       expect(mocks.paymentRecoveryOperationFindFirst).toHaveBeenCalledWith({
@@ -1235,9 +1248,9 @@ describe("#1992 duplicate-capture auto-refund", () => {
       expect(reachedSibling).toBe(true);
       // #4211: nothing recorded which capture settled this booking, so the
       // match is reported to the admins and nothing is refunded automatically.
-      expect(result.outcome).toBe("already_paid");
-      expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentIntentId: SETTLEMENT_PI }),
+      expect(result.outcome).toBe("duplicate_capture_kept");
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentIntentId: SETTLEMENT_PI, otherPaymentIntentId: SUPERSEDED_PI }),
         CLUB_FORMAT_TEST,
       );
       expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
@@ -1618,7 +1631,7 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
 
     expect(await arrive(SETTLING_PI)).toEqual({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
     expectNothingRefunded();
-    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
     // Rule 1 answers before the ledger is asked anything.
     expect(mocks.paymentTransactionFindFirst).not.toHaveBeenCalled();
   });
@@ -1655,25 +1668,42 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
   it("with no record, a capture arriving beside another holding money is kept and the admins are told, once a day", async () => {
     primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })]);
 
-    expect(await arrive(THIRD_PI)).toEqual({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
+    expect(await arrive(THIRD_PI)).toEqual({ outcome: "duplicate_capture_kept", bookingId: "booking-1", bumpedBookingIds: [] });
     expectNothingRefunded();
-    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
-    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        paymentIntentId: THIRD_PI,
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+      {
+        memberName: expect.any(String),
+        checkIn: expect.any(Date),
+        checkOut: expect.any(Date),
+        bookingId: "booking-1",
+        reason: "not-recorded",
         amountCents: 10000,
-        errorMessage: expect.stringContaining(`card payment ${SETTLING_PI} on it still holds money`),
-      }),
+        paymentIntentId: THIRD_PI,
+        otherPaymentIntentId: SETTLING_PI,
+      },
       CLUB_FORMAT_TEST,
     );
+    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
     expect(mocks.claimAlertCooldownFailOpen).toHaveBeenCalledWith(
       expect.objectContaining({ key: `duplicate-capture-unrecorded-settler:booking-1:${THIRD_PI}`, windowMs: 24 * 60 * 60 * 1000 }),
     );
 
     // A redelivery inside the window re-checks and keeps, but does not re-mail.
     mocks.claimAlertCooldownFailOpen.mockResolvedValueOnce(false);
-    expect((await arrive(THIRD_PI)).outcome).toBe("already_paid");
-    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_kept");
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledTimes(1);
+    expectNothingRefunded();
+    expect(mocks.releaseAlertCooldown).not.toHaveBeenCalled();
+  });
+
+  it("with no record, a send that throws gives the alert's claim back so the next repeat tries again", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })]);
+    mocks.sendAdminDuplicateCaptureKeptAlert.mockRejectedValueOnce(new Error("no recipients readable"));
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_kept");
+    const claim = mocks.claimAlertCooldownFailOpen.mock.calls[0]![0] as { key: string; now: Date };
+    expect(mocks.releaseAlertCooldown).toHaveBeenCalledWith({ key: claim.key, claimedAt: claim.now });
     expectNothingRefunded();
   });
 
@@ -1685,7 +1715,7 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
     expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
       expect.objectContaining({ paymentIntentId: THIRD_PI }),
     );
-    expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
   });
 
   it("a recorded settler that no longer holds money is no record: the arriving capture is kept and the admins told", async () => {
@@ -1698,9 +1728,29 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
       { settledBy: "txn-y" },
     );
 
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_kept");
+    expectNothingRefunded();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "settler-released", otherPaymentIntentId: "pi_other_w" }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("(c′) alone sees a live superseded operation on the RECORDED settler: nothing is refunded and nobody is asked to check", async () => {
+    primeLedger(
+      [ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })],
+      { settledBy: "txn-y" },
+    );
+    // (b′)'s payment-scoped read misses it; only the direct re-check sees it.
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
+    mocks.paymentRecoveryOperationFindFirst.mockResolvedValue({ id: "op-superseded-y" });
+
     expect((await arrive(THIRD_PI)).outcome).toBe("already_paid");
     expectNothingRefunded();
-    expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
+    expect(mocks.paymentRecoveryOperationFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ paymentIntentId: SETTLING_PI }) }),
+    );
   });
 });
 

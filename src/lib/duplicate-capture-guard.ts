@@ -49,7 +49,9 @@ import {
 import { claimAlertCooldownFailOpen, SETTLEMENT_MONEY_ALERT_REPEAT_MS } from "@/lib/alert-cooldown-fail-open";
 import type { ClubFormat } from "@/lib/club-format";
 import { listDuplicateCaptureRefundIntentIds } from "@/lib/duplicate-capture-ownership";
-import { sendAdminPaymentFailureAlert } from "@/lib/email";
+import { releaseAlertCooldown } from "@/lib/alert-cooldown";
+import type { DuplicateCaptureKeptReason } from "@/lib/duplicate-capture-kept-note";
+import { sendAdminDuplicateCaptureKeptAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
@@ -101,7 +103,7 @@ type DuplicateRefundSlice = { paymentTransactionId: string; amountCents: number 
 export type ArrivingCaptureVerdict =
   | { verdict: "keep" }
   /** Rule 3: kept, and the admins check by hand which side to refund. */
-  | { verdict: "keep_unrecorded_settler"; otherPaymentIntentId: string | null }
+  | { verdict: "keep_unrecorded_settler"; otherPaymentIntentId: string | null; reason: DuplicateCaptureKeptReason }
   | {
       verdict: "refund";
       refundPlan: DuplicateRefundSlice[];
@@ -121,7 +123,7 @@ export async function judgeCaptureOnPaidBooking(
     bookingId: string;
     paymentId: string;
     /** `Payment.settledByTransactionId`, read under the caller's lock(1). */
-    settledByTransactionId: string | null;
+    recordedSettlerId: string | null;
     paymentIntentId: string;
     amountCents: number;
   },
@@ -131,7 +133,7 @@ export async function judgeCaptureOnPaidBooking(
     store: tx,
   });
   // Rule 1.
-  if (!arriving || arriving.id === input.settledByTransactionId) return { verdict: "keep" };
+  if (!arriving || arriving.id === input.recordedSettlerId) return { verdict: "keep" };
 
   const duplicateRefundIntentIds = await listDuplicateCaptureRefundIntentIds({
     bookingId: input.bookingId,
@@ -145,8 +147,8 @@ export async function judgeCaptureOnPaidBooking(
   });
   const select = { id: true, stripePaymentIntentId: true } as const;
   // Rule 2's settlement: the recorded settler, while it still qualifies.
-  const recordedSettler = input.settledByTransactionId
-    ? await tx.paymentTransaction.findFirst({ where: { ...where, id: input.settledByTransactionId }, select })
+  const recordedSettler = input.recordedSettlerId
+    ? await tx.paymentTransaction.findFirst({ where: { ...where, id: input.recordedSettlerId }, select })
     : null;
   // #4177 (`INV-PAY-133`): with no usable record, the oldest-inserted that qualifies.
   const settlement =
@@ -166,7 +168,11 @@ export async function judgeCaptureOnPaidBooking(
 
   if (!recordedSettler && !duplicateRefundIntentIds.includes(input.paymentIntentId)) {
     // Rule 3.
-    return { verdict: "keep_unrecorded_settler", otherPaymentIntentId: settlement.stripePaymentIntentId };
+    return {
+      verdict: "keep_unrecorded_settler",
+      otherPaymentIntentId: settlement.stripePaymentIntentId,
+      reason: input.recordedSettlerId ? "settler-released" : "not-recorded",
+    };
   }
 
   // Pinned to exactly this capture's outstanding amount, never a newest-first
@@ -183,11 +189,15 @@ export async function judgeCaptureOnPaidBooking(
 
 /**
  * Rule 3's alert, after the commit: a card capture was kept on a PAID booking
- * whose settlement was never recorded while another payment on it still holds
- * money. Reuses the admin payment alert rather than the duplicate-capture
- * refund's, whose every variant says a refund was made or queued. Once a day
- * per (booking, capture) while webhooks redeliver, sent anyway if the claim
- * cannot be read (`claimAlertCooldownFailOpen`).
+ * with no usable record of which payment settled it while another payment on it
+ * still holds money. Its own unmuteable, delivery-locked template
+ * (`admin-duplicate-capture-kept`): the duplicate-capture refund's alert says a
+ * refund was made or queued, and the generic payment alert says "Payment Failed"
+ * and can be muted. Once a day per (booking, capture) while repeats arrive (a
+ * Stripe redelivery, a reconcile or cron re-run), sent anyway if the claim
+ * cannot be read (`claimAlertCooldownFailOpen`), and the claim is given back if
+ * the send throws so the next repeat tries again (`releaseAlertCooldown`, as
+ * `internet-banking-hold-kept.ts`).
  */
 export async function alertCaptureKeptWithoutRecordedSettler({
   booking,
@@ -195,6 +205,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   paymentIntentId,
   amountCents,
   otherPaymentIntentId,
+  reason,
   format,
 }: {
   booking: { id: string; checkIn: Date; checkOut: Date };
@@ -202,26 +213,36 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   paymentIntentId: string;
   amountCents: number;
   otherPaymentIntentId: string | null;
+  reason: DuplicateCaptureKeptReason;
   format: ClubFormat;
 }) {
-  const context = { bookingId: booking.id, paymentIntentId, otherPaymentIntentId };
+  const context = { bookingId: booking.id, paymentIntentId, otherPaymentIntentId, reason };
+  const key = `duplicate-capture-unrecorded-settler:${booking.id}:${paymentIntentId}`;
+  const claimedAt = new Date();
   const send = await claimAlertCooldownFailOpen({
-    key: `duplicate-capture-unrecorded-settler:${booking.id}:${paymentIntentId}`,
+    key,
     windowMs: SETTLEMENT_MONEY_ALERT_REPEAT_MS,
+    now: claimedAt,
     context,
     logMessage: "Could not claim the kept-capture alert's cooldown; alerting anyway (#4211)",
   });
-  logger.error(context, "A card capture on a paid booking with no recorded settlement was kept for an admin to check (#4211)");
+  logger.error(context, "A card capture on a paid booking with no usable settlement record was kept for an admin to check (#4211)");
   if (!send) return;
-  const other = otherPaymentIntentId ? `card payment ${otherPaymentIntentId}` : "a cash or bank payment";
-  await sendAdminPaymentFailureAlert({
-    memberName,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    amountCents,
-    errorMessage: `Card payment ${paymentIntentId} arrived on a booking that is already paid, and ${other} on it still holds money. This booking was paid before the system recorded which payment settled it, so nothing was refunded automatically. Check which payment settled the booking and refund the other one by hand.`,
-    paymentIntentId,
-  }, format).catch((err) =>
-    logger.error({ err, ...context }, "Failed to alert admins about a kept capture with no recorded settlement (#4211)"),
-  );
+  try {
+    await sendAdminDuplicateCaptureKeptAlert({
+      memberName,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      bookingId: booking.id,
+      reason,
+      amountCents,
+      paymentIntentId,
+      otherPaymentIntentId,
+    }, format);
+  } catch (err) {
+    logger.error({ err, ...context }, "Failed to alert admins about a kept capture; giving the claim back so a repeat tries again (#4211)");
+    await releaseAlertCooldown({ key, claimedAt }).catch((releaseErr) =>
+      logger.error({ err: releaseErr, ...context }, "Failed to give back the kept-capture alert's claim (#4211)"),
+    );
+  }
 }

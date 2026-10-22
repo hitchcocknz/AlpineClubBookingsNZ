@@ -834,6 +834,28 @@ describe("card first, then cancelled, then bank (#3638)", () => {
       mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
     ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: "pi_card_3638" });
   });
+
+  it("#4211: a recorded settler with #1765 history still ranks after a real card settlement on a cancelled booking", async () => {
+    const switchedAt = new Date("2026-07-10T00:00:00.000Z");
+    primePayment(
+      switchedPayment(BookingStatus.CANCELLED, { status: PaymentStatus.REFUNDED, settledByTransactionId: "old-row" })
+    );
+    mocks.paymentTransactionFindFirst.mockImplementation(
+      async ({ orderBy }: { orderBy?: unknown }) =>
+        orderBy ? { createdAt: switchedAt } : null
+    );
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { ...CARD_PRIMARY, id: "old-row", stripePaymentIntentId: "pi_old", refundedAmountCents: 27000 },
+      { ...CARD_PRIMARY, id: "card-row", refundedAmountCents: 27000 },
+    ]);
+    mocks.paymentRefundFindMany.mockResolvedValue([{ paymentTransactionId: "old-row" }]);
+
+    await sync();
+
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: "pi_card_3638" });
+  });
 });
 
 /**

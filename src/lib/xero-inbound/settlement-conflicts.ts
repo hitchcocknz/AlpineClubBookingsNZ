@@ -348,13 +348,18 @@ export async function findSecondInstrumentSettlement(
       );
   if (holding.length === 0) return null;
   const history = await refundHistoryIds(tx, paymentId, holding);
-  // PAID / COMPLETED drop #1765 history; a cancelled booking keeps it (the new
-  // bank cash still has nowhere to go) and prefers a real card settlement.
-  const candidates = cancelled
-    ? [...holding].sort(
-        (a, b) => Number(history.has(a.id)) - Number(history.has(b.id)),
-      )
-    : holding.filter((transaction) => !history.has(transaction.id));
+  // #4211 (`INV-PAY-043`): the settlement the PAID claim recorded, if any.
+  const recordedId = (await tx.payment.findUnique({ where: { id: paymentId }, select: { settledByTransactionId: true } }))
+    ?.settledByTransactionId;
+  // ONE ordering for both rules: #1765 refund history last, then the recorded
+  // settler first among the rest, otherwise the ledger order above (a stable
+  // sort). PAID / COMPLETED drop history; a cancelled booking keeps it (the new
+  // bank cash still has nowhere to go) and prefers a real card settlement, so a
+  // recorded settler with refund history never outranks one without.
+  const rank = (transaction: (typeof holding)[number]) =>
+    (history.has(transaction.id) ? 2 : 0) + (transaction.id === recordedId ? 0 : 1);
+  const candidates = (cancelled ? [...holding] : holding.filter((transaction) => !history.has(transaction.id)))
+    .sort((a, b) => rank(a) - rank(b));
   if (candidates.length === 0) return null;
 
   // Only a card capture can be owned, so with none there is nothing to ask.
@@ -377,12 +382,7 @@ export async function findSecondInstrumentSettlement(
     !transaction.stripePaymentIntentId ||
     (!ownedBySupersededMachinery.has(transaction.stripePaymentIntentId) &&
       !ownedByDuplicateRefund.has(transaction.stripePaymentIntentId));
-  // #4211 (`INV-PAY-043`): the settlement the PAID claim recorded, when it is a
-  // candidate here; otherwise (not recorded, or the bank receipt) the rule above.
-  const recorded = await tx.payment.findUnique({ where: { id: paymentId }, select: { settledByTransactionId: true } });
-  const settledBy =
-    candidates.find((transaction) => transaction.id === recorded?.settledByTransactionId && unowned(transaction)) ??
-    candidates.find(unowned);
+  const settledBy = candidates.find(unowned);
   if (!settledBy) return null;
   return {
     source: settledBy.source,

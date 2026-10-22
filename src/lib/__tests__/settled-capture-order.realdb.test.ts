@@ -198,7 +198,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         judgeCaptureOnPaidBooking(tx, {
           bookingId: BOOKING_ID,
           paymentId: PAYMENT_ID,
-          settledByTransactionId: null,
+          recordedSettlerId: null,
           paymentIntentId: ARRIVING_PI,
           amountCents: PRICE_CENTS,
         }),

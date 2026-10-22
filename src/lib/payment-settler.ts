@@ -25,6 +25,14 @@ import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payme
 
 type PaymentWriter = Pick<Prisma.TransactionClient, "payment">;
 
+/**
+ * The clear, for a writer that re-opens the payment inside a fenced
+ * `updateMany` of its own (the manual mark-paid reversal) and must keep that one
+ * statement. Every write of the column is here or in `recordSettlingTransaction`
+ * below; `payment-settler-writer-census.test.ts` fails any other.
+ */
+export const CLEAR_SETTLING_TRANSACTION = { settledByTransactionId: null } as const satisfies Prisma.PaymentUpdateManyMutationInput;
+
 /** Record (or, with null, clear) the settling transaction. Inside the PAID claim's transaction only. */
 export async function recordSettlingTransaction(
   store: PaymentWriter,
