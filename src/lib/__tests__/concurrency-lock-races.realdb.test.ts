@@ -370,6 +370,15 @@ import "./xero-bt-repair-request-cash.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4230-` fixtures.
 import "./xero-bt-recount-handbacks.realdb.test";
+// #4287 reuses it to prove a later cancellation hand-back on a bank transfer
+// gets its own Xero note, keyed and sized on its task: through the real
+// completion and outbox worker (a fake Xero transport), two completions racing
+// on the Payment row lock, a card note never squeezed by it, the readers and
+// the #4162 floor, no note for a refund the old release absorbed, and the
+// self-heal never selecting a bank transfer.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4287-` fixtures.
+import "./xero-bt-per-refund-notes.realdb.test";
 // #4098 reuses it to prove closing a subscription charge as already paid: two
 // closes at once close it once (one audit row, each voidGeneration bumped
 // once), and a manual reversal committing while the close waits for the

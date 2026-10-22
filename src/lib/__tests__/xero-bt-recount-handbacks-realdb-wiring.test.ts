@@ -21,11 +21,23 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("a group organiser's hand-back moves no payment's refunded total");
     expect(suite).toContain("the recount writes the payment's refunded total and never its charge rows");
-    expect(suite).toContain("CURRENT BEHAVIOUR: a second cancellation hand-back is absorbed into the canonical note");
+    expect(suite).toContain("a second cancellation hand-back is queued its own note, keyed on its task");
     expect(suite).toContain("CURRENT BEHAVIOUR: a refund request's card part on a bank transfer is absorbed");
     expect(suite).toContain("a payment whose refunds all have notes is not listed by the deploy note's query");
     expect(suite).toContain("a review's refund on a cancelled booking counts with its own note");
     expect(suite).toContain("a void the nightly follow-up undid is not listed");
     expect(suite).toContain("which void states reach the alert");
+  });
+
+  it("#4287's per-refund note proofs are imported by the race harness too", () => {
+    const harness = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"), "utf8");
+    expect(harness).toContain('import "./xero-bt-per-refund-notes.realdb.test";');
+    const suite = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/xero-bt-per-refund-notes.realdb.test.ts"), "utf8");
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("a second cancellation hand-back gets its own note, keyed and sized on its task");
+    expect(suite).toContain("two hand-backs completed at once on a payment with no note yet");
+    expect(suite).toContain("the hand-back's own note never squeezes the card note raised after it");
+    expect(suite).toContain("a refund the old release absorbed is never given a note");
+    expect(suite).toContain("the nightly self-heal never selects a bank-transfer payment");
   });
 });

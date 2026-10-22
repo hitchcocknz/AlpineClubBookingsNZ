@@ -983,9 +983,9 @@ export async function enqueueXeroRefundCreditNoteOperation(
       };
     }
   } else if (canonicalLink) {
-    // Non-Stripe callers (internet-banking cron, group-cancel) issue at most one
-    // refund per payment and re-enqueue on cron reruns; the single-note skip
-    // absorbs those replays by repointing at the existing note.
+    // Non-Stripe callers that name no record of their own (internet-banking cron,
+    // group-cancel) re-enqueue on reruns; the single-note skip absorbs those replays
+    // by repointing. #4287: a later hand-back names its own (`paidAnotherWayTaskId`).
     if (payment.xeroRefundCreditNoteId !== canonicalLink.xeroObjectId) {
       await db.payment.update({
         where: { id: paymentId },

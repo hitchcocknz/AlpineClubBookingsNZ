@@ -5,6 +5,7 @@ import {
   CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
   COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE,
   isCancelCardShortfallTask,
+  NOT_NON_CANCELLATION_HAND_BACK_WHERE,
   paidAnotherWayCloseXeroNote,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE } from "@/lib/bank-refund-void-follow-up-key";
@@ -58,6 +59,15 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
  * off the invoice as it stands later. #4159 round 2 (F1): a capacity race's
  * part whose record keeps a card note's cover (`paidAnotherWayCardNoteCover`)
  * is noted too: that note answers its cash, and its own note the rest.
+ *
+ * #4287 (`INV-PAY-101`): A CANCELLATION HAND-BACK NOTED ON ITS OWN RECORD IS
+ * READ THE SAME WAY. A later hand-back on a bank-transfer payment, or one on a
+ * payment with card refund rows, queues its own note keyed on the task
+ * (`cancellationHandBackNotedOnItsOwnRecord`). Such a completed hand-back is
+ * noted bank cash here once a note row names it, so a card note sized against
+ * the payment's cash is never squeezed by that note's coverage. One whose note
+ * is the payment's canonical one, or that has none, is not a record here at
+ * all: the canonical note is sized from the mirror as before.
  */
 
 /**
@@ -82,9 +92,16 @@ export function readPaidAnotherWayCardNoteCoverCents(reviewContext: unknown): nu
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : 0;
 }
 
-/** The records whose bank cash this module reads: paid-another-way closes and (#4097) paid-back card refund shortfalls. */
+/** #4287: a completed cancellation hand-back - noted bank cash only once a note row names it (see above). */
+const COMPLETED_CANCELLATION_HAND_BACK_WHERE = {
+  kind: "CANCELLED_BOOKING_HAND_BACK",
+  status: "COMPLETED",
+  ...NOT_NON_CANCELLATION_HAND_BACK_WHERE,
+} satisfies Prisma.ManualRefundTaskWhereInput;
+
+/** The records whose bank cash this module reads: paid-another-way closes, (#4097) paid-back card refund shortfalls and (#4287) hand-backs noted on their own record. */
 const BANK_CASH_RECORD_WHERE = {
-  OR: [CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE],
+  OR: [CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, COMPLETED_CANCEL_CARD_SHORTFALL_TASK_WHERE, COMPLETED_CANCELLATION_HAND_BACK_WHERE],
 };
 
 export interface PaidAnotherWayCash {
@@ -123,6 +140,13 @@ async function readPaidAnotherWayCloses(db: CashStore, paymentId: string): Promi
       continue;
     }
     const note = paidAnotherWayCloseXeroNote(task);
+    if (note === null) {
+      // #4287: a cancellation hand-back is a record here only once its own note row names it.
+      if ((await db.xeroSyncOperation.count({ where: paidAnotherWayCloseNoteRowsWhere(paymentId, task.id) })) > 0) {
+        closes.push({ id: task.id, amountCents, counted: "noted" });
+      }
+      continue;
+    }
     const counted =
       note === "now"
         ? "noted"
@@ -191,6 +215,7 @@ export async function readPaidAnotherWayCloseShare(
     // #4162 (`INV-ADDPAY-042`): a completed bank refund to re-confirm raises its
     // fresh note the same way - keyed and sized on itself, never the payment's
     // gap - so its record is read here too (and only here: it is no card cash).
+    // #4287: as is a completed cancellation hand-back's (`BANK_CASH_RECORD_WHERE`).
     where: {
       id: closeId,
       paymentId,

@@ -15,6 +15,7 @@ import {
 } from "@/lib/xero-operation-outbox";
 import { enqueueXeroRefundRequestCreditNoteOperation } from "@/lib/xero-refund-request-credit-note-outbox";
 import { isCancelCardShortfallTask, isNonCancellationHandBackTask, refundRequestIdOfHandBack } from "@/lib/manual-refund-task-settlement-rules";
+import { cancellationHandBackNotedOnItsOwnRecord } from "@/lib/bank-hand-back-refund-note";
 import type { RefundMethod } from "@/lib/xero-refund-method";
 import type { ClubFormat } from "@/lib/club-format";
 
@@ -135,8 +136,9 @@ function enqueueCancelledReviewRefundNote(
  * #3880: a bank-transfer hand-back's note on a cancelled booking, queued on the
  * completion's own transaction after its allocation: a review's hand-back
  * (noted per refund, keyed on the task) and a `CANCELLED_BOOKING_HAND_BACK`
- * (`INV-PAY-101`, #3529: the payment's one refund note; #4097, a card refund
- * shortfall's: its OWN, keyed on the task like a "Paid another way" close's).
+ * (`INV-PAY-101`, #3529: the payment's canonical refund note, or - #4287, a
+ * later one - its OWN, keyed on the task; #4097, a card refund shortfall's:
+ * its OWN, keyed on the task like a "Paid another way" close's).
  * An outbox row insert and no provider call; a throw rolls the completion back.
  */
 export async function queueCancelledBookingHandBackNoteInTransaction({
@@ -172,8 +174,10 @@ export async function queueCancelledBookingHandBackNoteInTransaction({
     route?.kind === "local-allocation" &&
     route.refundCents > 0
   ) {
-    // #4162 (`INV-ADDPAY-042`): the payload names the hand-back it records (never its key or sizing), so a void is matched to it.
-    await enqueueXeroRefundCreditNoteOperation(route.paymentId, route.refundCents, { createdByMemberId: actingMemberId, refundMethod: "internet-banking", handBackTaskId: task.id, store });
+    // #4162 (`INV-ADDPAY-042`): the payload names the hand-back it records, so a void is matched to it.
+    // #4287 (`INV-PAY-101`): a later one is keyed and sized on its own task, never absorbed into the canonical note.
+    const ownRecord = (await cancellationHandBackNotedOnItsOwnRecord(store, route.paymentId, task.id)) ? { paidAnotherWayTaskId: task.id } : {};
+    await enqueueXeroRefundCreditNoteOperation(route.paymentId, route.refundCents, { createdByMemberId: actingMemberId, refundMethod: "internet-banking", handBackTaskId: task.id, ...ownRecord, store });
   }
 }
 
