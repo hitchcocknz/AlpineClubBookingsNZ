@@ -73,6 +73,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
   { timeout: 120_000 },
   () => {
     async function deleteBookingRows() {
+      await prisma.processedWebhookEvent.deleteMany({ where: { eventId: { startsWith: "evt_race_4211_" } } });
+      await prisma.webhookLog.deleteMany({ where: { eventId: { startsWith: "evt_race_4211_" } } });
       await prisma.alertCooldown.deleteMany({ where: { key: { contains: BOOKING_ID } } });
       await prisma.auditLog.deleteMany({ where: { targetId: { in: [BOOKING_ID, PAYMENT_ID] } } });
       await prisma.bookingEvent.deleteMany({ where: { bookingId: BOOKING_ID } });
@@ -462,14 +464,43 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await prisma.alertCooldown.count({ where: { key: { contains: BOOKING_ID } } })).toBe(0);
     });
 
-    it("a change fee recorded after the settle: a duplicate delivered at the old amount is refunded in full and the settler kept", async () => {
+    let webhookEventSequence = 0;
+    /** Stripe's `payment_intent.succeeded` through the REAL webhook processor, stale-amount check included. */
+    async function deliverWebhook(paymentIntentId: string) {
+      webhookEventSequence += 1;
+      const { processStripeWebhookEvent } = await import("@/lib/stripe-webhook-service");
+      const event = {
+        id: `evt_race_4211_${webhookEventSequence}`,
+        object: "event",
+        type: "payment_intent.succeeded",
+        request: null,
+        data: {
+          object: {
+            id: paymentIntentId,
+            object: "payment_intent",
+            amount: PRICE_CENTS,
+            currency: "nzd",
+            status: "succeeded",
+            payment_method: "pm_race_4211",
+            metadata: { bookingId: BOOKING_ID },
+            latest_charge: null,
+          },
+        },
+      } as unknown as import("stripe").Stripe.Event;
+      return processStripeWebhookEvent(event);
+    }
+
+    it("a change fee recorded after the settle: a duplicate's webhook at the old amount passes the stale-amount check and is refunded in full, the settler kept", async () => {
       const asked = stripeMakesRefunds();
       const [settling, duplicate] = TABS;
       expect((await arrive(settling)).outcome).toBe("paid");
       // A later correction records a fee on the payment, so the booking now owes more.
       await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { changeFeeCents: 2_500 } });
 
-      expect((await arrive(duplicate)).outcome).toBe("duplicate_capture_refunded");
+      // On a PAID booking the webhook hands the capture to the settle rather
+      // than refusing it as a stale intent (a 500 and a mismatch alert on every retry).
+      const delivered = await deliverWebhook(duplicate);
+      expect(delivered.init?.status ?? 200, JSON.stringify(delivered.body)).toBe(200);
       expect(asked).toEqual([duplicate]);
       const after = await snapshot();
       expect(after.refunds.map((refund) => refund.amountCents)).toEqual([PRICE_CENTS]);
