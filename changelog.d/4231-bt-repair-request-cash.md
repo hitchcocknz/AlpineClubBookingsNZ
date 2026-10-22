@@ -28,12 +28,14 @@
   the booking had no invoice to credit when it was paid back. Once the invoice
   exists, and only where the payment has no cancellation credit note of any
   kind, the repair tool now offers that note, for the amount paid back, but
-  never raises it by itself: check Xero for a credit already raised by hand for
-  the request, then confirm the action by its key. Where the payment has a
+  never raises it by itself. Its report starts by asking you to check the
+  invoice in Xero for a credit already raised for the request: if there is one,
+  nothing more is needed, and the report stays because the app cannot record
+  it. Otherwise confirm the action by its key. Where the payment may have a
   cancellation credit note, that note may already include the request's refund
   if it was raised before this release, so the tool offers nothing and asks a
   person to compare the note's lines in Xero with the cancellation's own refund
-  and raise the request's credit by hand. It never re-raises a request's note
+  and, where no credit for the request exists yet, raise it by hand. It never re-raises a request's note
   that was voided in Xero: that stays the officer's decision.
 
   A payment that already lost a request's refund this way is not corrected by
@@ -57,9 +59,10 @@
   "folded", which is misleading here. A third check lists every request the
   repair tool sends to a person because its payment has a cancellation credit
   note, whatever the payment shows, so a folded note is found before anything
-  is counted twice. To fix one, check Xero for a credit raised by hand for the
-  request, then compare the cancellation note's lines with the cancellation's
-  own refund. If the request's refund is in it, edit the note in place so it
+  is counted twice. To fix one, first check the invoice in Xero for a credit
+  already raised for the request; if there is one, nothing more is needed.
+  Otherwise compare the cancellation note's lines with the cancellation's own
+  refund. If the request's refund is in it, edit the note in place so it
   carries only the cancellation's own refund (Xero needs its allocations and
   refund payments removed first, and a removed reconciled payment's bank line
   matched again; a lock date blocks the edit until the club's adviser lifts
