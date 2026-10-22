@@ -1804,7 +1804,7 @@ note of its own as a cause and asks for the missing note by hand
 (`BANK_TRANSFER_REFUND_SHORTFALL_ADVICE`, the Xero guide's troubleshooting row
 quotes it). Giving every later, distinct refund on a bank transfer its own
 note, sized from its own record, changes `INV-PAY-101`'s one refund note and is
-a separate, High-risk change. Pinned on real PostgreSQL by
+a separate, High-risk change (#4287). Pinned on real PostgreSQL by
 `xero-bt-recount-handbacks`, which also pins two cases that are safe: a group
 organiser's hand-back (#4042) moves no payment's total, since each joiner's
 refund sits on the joiner's payment under its own note; and the recount writes

@@ -10,7 +10,7 @@
   and asks for the missing note to be raised by hand in Xero, and the Xero
   guide's troubleshooting table quotes it. The payment keeps the club's own
   record of its refunds, as before. Nothing changes in how notes are raised;
-  giving each later refund its own note is a separate change.
+  giving each later refund its own note is a separate change (#4287).
 
   The deploy notes add a read-only query that lists bank-transfer payments
   whose paid-back refunds add up to more than their refund credit notes, so

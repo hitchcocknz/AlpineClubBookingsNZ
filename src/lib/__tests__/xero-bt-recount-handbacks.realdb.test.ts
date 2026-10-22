@@ -23,7 +23,7 @@
  * floor keeps the total and the alert is true; it names that cause and asks for
  * the note by hand. The recount deliberately does not add the absorbed cash
  * (that would silence the only signal). Giving each such refund its own note is
- * the subject of a separate High-risk issue; these cases change with it. The
+ * the subject of #4287; these cases change with it. The
  * deploy note's read-only query that lists such payments is run here too.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
