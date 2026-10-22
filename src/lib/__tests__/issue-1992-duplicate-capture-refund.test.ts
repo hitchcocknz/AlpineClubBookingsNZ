@@ -1923,6 +1923,29 @@ describe("#4227 / #4283 the superseded machinery's captures, arriving or beside"
     );
   });
 
+  it("#4227: with no record, an owed-back superseded capture is skipped as the settlement, so a real second payment beside it is still reported", async () => {
+    primeLedger([
+      ledgerRow({ id: "txn-x", stripePaymentIntentId: X }),
+      ledgerRow({ id: "txn-z", stripePaymentIntentId: Z }),
+      ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }),
+    ]);
+    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+
+    expect((await arrive(Y)).outcome).toBe("duplicate_capture_kept");
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: Y, otherPaymentIntentId: Z }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("#4227: a recorded settler the superseded machinery owes back again, beside nothing else, keeps silently (as a live operation would)", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-z", stripePaymentIntentId: Z })], { settledBy: "txn-y" });
+    mocks.supersededOwedBackAgain.mockResolvedValue([Y]);
+
+    expect((await arrive(Z)).outcome).toBe("already_paid");
+    expectNothingMoves();
+  });
+
   it("#4227: a third capture beside the recorded settler and an owed-back superseded capture is refunded, naming the settler", async () => {
     primeLedger(
       [ledgerRow({ id: "txn-x", stripePaymentIntentId: X }), ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-z", stripePaymentIntentId: Z })],
