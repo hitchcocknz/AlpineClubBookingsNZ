@@ -59,7 +59,7 @@ describe("the price summary names how a reduction goes back to the group organis
   it("#3949: by bank transfer where the organiser paid by Internet Banking - never a card, never a choice", () => {
     renderQuote(organiserQuote(true));
 
-    expect(screen.getByTestId("organiser-refund-notice").textContent).toMatch(/^Refunded to the group organiser by bank transfer: \$25\.00 \(50%\)/);
+    expect(screen.getByTestId("organiser-refund-notice").textContent).toMatch(/^To be refunded to the group organiser by bank transfer: \$25\.00 \(50%\)/);
     expect(screen.queryByRole("radio")).toBeNull();
   });
 

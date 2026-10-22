@@ -420,7 +420,7 @@ export function PriceSummaryCard({
                   // #3653: the organiser paid, so the organiser is refunded.
                   <p data-testid="organiser-refund-notice">
                     {quote.settlementOptions.cardRefundAmountCents > 0
-                      ? `${quote.settlementOptions.organiserRefundByBankTransfer ? "Refunded to the group organiser by bank transfer" : "Refunded to the group organiser's card"}: ${formatCents(quote.settlementOptions.cardRefundAmountCents, format)} (${quote.settlementOptions.cardRefundPercentage}%). The organiser paid for this booking, so the refund goes back to them.`
+                      ? `${quote.settlementOptions.organiserRefundByBankTransfer ? "To be refunded to the group organiser by bank transfer" : "Refunded to the group organiser's card"}: ${formatCents(quote.settlementOptions.cardRefundAmountCents, format)} (${quote.settlementOptions.cardRefundPercentage}%). The organiser paid for this booking, so the refund goes back to them.`
                       : "No refund is available for this reduction under the current policy."}
                   </p>
                 ) : quote.settlementOptions.requiresSettlementMethod ? (
