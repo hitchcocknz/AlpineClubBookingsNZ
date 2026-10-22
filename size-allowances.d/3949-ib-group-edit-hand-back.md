@@ -42,3 +42,13 @@ reason: the paid-cancel gate and the cancel's capture evidence each pass the
   name the organiser - by name in the reason and the alert's Organiser row, read
   from the organiser's booking under the claim's locks - each beside the cash
   hand-back's own lines in the same branch.
+
+file: src/app/api/bookings/[id]/guests/route.ts
+lines: 1688
+reason: the guest-add door settles its own price change rather than through
+  `applyPaymentAdjustments`, so it asks the same refusal every other edit door
+  asks there - no price change of a joiner's booking the organiser paid for by
+  internet banking while the organiser's group cancel is part-way through
+  (`refuseOrganiserBankChildPriceChangeInGroupCancel`) - right after it prices
+  the change under its own `lock(1)`. The three lines are that call, its
+  comment and its import; the one helper is shared, not copied.
