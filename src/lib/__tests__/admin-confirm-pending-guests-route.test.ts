@@ -1115,8 +1115,9 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toMatchObject({ success: true, status: "PAID", charged: false, duplicateChargeRefunded: false });
+    expect(body).toMatchObject({ success: true, status: "PAID", charged: true, duplicateChargeRefunded: false });
     expect(body.message).toContain("nothing was refunded");
+    expect(body.message).not.toContain("#4211");
     expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
     expect(mocks.enqueueXero).not.toHaveBeenCalled();
     expect(mocks.createStructuredAuditLog).toHaveBeenCalledWith(

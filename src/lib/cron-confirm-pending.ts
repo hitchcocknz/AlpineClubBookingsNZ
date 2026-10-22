@@ -1745,7 +1745,9 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
               outcome: reconciliation.outcome,
               job: "confirmPendingBookings",
             },
-            "Auto-charge captured against a booking already settled by its payment link; the duplicate charge was handed to the #1992 auto-refund"
+            reconciliation.outcome === "duplicate_capture_kept"
+              ? "Auto-charge captured against a booking another payment already settled; with no usable record of which payment to keep, the charge was kept and admins were asked to check by hand"
+              : "Auto-charge captured against a booking already settled by its payment link; the duplicate charge was handed to the #1992 auto-refund"
           );
           result.confirmedBookingIds.push(resolution.booking.id);
           continue;

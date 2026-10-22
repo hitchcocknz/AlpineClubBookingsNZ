@@ -858,14 +858,14 @@ export async function POST(
       return NextResponse.json({
         success: true,
         status: "PAID",
-        charged: false,
+        charged: reconciliation.outcome === "duplicate_capture_kept", // #4211: kept, so it stands charged
         duplicateChargeRefunded:
           reconciliation.outcome === "duplicate_capture_refunded",
         message:
           reconciliation.outcome === "duplicate_capture_refunded"
             ? "The booking was already paid by another payment; this duplicate charge was automatically refunded in full."
             : reconciliation.outcome === "duplicate_capture_kept"
-              ? "The booking was already paid by another payment, and the app has no record of which payment settled it, so this charge was kept and nothing was refunded. Admins have been asked to check by hand (#4211)."
+              ? "The booking was already paid by another payment, and the app cannot tell which of the payments to keep, so this charge was kept and nothing was refunded. Admins have been asked to check by hand."
               : "The booking was already paid by another payment; the refund of this duplicate charge failed inline and has been queued for automatic retry. Admins have been alerted.",
       });
     }

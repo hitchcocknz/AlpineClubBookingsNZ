@@ -40,7 +40,7 @@ export function duplicateCaptureKeptParagraph(input: {
     case "not-recorded":
       return `${lead} The app has no record of which payment settled this booking: it was paid before the app kept one, by the previous app version during an upgrade, or by a bank payment that could not be matched to a single receipt. So nothing was refunded automatically.`;
     case "settler-released":
-      return `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed), so the app cannot tell which of the remaining payments to keep, and nothing was refunded automatically.`;
+      return `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell which of the remaining payments to keep, and nothing was refunded automatically.`;
   }
 }
 
