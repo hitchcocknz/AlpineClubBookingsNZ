@@ -8,5 +8,11 @@
 
   The officer now sees a clear refusal instead, and the task stays open:
   collect the amount another way, then dismiss the task with a note recording
-  what was collected and how. Reviews on bookings that are not cancelled are
-  unchanged.
+  what was collected and how. If the organiser paid for a joiner's booking,
+  the message says to agree the amount with the organiser.
+
+  If the booking is cancelled in the moment just after a review is settled,
+  nothing is asked of the member, and the amount still owed is recorded in the
+  audit log as a review share that was not collected, so an officer can find
+  it and collect it another way. Reviews on bookings that are not cancelled
+  are unchanged.

@@ -2,7 +2,7 @@ import "server-only";
 
 import { raiseReviewChargeAsk, sizeReviewChargeAsk } from "@/lib/additional-payment-ask";
 import { reissueRaisedAskIfCurrencyChanged } from "@/lib/additional-intent-currency";
-import { canAskCardForReviewCharge } from "@/lib/booking-payment-state";
+import { canAskCardForReviewCharge, refusesReviewChargeForCancellation } from "@/lib/booking-payment-state";
 import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import type { ClubFormat } from "@/lib/club-format";
 import { recordCarriedEditReviewChargeBalance } from "@/lib/edit-financial-review-carried-balance";
@@ -313,6 +313,27 @@ async function syncEditReviewChargeRequestUnderClaim(
     };
   }
 
+  // #4272: a booking cancelled since the completion committed is asked nothing,
+  // before any provider call - neither a raise of this edit's request, whose
+  // intent the cancellation retired, nor a currency re-issue or a first mint.
+  // The debt goes to the recovery row, whose cancelled-booking skip records the
+  // share as uncollected for an officer (`recordCancelledEditReviewChargeShare`).
+  const cancelledSince = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: { booking: { select: { status: true } } },
+  });
+  if (cancelledSince && refusesReviewChargeForCancellation(cancelledSince.booking)) {
+    await enqueueEditFinancialReviewChargeRecovery({
+      bookingId, paymentId, bookingModificationId,
+      advisoryAmountCents: totalCents, hadIssuedXeroInvoice: hasIssuedXeroInvoice,
+    });
+    return {
+      result: { outcome: "not-raised", paymentIntentId: null, totalCents, carriedCents: 0 },
+      coveredOwedCents: 0,
+      providerCall: null,
+    };
+  }
+
   const existing = await findEditReviewChargeRequest({
     paymentId,
     bookingModificationId,
@@ -543,9 +564,11 @@ async function syncEditReviewChargeRequestUnderClaim(
       // #3947: the chooser's own question (`chooseEditReviewChargeRoute`), so a
       // credit-paid ($0) booking routed to the card is minted for, not left to a
       // replay that reports `not-raised` until its recovery row dies FAILED.
-      // #4272: it answers no on a booking cancelled since the commit, so this
-      // mints nothing and the recovery row below is closed by the replay's
-      // cancelled-booking skip, as the chooser's refusal would have been.
+      // #4272: it also answers no on a CANCELLED booking, so a cancellation
+      // landing between the check above and this re-read still mints nothing,
+      // and the recovery row below gets the share recorded as uncollected. One
+      // landing after this re-read is not caught: nothing locks the booking
+      // across the provider call.
       hasSucceededPayment: canAskCardForReviewCharge({
         status: payment?.booking.status ?? "",
         payment,

@@ -13,6 +13,7 @@ import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import {
   REVIEW_CHARGE_ANCHOR_MISSING_MESSAGE,
   REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE,
+  REVIEW_CHARGE_BOOKING_CANCELLED_ORGANISER_MESSAGE,
   REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
   REVIEW_CHARGE_ORGANISER_PAID_MESSAGE,
   REVIEW_CHARGE_REQUEST_ALREADY_PAID_MESSAGE,
@@ -234,7 +235,15 @@ export async function chooseEditReviewChargeRoute({
   // The helper the card question asks refuses it too, so a cancellation landing
   // after this commit stops the sync's mint as well.
   if (refusesReviewChargeForCancellation(booking)) {
-    throw new ManualBookingPaymentError(REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE, 409);
+    // A joiner the organiser settled, by card or internet banking, is pointed
+    // at the organiser, as the organiser-paid refusal below does.
+    const organiserSettledJoiner = booking.organiserSettled && booking.parentBookingId != null;
+    throw new ManualBookingPaymentError(
+      organiserSettledJoiner
+        ? REVIEW_CHARGE_BOOKING_CANCELLED_ORGANISER_MESSAGE
+        : REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE,
+      409,
+    );
   }
   // #3653 (`INV-PAY-114`): the organiser paid for this booking by card. Its
   // payment mirror is a slice of the organiser's combined payment, so a card

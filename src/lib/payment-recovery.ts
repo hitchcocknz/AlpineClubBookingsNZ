@@ -59,6 +59,7 @@ import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinar
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { closeCancellationRefundAfterReplay, closeCapacityRaceRefundRecordingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
+import { refusesReviewChargeForCancellation } from "@/lib/booking-payment-state";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE } from "@/lib/payment-recovery-constants";
@@ -2465,14 +2466,11 @@ async function processCreateAdditionalPaymentIntentOperation(
         `Booking ${operation.bookingId} not found for edit-financial-review charge recovery`,
       );
     }
-    if (booking.status === BookingStatus.CANCELLED) {
-      // Same reasoning as the ordinary path's cancelled-booking skip (#1358):
-      // the cancel flow retired this booking's additional intents, so minting a
-      // live one here would resurrect a collectable that must never be captured.
-      logger.info(
-        { operationId: operation.id, bookingId: operation.bookingId },
-        "Skipping edit-financial-review charge recovery for cancelled booking",
-      );
+    if (refusesReviewChargeForCancellation(booking)) {
+      // #1358: the cancel flow retired this booking's asks, so a mint here would resurrect one nobody
+      // can pay (#4272). The shares it leaves uncollected get their officer-findable record instead.
+      const { recordCancelledEditReviewChargeShare } = await import("@/lib/edit-financial-review-charge-cancelled");
+      await recordCancelledEditReviewChargeShare({ format, bookingId: operation.bookingId, paymentId: operation.paymentId, bookingModificationId, memberId: bookingOwner(booking).member?.id ?? null });
       await completePaymentRecoveryOperation(operation.id);
       return;
     }

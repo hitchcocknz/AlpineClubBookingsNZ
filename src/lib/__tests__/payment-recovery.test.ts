@@ -46,6 +46,7 @@ const {
   mockCompleteDeferredSupplementaryInvoice,
   mockRecordShortEditReviewChargeInvoice,
   mockRecordUncollectedEditReviewChargeShare,
+  mockRecordCancelledEditReviewChargeShare,
   mockFindEditReviewChargeRequest,
   mockCreateAuditLog,
   settlementModuleLoadFailure,
@@ -117,6 +118,7 @@ const {
     .mockResolvedValue("covers-total"),
   mockRecordShortEditReviewChargeInvoice: vi.fn().mockResolvedValue(false),
   mockRecordUncollectedEditReviewChargeShare: vi.fn().mockResolvedValue(undefined),
+  mockRecordCancelledEditReviewChargeShare: vi.fn().mockResolvedValue(undefined),
   /**
    * #3181 fix round: arms a failure to LOAD the settlement module, as distinct
    * from a failure of the call inside it. The worker reaches that module through
@@ -306,6 +308,13 @@ vi.mock("@/lib/edit-financial-review-charge-request", () => ({
   // and kills the file before a test runs.
   findEditReviewChargeRequest: (...args: unknown[]) =>
     mockFindEditReviewChargeRequest(...args),
+}));
+
+// #4272: the cancelled-booking skip's record, proved against the real request
+// module in `edit-financial-review-charge.test.ts`.
+vi.mock("@/lib/edit-financial-review-charge-cancelled", () => ({
+  recordCancelledEditReviewChargeShare: (...args: unknown[]) =>
+    mockRecordCancelledEditReviewChargeShare(...args),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -5094,6 +5103,24 @@ describe("edit-financial-review charge recovery (#3170)", () => {
     expect(result.succeeded).toBe(1);
     expect(mockSyncEditFinancialReviewChargeRequest).not.toHaveBeenCalled();
     expect(mockAttachIntentToWaitingOps).not.toHaveBeenCalled();
+    // #4272: and the shares it leaves uncollected are recorded for an officer,
+    // before the row closes - not left to a log line under a COMPLETED task.
+    expect(mockRecordCancelledEditReviewChargeShare).toHaveBeenCalledTimes(1);
+    expect(mockRecordCancelledEditReviewChargeShare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "booking-1",
+        paymentId: "payment-1",
+        bookingModificationId: "mod-1",
+        memberId: "m1",
+      }),
+    );
+  });
+
+  it("CONTROL: a live booking's replay writes no cancelled-share record (#4272)", async () => {
+    await processPaymentRecoveryOperations({ limit: 1 });
+
+    expect(mockSyncEditFinancialReviewChargeRequest).toHaveBeenCalledTimes(1);
+    expect(mockRecordCancelledEditReviewChargeShare).not.toHaveBeenCalled();
   });
 
   /**

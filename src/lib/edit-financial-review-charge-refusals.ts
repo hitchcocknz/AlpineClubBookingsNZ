@@ -41,6 +41,14 @@ export const REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE =
   "This booking has been cancelled, so the club cannot ask the member for this amount automatically - a payment request on a cancelled booking is one the member has no way to pay. Collect it another way, then dismiss this task with a note recording what was collected and how - the note is the record that the money was settled outside the system.";
 
 /**
+ * #4272: the same refusal on a cancelled joiner's booking the group organiser
+ * settled, by card or by internet banking. The joiner did not pay for it, so the
+ * officer is pointed at the organiser, as the live-booking refusal above does.
+ */
+export const REVIEW_CHARGE_BOOKING_CANCELLED_ORGANISER_MESSAGE =
+  "This booking has been cancelled, and the group organiser paid for it, so the club cannot ask for this amount automatically. Agree it with the organiser and collect it another way, then dismiss this task with a note recording what was collected and how - the note is the record that the money was settled outside the system.";
+
+/**
  * #3653 (`INV-PAY-114`): a charge on a joiner's booking the group organiser paid
  * for by card. The card behind the booking's payment mirror is the ORGANISER's
  * combined payment, and an invoice would bill the joiner for a booking somebody

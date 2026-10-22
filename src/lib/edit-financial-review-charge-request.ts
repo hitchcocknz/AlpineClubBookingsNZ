@@ -266,15 +266,19 @@ export type UncollectedEditReviewChargeLeg = "payment-request" | "xero-invoice";
  *     The instrument here is the booking-vs-Xero repair pass, which compares the
  *     booking against Xero and can answer the question this record cannot.
  *
- * Four of the six combinations are produced today: the card leg only ever closes
- * (its ask is the intent, which exists by then) and the accounting leg produces
- * all three. The rest are not refused, because a leg/cause pair describes what
- * happened rather than claiming what can.
+ *   * `booking-cancelled` (#4272) - the card leg only: the booking was cancelled
+ *     before its share was asked for, and an ask on it is one nobody can pay.
+ *
+ * Five combinations are produced today: the card leg closes or meets a
+ * cancellation, and the accounting leg produces the first three. The rest are
+ * not refused, because a leg/cause pair describes what happened rather than
+ * claiming what can.
  */
 export type UncollectedEditReviewChargeCause =
   | "ask-closed"
   | "ask-not-raised"
-  | "ask-owed-unknown";
+  | "ask-owed-unknown"
+  | "booking-cancelled";
 
 /**
  * WHAT HAPPENED TO THE DIFFERENCE a settled share could not add to this edit's
@@ -606,6 +610,7 @@ export async function recordUncollectedEditReviewChargeShare({
   const { requestedForThisEditCents, shortfallCents, carriedSentence } =
     measureCarriedAskShortfall({ format, derivedTotalCents, requestedTotalCents, carriedAskCents });
   const invoiceNeverRaised = leg === "xero-invoice" && cause === "ask-not-raised";
+  const cardCancelled = leg === "payment-request" && cause === "booking-cancelled"; // #4272
   const invoiceOwedUnknown =
     leg === "xero-invoice" && cause === "ask-owed-unknown";
   // #3193: the closed-ask case has several endings needing different
@@ -636,7 +641,7 @@ export async function recordUncollectedEditReviewChargeShare({
       carriedAskCents,
     },
     leg === "payment-request"
-      ? "Edit-financial-review charge request was paid before its combined total could be raised - the remaining share must be collected by hand"
+      ? cardCancelled ? "Edit-financial-review charge share was not asked for because the booking was cancelled - it must be collected by hand" : "Edit-financial-review charge request was paid before its combined total could be raised - the remaining share must be collected by hand"
       : invoiceOwedUnknown
         ? "Edit-financial-review charge carries no record of whether a supplementary Xero invoice was owed - none was raised, and only the booking-vs-Xero repair pass can say whether one is missing"
         : invoiceNeverRaised
@@ -657,7 +662,7 @@ export async function recordUncollectedEditReviewChargeShare({
       outcome: "failure",
       summary:
         leg === "payment-request"
-          ? `A settled review share of ${formatCents(shortfallCents ?? derivedTotalCents, format)} could not be added to this booking change's payment request`
+          ? cardCancelled ? `A settled review share of ${formatCents(shortfallCents ?? derivedTotalCents, format)} was not asked for because this booking was cancelled` : `A settled review share of ${formatCents(shortfallCents ?? derivedTotalCents, format)} could not be added to this booking change's payment request`
           : invoiceOwedUnknown
             ? `Whether a Xero invoice was owed for this booking change's settled total of ${formatCents(derivedTotalCents, format)} is not recorded`
             : invoiceNeverRaised
@@ -667,7 +672,7 @@ export async function recordUncollectedEditReviewChargeShare({
                 : `This booking change's Xero invoice could not be raised to the settled total of ${formatCents(derivedTotalCents, format)}`,
       details:
         leg === "payment-request"
-          ? `An admin settled a booking-change review as money the member owes the club, but the request for that change had already been paid, so ${formatCents(shortfallCents ?? derivedTotalCents, format)} was not added to it. The reviews settled to ${formatCents(derivedTotalCents, format)} in total and the member was asked for ${formatCents(requestedForThisEditCents ?? 0, format)} of it.${carriedSentence} Collect the difference another way and record what was collected.`
+          ? cardCancelled ? `An admin settled a booking-change review as money the member owes the club, but the booking was cancelled before the member could be asked for it, so ${formatCents(shortfallCents ?? derivedTotalCents, format)} was never requested - a payment request on a cancelled booking is one the member has no way to pay. The reviews settled to ${formatCents(derivedTotalCents, format)} in total and the member had paid ${formatCents(requestedForThisEditCents ?? 0, format)} of it.${carriedSentence} Collect the rest another way and record what was collected.` : `An admin settled a booking-change review as money the member owes the club, but the request for that change had already been paid, so ${formatCents(shortfallCents ?? derivedTotalCents, format)} was not added to it. The reviews settled to ${formatCents(derivedTotalCents, format)} in total and the member was asked for ${formatCents(requestedForThisEditCents ?? 0, format)} of it.${carriedSentence} Collect the difference another way and record what was collected.`
           : invoiceOwedUnknown
             ? `An admin settled a booking-change review as money the member owes the club, and the reviews for that change now total ${formatCents(derivedTotalCents, format)}. The member has been asked for it. Whether a Xero supplementary invoice was owed for the charge was never recorded, so none was raised - and one may not have been needed: if the booking's main Xero invoice had not yet been sent when the change was made, that invoice bills this charge itself, and adding a supplementary invoice on top would bill the member twice. Do not raise one by hand on the strength of this note. Run the booking-vs-Xero repair for this booking, which compares the booking against Xero and will say whether an invoice is actually missing, and record what was done.`
             : invoiceNeverRaised
