@@ -42,6 +42,7 @@ import { getCapturedRepairTransactions } from "./xero-booking-repair-payments";
 import { readLateCaptureRefundsPaidAnotherWay } from "@/lib/late-capture-paid-another-way";
 import type { ClubFormat } from "@/lib/club-format";
 import { formatCents } from "@/lib/utils";
+import { labelPaidBackRefundRequests } from "./xero-booking-repair-request-notes";
 
 const MAX_APPLY_PASSES = 3;
 
@@ -131,7 +132,8 @@ async function runSinglePass(
 ) {
   const loaded = await withPaidAnotherWayCloses(await loadAuditData(scope, deps), deps, format);
   const contexts = await withLateCaptureCardRefundsByHand(loaded, deps, format);
-  const bookings = contexts.map((context) => classifyBookingContext(context));
+  // #4231: each paid-back request's amount in the club's format, for its finding.
+  const bookings = contexts.map((context) => classifyBookingContext(labelPaidBackRefundRequests(context, format)));
   return buildPassReport(pass, bookings);
 }
 

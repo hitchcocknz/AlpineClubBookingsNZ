@@ -26,7 +26,6 @@ import {
   type UnpaidAskSettlement,
 } from "@/lib/additional-ask-reissue";
 import { bookingOwner } from "@/lib/booking-owner";
-import { BookingModificationSettlementMethodRequiredError } from "@/lib/booking-modify-settlement-required";
 import type { CalendarDate } from "@/lib/club-time";
 import type { ClubFormat } from "@/lib/club-format";
 import { giveBackPaidReductionCredit } from "@/lib/booking-modify-credit-give-back";
@@ -58,7 +57,7 @@ import {
 } from "@/lib/member-credit";
 import { clearStaleCreditElection } from "@/lib/booking-credit-election";
 import { refundableCashNetOfOpenHandBacks } from "@/lib/edit-refund-hand-back";
-import { ApiError } from "@/lib/api-error";
+import { writeEditOnPayment } from "@/lib/booking-primary-invoice-claim";
 import {
   OrganiserChildRefundRefusedError,
   planOrganiserChildModificationRefund,
@@ -106,6 +105,8 @@ export type PaymentAdjustmentResult = {
   organiserChildRefund: { settlement: CombinedCardSettlement; amountCents: number } | null;
   /** #3954 round 6: the waiting re-issues this increase folded into its ask, for its history (`unpaidAskOffsetHistory`). */
   foldedReissuedAsks: FoldedReissuedAsks;
+  /** #3980: read no invoice link and claimed it (`writeEditOnPayment`); the door marks its history row. */
+  settledAgainstPrimaryInvoice: boolean;
 } & UnpaidAskSettlement; // #3954: what the reduction did to the unpaid ask
 
 /**
@@ -140,71 +141,18 @@ export {
   calculateModificationSettlementOptions,
   type BookingModificationSettlementOptions,
 } from "@/lib/booking-modify-settlement-options";
-import type { BookingModificationSettlementOptions } from "@/lib/booking-modify-settlement-options";
+import {
+  resolveSelectedSettlementAmount,
+  type BookingModificationSettlementOptions,
+} from "@/lib/booking-modify-settlement-options";
 
 // #3232: the settlement-required refusal moved to `booking-modify-settlement-
 // required.ts`, whose only import is `ApiError`, so a caller that needs to
 // RECOGNISE it does not have to pull this file's pricing/cancellation/payment
-// graph in with it. It is imported above and thrown below exactly as before; the
-// `booking-modify` barrel re-exports it from its new home, so no importer moved.
-
-function resolveSelectedSettlementAmount({
-  settlementOptions,
-  settlementMethod,
-}: {
-  settlementOptions: BookingModificationSettlementOptions | null | undefined;
-  settlementMethod: BookingModificationSettlementMethod | undefined;
-}) {
-  if (!settlementOptions) {
-    return {
-      settlementMethod: null,
-      amountCents: 0,
-      policyRetainedAmountCents: 0,
-    };
-  }
-
-  if (settlementOptions.returnsToOrganiser) {
-    if (settlementMethod === "credit") {
-      throw new ApiError(
-        "This booking was paid for by the group organiser, so a reduction goes back to the organiser's card and cannot be held as account credit.",
-        400,
-      );
-    }
-    const amountCents = settlementOptions.cardRefundAmountCents;
-    return {
-      settlementMethod: amountCents > 0 ? ("card" as const) : null,
-      amountCents,
-      policyRetainedAmountCents: Math.max(0, settlementOptions.basisAmountCents - amountCents),
-    };
-  }
-
-  if (settlementOptions.requiresSettlementMethod && !settlementMethod) {
-    throw new BookingModificationSettlementMethodRequiredError();
-  }
-
-  if (!settlementOptions.requiresSettlementMethod) {
-    return {
-      settlementMethod: null,
-      amountCents: 0,
-      policyRetainedAmountCents: settlementOptions.basisAmountCents,
-    };
-  }
-
-  const resolvedMethod = settlementMethod ?? "card";
-  const amountCents =
-    resolvedMethod === "credit"
-      ? settlementOptions.accountCreditAmountCents
-      : settlementOptions.cardRefundAmountCents;
-
-  return {
-    settlementMethod: resolvedMethod,
-    amountCents,
-    policyRetainedAmountCents: Math.max(
-      0,
-      settlementOptions.basisAmountCents - amountCents,
-    ),
-  };
-}
+// graph in with it. The `booking-modify` barrel re-exports it from its new home,
+// so no importer moved. #3980: it is thrown by `resolveSelectedSettlementAmount`,
+// moved verbatim to `booking-modify-settlement-options.ts` beside the options it
+// reads, to keep this module inside its size budget.
 
 export async function applyPaymentAdjustments(
   tx: Prisma.TransactionClient,
@@ -220,6 +168,7 @@ export async function applyPaymentAdjustments(
     appliedCreditReturnedByCaller = false,
     reductionUntiered = false,
     changeFeeRecordedByCaller = false,
+    primaryInvoiceRaisedMessage,
   }: {
     booking: LoadedBookingForModify;
     priceDiffCents: number;
@@ -249,6 +198,7 @@ export async function applyPaymentAdjustments(
     reductionUntiered?: boolean;
     /** #3954 x #3750: the caller records the fee on the amount owed (`recordFinishedStayFeeOwed`). */
     changeFeeRecordedByCaller?: boolean;
+    primaryInvoiceRaisedMessage?: string; // #3980: the claim's refusal, in the caller's words
   },
 ): Promise<PaymentAdjustmentResult> {
   const inSettledStatus = isSettledBookingStatus(booking.status);
@@ -266,6 +216,7 @@ export async function applyPaymentAdjustments(
     (hasSettledPayment && booking.payment?.source === PaymentSource.STRIPE) ||
     zeroDollarCardIncrease;
   const hasIssuedXeroInvoice = hasIssuedPrimaryXeroInvoice(booking);
+  let feeRecordedHereCents = 0; // written with the payment's claim below (#3980)
   // #3827 (`INV-PAY-117`): net of edit refunds already promised back by hand.
   const remainingRefundableCents = await refundableCashNetOfOpenHandBacks(tx, booking.payment);
 
@@ -403,15 +354,17 @@ export async function applyPaymentAdjustments(
     }
 
     // #3954 x #3750: once - a caller that records it on the amount owed did.
-    if (changeFeeCents > 0 && !changeFeeRecordedByCaller) {
-      await tx.payment.update({
-        where: { id: booking.payment.id },
-        data: { changeFeeCents: { increment: changeFeeCents } },
-      });
-    }
+    if (changeFeeCents > 0 && !changeFeeRecordedByCaller) feeRecordedHereCents = changeFeeCents;
   } else if (xeroAdditionalAmountCents > 0) {
     additionalAmountCents = xeroAdditionalAmountCents;
   }
+
+  // #3980 (`INV-PAY-136`): the fee, and the claim on an unlinked invoice (409 if it moved).
+  const settledAgainstPrimaryInvoice = await writeEditOnPayment(tx, {
+    payment: booking.payment,
+    changeFeeCents: feeRecordedHereCents,
+    refusalMessage: primaryInvoiceRaisedMessage,
+  });
 
   // #3653: refused here, before the edit commits, when the organiser's combined
   // payment cannot return it.
@@ -439,6 +392,7 @@ export async function applyPaymentAdjustments(
     appliedCreditGiveBack: creditGiveBack,
     organiserChildRefund,
     foldedReissuedAsks,
+    settledAgainstPrimaryInvoice,
     ...unpaidAskSettlement,
   };
 }

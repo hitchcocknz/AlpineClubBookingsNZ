@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   txPaymentFindUnique: vi.fn(),
   txPaymentUpdateMany: vi.fn(),
+  txLinkCreateMany: vi.fn(),
   txLinkUpdateMany: vi.fn(),
   txLinkUpsert: vi.fn(),
   txLinkFindUnique: vi.fn(),
@@ -383,12 +384,13 @@ describe("findCanonicalPaymentRefundCreditNote", () => {
 describe("upsertXeroObjectLink", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.txLinkCreateMany.mockResolvedValue({ count: 0 });
     mocks.txLinkUpdateMany.mockResolvedValue({ count: 1 });
     mocks.txPaymentUpdateMany.mockResolvedValue({ count: 1 });
     mocks.txLinkUpsert.mockResolvedValue({ id: "link_1" });
     mocks.txLinkFindUnique.mockResolvedValue(null);
     mocks.txLinkFindMany.mockResolvedValue([]);
-    mocks.txExecuteRaw.mockResolvedValue(0);
+    mocks.txExecuteRaw.mockResolvedValue(1);
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
         $executeRaw: mocks.txExecuteRaw,
@@ -397,6 +399,7 @@ describe("upsertXeroObjectLink", () => {
           updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
+          createMany: mocks.txLinkCreateMany,
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: mocks.txLinkFindUnique,
@@ -596,7 +599,124 @@ describe("upsertXeroObjectLink", () => {
 
     it("a write naming a status is judged on it, without reading the stored row", async () => {
       await writeRequestNote("AUTHORISED");
-      expect(mocks.txExecuteRaw).not.toHaveBeenCalled();
+      // #4223: it still takes its own row first, as every refund-note link write does.
+      expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(1);
+      // One read only: the metadata merge's. The stored row is not judged.
+      expect(mocks.txLinkFindUnique).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("#4223: the payment's own refund notes, voided in Xero while a retry records one (INV-ADDPAY-041)", () => {
+    const LOCK_SQL =
+      'SELECT 1 FROM "XeroObjectLink" WHERE "localModel" = ? AND "localId" = ? AND "xeroObjectType" = ? AND "xeroObjectId" = ? AND "role" = ? FOR UPDATE';
+    const STORED_VOID = { amountCents: 20000, watermarkCents: 20000, status: "VOIDED", total: 200, appliedAmount: 50, remainingCredit: 150, provenance: { source: "inbound" } };
+
+    it("MUTATION (race): a canonical write naming no status keeps a stored void - inactive, status merged, no sibling retired, pointer released", async () => {
+      // The inbound void committed while this retry's write waited on the row
+      // lock; the retry read the note as live and still names the pointer at it.
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await upsertXeroObjectLink({ localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", xeroObjectNumber: "CN-1", role: "REFUND_CREDIT_NOTE" });
+
+      const [call] = mocks.txLinkUpsert.mock.calls[0] as [{ create: { active: boolean }; update: { active: boolean; metadata: Record<string, unknown> } }];
+      // Before #4223 the canonical branch wrote it back active: the field (or its fallback) named it.
+      expect(call.update.active).toBe(false);
+      expect(call.create.active).toBe(false);
+      // Merged over the stored row, so no stored key moves and the status rides the write.
+      expect(call.update.metadata).toEqual(STORED_VOID);
+      // A voided note claims nothing: no sibling is retired for it...
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      // ...and a pointer naming it is released, as the inbound void's own write does.
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_canonical" },
+        data: { xeroRefundCreditNoteId: null },
+      });
+      const [template, ...values] = mocks.txExecuteRaw.mock.calls[0] as [TemplateStringsArray, ...unknown[]];
+      expect(template.join("?").replace(/\s+/g, " ").trim()).toBe(LOCK_SQL);
+      expect(values).toEqual(["Payment", "payment_1", "CREDIT_NOTE", "cn_canonical", "REFUND_CREDIT_NOTE"]);
+    });
+
+    it("MUTATION (race): a card payment's note written with no status keeps a stored void too", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "STRIPE", xeroRefundCreditNoteId: null });
+
+      await upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_delta", role: "REFUND_CREDIT_NOTE",
+        metadata: { amountCents: 20000, watermarkCents: 20000 },
+      });
+
+      // Before #4223 the per-delta rule kept `active ?? true`.
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }),
+      );
+    });
+
+    it.each(["REFUND_CREDIT_NOTE", "REFUND_REQUEST_CREDIT_NOTE"])("MUTATION: a statusless %s write merges its keys over every stored void detail", async (role) => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
+
+      await upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role,
+        metadata: { amountCents: 20000, refundRequestId: "rr_1" },
+      });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({
+        update: expect.objectContaining({ active: false, metadata: { ...STORED_VOID, refundRequestId: "rr_1" } }),
+      }));
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: a kept void commits inactive with all metadata when Payment is busy, leaving pointer cleanup to the heal", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+      mocks.txExecuteRaw.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+      await upsertXeroObjectLink({ localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE" });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }));
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      const [template, ...values] = mocks.txExecuteRaw.mock.calls[1] as [TemplateStringsArray, ...unknown[]];
+      expect(template.join("?").replace(/\s+/g, " ").trim()).toBe('SELECT 1 FROM "Payment" WHERE "id" = ? FOR NO KEY UPDATE SKIP LOCKED');
+      expect(values).toEqual(["payment_1"]);
+      expect(mocks.txLinkUpsert.mock.invocationCallOrder[0]!).toBeLessThan(mocks.txExecuteRaw.mock.invocationCallOrder[1]!);
+    });
+
+    it("a canonical write naming no status, over a stored live row, is written as before", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: { amountCents: 20000, status: "AUTHORISED" } });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await upsertXeroObjectLink({ localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE" });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: true }) }));
+      expect(mocks.txLinkUpsert.mock.calls[0]![0].update.metadata).toBeUndefined();
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["names no status", undefined],
+      ["names a live status", { status: "AUTHORISED", total: 200 }],
+    ])("MUTATION (lock order): a canonical write that %s takes its own row before any sibling's or the payment's", async (_label, metadata) => {
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+
+      await upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE",
+        ...(metadata ? { metadata, mergeMetadata: true } : {}),
+      });
+
+      // One order for every writer of the row: a mixed order (a retry's own row
+      // first, an inbound live write's siblings first) could deadlock two
+      // writers of one note that both retire an active sibling.
+      expect(mocks.txLinkCreateMany).toHaveBeenCalledWith({
+        data: [{ localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE", active: false }],
+        skipDuplicates: true,
+      });
+      const lockAt = mocks.txExecuteRaw.mock.invocationCallOrder[0]!;
+      expect(mocks.txLinkCreateMany.mock.invocationCallOrder[0]!).toBeLessThan(lockAt);
+      expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(1);
+      expect(lockAt).toBeLessThan(mocks.txPaymentFindUnique.mock.invocationCallOrder[0]!);
+      expect(lockAt).toBeLessThan(mocks.txLinkUpdateMany.mock.invocationCallOrder[0]!);
     });
   });
 
@@ -606,11 +726,13 @@ describe("upsertXeroObjectLink", () => {
     });
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
+        $executeRaw: mocks.txExecuteRaw,
         payment: {
           findUnique: mocks.txPaymentFindUnique,
           updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
+          createMany: mocks.txLinkCreateMany,
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: txLinkFindUnique,
@@ -726,11 +848,13 @@ describe("upsertXeroObjectLink", () => {
     });
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
+        $executeRaw: mocks.txExecuteRaw,
         payment: {
           findUnique: mocks.txPaymentFindUnique,
           updateMany: mocks.txPaymentUpdateMany,
         },
         xeroObjectLink: {
+          createMany: mocks.txLinkCreateMany,
           updateMany: mocks.txLinkUpdateMany,
           upsert: mocks.txLinkUpsert,
           findUnique: txLinkFindUnique,

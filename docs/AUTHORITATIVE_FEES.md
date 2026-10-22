@@ -137,7 +137,10 @@ current schedule; annual-fee blocks omit types with no current invoiceable fee
 and require each type's public-listing flag. `{{annual-fees}}` has its **own**
 dedicated `annualFees` visibility opt-in (default off), separate from the joining
 `entranceFees` gate (D-R4); `{{membership-types}}` and `{{entrance-fees}}` are
-deprecated aliases of `{{annual-fees}}` and `{{joining-fees}}`. Hut-rate blocks
+deprecated aliases of `{{annual-fees}}` and `{{joining-fees}}`. `{{first-year-costs}}`
+(#4295) adds the two schedules into one first-year total per type and tier, read
+through the same precedence and exemptions as the invoicing, and needs **both**
+the `entranceFees` and `annualFees` opt-ins. Hut-rate blocks
 use active seasons/rates plus configured age-tier labels. Fees are edited on the
 consolidated **Admin > Fees** page (`/admin/fees`); **Admin > Seasons** now holds
 only season windows (name/type/dates/active). Visibility writes are audited and

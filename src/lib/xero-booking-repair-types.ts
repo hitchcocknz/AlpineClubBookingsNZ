@@ -6,6 +6,7 @@ import { Prisma } from "@prisma/client";
 import type { XeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement-rules";
 import type { PaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-note";
+import type { PaidBackRefundRequest } from "@/lib/xero-inbound/refund-request-paid-back";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 export const XERO_BOOKING_REPAIR_FINDING_CODES = [
@@ -64,6 +65,9 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   // #3836: a credit-only card booking's invoice with its applied credit never
   // allocated (raised before #3836). Queues the one allocation engine.
   "UNALLOCATED_APPLIED_CREDIT",
+  // #4231 (`INV-PAY-118`): a refund request paid back before the booking had
+  // an invoice, whose own note was therefore never queued. Queues it.
+  "REFUND_REQUEST_NOTE_NOT_QUEUED",
 ] as const;
 
 export type XeroBookingRepairFindingCode =
@@ -76,6 +80,8 @@ export const XERO_BOOKING_REPAIR_ACTION_TYPES = [
   "QUEUE_MODIFICATION_CREDIT_NOTE",
   "QUEUE_ACCOUNT_CREDIT_NOTE",
   "QUEUE_REFUND_CREDIT_NOTE",
+  // #4231: a refund request's OWN note, keyed by the request (`INV-PAY-118`).
+  "QUEUE_REFUND_REQUEST_CREDIT_NOTE",
   "QUEUE_CREDIT_NOTE_ALLOCATION",
   "REQUEUE_XERO_OPERATION",
   "SYNC_PAYMENT_PRIMARY_INVOICE_FIELD",
@@ -540,6 +546,19 @@ export interface BookingClassificationContext {
    * note it means cash arrived and no clearing note is owed.
    */
   cancelledBookingHandBackPaymentIds: Set<string>;
+  /**
+   * #4215 (`INV-PAY-118`): the refund requests this booking's payment paid
+   * back (`readPaidBackRefundRequests`). Their cash no cancellation note
+   * answers; each has its own note, which the repair tool may offer (#4231). The inbound recount reads
+   * the same rows.
+   */
+  paidBackRefundRequests: Array<PaidBackRefundRequest & { amountLabel?: string }>;
+  /**
+   * #4231: whether this booking's payment ever had a refund note linked
+   * (`REFUND_CREDIT_NOTE`), active or not (`refundNoteSetsForPayments`, the
+   * same read as `cancelledRefundNoteIds`).
+   */
+  everRefundNoteLinked: boolean;
   /**
    * #3924 rounds 12-13: by intent, a late capture's card refunds no note will
    * answer (`readLateCaptureCardRefundsByHand`), in cents and the club's format,

@@ -957,21 +957,29 @@ export async function finaliseMemberGuestConsentTransition(params: {
   // #3954: a removal whose reduction retired an unpaid ask cancels it at Stripe
   // now and re-issues what is left, as the DELETE door does. Best-effort: the
   // cancellations are queued durably and a failed mint keeps its recovery row.
+  let reissuedIntentId: string | null = null;
   if ((outcome.outcome === "DECLINED" || outcome.outcome === "EXPIRED") && outcome.askRetirement) {
-    await createModificationAdditionalPaymentIntent({
+    reissuedIntentId = await createModificationAdditionalPaymentIntent({
       format,
       bookingId,
       result: outcome.askRetirement,
       door: "guestConsentRemoval",
       failureMessage: "Failed to re-issue an unpaid additional PaymentIntent after a member-guest consent removal",
-    }).catch((err) => logger.error({ err, bookingId, guestId }, "Failed to settle the asks a member-guest consent removal retired"));
+    })
+      .then((mint) => mint.additionalPaymentIntentId ?? null)
+      .catch((err) => {
+        logger.error({ err, bookingId, guestId }, "Failed to settle the asks a member-guest consent removal retired");
+        return null;
+      });
   }
 
   if ((outcome.outcome === "DECLINED" || outcome.outcome === "EXPIRED") && outcome.xeroSettlement) {
     try {
       await queueGuestRemovalXeroSettlement(outcome.xeroSettlement, {
         createdByMemberId: actorMemberId ?? undefined,
-        additionalPaymentIntentId: null,
+        // #3980 review round 2 F3: the re-issued ask it minted, as the DELETE
+        // door passes its own, so a supplementary invoice waits on its payment.
+        additionalPaymentIntentId: reissuedIntentId,
       });
     } catch (err) {
       logger.error({ err, bookingId, guestId }, "Failed to queue Xero settlement for a member-guest consent removal");
