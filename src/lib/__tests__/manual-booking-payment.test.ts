@@ -29,7 +29,7 @@ import { parseDateOnly } from "@/lib/date-only";
 const mocks = vi.hoisted(() => ({
   lockPaymentForRefundedTotal: vi.fn<(tx: unknown, paymentId: string) => Promise<undefined>>(async () => undefined),
   transaction: vi.fn(),
-  paymentUpdate: vi.fn(async (..._args: unknown[]) => ({})),
+  paymentUpdate: vi.fn<(...args: unknown[]) => Promise<object>>(async () => ({})),
   executeRaw: vi.fn(),
   bookingFindUnique: vi.fn(),
   bookingUpdateMany: vi.fn(),
