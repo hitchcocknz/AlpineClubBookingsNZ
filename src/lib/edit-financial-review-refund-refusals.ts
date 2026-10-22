@@ -150,3 +150,11 @@ export function reviewRefundOverPromisedMessage({
  */
 export const REVIEW_CANCELLATION_ORGANISER_PAID_MESSAGE =
   "This booking was paid for by the group organiser and has been cancelled, so its share cannot be netted against what the organiser was refunded automatically. Work out what is still owed to the organiser, hand it back another way, then dismiss this task with a note saying what was done.";
+
+/**
+ * #3949 (`INV-PAY-136`): the same refusal on one the group organiser paid for by Internet Banking. Nothing was
+ * refunded automatically: the cancellation's own refund to the organiser is paid by bank transfer from its own task
+ * (the joiner's cancel's hand-back, or the group cancel's organiser hand-back).
+ */
+export const REVIEW_CANCELLATION_ORGANISER_PAID_BY_BANK_MESSAGE =
+  "This booking was paid for by the group organiser by internet banking and has been cancelled, so its share cannot be netted against the cancellation's own refund to the organiser, which is paid by bank transfer from its own task. Work out what is still owed to the organiser beyond that, pay it to them by bank transfer, then dismiss this task with a note saying what was done.";

@@ -294,7 +294,7 @@ import { requireCalendarDate } from "@/lib/club-time";
 import { bookingCancelCardRefundRecoveryWhere, buildEditFinancialReviewRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
 import { deletedBookingModificationRefundReason } from "@/lib/deleted-booking-modification-payment";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
-import { REVIEW_CANCELLATION_ORGANISER_PAID_MESSAGE, REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
+import { REVIEW_CANCELLATION_ORGANISER_PAID_BY_BANK_MESSAGE, REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
 
 const tx = {
   // #3582: an edit review's completion takes lock(1) first, before its claim.
@@ -5507,7 +5507,7 @@ describe("#3949 - a hand-back on a joiner the organiser paid for by internet ban
     mocks.manualRefundTaskFindUnique.mockResolvedValue(groupChildReview("CANCELLED"));
     mocks.bookingFindUniqueOrThrow.mockResolvedValue({ organiserSettled: true, parentBookingId: "organiser-booking", payment: { source: "INTERNET_BANKING" } });
 
-    await expect(completeReview()).rejects.toMatchObject({ status: 409, message: REVIEW_CANCELLATION_ORGANISER_PAID_MESSAGE });
+    await expect(completeReview()).rejects.toMatchObject({ status: 409, message: REVIEW_CANCELLATION_ORGANISER_PAID_BY_BANK_MESSAGE });
     expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
     expect(mocks.giveBackAppliedCredit).not.toHaveBeenCalled();
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
