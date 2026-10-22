@@ -1,4 +1,4 @@
-import type { PaymentSource } from "@prisma/client";
+import type { BookingStatus, PaymentSource } from "@prisma/client";
 
 /**
  * The `Payment.status` values that mean MONEY WAS TAKEN — captured, and possibly
@@ -202,6 +202,26 @@ export function canAskCardForIncrease(booking: {
   );
 }
 
+/** The booking status a review charge is refused on, checked by the compiler. */
+const CANCELLED_BOOKING_STATUS = "CANCELLED" satisfies BookingStatus;
+
+/**
+ * #4272 (`INV-PAY-112`, owner decision 21 Oct 2026): a review charge on a
+ * CANCELLED booking is REFUSED. Its ask is one the member cannot pay — every
+ * pay surface excludes a cancelled booking (`INV-ADDPAY-023`) — and the
+ * recovery replay already skips one, so the inline path refuses it too.
+ *
+ * THE ONE HOME for that rule, asked by the route chooser before the claim
+ * (`chooseEditReviewChargeRoute`, which refuses with its own sentence before any
+ * route is chosen) and inside `canAskCardForReviewCharge`, so the sync's mint
+ * after the commit refuses too when a cancellation lands between the two.
+ */
+export function refusesReviewChargeForCancellation(booking: {
+  status: string;
+}): boolean {
+  return booking.status === CANCELLED_BOOKING_STATUS;
+}
+
 /**
  * #3947 (`INV-PAY-047`, `INV-PAY-112`): may an officer's settled edit-review
  * CHARGE (`CHARGE_TO_MEMBER`) ask the member's card? THE ONE ANSWER for that
@@ -211,22 +231,15 @@ export function canAskCardForIncrease(booking: {
  * The two must agree, or a route chosen as "card" mints nothing, queues a
  * recovery row, and every replay reports `not-raised` until the row dies FAILED.
  *
- * It is `canAskCardForIncrease` — so a settled booking paid wholly with credit
- * (`{ amountCents: 0, SUCCEEDED, STRIPE }`) IS asked by card, the owner's
- * 15 Oct 2026 decision on #3947, matching the four edit doors (#3502) — OR the
- * captured-card test this path used before (`hasCapturedPayment` + `STRIPE`).
- *
- * The second clause is TODAY'S ROUTE, KEPT PENDING A DECISION (#4272), not the
- * intended rule. A review can be settled on a booking that has since left the
- * settled statuses (most often CANCELLED) while still holding money captured on
- * a card, and that booking took the card route before #3947. The decision on
- * #3947 covered credit-paid bookings, not those, so their route is unchanged:
- * dropping the clause would turn each into a no-instrument refusal, because
- * `hasIssuedPrimaryXeroInvoice` is gated on the same settled statuses. Whether
- * such a booking should be card-asked at all - a CANCELLED booking's ask is one
- * the member cannot pay (`INV-ADDPAY-023`), and its recovery replay skips it -
- * is #4272's question. Until then the union only ever ADDS the credit-paid
- * shape; nothing that was card-asked stops being asked.
+ * NEVER on a CANCELLED booking (`refusesReviewChargeForCancellation`, #4272).
+ * Otherwise it is `canAskCardForIncrease` — so a settled booking paid wholly
+ * with credit (`{ amountCents: 0, SUCCEEDED, STRIPE }`) IS asked by card, the
+ * owner's 15 Oct 2026 decision on #3947, matching the four edit doors (#3502) —
+ * OR the captured-card test this path used before (`hasCapturedPayment` +
+ * `STRIPE`), which keeps the card for a booking outside the settled statuses,
+ * other than a cancelled one, that still holds money captured on a card.
+ * Dropping that clause would turn each into a no-instrument refusal, because
+ * `hasIssuedPrimaryXeroInvoice` is gated on the same settled statuses.
  *
  * INCREASES ONLY, like `canAskCardForIncrease`: a review REFUND reads its own
  * captured-cash tests (`editReviewRefundGoesBackOnCard`).
@@ -238,6 +251,7 @@ export function canAskCardForReviewCharge(booking: {
     | null
     | undefined;
 }): boolean {
+  if (refusesReviewChargeForCancellation(booking)) return false;
   return (
     canAskCardForIncrease(booking) ||
     (hasCapturedPayment(booking.payment) &&

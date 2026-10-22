@@ -4,7 +4,7 @@
  *
  * Lifted out of `edit-financial-review-charge.ts` in the #3181 fix round. The
  * seam is worth having on its own merits and not only for the file-size ratchet:
- * these five are member- and officer-facing SENTENCES, each carrying the reason
+ * these are member- and officer-facing SENTENCES, each carrying the reason
  * it exists, and the module they came from is about deciding a route and raising
  * an ask. `edit-financial-review-settlement.ts` already imported one of them
  * across that boundary, which is the usual sign that the strings are their own
@@ -26,6 +26,19 @@
  */
 export const REVIEW_CHARGE_WRONG_KIND_MESSAGE =
   "This task is money the club owes the member, so it cannot be used to collect money from them. If the member owes the club for a booking change, make that change on the booking itself.";
+
+/**
+ * #4272 (owner decision, 21 Oct 2026): a charge on a CANCELLED booking.
+ *
+ * Neither instrument is right. A card ask on a cancelled booking is one the
+ * member can never pay - every place a member pays excludes it
+ * (`INV-ADDPAY-023`) - and a cancelled booking has no issued invoice to add to.
+ * The recovery replay already skips a cancelled booking, so refusing here keeps
+ * the inline path and the replay agreeing. Refused before the claim, so the
+ * task stays OPEN for a person to settle another way.
+ */
+export const REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE =
+  "This booking has been cancelled, so the club cannot ask the member for this amount automatically - a payment request on a cancelled booking is one the member has no way to pay. Collect it another way, then dismiss this task with a note recording what was collected and how - the note is the record that the money was settled outside the system.";
 
 /**
  * #3653 (`INV-PAY-114`): a charge on a joiner's booking the group organiser paid

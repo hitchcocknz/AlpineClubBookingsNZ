@@ -543,6 +543,9 @@ async function syncEditReviewChargeRequestUnderClaim(
       // #3947: the chooser's own question (`chooseEditReviewChargeRoute`), so a
       // credit-paid ($0) booking routed to the card is minted for, not left to a
       // replay that reports `not-raised` until its recovery row dies FAILED.
+      // #4272: it answers no on a booking cancelled since the commit, so this
+      // mints nothing and the recovery row below is closed by the replay's
+      // cancelled-booking skip, as the chooser's refusal would have been.
       hasSucceededPayment: canAskCardForReviewCharge({
         status: payment?.booking.status ?? "",
         payment,

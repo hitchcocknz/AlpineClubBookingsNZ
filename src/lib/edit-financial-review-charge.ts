@@ -5,10 +5,14 @@ import {
   PaymentStatus,
 } from "@prisma/client";
 
-import { canAskCardForReviewCharge } from "@/lib/booking-payment-state";
+import {
+  canAskCardForReviewCharge,
+  refusesReviewChargeForCancellation,
+} from "@/lib/booking-payment-state";
 import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import {
   REVIEW_CHARGE_ANCHOR_MISSING_MESSAGE,
+  REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE,
   REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
   REVIEW_CHARGE_ORGANISER_PAID_MESSAGE,
   REVIEW_CHARGE_REQUEST_ALREADY_PAID_MESSAGE,
@@ -195,7 +199,8 @@ export async function chooseEditReviewChargeRoute({
   bookingModificationId: string | null;
   /**
    * #3653: whether the group organiser paid for this booking (`paidByOrganiserCard`).
-   * #3947: and its `status`, half of the card question (`canAskCardForReviewCharge`).
+   * #3947: and its `status`, half of the card question (`canAskCardForReviewCharge`),
+   * and the whole of the cancelled-booking refusal (#4272).
    */
   booking: { status: string; organiserSettled: boolean; parentBookingId: string | null };
   bookingPayment: {
@@ -221,6 +226,16 @@ export async function chooseEditReviewChargeRoute({
       409,
     );
   }
+  // #4272 (owner decision 21 Oct 2026): a CANCELLED booking is refused before
+  // any route is chosen, and before every other refusal that reads its payment:
+  // the cancellation is what makes every instrument wrong. A card ask on it is
+  // one the member cannot pay (`INV-ADDPAY-023`), and the recovery replay skips
+  // it, so asking here would leave the inline path and the replay disagreeing.
+  // The helper the card question asks refuses it too, so a cancellation landing
+  // after this commit stops the sync's mint as well.
+  if (refusesReviewChargeForCancellation(booking)) {
+    throw new ManualBookingPaymentError(REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE, 409);
+  }
   // #3653 (`INV-PAY-114`): the organiser paid for this booking by card. Its
   // payment mirror is a slice of the organiser's combined payment, so a card
   // ask would charge the joiner's own card and an invoice would bill the joiner;
@@ -233,9 +248,9 @@ export async function chooseEditReviewChargeRoute({
   // disagree and strand the debt on a replay that never raises. It is the
   // edit doors' `canAskCardForIncrease` (#3502), so a booking paid wholly with
   // credit - a $0 SUCCEEDED card payment - is asked by card, Xero or not; plus
-  // the captured-card test this path used before - today's route for a
-  // booking outside the settled statuses, kept pending a decision (#4272), not
-  // the intended rule (the helper's docblock says why). `Payment.source` alone
+  // the captured-card test this path used before, for a booking outside the
+  // settled statuses other than a cancelled one (refused above; the helper's
+  // docblock says why the clause stays). `Payment.source` alone
   // is not enough - its schema DEFAULT is STRIPE, so a hand-settled booking
   // carries it with nothing captured behind it. A MEMBER is part of the test
   // rather than a fallback: minting needs somebody to bill, and a booking with
