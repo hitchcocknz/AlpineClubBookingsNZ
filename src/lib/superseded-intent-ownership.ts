@@ -152,9 +152,10 @@ export type OwnershipCapture = {
  * (`OPEN_CARD_REFUND_OPERATION_WHERE`, the rows `keepFailedLaterCardRefundOwed`
  * re-plans). Open means live, or dead for the treasurer; a SUCCEEDED one was
  * made or closed as paid another way. The failed-later rows are open card
- * refund rows today; they are read by their key too, so the key's rule, not
- * the row's type, decides. Scoped to a payment: a re-planned slice names its
- * capture by transaction, on a row that may sit on another intent.
+ * refund rows today; the key picks them, but what they owe comes from the
+ * card-refund owed figure, so a row of another type would owe nothing.
+ * Scoped to a payment: a re-planned slice names its capture by transaction,
+ * on a row that may sit on another intent.
  */
 const SUPERSEDED_REFUND_OWED_AGAIN_WHERE = [
   { type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT },
