@@ -2319,7 +2319,7 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     entry point, Net Collected's included): never read as unpaid or flipped
     FAILED.
   - **A review on a cancelled child is refused**, in the bank transfer's own
-    words. Dismissal and reopening are unchanged; their refusals name the
+    words; a charge-direction review on any such child, in the organiser's. Dismissal and reopening are unchanged; their refusals name the
     organiser.
   - **The group cancel's plan and replay** subtract every paid-back mirror
     write (`mirrorPlanShareWritten`), and plan nothing for a child the cancel

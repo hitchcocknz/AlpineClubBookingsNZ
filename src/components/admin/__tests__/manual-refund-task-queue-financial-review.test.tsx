@@ -716,6 +716,9 @@ describe("what completing or dismissing means, per kind (#3033)", () => {
     await openDialog({ ...REVIEW_TASK, id: "task-review-organiser", paidBackByHand: true, paidToGroupOrganiser: true }, "Record the adjustment");
     const dialog = screen.getByRole("dialog");
     expect(dialog.textContent).toMatch(/money the club owes goes back to the organiser by bank transfer, never to the member/);
+    // Round 4: a charge is refused here, so the member is never said to be asked to pay on this booking.
+    expect(dialog.textContent).toMatch(/it cannot be asked for from here: agree it with the organiser/);
+    expect(dialog.textContent).not.toMatch(/asked to pay it on this booking/);
     fireEvent.click(screen.getByLabelText(/The club owes the member/));
     expect(screen.queryByLabelText("In cash")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Pay the group organiser back" })).toBeInTheDocument();

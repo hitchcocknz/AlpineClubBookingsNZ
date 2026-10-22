@@ -254,7 +254,9 @@ one of these tasks too, for the policy's card-tier refund, to the organiser
 needed** email saying the refund goes to the organiser (a customised message
 shows that through `{{handBackNote}}`, as below). A price review on
 such a booking that the club settles as money owed back goes to the organiser
-the same way. Once the joiner's booking is cancelled, by the joiner or by the
+the same way. One that finds the joiner owes the club is refused: the club
+cannot ask for that money from here, so agree it with the organiser, collect it
+another way and dismiss the review with a note. Once the joiner's booking is cancelled, by the joiner or by the
 organiser's cancellation of the group, such a review is refused and has to be
 settled by hand and dismissed. While the organiser's cancellation of the group
 is still part-way through, marking one of these paid back is refused: mark it

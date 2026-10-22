@@ -686,7 +686,7 @@ function resolutionDescription({
 
   if (isFinancialReview(task)) {
     // #3949 review round 3: the group organiser paid for this booking by internet banking, so money owed back is theirs.
-    if (task.paidToGroupOrganiser === true) return "Price this from the evidence on the row and the booking's payment history: the amount, and which way it goes. The group organiser paid for this booking, so money the club owes goes back to the organiser by bank transfer, never to the member; if the member owes the club they are asked to pay it on this booking. If nothing is owed either way, close the review with no adjustment instead.";
+    if (task.paidToGroupOrganiser === true) return "Price this from the evidence on the row and the booking's payment history: the amount, and which way it goes. The group organiser paid for this booking, so money the club owes goes back to the organiser by bank transfer, never to the member. If the member owes the club, it cannot be asked for from here: agree it with the organiser and collect it another way, then dismiss the review with a note. If nothing is owed either way, close the review with no adjustment instead.";
     return "Price this from the evidence on the row and the booking's payment history: the amount, and which way it goes. If the club owes the member it is paid back or held as account credit; if the member owes the club they are asked to pay it on this booking. If nothing is owed either way, close the review with no adjustment instead.";
   }
 

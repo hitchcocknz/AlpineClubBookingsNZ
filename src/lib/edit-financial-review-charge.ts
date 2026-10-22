@@ -6,10 +6,11 @@ import {
 } from "@prisma/client";
 
 import { hasCapturedPayment } from "@/lib/booking-payment-state";
-import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
+import { paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import {
   REVIEW_CHARGE_ANCHOR_MISSING_MESSAGE,
   REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
+  REVIEW_CHARGE_ORGANISER_PAID_BY_BANK_MESSAGE,
   REVIEW_CHARGE_ORGANISER_PAID_MESSAGE,
   REVIEW_CHARGE_REQUEST_ALREADY_PAID_MESSAGE,
   REVIEW_CHARGE_REQUEST_CLOSED_MESSAGE,
@@ -179,7 +180,7 @@ export async function chooseEditReviewChargeRoute({
   store,
 }: {
   bookingModificationId: string | null;
-  /** #3653: whether the group organiser paid for this booking (`paidByOrganiserCard`). */
+  /** #3653, #3949: whether the group organiser paid for this booking (`paidByOrganiserCard`, `paidByOrganiserInternetBanking`). */
   booking: { organiserSettled: boolean; parentBookingId: string | null };
   bookingPayment: {
     id: string;
@@ -210,6 +211,11 @@ export async function chooseEditReviewChargeRoute({
   // the edit doors refuse the same increase (`organiserChildChargeRefusal`).
   if (paidByOrganiserCard({ ...booking, payment: bookingPayment })) {
     throw new ManualBookingPaymentError(REVIEW_CHARGE_ORGANISER_PAID_MESSAGE, 409);
+  }
+  // #3949: so is one the organiser paid for by Internet Banking - refused in the organiser's words, before the
+  // no-instrument refusal below would answer it in general ones.
+  if (paidByOrganiserInternetBanking({ ...booking, payment: bookingPayment })) {
+    throw new ManualBookingPaymentError(REVIEW_CHARGE_ORGANISER_PAID_BY_BANK_MESSAGE, 409);
   }
   // The same test `applyPaymentAdjustments` uses to decide whether an ordinary
   // price increase mints an intent: a CAPTURED payment whose source is the card.
