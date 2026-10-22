@@ -484,7 +484,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const before = await snapshot();
 
       for (const paymentIntentId of [settling, third, settling]) {
-        expect((await arrive(paymentIntentId)).outcome).toBe("already_paid");
+        expect((await arrive(paymentIntentId)).outcome).toBe("duplicate_capture_kept");
       }
       expect(asked, "nothing is refunded automatically").toEqual([]);
       expect(await snapshot()).toEqual(before);

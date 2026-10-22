@@ -270,7 +270,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
       const result = await settleArrivingCapture();
 
-      expect(result.outcome).toBe("already_paid");
+      expect(result.outcome).toBe("duplicate_capture_kept");
       expect(asked, "nothing is refunded with no recorded settler").toEqual([]);
       expect(await settledIntentTheAlertNames()).toBe(FIRST_PI);
     });
@@ -281,7 +281,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
       const result = await settleArrivingCapture();
 
-      expect(result.outcome).toBe("already_paid");
+      expect(result.outcome).toBe("duplicate_capture_kept");
       expect(asked, "nothing is refunded with no recorded settler").toEqual([]);
       expect(await settledIntentTheAlertNames()).toBe(FIRST_PI);
     });
