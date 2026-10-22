@@ -1,3 +1,3 @@
-- Upgrade sanitize-html to 2.18.1 to prevent discarded iframe fallbacks from
-  exhausting the stack or bypassing the configured nesting limit. Preserve the
-  existing braces mitigation's patch, scope and expiry.
+- **Deeply nested HTML no longer breaks sanitization (#4281).** Upgrade
+  sanitize-html to 2.18.1 to bound discarded iframe fallbacks and preserve the
+  nesting limit. The existing braces patch, scope and expiry stay unchanged.
