@@ -434,7 +434,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-022` | The admin exemption is not one predicate, and is stated per path |
 | `INV-MOD-023` | Advisory surfaces report the same facts and gate nothing; nothing persisted |
 | `INV-MOD-024` | Minimum-stay policy administration is versioned; a stale version is refused, not overwritten |
-| `INV-MOD-028` | Historical nights value only from sold-price rows; else `NULL` and parked review |
+| `INV-MOD-028` | `valueStrandNights`: stored rows, else even split, always summing to guest total |
 | `INV-MOD-036` | A blank is filled only by a person, on four conditions |
 | `INV-MOD-037` | The repair is optional, and four things it deliberately does not repair |
 | `INV-MOD-038` | Three consumers read a re-based strand total; none restates a billed amount |
