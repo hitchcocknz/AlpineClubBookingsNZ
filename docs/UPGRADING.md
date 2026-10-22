@@ -119,20 +119,6 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
-### List bank-transfer refunds that have no Xero credit note (#4230)
-
-**What changes.** The Xero sync alert for a bank-transfer payment whose Xero
-refund credit notes add up to less than the refunds the club recorded now
-names two causes: a voided note, or a later refund on the payment that never
-got a note of its own. No migration runs, and nothing changes in how notes are
-raised.
-
-**After upgrading.** Run the read-only query in
-[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
-against the live database. With the treasurer, compare each listed payment's
-invoice in Xero with its refunds and raise a credit note by hand for any refund
-that has none. Leave a payment with a voided note to the nightly follow-up.
-
 ### Count voided bank-transfer refund notes, then switch the follow-up on (#4162)
 
 **What changes.** A bank-transfer refund whose Xero refund credit note is voided
@@ -174,6 +160,31 @@ records it as `xero-bank-refund-void-follow-up`.
 raised stays on the refund list; the previous app version completes it as an
 ordinary hand-back (it records the refund and queues the payment's refund
 note, under a key that never replays the voided one).
+
+### List bank-transfer refunds that have no Xero credit note (#4230)
+
+Do this after the #4162 entry above, once its nightly follow-up is switched on,
+so voided notes have been handled first.
+
+**What changes.** The Xero sync alert for a bank-transfer payment whose
+refunds in Xero add up to less than the refunds the club recorded now names
+the payment, its booking and the credit note, and says the usual cause: a later
+refund on the payment that never got a credit note of its own. No migration
+runs, and nothing changes in how notes are raised.
+
+**After upgrading.** Run the read-only query in
+[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
+against the live database. With the treasurer, compare each listed payment's
+invoice in Xero with its refunds and raise a credit note by hand for any refund
+whose note was never raised. Never raise one for a refund whose note was
+voided: that is answered on the refund list or Stuck States.
+
+**If a listed payment's `refundedAmountCents` is below its
+`rowsRefundedCents`,** an older version lowered its refunded total, and nothing
+in this release raises it back: not a replay of its Xero events, and not the
+booking repair tool. The next refund the app records on that payment resets the
+total from its rows. Until then, read `rowsRefundedCents` as the cash handed
+back.
 
 ### One-off correction of the starter privacy policy's audit-log retention (#4031)
 
