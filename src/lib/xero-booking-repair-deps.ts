@@ -30,6 +30,7 @@ import {
 import { recordAndNoteRepairedLateCaptureRefunds } from "@/lib/late-capture-repair-refund-record";
 import { readLateCaptureCardRefundsByHand } from "@/lib/late-capture-card-refund-by-hand";
 import { readRefundCreditNoteGap } from "@/lib/xero-admin-health";
+import { enqueueXeroRefundRequestCreditNoteOperation } from "@/lib/xero-refund-request-credit-note-outbox";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { finishRefundCreditNoteSettlement } from "@/lib/xero-refund-note-settlement";
 import { isXeroConnected } from "@/lib/xero-token-store";
@@ -48,6 +49,8 @@ export type RepairDependencies = {
   enqueueXeroModificationCreditNoteOperation: typeof enqueueXeroModificationCreditNoteOperation;
   enqueueXeroAccountCreditNoteOperation: typeof enqueueXeroAccountCreditNoteOperation;
   enqueueXeroRefundCreditNoteOperation: typeof enqueueXeroRefundCreditNoteOperation;
+  // #4231 (`INV-PAY-118`): a refund request's own note, keyed by the request.
+  enqueueXeroRefundRequestCreditNoteOperation: typeof enqueueXeroRefundRequestCreditNoteOperation;
   enqueueXeroCreditNoteAllocationOperation: typeof enqueueXeroCreditNoteAllocationOperation;
   // #3836: an unallocated credit-only card invoice's allocation.
   enqueueXeroAppliedCreditAllocationOperation: typeof enqueueXeroAppliedCreditAllocationOperation;
@@ -90,6 +93,7 @@ const defaultDependencies: RepairDependencies = {
   enqueueXeroModificationCreditNoteOperation,
   enqueueXeroAccountCreditNoteOperation,
   enqueueXeroRefundCreditNoteOperation,
+  enqueueXeroRefundRequestCreditNoteOperation,
   enqueueXeroCreditNoteAllocationOperation,
   enqueueXeroAppliedCreditAllocationOperation,
   enqueueXeroSyncOperationRetry,

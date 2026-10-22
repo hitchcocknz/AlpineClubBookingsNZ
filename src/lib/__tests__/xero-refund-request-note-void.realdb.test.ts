@@ -272,7 +272,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
       const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { ...base }, select: { active: true, metadata: true } });
       expect(link.active).toBe(false);
-      expect(link.metadata).toEqual({ amountCents: 5_000, refundRequestId: REQUEST_ID, status: "VOIDED" });
+      expect(link.metadata).toEqual({ amountCents: 5_000, refundRequestId: REQUEST_ID, status: "VOIDED", total: 50 });
     });
   },
 );

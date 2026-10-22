@@ -20,6 +20,7 @@ import { formatCents } from "@/lib/utils";
 import { invoiceCorrectionNoteIds, noCashModificationNoteIds } from "./account-credit-modification-notes";
 import { paymentsCountingInvoiceCorrections, uncapturedPrimaryStatus } from "./modification-note-refunds";
 import { capOrganiserChildMirrorAtStripeRefunds } from "@/lib/organiser-child-refund";
+import { readRefundRequestPaidBackCentsByPaymentId } from "./refund-request-paid-back";
 
 /** #3792: the operator alert, and the audit action, for a refused change. */
 const RESTORED_BOOKING_ALLOCATION_CHANGE_ERROR_TYPE =
@@ -122,7 +123,7 @@ async function includeDeletedAppliedCreditAllocationTargets(
 
 export async function repairRefundedPaymentBusinessState(input: {
   creditNoteId: string;
-  creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit">;
+  creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit" | "creditNoteNumber">;
   directPaymentIds: string[];
   modificationRefundAmountsByPaymentId: Map<string, number>;
   /**
@@ -164,7 +165,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       },
     },
     select: {
-      id: true,
+      id: true, bookingId: true, // #4230: the bank-transfer floor's alert names the booking
       amountCents: true,
       refundedAmountCents: true,
       status: true,
@@ -183,7 +184,9 @@ export async function repairRefundedPaymentBusinessState(input: {
     };
   }
 
-  const [directRefundLinks, modificationAllocationLinks] = await Promise.all([
+  // #4215 (`INV-PAY-118`): requests' paid-back cash, read AFTER the payment rows,
+  // so one completed in between moves the row and loses the claim below.
+  const [directRefundLinks, modificationAllocationLinks, refundRequestPaidBackCentsByPaymentId] = await Promise.all([
     prisma.xeroObjectLink.findMany({
       where: {
         localModel: "Payment",
@@ -218,6 +221,7 @@ export async function repairRefundedPaymentBusinessState(input: {
         metadata: true,
       },
     }),
+    readRefundRequestPaidBackCentsByPaymentId(paymentIds),
   ]);
 
   // #3979 (`INV-PAY-126`): a bank-transfer payment's modification notes are
@@ -397,7 +401,8 @@ export async function repairRefundedPaymentBusinessState(input: {
       directRefundTotalCents +
       modificationRefundTotalCents +
       currentDirectRefundContributionCents +
-      currentModificationRefundContributionCents;
+      currentModificationRefundContributionCents +
+      (refundRequestPaidBackCentsByPaymentId.get(payment.id) ?? 0);
     const nextRefundedTotalCents = Math.min(
       Math.max(rawRefundedTotalCents, 0),
       payment.amountCents
@@ -450,7 +455,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       effectiveRefundedTotalCents = payment.refundedAmountCents;
     }
     // #4162 (`INV-ADDPAY-021`): never below a bank-transfer payment's own refund detail; less is alerted, not applied.
-    effectiveRefundedTotalCents = await floorBankTransferRefundedTotal({ payment, xeroDerivedCents: effectiveRefundedTotalCents, creditNoteId: input.creditNoteId, format });
+    effectiveRefundedTotalCents = await floorBankTransferRefundedTotal({ payment, xeroDerivedCents: effectiveRefundedTotalCents, creditNoteId: input.creditNoteId, creditNoteNumber: input.creditNote.creditNoteNumber ?? null, format });
     // #3653 (`INV-PAY-114`): a Xero note never raises an organiser child's cash
     // mirror past the refunds Stripe recorded for it.
     if (isStripePayment && payment.booking.organiserSettled) {

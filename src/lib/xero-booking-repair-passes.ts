@@ -562,11 +562,12 @@ async function applyQueuedAction(
       action.resultMessage = result.message;
       return;
     }
-    case "QUEUE_REFUND_CREDIT_NOTE": {
-      const result = await deps.enqueueXeroRefundCreditNoteOperation(
-        String(action.payload.paymentId),
-        Number(action.payload.refundAmountCents)
-      );
+    case "QUEUE_REFUND_CREDIT_NOTE":
+    case "QUEUE_REFUND_REQUEST_CREDIT_NOTE": {
+      // #4231 (`INV-PAY-118`): a request's own note is keyed by the request, never the payment's one note.
+      const result = action.type === "QUEUE_REFUND_REQUEST_CREDIT_NOTE"
+        ? await deps.enqueueXeroRefundRequestCreditNoteOperation({ paymentId: String(action.payload.paymentId), refundRequestId: String(action.payload.refundRequestId), amountCents: Number(action.payload.refundAmountCents) })
+        : await deps.enqueueXeroRefundCreditNoteOperation(String(action.payload.paymentId), Number(action.payload.refundAmountCents));
       action.status = result.queueOperationId ? "queued" : "skipped";
       action.resultMessage = result.message;
       return;
