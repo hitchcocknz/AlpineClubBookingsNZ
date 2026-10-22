@@ -65,7 +65,11 @@ import {
  * intent that no superseded-intent operation (b′) and no duplicate-capture
  * refund (c, #4211) owns, or any non-Stripe one (#2262; the row this
  * settlement just wrote is always STRIPE, so it never matches that arm).
- * Exported so the real-PostgreSQL proofs repeat the exact read.
+ * Fully REFUNDED rows are history, so a #1765 repay generation is never a
+ * duplicate of its refunded predecessor. (b′) because a superseded intent's
+ * late capture is handed to its own refund WITHOUT passing through the
+ * settlement, so from the ledger alone it looks like one. Exported so the
+ * real-PostgreSQL proofs repeat the exact read.
  */
 export function otherSettledCaptureWhere(input: {
   paymentId: string;
