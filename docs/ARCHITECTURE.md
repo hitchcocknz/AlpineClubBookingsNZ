@@ -2039,7 +2039,11 @@ duplicate-capture guard (`duplicate-capture-guard.ts`) never refunds the
 recorded settler; with no usable record it refunds nothing new, returns
 `duplicate_capture_kept` and sends the unmuteable `admin-duplicate-capture-kept`
 alert when another payment holds money, and keeps a stray capture silently when
-nothing else does. The Xero second-instrument conflict names it first
+nothing else does. A recorded settler that no longer holds money, with nothing
+else holding any, is kept and alerted too (this payment may now be the one
+paying for the booking), unless the arriving capture is a duplicate whose own
+refund is already owed, which re-sends that refund, or a live superseded-intent
+operation holds the settler, a silent keep. The Xero second-instrument conflict names it first
 (`INV-PAY-043`). It has no foreign key, because the guard re-reads the row and
 trusts it only while it still holds money on this payment.
 

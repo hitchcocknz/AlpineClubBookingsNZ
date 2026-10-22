@@ -107,12 +107,13 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   duplicate-capture refund owns: a third capture, or a stray capture on a
   cash- or Xero-settled booking (#2262). The alert names the settlement; the
   history entry names it when the refund completes inline.
-- **No record, no automatic refund.** Paid before this release, by the
-  draining old colour, or with a settler no longer holding money: if another
-  capture holds money, the arriving one is kept (`duplicate_capture_kept`, no
-  second confirmation or invoice) and the unmuteable `admin-duplicate-capture-kept`
-  alert asks for a check by hand, once a day per capture. A capture a
-  duplicate-capture refund owns still re-sends its own refund.
+- **No record, no automatic refund.** Paid before this release or by the
+  draining old colour, if another capture holds money; or a recorded settler
+  no longer holding money, whether or not another does: the arriving capture is
+  kept (`duplicate_capture_kept`, no second confirmation or invoice) and the
+  unmuteable `admin-duplicate-capture-kept` alert asks for a check, once a day
+  per capture. An owned duplicate still re-sends its own refund; a settler a
+  live superseded-intent operation holds keeps silently.
 - **Limit:** PAID transitions no transaction settles never write it - zero-cash
   confirmations, the fully credit-covered settle, the $0 auto-pay after an
   edit, group settlement - so a stray capture there, beside nothing else

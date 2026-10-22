@@ -1715,6 +1715,12 @@ no usable record, another capture holds    -> duplicate_capture_kept: kept,
   cash (paid before #4211, by the draining    nothing refunded; unmuteable
   colour, or a settler that no longer holds   admin-duplicate-capture-kept
   money)                                      alert, once a day per capture
+recorded settler no longer holds money,    -> duplicate_capture_kept: kept,
+  nothing else does                            alert says this payment may now
+                                               pay for the booking (owned
+                                               duplicate: re-sends its refund;
+                                               settler held by a live
+                                               superseded op: silent keep)
 ```
 
 A success carrying a DIFFERENT intent while the recorded settler still holds

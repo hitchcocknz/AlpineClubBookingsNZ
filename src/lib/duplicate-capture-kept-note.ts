@@ -17,7 +17,8 @@
  *   receipt the settle could not match to exactly one receipt row.
  * - `settler-released`: the recorded settler no longer holds money (refunded,
  *   reversed, or going back to the member), so it says nothing about which
- *   remaining payment to keep.
+ *   remaining payment to keep - or, with nothing else holding money
+ *   (`otherHoldsMoney: false`), whether this payment now pays for the booking.
  */
 export type DuplicateCaptureKeptReason = "not-recorded" | "settler-released";
 

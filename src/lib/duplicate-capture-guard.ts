@@ -28,13 +28,14 @@
  *    duplicate-capture refund owns. A capture a duplicate-capture refund
  *    already owns re-sends only its own frozen refund (one operation per
  *    booking and intent, so the replay is idempotent).
- * 3. **No usable record** - paid before this release, by the draining old
- *    colour, or a settler that no longer holds money - and another capture
- *    holds money (`otherSettledCaptureWhere`): the arriving capture is KEPT
- *    and the admins are told to check by hand. Nothing is refunded
- *    automatically, because nothing says which side is the settlement. A
- *    capture a duplicate-capture refund already owns still re-sends its own
- *    refund, which an earlier delivery decided.
+ * 3. **No usable record** - paid before this release or by the draining old
+ *    colour while another capture holds money (`otherSettledCaptureWhere`), or a
+ *    recorded settler that no longer holds money, whether or not another does:
+ *    the arriving capture is KEPT and the admins are told to check by hand.
+ *    Nothing is refunded automatically, because nothing says which side is
+ *    the settlement. A capture a duplicate-capture refund already owns still
+ *    re-sends its own refund, which an earlier delivery decided; a released
+ *    settler a live superseded-intent operation holds keeps silently.
  *
  * Every read runs under the lock(1) every caller of `markBookingPaymentSucceeded`
  * holds, so the check-then-enqueue cannot interleave with another settlement,
@@ -216,8 +217,8 @@ export async function judgeCaptureOnPaidBooking(
 
 /**
  * Rule 3's alert, after the commit: a card capture was kept on a PAID booking
- * with no usable record of which payment settled it while another payment on it
- * still holds money. Its own unmuteable, delivery-locked template
+ * with no usable record of which payment settled it - while another payment on
+ * it still holds money, or beside a released settler and nothing else. Its own unmuteable, delivery-locked template
  * (`admin-duplicate-capture-kept`): the duplicate-capture refund's alert says a
  * refund was made or queued, and the generic payment alert says "Payment Failed"
  * and can be muted. Once a day per (booking, capture) while repeats arrive (a

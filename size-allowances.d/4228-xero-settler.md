@@ -10,9 +10,9 @@ reason: the Xero bank-receipt settle's PAID claim records its own receipt row
   settle's one transaction across modules.
 
 file: src/lib/email-message-registry.ts
-lines: 2346
+lines: 2348
 reason: the kept-capture alert (`admin-duplicate-capture-kept`) is registered
   where every template is: the admin-system and delivery-locked sets, its
-  required tokens, its trigger summary, its token's preview sample and the
+  required tokens, its trigger summary, its two tokens' preview samples and the
   approved-token list. Each is one row in the single table its kind lives in;
   a second file would split the registry the email censuses read as one.

@@ -1,7 +1,9 @@
 /**
  * #4211 (`INV-PAY-043`): the admin alert for a card capture the duplicate-capture
  * guard KEPT on a paid booking because it has no usable record of which payment
- * settled it, while another payment on the booking still holds money.
+ * settled it - while another payment on the booking still holds money, or with
+ * a recorded settler that no longer holds money and nothing else holding any,
+ * when this payment may now be the one paying for the booking.
  *
  * Part of the finance/money-event family (`src/lib/email/admin-alerts-settlement.ts`
  * sends it); its own module for size.
