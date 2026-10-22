@@ -651,20 +651,17 @@ Operator repair: `scripts/xero-refund-note-link-repair.ts`
 
 ### INV-ADDPAY-021
 
-For `source: STRIPE` payments the local refund ledger is Stripe-truth and
-inbound Xero reconciliation may only raise it, never lower it (#1353). The
-inbound credit-note repair keeps the local `refundedAmountCents` when the
-Xero-derived total is below it (logging and raising the deduped Xero sync
-alert instead of rewriting), and never flips a REFUNDED/PARTIALLY_REFUNDED
-Stripe payment back to SUCCEEDED from Xero-derived data — an operator voiding
-a refund credit note in Xero cannot "un-refund" money Stripe has already paid
-out, and a missing refund-delta credit note can no longer silently lower the
-ledger the missing-credit-note detector compares against (which previously
-self-masked the divergence). Internet Banking payments (#4162): the repair
-follows Xero both ways, but never takes the total below the payment's own
-transaction detail - the hand-backs the treasurer recorded. Below that it keeps
-the detail, logs and raises the same alert; only the nightly follow-up moves the
-detail, line and total together (`INV-ADDPAY-042`).
+For `source: STRIPE` payments the local refund ledger is Stripe-truth:
+inbound Xero reconciliation may raise it, never lower it (#1353). Below it the
+credit-note repair keeps `refundedAmountCents`, logs and raises the deduped
+Xero sync alert, never flipping a REFUNDED/PARTIALLY_REFUNDED Stripe payment
+back to SUCCEEDED from Xero-derived data: a void in Xero cannot un-refund
+Stripe's money, nor a missing note silently lower the ledger the missing-note
+detector reads. Internet Banking payments (#4162): the repair follows Xero both
+ways, but never takes the total below the payment's own transaction detail (the
+recorded hand-backs). Below that it keeps the detail, logs and raises the same
+alert; only the nightly follow-up moves the detail, line and total together
+(`INV-ADDPAY-042`).
 
 - **A refund request's paid-back cash is not Xero's to drop** (#4215,
   `INV-PAY-118`). Its own note is outside the notes the repair sums, so the
@@ -673,15 +670,18 @@ detail, line and total together (`INV-ADDPAY-042`).
   voided or never raised) nor the canonical note, so the floor never alerts
   on it and a total dropped before #4215 is raised back. It reads them after
   the payment row, so a completion in between loses the claim and the repair
-  re-runs. The booking
-  repair tool nets the same figure from the cash a cancellation's note answers
-  (`readPaidBackRefundRequests`, #4231), and offers, for an officer to
+  re-runs. The booking repair tool nets the same figure from the cash a cancellation's
+  note answers (`readPaidBackRefundRequests`, #4231), and offers, for an officer to
   confirm, a request's own note its completion could not queue (no invoice
   yet): only with no note row of its own (a voided one stays the officer's,
   `INV-ADDPAY-041`) and no cancellation note at all, else a person checks
   Xero.
   Pinned by `xero-credit-note-repairs`, `xero-booking-repair` and
   `xero-bt-repair-request-cash`.
+- **Below the detail, Xero is short a note** (#4230), usually for a later
+  refund folded into the payment's one note. The alert says so; adding folded
+  cash to the recount would silence it. Pinned by
+  `xero-bt-recount-handbacks`.
 
 ### INV-ADDPAY-022
 
