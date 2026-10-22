@@ -235,7 +235,7 @@ export function paidAnotherWayUnpaidCents(close: { amountCents: number | null; r
  * (the booking repair tool's late-cash evidence, the organisation hand-back's
  * duplicate check), and the readers census polices any new one.
  */
-const NON_CANCELLATION_HAND_BACK_KEY_PREFIXES = [
+export const NON_CANCELLATION_HAND_BACK_KEY_PREFIXES = [
   EDIT_REFUND_HAND_BACK_KEY_PREFIX,
   REFUND_REQUEST_HAND_BACK_KEY_PREFIX,
   CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX,

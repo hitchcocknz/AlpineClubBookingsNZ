@@ -281,8 +281,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   column restored by a guarded claim matching exactly what the settle wrote).
 
   **The mirror is net of refunds, carries the change fee, and is what SIZES an
-  ask (#3340).** Three things the #2397 statement above left implicit, each of
-  which was a live defect:
+  ask (#3340).** Three things #2397 left implicit, each a live defect:
 
   - **Net, never gross.** `paidAmountCents = amountCents - refundedAmountCents`.
     The manual-settle path was made net-correct in July 2026; the edit path and
@@ -308,14 +307,15 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     edit doors sent its increase to a Xero supplementary invoice that, with Xero
     off or the primary invoice not yet raised, did not exist: an `unasked`
     residual. Every door now asks `canAskCardForIncrease`
-    (`booking-payment-state.ts`) and asks the card, fee recorded; reductions
-    still read `hasCapturedPayment`. No further credit is drawn ([INV-PAY-002]).
-    Rows grown earlier are reported by the census, never back-billed.
+    (`booking-payment-state.ts`) and asks the card, fee recorded; a review
+    charge asks the wider `canAskCardForReviewCharge`, no fee ([INV-PAY-069]).
+    Reductions still read `hasCapturedPayment`. No further credit is drawn
+    ([INV-PAY-002]). Rows grown earlier are reported by the census, never
+    back-billed.
 
   **WHY THE ASK IS NOT READ STRAIGHT OFF THE PRICE.** `finalPriceCents - net paid
   - creditAppliedCents` is the same figure wherever the ledger is clean (the
-  tests assert it). It stops being
-  the same figure in exactly the cases where the club legitimately holds money
+  tests assert it). It differs exactly where the club legitimately holds money
   that is NOT the booking's price, and there it gives that money back: after a
   policy-tiered reduction the retained slice ([INV-MOD-011]) is a CHARGE, not a
   prepayment, and after a reduction settled as account credit `amountCents` is
@@ -2118,10 +2118,19 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   `ADDITIONAL` `PaymentTransaction`, the chase reminders, the member's pay link
   and the Xero supplementary invoice's wait-for-payment are the existing ones.
   NOTHING IS TAKEN FROM THE CARD BY THE COMPLETION: it raises the request and the
-  member pays it. A booking with neither a captured card payment nor an issued
-  Xero invoice is REFUSED before the claim, with the task left OPEN. The Xero leg
-  is the same choke point with a POSITIVE `priceDiffCents`, the only place the
-  direction becomes a sign.
+  member pays it. A booking with neither a card to ask
+  (`canAskCardForReviewCharge`) nor an issued Xero invoice is REFUSED before the
+  claim, with the task left OPEN. The Xero leg is the same supplementary-invoice
+  enqueue, billed a POSITIVE amount: the only place direction becomes a sign.
+- **Which instrument a charge uses** (#3947; owner decisions 15 and 22 Oct
+  2026). The card when `canAskCardForReviewCharge` says so: the edit doors'
+  `canAskCardForIncrease`, so a settled credit-paid booking too, Xero or not,
+  plus captured card money on an unsettled booking (pending #4272). Otherwise
+  the issued invoice. ONE INSTRUMENT PER EDIT: a share whose edit has no card
+  request but an invoice queued, sending, retried, or failed and unresolved
+  joins it; one issued, or resolved by hand in Xero, refuses it. The invoice route queues
+  its invoice inside the completion's transaction, and "coming" is read before
+  "issued", so no later share misses it.
 
 ## INV-PAY-062
 
@@ -2237,6 +2246,9 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   - **A lease, never a lock**: nothing is held across Stripe and no advisory key
     is taken; an expired token is taken over, safe because the derived total
     only grows and a raise is absolute.
+  - **One card question** (#3947): the route chooser and the mint both ask
+    `canAskCardForReviewCharge` ([INV-PAY-069]), so a route chosen as card is
+    always minted for, never left to a replay that cannot raise.
   - **Stated limits**, ordering and interleavings:
     [`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md).
   - Home: `edit-financial-review-charge-raise-claim.ts`,
@@ -2409,13 +2421,13 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 - **The Xero leg bills the TOTAL, on ONE invoice per edit, enforced rather than
   assumed** (#3170). A share arriving while this edit's supplementary invoice
   operation is still PENDING or WAITING_PAYMENT RAISES that operation's amount
-  rather than queueing a second invoice. `enqueueXeroSupplementaryInvoiceOperation`
-  decides link-check → queued-check → write inside ONE transaction holding
+  rather than queueing a second invoice. The enqueue decides link-check →
+  queued-check → write inside ONE transaction (its own, or an invoice-route
+  review charge's completion, #3947) holding
   `pg_advisory_xact_lock(hashtext("xero-supplementary-invoice"),
-  hashtext(<anchor>))`, and looks for an outstanding invoice by ANCHOR rather
-  than by the amount-derived correlation key — the active `SUPPLEMENTARY_INVOICE`
-  link exists only once the FIRST invoice exists, so before that it fences
-  nothing.
+  hashtext(<anchor>))`, and finds an outstanding invoice by ANCHOR, not the
+  amount-derived correlation key: the link exists only once the FIRST invoice
+  does.
 - **A restate that WRITES is a restate that goes out.**
   `processQueuedXeroOutboxOperations` re-reads `requestPayload` after its claim
   commits; RUNNING is outside the restatable set, so a restate either lands and
