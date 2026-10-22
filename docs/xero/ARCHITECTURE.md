@@ -1194,19 +1194,23 @@ credit an officer raised by hand in Xero is invisible to the tool, so the
 officer checks Xero for one first and then confirms the action by its key
 (`--apply-action`). And it is offered **only where the payment has no
 cancellation refund note of any kind** - no `xeroRefundCreditNoteId`, no
-`REFUND_CREDIT_NOTE` link active or not (`readPaymentsEverRefundNoted`), and
+`REFUND_CREDIT_NOTE` link active or not (`refundNoteSetsForPayments`,
+its `notedPaymentIds`, read with `REFUND_CREDIT_NOTE_LINK_WHERE`), and
 no refund-note create row that is no request's, whatever its status. Before
 #4231 the tool, or an officer, could size the cancellation's note with the
 request's cash folded in, and only Xero can say whether it did: an amount the
 app recorded goes stale once the note is edited there. So with any
 cancellation note the finding goes to a person (`manual_review`) with no
-action. Both findings lead with the check that prevents a second credit: look
-in Xero for a credit already raised for the request, and if there is one do
-nothing more. The person's finding then names the request and its amount, says
-the payment may have a cancellation note (a voided or never-sent one holds
-nothing), how to compare its lines in Xero, and what to do either way. A request's note the app never
-queued has no outbox row to mark resolved in Xero, so a credit raised by hand
-leaves that finding standing; an officer reads it against Xero.
+action, in two ordered steps: first always compare the cancellation note's
+lines on the booking's invoice in Xero with the cancellation's own refund, and
+edit it in place if the request's refund is in it; then raise the request's
+own credit by hand only if none exists yet. A note Xero voided, or a create row
+withdrawn (`CANCELLED`), holds nothing; for a row still queued or failed the
+officer waits for it, or checks its amount in Xero Operations, before raising
+anything by hand. Only the offer's finding, where no cancellation note exists,
+says a credit already raised is the whole answer. A request's note the app
+never queued has no outbox row to mark resolved in Xero, so a credit raised by
+hand leaves either finding standing; an officer reads it against Xero.
 
 **Deploy and rollback note (#4215).** No schema changes. A payment is only
 recounted when Xero sends an event for one of the notes above, which may never
@@ -1272,20 +1276,23 @@ link active or not, or a refund-note create row that is no request's, a row
 naming no queue type included):
 `SELECT p.id, p."bookingId", p."refundedAmountCents", (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) AS "rowsRefundedCents", (SELECT SUM(m."amountCents") FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':'))) AND NOT EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = p.id AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role = 'REFUND_REQUEST_CREDIT_NOTE' AND l.metadata->>'refundRequestId' = substr(m."occurrenceKey", 26))) AS "requestsWithoutNoteCents", p."xeroRefundCreditNoteId" FROM "Payment" p WHERE p.source = 'INTERNET_BANKING' AND EXISTS (SELECT 1 FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':'))) AND NOT EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = p.id AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role = 'REFUND_REQUEST_CREDIT_NOTE' AND l.metadata->>'refundRequestId' = substr(m."occurrenceKey", 26))) AND p."xeroInvoiceId" IS NOT NULL AND (p."xeroRefundCreditNoteId" IS NOT NULL OR EXISTS (SELECT 1 FROM "XeroObjectLink" c WHERE c."localModel" = 'Payment' AND c."localId" = p.id AND c."xeroObjectType" = 'CREDIT_NOTE' AND c.role = 'REFUND_CREDIT_NOTE') OR EXISTS (SELECT 1 FROM "XeroSyncOperation" c WHERE c."localModel" = 'Payment' AND c."localId" = p.id AND c."entityType" = 'CREDIT_NOTE' AND c."operationType" = 'CREATE' AND coalesce(c."queueType", c."requestPayload"->>'queueType', 'REFUND_CREDIT_NOTE') = 'REFUND_CREDIT_NOTE' AND c."requestPayload"->>'refundRequestId' IS NULL AND position(':refund-request-credit-note:' in coalesce(c."correlationKey", '')) = 0)) ORDER BY p.id`.
 
-To remedy a payment from either list, first check this invoice in Xero for a
-credit already raised for the request (its amount is the request's paid-back
-cash). If there is one, nothing more is needed: do not raise another. Otherwise
-compare the cancellation note's lines in Xero with the cancellation's own
-refund (the booking's cancellation in the app, or its refund lines in Xero);
-quote no figure worked out from the totals, which the recount may already have
-moved. A cancellation note that was voided, or never reached Xero, holds
-nothing.
+To remedy a payment from either list, work in two steps, in this order. A
+credit already raised for the request never makes the first step unnecessary:
+a folded note beside it would still credit the request twice.
 
-- **The request's cash is in the note:** edit the note **in place** so its
-  lines carry only the cancellation's own refund, then raise the request's own
-  credit note by hand in Xero, so Xero carries each refund once.
-- **It is not, and no credit for the request exists yet:** raise the request's
-  own credit note by hand in Xero.
+1. **Always check the cancellation note.** Compare its lines on the booking's
+   invoice in Xero with the cancellation's own refund (the booking's
+   cancellation in the app, or its refund lines in Xero); quote no figure
+   worked out from the totals, which the recount may already have moved. If
+   the request's refund is in it, edit the note **in place** so its lines carry
+   only the cancellation's own refund. A note Xero voided, or a create row
+   withdrawn (`CANCELLED`) in Xero Operations, holds nothing; for a row still
+   queued or failed there, wait for it or check its amount in Xero Operations
+   before going on.
+2. **Then the request's own credit.** Check the booking's invoice in Xero for a
+   credit already raised for the request (its amount is the request's
+   paid-back cash). Raise the request's own credit note by hand in Xero only if
+   none exists yet, so Xero carries each refund once.
 
 Editing in Xero: an approved credit note can be edited only once its
 allocations and refund payments are removed; remove them, change the lines,

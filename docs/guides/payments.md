@@ -224,18 +224,20 @@ them by bank transfer. Pay it and mark it paid back exactly as above. Marking
 it paid back queues that appeal's own Xero refund credit note for the amount
 you paid back; each appeal gets its own note, beside the payment's one refund
 note for its cancellation. A booking with no Xero invoice yet gets no note
-then; once its invoice exists, the booking repair tool reports it (#4231). The
-officer first checks the invoice in Xero for a credit already raised for that
-appeal; if there is one, nothing more is needed, and the tool's report of it
-stays because the app cannot record a credit raised by hand. Otherwise, where
-the payment has no cancellation credit note, the tool offers the appeal's note
-and the officer confirms it by its action key - the tool never raises it alone.
-Where the payment may have a cancellation credit note (one voided, or never
-sent to Xero, holds nothing), it may already include the appeal's money: the
-officer compares that note's lines in Xero with the cancellation's own refund,
-edits it in place if the appeal's money is in it (never voids it) and then
-raises the appeal's credit note by hand, or, if it is not and no credit for the
-appeal exists yet, raises the appeal's credit note by hand.
+then; once its invoice exists, the booking repair tool reports it (#4231), and
+its report stays even after a credit is raised by hand, because the app cannot
+record one. Where the payment has no cancellation credit note, the officer
+checks this booking's invoice in Xero for a credit already raised for that
+appeal: if there is one, nothing more is needed; if not, the officer confirms
+the tool's offer of the appeal's note by its action key - the tool never raises
+it alone. Where the payment may have a cancellation credit note, it may
+already include the appeal's money, so the officer works in two steps. First,
+always compare that note's lines on the booking's invoice in Xero with the
+cancellation's own refund, and edit it in place if the appeal's money is in it
+(never void it). A note Xero voided, or a create row withdrawn in Xero
+Operations, holds nothing; for one still queued or failed there, wait for it or
+check its amount before going on. Second, raise the appeal's own credit note by
+hand only if no credit for the appeal exists yet.
 
 While the task is open its amount counts as already promised, so a second
 appeal can only be approved for what is left. An appeal's limit also leaves
