@@ -89,6 +89,7 @@ import {
 } from "@/lib/xero-booking-repair-side-notes";
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
 import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
+import { addRefundRequestNoteNotQueuedFindings, paidBackRefundRequestCents } from "./xero-booking-repair-request-notes";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
 import {
@@ -99,6 +100,7 @@ import {
   XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
 } from "@/lib/xero-operation-outbox-payload";
 import { formatDateOnly } from "@/lib/date-only";
+import { recordedPrimaryInvoiceSettlement } from "@/lib/booking-primary-invoice-claim";
 import { canonicalRefundNoteCandidates } from "@/lib/xero-refund-note-status";
 import {
   decideLateCapture,
@@ -497,8 +499,21 @@ export function classifyBookingContext(
      * coincidence anybody has to re-derive.
      */
     const modificationNetAmountCents = getModificationNetAmountCents(modification);
+    /**
+     * #3980 (review R1, `INV-PAY-136`): an edit that settled against the
+     * primary invoice - it read no invoice link - expects no Xero document of
+     * its own. The invoice raised after it billed it, or, where the edit landed
+     * while that invoice was being raised, the create's gap check billed the
+     * difference on a supplementary invoice or handed it to the treasurer as a
+     * Xero Operations task. Expecting its own invoice or note here would bill
+     * or credit that difference a second time, and "the invoice already bills
+     * it" would be wrong advice for an edit that landed mid-create. A review
+     * charge on it is the review's own money and is still expected.
+     */
+    const ownDocumentExpected =
+      recordedPrimaryInvoiceSettlement(modification.newData) === null || editReviewChargeCents > 0;
 
-    if (netAmountCents > 0 && primaryInvoice) {
+    if (netAmountCents > 0 && primaryInvoice && ownDocumentExpected) {
       const supplementaryInvoice = resolveObjectFromCandidates({
         links: modificationLinks,
         operations: modificationOperations,
@@ -936,7 +951,7 @@ export function classifyBookingContext(
       addUnpaidAskUnsureFindings({ bookingId: booking.id, modification, reissueRetired, xeroInvoiceId: primaryInvoice.objectId, actionMap, findings });
     }
 
-    if (reductionNoteDueCents > 0 && primaryInvoice) {
+    if (reductionNoteDueCents > 0 && primaryInvoice && ownDocumentExpected) {
       const refundDueCents = reductionNoteDueCents;
       // Captured money via the payment status OR the transaction ledger —
       // ledger-first states (a SUCCEEDED capture row under a still-PENDING
@@ -1452,9 +1467,10 @@ export function classifyBookingContext(
   }
 
   if (payment) addUnsettledRefundCreditNoteFindings(findings, actionMap, booking.id, context.paymentRefundPaymentLinks, paymentOperations, paymentLinks);
+  addRefundRequestNoteNotQueuedFindings({ findings, actionMap, context }); // #4231
   addUnallocatedCardAppliedCreditFindings(findings, actionMap, context);
   if (payment && refundCreditNote) {
-    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
+    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paidBackRefundRequestCents(context), context.modificationOperationsById);
     if (refundAmountCents !== null && refundAmountCents > 0) {
       addXeroAmountMismatchFinding({
         findings,
@@ -2284,7 +2300,7 @@ export function classifyBookingContext(
     // per-refund ones - already answer every cent a note may: nothing is
     // missing, and nothing is ambiguous.
     if (primaryInvoice && !refundCreditNote && context.refundNoteUncoveredCents !== 0) {
-      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
+      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paidBackRefundRequestCents(context), context.modificationOperationsById);
       if (cashCancellationRefundCents === null) {
         const action = addAction(
           actionMap,

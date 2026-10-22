@@ -371,6 +371,8 @@ const tx = {
   payment: {
     update: (...a: unknown[]) => mocks.paymentUpdate(...a),
     findUnique: (...a: unknown[]) => mocks.txPaymentFindUnique(...a),
+    // #3980 review round 2 F4: a re-price claims the closure's unlinked invoice.
+    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
   },
   // #3219: the booking's OWN history, which is where a re-base has to be
   // readable from - D1 lets a later cancellation refund less than the member
