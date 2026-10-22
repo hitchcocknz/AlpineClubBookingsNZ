@@ -44,7 +44,7 @@ const mocks = vi.hoisted(() => ({
   paymentTransactionFindUnique: vi.fn(),
   paymentTransactionFindMany: vi.fn(),
   // #4227: what the owed-again reading answers (the real one reads card refund rows).
-  supersededOwedBackAgain: vi.fn(),
+  supersededHoldsForMember: vi.fn(),
   paymentRecoveryOperationFindMany: vi.fn(),
   paymentRecoveryOperationFindFirst: vi.fn(),
   upsertPaymentIntentTransaction: vi.fn(),
@@ -132,7 +132,7 @@ vi.mock("@/lib/alert-cooldown-fail-open", () => ({
 // #4227: the owed-again reading, real elsewhere; its own suites cover the rows it reads.
 vi.mock("@/lib/superseded-intent-ownership", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/superseded-intent-ownership")),
-  listSupersededIntentIdsOwedBackAgain: (...args: unknown[]) => mocks.supersededOwedBackAgain(...args),
+  listSupersededIntentIdsOwningCaptures: (...args: unknown[]) => mocks.supersededHoldsForMember(...args),
 }));
 
 vi.mock("@/lib/member-credit", () => ({
@@ -510,7 +510,7 @@ beforeEach(() => {
   mocks.recoveryUpdateMany.mockResolvedValue({ count: 1 });
   mocks.recoveryFindUnique.mockResolvedValue(null);
   mocks.claimAlertCooldownFailOpen.mockResolvedValue(true);
-  mocks.supersededOwedBackAgain.mockResolvedValue([]);
+  mocks.supersededHoldsForMember.mockResolvedValue([]);
   mocks.paymentTransactionFindMany.mockResolvedValue([]);
 });
 
@@ -869,12 +869,11 @@ describe("#1992 duplicate-capture auto-refund", () => {
 
       expect(result.outcome).toBe("duplicate_capture_kept");
       expectSettledBy(OLDER_PI);
-      // #4283 asks of the arriving capture first; (c′) then re-checks the
-      // chosen settlement, never the later capture.
+      // (c′) re-checks the chosen settlement, never the later capture.
       const recheckedIntents = mocks.paymentRecoveryOperationFindFirst.mock.calls.map(
         ([args]) => (args as { where: { paymentIntentId: string } }).where.paymentIntentId,
       );
-      expect(recheckedIntents).toEqual([DUPLICATE_PI, OLDER_PI]);
+      expect(recheckedIntents).toEqual([OLDER_PI]);
     });
 
     it("createdAt outranks insertionSeq: the earlier-created capture is the settled one even with the higher sequence", async () => {
@@ -1462,12 +1461,11 @@ describe("#4211 every capture beyond the settling one is refunded, a third inclu
       duplicatePaymentIntentId: THIRD_PI,
       settledPaymentIntentId: SETTLING_PI,
     });
-    // #4283 asks of the arriving capture; (c′) re-checks the settling capture,
-    // never the refunded one.
+    // (c′) re-checks the settling capture, never the refunded one.
     const recheckedIntents = mocks.paymentRecoveryOperationFindFirst.mock.calls.map(
       ([args]) => (args as { where: { paymentIntentId: string } }).where.paymentIntentId,
     );
-    expect(recheckedIntents).toEqual([THIRD_PI, SETTLING_PI]);
+    expect(recheckedIntents).toEqual([SETTLING_PI]);
   });
 
   it("with only refunded-or-owned captures beside it, the arriving capture is the settlement and stays already_paid", async () => {
@@ -1872,17 +1870,29 @@ describe("#4227 / #4283 the superseded machinery's captures, arriving or beside"
   it("#4283: a superseded capture ARRIVING while its superseded refund is live is not refunded as a duplicate on top", async () => {
     primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-x", stripePaymentIntentId: X })], { settledBy: "txn-y" });
     primeRecoveryOperations([liveRefundOf(X)]);
+    // The Xero conflict's reading: a superseded refund until it SUCCEEDED.
+    mocks.supersededHoldsForMember.mockResolvedValue([X]);
 
     expect((await arrive(X)).outcome).toBe("already_paid");
     expectNothingMoves();
+    expect(mocks.supersededHoldsForMember).toHaveBeenCalledWith(tx, "payment-1", expect.any(Array));
   });
 
-  it("#4283: the same when only the direct re-check sees the operation, and when a duplicate-capture refund also names it (no re-send)", async () => {
+  it("#4283 review: an arriving capture behind a DEAD cancel (handed to nobody) is a duplicate like any other and is refunded", async () => {
     primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-x", stripePaymentIntentId: X })], { settledBy: "txn-y" });
-    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
-    mocks.paymentRecoveryOperationFindFirst.mockImplementation(
-      async ({ where }: { where: { paymentIntentId: string } }) => (where.paymentIntentId === X ? { id: "op-superseded-x" } : null),
+    // (b′) counts the dead cancel as live; the Xero reading does not.
+    primeRecoveryOperations([{ ...liveRefundOf(X), type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, status: PaymentRecoveryOperationStatus.FAILED }]);
+    mocks.supersededHoldsForMember.mockResolvedValue([]);
+
+    expect((await arrive(X)).outcome).toBe("duplicate_capture_refunded");
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: X, allocationPlan: [{ paymentTransactionId: "txn-x", amountCents: 10000 }] }),
     );
+  });
+
+  it("#4283: held by the superseded machinery and also named by a duplicate-capture refund: no re-send", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-x", stripePaymentIntentId: X })], { settledBy: "txn-y" });
+    mocks.supersededHoldsForMember.mockResolvedValue([X]);
     mocks.listDuplicateCaptureRefundIntentIds.mockResolvedValue([X]);
 
     expect((await arrive(X)).outcome).toBe("already_paid");
@@ -1891,7 +1901,7 @@ describe("#4227 / #4283 the superseded machinery's captures, arriving or beside"
 
   it("#4283: a superseded capture whose failed-later refund is owed back again, arriving, is not refunded on top either", async () => {
     primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-x", stripePaymentIntentId: X })], { settledBy: "txn-y" });
-    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+    mocks.supersededHoldsForMember.mockResolvedValue([X]);
 
     expect((await arrive(X)).outcome).toBe("already_paid");
     expectNothingMoves();
@@ -1899,12 +1909,12 @@ describe("#4227 / #4283 the superseded machinery's captures, arriving or beside"
 
   it("#4227: with no record, a replay beside a superseded capture owed back again in full keeps silently - no false 'paid twice' alert", async () => {
     primeLedger([ledgerRow({ id: "txn-x", stripePaymentIntentId: X }), ledgerRow({ id: "txn-y", stripePaymentIntentId: Y })]);
-    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+    mocks.supersededHoldsForMember.mockResolvedValue([X]);
 
     expect((await arrive(Y)).outcome).toBe("already_paid");
     expectNothingMoves();
     // The reading weighs every capture on the payment, in ledger order.
-    expect(mocks.supersededOwedBackAgain).toHaveBeenCalledWith(tx, "payment-1", expect.any(Array));
+    expect(mocks.supersededHoldsForMember).toHaveBeenCalledWith(tx, "payment-1", expect.any(Array));
     expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith(
       expect.objectContaining({
         orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
@@ -1929,7 +1939,7 @@ describe("#4227 / #4283 the superseded machinery's captures, arriving or beside"
       ledgerRow({ id: "txn-z", stripePaymentIntentId: Z }),
       ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }),
     ]);
-    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+    mocks.supersededHoldsForMember.mockResolvedValue([X]);
 
     expect((await arrive(Y)).outcome).toBe("duplicate_capture_kept");
     expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
@@ -1940,7 +1950,7 @@ describe("#4227 / #4283 the superseded machinery's captures, arriving or beside"
 
   it("#4227: a recorded settler the superseded machinery owes back again, beside nothing else, keeps silently (as a live operation would)", async () => {
     primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-z", stripePaymentIntentId: Z })], { settledBy: "txn-y" });
-    mocks.supersededOwedBackAgain.mockResolvedValue([Y]);
+    mocks.supersededHoldsForMember.mockResolvedValue([Y]);
 
     expect((await arrive(Z)).outcome).toBe("already_paid");
     expectNothingMoves();
@@ -1951,7 +1961,7 @@ describe("#4227 / #4283 the superseded machinery's captures, arriving or beside"
       [ledgerRow({ id: "txn-x", stripePaymentIntentId: X }), ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-z", stripePaymentIntentId: Z })],
       { settledBy: "txn-y" },
     );
-    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+    mocks.supersededHoldsForMember.mockResolvedValue([X]);
 
     expect((await arrive(Z)).outcome).toBe("duplicate_capture_refunded");
     expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(

@@ -117,8 +117,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - **Limit:** PAID transitions no transaction settles (zero cash, full credit,
   the $0 auto-pay after an edit, group settlement) never write it: a lone
   stray capture there is kept without an alert.
-- **One home**: `duplicate-capture-guard.ts`; its ownership readings are the
-  Xero conflict's too, which names the recorded settler first.
+- **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
+  readings for duplicate-refund-owned and owed-back captures and, since #4283,
+  the arriving capture.
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per
   (booking, intent).
 - Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,
@@ -1443,10 +1444,10 @@ short).
     check for open ones after the old colour drains.
   - **The settling capture: the recorded one, else the oldest-inserted
     qualifying one** (#4177, `INV-PAY-043`). Xero's conflict (#4163) and the
-    guard skip duplicate-refund-owned captures, at any status. When paid,
-    Xero's conflict also skips #1765 refund history (ranked last when
-    cancelled) and what `INV-PAY-102` says the superseded-intent machinery
-    holds, failed-later refunds open rows owe back in full included (#4221).
+    guard both skip duplicate-refund-owned captures at any status and ones
+    open rows owe back in full (#4221, #4227). When paid, Xero's also skips
+    #1765 history (ranked last when cancelled) and what else `INV-PAY-102`
+    says the machinery holds.
   - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, `settled-capture-order.realdb.test.ts`
     and the migration's fixture; the settling capture by

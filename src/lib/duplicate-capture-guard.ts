@@ -26,8 +26,10 @@
  * 2. **Any other arriving capture is refunded** while the recorded settler
  *    still holds net cash that neither the superseded-intent machinery (a live
  *    operation, or #4227 a failed-later refund open rows owe back in full) nor
- *    a duplicate-capture refund owns. An arriving capture that machinery holds
- *    is its own: never refunded on top, never re-sent, never alerted (#4283). A capture a duplicate-capture refund
+ *    a duplicate-capture refund owns. An arriving capture that machinery is
+ *    still sending back (the Xero conflict's reading: an in-flight cancel, an
+ *    unfinished refund, or one owed back in full) is never refunded on top,
+ *    re-sent or alerted (#4283); a dead cancel leaves it a duplicate. A capture a duplicate-capture refund
  *    already owns re-sends only its own frozen refund (one operation per
  *    booking and intent, so the replay is idempotent).
  * 3. **No usable record** - paid before this release or by the draining old
@@ -62,7 +64,7 @@ import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payme
 import {
   findLiveSupersededIntentOperation,
   listLiveSupersededIntentIds,
-  listSupersededIntentIdsOwedBackAgain,
+  listSupersededIntentIdsOwningCaptures,
 } from "@/lib/superseded-intent-ownership";
 
 /**
@@ -145,11 +147,11 @@ export async function judgeCaptureOnPaidBooking(
   // Rule 1.
   if (!arriving || arriving.id === input.recordedSettlerId) return { verdict: "keep" };
 
-  // (b′), and #4227: a superseded capture whose refund Stripe failed later is
-  // still the superseded machinery's while open rows owe it back again in full
-  // (`listSupersededIntentIdsOwedBackAgain`, the Xero conflict's reading too).
-  const owedBackAgain = new Set(
-    await listSupersededIntentIdsOwedBackAgain(
+  // The Xero conflict's reading (`listSupersededIntentIdsOwningCaptures`): a
+  // cancel only while in flight, a superseded refund until it SUCCEEDED, and
+  // (#4227) a capture whose failed-later refund open rows owe back in full.
+  const holdsForMember = new Set(
+    await listSupersededIntentIdsOwningCaptures(
       tx,
       input.paymentId,
       await tx.paymentTransaction.findMany({
@@ -164,15 +166,17 @@ export async function judgeCaptureOnPaidBooking(
       }),
     ),
   );
-  const supersededOwned = [...(await listLiveSupersededIntentIds(tx, input.paymentId)), ...owedBackAgain];
-  // (c′) with a different query shape, for the live operations.
+  // #4283: the ARRIVING capture is refunded on top only if nothing is already
+  // sending its money back - read the Xero way, so a DEAD cancel (one that
+  // handed the money to nobody) leaves it a duplicate like any other. Held:
+  // no duplicate refund, no re-send, no alert.
+  if (holdsForMember.has(input.paymentIntentId)) return { verdict: "keep" };
+  // (b′) and (c′) as the OTHER capture fail safe the opposite way: any
+  // operation not SUCCEEDED counts (wrongly skipping costs nothing; wrongly
+  // counting refunds the real settlement), plus #4227's owed-back captures.
+  const supersededOwned = [...(await listLiveSupersededIntentIds(tx, input.paymentId)), ...holdsForMember];
   const supersededOwns = async (paymentIntentId: string) =>
-    owedBackAgain.has(paymentIntentId) || !!(await findLiveSupersededIntentOperation(tx, paymentIntentId));
-  // #4283: the ARRIVING capture's own money the superseded machinery holds (a
-  // redelivered webhook after the cancel handed it off, or a confirm on a
-  // superseded intent) - its refund is that machinery's, so no duplicate
-  // refund on top of it, no re-send, no alert.
-  if (supersededOwned.includes(input.paymentIntentId) || (await supersededOwns(input.paymentIntentId))) return { verdict: "keep" };
+    holdsForMember.has(paymentIntentId) || !!(await findLiveSupersededIntentOperation(tx, paymentIntentId));
 
   const duplicateRefundIntentIds = await listDuplicateCaptureRefundIntentIds({
     bookingId: input.bookingId,
