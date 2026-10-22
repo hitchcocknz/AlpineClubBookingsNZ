@@ -1092,7 +1092,16 @@ pointer to an inactive mirror (#4046). A refund left with no live note shows no
 drift in that report, by design; on a bank transfer the nightly follow-up
 handles it (#4162, below). A mirror voided
 before #4091 (still active, its pointer naming it) is healed by the nightly
-`link-cleanup` through this same write (#4161).
+`link-cleanup` through this same write (#4161). A later event for the voided
+note — a redelivery, the retry of an event that failed after this write, or a
+replay from Inbound Events — still recounts the payment's refunded total: the
+reconcile resolves a cancelled note to every payment whose inactive mirror
+records the void (`findPaymentIdsWithCancelledRefundNoteMirror`, #4291), read
+after the event's own link writes so a concurrent void committed meanwhile is
+seen. An audit row (source `xero-inbound-credit-note-voided-mirror-recount`)
+names each payment only that lookup found. That is for the recount only, so the mirror stays off and the pointer released; a
+mirror retired while its note was live, or a read of the note as live, resolves
+nothing.
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,
