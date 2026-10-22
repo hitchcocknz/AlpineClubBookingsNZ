@@ -136,9 +136,8 @@ function enqueueCancelledReviewRefundNote(
  * #3880: a bank-transfer hand-back's note on a cancelled booking, queued on the
  * completion's own transaction after its allocation: a review's hand-back
  * (noted per refund, keyed on the task) and a `CANCELLED_BOOKING_HAND_BACK`
- * (`INV-PAY-101`, #3529: the payment's canonical refund note, or - #4287, a
- * later one - its OWN, keyed on the task; #4097, a card refund shortfall's:
- * its OWN, keyed on the task like a "Paid another way" close's).
+ * (`INV-PAY-101`, #3529: the payment's canonical note, or a later one's OWN,
+ * #4287; #4097, a card refund shortfall's OWN, keyed like a close's).
  * An outbox row insert and no provider call; a throw rolls the completion back.
  */
 export async function queueCancelledBookingHandBackNoteInTransaction({
