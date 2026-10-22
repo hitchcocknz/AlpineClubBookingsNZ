@@ -165,8 +165,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       },
     },
     select: {
-      id: true,
-      bookingId: true, // #4230: named in the bank-transfer floor's alert
+      id: true, bookingId: true, // #4230: the bank-transfer floor's alert names the booking
       amountCents: true,
       refundedAmountCents: true,
       status: true,
