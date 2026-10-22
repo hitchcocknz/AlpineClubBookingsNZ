@@ -883,7 +883,7 @@ export async function executeGroupSettlementRefundPlan(
     // ACTIVE children still belong to the inline loop / reaper resume path,
     // which cancel + mirror atomically; touching them here could double-apply.
     if (!child || child.status !== BookingStatus.CANCELLED || !child.payment) continue;
-    // #3949 (`INV-PAY-136`): written or not is asked under the Payment row, net of paid-back hand-backs.
+    // #3949 (`INV-PAY-137`): written or not is asked under the Payment row, net of paid-back hand-backs.
     // Mirror and durable Xero outbox insertion are one atomic unit (an enqueue
     // failure rolls the mirror back, so the replay never skips a stranded note).
     const mirrorResult = await prisma.$transaction(async (tx) => {

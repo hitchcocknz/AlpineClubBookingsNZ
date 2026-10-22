@@ -142,7 +142,7 @@ export function groupSettledChildKeptFrom(
  *    completed task's amount is what it settled; non-review kinds cannot be
  *    repriced), so the planner takes it back out to read the refunds as the
  *    cancel left them.
- *  - `completedOtherMirrorWritesCents` (#3949, `INV-PAY-136`): every OTHER
+ *  - `completedOtherMirrorWritesCents` (#3949, `INV-PAY-137`): every OTHER
  *    completion that writes an Internet Banking child's mirror - an edit's
  *    hand-back, the joiner's own cancellation's (keyless,
  *    `isGroupSettlementMirrorHandBackKind`) and a refund-direction edit review.
@@ -194,7 +194,7 @@ export function groupChildHandBacksFromRows(
 }
 
 /**
- * #3949 (`INV-PAY-136`): HAS A MIRROR PLAN'S SHARE BEEN WRITTEN ON THIS CHILD?
+ * #3949 (`INV-PAY-137`): HAS A MIRROR PLAN'S SHARE BEEN WRITTEN ON THIS CHILD?
  * Before #3949 nothing but the organiser cancel moved an organiser-settled
  * child's `refundedAmountCents`, so any figure above zero meant "mirrored".
  * An Internet Banking child's paid-back edit and appeal hand-backs now move it

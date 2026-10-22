@@ -91,37 +91,62 @@ export function canonicalRefundNoteCandidates<
   };
 }
 
+/**
+ * A payment's own refund-note links (`REFUND_CREDIT_NOTE`), active or not, as a
+ * where fragment - the one filter the reads below share, and (#4231) the one
+ * the booking repair's deploy-note SQL is pinned to.
+ */
+export const REFUND_CREDIT_NOTE_LINK_WHERE = {
+  localModel: "Payment",
+  xeroObjectType: "CREDIT_NOTE",
+  role: "REFUND_CREDIT_NOTE",
+} as const satisfies Prisma.XeroObjectLinkWhereInput;
+
 /** The refund-note links of one payment (or several), active or not: the one fetch every reader below shares. */
 async function readRefundNoteLinks(localId: string | { in: string[] }, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
   return (await db.xeroObjectLink.findMany({
-    where: { localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
-    select: { xeroObjectId: true, metadata: true },
+    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, localId },
+    select: { localId: true, xeroObjectId: true, metadata: true, active: true },
   })) ?? [];
 }
 
 /**
  * The payment's refund notes, active or not, in one read on the caller's client:
- * its per-refund notes (#3880), and the notes Xero recorded VOIDED/DELETED,
- * which are never re-adopted as its one refund note (`INV-ADDPAY-041`).
+ * its per-refund notes (#3880), the notes Xero recorded VOIDED/DELETED, which
+ * are never re-adopted as its one refund note (`INV-ADDPAY-041`), and (#4250)
+ * the notes with an active link - all from the same read, so a void landing
+ * meanwhile never shows in one set and not another.
  */
 export async function refundNoteIdSets(
   paymentId: string,
   db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
-): Promise<{ perDelta: Set<string>; cancelled: Set<string> }> {
+): Promise<{ perDelta: Set<string>; cancelled: Set<string>; active: Set<string> }> {
   const links = await readRefundNoteLinks(paymentId, db);
-  const idsWhere = (keep: (metadata: unknown) => boolean) =>
-    new Set(links.filter((link) => keep(link.metadata)).map((link) => link.xeroObjectId));
-  return { perDelta: idsWhere(isPerDeltaRefundNoteLink), cancelled: idsWhere(isRefundCreditNoteLinkCancelledInXero) };
+  const idsWhere = (keep: (link: (typeof links)[number]) => boolean) =>
+    new Set(links.filter(keep).map((link) => link.xeroObjectId));
+  return {
+    perDelta: idsWhere((link) => isPerDeltaRefundNoteLink(link.metadata)),
+    cancelled: idsWhere((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)),
+    active: idsWhere((link) => link.active === true),
+  };
 }
 
-/** `refundNoteIdSets(...).cancelled` for several payments at once (the booking repair's loader). */
-export async function cancelledRefundNoteIds(
+/**
+ * For several payments at once (the booking repair's loader), from one read:
+ * `refundNoteIdSets(...).cancelled`, and (#4231) the payments with any refund
+ * note linked, active or not - a deactivated link is still a note Xero may
+ * hold, so a refund request's own note is never offered beside it.
+ */
+export async function refundNoteSetsForPayments(
   paymentIds: readonly string[],
   db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
-): Promise<Set<string>> {
-  if (paymentIds.length === 0) return new Set();
+): Promise<{ cancelled: Set<string>; notedPaymentIds: Set<string> }> {
+  if (paymentIds.length === 0) return { cancelled: new Set(), notedPaymentIds: new Set() };
   const links = await readRefundNoteLinks({ in: [...paymentIds] }, db);
-  return new Set(links.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)).map((link) => link.xeroObjectId));
+  return {
+    cancelled: new Set(links.filter((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)).map((link) => link.xeroObjectId)),
+    notedPaymentIds: new Set(links.map((link) => link.localId)),
+  };
 }
 
 /**

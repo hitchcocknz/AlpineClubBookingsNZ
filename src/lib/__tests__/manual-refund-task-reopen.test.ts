@@ -486,7 +486,7 @@ describe("reopening a dismissed refund APPEAL hand-back (#3827, D-3813-7, INV-PA
 });
 
 /**
- * #3949 (`INV-PAY-136`): the same two keys on a joiner's booking the group
+ * #3949 (`INV-PAY-137`): the same two keys on a joiner's booking the group
  * organiser paid for by internet banking. The rules are unchanged - the group
  * cancel nets an open edit refund as a member's cancel does - and the refusal
  * names the organiser, whose money it is.

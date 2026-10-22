@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 /**
- * #3949 (`INV-PAY-136`): an edit's or an approved appeal's bank-transfer refund
+ * #3949 (`INV-PAY-137`): an edit's or an approved appeal's bank-transfer refund
  * on a joiner's booking the group organiser paid for by internet banking. The
  * one predicate (`paidByOrganiserInternetBanking`), the route it opens
  * (`group-settlement-mirror`), and the words that name the organiser as the

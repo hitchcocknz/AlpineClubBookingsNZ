@@ -586,7 +586,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     },
     bookingModification: { create: vi.fn().mockResolvedValue({ id: "mod1" }) },
     bookingRequest: { findFirst: vi.fn().mockResolvedValue(null) },
-    payment: { update: vi.fn().mockResolvedValue({}) },
+    // #3980: an edit that read no invoice link claims the payment row.
+    payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     season: {
       findMany: vi.fn().mockResolvedValue([{
         id: "s1",
@@ -1048,8 +1049,9 @@ describe("PUT /api/bookings/[id]/modify-dates — price increase", () => {
     expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(
       expect.objectContaining({ amountCents: 6000, customerId: "cus_new" }),
     );
-    expect(tx.payment.update).toHaveBeenCalledWith({
-      where: { id: "p1" },
+    // #3980: no invoice link was read, so the fee rides the edit's claim on the row.
+    expect(tx.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "p1", xeroInvoiceId: null },
       data: { changeFeeCents: { increment: 1000 } },
     });
     await Promise.resolve();

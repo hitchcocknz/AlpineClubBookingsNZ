@@ -477,7 +477,7 @@ describe("sync lens F1: a refund appeal approved after the organiser cancel leav
     expect(kept(1_000, [task("COMPLETED", appeal, 1_000)])).toBe(2_250);
   });
 
-  // #3949 (`INV-PAY-136`): an IB child's paid-back edit hand-back is in `refundedAmountCents` too,
+  // #3949 (`INV-PAY-137`): an IB child's paid-back edit hand-back is in `refundedAmountCents` too,
   // so it no longer says the plan's share is written; only what is above the paid-back hand-backs does.
   it("#3949: a paid-back edit hand-back never stands in for an unwritten mirror either", () => {
     const edit = "edit-refund-hand-back:m1";

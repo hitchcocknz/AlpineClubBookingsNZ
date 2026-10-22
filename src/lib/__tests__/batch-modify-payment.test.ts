@@ -128,6 +128,8 @@ vi.mock("@/lib/prisma", () => ({
     },
     payment: {
       update: mockPaymentUpdate,
+      // #3980: an edit that read no invoice link claims the payment row.
+      updateMany: vi.fn(async () => ({ count: 1 })),
       // #4036: with no stored customer, the door resolves the booking owner's
       // as the recovery runner does (`readAskMintPayment`, `resolveAskCustomerId`).
       findUnique: vi.fn(async () => ({
@@ -606,6 +608,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     },
     payment: {
       update: vi.fn().mockResolvedValue(undefined),
+      // #3980: an edit that read no invoice link claims the payment row.
+      updateMany: vi.fn(async () => ({ count: 1 })),
       upsert: vi.fn().mockResolvedValue({
         id: booking.payment?.id ?? "pay_zero",
         amountCents: 0,

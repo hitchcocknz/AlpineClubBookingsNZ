@@ -294,7 +294,7 @@ export function bookingModifiedRefundSentence(
     case "own_card_pending":
       return ownCardRefundPendingSentence(amount);
     case "own":
-      // #3949 (`INV-PAY-136`): a joiner's booking the organiser paid by internet banking is refunded to the organiser.
+      // #3949 (`INV-PAY-137`): a joiner's booking the organiser paid by internet banking is refunded to the organiser.
       if (refundByBankTransfer === "organiser") return organiserByHandRefundSentence(amount);
       return refundByBankTransfer === "member" ? bankTransferRefundSentence(amount) : ownCardRefundSentence(amount);
   }
@@ -329,7 +329,7 @@ export function refundRequestApprovedRefundSentence(
    * other booking.
    */
   organiserCardRefund: OrganiserCardAppealRefund | null = null,
-  /** #3949 (`INV-PAY-136`): who the bank-transfer part goes to - the group organiser who paid for the booking by internet banking, or the member. */
+  /** #3949 (`INV-PAY-137`): who the bank-transfer part goes to - the group organiser who paid for the booking by internet banking, or the member. */
   bankTransferPayee: BankTransferRefundPayee = "member",
 ): string {
   if (organiserCardRefund === "organiser_card") return organiserCardRefundSentence(formatAmount(approvedCents));

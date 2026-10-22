@@ -223,7 +223,23 @@ refund cannot carry), and the member's email says the club **will** refund
 them by bank transfer. Pay it and mark it paid back exactly as above. Marking
 it paid back queues that appeal's own Xero refund credit note for the amount
 you paid back; each appeal gets its own note, beside the payment's one refund
-note for its cancellation. While it is open its amount counts as already promised, so a second
+note for its cancellation. A booking with no Xero invoice yet gets no note
+then; once its invoice exists, the booking repair tool reports it (#4231), and
+its report stays even after a credit is raised by hand, because the app cannot
+record one. Where the payment has no cancellation credit note, the officer
+checks this booking's invoice in Xero for a credit already raised for that
+appeal: if there is one, nothing more is needed; if not, the officer confirms
+the tool's offer of the appeal's note by its action key - the tool never raises
+it alone. Where the payment may have a cancellation credit note, it may
+already include the appeal's money, so the officer works in two steps. First,
+always compare that note's lines on the booking's invoice in Xero with the
+cancellation's own refund, and edit it in place if the appeal's money is in it
+(never void it). A note Xero voided, or a create row withdrawn in Xero
+Operations, holds nothing; for one still queued or failed there, wait for it or
+check its amount before going on. Second, raise the appeal's own credit note by
+hand only if no credit for the appeal exists yet.
+
+While the task is open its amount counts as already promised, so a second
 appeal can only be approved for what is left. An appeal's limit also leaves
 out every other task still open on the payment, a cancellation's own
 included, any account credit already given for a bank transfer that
@@ -454,6 +470,11 @@ Nothing is sent to the member and nothing is raised in Xero until you answer:
 
 If the voided note was only a **duplicate** - Xero still has live notes for
 every bank refund on that payment - nothing changes and nothing is asked.
+
+**A card refund's voided note is different** (#4250). Stripe shows the money
+went out, so each night the app raises a fresh credit note for it, even if the
+voided note was one you had marked *Resolved in Xero*. Don't make a replacement
+note by hand as well: Xero would then have two.
 
 A voided note the app cannot match to a single refund (an older note that
 covered several refunds at once, or one whose amount it cannot read) appears on

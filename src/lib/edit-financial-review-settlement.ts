@@ -15,8 +15,12 @@ import { editReviewRefundGoesBackOnCard, editReviewRefundSettlementPayment, hasC
 import {
   chooseEditReviewChargeRoute,
   executeEditReviewCharge,
+  finishEditReviewChargeInvoice,
+  type QueuedEditReviewChargeInvoice,
   type EditReviewChargeRoute,
 } from "@/lib/edit-financial-review-charge";
+// #3947: re-exported so the completion reaches the charge's in-transaction invoice through its one settlement import.
+export { queueEditReviewChargeInvoiceInTransaction } from "@/lib/edit-financial-review-charge";
 import { REVIEW_CHARGE_WRONG_KIND_MESSAGE } from "@/lib/edit-financial-review-charge-refusals";
 import {
   REVIEW_CREDIT_ANCHOR_TAKEN_MESSAGE,
@@ -236,7 +240,7 @@ export type EditReviewSettlementRoute =
    * same Stripe keys.
    */
   | LateCaptureRefundRoute
-  /** #3949 (`INV-PAY-136`): recorded on a group child's payment mirror (`group-settlement-mirror-hand-back.ts`). */
+  /** #3949 (`INV-PAY-137`): recorded on a group child's payment mirror (`group-settlement-mirror-hand-back.ts`). */
   | GroupSettlementMirrorRoute;
 
 /**
@@ -318,7 +322,7 @@ export async function chooseEditReviewSettlementRoute({
     if (task.kind === ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE) {
       await assertLateCaptureHandBackStillOwed({ task, amountCents, store });
     }
-    // #3949 (`INV-PAY-136`): an edit's or appeal's hand-back on a joiner the organiser paid for by bank transfer.
+    // #3949 (`INV-PAY-137`): an edit's or appeal's hand-back on a joiner the organiser paid for by bank transfer.
     const groupMirror = await chooseGroupSettlementMirrorRoute({ task, amountCents, store });
     if (groupMirror) return groupMirror;
     const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null, format: club.format, capacityRace }); // #4097: null unless a card refund shortfall
@@ -411,7 +415,7 @@ export async function chooseEditReviewSettlementRoute({
       : Promise.resolve({ captureCents: amountCents, creditCents: 0 });
 
   // #3949 review: on a joiner the organiser paid for by Internet Banking the share goes to the organiser, onto the
-  // child's mirror (`INV-PAY-136`); a cancelled one is refused by the netting first, as the card twin is.
+  // child's mirror (`INV-PAY-137`); a cancelled one is refused by the netting first, as the card twin is.
   if (settlementPayment !== null && reviewRefundGoesToGroupOrganiser(task)) {
     const reviewMirror = await chooseReviewGroupSettlementMirrorRoute({ task, paymentId: settlementPayment.id, amountCents: (await owed()).captureCents, store });
     if (reviewMirror) return reviewMirror;
@@ -532,6 +536,7 @@ export async function executeEditReviewSettlement({
   bookingPaymentStatus,
   bookingXeroInvoiceId = null,
   format,
+  chargeInvoice = null,
   ...handBackXero
 }: {
   bookingId: string;
@@ -547,6 +552,8 @@ export async function executeEditReviewSettlement({
   bookingPaymentStatus: string | null;
   /** The club's format (#3565), resolved once by the caller, before its transaction. */
   format: ClubFormat;
+  /** #3947: the `invoice` route's invoice, queued inside the completion's transaction. */
+  chargeInvoice?: QueuedEditReviewChargeInvoice | null;
 } & EditReviewHandBackXeroFacts): Promise<{
   stripeRefundId: string | null;
   additionalPaymentIntentId: string | null;
@@ -627,6 +634,23 @@ export async function executeEditReviewSettlement({
       hasIssuedXeroInvoice,
       bookingXeroInvoiceId,
       bookingPaymentStatus,
+    });
+    return { stripeRefundId, additionalPaymentIntentId };
+  }
+
+  // #3947: the `invoice` route's invoice was queued inside the completion's
+  // transaction, so the dispatch below must not restate or enqueue it again;
+  // what is left is the kick and the short-ask record.
+  if (route?.kind === "additional-charge" && route.collectVia === "invoice" && chargeInvoice) {
+    await finishEditReviewChargeInvoice({
+      queued: chargeInvoice,
+      bookingId,
+      taskId,
+      bookingModificationId: route.bookingModificationId,
+      shareCents: amountCents,
+      memberId: route.member?.id ?? null,
+      actingMemberId,
+      format,
     });
     return { stripeRefundId, additionalPaymentIntentId };
   }

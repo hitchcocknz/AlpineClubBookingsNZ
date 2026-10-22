@@ -13,7 +13,7 @@ import { recordBookingEvent } from "@/lib/booking-events";
 import { recordManualRefundTaskClosureAudit } from "@/lib/manual-refund-task-audit";
 import { hasIssuedPrimaryXeroInvoice } from "@/lib/booking-payment-state";
 import { isNonNegativeIntegerCents } from "@/lib/edit-financial-review-context";
-import { chooseEditReviewSettlementRoute, executeEditReviewSettlement, type EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
+import { chooseEditReviewSettlementRoute, executeEditReviewSettlement, queueEditReviewChargeInvoiceInTransaction, type EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
 import { giveBackCancelledShareCredit, writeEditReviewAccountCredit, type EditReviewAccountCreditOutcome } from "@/lib/edit-financial-review-account-credit";
 import { cancelledBookingRefundInvoiceId, queueCancelledBookingHandBackNoteInTransaction, queueRefundRequestCreditNoteInTransaction, refundMethodForEditReviewRoute } from "@/lib/edit-financial-review-xero-leg";
 import { applyGroupSettlementMirrorRefund, isBankTransferHandBackRoute } from "@/lib/group-settlement-mirror-hand-back"; // #3949
@@ -149,7 +149,7 @@ export async function resolveManualRefundTask(
   const clubZone = await readClubTimeZoneOutsideRequest();
   const todayAtClub = clubToday(clubZone);
   const capacityRaceStripe = resolution === "completed" ? await readCapacityRaceStripeRefundedForTask(taskId) : null; // #4154 review (M1): a provider call, so here, bounded
-  const result = await prisma.$transaction(async (tx) => {
+  const { chargeInvoice, ...result } = await prisma.$transaction(async (tx) => { // #3947: chargeInvoice is internal, never returned
     // #3740 (concurrency F1): only the immutable `kind` is read unlocked. An
     // edit review takes lock(1) as this transaction's FIRST lock (INV-LOCK-002)
     // and only then reads what picks its money route, so nothing that route
@@ -535,14 +535,14 @@ export async function resolveManualRefundTask(
         resolution,
         note: trimmedNote,
         todayAtClub,
-        hasIssuedXeroInvoice,
+        hasIssuedXeroInvoice, paymentLinkRead: task.booking.payment ?? null, // #3980 r2 F4: the re-price claims this read
         settlementRoute,
         settlementAmountCents: settledCents,
         settlementDirection: settlement ? settlementDirection : null,
         store: tx,
       });
     }
-
+    const chargeInvoice = settlement ? await queueEditReviewChargeInvoiceInTransaction({ bookingId: task.bookingId, route: settlementRoute, hasIssuedXeroInvoice, createdByMemberId: actingMemberId, store: tx }) : null; // #3947: the invoice route's invoice, queued LAST - its anchor key after every other lock
     await recordManualRefundTaskClosureAudit({
       task,
       resolution,
@@ -644,7 +644,7 @@ export async function resolveManualRefundTask(
         resolution === "completed"
           ? ManualRefundTaskStatus.COMPLETED
           : ManualRefundTaskStatus.DISMISSED,
-      keptLateCaptureXeroPlan,
+      keptLateCaptureXeroPlan, chargeInvoice, // #3947: the invoice route's queued invoice
     };
   });
 
@@ -686,7 +686,7 @@ export async function resolveManualRefundTask(
       cancellationHandBackInvoiceId: result.cancellationHandBackInvoiceId,
       nonCancellationHandBack: result.nonCancellationHandBack,
       refundRequestId: result.refundRequestId,
-      format,
+      format, chargeInvoice,
     });
 
   // #3635: the kept capture's Xero record, after the commit; never returned.

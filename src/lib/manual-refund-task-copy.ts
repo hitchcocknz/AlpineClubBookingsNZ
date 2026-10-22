@@ -334,7 +334,7 @@ export function stillOwedNoticeText(preview: EditReviewStillOwedPreview | null, 
 }
 
 /**
- * #3827, #3949 (`INV-PAY-136`): THE REASON LINE of an edit's refund hand-back
+ * #3827, #3949 (`INV-PAY-137`): THE REASON LINE of an edit's refund hand-back
  * (`INV-PAY-117`) and of an approved appeal's (`INV-PAY-118`), as the finance
  * queue shows it - naming who the bank transfer goes to. A joiner's booking the
  * group organiser paid for by internet banking is refunded to the ORGANISER
@@ -355,7 +355,7 @@ export function refundRequestHandBackReason({ bookingId, payee }: { bookingId: s
 }
 
 /**
- * #3949 (`INV-PAY-136`): the two refusals `INV-PAY-117` gives an edit refund
+ * #3949 (`INV-PAY-137`): the two refusals `INV-PAY-117` gives an edit refund
  * hand-back once its booking is cancelled (dismissing an open one, reopening a
  * dismissed one), on the booking as the door read it. On a joiner's booking the
  * group organiser paid for by internet banking they name the organiser, whose

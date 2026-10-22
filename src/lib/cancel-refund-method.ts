@@ -21,7 +21,7 @@ export function forcedCancelRefundMethod(
   paymentSource: string | null | undefined,
   paidByOrganiserCard = false,
   /**
-   * #3949 (owner decision, 22 Oct 2026; `INV-PAY-136`): `paidByOrganiserInternetBanking`. Its refund goes back to
+   * #3949 (owner decision, 22 Oct 2026; `INV-PAY-137`): `paidByOrganiserInternetBanking`. Its refund goes back to
    * the ORGANISER by bank transfer, as a hand-back task, never as the joiner's account credit.
    */
   paidByOrganiserInternetBanking = false,

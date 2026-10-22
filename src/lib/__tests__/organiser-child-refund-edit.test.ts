@@ -77,7 +77,8 @@ const ORGANISER_OPTIONS: BookingModificationSettlementOptions = {
 
 function txWithSettlement(settlement: Record<string, unknown> | null, groupStatus = "OPEN") {
   return {
-    payment: { update: vi.fn().mockResolvedValue({}) },
+    // #3980: an edit that read no invoice link claims the payment row.
+    payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     // #3949 review round 5: the organiser's group, read by the mid-cancel price-change refusal.
     groupBooking: { findUnique: vi.fn(async () => ({ status: groupStatus })) },
     groupBookingSettlement: { findFirst: vi.fn().mockResolvedValue(settlement) },

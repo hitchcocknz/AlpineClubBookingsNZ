@@ -528,7 +528,7 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "resolveManualRefundTask#1",
     tier: "GLOBAL",
     reason:
-      "#3582: an EDIT_FINANCIAL_REVIEW closure posts booking-ledger lines, and whether the booking is confirmed on the ledger must be asked under the key the settle asks it under, or a closure and a first settle could both see 'not yet' and both post. Taken only for that task kind, as the transaction's first lock — before the claim, the payment-row allocation and the re-price's promotion key — so it orders global before anything narrower as every edit door does; the Stripe refund and the Xero leg run after the commit, so it is never held across a provider round trip. Order: global → member-credit (#3791, account-credit route only). #4042: also taken for a group organiser's hand-back, which each later joiner's claim grows under this key while it is OPEN, so a growth and a completion never interleave. #3949 (INV-PAY-136): an edit's or appeal's hand-back on a joiner the organiser paid for by Internet Banking then takes the child's Payment row (lockPaymentForRefundedTotal) before its cap read and holds it to the mirror write - global, then the row.",
+      "#3582: an EDIT_FINANCIAL_REVIEW closure posts booking-ledger lines, and whether the booking is confirmed on the ledger must be asked under the key the settle asks it under, or a closure and a first settle could both see 'not yet' and both post. Taken only for that task kind, as the transaction's first lock — before the claim, the payment-row allocation and the re-price's promotion key — so it orders global before anything narrower as every edit door does; the Stripe refund and the Xero leg run after the commit, so it is never held across a provider round trip. Order: global → member-credit (#3791, account-credit route only) → the per-anchor xero-supplementary-invoice key LAST (#3947, owner decision 22 Oct 2026: an invoice-route review charge queues its edit's supplementary invoice in this transaction through enqueueEditReviewChargeInvoiceInTransaction, so the next share, behind it on this key, sees it; only the outbox row is written, the kick runs after the commit, and no holder of that key takes another). #4042: also taken for a group organiser's hand-back, which each later joiner's claim grows under this key while it is OPEN, so a growth and a completion never interleave. #3949 (INV-PAY-137): an edit's or appeal's hand-back on a joiner the organiser paid for by Internet Banking then takes the child's Payment row (lockPaymentForRefundedTotal) before its cap read and holds it to the mirror write - global, then the row.",
     invariant: "INV-LOCK-002",
   },
   {
@@ -1247,8 +1247,11 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // fences nothing before the first invoice exists, so the lock is what makes
   // "one invoice per edit" true rather than asserted.
   //
-  // COUNTERPARTS AND ORDER. Single-lock holder, composing with no other family,
-  // and no counterpart writer takes it. TWO callers, and "every caller is
+  // COUNTERPARTS AND ORDER. No holder of it takes any other key, so it is always
+  // the LAST key of its transaction; since #3947 (option 2) one caller composes
+  // it - the review-charge completion's invoice route, inside its lock(1)
+  // transaction, last (`resolveManualRefundTask#1` above). Every other caller
+  // arrives holding nothing, and no counterpart writer takes it. TWO callers, and "every caller is
   // post-commit" was not one of them: the edit-settlement callers reach it
   // post-commit through a fire-and-forget `queueXeroBookingEditSettlement`, while
   // the booking-vs-Xero repair pass (`xero-booking-repair-passes.ts`,

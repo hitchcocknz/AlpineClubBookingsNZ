@@ -4,7 +4,8 @@
  *
  * Why this exists: inbound reconciliation structurally cannot stamp
  * `metadata.status` onto an INACTIVE link — `reconcileXeroCreditNote` reaches
- * a payment's refund links only through ACTIVE links or the scalar pointer,
+ * a payment's refund links only through ACTIVE links or the scalar pointer
+ * (for writing a status; #4291 reads voided inactive mirrors for the recount only),
  * and there is no credit-note cursor — so the population the #2901 repair
  * wants to reactivate (links the pre-fix cleanup deactivated) never gains a
  * recorded status by itself, and the repair rightly refuses to reactivate an

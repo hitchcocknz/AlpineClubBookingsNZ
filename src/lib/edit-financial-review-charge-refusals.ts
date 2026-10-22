@@ -38,7 +38,7 @@ export const REVIEW_CHARGE_ORGANISER_PAID_MESSAGE =
   "The group organiser paid for this booking by card, so the extra amount cannot be charged to the joiner from here. Agree it with the organiser and collect it another way, then dismiss this task with a note recording what was collected and how.";
 
 /**
- * #3949 (`INV-PAY-136`): the same refusal on a joiner's booking the group organiser paid for by Internet Banking. The
+ * #3949 (`INV-PAY-137`): the same refusal on a joiner's booking the group organiser paid for by Internet Banking. The
  * booking's payment is a slice of the organiser's one settlement and the joiner has no invoice of their own, so there
  * is nobody to ask from here. Refused before the claim, beside the card twin's, so the officer reads whose money it
  * is rather than the general no-instrument sentence. Building a way to collect it is an owner decision, not this.
@@ -50,8 +50,10 @@ export const REVIEW_CHARGE_ORGANISER_PAID_BY_BANK_MESSAGE =
  * #3170: the officer said the club is owed, and there is no way to ask for it.
  *
  * The club collects a price increase in exactly two ways: an additional card
- * payment against a captured Stripe payment, or a supplementary invoice on a
- * booking that already has one. A booking with neither has no instrument at all -
+ * payment, when the booking has a card to ask (`canAskCardForReviewCharge`,
+ * which since #3947 includes a settled booking paid wholly with credit), or a
+ * supplementary invoice on a booking whose Xero invoice has been issued. A
+ * booking with neither has no instrument at all -
  * inventing one here would be the fourth settlement mechanism the epic forbids,
  * and pretending the money was collected would be the "claims money moved"
  * failure `INV-PAY-051` exists to stop.

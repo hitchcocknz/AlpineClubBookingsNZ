@@ -57,7 +57,7 @@ export function editRefundGoesBackByHand(adjusted: {
 }
 
 /**
- * #3949 (`INV-PAY-136`): WHO that bank transfer goes to, or null when the
+ * #3949 (`INV-PAY-137`): WHO that bank transfer goes to, or null when the
  * edit's refund is not sent by hand: the member, or the group organiser who
  * paid for the booking by internet banking (`bankTransferRefundPayee`). The
  * one answer the hand-back's reason and the "Booking Modified" email share.
@@ -70,7 +70,7 @@ export function editRefundBankTransferPayee(
 }
 
 /**
- * #3949 review round 4 (`INV-PAY-136`): a refund to the group organiser is never RAISED on a child while the
+ * #3949 review round 4 (`INV-PAY-137`): a refund to the group organiser is never RAISED on a child while the
  * organiser's group cancel is between its plan and this child's claim (`groupCancelInProgress`): the plan froze the
  * child's share net of the hand-backs then open and pays it whole at the claim, so a new one would pay the organiser
  * twice. The child's status is read here under the caller's `lock(1)`. Throws, so the edit or the approval rolls back
@@ -261,7 +261,7 @@ export async function assertByHandReviewRefundWithinUnpromisedCash(
 }
 
 /**
- * #3949 (`INV-PAY-136`): an edit's or an approved appeal's hand-back on a
+ * #3949 (`INV-PAY-137`): an edit's or an approved appeal's hand-back on a
  * joiner's booking the organiser paid for by internet banking completes onto
  * the child's mirror (`group-settlement-mirror-hand-back.ts`), which no
  * `PaymentTransaction` backs, so the ledger cap inside

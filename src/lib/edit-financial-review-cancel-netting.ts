@@ -271,7 +271,7 @@ export async function capturedShareOwedAfterCancellation({
     select: { organiserSettled: true, parentBookingId: true, payment: { select: { source: true } } },
   });
   // #3949 review: so is one the organiser paid for by Internet Banking - its cancellation froze no figures to net
-  // against, and no part of its share may become the joiner's credit (`INV-PAY-136`).
+  // against, and no part of its share may become the joiner's credit (`INV-PAY-137`).
   if (paidByOrganiserCard(owner)) throw new ManualBookingPaymentError(REVIEW_CANCELLATION_ORGANISER_PAID_MESSAGE, 409);
   if (paidByOrganiserInternetBanking(owner)) throw new ManualBookingPaymentError(REVIEW_CANCELLATION_ORGANISER_PAID_BY_BANK_MESSAGE, 409);
   const cancelled = await store.bookingEvent.findFirst({

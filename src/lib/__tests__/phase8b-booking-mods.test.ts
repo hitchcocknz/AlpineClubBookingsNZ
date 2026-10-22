@@ -89,6 +89,8 @@ vi.mock("@/lib/prisma", () => ({
     season: { findMany: mockFindMany },
     payment: {
       update: mockUpdate,
+      // #3980: an edit that read no invoice link claims the payment row.
+      updateMany: vi.fn(async () => ({ count: 1 })),
       // #4036: with no stored customer, the door reads the owner after commit
       // and resolves the customer as the recovery runner does.
       findUnique: vi.fn(async () => ({
@@ -539,6 +541,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
     },
     payment: {
       update: vi.fn().mockResolvedValue({}),
+      // #3980: an edit that read no invoice link claims the payment row.
+      updateMany: vi.fn(async () => ({ count: 1 })),
       upsert: vi.fn().mockResolvedValue({ id: "p1" }),
     },
     paymentTransaction: {
@@ -1555,6 +1559,69 @@ describe("POST /api/bookings/[id]/guests", () => {
       }),
     );
     expect(fullPartyCall?.[2]?.lockedNightPrices ?? []).toEqual([]);
+  });
+
+  /** #3980: an add on a booking whose primary invoice is not linked yet. */
+  async function addGuestToUnlinkedBooking(claimCount: number) {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking({ payment: { ...makeBooking().payment, xeroInvoiceId: null } });
+    const tx = makeTx(booking);
+    tx.payment.updateMany.mockResolvedValue({ count: claimCount });
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCheckCapacity.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] } as any);
+    mockedCheckCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] } as any);
+    mockedCalcPrice.mockImplementation(((_ci: unknown, _co: unknown, guests: unknown[]) => ({
+      totalPriceCents: guests.length * 5000,
+      guests: guests.map(() => ({ priceCents: 5000, perNightCents: [2500, 2500], nightDates: [] })),
+    })) as any);
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests", {
+      method: "POST",
+      body: JSON.stringify({ guests: [{ firstName: "New", lastName: "Guest", ageTier: "ADULT", isMember: false }] }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ id: "bk1" }) });
+    return { res, tx };
+  }
+
+  it("#3980: an add that read no invoice link claims the payment row and marks its history row", async () => {
+    const { res, tx } = await addGuestToUnlinkedBooking(1);
+    expect(res.status).toBe(200);
+    // A guest add records no fee: the claim only takes the row.
+    expect(tx.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "p1", xeroInvoiceId: null },
+      data: { changeFeeCents: { increment: 0 } },
+    });
+    const created = tx.bookingModification.create.mock.calls.at(-1)?.[0]?.data;
+    expect(created.modificationType).toBe("GUEST_ADD");
+    expect(created.newData).toMatchObject({ primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true } });
+  });
+
+  it("#3980: MUTATION - an add whose invoice link was saved under it is refused whole with the try-again 409", async () => {
+    const { PRIMARY_INVOICE_RAISED_DURING_EDIT_MESSAGE } = await import("@/lib/booking-primary-invoice-claim");
+    const { res, tx } = await addGuestToUnlinkedBooking(0);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ error: PRIMARY_INVOICE_RAISED_DURING_EDIT_MESSAGE });
+    expect(tx.bookingModification.create).not.toHaveBeenCalled();
+  });
+
+  it("#3980: an add that read the invoice link claims nothing", async () => {
+    mockedAuth.mockResolvedValue({ user: { id: "m1", role: "MEMBER", accessRoles: [{ role: "USER" }] } } as any);
+    const booking = makeBooking();
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCheckCapacity.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] } as any);
+    mockedCheckCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] } as any);
+    mockedCalcPrice.mockImplementation(((_ci: unknown, _co: unknown, guests: unknown[]) => ({
+      totalPriceCents: guests.length * 5000,
+      guests: guests.map(() => ({ priceCents: 5000, perNightCents: [2500, 2500], nightDates: [] })),
+    })) as any);
+    const req = new NextRequest("http://localhost/api/bookings/bk1/guests", {
+      method: "POST",
+      body: JSON.stringify({ guests: [{ firstName: "New", lastName: "Guest", ageTier: "ADULT", isMember: false }] }),
+    });
+    const res = await POST(req, { params: Promise.resolve({ id: "bk1" }) });
+    expect(res.status).toBe(200);
+    expect(tx.payment.updateMany).not.toHaveBeenCalled();
+    expect(tx.bookingModification.create.mock.calls.at(-1)?.[0]?.data.newData).not.toHaveProperty("primaryInvoiceSettlement");
   });
 
   it("moves a pending booking to PAYMENT_PENDING and clears the hold when the policy is disabled on add (#1287)", async () => {

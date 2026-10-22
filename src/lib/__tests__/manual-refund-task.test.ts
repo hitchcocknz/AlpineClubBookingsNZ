@@ -384,6 +384,8 @@ const tx = {
     findUnique: (...a: unknown[]) => mocks.txPaymentFindUnique(...a),
     // #3949: the group child's mirror, re-read under its row lock before the write.
     findUniqueOrThrow: (...a: unknown[]) => mocks.txPaymentFindUnique(...a),
+    // #3980 review round 2 F4: a re-price claims the closure's unlinked invoice.
+    updateMany: vi.fn().mockResolvedValue({ count: 1 }),
   },
   // #3219: the booking's OWN history, which is where a re-base has to be
   // readable from - D1 lets a later cancellation refund less than the member
@@ -5379,7 +5381,7 @@ describe("#3880 - a review's refund on a cancelled booking reaches Xero as the c
 });
 
 /**
- * #3949 (`INV-PAY-136`): an edit's or an approved appeal's hand-back on a
+ * #3949 (`INV-PAY-137`): an edit's or an approved appeal's hand-back on a
  * joiner's booking the group organiser paid for by internet banking. The
  * child's payment is the settle's mirror, with no `PaymentTransaction`, so the
  * completion records the refund on the mirror (lock(1), then the Payment row)

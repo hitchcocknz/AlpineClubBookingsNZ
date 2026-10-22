@@ -5,7 +5,7 @@ import { ORGANISER_CANCEL_ACTIVE_CHILD_STATUSES } from "@/lib/booking-status";
 import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 
 /**
- * #3949 (`INV-PAY-136`, review rounds 3 and 4): IS THE ORGANISER'S GROUP CANCEL BETWEEN ITS PLAN AND THIS CHILD'S
+ * #3949 (`INV-PAY-137`, review rounds 3 and 4): IS THE ORGANISER'S GROUP CANCEL BETWEEN ITS PLAN AND THIS CHILD'S
  * CLAIM? The cancel fences the group CANCELLED under `lock(1)`, then freezes each child's refund outside it from the
  * payment as it stood, net of the hand-backs then open, and books that whole planned share - on the mirror, the
  * ledger and the organiser's hand-back - when it claims the child under `lock(1)`. Until that claim (or the reaper's
@@ -46,7 +46,7 @@ export class GroupCancelInProgressError extends ApiError {
 }
 
 /**
- * #3949 review rounds 5-6 (`INV-PAY-136`): the refusal a price change of a joiner's booking the organiser paid for by
+ * #3949 review rounds 5-6 (`INV-PAY-137`): the refusal a price change of a joiner's booking the organiser paid for by
  * Internet Banking meets while the organiser's group cancel is part-way through, whatever settlement the edit chose -
  * account credit included - because the cancel froze this child's refund from the price as it stood; or null. The
  * price change and the change fee are each tested on their own: a cut a fee nets to zero still changes the price.

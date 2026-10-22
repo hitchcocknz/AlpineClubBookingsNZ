@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
- * #3949 (owner decision, 22 Oct 2026; `INV-PAY-136`): a joiner cancelling a
+ * #3949 (owner decision, 22 Oct 2026; `INV-PAY-137`): a joiner cancelling a
  * place the group organiser paid for by internet banking is refunded to the
  * ORGANISER by bank transfer, tiered on the CARD tiers as every refund to the
  * organiser is - never on the credit tiers an internet banking payment of the

@@ -177,7 +177,7 @@ export type OpenManualRefundTaskPayload = {
    */
   refundRequestHandBack: boolean;
   /**
-   * #3949 (`INV-PAY-136`): either of those two, or the joiner's own cancellation's
+   * #3949 (`INV-PAY-137`): either of those two, or the joiner's own cancellation's
    * hand-back (`isGroupSettlementMirrorHandBackKind`), or a review whose refund
    * the chooser sends there (`reviewRefundGoesToGroupOrganiser`), on a joiner's booking the
    * group organiser paid for by Internet Banking, so the money goes back to the

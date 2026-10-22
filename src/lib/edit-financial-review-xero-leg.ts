@@ -573,10 +573,10 @@ export async function dispatchEditReviewXeroSettlement({
     // so a charge passes null and lets the positive delta speak for itself
     // rather than handing the credit-note arm an amount it must not use.
     settlementAmountCents: isCharge ? null : ask.amountCents,
-    // #3170: the supplementary invoice waits for the additional payment when
-    // there is one to wait for, which is the ordinary price-increase
-    // arrangement. On the `invoice` route no intent exists and the
-    // supplementary invoice IS the ask, so it is raised unpaid.
+    // #3170: the supplementary invoice waits for the card request, the ordinary
+    // price-increase arrangement. #3947: the `invoice` route's invoice (the ask,
+    // raised unpaid) is queued inside the completion instead and skips this leg
+    // (`queueEditReviewChargeInvoiceInTransaction`); false here only without one.
     requiresAdditionalStripePayment: isCharge && route.collectVia === "stripe",
     additionalPaymentIntentId,
   })

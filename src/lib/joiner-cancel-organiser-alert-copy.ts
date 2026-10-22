@@ -1,5 +1,5 @@
 /**
- * #3949 (`INV-PAY-136`; owner decision, 22 Oct 2026): the officers' "Manual
+ * #3949 (`INV-PAY-137`; owner decision, 22 Oct 2026): the officers' "Manual
  * refund needed" wording when a joiner cancels their own place in a group the
  * organiser paid for by Internet Banking. Its refund goes back to the
  * ORGANISER by bank transfer, as a hand-back task. Pure, so the HTML template

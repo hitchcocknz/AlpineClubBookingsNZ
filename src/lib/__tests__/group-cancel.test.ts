@@ -1453,7 +1453,7 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
     });
   });
 
-  // #3949 (`INV-PAY-136`): an Internet Banking child's paid-back edit or appeal
+  // #3949 (`INV-PAY-137`): an Internet Banking child's paid-back edit or appeal
   // hand-back moves its refunded total too, so "above zero" is no longer
   // "mirrored": the replay asks it net of those hand-backs, under the Payment row.
   it("mirrors a child whose total only a paid-back hand-back moved, and skips one whose plan share is written beside it (#3949)", async () => {

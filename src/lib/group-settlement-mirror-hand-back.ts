@@ -21,7 +21,7 @@ import type { ClubFormat } from "@/lib/club-format";
 import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-settlement";
 
 /**
- * #3949 (`INV-PAY-136`; owner decisions on #3949, 15 and 21 Oct 2026): AN
+ * #3949 (`INV-PAY-137`; owner decisions on #3949, 15 and 21 Oct 2026): AN
  * EDIT'S OR AN APPROVED APPEAL'S BANK-TRANSFER REFUND ON A JOINER'S BOOKING THE
  * GROUP ORGANISER PAID FOR BY INTERNET BANKING.
  *
@@ -57,7 +57,7 @@ import type { EditReviewSettlementRoute } from "@/lib/edit-financial-review-sett
  */
 
 /**
- * #3949 (`INV-PAY-136`): DID THIS COMPLETION SEND MONEY BACK BY BANK TRANSFER,
+ * #3949 (`INV-PAY-137`): DID THIS COMPLETION SEND MONEY BACK BY BANK TRANSFER,
  * recorded inside its own transaction? The ordinary hand-back
  * (`local-allocation`, on the payment's transactions) and a group child's
  * (`group-settlement-mirror`, on its mirror) alike: both post the
@@ -239,7 +239,7 @@ export async function applyGroupSettlementMirrorRefund({
 }
 
 /**
- * #3949 (`INV-PAY-136`): A GROUP CHILD'S MIRROR, AS THE ORGANISER CANCEL'S
+ * #3949 (`INV-PAY-137`): A GROUP CHILD'S MIRROR, AS THE ORGANISER CANCEL'S
  * RECOVERY REPLAY READS IT. Before #3949 only the cancel moved such a child's
  * `refundedAmountCents`, so the replay read "zero" as "the plan's share is not
  * written yet". A paid-back edit or appeal hand-back now moves it too, so the
@@ -278,7 +278,7 @@ export async function readGroupChildMirrorForPlanReplay(
 }
 
 /**
- * #3949 review M1 (`INV-PAY-136`): THE APP RAISES NO XERO NOTE FOR SUCH A
+ * #3949 review M1 (`INV-PAY-137`): THE APP RAISES NO XERO NOTE FOR SUCH A
  * REFUND, SO IT TELLS THE TREASURER TO. A joiner's booking the organiser paid
  * for by Internet Banking has no invoice of its own: the money was taken on the
  * group's ONE combined invoice, addressed to the organiser. The refund note

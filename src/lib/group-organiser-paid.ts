@@ -85,7 +85,7 @@ export function paidByOrganiserCard(booking: {
 }
 
 /**
- * #3949 (`INV-PAY-136`): a joiner's booking the organiser paid for BY INTERNET
+ * #3949 (`INV-PAY-137`): a joiner's booking the organiser paid for BY INTERNET
  * BANKING - an organiser-settled child whose payment mirror came from the
  * group's one bank-transfer invoice. The settle writes the child's mirror with
  * the settlement's source and no `PaymentTransaction` of its own, exactly as
@@ -110,7 +110,7 @@ export function paidByOrganiserInternetBanking(booking: {
 }
 
 /**
- * #3949 review round 5 (`INV-PAY-114`, `INV-PAY-136`): a joiner's booking the
+ * #3949 review round 5 (`INV-PAY-114`, `INV-PAY-137`): a joiner's booking the
  * group organiser paid for, by card or by Internet Banking - the one test for
  * "its money back is the organiser's, never the joiner's account credit". A
  * reduction's options then offer the organiser's one disposition

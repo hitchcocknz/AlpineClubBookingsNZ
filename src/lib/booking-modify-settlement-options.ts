@@ -16,7 +16,12 @@ import {
   type CancellationPolicyDb,
 } from "@/lib/cancellation";
 import { hasCapturedPayment, isSettledBookingStatus } from "@/lib/booking-payment-state";
-import { type LoadedBookingForModify } from "@/lib/booking-modify-validation";
+import {
+  type BookingModificationSettlementMethod,
+  type LoadedBookingForModify,
+} from "@/lib/booking-modify-validation";
+import { ApiError } from "@/lib/api-error";
+import { BookingModificationSettlementMethodRequiredError } from "@/lib/booking-modify-settlement-required";
 import {
   refundableCashNetOfOpenHandBacks,
   type OpenNonCancellationHandBackDb,
@@ -216,5 +221,68 @@ export function calculateFullReductionSettlementOptions({
     requiresSettlementMethod: true,
     returnsToOrganiser: false,
     organiserRefundByBankTransfer: false,
+  };
+}
+
+/**
+ * The refund or credit an edit's chosen settlement takes of its options. Moved
+ * verbatim from `booking-modify-settlement.ts` (#3980, its size budget); its one
+ * caller is `applyPaymentAdjustments`.
+ */
+export function resolveSelectedSettlementAmount({
+  settlementOptions,
+  settlementMethod,
+}: {
+  settlementOptions: BookingModificationSettlementOptions | null | undefined;
+  settlementMethod: BookingModificationSettlementMethod | undefined;
+}) {
+  if (!settlementOptions) {
+    return {
+      settlementMethod: null,
+      amountCents: 0,
+      policyRetainedAmountCents: 0,
+    };
+  }
+
+  if (settlementOptions.returnsToOrganiser) {
+    if (settlementMethod === "credit") {
+      throw new ApiError(
+        "This booking was paid for by the group organiser, so a reduction goes back to the organiser and cannot be held as account credit.",
+        400,
+      );
+    }
+    const amountCents = settlementOptions.cardRefundAmountCents;
+    return {
+      settlementMethod: amountCents > 0 ? ("card" as const) : null,
+      amountCents,
+      policyRetainedAmountCents: Math.max(0, settlementOptions.basisAmountCents - amountCents),
+    };
+  }
+
+  if (settlementOptions.requiresSettlementMethod && !settlementMethod) {
+    throw new BookingModificationSettlementMethodRequiredError();
+  }
+
+  if (!settlementOptions.requiresSettlementMethod) {
+    return {
+      settlementMethod: null,
+      amountCents: 0,
+      policyRetainedAmountCents: settlementOptions.basisAmountCents,
+    };
+  }
+
+  const resolvedMethod = settlementMethod ?? "card";
+  const amountCents =
+    resolvedMethod === "credit"
+      ? settlementOptions.accountCreditAmountCents
+      : settlementOptions.cardRefundAmountCents;
+
+  return {
+    settlementMethod: resolvedMethod,
+    amountCents,
+    policyRetainedAmountCents: Math.max(
+      0,
+      settlementOptions.basisAmountCents - amountCents,
+    ),
   };
 }

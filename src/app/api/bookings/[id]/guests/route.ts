@@ -73,6 +73,7 @@ import {
 } from "@/lib/additional-payment-ask";
 import { foldWaitingReissuedAsks } from "@/lib/additional-ask-reissue";
 import { NO_FOLDED_REISSUED_ASKS, NO_UNPAID_ASK_SETTLEMENT, unpaidAskOffsetHistory, type FoldedReissuedAsks } from "@/lib/unpaid-ask-offset-marker";
+import { primaryInvoiceSettlementHistory, writeEditOnPayment } from "@/lib/booking-primary-invoice-claim";
 import { additionalAmountToName, createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import logger from "@/lib/logger";
 import { requiredNightPriceCents } from "@/lib/required-price-cents";
@@ -1087,6 +1088,10 @@ export async function POST(
         additionalAmountCents = priceDiffCents;
       }
 
+      // #3980 (`INV-PAY-136`): this door settles for itself, so it makes the edits'
+      // one payment write itself (no fee: an add charges none); 409 if the link moved.
+      const settledAgainstPrimaryInvoice = await writeEditOnPayment(tx, { payment: booking.payment, changeFeeCents: 0 });
+
       // This route only adds guests, so the no-adult rule can only change
       // from flagged → cleared (by adding an adult). When that happens, wipe
       // the review state IN PLACE: the booking keeps its status. It cannot be
@@ -1227,6 +1232,7 @@ export async function POST(
             ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),
             // #3954 round 6: the waiting re-issues this add folded into its ask.
             ...unpaidAskOffsetHistory({ ...NO_UNPAID_ASK_SETTLEMENT, foldedReissuedAsks }),
+            ...primaryInvoiceSettlementHistory({ settledAgainstPrimaryInvoice }), // #3980: the gap's anchor
           },
           priceDiffCents,
           changeFeeCents: 0,

@@ -1,10 +1,8 @@
 import "server-only";
 
-import { PaymentSource } from "@prisma/client";
-
 import { raiseReviewChargeAsk, sizeReviewChargeAsk } from "@/lib/additional-payment-ask";
 import { reissueRaisedAskIfCurrencyChanged } from "@/lib/additional-intent-currency";
-import { hasCapturedPayment } from "@/lib/booking-payment-state";
+import { canAskCardForReviewCharge } from "@/lib/booking-payment-state";
 import { createModificationAdditionalPaymentIntent } from "@/lib/booking-modification-settlement";
 import type { ClubFormat } from "@/lib/club-format";
 import { recordCarriedEditReviewChargeBalance } from "@/lib/edit-financial-review-carried-balance";
@@ -493,16 +491,20 @@ async function syncEditReviewChargeRequestUnderClaim(
   }
 
   // No request yet: mint through the same function every ordinary booking-edit
-  // price increase uses. Its guard on a captured card payment is answered with
-  // the payment as it stands NOW, re-read after the commit, rather than with a
-  // literal `true` - a constant there would make the minter's own guard
-  // permanently dead for this caller, which is the opposite of letting it remain
-  // the one definition.
+  // price increase uses. Its guard on a card to ask is answered with the
+  // payment AND its booking's status as they stand NOW, re-read after the
+  // commit, rather than with a literal `true` - a constant there would make the
+  // minter's own guard permanently dead for this caller, which is the opposite
+  // of letting it remain the one definition.
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
     select: {
       id: true,
       status: true,
+      // #3947: half of `canAskCardForReviewCharge`, the question the route
+      // chooser asked before the claim. Read here rather than carried, for the
+      // same reason as the payment: the guard answers for the booking now.
+      booking: { select: { status: true } },
       amountCents: true,
       refundedAmountCents: true,
       source: true,
@@ -538,8 +540,13 @@ async function syncEditReviewChargeRequestUnderClaim(
       pendingRefundAmountCents: 0, organiserChildRefund: null,
       paymentId, memberFirstName: "", // #3369: mints an ask, sends nothing.
       additionalAsk: ask, retiredAdditionalAsks: [], // #3954: a review charge retires nothing by reduction.
-      hasSucceededPayment:
-        hasCapturedPayment(payment) && payment?.source === PaymentSource.STRIPE,
+      // #3947: the chooser's own question (`chooseEditReviewChargeRoute`), so a
+      // credit-paid ($0) booking routed to the card is minted for, not left to a
+      // replay that reports `not-raised` until its recovery row dies FAILED.
+      hasSucceededPayment: canAskCardForReviewCharge({
+        status: payment?.booking.status ?? "",
+        payment,
+      }),
       paymentCustomerId: payment?.stripeCustomerId ?? null,
       memberEmail: member?.email ?? "",
       memberName: member?.name ?? "",

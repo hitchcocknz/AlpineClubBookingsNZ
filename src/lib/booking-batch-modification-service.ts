@@ -159,11 +159,13 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
+import { primaryInvoiceSettlementHistory } from "@/lib/booking-primary-invoice-claim";
 import {
   assertFinishedStayCorrectionCall,
   classifyFinishedStayChangeFeeRule,
   finishedStayNoticeDay,
   finishedStayRemovalFeeCents,
+  FINISHED_STAY_INVOICE_RAISED_MESSAGE,
   recordFinishedStayFeeOwed,
   finishedStayRemovedPortion,
   loadRemovalPromoRows,
@@ -1853,6 +1855,8 @@ export async function modifyBookingBatch({
       reductionUntiered: finishedStayRemovalCharged,
       // #3954 x #3750: recorded once, below, by `recordFinishedStayFeeOwed`.
       changeFeeRecordedByCaller: feeAddedToAmountOwed,
+      // #3980: an officer approves a correction again rather than retrying it.
+      ...(finishedStayCorrection ? { primaryInvoiceRaisedMessage: FINISHED_STAY_INVOICE_RAISED_MESSAGE } : {}),
     });
     if (feeAddedToAmountOwed) {
       // Owner decision (7 Oct 2026, "Add fee to amount owed"): recorded where
@@ -2109,6 +2113,7 @@ export async function modifyBookingBatch({
           ...creditGiveBackHistory(payments.appliedCreditGiveBack),
           // #3954: what an unpaid ask took of this reduction, for the Xero repair pass.
           ...unpaidAskOffsetHistory(payments),
+          ...primaryInvoiceSettlementHistory(payments), // #3980: the gap's anchor
           // #2266: what this edit did to the stored credit election (#2265),
           // recorded whenever the request carried a credit input — the
           // member's booking history reads it back.
