@@ -413,6 +413,11 @@ Nothing is sent to the member and nothing is raised in Xero until you answer:
 If the voided note was only a **duplicate** - Xero still has live notes for
 every bank refund on that payment - nothing changes and nothing is asked.
 
+**A card refund's voided note is different** (#4250). Stripe shows the money
+went out, so each night the app raises a fresh credit note for it, even if the
+voided note was one you had marked *Resolved in Xero*. Don't make a replacement
+note by hand as well: Xero would then have two.
+
 A voided note the app cannot match to a single refund (an older note that
 covered several refunds at once, or one whose amount it cannot read) appears on
 **Stuck States** under **Voided bank refund notes to answer**

@@ -404,12 +404,8 @@ export async function classifyVoidedBankRefundNote(db: Reader, linkId: string): 
   const handBackCents = handBackLines.reduce((sum, line) => sum + lineCents(line), 0);
 
   // The spare check: Xero still records every bank hand-back and card refund.
-  // A note resolved by hand whose own note Xero voided covers nothing (review, money 1).
-  const resolved = await readResolvedRefundCreditNoteCoverage(
-    paymentId,
-    db,
-    cancelledNoteIds.length > 0 ? { OR: [{ xeroObjectId: null }, { xeroObjectId: { notIn: cancelledNoteIds } }] } : undefined,
-  );
+  // A note resolved by hand whose own note Xero voided covers nothing (review, money 1; the helper's rule, #4250).
+  const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, db);
   if (resolved.unreadableOperationIds.length > 0) return unmatched("coverage-unknown");
   const coverageCents = await sumRefundCreditNoteCoverageCents(paymentId, resolved, db);
   const requiredCents = handBackCents + (await cardRefundCashCents(db, payment));
@@ -480,17 +476,14 @@ const NOTE_TASK_KEYS = ["handBackTaskId", "reviewTaskId", "paidAnotherWayTaskId"
  * if any, does not already name it). A line those notes still cover was not
  * the voided note's, so it is never picked.
  */
-async function taskNoteCoverageCents(db: Reader, paymentId: string, taskId: string, cancelledNoteIds: readonly string[]): Promise<number> {
+async function taskNoteCoverageCents(db: Reader, paymentId: string, taskId: string): Promise<number> {
   const namesTask: Prisma.XeroSyncOperationWhereInput = { OR: NOTE_TASK_KEYS.map((key) => ({ requestPayload: { path: [key], equals: taskId } })) };
   // A row closed as covered by another hand-back's note minted nothing: that note is not this task's.
   const namingRows = (await db.xeroSyncOperation.findMany({ where: { localModel: "Payment", localId: paymentId, ...namesTask }, select: { id: true, responsePayload: true } })) ?? [];
   const coveredByOtherIds = namingRows.filter(isCoveredByExistingNoteRow).map((row) => row.id);
   const rowsWhere: Prisma.XeroSyncOperationWhereInput = {
     ...namesTask,
-    AND: [
-      ...(coveredByOtherIds.length > 0 ? [{ id: { notIn: coveredByOtherIds } }] : []),
-      ...(cancelledNoteIds.length > 0 ? [{ OR: [{ xeroObjectId: null }, { xeroObjectId: { notIn: [...cancelledNoteIds] } }] }] : []),
-    ],
+    ...(coveredByOtherIds.length > 0 ? { AND: [{ id: { notIn: coveredByOtherIds } }] } : {}),
   };
   const fromRows = await sumRefundCreditNoteCoverageOfRowsCents(paymentId, rowsWhere, db);
   const handMade =
@@ -515,8 +508,7 @@ async function taskNoteCoverageCents(db: Reader, paymentId: string, taskId: stri
 
 /** How much of this hand-back line's refund its own task's live notes still record, at most the line's refund (money B). */
 async function lineOwnLiveCoverageCents(db: Reader, paymentId: string, line: PostedSettlementLine): Promise<number> {
-  const cancelledNoteIds = [...(await refundNoteIdSets(paymentId, db)).cancelled];
-  return Math.min(lineCents(line), await taskNoteCoverageCents(db, paymentId, line.anchorId, cancelledNoteIds));
+  return Math.min(lineCents(line), await taskNoteCoverageCents(db, paymentId, line.anchorId));
 }
 
 /**
