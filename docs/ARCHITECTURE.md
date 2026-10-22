@@ -2026,12 +2026,20 @@ settlement moved the booking to PAID: the card capture, or the cash or bank
 receipt's PRIMARY row. The PAID claim writes it under `lock(1)`, in the claim's
 own transaction (the card and manual settle in `payment-reconciliation.ts`, the
 Xero bank-receipt settle in `xero-inbound/invoice-paid-effects.ts`, both through
-`src/lib/payment-settler.ts`); the manual mark-paid reversal clears it. NULL
-means not recorded: paid before the column existed, by the draining old colour,
-or by a path no transaction of this payment settles (zero cash, an organiser's
-group settlement). The duplicate-capture guard (`duplicate-capture-guard.ts`)
-never refunds the recorded settler, and with no record it refunds nothing new and
-emails the admins; the Xero second-instrument conflict names it first
+`src/lib/payment-settler.ts`, the only module that writes it); the manual
+mark-paid reversal clears it. The bank receipt is recorded only when exactly one
+receipt row holds money. NULL means not recorded: paid before the column
+existed, by the draining old colour, by a bank receipt with no single receipt
+row, or by a PAID transition no transaction of this payment settles - the
+zero-cash confirmations (create, confirm-draft, waitlist confirm,
+confirm-pending-guests, the cron's zero-amount confirm), the fully
+credit-covered settle (`booking-credit-election.ts`), the $0 auto-pay after an
+edit (`booking-modify-settlement.ts`) and an organiser's group settlement. The
+duplicate-capture guard (`duplicate-capture-guard.ts`) never refunds the
+recorded settler; with no usable record it refunds nothing new, returns
+`duplicate_capture_kept` and sends the unmuteable `admin-duplicate-capture-kept`
+alert when another payment holds money, and keeps a stray capture silently when
+nothing else does. The Xero second-instrument conflict names it first
 (`INV-PAY-043`). It has no foreign key, because the guard re-reads the row and
 trusts it only while it still holds money on this payment.
 

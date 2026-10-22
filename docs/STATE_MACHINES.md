@@ -1711,9 +1711,10 @@ bank receipt's PRIMARY row. The manual mark-paid reversal clears it.
 ```text
 recorded settler arrives again             -> already_paid, never refunded
 other capture arrives, settler holds cash  -> duplicate refund (below)
-no usable record, another capture holds    -> already_paid, kept; admins
-  cash (paid before #4211, or by the          emailed to check by hand, once
-  draining colour)                            a day per capture
+no usable record, another capture holds    -> duplicate_capture_kept: kept,
+  cash (paid before #4211, by the draining    nothing refunded; unmuteable
+  colour, or a settler that no longer holds   admin-duplicate-capture-kept
+  money)                                      alert, once a day per capture
 ```
 
 A success carrying a DIFFERENT intent while the recorded settler still holds

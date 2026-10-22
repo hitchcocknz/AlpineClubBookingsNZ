@@ -18,7 +18,9 @@
 
   Bookings paid before this release have no record. For those, when a card
   payment arrives while another payment on the booking still holds money,
-  nothing is refunded automatically: the admins get an email asking them to
-  check which payment to refund by hand. Nothing goes back through past
+  nothing is refunded automatically: the admins get an email that cannot be
+  muted, asking them to check which payment to refund by hand. Before this
+  release such a payment was refunded automatically; on a booking with no
+  record it now waits for an admin. Nothing goes back through past
   bookings. Deploy note: the column is additive, and a booking the old colour
   settles during the switch is treated as paid before this release.

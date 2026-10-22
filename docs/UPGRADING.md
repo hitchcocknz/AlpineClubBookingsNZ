@@ -135,12 +135,21 @@ one never is.
 have no record. The old colour does not know the column, so a booking it
 settles stays unrecorded. For those bookings, if a card payment arrives while
 another payment on the booking still holds money, the app keeps it, refunds
-nothing, and emails the admins (as a payment alert) to check which payment
-settled the booking and refund the other by hand. The same email repeats at
-most once a day per payment while Stripe re-sends the event.
+nothing, and sends the admins a *"Booking may have been paid twice — check by
+hand"* alert that cannot be muted. The same email repeats at most once a day
+per payment while the payment repeats - a Stripe redelivery, or a reconcile or
+cron re-run. A payment the app had already started refunding as a duplicate
+still finishes its own refund.
 
-**No action is needed.** Nothing goes back through past bookings. Expect the
-alert only on a booking already paid twice.
+**During the switch the old colour still refunds automatically**, by the rule
+it shipped with, and on a repeat of the real payment it can refund that one.
+So before refunding anything by hand, check in Stripe that neither payment has
+already been refunded; the alert says so too.
+
+**What admins will notice.** Before this release a second card payment on a
+paid booking was refunded automatically. On a booking with no record it now
+waits for an admin to decide. Nothing goes back through past bookings, and the
+alert only comes for a booking that is already holding two payments.
 
 ### Count voided bank-transfer refund notes, then switch the follow-up on (#4162)
 
