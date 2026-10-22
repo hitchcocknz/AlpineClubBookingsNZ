@@ -121,7 +121,7 @@ as a red flag and check the release notes before deploying.
 
 ### The app records which payment settled each booking (#4211)
 
-`20261119020000_payment_settled_by_transaction` adds one nullable column,
+`20261121010000_payment_settled_by_transaction` adds one nullable column,
 `Payment.settledByTransactionId`. It is **additive only** (no backfill, no
 index, no rewrite), so it is safe in the ordinary deploy window with the
 previous colour still serving.
