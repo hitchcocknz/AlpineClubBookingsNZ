@@ -362,6 +362,12 @@ import "./xero-refund-request-note-void.realdb.test";
 // voided. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
 // own `race-4215-` fixtures.
 import "./xero-bt-repair-request-cash.realdb.test";
+// #4230 reuses it to pin two kinds of bank-transfer cash the inbound recount
+// was suspected of dropping: a group organiser's hand-back moves no payment's
+// total, and the recount never writes the charge rows the #4162 floor keeps.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4230-` fixtures.
+import "./xero-bt-recount-handbacks.realdb.test";
 // #4098 reuses it to prove closing a subscription charge as already paid: two
 // closes at once close it once (one audit row, each voidGeneration bumped
 // once), and a manual reversal committing while the close waits for the
