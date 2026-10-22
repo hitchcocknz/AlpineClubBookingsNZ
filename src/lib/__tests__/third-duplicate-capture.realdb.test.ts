@@ -513,6 +513,79 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await recordedSettlerIntent()).toBe(settling);
     });
 
+    /** The superseded machinery's state for one capture: its row SUCCEEDED after a cancel handed it to a refund. */
+    async function handedOffToSupersededRefund(paymentIntentId: string, refundStatus: "PENDING" | "SUCCEEDED") {
+      const row = await prisma.paymentTransaction.findFirstOrThrow({
+        where: { paymentId: PAYMENT_ID, stripePaymentIntentId: paymentIntentId },
+        select: { id: true },
+      });
+      await holdUnowned(paymentIntentId);
+      const base = { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentTransactionId: row.id, paymentIntentId, amountCents: PRICE_CENTS };
+      await prisma.paymentRecoveryOperation.create({
+        data: { ...base, type: "CANCEL_PAYMENT_INTENT", status: "SUCCEEDED", idempotencyKey: `race-4211-cancel-${paymentIntentId}` },
+      });
+      const refund = await prisma.paymentRecoveryOperation.create({
+        data: { ...base, type: "REFUND_SUPERSEDED_PAYMENT", status: refundStatus, idempotencyKey: `race-4211-superseded-${paymentIntentId}` },
+        select: { id: true },
+      });
+      return { transactionId: row.id, refundOperationId: refund.id };
+    }
+
+    it("#4283: a superseded capture's success redelivered after its cancel handed it to a live refund reaches the settle and is not refunded on top", async () => {
+      const asked = stripeMakesRefunds();
+      const [settling, superseded] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      await handedOffToSupersededRefund(superseded, "PENDING");
+      await reconcile();
+      const before = await snapshot();
+
+      // The cancel operation completed with the handoff, so the webhook no
+      // longer diverts this intent: it reaches markBookingPaymentSucceeded.
+      const delivered = await deliverWebhook(superseded);
+      expect(delivered.init?.status ?? 200, JSON.stringify(delivered.body)).toBe(200);
+      expect(asked, "only the superseded machinery refunds it").toEqual([]);
+      expect(await snapshot()).toEqual(before);
+      expect(
+        await prisma.paymentRecoveryOperation.count({ where: { bookingId: BOOKING_ID, idempotencyKey: { startsWith: "duplicate_capture_" } } }),
+      ).toBe(0);
+    });
+
+    it("#4227: with no record, a superseded capture whose refund failed later and is owed back in full is not 'another payment holding money': no false alert", async () => {
+      const asked = stripeMakesRefunds();
+      const [settling, superseded] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { settledByTransactionId: null } });
+      const { transactionId, refundOperationId } = await handedOffToSupersededRefund(superseded, "SUCCEEDED");
+      // Stripe failed that refund later; the club owes it again on an open row.
+      const { CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } = await import("@/lib/payment-recovery-keys");
+      const key = `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}re_race_4211_superseded`;
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_BOOKING_MODIFICATION",
+          status: "PENDING",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentIntentId: superseded,
+          amountCents: PRICE_CENTS,
+          idempotencyKey: key,
+          stripeKeyPrefix: key,
+          allocationPlan: [{ paymentTransactionId: transactionId, amountCents: PRICE_CENTS, madeByOperationId: refundOperationId }],
+        },
+      });
+      await reconcile();
+      const before = await snapshot();
+
+      expect((await arrive(settling)).outcome).toBe("already_paid");
+      expect(asked).toEqual([]);
+      expect(await snapshot()).toEqual(before);
+      expect(await prisma.alertCooldown.count({ where: { key: { contains: BOOKING_ID } } }), "no 'paid twice' alert").toBe(0);
+
+      // Non-vacuity: once nothing owes it back, the same capture is money held twice again.
+      await prisma.paymentRecoveryOperation.deleteMany({ where: { idempotencyKey: key } });
+      expect((await arrive(settling)).outcome).toBe("duplicate_capture_kept");
+      expect(await prisma.alertCooldown.count({ where: { key: { contains: BOOKING_ID } } })).toBe(1);
+    });
+
     it("(a) the kept third capture's own replay is refunded against the recorded settler", async () => {
       const asked = stripeMakesRefunds();
       const [settling, , third] = TABS;
