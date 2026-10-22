@@ -14,7 +14,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: {
 } }));
 
 import { loadPublicFirstYearCosts } from "@/lib/public-first-year-costs";
-import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { CLUB_FORMAT_TEST, CLUB_FORMAT_TEST_OTHER } from "./support/club-format-fixture";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -25,24 +25,27 @@ beforeEach(() => {
 
 describe("loadPublicFirstYearCosts (#4295)", () => {
   const tiers = [
-    { tier: "YOUTH", label: "Youth", sortOrder: 1 },
-    { tier: "ADULT", label: "Adult", sortOrder: 2 },
+    { tier: "YOUTH", label: "Youth", sortOrder: 1, subscriptionRequiredForBooking: true },
+    { tier: "ADULT", label: "Adult", sortOrder: 2, subscriptionRequiredForBooking: true },
   ];
   const annual = (ageTier: string | null, amountCents: number, extra: Record<string, unknown> = {}) => ({
     ageTier, amountCents, billingBasis: "PER_MEMBER", prorationRule: "NONE", ...extra,
   });
   const row = (label: string, amountCents: number, feeLabel: string) => ({ label, fee: { amountCents, label: feeLabel } });
   const heading = "Joining fee plus first year's subscription";
+  const type = (extra: Record<string, unknown>) => ({
+    key: "T", name: "T", ageGroupsApply: false, subscriptionBehavior: "REQUIRED", joiningFees: [], annualFees: [], ...extra,
+  });
 
-  it("adds the joining fee to the annual fee per tier and per-family fee once", async () => {
+  it("adds the joining fee to the annual fee per tier and a per-family fee once", async () => {
     mocks.ageTiers.mockResolvedValue(tiers);
     mocks.membershipTypes.mockResolvedValue([
-      { key: "FULL", name: "Full Member", ageGroupsApply: true,
+      type({ key: "FULL", name: "Full Member", ageGroupsApply: true,
         joiningFees: [{ ageTier: "ADULT", amountCents: 32000 }, { ageTier: "YOUTH", amountCents: 12000 }],
-        annualFees: [annual("ADULT", 7000), annual("YOUTH", 3500)] },
-      { key: "FAMILY", name: "Family", ageGroupsApply: true,
+        annualFees: [annual("ADULT", 7000), annual("YOUTH", 3500)] }),
+      type({ key: "FAMILY", name: "Family", ageGroupsApply: true,
         joiningFees: [{ ageTier: null, amountCents: 36000 }],
-        annualFees: [annual(null, 14000, { billingBasis: "PER_FAMILY" })] },
+        annualFees: [annual(null, 14000, { billingBasis: "PER_FAMILY" })] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
       { heading, rows: [
@@ -53,40 +56,74 @@ describe("loadPublicFirstYearCosts (#4295)", () => {
     ]);
   });
 
-  it("uses the fee that is current today, so a dated change flips the totals with no edit", async () => {
+  it("orders rows by the type order, then the configured age order, whatever order the rows arrive in", async () => {
     mocks.ageTiers.mockResolvedValue(tiers);
     mocks.membershipTypes.mockResolvedValue([
-      { key: "FULL", name: "Full", ageGroupsApply: true,
-        joiningFees: [{ ageTier: "ADULT", amountCents: 32000 }],
-        // effectiveFrom desc: the first row per tier is the current one.
-        annualFees: [annual("ADULT", 8500), annual("ADULT", 7000)] },
+      type({ key: "B", name: "Bb", ageGroupsApply: false, joiningFees: [{ ageTier: null, amountCents: 100 }], annualFees: [annual(null, 100)] }),
+      type({ key: "A", name: "Aa", ageGroupsApply: true,
+        joiningFees: [{ ageTier: "ADULT", amountCents: 100 }, { ageTier: "YOUTH", amountCents: 100 }],
+        annualFees: [annual("ADULT", 100), annual("YOUTH", 100)] }),
+    ]);
+    const [group] = await loadPublicFirstYearCosts(CLUB_FORMAT_TEST);
+    expect(group.rows.map((r) => r.label)).toEqual(["Bb", "Aa — Youth", "Aa — Adult"]);
+  });
+
+  it("uses the newest joining and annual rows (rows arrive effectiveFrom desc)", async () => {
+    mocks.ageTiers.mockResolvedValue(tiers);
+    mocks.membershipTypes.mockResolvedValue([
+      type({ key: "FULL", name: "Full", ageGroupsApply: true,
+        joiningFees: [{ ageTier: "ADULT", amountCents: 32000 }, { ageTier: "ADULT", amountCents: 1 }],
+        annualFees: [annual("ADULT", 8500), annual("ADULT", 7000)] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
       { heading, rows: [row("Full — Adult", 40500, "$405.00")] },
     ]);
-    const where = mocks.membershipTypes.mock.calls[0][0].select;
-    expect(where.joiningFees.where).toEqual(where.annualFees.where);
-    expect(where.annualFees.orderBy).toEqual([{ effectiveFrom: "desc" }]);
+    const select = mocks.membershipTypes.mock.calls[0][0].select;
+    expect(select.joiningFees.where).toEqual(select.annualFees.where);
+    expect(select.joiningFees.orderBy).toEqual([{ effectiveFrom: "desc" }]);
+    expect(select.annualFees.orderBy).toEqual([{ effectiveFrom: "desc" }]);
   });
 
-  it("falls back to the flat row for a tier with none of its own", async () => {
+  it("falls back to the flat joining row for a tier with none of its own", async () => {
     mocks.ageTiers.mockResolvedValue(tiers);
     mocks.membershipTypes.mockResolvedValue([
-      { key: "FULL", name: "Full", ageGroupsApply: true,
-        joiningFees: [{ ageTier: null, amountCents: 10000 }],
-        annualFees: [annual("ADULT", 7000)] },
+      type({ key: "FULL", name: "Full", ageGroupsApply: true,
+        joiningFees: [{ ageTier: null, amountCents: 10000 }], annualFees: [annual("ADULT", 7000)] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
       { heading, rows: [row("Full — Adult", 17000, "$170.00")] },
     ]);
   });
 
-  it("counts a no-invoice annual fee as nothing and drops a type that totals zero", async () => {
+  it("falls back to the flat annual row for a tier with none of its own, and adds no bare-type row", async () => {
+    mocks.ageTiers.mockResolvedValue(tiers);
     mocks.membershipTypes.mockResolvedValue([
-      { key: "LIFE", name: "Life", ageGroupsApply: false, joiningFees: [{ ageTier: null, amountCents: 5000 }],
-        annualFees: [annual(null, 0, { billingBasis: "NO_INVOICE" })] },
-      { key: "GUEST", name: "Guest", ageGroupsApply: false, joiningFees: [],
-        annualFees: [annual(null, 0, { billingBasis: "NO_INVOICE" })] },
+      type({ key: "FULL", name: "Full", ageGroupsApply: true,
+        joiningFees: [{ ageTier: "ADULT", amountCents: 32000 }, { ageTier: "YOUTH", amountCents: 12000 }],
+        annualFees: [annual(null, 7000)] }),
+    ]);
+    await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
+      { heading, rows: [row("Full — Youth", 19000, "$190.00"), row("Full — Adult", 39000, "$390.00")] },
+    ]);
+  });
+
+  it("reads only the flat rows of a type without age groups", async () => {
+    mocks.ageTiers.mockResolvedValue(tiers);
+    mocks.membershipTypes.mockResolvedValue([
+      type({ key: "ORG", name: "Org", ageGroupsApply: false,
+        joiningFees: [{ ageTier: null, amountCents: 10000 }, { ageTier: "ADULT", amountCents: 99900 }],
+        annualFees: [annual("ADULT", 88800), annual(null, 20000)] }),
+    ]);
+    await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
+      { heading, rows: [row("Org", 30000, "$300.00")] },
+    ]);
+  });
+
+  it("counts a no-invoice fee as nothing whatever its amount or proration, and drops a type that totals zero", async () => {
+    mocks.membershipTypes.mockResolvedValue([
+      type({ key: "LIFE", name: "Life", joiningFees: [{ ageTier: null, amountCents: 5000 }],
+        annualFees: [annual(null, 9999, { billingBasis: "NO_INVOICE", prorationRule: "REMAINING_MONTHS_INCLUSIVE" })] }),
+      type({ key: "GUEST", name: "Guest", annualFees: [annual(null, 0, { billingBasis: "NO_INVOICE" })] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
       { heading, rows: [row("Life", 5000, "$50.00")] },
@@ -95,25 +132,84 @@ describe("loadPublicFirstYearCosts (#4295)", () => {
 
   it("leaves out a tier with no annual fee set, rather than showing the joining fee as the total", async () => {
     mocks.membershipTypes.mockResolvedValue([
-      { key: "FAMILY", name: "Family", ageGroupsApply: true, joiningFees: [{ ageTier: null, amountCents: 36000 }], annualFees: [] },
+      type({ key: "FAMILY", name: "Family", ageGroupsApply: true, joiningFees: [{ ageTier: null, amountCents: 36000 }] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([]);
   });
 
-  it("shows 'from' when the annual fee is prorated", async () => {
+  it("adds no subscription for a type whose subscription is not required", async () => {
     mocks.membershipTypes.mockResolvedValue([
-      { key: "ORG", name: "Org", ageGroupsApply: false, joiningFees: [{ ageTier: null, amountCents: 1000 }],
-        annualFees: [annual(null, 9000, { prorationRule: "REMAINING_MONTHS_INCLUSIVE" })] },
+      type({ key: "HON", name: "Honorary", subscriptionBehavior: "NOT_REQUIRED",
+        joiningFees: [{ ageTier: null, amountCents: 5000 }], annualFees: [annual(null, 7000)] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
-      { heading, rows: [{ label: "Org", fee: { amountCents: 10000, label: "from $100.00" } }] },
+      { heading, rows: [row("Honorary", 5000, "$50.00")] },
     ]);
+  });
+
+  describe("a type priced by age tier, where a tier may not need a subscription", () => {
+    const exemptChild = [
+      { tier: "CHILD", label: "Child", sortOrder: 0, subscriptionRequiredForBooking: false },
+      { tier: "ADULT", label: "Adult", sortOrder: 2, subscriptionRequiredForBooking: true },
+    ];
+    const joiningFees = [{ ageTier: "ADULT", amountCents: 32000 }, { ageTier: "CHILD", amountCents: 1000 }];
+
+    it("adds nothing for the exempt tier on a per-member fee", async () => {
+      mocks.ageTiers.mockResolvedValue(exemptChild);
+      mocks.membershipTypes.mockResolvedValue([
+        type({ key: "FULL", name: "Full", ageGroupsApply: true, subscriptionBehavior: "BASED_ON_AGE_TIER",
+          joiningFees, annualFees: [annual(null, 7000)] }),
+      ]);
+      await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
+        { heading, rows: [row("Full — Child", 1000, "$10.00"), row("Full — Adult", 39000, "$390.00")] },
+      ]);
+    });
+
+    it("still adds a per-family fee to the exempt tier", async () => {
+      mocks.ageTiers.mockResolvedValue(exemptChild);
+      mocks.membershipTypes.mockResolvedValue([
+        type({ key: "FULL", name: "Full", ageGroupsApply: true, subscriptionBehavior: "BASED_ON_AGE_TIER",
+          joiningFees, annualFees: [annual(null, 14000, { billingBasis: "PER_FAMILY" })] }),
+      ]);
+      await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
+        { heading, rows: [row("Full — Child", 15000, "$150.00"), row("Full — Adult", 46000, "$460.00")] },
+      ]);
+    });
+
+    it("keeps the exempt tier when no annual fee resolves for it at all", async () => {
+      mocks.ageTiers.mockResolvedValue(exemptChild);
+      mocks.membershipTypes.mockResolvedValue([
+        type({ key: "FULL", name: "Full", ageGroupsApply: true, subscriptionBehavior: "BASED_ON_AGE_TIER",
+          joiningFees, annualFees: [annual("ADULT", 7000)] }),
+      ]);
+      await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
+        { heading, rows: [row("Full — Child", 1000, "$10.00"), row("Full — Adult", 39000, "$390.00")] },
+      ]);
+    });
+  });
+
+  it("shows 'up to' when the annual fee is prorated, and not for a no-invoice one", async () => {
+    mocks.membershipTypes.mockResolvedValue([
+      type({ key: "ORG", name: "Org", joiningFees: [{ ageTier: null, amountCents: 1000 }],
+        annualFees: [annual(null, 9000, { prorationRule: "REMAINING_MONTHS_INCLUSIVE" })] }),
+    ]);
+    await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([
+      { heading, rows: [{ label: "Org", fee: { amountCents: 10000, label: "up to $100.00" } }] },
+    ]);
+  });
+
+  it("formats the total in the club's format", async () => {
+    mocks.membershipTypes.mockResolvedValue([
+      type({ key: "ORG", name: "Org", joiningFees: [{ ageTier: null, amountCents: 1000 }], annualFees: [annual(null, 9000)] }),
+    ]);
+    const [group] = await loadPublicFirstYearCosts(CLUB_FORMAT_TEST_OTHER);
+    expect(group.rows[0].fee.label).toBe(new Intl.NumberFormat("de-CH", { style: "currency", currency: "CHF" }).format(100));
   });
 
   it("limits to one listed type, and an unlisted type gives the empty state", async () => {
     mocks.membershipTypes.mockResolvedValue([
-      { key: "FULL", name: "Full", ageGroupsApply: false, joiningFees: [{ ageTier: null, amountCents: 1000 }], annualFees: [annual(null, 2000)] },
-      { key: "FAMILY", name: "Family", ageGroupsApply: false, joiningFees: [{ ageTier: null, amountCents: 3000 }], annualFees: [annual(null, 4000)] },
+      type({ key: "FULL", name: "Full", joiningFees: [{ ageTier: null, amountCents: 1000 }], annualFees: [annual(null, 2000)] }),
+      type({ key: "FAMILY", name: "Family", joiningFees: [{ ageTier: null, amountCents: 3000 }], annualFees: [annual(null, 4000)] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST, { typeKey: "family" })).resolves.toEqual([
       { heading, rows: [row("Family", 7000, "$70.00")] },
@@ -126,7 +222,7 @@ describe("loadPublicFirstYearCosts (#4295)", () => {
       Object.fromEntries(Object.keys(select).map((key) => [key, key !== off])),
     );
     mocks.membershipTypes.mockResolvedValue([
-      { key: "FULL", name: "Full", ageGroupsApply: false, joiningFees: [{ ageTier: null, amountCents: 1000 }], annualFees: [annual(null, 2000)] },
+      type({ key: "FULL", name: "Full", joiningFees: [{ ageTier: null, amountCents: 1000 }], annualFees: [annual(null, 2000)] }),
     ]);
     await expect(loadPublicFirstYearCosts(CLUB_FORMAT_TEST)).resolves.toEqual([]);
     expect(mocks.membershipTypes).not.toHaveBeenCalled();

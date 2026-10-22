@@ -55,7 +55,7 @@ export type EmbeddedBodyPart =
   | { type: "skifield-whakapapa" }
   | { type: "photo-gallery"; images: PhotoGalleryImage[] }
   | { type: "photo-slideshow"; images: PhotoGalleryImage[] }
-  // Three fee embeds (#1933, E7). {{membership-types}} is a deprecated alias of
+  // Fee embeds (#1933, E7). {{membership-types}} is a deprecated alias of
   // {{annual-fees}} and {{entrance-fees}} of {{joining-fees}} — the aliases
   // resolve to the same part/renderer. Joining and annual fees share the
   // grouped definition-list view model; hut fees carry the tabular
