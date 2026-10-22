@@ -1805,6 +1805,16 @@ note among them. The refund is paid and recorded on the charge rows, but no
 note in Xero carries it. The inbound recount then reads Xero as accounting for
 less than the rows, and the floor (`INV-ADDPAY-021`) keeps the rows and alerts.
 
+**Since #4287 a cancellation hand-back no longer folds.** Completed after the
+payment has its canonical note, it gets a note of its own, keyed and sized on
+its task
+([A later bank-transfer hand-back gets its own note](#a-later-bank-transfer-hand-back-gets-its-own-note-4287)).
+The card writers still fold - a refund request's card part, the webhook's card
+delta and a late capture's note - while the owner decides how a card refund on a
+bank-transfer payment is sized from its own record. Refunds folded before the
+release stay folded: nothing raises their notes, and the deploy note below is
+how they are found.
+
 **The alert is true, so the recount does not add the cash (owner decision 22
 Oct 2026).** Adding the folded refund to the recount, as #4215 does for a
 refund request's paid-back cash (whose own note exists under another role),
@@ -1819,10 +1829,9 @@ voided note waits for the nightly follow-up the floor logs at info and raises
 nothing (`hasVoidAwaitingFollowUp`), and once the follow-up has undone it the
 rows no longer hold its cash. What is left is a void answered with the cash
 still recorded (a `bankRefundVoid` marker on its link), whose replacement comes
-from that answer on the refund list or Stuck States, never by hand. Giving
-every later, distinct refund on a bank transfer its own note, sized from its
-own record, changes `INV-PAY-101`'s one refund note and is a separate,
-High-risk change (#4287). Pinned on real PostgreSQL by
+from that answer on the refund list or Stuck States, never by hand. #4287
+gives a later cancellation hand-back its own note (`INV-ADDPAY-043`); a card
+part still folds, as above. Pinned on real PostgreSQL by
 `xero-bt-recount-handbacks`, which also pins two cases that are safe: a group
 organiser's hand-back (#4042) moves no payment's total, since each joiner's
 refund sits on the joiner's payment under its own note; and the recount writes
@@ -1916,6 +1925,86 @@ next refund the app records on the payment resets the total from its rows
 (`reconcilePaymentAggregates`). Until then the officer reads the rows' figure as
 the cash handed back. Otherwise the refunded total is held at the rows by the
 floor.
+
+### A later bank-transfer hand-back gets its own note (#4287)
+
+Owner decision, 22 Oct 2026 (`INV-ADDPAY-043`). A bank-transfer payment's first
+refund still takes its one canonical refund note. A cancellation hand-back
+completed later is noted on its own task: the completion
+(`queueCancelledBookingHandBackNoteInTransaction`) asks
+`cancellationHandBackNotedOnItsOwnRecord`, and where the answer is yes it
+queues the note with `paidAnotherWayTaskId` set to the task, beside the
+`handBackTaskId` it already carried (#4162). That is the per-record route a
+"Paid another way" close, a card refund shortfall and a re-confirmed bank
+refund already take, so the key, the sizing (`readPaidAnotherWayCloseShare`:
+the task's amount less its own notes), the dedupe, the Xero key after a void
+(`INV-ADDPAY-041`), the retry and the `perDelta` link are theirs, unchanged.
+
+The answer is yes when:
+
+- **the payment already has its canonical note**, linked
+  (`findCanonicalPaymentRefundCreditNote`) or on its way - a canonical create
+  row still PENDING, RUNNING or FAILED. A queued row is not linked yet, so
+  without it two hand-backs completed close together would both take the
+  canonical route, and the second would be closed as covered by the first's
+  note when it ran;
+- **or the payment has card refund rows.** Its refund-note cash is then read
+  from them (`resolveStripeCashRefundEvidence`, provider ledger), which leaves
+  the hand-back's bank cash out, so a canonical note sized against that cash
+  would floor at nothing. That is the "payment-wide figure floors at 0" the
+  blueprint names.
+
+**Its cash counts beside its note.** A hand-back noted this way is noted bank
+cash in `readPaidAnotherWayCash`, as a close is. Without that, on a payment
+with card refunds its note would sit in the coverage a card note is sized
+against with no cash beside it, and a card note raised after it - a retry of
+the cancel's card note, say - would be closed as covered and never reach Xero.
+A hand-back whose note is the canonical one, or that has none, is not a record
+there at all.
+
+**Locks.** The decision is read inside the completion, after
+`applyLocalRefundAllocation` has taken the Payment row lock (#4217), so a
+second completion on the same payment reads only after the first has
+committed its row. No new advisory key: the note's key is the task's.
+
+**Readers.** The inbound recount, the coverage sum
+(`sumRefundCreditNoteCoverageCents`) and the gap reader
+(`readRefundCreditNoteGap`) count the note through its link like any other, so
+a payment whose refunds all have notes shows nothing uncovered, the #4162 floor
+raises no alert once each note's own Xero event has been reconciled, and the
+#4230 deploy note does not list it. Until the note is in Xero the alert is
+true, as for any refund whose note has not landed yet.
+
+**Never for a historical refund** (owner, 22 Oct 2026). Only the completion
+asks, as it records the refund; nothing re-asks for a hand-back already
+completed. A refund an older release folded keeps the officer's hand-made note
+and the #4230 deploy note's list.
+
+**Deploy and rollback.** No schema change and no migration. On rollback the
+older release folds a later hand-back again; notes already raised per task stay
+valid in Xero and are still counted by every reader through their links. One
+rollback limit: the older release does not count a per-task hand-back's cash
+beside its note, so on a payment with card refunds a card note it raises
+afterwards can be closed as covered. Check such payments in Xero after a
+rollback.
+
+**Stopped for the owner: the card writers.** A refund request's card part, the
+webhook's card-refund delta and a late capture's note still reach the
+single-note branch on a bank-transfer payment and fold. None can be keyed and
+sized on its own record with the per-record routes that exist:
+
+- a card refund's record is its `PaymentRefund` row, which names no refund
+  request, and an approval whose card refund goes to the recovery queue has no
+  row at all when its note is queued;
+- sizing by capture (the late-capture rule, `noteLateCaptureRefunds`) would
+  count again a refund an older canonical note answered without naming the
+  capture, and a re-ask by the receipt's credit-back or the lost-record check
+  would then raise a note for a refund the old release folded.
+
+The nightly self-heal never reaches the branch: its list
+(`getRefundsMissingXeroCreditNotes`) reads card payments only (#4022). Pinned
+on real PostgreSQL by `xero-bt-per-refund-notes`, beside
+`xero-bt-recount-handbacks`, whose card-part pin still shows the fold.
 
 ### Stripe refund notes cover cash evidence, never the mirror (#2902)
 

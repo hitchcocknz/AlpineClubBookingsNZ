@@ -60,7 +60,7 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
  * part whose record keeps a card note's cover (`paidAnotherWayCardNoteCover`)
  * is noted too: that note answers its cash, and its own note the rest.
  *
- * #4287 (`INV-PAY-101`): A CANCELLATION HAND-BACK NOTED ON ITS OWN RECORD IS
+ * #4287 (`INV-ADDPAY-043`): A CANCELLATION HAND-BACK NOTED ON ITS OWN RECORD IS
  * READ THE SAME WAY. A later hand-back on a bank-transfer payment, or one on a
  * payment with card refund rows, queues its own note keyed on the task
  * (`cancellationHandBackNotedOnItsOwnRecord`). Such a completed hand-back is

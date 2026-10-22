@@ -6,7 +6,7 @@ import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note
 import { findCanonicalPaymentRefundCreditNote } from "@/lib/xero-sync";
 
 /**
- * #4287 (owner decision 22 Oct 2026, `INV-PAY-101`): DOES A CANCELLATION
+ * #4287 (owner decision 22 Oct 2026, `INV-ADDPAY-043`): DOES A CANCELLATION
  * HAND-BACK'S XERO NOTE STAND ON ITS OWN RECORD?
  *
  * A bank-transfer payment keeps one canonical refund note, for its first

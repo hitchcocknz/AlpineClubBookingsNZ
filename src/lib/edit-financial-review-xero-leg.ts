@@ -175,7 +175,7 @@ export async function queueCancelledBookingHandBackNoteInTransaction({
     route.refundCents > 0
   ) {
     // #4162 (`INV-ADDPAY-042`): the payload names the hand-back it records, so a void is matched to it.
-    // #4287 (`INV-PAY-101`): a later one is keyed and sized on its own task, never absorbed into the canonical note.
+    // #4287 (`INV-ADDPAY-043`): a later one is keyed and sized on its own task, never absorbed into the canonical note.
     const ownRecord = (await cancellationHandBackNotedOnItsOwnRecord(store, route.paymentId, task.id)) ? { paidAnotherWayTaskId: task.id } : {};
     await enqueueXeroRefundCreditNoteOperation(route.paymentId, route.refundCents, { createdByMemberId: actingMemberId, refundMethod: "internet-banking", handBackTaskId: task.id, ...ownRecord, store });
   }

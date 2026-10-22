@@ -186,6 +186,25 @@ booking repair tool. The next refund the app records on that payment resets the
 total from its rows. Until then, read `rowsRefundedCents` as the cash handed
 back.
 
+### A later bank-transfer hand-back gets its own Xero credit note (#4287)
+
+**What changes.** On a bank-transfer payment that already has its refund
+credit note, a cancellation refund handed back later now gets a credit note of
+its own in Xero, for exactly that refund, instead of being counted under the
+first note. No migration runs.
+
+**After upgrading.** Nothing to do for refunds handed back from now on. A
+refund handed back before the upgrade that never got its own note is not given
+one now: keep using the read-only query in
+[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
+to find those payments, and raise their notes by hand as that entry says. A
+refund appeal's card-refunded part, a dashboard card refund and a late card
+capture's refund on a bank-transfer payment still have no note of their own;
+the query lists those too.
+
+**If you roll back,** see the rollback note in
+[A later bank-transfer hand-back gets its own note](xero/ARCHITECTURE.md#a-later-bank-transfer-hand-back-gets-its-own-note-4287).
+
 ### One-off correction of the starter privacy policy's audit-log retention (#4031)
 
 `20261119010000_correct_starter_privacy_audit_retention` is a **data-only
