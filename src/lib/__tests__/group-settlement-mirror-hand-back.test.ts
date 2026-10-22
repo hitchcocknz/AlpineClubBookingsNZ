@@ -34,6 +34,7 @@ import {
   chooseGroupSettlementMirrorRoute,
   chooseReviewGroupSettlementMirrorRoute,
   isBankTransferHandBackRoute,
+  GROUP_CANCEL_IN_PROGRESS_MESSAGE,
   isGroupSettlementMirrorHandBack,
   type GroupSettlementMirrorRoute,
 } from "@/lib/group-settlement-mirror-hand-back";
@@ -44,7 +45,7 @@ import { editRefundHandBackReason, refundRequestHandBackReason } from "@/lib/man
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { bookingModifiedRefundSentence, organiserByHandRefundSentence, refundRequestApprovedRefundSentence } from "@/lib/booking-modified-email-copy";
 
-const GROUP_CHILD = { organiserSettled: true, parentBookingId: "organiser-booking", payment: { id: "pay-1", source: "INTERNET_BANKING" } };
+const GROUP_CHILD = { status: "PAID", organiserSettled: true, parentBookingId: "organiser-booking", payment: { id: "pay-1", source: "INTERNET_BANKING" } };
 
 describe("the payee: who a bank transfer on a booking goes back to", () => {
   it("is the group organiser exactly when the organiser paid for a joiner's booking by internet banking", () => {
@@ -97,7 +98,7 @@ describe("which hand-backs complete onto a group child's mirror", () => {
     expect(isGroupSettlementMirrorHandBack(task("edit-refund-hand-back:mod-1", { booking: { ...GROUP_CHILD, organiserSettled: false } }))).toBe(false);
   });
 
-  function store({ transactions = 0, refundedAmountCents = 0, otherOpenCents = 0 } = {}) {
+  function store({ transactions = 0, refundedAmountCents = 0, otherOpenCents = 0, groupStatus = "ACTIVE" } = {}) {
     const calls: string[] = [];
     return {
       calls,
@@ -112,6 +113,7 @@ describe("which hand-backs complete onto a group child's mirror", () => {
         update: vi.fn(async () => ({})),
       },
       manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: otherOpenCents || null } })) },
+      groupBooking: { findUnique: vi.fn(async () => ({ status: groupStatus })) },
     };
   }
 
@@ -144,6 +146,19 @@ describe("which hand-backs complete onto a group child's mirror", () => {
     expect(other.paymentTransaction.count).not.toHaveBeenCalled();
   });
 
+  it("review round 3: refused while the organiser's group cancel has fenced the group and not yet claimed this child; allowed once it has", async () => {
+    const midCancel = store({ groupStatus: "CANCELLED" });
+    await expect(chooseGroupSettlementMirrorRoute({ task: task("edit-refund-hand-back:mod-1"), amountCents: 100, store: midCancel as never })).rejects.toMatchObject({
+      status: 409,
+      message: GROUP_CANCEL_IN_PROGRESS_MESSAGE,
+    });
+    expect(midCancel.payment.update).not.toHaveBeenCalled();
+    const claimed = store({ groupStatus: "CANCELLED" });
+    await expect(
+      chooseGroupSettlementMirrorRoute({ task: task("edit-refund-hand-back:mod-1", { booking: { ...GROUP_CHILD, status: "CANCELLED" } }), amountCents: 100, store: claimed as never }),
+    ).resolves.toMatchObject({ kind: "group-settlement-mirror" });
+  });
+
   it("writes the mirror PARTIALLY_REFUNDED or REFUNDED, and refuses (never clamps) past what the payment holds", async () => {
     const route: GroupSettlementMirrorRoute = { kind: "group-settlement-mirror", paymentId: "pay-1", bookingModificationId: null, refundCents: 1_500, creditBackCents: 0 };
     const partial = store({ refundedAmountCents: 1_000 });
@@ -165,6 +180,7 @@ describe("review: an edit financial review's refund on such a child (#3949 revie
     paymentTransaction: { count: vi.fn(async () => 0) },
     payment: { findUnique: vi.fn(async () => ({ status: "SUCCEEDED", amountCents: 10_000, refundedAmountCents: 0 })) },
     manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })) },
+    groupBooking: { findUnique: vi.fn(async () => ({ status: "ACTIVE" })) },
   });
 
   it("goes to the organiser onto the mirror, out of the child's own payment only", async () => {

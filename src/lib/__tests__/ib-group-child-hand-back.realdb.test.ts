@@ -303,6 +303,31 @@ const money = async (bookingId: string) =>
     }
   }, 300_000);
 
+  it("review round 3: between the group cancel's plan and its claim a completion is refused, so the organiser is never paid twice; after the resume claims the child it pays", async () => {
+    const g = await settledGroup("mid-cancel");
+    const [edited, other] = g.children;
+    const taskId = await editHandBack(edited!, "m1");
+    const planned = (GROUP_CHILD_CENTS - EDIT_CENTS) / 2;
+    // The cancel fenced the group and froze its plan (net of the open $15), then died before any child's claim.
+    await prisma.groupBooking.update({ where: { id: g.group }, data: { status: "CANCELLED" } });
+    await prisma.groupBookingSettlement.update({ where: { id: g.settlement }, data: { refundPlan: { [edited!]: planned, [other!]: GROUP_CHILD_CENTS / 2 } } });
+
+    const { GROUP_CANCEL_IN_PROGRESS_MESSAGE } = await import("@/lib/group-settlement-mirror-hand-back");
+    await expect(complete(taskId)).rejects.toMatchObject({ status: 409, message: GROUP_CANCEL_IN_PROGRESS_MESSAGE });
+    expect((await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId } })).status).toBe("OPEN");
+    expect((await payment(edited!)).refundedAmountCents).toBe(0);
+
+    // The reaper's resume claims the children, then the hand-back is paid on top of the plan - once each.
+    await cancelGroupHistory(NAMES, g);
+    await complete(taskId);
+    expect(await payment(edited!)).toEqual({ status: "PARTIALLY_REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: planned + EDIT_CENTS });
+    const organiserTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: g.organiser, occurrenceKey: `group-organiser-hand-back:${g.settlement}` }, select: { amountCents: true } });
+    expect(organiserTask.amountCents).toBe(planned + GROUP_CHILD_CENTS / 2);
+    const report = await census();
+    expect(about(report, edited!)).toEqual(PAID_BACK);
+    expect(about(report, other!)).toEqual(NOTHING);
+  }, 300_000);
+
   it("a group cancel after a completed edit hand-back sizes the plan net of it and mirrors both, live and on a re-drive interrupted after its plan froze", async () => {
     for (const interrupted of [false, true]) {
       const g = await settledGroup(interrupted ? "resume-after-hand-back" : "cancel-after-hand-back");

@@ -1,6 +1,8 @@
 import "server-only";
 
-import { PaymentStatus, type Prisma } from "@prisma/client";
+import { GroupBookingStatus, PaymentStatus, type Prisma } from "@prisma/client";
+
+import { ORGANISER_CANCEL_ACTIVE_CHILD_STATUSES } from "@/lib/booking-status";
 
 import { groupChildHandBacksFromRows, mirrorPlanShareWritten } from "@/lib/booking-ledger-group-child-plan";
 import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
@@ -88,6 +90,7 @@ type MirrorHandBackTask = {
   occurrenceKey: string | null;
   paymentId: string | null;
   booking: {
+    status: string;
     organiserSettled: boolean;
     parentBookingId: string | null;
     payment: { id: string; source: string } | null;
@@ -126,7 +129,7 @@ export async function chooseGroupSettlementMirrorRoute({
   store: Prisma.TransactionClient;
 }): Promise<GroupSettlementMirrorRoute | null> {
   if (!isGroupSettlementMirrorHandBack(task) || task.paymentId === null) return null;
-  return mirrorRouteOnUnbackedPayment({ taskId: task.id, paymentId: task.paymentId, amountCents, store });
+  return mirrorRouteOnUnbackedPayment({ task, paymentId: task.paymentId, amountCents, store });
 }
 
 /**
@@ -150,8 +153,39 @@ export async function chooseReviewGroupSettlementMirrorRoute({
   store: Prisma.TransactionClient;
 }): Promise<GroupSettlementMirrorRoute | null> {
   if (!paidByOrganiserInternetBanking(task.booking) || task.booking.payment?.id !== paymentId) return null;
-  return mirrorRouteOnUnbackedPayment({ taskId: task.id, paymentId, amountCents, store });
+  return mirrorRouteOnUnbackedPayment({ task, paymentId, amountCents, store });
 }
+
+/**
+ * #3949 review round 3 (item 2): NOT WHILE THE ORGANISER'S GROUP CANCEL IS
+ * BETWEEN ITS PLAN AND THIS CHILD'S CLAIM. The cancel fences the group
+ * CANCELLED under `lock(1)`, then freezes each child's refund outside it from
+ * the payment as it stood, and books that whole planned share - on the mirror,
+ * the ledger and the organiser's hand-back - when it claims the child. A
+ * refund recorded on the child in between would be paid to the organiser
+ * twice. So, read under the completion's `lock(1)` (the fence's own key), a
+ * completion is refused, task OPEN, while the group is CANCELLED and this
+ * child is still one the cancel will claim (`ORGANISER_CANCEL_ACTIVE_CHILD_STATUSES`);
+ * once the claim (or the reaper's resume of it) has cancelled the child, the
+ * plan was sized net of every hand-back then open and the task is paid as
+ * normal. Refusing beats re-sizing the claim: the frozen plan is what the
+ * cancel's ledger line, its replay, the census and the organiser's hand-back
+ * all read, and re-sizing one would leave the others disagreeing.
+ */
+async function assertGroupCancelNotInProgress(
+  store: Prisma.TransactionClient,
+  booking: { status: string; parentBookingId: string | null },
+): Promise<void> {
+  if (!booking.parentBookingId || !(ORGANISER_CANCEL_ACTIVE_CHILD_STATUSES as readonly string[]).includes(booking.status)) return;
+  const group = await store.groupBooking.findUnique({ where: { organiserBookingId: booking.parentBookingId }, select: { status: true } });
+  if (group?.status === GroupBookingStatus.CANCELLED) {
+    throw new ManualBookingPaymentError(GROUP_CANCEL_IN_PROGRESS_MESSAGE, 409);
+  }
+}
+
+/** #3949 review round 3: the refusal while the organiser's group cancel is still working through its joiners. */
+export const GROUP_CANCEL_IN_PROGRESS_MESSAGE =
+  "The group organiser is cancelling this group and has not finished with this booking yet, so this refund cannot be recorded now - the cancellation is working out this booking's own refund to the organiser. Try again once the booking shows as cancelled.";
 
 /**
  * The `Payment` row first (review C1: the transaction count is then read under
@@ -161,19 +195,20 @@ export async function chooseReviewGroupSettlementMirrorRoute({
  * otherwise the cap, before the claim.
  */
 async function mirrorRouteOnUnbackedPayment({
-  taskId,
+  task,
   paymentId,
   amountCents,
   store,
 }: {
-  taskId: string;
+  task: { id: string; booking: Pick<MirrorHandBackTask["booking"], "status" | "parentBookingId"> };
   paymentId: string;
   amountCents: number;
   store: Prisma.TransactionClient;
 }): Promise<GroupSettlementMirrorRoute | null> {
+  await assertGroupCancelNotInProgress(store, task.booking);
   await lockPaymentForRefundedTotal(store, paymentId);
   if ((await store.paymentTransaction.count({ where: { paymentId } })) > 0) return null;
-  await assertGroupMirrorHandBackWithinUnpromisedCash(store, { paymentId, taskId, amountCents });
+  await assertGroupMirrorHandBackWithinUnpromisedCash(store, { paymentId, taskId: task.id, amountCents });
   return { kind: "group-settlement-mirror", paymentId, bookingModificationId: null, refundCents: amountCents, creditBackCents: 0 };
 }
 

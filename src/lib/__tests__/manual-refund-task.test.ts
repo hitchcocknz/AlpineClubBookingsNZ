@@ -398,6 +398,8 @@ const tx = {
   // #3791: what a netted or limited give-back reads of earlier reviews and
   // the cancellation - none of either unless a case installs some.
   bookingEvent: { findFirst: (...a: unknown[]) => mocks.bookingEventFindFirst(...a) },
+  // #3949 review round 3: whether the organiser's group cancel is mid-way (no group by default).
+  groupBooking: { findUnique: vi.fn(async () => null) },
 };
 
 /**
