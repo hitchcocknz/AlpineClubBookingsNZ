@@ -4969,6 +4969,20 @@ loses and is retried (`FailedLaterRefundHeldError`). The failed-later writer
 counts a part-close check against its close whatever the check's status, so
 this close cannot change what a later failure is weighed against.
 
+**The runner holding a failed-later row an older release raised** (#4210 round
+4, `holdFailedLaterRowForCheck`, `src/lib/card-refund-failed-later-recheck.ts`)
+takes no lock either. Rows this release's writer raises are marked weighed
+(`paidAnotherWayWeighed`) and cost the runner nothing. For an unmarked one, the
+runner, having claimed it, reads the payment's rows, refunds and close records
+outside any transaction, and where a "Paid another way" close may have paid the
+refund back puts the row back dead, as an `uncertain` check, in one
+compare-and-set on its own claim (`PROCESSING`, the claim's
+`processingStartedAt`) with its audit row. The stale-processing reaper is the
+claim's only other writer and compares the same attempt; a lost compare writes
+nothing and sends nothing. It moves no money or refunded total
+(`INV-LOCK-001`). A close committed after the read is not seen and the row is
+sent as before this release - the stated limit, with the older runner.
+
 ## A refused card refund's re-plan: fenced writes, no advisory key (#4083, #4096, #4103, #4144)
 
 A card refund Stripe answers `failed` or `canceled` (`INV-PAY-128`) adds these
@@ -5159,10 +5173,7 @@ it does not close it, because the new release raises a row from any refund
 status it reads - `charge.refunded`, the cron's read-back, a door's replay
 (`DEPLOYMENT.md`). In the same window an old release's "Resolved" on a
 paid-twice task writes that close record's `reviewContext` whole, dropping the
-card-note cover a new close kept there (and, #4210 round 3, the list of what it
-counted: a refund failing later is then weighed as against a close that kept
-none, raised dead to check unless the paid-twice list settles it), and an old
-release's card-note
+card-note cover a new close kept there, and an old release's card-note
 executor does not subtract the closes' uncovered cash. Either way Xero's total
 can drift from the refunds by that close's amount; the Xero reconciliation
 report lists the difference for the treasurer to correct.

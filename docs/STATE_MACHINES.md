@@ -3679,11 +3679,17 @@ PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
                        paid-twice row was marked Resolved, or where the close
                        kept no record and may have counted it, the whole
                        refund - raised dead for an officer to check)
+PROCESSING -> DEAD    (#4210 round 4: the runner, having claimed a failed-later
+                       row an older release raised - no paidAnotherWayWeighed
+                       mark - where a "Paid another way" close may have paid its
+                       refund back: an uncertain check, compare-and-set on its
+                       own claim, audited and alerted, never sent)
 DEAD -> SUCCEEDED     (#4210 round 3, a check only: "Checked - not owed",
                        finance:edit, no lock, one updateMany guarded on the
-                       plan, status and attempts read; lastError is the
-                       checked-not-owed marker; no money, ledger or Xero;
-                       audited under `payment`)
+                       plan, status and attempts read, refused for a plan
+                       recording a refund failed later; the check is marked
+                       notOwed and lastError is the checked-not-owed marker; no
+                       money, ledger or Xero; audited under `payment`)
 PENDING|FAILED -> same (an open, claimed row that counted the refund is
                        re-planned instead: the slice on its next key,
                        recording the failure in failedRefundIds; compare-and-set

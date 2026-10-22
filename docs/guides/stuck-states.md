@@ -312,8 +312,11 @@ depends on the close:
   your resolution note in the email. If they returned it, pay them and close it
   as **Paid another way**; if they kept it, close it as **Checked - not owed**.
 - **The app cannot tell.** A close recorded before this release did not keep
-  which refunds it had counted, so a refund it may have counted is listed for
-  you to check in the same way, never paid twice and never asked of Stripe.
+  which refunds it had counted, or the refund is larger than what the close
+  owed, or two booking changes for the same reason sent refunds that look
+  alike, so the app cannot tell which one this was. Such a refund is listed
+  for you to check in the same way, never paid twice and never asked of
+  Stripe.
 
 A card refund credit note raised in Xero while Stripe counted the refund no
 longer matches money paid back; the Xero reconciliation report lists it as
