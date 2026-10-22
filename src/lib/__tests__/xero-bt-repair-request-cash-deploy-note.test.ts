@@ -9,6 +9,7 @@ import {
 import { refundRequestCreditNoteKey } from "@/lib/xero-credit-notes";
 import { readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import { REFUND_CREDIT_NOTE_LINK_WHERE } from "@/lib/xero-refund-note-status";
 
 /**
  * #4231 (`INV-SSOT`, lens F3): the #4215 deploy note's read-only SQL spells a
@@ -76,9 +77,6 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
 
   it("names the payment source, the note roles, the queue type and the row shapes the code uses", () => {
     const arm = readFileSync(resolve(REPO_ROOT, "src/lib/xero-booking-repair-request-notes.ts"), "utf8");
-    // The payment's refund-note links are read by the one shared read (#4231 lens F3).
-    const linkRead = readFileSync(resolve(REPO_ROOT, "src/lib/xero-refund-note-status.ts"), "utf8");
-    const refundNoteWhere = 'where: { localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" }';
     expect(new Set(all(note, /p\.source = '([^']*)'/g))).toEqual(new Set([PaymentSource.INTERNET_BANKING]));
     // The request note's role is the code's constant; the payment's own refund note's is the role the arm reads.
     const roles = new Set([...all(note, /\.role = '([^']*)'/g), ...all(note, /\.role IN \(([^)]*)\)/g).flatMap((list) => list.split(", ").map((item) => item.slice(1, -1)))]);
@@ -87,7 +85,12 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
       expect(["REFUND_CREDIT_NOTE", "ACCOUNT_CREDIT_NOTE"]).toContain(role);
     }
     expect(roles).toContain(REFUND_REQUEST_CREDIT_NOTE_ROLE);
-    expect(linkRead).toContain(refundNoteWhere);
+    // Lens round 5 (F5): the cancellation note's link, as the tool reads it, is the one exported filter.
+    const cancellationLinks = [...note.matchAll(/FROM "XeroObjectLink" c WHERE c\."localModel" = '([^']*)' AND c\."localId" = p\.id AND c\."xeroObjectType" = '([^']*)' AND c\.role = '([^']*)'\)/g)];
+    expect(cancellationLinks.length).toBeGreaterThan(0);
+    for (const [, localModel, xeroObjectType, role] of cancellationLinks) {
+      expect({ localModel, xeroObjectType, role }).toEqual(REFUND_CREDIT_NOTE_LINK_WHERE);
+    }
     // The value compared, and the one a legacy row naming no queue type is read as (the arm counts it).
     const queueTypes = [...note.matchAll(/->>'queueType'(?:, '([^']*)')?\) = '([^']*)'/g)].flatMap((match) => [match[1], match[2]].filter(Boolean) as string[]);
     expect(queueTypes.length).toBeGreaterThan(0);
@@ -101,8 +104,7 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
       expect(arm).toContain(`operation.operationType === "${operationType}"`);
     }
     for (const objectType of all(note, /"xeroObjectType" = '([^']*)'/g)) {
-      expect(objectType).toBe("CREDIT_NOTE");
-      expect(refundNoteWhere).toContain(`xeroObjectType: "${objectType}"`);
+      expect(objectType).toBe(REFUND_CREDIT_NOTE_LINK_WHERE.xeroObjectType);
     }
   });
 });

@@ -96,22 +96,27 @@ export function addRefundRequestNoteNotQueuedFindings({
 
   for (const request of missing) {
     const amount = request.amountLabel ?? "the amount in this finding's details";
-    // #4231 lens round 4 (F1): the check that prevents a second credit comes first.
-    const opening =
-      `First check this invoice in Xero for a credit already raised for this request (${amount}). ` +
-      "If there is one, nothing more is needed: do not raise another. The app cannot record a credit raised by hand for a request's note it never queued, so this finding stays. " +
-      `Refund request ${request.refundRequestId} was paid back by bank transfer (${amount}) before the booking had a Xero invoice, so its own refund credit note was never queued.`;
+    // #4231 lens rounds 4-5: the check that prevents a second credit comes first.
+    const invoice = payment.xeroInvoiceNumber ? `this booking's invoice in Xero (${payment.xeroInvoiceNumber})` : "this booking's invoice in Xero";
+    const paidBack = `Refund request ${request.refundRequestId} was paid back by bank transfer (${amount}) before the booking had a Xero invoice, so its own refund credit note was never queued.`;
+    const staysOpen = "The app cannot record a credit raised by hand for a request's note it never queued, so this finding stays.";
     const details = { paymentId: payment.id, refundRequestId: request.refundRequestId, refundAmountCents: request.amountCents };
     if (cancellationNote) {
+      // Round 5 (F1): never "nothing more" here - a folded note beside a credit
+      // raised by hand would still credit the request twice. (F2) A withdrawn
+      // row never reached Xero; a queued or failed one may yet.
       const reason =
-        `${opening} This payment may have a cancellation refund credit note (one that was voided, or never reached Xero, holds nothing), and one raised before this release may already include the request's ${amount}. ` +
-        "Compare that note's lines in Xero with the cancellation's own refund (the booking's cancellation in the app, or its refund lines in Xero). " +
-        `If the request's ${amount} is in it, edit the note in place to the cancellation's own refund - remove its allocations and refund payments first, then record them again; never void it - and then raise the request's own credit note by hand in Xero. ` +
-        "If it is not, and no credit for the request exists yet, raise the request's own credit note by hand in Xero.";
+        `${paidBack} This payment may have a cancellation refund credit note, and one raised before this release may already include the request's ${amount}. Two steps, in this order. ` +
+        `First, always compare the cancellation note's lines on ${invoice} with the cancellation's own refund (the booking's cancellation in the app, or its refund lines in Xero). ` +
+        `If the request's ${amount} is in it, edit the note in place to the cancellation's own refund - remove its allocations and refund payments first, then record them again; never void it. ` +
+        "A note Xero voided, or a create row withdrawn (CANCELLED) in Xero Operations, holds nothing; for one still queued or failed there, wait for it or check its amount in Xero Operations before raising anything by hand. " +
+        `Second, check ${invoice} for a credit already raised for this request, and raise the request's own credit note by hand in Xero only if none exists yet. ${staysOpen}`;
       const action = addAction(actionMap, buildManualReviewAction(context.booking.id, reason));
       addFinding(findings, { code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review", summary: reason, safeToAutoApply: false, details, actionKeys: [action.key] });
       continue;
     }
+    // No cancellation note at all, so nothing can be folded: a credit already raised is the whole answer.
+    const opening = `First check ${invoice} for a credit already raised for this request (${amount}). If there is one, nothing more is needed: do not raise another. ${staysOpen} ${paidBack}`;
     const action = addAction(actionMap, {
       key: `queue:refund-request-credit-note:${payment.id}:${request.refundRequestId}`,
       bookingId: context.booking.id,

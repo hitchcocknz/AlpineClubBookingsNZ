@@ -91,10 +91,21 @@ export function canonicalRefundNoteCandidates<
   };
 }
 
+/**
+ * A payment's own refund-note links (`REFUND_CREDIT_NOTE`), active or not, as a
+ * where fragment - the one filter the reads below share, and (#4231) the one
+ * the booking repair's deploy-note SQL is pinned to.
+ */
+export const REFUND_CREDIT_NOTE_LINK_WHERE = {
+  localModel: "Payment",
+  xeroObjectType: "CREDIT_NOTE",
+  role: "REFUND_CREDIT_NOTE",
+} as const satisfies Prisma.XeroObjectLinkWhereInput;
+
 /** The refund-note links of one payment (or several), active or not: the one fetch every reader below shares. */
 async function readRefundNoteLinks(localId: string | { in: string[] }, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
   return (await db.xeroObjectLink.findMany({
-    where: { localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
+    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, localId },
     select: { localId: true, xeroObjectId: true, metadata: true, active: true },
   })) ?? [];
 }
