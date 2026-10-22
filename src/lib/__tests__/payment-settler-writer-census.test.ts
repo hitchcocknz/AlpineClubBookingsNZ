@@ -14,14 +14,19 @@
  * `include`, `orderBy`, `distinct` or `cursor` argument of the same call (the
  * walk up stops at the first function or call, so a closure under `select`
  * that writes is still a write); any string or template naming the column
- * inside a `$executeRaw*` / `$queryRaw*` call, however the SQL is split across
- * literals (a raw read is flagged too: raw SQL on this column goes through the
- * home or not at all); and, elsewhere, a literal naming it beside UPDATE, INSERT or SET.
- * Types, property reads and the column in a filter pass.
+ * inside a `$executeRaw*` / `$queryRaw*` call or a `Prisma.sql` / `sql` tag,
+ * however the SQL is split across literals, and a module constant naming it
+ * that such a call uses (a raw read is flagged too: raw SQL on this column goes
+ * through the home or not at all); elsewhere, a literal naming it beside
+ * UPDATE, INSERT or SET; and an assignment to it (`data.settledByTransactionId =
+ * x`, `data["settledByTransactionId"] = x`). Types, property reads and the
+ * column in a filter written inside the call pass.
  *
- * WHAT IT CANNOT SEE: a computed key (`["settledBy" + "TransactionId"]`), and
- * raw SQL assembled outside a raw call from literals that split the column's
- * own name.
+ * CONSERVATIVE: a filter built OUTSIDE the call (`const where = {
+ * settledByTransactionId: id }`) is flagged as a write - move it inline, or
+ * into the home. WHAT IT CANNOT SEE: a computed key (`["settledBy" +
+ * "TransactionId"]`), and raw SQL assembled outside a raw call from literals
+ * that split the column's own name.
  *
  * `pnpm run test:related` cannot select this file (it reads the tree from disk,
  * with no import edge to it); run it by name with `pnpm run test:named`.
@@ -65,9 +70,9 @@ function insideReadArgument(node: ts.Node): boolean {
   return false;
 }
 
-const RAW_SQL_CALL = /^\$(executeRaw|queryRaw)/;
+const RAW_SQL_CALL = /^(\$(executeRaw|queryRaw)|sql$)/;
 
-/** Inside an argument of a `$executeRaw*` / `$queryRaw*` call or tag. */
+/** Inside an argument of a `$executeRaw*` / `$queryRaw*` call or tag, or a `Prisma.sql` / `sql` tag or call. */
 function insideRawSql(node: ts.Node): boolean {
   for (let parent = node.parent; parent; parent = parent.parent) {
     const callee = ts.isCallExpression(parent) ? parent.expression : ts.isTaggedTemplateExpression(parent) ? parent.tag : null;
@@ -84,8 +89,24 @@ function settledByWrites(fileName: string, text: string): number[] {
   const source = ts.createSourceFile(fileName, text, ts.ScriptTarget.Latest, true, fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS);
   const lines: number[] = [];
   const at = (node: ts.Node) => source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1;
+  // Constants whose literal names the column: used inside raw SQL, they write it.
+  const namingConstants = new Set<string>();
+  const collect = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && node.initializer.getText(source).includes(COLUMN)) {
+      namingConstants.add(node.name.text);
+    }
+    ts.forEachChild(node, collect);
+  };
+  collect(source);
+  const assignsColumn = (target: ts.Expression) =>
+    (ts.isPropertyAccessExpression(target) && target.name.text === COLUMN) ||
+    (ts.isElementAccessExpression(target) && ts.isStringLiteralLike(target.argumentExpression) && target.argumentExpression.text === COLUMN);
   const visit = (node: ts.Node) => {
-    if (ts.isShorthandPropertyAssignment(node) && node.name.text === COLUMN && !insideReadArgument(node)) {
+    if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment && assignsColumn(node.left)) {
+      lines.push(at(node));
+    } else if (ts.isIdentifier(node) && namingConstants.has(node.text) && !ts.isVariableDeclaration(node.parent) && insideRawSql(node)) {
+      lines.push(at(node));
+    } else if (ts.isShorthandPropertyAssignment(node) && node.name.text === COLUMN && !insideReadArgument(node)) {
       lines.push(at(node));
     } else if (ts.isPropertyAssignment(node) && propertyName(node) === COLUMN) {
       const flag = node.initializer.kind === ts.SyntaxKind.TrueKeyword || node.initializer.kind === ts.SyntaxKind.FalseKeyword;
@@ -139,6 +160,13 @@ describe("Payment.settledByTransactionId has one writer home (#4211, INV-PAY-043
     ["an object built elsewhere and passed whole", "const data = { settledByTransactionId: txId }; await tx.payment.update({ where: { id }, data });", 1],
     ["raw SQL split across literals", 'await tx.$executeRawUnsafe(\'UPDATE "Payment" SET \' + \'"settledByTransactionId" = NULL WHERE id = $1\', id);', 1],
     ["a raw SQL read naming it", 'await tx.$queryRaw`SELECT "settledByTransactionId" FROM "Payment"`;', 1],
+    ["a property assignment", "const data: Record<string, unknown> = {}; data.settledByTransactionId = txId; await tx.payment.update({ where: { id }, data });", 1],
+    ["an element assignment", 'const data: Record<string, unknown> = {}; data["settledByTransactionId"] = txId; await tx.payment.update({ where: { id }, data });', 1],
+    // Twice: the fragment's literal, and the fragment where the raw call uses it.
+    ["a Prisma.sql fragment", 'const fragment = Prisma.sql`"settledByTransactionId" = ${txId}`; await tx.$executeRaw`UPDATE "Payment" SET ${fragment}`;', 2],
+    ["a bare sql tag", 'const fragment = sql`"settledByTransactionId" = NULL`;', 1],
+    ["a module constant used in $executeRawUnsafe", 'const COLUMN_SQL = \'"settledByTransactionId"\'; await tx.$executeRawUnsafe(`UPDATE "Payment" SET ${COLUMN_SQL} = NULL`);', 1],
+    ["a filter built outside the call (conservative: flagged)", "const where = { settledByTransactionId: id }; await tx.payment.findFirst({ where });", 1],
   ])("discriminates %s", (_label, snippet, expected) => {
     expect(settledByWrites("planted.ts", snippet)).toHaveLength(expected);
   });
