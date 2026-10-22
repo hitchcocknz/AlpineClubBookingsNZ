@@ -786,7 +786,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // under its `booking` relation, which declares it.
   "src/lib/booking-change-request-admin-decision.ts:88",
   "src/lib/cron-additional-payment-reminders.ts:440",
-  "src/lib/cron-confirm-pending.ts:209",
+  "src/lib/cron-confirm-pending.ts:210",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #4042: the organiser hand-back's owner-name select, shared by its two
   // booking reads. Verified by hand: written through
