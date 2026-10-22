@@ -105,7 +105,7 @@ import {
 } from "@/lib/booking-cancel-eligibility";
 import type { ClubFormat } from "@/lib/club-format";
 import { unpaidInvoiceClearingAmountCents } from "@/lib/invoice-clearing-amount";
-import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
+import { cancelRefundDisposition } from "@/lib/cancel-refund-method";
 import { ownCardRefundWithShortfallSentence, type OrganiserRefundMethod, type OwnCardRefundMethod } from "@/lib/booking-modified-email-copy";
 import { alertCancelCardShortfall, cancelRaisesCardShortfall, raiseCancelCardShortfallHandBack, type CancelCardShortfall } from "@/lib/cancel-card-refund-shortfall";
 import { foldMirrorRefundIntoLedger } from "@/lib/mirror-refund-fold";
@@ -1570,11 +1570,13 @@ async function performBookingCancellation(
     const organiserCard = paidByOrganiserCard({ ...fresh, payment })
       ? await organiserChildCancelBasis(tx, fresh, payment)
       : null;
-    // #3949 (owner decision, 22 Oct 2026): one the organiser paid for by Internet Banking is refunded to the
-    // organiser by bank transfer - a hand-back task (the manual branch), tiered as every refund to the organiser is.
-    const organiserByHand = organiserCard === null && paidByOrganiserInternetBanking({ ...fresh, payment });
-    const forcedMethod = forcedCancelRefundMethod(payment.source, organiserCard !== null, organiserByHand);
-    refundMethod = forcedMethod === "credit" ? "credit" : forcedMethod === "organiser_card" || forcedMethod === "organiser_by_hand" ? "card" : refundMethod;
+    // #3949 (owner decision, 22 Oct 2026): one the organiser paid for by Internet Banking is refunded to the organiser
+    // by bank transfer - a hand-back task (the manual branch), tiered as every refund to the organiser is. The method
+    // and disposition come from their one home, shared with the preview (`cancelRefundDisposition`).
+    const disposition = cancelRefundDisposition({ paymentSource: payment.source, organiserCard: organiserCard !== null,
+      organiserByBank: paidByOrganiserInternetBanking({ ...fresh, payment }), manuallyMarkedPaid: Boolean(payment.manuallyMarkedPaidAt), requested: refundMethod });
+    const organiserByHand = disposition.forced === "organiser_by_hand";
+    refundMethod = disposition.refundMethod;
 
     // #1491 (review): materialize any folded (mirror-only) refund into the
     // capture ledger BEFORE executing new refunds. The inbound reconcile
@@ -1848,9 +1850,8 @@ async function performBookingCancellation(
         });
       }
     }
-    const manualDisposition = !organiserCard && (Boolean(payment.manuallyMarkedPaidAt) || organiserByHand);
     const branch = paidCancellationBranch({
-      manualDisposition,
+      manualDisposition: disposition.manualDisposition,
       refundMethod,
       refundAmountCents,
     });

@@ -170,9 +170,8 @@ export async function GET(
     // the organiser from what remains after refunds made AND owed - the base
     // the cancel itself tiers - and from nothing once the organiser's payment
     // no longer holds money.
-    const organiserCard = paidByOrganiserCard(booking)
-      ? await organiserChildCancelBasis(prisma, booking, booking.payment)
-      : null;
+    const organiserCard = paidByOrganiserCard(booking) ? await organiserChildCancelBasis(prisma, booking, booking.payment) : null;
+    const organiserByBank = paidByOrganiserInternetBanking(booking); // #3949: refunded to the organiser by hand, on the card tiers
     const preview = calculateCancellationPreview({
       // #3643: the cash the cancel will record, not the invoice's face value.
       payment: partPayment
@@ -226,7 +225,7 @@ export async function GET(
     return NextResponse.json({
       ...preview,
       ...groupCancellation,
-      ...(await cancelPreviewCardShortfall(prisma, { payment: booking.payment, organiserCard: organiserCard !== null, refundAmountCents: preview.refundAmountCents })), // #4119: the card's part as the cancel plans it
+      ...(await cancelPreviewCardShortfall(prisma, { payment: booking.payment, organiserCard: organiserCard !== null, organiserByBank, refundAmountCents: preview.refundAmountCents })), // #4119: the card's part as the cancel plans it
       hasPayment: true,
       // B5 (#2262): this booking was settled in cash / by an off-Xero bank
       // transfer, so cancelling raises a hand-back task an admin pays by hand —
@@ -238,7 +237,7 @@ export async function GET(
       // The method the cancel will use whatever is chosen (an internet banking
       // payment refunds as account credit), from the cancel path's own home,
       // so the dialog offers only that option.
-      refundMethodForced: forcedCancelRefundMethod(booking.payment.source, organiserCard !== null, paidByOrganiserInternetBanking(booking)), // #3949: organiser by bank
+      refundMethodForced: forcedCancelRefundMethod(booking.payment.source, organiserCard !== null, organiserByBank), // #3949: organiser by bank
     });
   } catch (error) {
     logger.error({ err: error }, "Error generating cancel preview");

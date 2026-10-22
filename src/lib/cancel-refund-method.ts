@@ -29,3 +29,28 @@ export function forcedCancelRefundMethod(
   if (paidByOrganiserInternetBanking) return "organiser_by_hand";
   return paymentSource === PaymentSource.INTERNET_BANKING ? "credit" : null;
 }
+
+/**
+ * #3949 (review round 3): the method a paid cancel tiers its refund at and whether it is paid back by hand - the
+ * ONE home for the cancel (`cancelBooking`) and its preview's card-shortfall question
+ * (`cancelPreviewCardShortfall`), so the two cannot size a different branch.
+ *
+ * A refund to the organiser is tiered on the card tiers, whichever way they paid; one the organiser paid by
+ * Internet Banking is paid back by hand (owner decision, 22 Oct 2026). A hand-settled payment of the member's own
+ * is paid back by hand on the method they chose; an Internet Banking one of their own is held as account credit.
+ */
+export function cancelRefundDisposition(params: {
+  paymentSource: string | null | undefined;
+  /** The joiner's booking the organiser paid for by card, with a cancel basis (`organiserChildCancelBasis`). */
+  organiserCard: boolean;
+  /** The joiner's booking the organiser paid for by Internet Banking (`paidByOrganiserInternetBanking`), not by card. */
+  organiserByBank: boolean;
+  manuallyMarkedPaid: boolean;
+  /** The method the member chose, where nothing forces one. */
+  requested: "card" | "credit";
+}): { forced: ForcedCancelRefundMethod; refundMethod: "card" | "credit"; manualDisposition: boolean } {
+  const organiserByBank = !params.organiserCard && params.organiserByBank;
+  const forced = forcedCancelRefundMethod(params.paymentSource, params.organiserCard, organiserByBank);
+  const refundMethod = forced === "credit" ? "credit" : forced === null ? params.requested : "card";
+  return { forced, refundMethod, manualDisposition: !params.organiserCard && (params.manuallyMarkedPaid || organiserByBank) };
+}

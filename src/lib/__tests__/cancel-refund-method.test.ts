@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
+import { cancelRefundDisposition, forcedCancelRefundMethod } from "@/lib/cancel-refund-method";
 import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
 
 describe("forcedCancelRefundMethod (#3643 follow-up, the one home)", () => {
@@ -20,6 +20,24 @@ describe("forcedCancelRefundMethod (#3643 follow-up, the one home)", () => {
   it("forces a bank transfer to the organiser, never the joiner's credit, for one the organiser paid for by internet banking (#3949, owner decision 22 Oct 2026)", () => {
     expect(forcedCancelRefundMethod("INTERNET_BANKING", false, true)).toBe("organiser_by_hand");
     expect(forcedCancelRefundMethod("INTERNET_BANKING", false, false)).toBe("credit");
+  });
+});
+
+describe("cancelRefundDisposition (#3949 review round 3, the one home for the cancel and its preview)", () => {
+  const base = { paymentSource: "STRIPE", organiserCard: false, organiserByBank: false, manuallyMarkedPaid: false, requested: "credit" as const };
+
+  it("an organiser paid by internet banking: forced to them by hand, tiered on the card tiers", () => {
+    expect(cancelRefundDisposition({ ...base, paymentSource: "INTERNET_BANKING", organiserByBank: true })).toEqual({ forced: "organiser_by_hand", refundMethod: "card", manualDisposition: true });
+  });
+
+  it("the organiser's card wins, and is never by hand", () => {
+    expect(cancelRefundDisposition({ ...base, organiserCard: true, organiserByBank: true, manuallyMarkedPaid: true })).toEqual({ forced: "organiser_card", refundMethod: "card", manualDisposition: false });
+  });
+
+  it("the member's own: internet banking is credit; a card keeps the choice; a hand-settled one is by hand", () => {
+    expect(cancelRefundDisposition({ ...base, paymentSource: "INTERNET_BANKING" })).toEqual({ forced: "credit", refundMethod: "credit", manualDisposition: false });
+    expect(cancelRefundDisposition(base)).toEqual({ forced: null, refundMethod: "credit", manualDisposition: false });
+    expect(cancelRefundDisposition({ ...base, requested: "card", manuallyMarkedPaid: true })).toEqual({ forced: null, refundMethod: "card", manualDisposition: true });
   });
 });
 
