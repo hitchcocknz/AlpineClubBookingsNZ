@@ -9,6 +9,23 @@ import { formatCents } from "@/lib/utils";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 
 /**
+ * #4230 (owner decision 22 Oct 2026, `INV-ADDPAY-021`): what the floor's alert
+ * tells the officer to do. Below the detail is a real shortfall in Xero, with
+ * two causes: a refund that has no credit note of its own (a later refund on a
+ * bank-transfer payment can be counted under the payment's first refund note
+ * instead of getting its own), or a refund note voided in Xero. The one
+ * wording, shown in the alert and quoted by the Xero guide's troubleshooting
+ * row, which a test holds to this constant.
+ */
+export const BANK_TRANSFER_REFUND_SHORTFALL_ADVICE =
+  "Either a refund on this payment has no Xero credit note of its own yet - for example a later refund that was counted under the payment's first refund note instead of getting its own - so raise the missing refund credit note by hand in Xero; or a refund credit note was voided in Xero, and the nightly follow-up puts that refund back on the treasurer's refund list to confirm.";
+
+/** The floor's alert, in plain English: the two totals, what was kept, and the advice above. */
+export function bankTransferRefundShortfallMessage(input: { paymentId: string; xeroNotesTotal: string; recordedRefundsTotal: string }): string {
+  return `The Xero refund credit notes for bank-transfer payment ${input.paymentId} add up to ${input.xeroNotesTotal}, less than the refunds the club recorded on it (${input.recordedRefundsTotal}). The recorded refunds were kept. ${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}`;
+}
+
+/**
  * #4162 (owner decision 17 Oct 2026, `INV-ADDPAY-021`): THE BANK-TRANSFER
  * FLOOR on the inbound credit-note recount (`repairRefundedPaymentBusinessState`).
  *
@@ -20,6 +37,7 @@ import { notifyXeroSyncError } from "@/lib/xero-error-alert";
  * alone. When Xero shows less, the detail is kept, logged and alerted, as the
  * card floor is (#1353) - at info and with no alert while a voided refund note
  * on the payment waits for that follow-up, which is the expected divergence.
+ * The alert names both causes of a shortfall (`BANK_TRANSFER_REFUND_SHORTFALL_ADVICE`).
  * A total already below its detail is never raised here; one above it may
  * still come down to it. Any other source passes through untouched.
  */
@@ -56,7 +74,11 @@ export async function floorBankTransferRefundedTotal(input: {
   await notifyXeroSyncError({
     errorType: "refund-ledger-divergence",
     operation: `inbound-credit-note-repair:${input.creditNoteId}`,
-    errorMessage: `Xero-derived refund total (${formatCents(xeroDerivedCents, input.format)}) for bank-transfer payment ${payment.id} is below the refunds the club recorded on it (${formatCents(floorCents, input.format)}). Those were kept (#4162 floor). A voided refund credit note is put back on the treasurer's refund list by the nightly follow-up.`,
+    errorMessage: bankTransferRefundShortfallMessage({
+      paymentId: payment.id,
+      xeroNotesTotal: formatCents(xeroDerivedCents, input.format),
+      recordedRefundsTotal: formatCents(floorCents, input.format),
+    }),
   });
   return floorCents;
 }

@@ -216,6 +216,15 @@ describe("repairRefundedPaymentBusinessState raise-only Stripe ledger floor (#13
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(result).toEqual({ matchedPayments: 1, updatedPayments: 0 });
     expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({ errorType: "refund-ledger-divergence" }));
+    // #4230: the alert names both causes - a refund with no note of its own, or a voided note - and what to do.
+    const { BANK_TRANSFER_REFUND_SHORTFALL_ADVICE } = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
+    expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorMessage: `The Xero refund credit notes for bank-transfer payment pay-1 add up to $0.00, less than the refunds the club recorded on it ($50.00). The recorded refunds were kept. ${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}`,
+      }),
+    );
+    expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).toMatch(/no Xero credit note of its own yet.*raise the missing refund credit note by hand in Xero.*voided in Xero/);
+    expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).not.toMatch(/#\d/);
   });
 
   it("#4162: lowers a bank-transfer total to its detail, never below it", async () => {
