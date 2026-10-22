@@ -676,8 +676,9 @@ detail, line and total together (`INV-ADDPAY-042`).
   repair tool nets the same figure from the cash a cancellation's note answers
   (`readPaidBackRefundRequests`, #4231), and offers, for an officer to
   confirm, a request's own note its completion could not queue (no invoice
-  yet): only with no note row at all (a voided one stays the officer's,
-  `INV-ADDPAY-041`), never beside refund notes already holding its cash.
+  yet): only with no note row of its own (a voided one stays the officer's,
+  `INV-ADDPAY-041`) and no cancellation note at all, else a person checks
+  Xero.
   Pinned by `xero-credit-note-repairs`, `xero-booking-repair` and
   `xero-bt-repair-request-cash`.
 

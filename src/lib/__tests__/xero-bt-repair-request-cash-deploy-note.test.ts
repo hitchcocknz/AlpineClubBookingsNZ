@@ -84,8 +84,9 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
       expect(["REFUND_CREDIT_NOTE", "ACCOUNT_CREDIT_NOTE"]).toContain(role);
     }
     expect(roles).toContain(REFUND_REQUEST_CREDIT_NOTE_ROLE);
-    expect(arm).toContain('link.role !== "REFUND_CREDIT_NOTE"');
-    const queueTypes = all(note, /->>'queueType'\) = '([^']*)'/g);
+    expect(arm).toContain('role: "REFUND_CREDIT_NOTE"');
+    // The value compared, and the one a legacy row naming no queue type is read as (the arm counts it).
+    const queueTypes = [...note.matchAll(/->>'queueType'(?:, '([^']*)')?\) = '([^']*)'/g)].flatMap((match) => [match[1], match[2]].filter(Boolean) as string[]);
     expect(queueTypes.length).toBeGreaterThan(0);
     expect(new Set(queueTypes)).toEqual(new Set([XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE]));
     for (const entityType of all(note, /"entityType" = '([^']*)'/g)) {
@@ -98,7 +99,7 @@ describe("the #4215 deploy note's SQL matches the code's one definition (#4231)"
     }
     for (const objectType of all(note, /"xeroObjectType" = '([^']*)'/g)) {
       expect(objectType).toBe("CREDIT_NOTE");
-      expect(arm).toContain(`link.xeroObjectType !== "${objectType}"`);
+      expect(arm).toContain(`xeroObjectType: "${objectType}"`);
     }
   });
 });

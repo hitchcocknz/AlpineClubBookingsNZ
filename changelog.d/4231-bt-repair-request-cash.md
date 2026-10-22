@@ -26,12 +26,15 @@
   refund out, and passes the cancellation's amount to a person when the two
   sit side by side. Such a request also never got its own credit note, because
   the booking had no invoice to credit when it was paid back. Once the invoice
-  exists the repair tool now offers that note, for the amount paid back, but
+  exists, and only where the payment has no cancellation credit note of any
+  kind, the repair tool now offers that note, for the amount paid back, but
   never raises it by itself: check Xero for a credit already raised by hand for
-  the request, then confirm the action by its key. It offers nothing where the
-  cancellation's credit note already holds the request's refund, and sends that
-  booking to a person instead. It never re-raises a request's note that was
-  voided in Xero: that stays the officer's decision.
+  the request, then confirm the action by its key. Where the payment has a
+  cancellation credit note, that note may already include the request's refund
+  if it was raised before this release, so the tool offers nothing and asks a
+  person to compare the note's lines in Xero with the cancellation's own refund
+  and raise the request's credit by hand. It never re-raises a request's note
+  that was voided in Xero: that stays the officer's decision.
 
   A payment that already lost a request's refund this way is not corrected by
   itself: it is recounted only when Xero sends an update about the
@@ -52,10 +55,13 @@
   release then counts that request's refund twice. Such a payment reads more
   refunded than its records show, and the settled-cash audit lists it under
   "folded", which is misleading here. A third check lists every request the
-  repair tool would note beside a cancellation credit note, whatever the
-  payment shows, so a folded note is found before anything is counted twice.
-  To fix one, check Xero for a credit raised by hand for the request, then edit
-  the cancellation's credit note in place so it carries only the cancellation's
-  own refund (never void it: on a bank transfer a void puts the refund back on
-  the refund list as owed), then confirm the request's own note in the booking
-  repair tool.
+  repair tool sends to a person because its payment has a cancellation credit
+  note, whatever the payment shows, so a folded note is found before anything
+  is counted twice. To fix one, check Xero for a credit raised by hand for the
+  request, then compare the cancellation note's lines with the cancellation's
+  own refund. If the request's refund is in it, edit the note in place so it
+  carries only the cancellation's own refund (Xero needs its allocations and
+  refund payments removed first, and a removed reconciled payment's bank line
+  matched again; a lock date blocks the edit until the club's adviser lifts
+  it), then raise the request's credit by hand in Xero. Never void the note: on
+  a bank transfer a void puts the refund back on the refund list as owed.
