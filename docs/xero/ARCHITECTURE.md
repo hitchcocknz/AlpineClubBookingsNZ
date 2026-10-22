@@ -1133,6 +1133,9 @@ voided note the follow-up has not handled, the floor logs its divergence at
 info and raises no alert - including, while report-only, notes the job would
 undo, which no screen lists: the count below is where those appear. See
 [Voided bank-transfer refund notes](#voided-bank-transfer-refund-notes-4162).
+Otherwise the alert is a real shortfall in Xero, and names both causes: a
+voided note, or a refund with no note of its own
+([A later refund folded into the first note](#a-later-refund-folded-into-the-first-note-4230)).
 
 **A refund request's own note, voided (#4195).** The same void rule holds for
 a refund request's own note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`). The
@@ -1776,6 +1779,60 @@ what is left to pick). It also counts bank-transfer payments whose
 total is below their detail with no void, which the job never touches, and
 says how many payments hold several voids (each note is counted against today's
 records, so those can overstate).
+
+### A later refund folded into the first note (#4230)
+
+A bank-transfer payment issues its refund notes through the single-note branch
+of `enqueueXeroRefundCreditNoteOperation`: once the payment has its one
+canonical refund note, a later enqueue that is not keyed per refund
+(`reviewTaskId`, `paidAnotherWayTaskId`) is taken as a replay and raises
+nothing ("already linked"). That is right for a replay, and wrong for a
+second, distinct refund: a cancellation hand-back completed after another
+refund made the canonical note, or a refund request's card part approved after
+the cancellation's note (`refund-requests/[id]` queues it with no keyed
+options). The refund is paid and recorded on the charge rows, but no note in
+Xero carries it. The inbound recount then reads Xero's notes as less than the
+rows, and the floor (`INV-ADDPAY-021`) keeps the rows and alerts.
+
+**The alert is true, so the recount does not add the cash (owner decision 22
+Oct 2026).** Adding the folded refund to the recount, as #4215 does for a
+refund request's paid-back cash (whose own note exists under another role),
+would silence the only signal: for a card part the refund-note gap reader
+(`readRefundCreditNoteGap`) shows nothing uncovered, because the bank note's
+coverage hides the card cash. So the alert's wording names a refund with no
+note of its own as a cause and asks for the missing note by hand
+(`BANK_TRANSFER_REFUND_SHORTFALL_ADVICE`, the Xero guide's troubleshooting row
+quotes it). Giving every later, distinct refund on a bank transfer its own
+note, sized from its own record, changes `INV-PAY-101`'s one refund note and is
+a separate, High-risk change. Pinned on real PostgreSQL by
+`xero-bt-recount-handbacks`, which also pins two cases that are safe: a group
+organiser's hand-back (#4042) moves no payment's total, since each joiner's
+refund sits on the joiner's payment under its own note; and the recount writes
+`Payment.refundedAmountCents` and never the charge rows, which the paid cancel
+folds later (#1491) and the floor reads as its detail.
+
+**Deploy note (#4230).** No schema changes. A payment already holding a folded
+refund alerts on each reconcile of its notes. A payment a release before the floor recounted too low stays
+low: the floor never raises a total, and the recount never adds the folded
+cash. List bank-transfer payments whose completed hand-backs and card refunds
+add up to more than their live refund notes (read-only), so an officer can
+raise the missing notes by hand:
+`SELECT p.id, p."bookingId", p."refundedAmountCents", h."handBacksCents", r."cardRefundsCents", n."refundNotesCents" FROM "Payment" p CROSS JOIN LATERAL (SELECT COALESCE(SUM(m."amountCents"), 0) AS "handBacksCents" FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND NOT starts_with(coalesce(m."occurrenceKey", ''), 'edit-refund-hand-back:') AND NOT starts_with(coalesce(m."occurrenceKey", ''), 'refund-request-hand-back:') AND NOT starts_with(coalesce(m."occurrenceKey", ''), 'bank-refund-void:')) h CROSS JOIN LATERAL (SELECT COALESCE(SUM(f."amountCents"), 0) AS "cardRefundsCents" FROM "PaymentRefund" f WHERE f."paymentId" = p.id AND f.status NOT IN ('failed', 'canceled')) r CROSS JOIN LATERAL (SELECT COALESCE(SUM(CASE WHEN jsonb_typeof(l.metadata->'amountCents') = 'number' THEN (l.metadata->>'amountCents')::numeric ELSE 0 END), 0) AS "refundNotesCents" FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = p.id AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role = 'REFUND_CREDIT_NOTE' AND l.active AND upper(trim(coalesce(l.metadata->>'status', ''))) NOT IN ('VOIDED', 'DELETED')) n WHERE p.source = 'INTERNET_BANKING' AND p."xeroInvoiceId" IS NOT NULL AND h."handBacksCents" + r."cardRefundsCents" > n."refundNotesCents" ORDER BY p.id`.
+Hand-backs counted are the ones a refund note answers: an edit's refund
+hand-back is answered by the edit's own note, a refund request's by the
+request's own note (`INV-PAY-118`), and a bank refund re-confirmed after a void
+re-records the hand-back it undid, so those three are left out; a group
+organiser's hand-back has no payment. Stated limits, all listing a payment
+rather than missing one: a link written before amounts were recorded counts as
+nothing; a refund of a late capture Xero never received deliberately has no
+note (`INV-PAY-110`); and a voided note awaiting the nightly follow-up is left
+out of the notes while its hand-back still counts - leave such a payment to the
+follow-up. For each listed payment an officer compares the booking's invoice in
+Xero with its refunds and raises a note by hand for any refund that has none.
+Stated limit: a note raised by hand is linked to no payment here, so the
+recount still cannot count it, and a later reconcile of the payment's own notes
+alerts again; the officer checks the hand-raised note is in Xero and goes on.
+The refunded total stays right throughout, held at the rows by the floor.
 
 ### Stripe refund notes cover cash evidence, never the mirror (#2902)
 

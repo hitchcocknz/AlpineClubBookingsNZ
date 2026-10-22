@@ -119,6 +119,20 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### List bank-transfer refunds that have no Xero credit note (#4230)
+
+**What changes.** The Xero sync alert for a bank-transfer payment whose Xero
+refund credit notes add up to less than the refunds the club recorded now
+names two causes: a voided note, or a later refund on the payment that never
+got a note of its own. No migration runs, and nothing changes in how notes are
+raised.
+
+**After upgrading.** Run the read-only query in
+[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
+against the live database. With the treasurer, compare each listed payment's
+invoice in Xero with its refunds and raise a credit note by hand for any refund
+that has none. Leave a payment with a voided note to the nightly follow-up.
+
 ### Count voided bank-transfer refund notes, then switch the follow-up on (#4162)
 
 **What changes.** A bank-transfer refund whose Xero refund credit note is voided
