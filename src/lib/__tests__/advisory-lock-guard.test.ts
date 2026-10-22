@@ -1457,10 +1457,17 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // meanwhile is kept, including a competing first insertion. Existing rows
   // are untouched by reservation; a new identity row rolls back with the write.
   // Order, on every write: own link row, then any sibling note the canonical
-  // rule retires, then the Payment row a kept void releases - the inbound
-  // void's own order. Keyed on the link's immutable unique key; no advisory lock. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // rule retires. A kept void tries Payment without waiting (the xero-sync
+  // entry below); explicit inbound voids retain their existing order (#4200).
+  // Keyed on the link's immutable unique key; no advisory lock. See docs/CONCURRENCY_AND_LOCKING.md ->
   // "Refund-note link writes racing a void (#4195, #4223)".
   "src/lib/xero-refund-note-status.ts": 1,
+  // #4223: after keeping a stored void, pointer maintenance tries the immutable
+  // Payment row FOR NO KEY UPDATE SKIP LOCKED. A Payment-first enqueue may be
+  // waiting for this link, so a statusless writer must never wait back on it.
+  // A busy Payment defers only pointer cleanup to #4161; the mirror stays
+  // inactive with its metadata. Own-held Payment rows remain eligible.
+  "src/lib/xero-sync.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";

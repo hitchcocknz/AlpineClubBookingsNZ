@@ -390,7 +390,7 @@ describe("upsertXeroObjectLink", () => {
     mocks.txLinkUpsert.mockResolvedValue({ id: "link_1" });
     mocks.txLinkFindUnique.mockResolvedValue(null);
     mocks.txLinkFindMany.mockResolvedValue([]);
-    mocks.txExecuteRaw.mockResolvedValue(0);
+    mocks.txExecuteRaw.mockResolvedValue(1);
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback({
         $executeRaw: mocks.txExecuteRaw,
@@ -609,7 +609,7 @@ describe("upsertXeroObjectLink", () => {
   describe("#4223: the payment's own refund notes, voided in Xero while a retry records one (INV-ADDPAY-041)", () => {
     const LOCK_SQL =
       'SELECT 1 FROM "XeroObjectLink" WHERE "localModel" = ? AND "localId" = ? AND "xeroObjectType" = ? AND "xeroObjectId" = ? AND "role" = ? FOR UPDATE';
-    const STORED_VOID = { amountCents: 20000, watermarkCents: 20000, status: "VOIDED", total: 200 };
+    const STORED_VOID = { amountCents: 20000, watermarkCents: 20000, status: "VOIDED", total: 200, appliedAmount: 50, remainingCredit: 150, provenance: { source: "inbound" } };
 
     it("MUTATION (race): a canonical write naming no status keeps a stored void - inactive, status merged, no sibling retired, pointer released", async () => {
       // The inbound void committed while this retry's write waited on the row
@@ -648,8 +648,39 @@ describe("upsertXeroObjectLink", () => {
 
       // Before #4223 the per-delta rule kept `active ?? true`.
       expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
-        expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: { amountCents: 20000, watermarkCents: 20000, status: "VOIDED" } }) }),
+        expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }),
       );
+    });
+
+    it.each(["REFUND_CREDIT_NOTE", "REFUND_REQUEST_CREDIT_NOTE"])("MUTATION: a statusless %s write merges its keys over every stored void detail", async (role) => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
+
+      await upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role,
+        metadata: { amountCents: 20000, refundRequestId: "rr_1" },
+      });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({
+        update: expect.objectContaining({ active: false, metadata: { ...STORED_VOID, refundRequestId: "rr_1" } }),
+      }));
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: a kept void commits inactive with all metadata when Payment is busy, leaving pointer cleanup to the heal", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_canonical" });
+      mocks.txExecuteRaw.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+      await upsertXeroObjectLink({ localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_canonical", role: "REFUND_CREDIT_NOTE" });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }));
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      const [template, ...values] = mocks.txExecuteRaw.mock.calls[1] as [TemplateStringsArray, ...unknown[]];
+      expect(template.join("?").replace(/\s+/g, " ").trim()).toBe('SELECT 1 FROM "Payment" WHERE "id" = ? FOR NO KEY UPDATE SKIP LOCKED');
+      expect(values).toEqual(["payment_1"]);
+      expect(mocks.txLinkUpsert.mock.invocationCallOrder[0]!).toBeLessThan(mocks.txExecuteRaw.mock.invocationCallOrder[1]!);
     });
 
     it("a canonical write naming no status, over a stored live row, is written as before", async () => {

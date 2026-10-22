@@ -1102,8 +1102,12 @@ without changing any existing row, then locks it in the same transaction and,
 when it names no status, re-reads it (`keepStoredRefundNoteVoid`). Concurrent
 first insertions wait on the unique key before this read; the reservation
 rolls back with the write. A void that committed while it waited is kept. The
-mirror stays inactive, the status is merged onto the row, no sibling is
-retired, and a pointer the retry wrote back at the note is released by the same write (#4223). Lock order: [Refund-note
+mirror stays inactive, the status and incoming metadata merge over its stored
+figures and provenance, and no sibling is retired. A pointer the retry wrote
+back at the note is released if its Payment row is available without waiting
+(`FOR NO KEY UPDATE SKIP LOCKED`). A busy Payment defers only pointer cleanup
+to the nightly #4161 heal, so a Payment-first enqueue waiting for this same
+link cannot deadlock the retry (#4223). Lock order: [Refund-note
 link writes racing a void](../CONCURRENCY_AND_LOCKING.md#refund-note-link-writes-racing-a-void-4195-4223).
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`

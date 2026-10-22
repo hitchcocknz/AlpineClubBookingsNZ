@@ -9,6 +9,7 @@ import {
   perDeltaRefundNoteIds,
   neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
+  readRefundCreditNoteLinkStatus,
 } from "./xero-refund-note-status";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
@@ -838,13 +839,13 @@ async function upsertXeroObjectLinkWithClient(
     },
   });
 
-  // After the link row, so this transaction locks links and then the payment —
-  // the same order as the refund-note repair apply. The nightly report treats
-  // Payment.xeroRefundCreditNoteId as a promise that an active
+  // After the link row, matching the refund-note repair apply. The nightly
+  // report treats Payment.xeroRefundCreditNoteId as a promise that an active
   // REFUND_CREDIT_NOTE link exists. Deactivating a VOIDED or DELETED mirror
-  // without moving that pointer is a permanent "missing refund credit note
-  // link". Repoint at the newest other live note, or clear it. The where-clause
-  // is the claim: a pointer that already names a different note is left alone.
+  // without moving that pointer leaves a "missing refund credit note link"
+  // until #4192 heals the inactive mirror. Repoint at the newest other live
+  // note, or clear it. The where-clause is the claim: a pointer that already
+  // names a different note is left alone.
   if (
     normalizedLink.localModel === "Payment" &&
     normalizedLink.role === "REFUND_CREDIT_NOTE" &&
@@ -857,6 +858,17 @@ async function upsertXeroObjectLinkWithClient(
       select: { xeroRefundCreditNoteId: true },
     });
     if (payment?.xeroRefundCreditNoteId === normalizedLink.xeroObjectId) {
+      // INV-LOCK-001, INV-LOCK-002: a statusless retry can hold this link while
+      // a Payment-first enqueue waits for it. Never wait back on that Payment.
+      // SKIP LOCKED still returns a row this transaction already holds. When
+      // busy, commit the inactive mirror; the #4161 heal can release its pointer.
+      // Explicit inbound voids keep their existing protocol (#4200).
+      if (readRefundCreditNoteLinkStatus(link.metadata) === null) {
+        const available = await client.$executeRaw`
+          SELECT 1 FROM "Payment" WHERE "id" = ${normalizedLink.localId}
+          FOR NO KEY UPDATE SKIP LOCKED`;
+        if (available === 0) return written;
+      }
       await releaseCancelledRefundCreditNotePointer(client, normalizedLink);
     }
   }

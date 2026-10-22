@@ -218,8 +218,8 @@ export async function isRetryOfVoidedRefundRequestNote(
  * every write. A write that names no Xero status (a retry's, a completion's,
  * a repair's) then re-reads the row under that lock, so a void that committed
  * while it waited is kept: inactive, its status on the row, where the funnel's void rules read it
- * (no sibling retired, a pointer naming it released). A write that names a
- * status is judged on it.
+ * (no sibling retired, a pointer naming it released without waiting on a
+ * busy Payment). A write that names a status is judged on it.
  */
 export async function keepStoredRefundNoteVoid<L extends {
   localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; metadata?: unknown; active?: boolean; mergeMetadata?: boolean;
@@ -248,12 +248,9 @@ export async function keepStoredRefundNoteVoid<L extends {
   });
   const status = readRefundCreditNoteLinkStatus(stored?.metadata);
   if (status === null || isIncludedRefundCreditNoteStatus(status)) return link;
-  const metadata = asRecord(link.metadata);
-  // A write with no metadata of its own (a covered retry's) merges the status
-  // over the stored row, so no stored key moves and the status rides the write.
-  return metadata
-    ? { ...link, active: false, metadata: { ...metadata, status } }
-    : { ...link, active: false, metadata: { status }, mergeMetadata: true };
+  // Preserve the stored figures and provenance even when the retry has some
+  // metadata of its own. Its keys and the kept status merge over the locked row.
+  return { ...link, active: false, metadata: { ...asRecord(link.metadata), status }, mergeMetadata: true };
 }
 
 /** The payment's refund-request note links (`INV-PAY-118`), any request's, active or not. */

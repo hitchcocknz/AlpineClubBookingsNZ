@@ -88,12 +88,13 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     });
 
     /** Poll until a backend waits on a lock `blockerPid` holds. */
-    async function waitForBlockedBy(blockerPid: number) {
+    async function waitForBlockedBy(blockerPid: number, waiterPid?: number) {
       const startedAt = process.hrtime.bigint();
       while (realElapsedMs(startedAt) < 10_000) {
         const rows = await prisma.$queryRaw<Array<{ count: number }>>`
           SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
           WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
+            AND (${waiterPid ?? null}::int IS NULL OR pid = ${waiterPid ?? null}::int)
         `;
         if ((rows[0]?.count ?? 0) >= 1) return;
         await new Promise((resolve) => setTimeout(resolve, 10));
@@ -124,9 +125,11 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
           voidWritten(pid);
           await released;
         },
-        { timeout: 15_000 },
+        { timeout: 30_000 },
       );
-      return { pid: await holderPid, release, committed };
+      // A failed holder must reject readiness rather than leave the test hung.
+      const pid = await Promise.race([holderPid, committed.then(() => { throw new Error("Inbound void ended before reporting its lock"); })]);
+      return { pid, release, committed };
     }
 
     /** The cancellation's refund-note retry: the note already covers it, so no Xero call is made. */
@@ -221,6 +224,98 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         metadata: { amountCents: 20_000, watermarkCents: 20_000, status: "VOIDED", total: 200 },
         pointer: null,
       });
+    });
+
+    it("a stale retry keeps the void without waiting on a Payment-first real enqueue of that same note (race)", async () => {
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const { lockPaymentForRefundedTotal } = await import("@/lib/payment-transactions");
+      // V holds only the link: its snapshot sees no pointer to release.
+      await seed(null);
+      const inbound = await holdInboundVoid();
+      const pending: Promise<unknown>[] = [inbound.committed];
+      try {
+        // K is the real covered retry: it reads the old live note, commits the
+        // pointer at it, then queues its link write behind V's uncommitted void.
+        const retry = retryRefundNote();
+        void retry.catch(() => undefined);
+        pending.push(retry);
+        await waitForBlockedBy(inbound.pid);
+        expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).xeroRefundCreditNoteId).toBe(NOTE);
+
+        let paymentLocked!: (pid: number) => void;
+        const paymentPid = new Promise<number>((resolve) => (paymentLocked = resolve));
+        // F takes the same Payment lock as a group cancel's refund writer.
+        // Its actual enqueue sees old live N1 and pointer N1, so it skips the
+        // pointer update and queues behind K/V for exactly the same link.
+        const enqueue = prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+          await lockPaymentForRefundedTotal(tx, PAYMENT_ID);
+          const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS "pid"`;
+          paymentLocked(pid);
+          return enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 20_000, { refundMethod: "internet-banking", store: tx });
+        }, { timeout: 30_000 });
+        void enqueue.catch(() => undefined);
+        pending.push(enqueue);
+        const pid = await Promise.race([paymentPid, enqueue.then(() => { throw new Error("Enqueue ended before reporting its Payment lock"); })]);
+        await waitForBlockedBy(inbound.pid, pid);
+        inbound.release();
+
+        // K must commit its inactive mirror without waiting back on F's
+        // Payment. F then reads the stored void, and can release the pointer
+        // through SKIP LOCKED because it already holds that Payment itself.
+        await expect(Promise.all(pending)).resolves.toBeDefined();
+        expect(await retry).toBe(NOTE);
+        expect(await enqueue).toEqual({ queueOperationId: null, message: "Xero refund credit note already linked for this payment." });
+        expect(await state()).toEqual({
+          active: false,
+          metadata: { amountCents: 20_000, watermarkCents: 20_000, status: "VOIDED", total: 200 },
+          pointer: null,
+        });
+        expect(await prisma.xeroSyncOperation.count({ where: { localModel: "Payment", localId: PAYMENT_ID } })).toBe(0);
+      } finally {
+        // Always release V and drain K/F before fixture teardown, even when a
+        // scheduling assertion fails or a mutated blocking lock deadlocks.
+        inbound.release();
+        await Promise.allSettled(pending);
+      }
+    });
+
+    it("a busy Payment defers only pointer cleanup and the nightly heal finds the inactive void", async () => {
+      const { upsertXeroObjectLink } = await import("@/lib/xero-sync");
+      const { lockPaymentForRefundedTotal } = await import("@/lib/payment-transactions");
+      const { cleanupStaleCanonicalXeroObjectLinks } = await import("@/lib/xero-hardening-canonical-links");
+      const metadata = { amountCents: 20_000, watermarkCents: 20_000, status: "VOIDED", total: 200 };
+      await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID }, data: { active: false, metadata } });
+      let release!: () => void;
+      const mayCommit = new Promise<void>((resolve) => (release = resolve));
+      let locked!: () => void;
+      const paymentLocked = new Promise<void>((resolve) => (locked = resolve));
+      const holder = prisma.$transaction(async (tx) => {
+        await lockPaymentForRefundedTotal(tx, PAYMENT_ID);
+        locked();
+        await mayCommit;
+      }, { timeout: 30_000 });
+      // A blocking-lock mutation is released before the transaction expires,
+      // then fails the elapsed-time assertion rather than hanging teardown.
+      const backstop = setTimeout(release, 10_000);
+      try {
+        await Promise.race([paymentLocked, holder.then(() => { throw new Error("Payment holder ended before locking"); })]);
+        const startedAt = process.hrtime.bigint();
+        await upsertXeroObjectLink({
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE, role: "REFUND_CREDIT_NOTE",
+        });
+        expect(realElapsedMs(startedAt)).toBeLessThan(5_000);
+        expect(await state()).toEqual({ active: false, metadata, pointer: NOTE });
+      } finally {
+        clearTimeout(backstop);
+        release();
+        await holder;
+      }
+
+      const healed = await cleanupStaleCanonicalXeroObjectLinks();
+      expect(healed.pointedInactiveCancelledRefundNoteMirrors).toBeGreaterThanOrEqual(1);
+      expect(healed.releasedInactiveRefundNotePointers).toBeGreaterThanOrEqual(1);
+      expect(await state()).toEqual({ active: false, metadata, pointer: null });
     });
   },
 );
