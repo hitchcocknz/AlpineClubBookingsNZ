@@ -33,6 +33,8 @@ export function adminDuplicateCaptureKeptTemplate(data: {
   paymentIntentId: string;
   /** The other payment holding money; null for a cash or bank payment. */
   otherPaymentIntentId: string | null;
+  /** False when nothing else holds money (a released settler, this payment alone). */
+  otherHoldsMoney?: boolean;
   bookingUrl: string;
   reviewUrl: string;
 },
@@ -50,6 +52,7 @@ export function adminDuplicateCaptureKeptTemplate(data: {
         duplicateCaptureKeptParagraph({
           reason: data.reason,
           otherPaymentIntentId: data.otherPaymentIntentId,
+          otherHoldsMoney: data.otherHoldsMoney,
         }),
       )
     }

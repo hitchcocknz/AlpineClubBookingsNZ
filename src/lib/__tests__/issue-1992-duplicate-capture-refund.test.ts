@@ -1681,6 +1681,7 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
         amountCents: 10000,
         paymentIntentId: THIRD_PI,
         otherPaymentIntentId: SETTLING_PI,
+        otherHoldsMoney: true,
       },
       CLUB_FORMAT_TEST,
     );
@@ -1734,6 +1735,31 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
       expect.objectContaining({ reason: "settler-released", otherPaymentIntentId: "pi_other_w" }),
       CLUB_FORMAT_TEST,
     );
+  });
+
+  it("a recorded settler that no longer holds money and nothing else holding money: kept, and the admins are told (not a silent keep)", async () => {
+    primeLedger(
+      [
+        ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI, status: PaymentStatus.REFUNDED, refundedAmountCents: 10000 }),
+        ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI }),
+      ],
+      { settledBy: "txn-y" },
+    );
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_kept");
+    expectNothingRefunded();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "settler-released", otherPaymentIntentId: null, otherHoldsMoney: false }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("no record and nothing else holding money (a replay of the booking's only capture): a silent keep", async () => {
+    primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })]);
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("already_paid");
+    expectNothingRefunded();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
   });
 
   it("(c′) alone sees a live superseded operation on the RECORDED settler: nothing is refunded and nobody is asked to check", async () => {

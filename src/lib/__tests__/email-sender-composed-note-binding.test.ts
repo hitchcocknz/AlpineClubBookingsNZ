@@ -641,6 +641,16 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(released).toContain("a cash or bank payment on it still holds money");
     expect(released).toContain("no longer holds money");
     expect(released).not.toContain("no record of which payment settled");
+
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminDuplicateCaptureKeptAlert(
+      { ...alert, reason: "settler-released", otherPaymentIntentId: null, otherHoldsMoney: false },
+      CLUB_FORMAT_TEST,
+    );
+    const alone = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(alone).toContain("no other payment on it still holds money");
+    expect(alone).toContain("whether this payment now pays for the booking or is a duplicate");
+    expect(alone).not.toContain("a cash or bank payment");
   });
 
   it("split-guest-portion-cancelled: {{ownBookingNote}} is supplied and renders its reassurance sentence", async () => {

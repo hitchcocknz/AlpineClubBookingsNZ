@@ -103,7 +103,13 @@ type DuplicateRefundSlice = { paymentTransactionId: string; amountCents: number 
 export type ArrivingCaptureVerdict =
   | { verdict: "keep" }
   /** Rule 3: kept, and the admins check by hand which side to refund. */
-  | { verdict: "keep_unrecorded_settler"; otherPaymentIntentId: string | null; reason: DuplicateCaptureKeptReason }
+  | {
+      verdict: "keep_unrecorded_settler";
+      otherPaymentIntentId: string | null;
+      reason: DuplicateCaptureKeptReason;
+      /** False: a recorded settler released and nothing else holds money. */
+      otherHoldsMoney: boolean;
+    }
   | {
       verdict: "refund";
       refundPlan: DuplicateRefundSlice[];
@@ -154,7 +160,15 @@ export async function judgeCaptureOnPaidBooking(
   const settlement =
     recordedSettler ??
     (await tx.paymentTransaction.findFirst({ orderBy: [...LEDGER_ROWS_OLDEST_FIRST], where, select }));
-  if (!settlement) return { verdict: "keep" };
+  if (!settlement) {
+    // #4211 review: a RECORDED settler that no longer qualifies, and nothing
+    // else holding money - the arriving capture may now pay for the booking or
+    // be a duplicate, and only a person can say. A booking with no record and
+    // no other holder (a replay of its only capture) stays a silent keep.
+    return input.recordedSettlerId
+      ? { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "settler-released", otherHoldsMoney: false }
+      : { verdict: "keep" };
+  }
 
   // (c′) belt and braces: the settlement's own intent re-checked against the
   // live superseded-intent operations, by a different query shape. If one owns
@@ -171,6 +185,7 @@ export async function judgeCaptureOnPaidBooking(
     return {
       verdict: "keep_unrecorded_settler",
       otherPaymentIntentId: settlement.stripePaymentIntentId,
+      otherHoldsMoney: true,
       reason: input.recordedSettlerId ? "settler-released" : "not-recorded",
     };
   }
@@ -205,6 +220,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   paymentIntentId,
   amountCents,
   otherPaymentIntentId,
+  otherHoldsMoney = true,
   reason,
   format,
 }: {
@@ -213,6 +229,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   paymentIntentId: string;
   amountCents: number;
   otherPaymentIntentId: string | null;
+  otherHoldsMoney?: boolean;
   reason: DuplicateCaptureKeptReason;
   format: ClubFormat;
 }) {
@@ -238,6 +255,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
       amountCents,
       paymentIntentId,
       otherPaymentIntentId,
+      otherHoldsMoney,
     }, format);
   } catch (err) {
     logger.error({ err, ...context }, "Failed to alert admins about a kept capture; giving the claim back so a repeat tries again (#4211)");

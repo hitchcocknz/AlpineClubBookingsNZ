@@ -174,6 +174,7 @@ export async function sendAdminDuplicateCaptureKeptAlert(data: {
   amountCents: number;
   paymentIntentId: string;
   otherPaymentIntentId: string | null;
+  otherHoldsMoney?: boolean;
 },
   format: ClubFormat,
 ) {
@@ -200,6 +201,7 @@ export async function sendAdminDuplicateCaptureKeptAlert(data: {
       duplicateCaptureKeptNote: duplicateCaptureKeptParagraph({
         reason: data.reason,
         otherPaymentIntentId: data.otherPaymentIntentId,
+        otherHoldsMoney: data.otherHoldsMoney,
       }),
     },
     requirement: { area: "finance", level: "edit" },

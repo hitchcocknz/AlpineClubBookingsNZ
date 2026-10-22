@@ -1102,6 +1102,7 @@ async function settleBookingPaymentInTransaction(
             paymentId: payment.id,
             bumpedBookingIds: [] as string[],
             otherPaymentIntentId: verdict.otherPaymentIntentId,
+            otherHoldsMoney: verdict.otherHoldsMoney,
             keptReason: verdict.reason,
           };
         }
@@ -1880,7 +1881,7 @@ export async function markBookingPaymentSucceeded({
 
   if (reconciliation.outcome === "duplicate_capture_kept") {
     const owner = bookingOwner(reconciliation.booking).member;
-    await alertCaptureKeptWithoutRecordedSettler({ booking: reconciliation.booking, memberName: `${owner.firstName} ${owner.lastName}`, paymentIntentId, amountCents, otherPaymentIntentId: reconciliation.otherPaymentIntentId, reason: reconciliation.keptReason, format });
+    await alertCaptureKeptWithoutRecordedSettler({ booking: reconciliation.booking, memberName: `${owner.firstName} ${owner.lastName}`, paymentIntentId, amountCents, otherPaymentIntentId: reconciliation.otherPaymentIntentId, otherHoldsMoney: reconciliation.otherHoldsMoney, reason: reconciliation.keptReason, format });
     return { outcome: "duplicate_capture_kept", bookingId, bumpedBookingIds: [] };
   }
 

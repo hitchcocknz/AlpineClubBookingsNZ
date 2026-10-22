@@ -833,6 +833,18 @@ describe("Stripe webhook Xero alerting", () => {
       handed: false,
     },
     {
+      label: "no settler recorded and the intent pointer names another intent, on an unpaid booking",
+      bookingStatus: "PAYMENT_PENDING", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
+      payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: null },
+      handed: false,
+    },
+    {
+      label: "the settler's id, but on a row of another payment",
+      bookingStatus: "COMPLETED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-elsewhere",
+      payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: SETTLER },
+      handed: false,
+    },
+    {
       label: "a PAID booking, but the capture's row is on another payment",
       bookingStatus: "PAID", rowStatus: "SUCCEEDED", rowPaymentId: "payment-elsewhere",
       payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: "txn-other" },

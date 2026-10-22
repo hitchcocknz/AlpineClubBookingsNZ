@@ -34,13 +34,19 @@ function otherPaymentLabel(otherPaymentIntentId: string | null): string {
 export function duplicateCaptureKeptParagraph(input: {
   reason: DuplicateCaptureKeptReason;
   otherPaymentIntentId: string | null;
+  /** False when nothing else holds money: a released settler and this payment alone (#4211 review). */
+  otherHoldsMoney?: boolean;
 }): string {
-  const lead = `A card payment arrived on this booking after it was already paid, and ${otherPaymentLabel(input.otherPaymentIntentId)} on it still holds money.`;
+  const lead = input.otherHoldsMoney === false
+    ? "A card payment arrived on this booking after it was already paid, and no other payment on it still holds money."
+    : `A card payment arrived on this booking after it was already paid, and ${otherPaymentLabel(input.otherPaymentIntentId)} on it still holds money.`;
   switch (input.reason) {
     case "not-recorded":
       return `${lead} The app has no record of which payment settled this booking: it was paid before the app kept one, by the previous app version during an upgrade, or by a bank payment that could not be matched to a single receipt. So nothing was refunded automatically.`;
     case "settler-released":
-      return `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell which of the remaining payments to keep, and nothing was refunded automatically.`;
+      return input.otherHoldsMoney === false
+        ? `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell whether this payment now pays for the booking or is a duplicate, and nothing was refunded automatically.`
+        : `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell which of the remaining payments to keep, and nothing was refunded automatically.`;
   }
 }
 
