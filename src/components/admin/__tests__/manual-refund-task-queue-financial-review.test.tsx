@@ -712,6 +712,16 @@ describe("what completing or dismissing means, per kind (#3033)", () => {
     });
   });
 
+  it("#3949 review round 3: a review on a joiner the organiser paid for by internet banking is worded for the organiser, and asks no cash-or-bank", async () => {
+    await openDialog({ ...REVIEW_TASK, id: "task-review-organiser", paidBackByHand: true, paidToGroupOrganiser: true }, "Record the adjustment");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toMatch(/money the club owes goes back to the organiser by bank transfer, never to the member/);
+    fireEvent.click(screen.getByLabelText(/The club owes the member/));
+    expect(screen.queryByLabelText("In cash")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay the group organiser back" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pay the member back" })).not.toBeInTheDocument();
+  });
+
   it("never asks cash-or-bank where a refund is not paid back by hand (#3536)", async () => {
     await openDialog({ ...REVIEW_TASK, id: "task-review-card", paidBackByHand: false }, "Record the adjustment");
     fireEvent.click(screen.getByLabelText(/The club owes the member/));

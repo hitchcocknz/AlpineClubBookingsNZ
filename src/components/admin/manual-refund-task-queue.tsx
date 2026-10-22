@@ -685,6 +685,8 @@ function resolutionDescription({
   }
 
   if (isFinancialReview(task)) {
+    // #3949 review round 3: the group organiser paid for this booking by internet banking, so money owed back is theirs.
+    if (task.paidToGroupOrganiser === true) return "Price this from the evidence on the row and the booking's payment history: the amount, and which way it goes. The group organiser paid for this booking, so money the club owes goes back to the organiser by bank transfer, never to the member; if the member owes the club they are asked to pay it on this booking. If nothing is owed either way, close the review with no adjustment instead.";
     return "Price this from the evidence on the row and the booking's payment history: the amount, and which way it goes. If the club owes the member it is paid back or held as account credit; if the member owes the club they are asked to pay it on this booking. If nothing is owed either way, close the review with no adjustment instead.";
   }
 
@@ -728,7 +730,7 @@ function confirmButtonLabel(
 
   if (isFinancialReview(task)) {
     if (direction === "CHARGE_TO_MEMBER") return "Ask the member to pay";
-    if (direction === "REFUND_TO_MEMBER") return "Pay the member back";
+    if (direction === "REFUND_TO_MEMBER") return task.paidToGroupOrganiser === true ? "Pay the group organiser back" : "Pay the member back"; // #3949
     return "Settle the review";
   }
 
@@ -1212,7 +1214,7 @@ export function ManualRefundTaskQueue() {
     isFinancialReview(target.task);
   // #3536: only a refund the club pays back by hand asks how it went back.
   const askHandBackMethod =
-    pricingReview && direction === "REFUND_TO_MEMBER" && target.task.paidBackByHand === true;
+    pricingReview && direction === "REFUND_TO_MEMBER" && target.task.paidBackByHand === true && target.task.paidToGroupOrganiser !== true; // #3949: an organiser's goes by bank, its note by hand
   const pricedAmountCents = pricingReview
     ? parseDecimalDollarsToCents(amountInput)
     : null;

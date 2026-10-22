@@ -52,7 +52,7 @@ import type { EditReviewSettlementTask } from "@/lib/edit-financial-review-settl
 import { cardShortfallSettlement } from "@/lib/cancel-card-refund-shortfall-settle";
 import type { CapacityRaceStripeRefunded } from "@/lib/capacity-race-refunded-total-correction";
 import { alertGroupMirrorRefundXeroByHand, chooseGroupSettlementMirrorRoute, chooseReviewGroupSettlementMirrorRoute, type GroupSettlementMirrorRoute } from "@/lib/group-settlement-mirror-hand-back";
-import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
+import { reviewRefundGoesToGroupOrganiser } from "@/lib/group-settlement-mirror-kinds";
 
 /**
  * #3032 (epic #2797): WHERE a confirmed review amount goes when the task is
@@ -412,7 +412,7 @@ export async function chooseEditReviewSettlementRoute({
 
   // #3949 review: on a joiner the organiser paid for by Internet Banking the share goes to the organiser, onto the
   // child's mirror (`INV-PAY-136`); a cancelled one is refused by the netting first, as the card twin is.
-  if (settlementPayment !== null && paidByOrganiserInternetBanking(task.booking)) {
+  if (settlementPayment !== null && reviewRefundGoesToGroupOrganiser(task)) {
     const reviewMirror = await chooseReviewGroupSettlementMirrorRoute({ task, paymentId: settlementPayment.id, amountCents: (await owed()).captureCents, store });
     if (reviewMirror) return reviewMirror;
   }

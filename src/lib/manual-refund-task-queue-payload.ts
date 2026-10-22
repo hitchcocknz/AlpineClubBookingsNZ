@@ -14,7 +14,7 @@ import {
 import { isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
 import { isGroupOrganiserHandBackTask } from "@/lib/group-organiser-hand-back-rules";
 import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
-import { isGroupSettlementMirrorHandBackKind } from "@/lib/group-settlement-mirror-kinds";
+import { isGroupSettlementMirrorHandBackKind, reviewRefundGoesToGroupOrganiser } from "@/lib/group-settlement-mirror-kinds";
 import { readBankRefundVoidFollowUpContext } from "@/lib/bank-refund-void-follow-up-copy";
 import type { QueueRepairableStrand } from "@/lib/stored-night-price-repair-queue";
 
@@ -178,7 +178,8 @@ export type OpenManualRefundTaskPayload = {
   refundRequestHandBack: boolean;
   /**
    * #3949 (`INV-PAY-136`): either of those two, or the joiner's own cancellation's
-   * hand-back (`isGroupSettlementMirrorHandBackKind`), on a joiner's booking the
+   * hand-back (`isGroupSettlementMirrorHandBackKind`), or a review whose refund
+   * the chooser sends there (`reviewRefundGoesToGroupOrganiser`), on a joiner's booking the
    * group organiser paid for by Internet Banking, so the money goes back to the
    * ORGANISER (`paidByOrganiserInternetBanking`), never to the joiner.
    */
@@ -296,7 +297,9 @@ export function toOpenManualRefundTaskPayload(
     editRefundHandBack: isEditRefundHandBackTask(task),
     refundRequestHandBack: isRefundRequestHandBackTask(task),
     paidToGroupOrganiser:
-      isGroupSettlementMirrorHandBackKind(task) && paidByOrganiserInternetBanking(task.booking),
+      task.kind === "EDIT_FINANCIAL_REVIEW"
+        ? reviewRefundGoesToGroupOrganiser(task) // review round 3: the chooser's own test
+        : isGroupSettlementMirrorHandBackKind(task) && paidByOrganiserInternetBanking(task.booking),
     groupOrganiserHandBack: groupHandBack,
     cardShortfallHandBack: cancelCardShortfallPart(task) === "bank",
     cardShortfallCheck: cancelCardShortfallPart(task) === "check",
