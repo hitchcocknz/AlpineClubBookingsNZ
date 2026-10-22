@@ -63,6 +63,13 @@ describe("the price summary names how a reduction goes back to the group organis
     expect(screen.queryByRole("radio")).toBeNull();
   });
 
+  it("#3949 review round 6: mid group cancel, shows the save's refusal and promises no refund", () => {
+    renderQuote({ ...organiserQuote(true), priceChangeRefusal: "The group organiser is cancelling this group." } as QuoteResult);
+
+    expect(screen.getByTestId("organiser-price-change-refusal").textContent).toBe("The group organiser is cancelling this group.");
+    expect(screen.queryByTestId("organiser-refund-notice")).toBeNull();
+  });
+
   it("#3653: to the organiser's card where the organiser paid by card", () => {
     renderQuote(organiserQuote(false));
 

@@ -46,19 +46,33 @@ export class GroupCancelInProgressError extends ApiError {
 }
 
 /**
- * #3949 review round 5 (`INV-PAY-136`): refuse a price change of a joiner's booking the organiser paid for by Internet
- * Banking while the organiser's group cancel is part-way through, whatever settlement the edit chose - account
- * credit included - because the cancel froze this child's refund from the price as it stood. Asked once, by
- * `applyPaymentAdjustments`, which every edit door and a guest's acceptance settle a price change through, under the
- * door's `lock(1)` with the booking re-read after it.
+ * #3949 review rounds 5-6 (`INV-PAY-136`): the refusal a price change of a joiner's booking the organiser paid for by
+ * Internet Banking meets while the organiser's group cancel is part-way through, whatever settlement the edit chose -
+ * account credit included - because the cancel froze this child's refund from the price as it stood; or null. The
+ * price change and the change fee are each tested on their own: a cut a fee nets to zero still changes the price.
+ *
+ * The ONE answer for the save and its quote: the save asks it through `refuseOrganiserBankChildPriceChangeInGroupCancel`
+ * under the door's `lock(1)` with the booking re-read after it; the quote asks it unlocked, as advice
+ * (`priceChangeRefusal`), so it does not promise a refund the save will refuse.
+ */
+export async function organiserBankChildPriceChangeRefusal(
+  store: Pick<Prisma.TransactionClient, "groupBooking">,
+  booking: Parameters<typeof paidByOrganiserInternetBanking>[0] & { status: string },
+  change: { priceDiffCents: number; changeFeeCents: number },
+): Promise<string | null> {
+  const changes = change.priceDiffCents !== 0 || change.changeFeeCents !== 0;
+  return changes && paidByOrganiserInternetBanking(booking) && (await groupCancelInProgress(store, booking)) ? GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE : null;
+}
+
+/**
+ * Throw that refusal (409). Asked once by `applyPaymentAdjustments`, which every edit door and a guest's acceptance
+ * settle a price change through, and by the guest-add door, which settles itself.
  */
 export async function refuseOrganiserBankChildPriceChangeInGroupCancel(
   store: Pick<Prisma.TransactionClient, "groupBooking">,
   booking: Parameters<typeof paidByOrganiserInternetBanking>[0] & { status: string },
-  /** Each part on its own (review round 6): a price cut a change fee nets to zero is still a price change. */
   change: { priceDiffCents: number; changeFeeCents: number },
 ): Promise<void> {
-  if ((change.priceDiffCents !== 0 || change.changeFeeCents !== 0) && paidByOrganiserInternetBanking(booking) && (await groupCancelInProgress(store, booking))) {
-    throw new GroupCancelInProgressError(GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE);
-  }
+  const refusal = await organiserBankChildPriceChangeRefusal(store, booking, change);
+  if (refusal) throw new GroupCancelInProgressError(refusal);
 }

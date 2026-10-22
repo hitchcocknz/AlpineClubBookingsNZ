@@ -1936,7 +1936,7 @@ export function EditBookingPanel({
                 saving ||
                 quoteLoading ||
                 !quote ||
-                !capacityOk || Boolean(quote.chargeRefusal) /* #3653 */ ||
+                !capacityOk || Boolean(quote.chargeRefusal) /* #3653 */ || Boolean(quote.priceChangeRefusal) /* #3949 */ ||
                 (settlementRequired && !settlementMethod) ||
                 (linkedMoveSettlementRequired &&
                   linkedMoveChoice === "MOVE_BOTH" &&

@@ -13,7 +13,7 @@ import {
 } from "@/lib/booking-modify-settlement";
 import { paymentEligibleForPaidCancelPath, paymentHasCaptureEvidence } from "@/lib/booking-cancel";
 import { ORGANISER_CHILD_CHARGE_REFUSAL } from "@/lib/group-organiser-paid";
-import { GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE } from "@/lib/group-cancel-in-progress";
+import { GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE, organiserBankChildPriceChangeRefusal } from "@/lib/group-cancel-in-progress";
 import type { BookingModificationSettlementOptions } from "@/lib/booking-modify-settlement";
 import { noReductionAgainstUnpaidAsk } from "@/lib/additional-ask-reduction";
 import type { LoadedBookingForModify } from "@/lib/booking-modify-validation";
@@ -302,6 +302,21 @@ describe("an organiser child's reduction at the edit door (#3653)", () => {
     // The quote route answers with the SAME predicate the save refuses on.
     const quote = readFileSync(resolve(REPO_ROOT, "src/app/api/bookings/[id]/modify-quote/route.ts"), "utf8");
     expect(quote).toContain("chargeRefusal: organiserChildChargeRefusal({ booking, netChargeCents }),");
+  });
+
+  it("#3949 review round 6: the quote shows the mid-group-cancel refusal the save would meet, from the save's own answer", async () => {
+    const store = (groupStatus: string) => ({ groupBooking: { findUnique: vi.fn(async () => ({ status: groupStatus })) } }) as never;
+    const change = { priceDiffCents: -1500, changeFeeCents: 0 };
+    expect(await organiserBankChildPriceChangeRefusal(store("CANCELLED"), ibChild(), change)).toBe(GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE);
+    expect(await organiserBankChildPriceChangeRefusal(store("CANCELLED"), ibChild(), { priceDiffCents: -2000, changeFeeCents: 2000 })).toBe(GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE);
+    expect(await organiserBankChildPriceChangeRefusal(store("CANCELLED"), ibChild(), { priceDiffCents: 0, changeFeeCents: 0 })).toBeNull();
+    expect(await organiserBankChildPriceChangeRefusal(store("OPEN"), ibChild(), change)).toBeNull();
+    expect(await organiserBankChildPriceChangeRefusal(store("CANCELLED"), child(), change)).toBeNull();
+    // The quote answers with that function, and the edit panel keeps Save off while it is set.
+    const quote = readFileSync(resolve(REPO_ROOT, "src/app/api/bookings/[id]/modify-quote/route.ts"), "utf8");
+    expect(quote).toContain("priceChangeRefusal: await organiserBankChildPriceChangeRefusal(prisma, booking, { priceDiffCents, changeFeeCents })");
+    const panel = readFileSync(resolve(REPO_ROOT, "src/components/edit-booking-panel.tsx"), "utf8");
+    expect(panel).toContain("Boolean(quote.priceChangeRefusal)");
   });
 
   it("a joiner's organiser-card booking a reduction partly refunded still takes the paid cancel path (fix round 2, F1)", async () => {

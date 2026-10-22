@@ -52,3 +52,12 @@ reason: the guest-add door settles its own price change rather than through
   (`refuseOrganiserBankChildPriceChangeInGroupCancel`) - right after it prices
   the change under its own `lock(1)`. The three lines are that call, its
   comment and its import; the one helper is shared, not copied.
+
+file: src/app/api/bookings/[id]/modify-quote/route.ts
+lines: 2551
+reason: the quote answers, as advice, the refusal its save would meet - no
+  price change of a joiner's booking the organiser paid for by internet
+  banking while the organiser's group cancel is part-way through - from the
+  save's own function (`organiserBankChildPriceChangeRefusal`), returned beside
+  the organiser card's `chargeRefusal` on that field's own line, so it never
+  promises a refund the save refuses. The one line is that function's import.
