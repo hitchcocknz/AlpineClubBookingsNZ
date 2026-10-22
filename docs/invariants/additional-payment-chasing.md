@@ -665,6 +665,23 @@ transaction detail - the hand-backs the treasurer recorded. Below that it keeps
 the detail, logs and raises the same alert; only the nightly follow-up moves the
 detail, line and total together (`INV-ADDPAY-042`).
 
+- **A refund request's paid-back cash is not Xero's to drop** (#4215,
+  `INV-PAY-118`). Its own note is outside the notes the repair sums, so the
+  recount adds what each request's completed hand-back recorded
+  (`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`), never its note (queued,
+  voided or never raised) nor the canonical note, so the floor never alerts
+  on it and a total dropped before #4215 is raised back. It reads them after
+  the payment row, so a completion in between loses the claim and the repair
+  re-runs. The booking
+  repair tool nets the same figure from the cash a cancellation's note answers
+  (`readPaidBackRefundRequests`, #4231), and offers, for an officer to
+  confirm, a request's own note its completion could not queue (no invoice
+  yet): only with no note row of its own (a voided one stays the officer's,
+  `INV-ADDPAY-041`) and no cancellation note at all, else a person checks
+  Xero.
+  Pinned by `xero-credit-note-repairs`, `xero-booking-repair` and
+  `xero-bt-repair-request-cash`.
+
 ### INV-ADDPAY-022
 
 Cancelled-booking soft-delete may hide an operational duplicate only when it
@@ -1580,7 +1597,8 @@ decision and would need its own owner decision.
   and conflict check leave out a note a link records VOIDED or DELETED
   (`refundNoteIdSets`), so nothing writes one back into
   `Payment.xeroRefundCreditNoteId`. The nightly link cleanup heals a pre-#4091
-  active mirror (#4161).
+  active mirror (#4161). A later inbound event for the voided note still
+  recounts that payment (#4291).
 - **A refund request's own note** (`INV-PAY-118`, #4195) too: its voided
   mirror goes inactive, even racing a status-less write, and never covers
   the request. Only an officer re-raises one (#4214), never a retry; the Xero
@@ -1598,7 +1616,7 @@ decision and would need its own owner decision.
   (`INV-ADDPAY-042`), moves the detail, the `BANK_REFUND` line and the total
   together and raises the follow-up; nothing is re-raised automatically.
   Pinned by `xero-refund-note-{void-pointer,crash-window,after-void-key}`,
-  `bank-refund-void-follow-up`,
+  `xero-voided-note-recount`, `bank-refund-void-follow-up`,
   `xero-refund-request-note-void`, `xero-voided-request-note-retry-routes`,
   `xero-sync`, `xero-booking-repair`, `xero-operation-retry`,
   `xero-operation-outbox` and `xero-hardening`.

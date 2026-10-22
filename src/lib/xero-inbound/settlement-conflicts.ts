@@ -267,9 +267,13 @@ export type SecondInstrumentSettlement = {
  * (bank first, card second), whose durable refund operation already says which
  * side goes back (`INV-PAY-043`). On a PAID / COMPLETED booking, nor one the
  * superseded-intent machinery holds for the member
- * (`listSupersededIntentIdsOwningCaptures`, #4177): the duplicate-capture
- * refund skips it too, so the two name the same settling capture. A cancelled
- * booking still counts it, because the new bank cash has nowhere to go.
+ * (`listSupersededIntentIdsOwningCaptures`, #4177), including one whose
+ * superseded refund open rows owe back again, for all it holds, after a refund
+ * Stripe failed later (#4221). The duplicate-capture
+ * refund skips a capture a live superseded operation holds, but not yet one a
+ * failed-later row holds, so after such a failure the two can name different
+ * settling captures until #4227. A cancelled booking still counts it, because
+ * the new bank cash has nowhere to go.
  *
  * Read under the lock(1) the settle loop already holds, which the card
  * settlement takes too, so the settlement it looks for has either committed or
@@ -375,7 +379,7 @@ export async function findSecondInstrumentSettlement(
   // nowhere to go, so a capture going back to the member still counts there.
   const ownedBySupersededMachinery = new Set(
     !cancelled && anyCardCandidate
-      ? await listSupersededIntentIdsOwningCaptures(tx, paymentId)
+      ? await listSupersededIntentIdsOwningCaptures(tx, paymentId, candidates)
       : []
   );
   const unowned = (transaction: (typeof candidates)[number]) =>

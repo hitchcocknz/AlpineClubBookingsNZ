@@ -132,10 +132,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   silently** (#3638).
 - **The Internet Banking switch refuses unless the card intent is retired**
   (`isCardIntentRetired`): Stripe confirmed the cancel, the intent was already
-  `canceled`, or it succeeded and the local ledger shows it refunded (#1765). A
-  live capture, or a cancel that throws, is a 409 with no payment write and no
-  invoice. Under lock(1) it refuses a payment now pointing at a different
-  intent.
+  `canceled`, or it succeeded and the ledger shows it refunded (#1765). A
+  live capture, or a cancel that throws, is a 409 writing no payment or
+  invoice. Under lock(1) it refuses a payment now on a different intent.
 - **Every card door attaches through `attachMintedCardIntent`** —
   `create-payment-intent` and `/pay/<token>` — under lock(1), re-reading the
   payment's source and the booking's status and refusing an Internet Banking or
@@ -145,13 +144,14 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   loop's lock(1), a PRIMARY capture of another source is a conflict on a PAID or
   COMPLETED booking while it holds net cash, and on a CANCELLED one while the
   bank cash is new. The bank receipt is recorded and nothing else moves. One
-  admin-only marker per invoice is written IN that transaction, so it commits
+  admin-only marker per invoice is written IN that transaction, committing
   with the receipt; the unmuteable alert follows the commit, and the marker
-  records it sent, so a crash in between re-sends it once on the retry. Not
+  records it sent, so a crash in between re-sends it once. Not
   second instruments: an ADDITIONAL card row, a capture the #1992 refund owns
   (`INV-PAY-043`), and — on a settled booking — #1765 refund history, a card
-  row refunded before the booking moved to Internet Banking, or a capture a
-  superseded-intent refund or in-flight cancel holds for the member (#4177).
+  row refunded before the switch, a capture a superseded-intent refund or
+  in-flight cancel holds for the member (#4177), or one with a superseded
+  refund that open rows owe back in full after failed-later refunds (#4221).
 - **A replay on a settled booking changes nothing.** COMPLETED takes the
   already-paid arm like PAID.
 - Pinned by `switch-to-internet-banking-route.test.ts`,
@@ -1426,8 +1426,8 @@ short).
   (#4132, owner decision 15 Oct 2026). `createdAt` alone is not an order. Rows
   written in one transaction share it, and PostgreSQL returns a tie in heap
   order, which an update of an indexed column changes. Nor is a cuid `id`.
-  - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from a
-    sequence the column owns. The database assigns it; code never writes it.
+  - **The column**: `PaymentTransaction.insertionSeq`, an `INTEGER` from its
+    own sequence. The database assigns it; code never writes it.
     The migration numbered each stored tie retired rows first (FAILED,
     withdrawn, or an ask queued for cancellation), live rows last, then
     physical order. A stored tie can change order at that
@@ -1445,11 +1445,10 @@ short).
     check for open ones after the old colour drains.
   - **The settling capture: the recorded one, else the oldest-inserted
     qualifying one** (#4177, `INV-PAY-043`). Xero's conflict (#4163) and the
-    duplicate-capture guard skip duplicate-refund-owned captures, at any
-    status. When
-    paid, the Xero conflict also skips a capture a superseded refund or
-    in-flight cancel holds, and #1765 refund history (ranked last when
-    cancelled).
+    guard skip duplicate-refund-owned captures, at any status. When paid,
+    Xero's conflict also skips #1765 refund history (ranked last when
+    cancelled) and what `INV-PAY-102` says the superseded-intent machinery
+    holds, failed-later refunds open rows owe back in full included (#4221).
   - Policed by `ledger-row-order-census.test.ts`; proven on PostgreSQL by
     `ledger-insertion-seq.realdb.test.ts`, `settled-capture-order.realdb.test.ts`
     and the migration's fixture; the settling capture by
@@ -2286,20 +2285,21 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 ## INV-PAY-118
 
 - **An approved refund appeal's non-card part raises ONE officer refund task**
-  (#3827; owner decision D-3813-7 on #3492). Approving a refund request plans
+  (#3827; owner decision D-3813-7, #3492). Approving a refund request plans
   the Stripe refund inside the approval's own transaction, under `lock(1)`;
   on an internet-banking payment whatever that plan cannot carry raises a
   `ManualRefundTask` in the same transaction through
-  `raiseRefundRequestHandBack`, so it is netted before the lock is released. A card payment planned short is drift,
-  logged, never a task. A task that cannot be raised refuses the approval.
+  `raiseRefundRequestHandBack`, so it is netted before the lock releases. A card payment planned short is drift,
+  logged, never a task. An unraisable task refuses the approval.
   - **One task per request**: occurrence key
     `refund-request-hand-back:<RefundRequest id>`, unique, inserted
     `ON CONFLICT DO NOTHING`. A released claim (Stripe and its recovery
-    enqueue both failed) deletes the OPEN task in the same locked
+    enqueue both failed) deletes the OPEN task in the approval's locked
     transaction.
   - **The same kind and marker as an edit's.** `isNonCancellationHandBackTask`
     and `NOT_NON_CANCELLATION_HAND_BACK_WHERE` cover both. Completion records
-    the refund on the payment, the bank-refund ledger line and a `REFUNDED`
+    the refund on the payment (kept by `INV-ADDPAY-021`'s recount), the
+    bank-refund ledger line and a `REFUNDED`
     event marked `refund_request_hand_back_completed`, outside the narrative's
     settlement.
   - **Its Xero note is queued on payout, one live note per request**
