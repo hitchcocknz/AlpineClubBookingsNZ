@@ -5,7 +5,8 @@ import { describe, expect, it } from "vitest";
 /**
  * #4230 (`INV-ADDPAY-021`, `INV-PAY-124`): the real-PostgreSQL pins that a
  * group organiser's hand-back leaves the bank-transfer recount nothing to drop,
- * and that the recount never writes the charge rows the #4162 floor keeps,
+ * that the recount never writes the charge rows the #4162 floor keeps, of the
+ * absorbed later refunds and the alert they raise, and of the deploy note's query,
  * self-skip without `RUN_CONCURRENCY_RACE_TESTS`; hosted CI reaches them only
  * because the race harness imports them. Lose that import and they silently
  * become a no-op while every suite stays green, so the edge is pinned here.
@@ -20,5 +21,8 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("a group organiser's hand-back moves no payment's refunded total");
     expect(suite).toContain("the recount writes the payment's refunded total and never its charge rows");
+    expect(suite).toContain("CURRENT BEHAVIOUR: a second cancellation hand-back is absorbed into the canonical note");
+    expect(suite).toContain("CURRENT BEHAVIOUR: a refund request's card part on a bank transfer is absorbed");
+    expect(suite).toContain("a payment whose refunds all have notes is not listed by the deploy note's query");
   });
 });

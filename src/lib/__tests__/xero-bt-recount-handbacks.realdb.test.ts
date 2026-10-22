@@ -1,8 +1,9 @@
 /**
- * Real-PostgreSQL pins for #4230 (`INV-PAY-124`, `INV-ADDPAY-021`): two kinds
- * of bank-transfer cash the inbound refunded-total recount
- * (`repairRefundedPaymentBusinessState`) was suspected of dropping, shown safe.
+ * Real-PostgreSQL pins for #4230 (`INV-ADDPAY-021`, `INV-PAY-124`): bank-transfer
+ * cash the inbound refunded-total recount (`repairRefundedPaymentBusinessState`)
+ * was suspected of dropping.
  *
+ * Safe, and pinned as such:
  * - A group organiser's hand-back (#4042) moves no payment's refunded total.
  *   The group cancel already recorded each joiner's refund on the joiner's own
  *   payment, under that payment's own canonical note, so completing the
@@ -13,6 +14,17 @@
  *   rows later (#1491, `foldMirrorRefundIntoLedger`), and the rows are the
  *   detail the #4162 floor keeps, so a recount that rewrote them would erase
  *   the floor it is held to.
+ *
+ * CURRENT BEHAVIOUR, pinned on purpose (owner decision 22 Oct 2026): a later,
+ * distinct refund on a bank-transfer payment that already has its canonical
+ * note - a second cancellation hand-back, or a refund request's card part - is
+ * ABSORBED by the single-note branch of `enqueueXeroRefundCreditNoteOperation`
+ * and gets no note of its own. Xero is then genuinely short a note, so the
+ * floor keeps the total and the alert is true; it names that cause and asks for
+ * the note by hand. The recount deliberately does not add the absorbed cash
+ * (that would silence the only signal). Giving each such refund its own note is
+ * the subject of a separate High-risk issue; these cases change with it. The
+ * deploy note's read-only query that lists such payments is run here too.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
@@ -52,6 +64,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await prisma.manualRefundTask.deleteMany({ where: { bookingId: { in: BOOKING_IDS } } });
       await prisma.xeroSyncOperation.deleteMany({ where: { localModel: "Payment", localId: { in: PAYMENT_IDS } } });
       await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: PAYMENT_IDS } } });
+      await prisma.paymentRefund.deleteMany({ where: { paymentId: { in: PAYMENT_IDS } } });
       await prisma.paymentTransaction.deleteMany({ where: { paymentId: { in: PAYMENT_IDS } } });
       await prisma.payment.deleteMany({ where: { id: { in: PAYMENT_IDS } } });
     }
@@ -128,19 +141,63 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       }
     }
 
-    /** The refund-ledger divergence alerts raised while `run` executes (#1353, #4162 floors). */
-    async function watchDivergenceAlerts(run: () => Promise<unknown>): Promise<string[]> {
+    /** The refund-ledger divergence alerts raised while `run` executes (#1353, #4162 floors): operation and message. */
+    async function watchDivergenceAlertMessages(run: () => Promise<unknown>): Promise<Array<{ operation: string; errorMessage: string }>> {
       const alerting = await import("@/lib/xero-error-alert");
       const spy = vi.spyOn(alerting, "notifyXeroSyncError").mockResolvedValue(undefined as never);
       try {
         await run();
         return spy.mock.calls
-          .map(([input]) => input as { errorType: string; operation: string })
+          .map(([input]) => input as { errorType: string; operation: string; errorMessage: string })
           .filter((input) => input.errorType === "refund-ledger-divergence")
-          .map((input) => input.operation);
+          .map(({ operation, errorMessage }) => ({ operation, errorMessage }));
       } finally {
         spy.mockRestore();
       }
+    }
+
+    async function watchDivergenceAlerts(run: () => Promise<unknown>): Promise<string[]> {
+      return (await watchDivergenceAlertMessages(run)).map((alert) => alert.operation);
+    }
+
+    /** The #4230 deploy note's read-only query, run as an operator would run it: the payments it lists. */
+    async function deployNoteListedPaymentIds(): Promise<string[]> {
+      const { readFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const doc = readFileSync(resolve(__dirname, "../../../docs/xero/ARCHITECTURE.md"), "utf8");
+      const section = doc.slice(doc.indexOf("**Deploy note (#4230).**"));
+      const sql = /`(SELECT [^`]*)`/.exec(section)?.[1];
+      expect(sql).toBeDefined();
+      const rows = await prisma.$queryRawUnsafe<Array<{ id: string }>>(sql!);
+      return rows.map((row) => row.id).filter((id) => PAYMENT_IDS.includes(id));
+    }
+
+    /** A $200 bank transfer that refunded $100 by a completed hand-back, under its one canonical note. */
+    async function seedRefundedUnderCanonicalNote(extra: { amountCents?: number } = {}) {
+      await prisma.payment.create({
+        data: {
+          id: ORGANISER_PAYMENT_ID, bookingId: ORGANISER_BOOKING_ID, amountCents: extra.amountCents ?? 20_000, source: "INTERNET_BANKING",
+          status: "PARTIALLY_REFUNDED", refundedAmountCents: 10_000, xeroInvoiceId: "inv-race-4230-organiser",
+        },
+      });
+      await prisma.paymentTransaction.create({
+        data: {
+          id: "race-4230-txn", paymentId: ORGANISER_PAYMENT_ID, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: 20_000,
+          refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED",
+        },
+      });
+      await prisma.manualRefundTask.create({
+        data: {
+          id: "race-4230-first-hand-back", bookingId: ORGANISER_BOOKING_ID, paymentId: ORGANISER_PAYMENT_ID, amountCents: 10_000, raisedAmountCents: 10_000,
+          kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", reason: "race 4230 first hand-back",
+          completedAt: new Date("2026-06-01T00:00:00.000Z"), completedByMemberId: OFFICER_ID, settlementDirection: "REFUND_TO_MEMBER",
+        },
+      });
+      await linkCanonicalNote(ORGANISER_PAYMENT_ID, 10_000);
+    }
+
+    async function refundNoteRows() {
+      return prisma.xeroSyncOperation.count({ where: { localModel: "Payment", localId: ORGANISER_PAYMENT_ID, entityType: "CREDIT_NOTE" } });
     }
 
     it("a group organiser's hand-back moves no payment's refunded total, and a joiner's canonical-note recount keeps the joiner's refund (#4042)", async () => {
@@ -218,6 +275,74 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" });
       expect(alerts).toEqual([`inbound-credit-note-repair:${CANONICAL_NOTE}`]);
       expect(await rows()).toEqual([{ refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" }]);
+    });
+
+    it("a payment whose refunds all have notes is not listed by the deploy note's query", async () => {
+      await seedRefundedUnderCanonicalNote();
+      expect(await deployNoteListedPaymentIds()).toEqual([]);
+    });
+
+    it("CURRENT BEHAVIOUR: a second cancellation hand-back is absorbed into the canonical note - the floor keeps it, the alert asks for its note, the deploy note lists it", async () => {
+      await seedRefundedUnderCanonicalNote();
+      await prisma.manualRefundTask.create({
+        data: {
+          id: TASK_ID, bookingId: ORGANISER_BOOKING_ID, paymentId: ORGANISER_PAYMENT_ID, amountCents: 3_000, raisedAmountCents: 3_000,
+          kind: "CANCELLED_BOOKING_HAND_BACK", reason: "race 4230 second hand-back",
+        },
+      });
+      const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
+      await resolveManualRefundTask(
+        { taskId: TASK_ID, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null },
+        CLUB_FORMAT_TEST,
+      );
+      // Paid and recorded, but absorbed: the completion queued no note of its own.
+      expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 13_000, status: "PARTIALLY_REFUNDED" });
+      expect(await refundNoteRows()).toBe(0);
+      expect(await deployNoteListedPaymentIds()).toEqual([ORGANISER_PAYMENT_ID]);
+
+      const { BANK_TRANSFER_REFUND_SHORTFALL_ADVICE } = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
+      const alerts = await watchDivergenceAlertMessages(() => reconcileCanonicalNote(100));
+      expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 13_000, status: "PARTIALLY_REFUNDED" });
+      expect(alerts).toEqual([{ operation: `inbound-credit-note-repair:${CANONICAL_NOTE}`, errorMessage: expect.stringContaining(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE) }]);
+      expect(alerts[0]!.errorMessage).toContain(ORGANISER_PAYMENT_ID);
+
+      // A total a release before the floor dropped stays low: the floor never raises, and the recount never adds absorbed cash.
+      await prisma.payment.update({ where: { id: ORGANISER_PAYMENT_ID }, data: { refundedAmountCents: 10_000 } });
+      expect(await watchDivergenceAlerts(() => reconcileCanonicalNote(100))).toEqual([]);
+      expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("CURRENT BEHAVIOUR: a refund request's card part on a bank transfer is absorbed - the floor keeps it, the alert asks for its note, the deploy note lists it", async () => {
+      await seedRefundedUnderCanonicalNote({ amountCents: 25_000 });
+      // An edit's card capture on the bank-transfer payment, $40 of it refunded by the approved request.
+      await prisma.paymentTransaction.create({
+        data: {
+          id: "race-4230-card", paymentId: ORGANISER_PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: "pi_race_4230",
+          amountCents: 5_000, refundedAmountCents: 4_000, status: "PARTIALLY_REFUNDED",
+        },
+      });
+      await prisma.paymentRefund.create({
+        data: {
+          paymentId: ORGANISER_PAYMENT_ID, paymentTransactionId: "race-4230-card", stripeRefundId: "re_race_4230", stripePaymentIntentId: "pi_race_4230",
+          amountCents: 4_000, currency: "nzd", status: "succeeded",
+        },
+      });
+      await prisma.payment.update({ where: { id: ORGANISER_PAYMENT_ID }, data: { refundedAmountCents: 14_000 } });
+      // The approval's own call (`refund-requests/[id]`): no keyed options.
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      expect(await enqueueXeroRefundCreditNoteOperation(ORGANISER_PAYMENT_ID, 4_000, { createdByMemberId: OFFICER_ID })).toEqual(
+        expect.objectContaining({ queueOperationId: null, message: "Xero refund credit note already linked for this payment." }),
+      );
+      expect(await refundNoteRows()).toBe(0);
+      // The refund-note gap reader cannot see it: the bank note's coverage hides the card cash.
+      const { readRefundCreditNoteGap } = await import("@/lib/xero-admin-health");
+      expect((await readRefundCreditNoteGap({ id: ORGANISER_PAYMENT_ID, bookingId: ORGANISER_BOOKING_ID, refundedAmountCents: 14_000 })).uncoveredCents).toBe(0);
+      expect(await deployNoteListedPaymentIds()).toEqual([ORGANISER_PAYMENT_ID]);
+
+      const { BANK_TRANSFER_REFUND_SHORTFALL_ADVICE } = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
+      const alerts = await watchDivergenceAlertMessages(() => reconcileCanonicalNote(100));
+      expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 14_000, status: "PARTIALLY_REFUNDED" });
+      expect(alerts).toEqual([{ operation: `inbound-credit-note-repair:${CANONICAL_NOTE}`, errorMessage: expect.stringContaining(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE) }]);
     });
   },
 );
