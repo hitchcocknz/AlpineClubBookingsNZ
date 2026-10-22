@@ -1,6 +1,7 @@
 import { PaymentSource, type Prisma } from "@prisma/client";
 
 import { hasVoidAwaitingFollowUp } from "@/lib/bank-refund-void-scan";
+import { bankTransferRefundDetailCents } from "@/lib/bank-transfer-refund-detail";
 
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
@@ -31,8 +32,8 @@ export async function floorBankTransferRefundedTotal(input: {
 }): Promise<number> {
   const { payment, xeroDerivedCents } = input;
   if (payment.source !== PaymentSource.INTERNET_BANKING || xeroDerivedCents >= payment.refundedAmountCents) return xeroDerivedCents;
-  const detail = await prisma.paymentTransaction.aggregate({ where: { paymentId: payment.id }, _sum: { refundedAmountCents: true } });
-  const floorCents = Math.min(payment.refundedAmountCents, Math.max(0, detail._sum.refundedAmountCents ?? 0));
+  // #4290 (`INV-ADDPAY-043`): the detail includes a group joiner's own refund line - it has no charge row.
+  const floorCents = Math.min(payment.refundedAmountCents, await bankTransferRefundDetailCents(prisma, payment.id));
   if (xeroDerivedCents >= floorCents) return xeroDerivedCents;
   // A voided refund note the nightly follow-up has not handled yet explains
   // the divergence and resolves it: logged, not alerted (review, security 12).

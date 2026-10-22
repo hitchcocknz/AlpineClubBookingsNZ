@@ -409,6 +409,14 @@ import "./audit-query-exact-prefix.realdb.test";
 // version, report-only and the count's buckets. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4162b-` fixtures.
 import "./bank-refund-void-follow-up.realdb.test";
+// #4290 reuses it to prove a bank-transfer group joiner's refund, which the
+// organiser's cancel records on the joiner's payment and its settlement refund
+// line but on no charge row, is held by the #4162 floor: a voided note (logged
+// while the follow-up waits, then listed for a person) and a short note
+// (alerted) leave it, and a later refund on that payment cannot be recorded.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4290-` fixtures.
+import "./bt-joiner-refund-detail.realdb.test";
 // #4217 reuses it to prove every payment-ledger writer takes the Payment row
 // before its first row write and the aggregate rebuild reads under it: seven
 // forced interleavings against the refund writers, the settle, the Internet

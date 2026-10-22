@@ -1575,6 +1575,26 @@ takes the one live hand-back line of its amount, only when no other live
 notes (create rows naming the task, or a hand-made link) still record any of it
 is never matched: an undo takes back the whole line.
 
+**A group joiner's refund (#4290, `INV-ADDPAY-043`).** When an organiser
+cancels a group paid by one Internet Banking settlement, each joiner's refund
+is recorded on the joiner's own payment (`refundedAmountCents`) and as a
+`GROUP_SETTLEMENT` `BANK_REFUND` line on the joiner's booking, and its refund
+note is queued on that payment. It has no charge row: the group settle writes
+none, because the settlement posts the joiner's share itself and a charge row
+would post a second receipt. So the floor's detail
+(`bankTransferRefundDetailCents`, `src/lib/bank-transfer-refund-detail.ts`) is
+the charge rows' refunded detail plus the joiner's live settlement refund
+line. Before #4290 it read only charge rows, so a joiner's voided note took
+its total to nothing and its payment back to `SUCCEEDED`, and a note short of
+the refund took the total down to the note, both with no alert. Now the
+total is kept: logged while the void waits for the follow-up, alerted
+otherwise. The follow-up's own detail stays the charge rows', what an undo can
+unwind; a joiner's void has no hand-back line of its own, so it is listed
+unmatched (`no-line`) for a person. A later refund on a joiner's payment, such
+as an approved appeal's hand-back, cannot be recorded there at all: its
+completion finds no charge row and is refused. Pinned by
+`bt-joiner-refund-detail.realdb.test.ts`.
+
 **Report-only by default.** Until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`
 the job classifies and logs, and writes nothing; a person's pick or answer is
 refused (409) and the panel is read-only. Each night a note is classified

@@ -1632,3 +1632,21 @@ decision and would need its own owner decision.
   the person's pick included, writes before then.
   Pinned by `bank-refund-void-follow-up` (unit and realdb),
   `bank-refund-void-answer` and `advisory-lock-guard`.
+
+### INV-ADDPAY-043
+
+- **A bank-transfer group joiner's refund is part of its payment's detail**
+  (#4290). When an organiser cancels a group paid by one Internet Banking
+  settlement, the joiner's refund is recorded on the joiner's payment and as
+  a `GROUP_SETTLEMENT` `BANK_REFUND` line on its booking, in one transaction,
+  but on no charge row: the group settle writes none, because the settlement
+  posts the joiner's share and a charge row would post it twice.
+- **The floor counts that line.** `INV-ADDPAY-021`'s detail is the charge
+  rows' refunded detail plus the joiner's live settlement refund line
+  (`bankTransferRefundDetailCents`), so a voided or short joiner note never
+  takes the total down unalerted. The nightly follow-up's detail stays the
+  charge rows': a joiner's void has no hand-back line to undo and is listed
+  for a person (`no-line`).
+- **A later refund on a joiner's payment is never recorded there**: with no
+  charge row its completion is refused.
+  Pinned by `bt-joiner-refund-detail` (realdb).
