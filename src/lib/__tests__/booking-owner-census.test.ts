@@ -489,7 +489,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/lib/booking-batch-modification-service.ts:1080",
   "src/lib/booking-cancel.ts:2490",
   "src/lib/booking-cancel.ts:541",
-  "src/lib/booking-date-modification-service.ts:406",
+  "src/lib/booking-date-modification-service.ts:407",
   "src/lib/booking-delete.ts:120",
   "src/lib/booking-delete.ts:69",
   "src/lib/booking-email-authority.ts:115",

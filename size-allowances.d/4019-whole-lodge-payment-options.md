@@ -48,7 +48,7 @@ reason: the bookings list gains the `unpaid=finished` queue filter (#4264
   unpaid-finished-stays.ts, so the list adds a door and not a rule.
 
 file: src/lib/booking-date-modification-service.ts
-lines: 2398
+lines: 2400
 reason: the INV-MOD-012 clamp and the $0 auto-settle now reach an approved
   member whole-lodge booking with no Payment row (#4264 review F1), through
   the one predicate `isUnpaidConfirmedWholeLodge`; the conditions widen in
