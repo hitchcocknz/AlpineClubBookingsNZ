@@ -49,10 +49,11 @@
  * `status != SUCCEEDED` across both types covers the handoff window itself.
  * It does not cover what follows: when Stripe fails a SUCCEEDED refund later,
  * the capture holds net cash again with no live operation of these types, and
- * (b′) and (c′) count it as a settling capture. The Xero reader covers that
- * gap through the open row that owes the failed refund again - a failed-later
- * row, or a slice re-planned on an open card refund row (#4221); the two
- * readers differ there until #4227.
+ * (b′) and (c′) count it as a settling capture. Both readers cover that gap
+ * through the open row that owes the failed refund again - a failed-later
+ * row, or a slice re-planned on an open card refund row (#4221, #4227):
+ * `listSupersededIntentIdsOwedBackAgain`, which the Xero reader's own read
+ * shares.
  */
 import {
   PaymentRecoveryOperationStatus,
@@ -228,6 +229,50 @@ function supersededRefundsOwedAgainCents(
   return owed;
 }
 
+/** The rows and payment `supersededRefundsOwedAgainCents` reads, under the caller's lock(1). */
+async function readSupersededRefundsOwedAgain(tx: OwnershipReader, paymentId: string, extraRows: Prisma.PaymentRecoveryOperationWhereInput[] = []) {
+  const operations: OwnershipRow[] = await tx.paymentRecoveryOperation.findMany({
+    where: { paymentId, OR: [...SUPERSEDED_REFUND_OWED_AGAIN_WHERE, ...extraRows] },
+    select: { id: true, type: true, status: true, paymentIntentId: true, paymentTransactionId: true, idempotencyKey: true },
+  });
+  // What each card refund row still owes, as the owed figure reads it.
+  const payment = await tx.payment.findUnique({
+    where: { id: paymentId },
+    select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+  });
+  return { operations, payment };
+}
+
+/** The captures open rows owe back again for at least all each still holds. */
+function owedBackInFull(
+  operations: readonly OwnershipRow[],
+  payment: CardRefundOwedPaymentRow | null,
+  captures: readonly OwnershipCapture[],
+): Set<string> {
+  const owned = new Set<string>();
+  for (const [intent, owedCents] of supersededRefundsOwedAgainCents(operations, payment)) {
+    const capture = captures.find((each) => each.stripePaymentIntentId === intent);
+    if (capture && owedCents >= capture.amountCents - capture.refundedAmountCents) owned.add(intent);
+  }
+  return owned;
+}
+
+/**
+ * #4227: guards (b′) and (c′), and the arriving capture's own check (#4283),
+ * read this beside `listLiveSupersededIntentIds`: every intent id among
+ * `captures` whose SUCCEEDED superseded refund Stripe failed later and open
+ * rows owe back again for at least all it holds - the same reading as the Xero
+ * conflict's, so the two never disagree. Read under lock(1).
+ */
+export async function listSupersededIntentIdsOwedBackAgain(
+  tx: OwnershipReader,
+  paymentId: string,
+  captures: readonly OwnershipCapture[],
+): Promise<string[]> {
+  const { operations, payment } = await readSupersededRefundsOwedAgain(tx, paymentId);
+  return [...owedBackInFull(operations, payment, captures)];
+}
+
 /**
  * The Xero second-instrument conflict's reading (#4177): every intent id on
  * this payment whose captured money a superseded-intent operation still holds
@@ -245,37 +290,10 @@ export async function listSupersededIntentIdsOwningCaptures(
   paymentId: string,
   captures: readonly OwnershipCapture[],
 ): Promise<string[]> {
-  const operations: OwnershipRow[] = await tx.paymentRecoveryOperation.findMany({
-    where: {
-      paymentId,
-      OR: [
-        ...SUPERSEDED_REFUND_OWED_AGAIN_WHERE,
-        {
-          type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-          AND: [PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE],
-        },
-      ],
-    },
-    select: {
-      id: true,
-      type: true,
-      status: true,
-      paymentIntentId: true,
-      paymentTransactionId: true,
-      idempotencyKey: true,
-    },
-  });
-  // What each card refund row still owes, as the owed figure reads it, under
-  // the same lock(1).
-  const payment = await tx.payment.findUnique({
-    where: { id: paymentId },
-    select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
-  });
-  const owned = new Set<string>();
-  for (const [intent, owedCents] of supersededRefundsOwedAgainCents(operations, payment)) {
-    const capture = captures.find((each) => each.stripePaymentIntentId === intent);
-    if (capture && owedCents >= capture.amountCents - capture.refundedAmountCents) owned.add(intent);
-  }
+  const { operations, payment } = await readSupersededRefundsOwedAgain(tx, paymentId, [
+    { type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, AND: [PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE] },
+  ]);
+  const owned = owedBackInFull(operations, payment, captures);
   for (const operation of operations) {
     // A failed-later row counts only through `supersededRefundsOwedAgainCents`,
     // as does an open edit or cancel refund row, which no branch below matches.

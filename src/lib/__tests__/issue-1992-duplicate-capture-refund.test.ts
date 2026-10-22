@@ -42,6 +42,9 @@ const mocks = vi.hoisted(() => ({
   paymentUpsert: vi.fn(),
   paymentTransactionFindFirst: vi.fn(),
   paymentTransactionFindUnique: vi.fn(),
+  paymentTransactionFindMany: vi.fn(),
+  // #4227: what the owed-again reading answers (the real one reads card refund rows).
+  supersededOwedBackAgain: vi.fn(),
   paymentRecoveryOperationFindMany: vi.fn(),
   paymentRecoveryOperationFindFirst: vi.fn(),
   upsertPaymentIntentTransaction: vi.fn(),
@@ -124,6 +127,12 @@ vi.mock("@/lib/alert-cooldown", () => ({
 vi.mock("@/lib/alert-cooldown-fail-open", () => ({
   SETTLEMENT_MONEY_ALERT_REPEAT_MS: 24 * 60 * 60 * 1000,
   claimAlertCooldownFailOpen: (...args: unknown[]) => mocks.claimAlertCooldownFailOpen(...args),
+}));
+
+// #4227: the owed-again reading, real elsewhere; its own suites cover the rows it reads.
+vi.mock("@/lib/superseded-intent-ownership", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/superseded-intent-ownership")>()),
+  listSupersededIntentIdsOwedBackAgain: (...args: unknown[]) => mocks.supersededOwedBackAgain(...args),
 }));
 
 vi.mock("@/lib/member-credit", () => ({
@@ -233,6 +242,8 @@ const tx = {
     findFirst: (...args: unknown[]) => mocks.paymentTransactionFindFirst(...args),
     // #4211: the released settler's own intent, read by id.
     findUnique: (...args: unknown[]) => mocks.paymentTransactionFindUnique(...args),
+    // #4227: the captures the owed-again reading weighs.
+    findMany: (...args: unknown[]) => mocks.paymentTransactionFindMany(...args),
   },
   // #1992 superseded-handoff exclusion: guards (b′)/(c′) read the recovery
   // operations inside the same lock(1) transaction. Deliberately NO write
@@ -499,6 +510,8 @@ beforeEach(() => {
   mocks.recoveryUpdateMany.mockResolvedValue({ count: 1 });
   mocks.recoveryFindUnique.mockResolvedValue(null);
   mocks.claimAlertCooldownFailOpen.mockResolvedValue(true);
+  mocks.supersededOwedBackAgain.mockResolvedValue([]);
+  mocks.paymentTransactionFindMany.mockResolvedValue([]);
 });
 
 // The settled auto-charge capture and the arriving in-flight link capture.
@@ -856,11 +869,12 @@ describe("#1992 duplicate-capture auto-refund", () => {
 
       expect(result.outcome).toBe("duplicate_capture_kept");
       expectSettledBy(OLDER_PI);
-      // (c′) re-checks the chosen settlement, never the later capture.
+      // #4283 asks of the arriving capture first; (c′) then re-checks the
+      // chosen settlement, never the later capture.
       const recheckedIntents = mocks.paymentRecoveryOperationFindFirst.mock.calls.map(
         ([args]) => (args as { where: { paymentIntentId: string } }).where.paymentIntentId,
       );
-      expect(recheckedIntents).toEqual([OLDER_PI]);
+      expect(recheckedIntents).toEqual([DUPLICATE_PI, OLDER_PI]);
     });
 
     it("createdAt outranks insertionSeq: the earlier-created capture is the settled one even with the higher sequence", async () => {
@@ -1162,9 +1176,10 @@ describe("#1992 duplicate-capture auto-refund", () => {
       // findMany returns nothing, while the direct intent-id findFirst still
       // sees the live operation.
       mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
-      mocks.paymentRecoveryOperationFindFirst.mockResolvedValue({
-        id: "op-refund-superseded-x",
-      });
+      mocks.paymentRecoveryOperationFindFirst.mockImplementation(
+        async ({ where }: { where: { paymentIntentId: string } }) =>
+          where.paymentIntentId === SUPERSEDED_PI ? { id: "op-refund-superseded-x" } : null,
+      );
 
       const result = await markBookingPaymentSucceeded({
         format: CLUB_FORMAT_TEST,
@@ -1447,11 +1462,12 @@ describe("#4211 every capture beyond the settling one is refunded, a third inclu
       duplicatePaymentIntentId: THIRD_PI,
       settledPaymentIntentId: SETTLING_PI,
     });
-    // (c′) re-checks the settling capture, never the refunded one.
+    // #4283 asks of the arriving capture; (c′) re-checks the settling capture,
+    // never the refunded one.
     const recheckedIntents = mocks.paymentRecoveryOperationFindFirst.mock.calls.map(
       ([args]) => (args as { where: { paymentIntentId: string } }).where.paymentIntentId,
     );
-    expect(recheckedIntents).toEqual([SETTLING_PI]);
+    expect(recheckedIntents).toEqual([THIRD_PI, SETTLING_PI]);
   });
 
   it("with only refunded-or-owned captures beside it, the arriving capture is the settlement and stays already_paid", async () => {
@@ -1816,13 +1832,108 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
     );
     // (b′)'s payment-scoped read misses it; only the direct re-check sees it.
     mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
-    mocks.paymentRecoveryOperationFindFirst.mockResolvedValue({ id: "op-superseded-y" });
+    mocks.paymentRecoveryOperationFindFirst.mockImplementation(
+      async ({ where }: { where: { paymentIntentId: string } }) => (where.paymentIntentId === SETTLING_PI ? { id: "op-superseded-y" } : null),
+    );
 
     expect((await arrive(THIRD_PI)).outcome).toBe("already_paid");
     expectNothingRefunded();
     expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
     expect(mocks.paymentRecoveryOperationFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ paymentIntentId: SETTLING_PI }) }),
+    );
+  });
+});
+
+// #4227 / #4283: what the superseded-intent machinery holds - a live operation,
+// or (#4227) a superseded refund Stripe failed later that open rows owe back in
+// full - is never another capture holding money, and never refunded as a
+// duplicate when it is itself the capture arriving.
+describe("#4227 / #4283 the superseded machinery's captures, arriving or beside", () => {
+  const Y = "pi_settling_y";
+  const X = "pi_superseded_x";
+  const Z = "pi_third_z";
+  const arrive = (paymentIntentId: string) =>
+    markBookingPaymentSucceeded({ format: CLUB_FORMAT_TEST, bookingId: "booking-1", paymentIntentId, amountCents: 10000, paymentMethodId: "pm_1" });
+  const liveRefundOf = (paymentIntentId: string): RecoveryOperationRow => ({
+    id: `op-superseded-${paymentIntentId}`,
+    type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+    status: PaymentRecoveryOperationStatus.PENDING,
+    paymentId: "payment-1",
+    paymentIntentId,
+  });
+  function expectNothingMoves() {
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
+  }
+
+  it("#4283: a superseded capture ARRIVING while its superseded refund is live is not refunded as a duplicate on top", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-x", stripePaymentIntentId: X })], { settledBy: "txn-y" });
+    primeRecoveryOperations([liveRefundOf(X)]);
+
+    expect((await arrive(X)).outcome).toBe("already_paid");
+    expectNothingMoves();
+  });
+
+  it("#4283: the same when only the direct re-check sees the operation, and when a duplicate-capture refund also names it (no re-send)", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-x", stripePaymentIntentId: X })], { settledBy: "txn-y" });
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([]);
+    mocks.paymentRecoveryOperationFindFirst.mockImplementation(
+      async ({ where }: { where: { paymentIntentId: string } }) => (where.paymentIntentId === X ? { id: "op-superseded-x" } : null),
+    );
+    mocks.listDuplicateCaptureRefundIntentIds.mockResolvedValue([X]);
+
+    expect((await arrive(X)).outcome).toBe("already_paid");
+    expectNothingMoves();
+  });
+
+  it("#4283: a superseded capture whose failed-later refund is owed back again, arriving, is not refunded on top either", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-x", stripePaymentIntentId: X })], { settledBy: "txn-y" });
+    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+
+    expect((await arrive(X)).outcome).toBe("already_paid");
+    expectNothingMoves();
+  });
+
+  it("#4227: with no record, a replay beside a superseded capture owed back again in full keeps silently - no false 'paid twice' alert", async () => {
+    primeLedger([ledgerRow({ id: "txn-x", stripePaymentIntentId: X }), ledgerRow({ id: "txn-y", stripePaymentIntentId: Y })]);
+    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+
+    expect((await arrive(Y)).outcome).toBe("already_paid");
+    expectNothingMoves();
+    // The reading weighs every capture on the payment, in ledger order.
+    expect(mocks.supersededOwedBackAgain).toHaveBeenCalledWith(tx, "payment-1", expect.any(Array));
+    expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+        where: expect.objectContaining({ paymentId: "payment-1", kind: PaymentTransactionKind.PRIMARY, source: PaymentSource.STRIPE }),
+      }),
+    );
+  });
+
+  it("#4227: non-vacuity - the same ledger with nothing owed back alerts, as before", async () => {
+    primeLedger([ledgerRow({ id: "txn-x", stripePaymentIntentId: X }), ledgerRow({ id: "txn-y", stripePaymentIntentId: Y })]);
+
+    expect((await arrive(Y)).outcome).toBe("duplicate_capture_kept");
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ otherPaymentIntentId: X }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("#4227: a third capture beside the recorded settler and an owed-back superseded capture is refunded, naming the settler", async () => {
+    primeLedger(
+      [ledgerRow({ id: "txn-x", stripePaymentIntentId: X }), ledgerRow({ id: "txn-y", stripePaymentIntentId: Y }), ledgerRow({ id: "txn-z", stripePaymentIntentId: Z })],
+      { settledBy: "txn-y" },
+    );
+    mocks.supersededOwedBackAgain.mockResolvedValue([X]);
+
+    expect((await arrive(Z)).outcome).toBe("duplicate_capture_refunded");
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: Z, settledPaymentIntentId: Y }),
+      CLUB_FORMAT_TEST,
     );
   });
 });

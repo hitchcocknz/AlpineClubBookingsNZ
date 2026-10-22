@@ -60,6 +60,7 @@ import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payme
 import {
   findLiveSupersededIntentOperation,
   listLiveSupersededIntentIds,
+  listSupersededIntentIdsOwedBackAgain,
 } from "@/lib/superseded-intent-ownership";
 
 /**
@@ -142,6 +143,35 @@ export async function judgeCaptureOnPaidBooking(
   // Rule 1.
   if (!arriving || arriving.id === input.recordedSettlerId) return { verdict: "keep" };
 
+  // (b′), and #4227: a superseded capture whose refund Stripe failed later is
+  // still the superseded machinery's while open rows owe it back again in full
+  // (`listSupersededIntentIdsOwedBackAgain`, the Xero conflict's reading too).
+  const owedBackAgain = new Set(
+    await listSupersededIntentIdsOwedBackAgain(
+      tx,
+      input.paymentId,
+      await tx.paymentTransaction.findMany({
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+        where: {
+          paymentId: input.paymentId,
+          kind: PaymentTransactionKind.PRIMARY,
+          source: PaymentSource.STRIPE,
+          status: { in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST] },
+        },
+        select: { stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
+      }),
+    ),
+  );
+  const supersededOwned = [...(await listLiveSupersededIntentIds(tx, input.paymentId)), ...owedBackAgain];
+  // (c′) with a different query shape, for the live operations.
+  const supersededOwns = async (paymentIntentId: string) =>
+    owedBackAgain.has(paymentIntentId) || !!(await findLiveSupersededIntentOperation(tx, paymentIntentId));
+  // #4283: the ARRIVING capture's own money the superseded machinery holds (a
+  // redelivered webhook after the cancel handed it off, or a confirm on a
+  // superseded intent) - its refund is that machinery's, so no duplicate
+  // refund on top of it, no re-send, no alert.
+  if (supersededOwned.includes(input.paymentIntentId) || (await supersededOwns(input.paymentIntentId))) return { verdict: "keep" };
+
   const duplicateRefundIntentIds = await listDuplicateCaptureRefundIntentIds({
     bookingId: input.bookingId,
     store: tx,
@@ -149,7 +179,7 @@ export async function judgeCaptureOnPaidBooking(
   const where = otherSettledCaptureWhere({
     paymentId: input.paymentId,
     arrivingPaymentIntentId: input.paymentIntentId,
-    liveSupersededIntentIds: await listLiveSupersededIntentIds(tx, input.paymentId),
+    liveSupersededIntentIds: supersededOwned,
     duplicateRefundIntentIds,
   });
   const select = { id: true, stripePaymentIntentId: true } as const;
@@ -186,7 +216,7 @@ export async function judgeCaptureOnPaidBooking(
     });
     const settlerIntent = settler?.stripePaymentIntentId ?? null;
     if (arrivingOwned) return refundArriving(settlerIntent);
-    if (settlerIntent && (await findLiveSupersededIntentOperation(tx, settlerIntent))) return { verdict: "keep" };
+    if (settlerIntent && (await supersededOwns(settlerIntent))) return { verdict: "keep" };
     // Otherwise the arriving capture may now pay for the booking or be a
     // duplicate, and only a person can say.
     return { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "settler-released", otherHoldsMoney: false };
@@ -195,10 +225,7 @@ export async function judgeCaptureOnPaidBooking(
   // (c′) belt and braces: the settlement's own intent re-checked against the
   // live superseded-intent operations, by a different query shape. If one owns
   // its money, the arriving capture is the settlement side.
-  if (
-    settlement.stripePaymentIntentId &&
-    (await findLiveSupersededIntentOperation(tx, settlement.stripePaymentIntentId))
-  ) {
+  if (settlement.stripePaymentIntentId && (await supersededOwns(settlement.stripePaymentIntentId))) {
     return { verdict: "keep" };
   }
 
