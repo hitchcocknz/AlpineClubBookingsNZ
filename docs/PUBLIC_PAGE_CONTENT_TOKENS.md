@@ -8,6 +8,9 @@ database-backed 404. The supported data tokens are:
   rate columns (all lodges, or one named lodge).
 - `{{joining-fees}}` — one-off joining fees, grouped by membership type or age.
 - `{{annual-fees}}` — annual membership fee totals (own visibility opt-in).
+- `{{first-year-costs}}` — what it costs to join: the joining fee plus the first
+  year's annual subscription as one total per membership type and age tier
+  (needs both the Joining fees and Annual membership fees opt-ins).
 - `{{booking-policy-summary}}` or `{{booking-policy-summary:lodge-slug}}`
 - `{{cancellation-policy}}` or `{{cancellation-policy:lodge-slug}}`
 
@@ -38,6 +41,23 @@ Examples:
 - `{{joining-fees:group-by=age}}` (or `{{joining-fees:by-age}}`).
 - `{{annual-fees}}` shows the fee **total** by default;
   `{{annual-fees:components}}` opts into the per-invoice-line breakdown (E6).
+
+## How `{{first-year-costs}}` works (#4295)
+
+One row per publicly-listed active membership type and age tier: the current
+joining fee plus the current annual fee, resolved from the same dated schedules
+the invoicing reads, so a schedule that takes effect on a future date changes the
+totals on that day with no edit.
+
+- A tier with no row of its own uses the type's flat (NULL-tier) row. A flat
+  `PER_FAMILY` annual fee is added once, so a Family type reads joining fee +
+  family annual fee with no rule in the page code.
+- An annual fee of `NO_INVOICE` adds nothing. A tier with **no** annual fee set is
+  left out, so a joining fee alone is never presented as the first-year cost.
+- An annual fee with a proration rule shows the total as "from $X", because a
+  mid-season joiner's first invoice is smaller.
+- Both opt-ins must be on; either off renders nothing, never a partial total.
+- `{{first-year-costs:type=family}}` limits it to one publicly-listed type.
 
 `type=` resolves **only** against publicly-listed membership types. An unknown
 key, an unknown/unlisted `type=`, or any value the block cannot satisfy renders
