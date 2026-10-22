@@ -577,6 +577,34 @@ describe("the linked move is one transaction (#3232, INV-HOST-051)", () => {
     expect(offer?.quote.linked).toHaveLength(1);
   });
 
+  it("#3949 review round 6: leaves the choice off a dependent the group organiser paid for, and never counts its refund as the member's", async () => {
+    const owned = { lodgeId: LODGE, checkIn: HELD.checkIn, checkOut: HELD.checkOut, memberId: OWNER };
+    h.bookingFindUnique.mockImplementation(async ({ where }: { where: { id: string } }) =>
+      where.id === DEPENDENT
+        ? { ...owned, organiserSettled: true, parentBookingId: "organiser-booking", payment: { source: "INTERNET_BANKING" } }
+        : owned,
+    );
+    h.modifyBookingBatch.mockImplementation(async (call: BatchArgs) => {
+      h.events.push(`edit:${call.bookingId}`);
+      const money =
+        call.bookingId === PRIMARY
+          ? { ...PRIMARY_MONEY, additionalAmountCents: 0, refundAmountCents: 900 }
+          : { ...DEPENDENT_MONEY, refundAmountCents: 400, accountCreditAmountCents: 0 };
+      return batchResult(call.bookingId, money, MOVED, call.waiveChangeFee === true);
+    });
+
+    const offer = await offerLinkedDateMove({ ...args(), input: { ...args().input, settlementMethod: "credit" } }).then(
+      () => null,
+      (thrown: unknown) => thrown as SameOwnerCoverageLinkedMoveRequiredError,
+    );
+
+    const calls = h.modifyBookingBatch.mock.calls.map(([call]) => call as BatchArgs);
+    expect(calls.find((call) => call.bookingId === PRIMARY)?.input.settlementMethod).toBe("credit");
+    expect(calls.find((call) => call.bookingId === DEPENDENT)?.input).not.toHaveProperty("settlementMethod");
+    // The dependent's $4 goes back to the organiser by bank transfer, so only the primary's $9 "comes back to you".
+    expect(offer?.quote.combinedRefundCents).toBe(900);
+  });
+
   it("re-asserts the rule over the primary using the window it vacated", async () => {
     await acceptOffer(await raiseOffer());
 

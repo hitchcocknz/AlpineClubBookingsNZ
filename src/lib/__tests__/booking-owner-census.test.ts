@@ -495,7 +495,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/lib/booking-email-authority.ts:115",
   "src/lib/booking-guest-removal-service.ts:459",
   "src/lib/booking-guest-removal-service.ts:795",
-  "src/lib/booking-linked-date-move-service.ts:240",
+  "src/lib/booking-linked-date-move-service.ts:244",
   "src/lib/booking-member-night-conflicts.ts:369",
   "src/lib/booking-modify-validation.ts:618",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1427",

@@ -33,6 +33,7 @@ import {
   WholeLodgeHoldBlockedError,
 } from "@/lib/over-capacity-confirmation";
 import { ApiError } from "@/lib/api-error";
+import { paidByOrganiser } from "@/lib/group-organiser-paid";
 import { acquireLodgeCapacityLock } from "@/lib/capacity";
 import { assertBookingEnvelopeInvariants } from "@/lib/booking-envelope-invariants";
 import { BookingModificationSettlementMethodRequiredError } from "@/lib/booking-modify-settlement-required";
@@ -48,6 +49,9 @@ import {
 import { getDefaultLodgeId } from "@/lib/lodges";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+
+/** #3949: what `paidByOrganiser` reads of a booking. */
+const ORGANISER_PAID_SELECT = { organiserSettled: true, parentBookingId: true, payment: { select: { source: true } } } as const;
 import type { ClubFormat } from "@/lib/club-format";
 
 /**
@@ -215,7 +219,7 @@ async function runLinkedDateMove(
     // dependent's shift is measured from, and a proposal is not evidence.
     const before = await tx.booking.findUnique({
       where: { id: args.bookingId },
-      select: { checkIn: true, checkOut: true, memberId: true },
+      select: { checkIn: true, checkOut: true, memberId: true, ...ORGANISER_PAID_SELECT },
     });
     if (!before) throw new Error("Booking not found");
 
@@ -245,10 +249,17 @@ async function runLinkedDateMove(
       );
     }
 
+    // #3949 review round 6: ONE settlement choice covers every booking, but a booking the group organiser paid for
+    // (`paidByOrganiser`) has one disposition - back to the organiser - and refuses a credit choice, so the choice is
+    // not passed to it; its refund is the organiser's, never counted as coming back to the member.
+    const organiserPaidIds = new Set(paidByOrganiser(before) ? [args.bookingId] : []);
+    const choiceFor = (bookingId: string, method: typeof args.input.settlementMethod) =>
+      method && !organiserPaidIds.has(bookingId) ? { settlementMethod: method } : {};
+    const { settlementMethod: memberChoice, ...inputWithoutChoice } = args.input;
     const primary = await modifyBookingBatch({
       bookingId: args.bookingId,
       actor: args.actor,
-      input: args.input,
+      input: { ...inputWithoutChoice, ...choiceFor(args.bookingId, memberChoice) },
       ipAddress: args.ipAddress,
       todayAtClub: args.todayAtClub,
       format: args.format,
@@ -292,6 +303,8 @@ async function runLinkedDateMove(
 
     for (const dependent of stranded) {
       const target = targetOf(dependent);
+      const dependentPaidBy = await tx.booking.findUnique({ where: { id: dependent.bookingId }, select: ORGANISER_PAID_SELECT });
+      if (dependentPaidBy && paidByOrganiser(dependentPaidBy)) organiserPaidIds.add(dependent.bookingId);
       try {
         const result = await modifyBookingBatch({
           bookingId: dependent.bookingId,
@@ -321,9 +334,7 @@ async function runLinkedDateMove(
             // with the true figures rather than a silent substitution — the accept
             // key covers the combined money. One extra confirmation on that
             // branch, and never a figure they were not shown.
-            ...(settlementMethodForDependent
-              ? { settlementMethod: settlementMethodForDependent }
-              : {}),
+            ...choiceFor(dependent.bookingId, settlementMethodForDependent),
           },
           ipAddress: args.ipAddress,
           todayAtClub: args.todayAtClub,
@@ -469,11 +480,13 @@ async function runLinkedDateMove(
       }
     }
 
+    const memberMoney = <R extends { refundAmountCents: number }>(bookingId: string, result: R): R =>
+      organiserPaidIds.has(bookingId) ? { ...result, refundAmountCents: 0 } : result;
     const quote = combineLinkedMoveQuote({
-      primary,
+      primary: memberMoney(args.bookingId, primary),
       primaryId: args.bookingId,
       primaryRange,
-      linked,
+      linked: linked.map((entry) => (entry.result ? { ...entry, result: memberMoney(entry.stranded.bookingId, entry.result) } : entry)),
       bothChangeFeesCharged,
       // Whether a card-or-credit choice ALREADY travelled with this request, which
       // decides whether the offer's money sentence promises a question. In
