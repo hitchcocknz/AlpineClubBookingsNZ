@@ -552,7 +552,13 @@ export interface BookingClassificationContext {
    * answers, and each queues its own note (#4231). The inbound recount reads
    * the same rows.
    */
-  paidBackRefundRequests: PaidBackRefundRequest[];
+  paidBackRefundRequests: Array<PaidBackRefundRequest & { amountLabel?: string }>;
+  /**
+   * #4231: whether this booking's payment ever had a refund note linked
+   * (`REFUND_CREDIT_NOTE`), active or not (`readPaymentsEverRefundNoted`). Read
+   * only for a payment with a paid-back refund request.
+   */
+  everRefundNoteLinked: boolean;
   /**
    * #3924 rounds 12-13: by intent, a late capture's card refunds no note will
    * answer (`readLateCaptureCardRefundsByHand`), in cents and the club's format,

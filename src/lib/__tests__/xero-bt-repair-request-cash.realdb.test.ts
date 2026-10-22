@@ -339,6 +339,25 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await requestNoteRows()).toEqual([{ key: REQUEST_KEY, cents: 5_000 }]);
     });
 
+    it("MUTATION (gate: link, active or not): a cancellation note whose link was deactivated still sends the request to a person", async () => {
+      await seed({ invoiced: false });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroInvoiceId: INVOICE_ID } });
+      // No pointer and no create row: only a link the normaliser or a void turned off.
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: CANONICAL_NOTE, xeroObjectNumber: "CN-4215",
+          role: "REFUND_CREDIT_NOTE", active: false, metadata: { amountCents: 10_000 },
+        },
+      });
+
+      const { runBookingXeroRepair } = await import("@/lib/xero-booking-repair");
+      const booking = (await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID } })).passes[0]!.bookings[0]!;
+      expect(booking.actions.filter((action) => action.type === "QUEUE_REFUND_REQUEST_CREDIT_NOTE")).toEqual([]);
+      expect(booking.findings).toContainEqual(
+        expect.objectContaining({ code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review", details: expect.objectContaining({ refundRequestId: REQUEST_ID, refundAmountCents: 5_000 }) }),
+      );
+    });
+
     it("MUTATION (lens F1): a cancellation note an earlier release sized with the request's cash gets a person - the request's note is never offered beside it", async () => {
       await seed({ invoiced: false });
       // The invoice reached Xero, then the old tool raised one $150 note: $100 of cancellation and the request's $50.
@@ -354,7 +373,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const booking = (await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID } })).passes[0]!.bookings[0]!;
       expect(booking.actions.filter((action) => action.type === "QUEUE_REFUND_REQUEST_CREDIT_NOTE")).toEqual([]);
       expect(booking.findings).toContainEqual(
-        expect.objectContaining({ code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review", summary: expect.stringContaining("folded into the cancellation's note") }),
+        expect.objectContaining({ code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review", summary: expect.stringContaining("may already include the request's") }),
       );
       // Even an officer's confirmation of the key raises nothing: no such action exists.
       await runBookingXeroRepair(CLUB_FORMAT_TEST, { scope: { bookingId: BOOKING_ID }, apply: true, applyActionKeys: [`queue:refund-request-credit-note:${PAYMENT_ID}:${REQUEST_ID}`] });

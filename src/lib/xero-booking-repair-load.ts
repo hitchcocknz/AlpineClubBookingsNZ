@@ -21,6 +21,7 @@ import {
 import { buildBookingCancellationRefundIdempotencyKey } from "./payment-recovery-keys";
 import { loadFailedLaterOwedCents } from "./xero-booking-repair-failed-later";
 import { readPaidBackRefundRequests } from "@/lib/xero-inbound/refund-request-paid-back";
+import { readPaymentsEverRefundNoted } from "./xero-booking-repair-request-notes";
 import { groupOpenIntentRecoveriesByBooking, intentRecoveryKeyMaps } from "./xero-booking-repair-intent-recoveries";
 import { unallocatedAppliedCreditCentsByBooking } from "@/lib/xero-applied-credit-ledger-state";
 import {
@@ -432,6 +433,7 @@ export async function loadAuditData(
   const failedLaterOwedByPaymentId = await loadFailedLaterOwedCents(deps, paymentIds);
   // #4215 (`INV-PAY-118`): the one reader the inbound recount uses too.
   const paidBackRefundRequests = await readPaidBackRefundRequests(paymentIds, deps.prisma);
+  const everRefundNoted = await readPaymentsEverRefundNoted(deps.prisma, [...new Set(paidBackRefundRequests.map((request) => request.paymentId))]);
   const unallocatedAppliedCreditByBookingId = await unallocatedAppliedCreditCentsByBooking(bookingIds, deps.prisma);
   const allocatedAppliedCreditByBookingId = new Map(
     appliedCreditAllocations.map((row) => [
@@ -650,6 +652,7 @@ export async function loadAuditData(
     cancelledBookingHandBackPaymentIds:
       handBackPaymentIdsByBookingId.get(booking.id) ?? new Set<string>(),
     paidBackRefundRequests: paidBackRefundRequests.filter((request) => request.paymentId === booking.payment?.id),
+    everRefundNoteLinked: booking.payment ? everRefundNoted.has(booking.payment.id) : false,
     refundNoteUncoveredCents: booking.payment
       ? refundNoteUncoveredCentsByPaymentId.get(booking.payment.id) ?? null
       : null,

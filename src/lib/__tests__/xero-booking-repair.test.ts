@@ -8060,7 +8060,7 @@ describe("a refund request's own note never answers for the payment's refund not
           code: "REFUND_REQUEST_NOTE_NOT_QUEUED",
           severity: "critical",
           safeToAutoApply: false,
-          summary: expect.stringContaining("Check Xero for a credit raised by hand"),
+          summary: expect.stringMatching(/^Refund request rr_1 was paid back by bank transfer \(\$30\.00\).*Check Xero for a credit raised by hand/),
           actions: [expect.objectContaining({ key: "queue:refund-request-credit-note:payment_1:rr_1" })],
         }),
       );
@@ -8095,11 +8095,13 @@ describe("a refund request's own note never answers for the payment's refund not
       expect(confirmed.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
     });
 
-    // Lens F1 (probe-confirmed): before #4231 the tool, or an officer, could
-    // size the cancellation's note to the whole refunded total - a $100 note
-    // for $70 of cancellation and the request's $30. A $30 request note beside
-    // it would have Xero credit $130 against $100 handed back.
-    const cancellationNoteOp = (refundAmountCents: number | null, overrides: Record<string, unknown> = {}) =>
+    // Lens rounds 2-3: before #4231 the tool, or an officer, could size the
+    // cancellation's note to the whole refunded total with the request's cash
+    // folded in (a $100 note for $70 of cancellation and the request's $30), and
+    // an amount recorded here goes stale once the note is edited in Xero. So any
+    // cancellation refund note at all sends the request to a person, with no
+    // amount read and no action offered.
+    const cancellationNoteOp = (overrides: Record<string, unknown> = {}) =>
       makeOperation({
         id: "operation_cancel_note",
         localModel: "Payment",
@@ -8112,81 +8114,74 @@ describe("a refund request's own note never answers for the payment's refund not
         idempotencyKey: "payment:payment_1:refund-credit-note:v1",
         xeroObjectType: "CREDIT_NOTE",
         xeroObjectId: "cn_cancel",
-        requestPayload: { queueType: "REFUND_CREDIT_NOTE", ...(refundAmountCents === null ? {} : { refundAmountCents }), refundMethod: "internet-banking" },
+        requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 7000, refundMethod: "internet-banking" },
         ...overrides,
       });
-    const cancellationNoteLink = (metadata: Record<string, unknown>) =>
-      paymentLink({ id: "link_cancel_note", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_cancel", role: "REFUND_CREDIT_NOTE", metadata });
-    const foldedReview = expect.objectContaining({
+    const cancellationNoteLink = (overrides: Record<string, unknown> = {}) =>
+      paymentLink({ id: "link_cancel_note", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_cancel", role: "REFUND_CREDIT_NOTE", metadata: { amountCents: 7000 }, ...overrides });
+    const personChecksXero = expect.objectContaining({
       code: "REFUND_REQUEST_NOTE_NOT_QUEUED",
       severity: "manual_review",
       safeToAutoApply: false,
-      summary: expect.stringContaining("folded into the cancellation's note"),
+      summary: expect.stringMatching(
+        /Refund request rr_1 .*\$30\.00.*may already include the request's \$30\.00.*compare that note's lines with the cancellation's own refund.*edit the note in place.*never void it.*raise the request's own credit note by hand in Xero.*If it is not, raise the request's own credit note by hand/,
+      ),
     });
-
-    it("MUTATION (lens F1): a cancellation note that already holds the request's cash gets a person, never a second credit", async () => {
-      const booking = await run({
-        operations: [cancellationNoteOp(10000)],
-        links: [cancellationNoteLink({ amountCents: 10000, status: "AUTHORISED" })],
-        payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_cancel" },
-      });
+    const expectPerson = (booking: Awaited<ReturnType<typeof run>>) => {
       expect(requestNoteActions(booking.actions)).toEqual([]);
-      expect(booking.findings).toContainEqual(foldedReview);
-      expect(booking.findings.find((finding) => finding.code === "REFUND_REQUEST_NOTE_NOT_QUEUED")?.details).toMatchObject({
-        refundNotesRecordedCents: 10000,
-        cancellationOwnCashCents: 7000,
-        requestCashCents: 3000,
+      expect(booking.findings).toContainEqual(personChecksXero);
+      expect(booking.findings.find((finding) => finding.code === "REFUND_REQUEST_NOTE_NOT_QUEUED")?.details).toEqual({
+        paymentId: "payment_1",
+        refundRequestId: "rr_1",
+        refundAmountCents: 3000,
       });
+    };
+
+    it("MUTATION (lens F1, probe): a cancellation note with the request's cash folded in gets a person, never a second credit", async () => {
+      expectPerson(
+        await run({
+          operations: [cancellationNoteOp({ requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 10000 } })],
+          links: [cancellationNoteLink({ metadata: { amountCents: 10000, status: "AUTHORISED" } })],
+          payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_cancel" },
+        }),
+      );
     });
 
-    it("MUTATION (lens F1): the same once the recount has added the request's cash above the charge rows - the rows, not the total, are the cash", async () => {
-      const booking = await run({
-        operations: [cancellationNoteOp(10000)],
-        links: [cancellationNoteLink({ amountCents: 10000 })],
-        payment: {
-          refundedAmountCents: 13000,
-          xeroRefundCreditNoteId: "cn_cancel",
-          transactions: [{ id: "txn_1", kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: 10000, refundedAmountCents: 10000, status: "REFUNDED" }],
-        },
-      });
-      expect(requestNoteActions(booking.actions)).toEqual([]);
-      expect(booking.findings).toContainEqual(foldedReview);
+    it("MUTATION (gate: pointer): a payment that names a cancellation note nothing local records gets a person", async () => {
+      expectPerson(await run({ operations: [], links: [], payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_by_hand" } }));
     });
 
-    it("offers the request's note beside a cancellation note sized to the cancellation's own cash", async () => {
-      const booking = await run({
-        operations: [cancellationNoteOp(7000)],
-        links: [cancellationNoteLink({ amountCents: 7000 })],
-        payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_cancel" },
-      });
-      expect(requestNoteActions(booking.actions)).toEqual([expect.objectContaining({ safeToAutoApply: false })]);
+    it("MUTATION (gate: link, active or not): a stale link whose amountCents says the cancellation's own cash gets a person, with no sum read", async () => {
+      expectPerson(await run({ operations: [], links: [cancellationNoteLink()], payment: { refundedAmountCents: 10000 } }));
+      // A link the normaliser or the void deactivated is still a note Xero may hold.
+      expectPerson(await run({ operations: [], links: [cancellationNoteLink({ active: false, metadata: { amountCents: 7000, status: "VOIDED" } })], payment: { refundedAmountCents: 10000 } }));
     });
 
-    it("a cancellation note with no readable amount, or one the payment names but nothing records, gets a person", async () => {
-      const unreadable = await run({
-        operations: [cancellationNoteOp(null)],
-        links: [cancellationNoteLink({ status: "AUTHORISED" })],
-        payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_cancel" },
-      });
-      expect(requestNoteActions(unreadable.actions)).toEqual([]);
-      expect(unreadable.findings).toContainEqual(expect.objectContaining({ code: "REFUND_REQUEST_NOTE_NOT_QUEUED", severity: "manual_review" }));
-      const unrecorded = await run({ operations: [], links: [], payment: { refundedAmountCents: 10000, xeroRefundCreditNoteId: "cn_by_hand" } });
-      expect(requestNoteActions(unrecorded.actions)).toEqual([]);
+    it("MUTATION (gate: create row): a cancellation note's create row alone - FAILED, queued or a legacy row naming no queue type - gets a person", async () => {
+      for (const overrides of [
+        { status: "FAILED", xeroObjectId: null, xeroObjectType: null },
+        { status: "PENDING", xeroObjectId: null, xeroObjectType: null },
+        { queueType: null, requestPayload: { refundAmountCents: 7000 } },
+      ]) {
+        expectPerson(await run({ operations: [cancellationNoteOp(overrides)], links: [], payment: { refundedAmountCents: 10000 } }));
+      }
     });
 
-    it("a cancellation note queued but not yet sent counts by its row; one Xero voided counts nothing", async () => {
-      const queued = await run({
-        operations: [cancellationNoteOp(10000, { status: "PENDING", xeroObjectId: null, xeroObjectType: null })],
+    it("an account-credit note's row, or another request's own note, is no cancellation note: the request's note is still offered", async () => {
+      const accountCredit = await run({
+        operations: [cancellationNoteOp({ queueType: "ACCOUNT_CREDIT_NOTE", requestPayload: { queueType: "ACCOUNT_CREDIT_NOTE", refundAmountCents: 7000 } })],
         links: [],
-        payment: { refundedAmountCents: 10000 },
-      });
-      expect(requestNoteActions(queued.actions)).toEqual([]);
-      const voided = await run({
-        operations: [cancellationNoteOp(10000)],
-        links: [cancellationNoteLink({ amountCents: 10000, status: "VOIDED" })],
         payment: { refundedAmountCents: 3000 },
       });
-      expect(requestNoteActions(voided.actions)).toEqual([expect.objectContaining({ safeToAutoApply: false })]);
+      expect(requestNoteActions(accountCredit.actions)).toEqual([expect.objectContaining({ safeToAutoApply: false })]);
+      const otherRequest = await run({
+        operations: [requestNote({ id: "operation_other_request", requestPayload: { refundRequestId: "rr_2", refundAmountCents: 2000 }, correlationKey: "payment:payment_1:refund-request-credit-note:rr_2:v1", idempotencyKey: "payment:payment_1:refund-request-credit-note:rr_2:v1" })],
+        links: [],
+        payment: { refundedAmountCents: 5000 },
+      });
+      expect(requestNoteActions(otherRequest.actions).map((action) => action.payload)).toEqual([
+        { paymentId: "payment_1", refundRequestId: "rr_1", refundAmountCents: 3000 },
+      ]);
     });
 
     it("MUTATION (#4195, #4214): never for a request with a note row of any status - a voided note is the officer's to re-raise", async () => {
