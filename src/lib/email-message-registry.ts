@@ -5,7 +5,7 @@ import {
 } from "@/lib/email-message-audit-defaults";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { ibSettlementFigureParagraph } from "@/lib/ib-settlement-figure-note";
-import { duplicateCaptureKeptParagraph } from "@/lib/duplicate-capture-kept-note";
+import { duplicateCaptureKeptAction, duplicateCaptureKeptParagraph } from "@/lib/duplicate-capture-kept-note";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
@@ -639,7 +639,7 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
   ],
   // #4211: {{duplicateCaptureKeptNote}} says why nothing was refunded (no record,
   // or a recorded settler that no longer holds money) and names the other payment.
-  "admin-duplicate-capture-kept": ["memberName", "reviewUrl", "duplicateCaptureKeptNote"],
+  "admin-duplicate-capture-kept": ["memberName", "reviewUrl", "duplicateCaptureKeptNote", "duplicateCaptureKeptAction"],
   // #2761: memberName and reviewUrl as its siblings, plus the two tokens that
   // carry WHICH of the two populations this was. An override that drops
   // {{bookingStateLabel}} or {{refundOutcomeNote}} leaves an operator unable to
@@ -1582,6 +1582,7 @@ export function sampleValue(token: string): string {
   if (token === "duplicateCaptureKeptNote") {
     return duplicateCaptureKeptParagraph({ reason: "not-recorded", otherPaymentIntentId: "pi_example" });
   }
+  if (token === "duplicateCaptureKeptAction") return duplicateCaptureKeptAction({ otherHoldsMoney: true });
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
   }
@@ -2131,6 +2132,7 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "settlementFigureNote",
   // #4211: the kept-capture alert's why-nothing-was-refunded sentence.
   "duplicateCaptureKeptNote",
+  "duplicateCaptureKeptAction",
   // #4170: the outside-the-app refund alert's instruction.
   "outsideAppRefundNote",
   // #2774: the same direction as a SUBJECT-length phrase, so the withheld and

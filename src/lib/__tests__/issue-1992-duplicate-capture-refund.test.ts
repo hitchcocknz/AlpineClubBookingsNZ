@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   bookingUpdateMany: vi.fn(),
   paymentUpsert: vi.fn(),
   paymentTransactionFindFirst: vi.fn(),
+  paymentTransactionFindUnique: vi.fn(),
   paymentRecoveryOperationFindMany: vi.fn(),
   paymentRecoveryOperationFindFirst: vi.fn(),
   upsertPaymentIntentTransaction: vi.fn(),
@@ -230,6 +231,8 @@ const tx = {
   },
   paymentTransaction: {
     findFirst: (...args: unknown[]) => mocks.paymentTransactionFindFirst(...args),
+    // #4211: the released settler's own intent, read by id.
+    findUnique: (...args: unknown[]) => mocks.paymentTransactionFindUnique(...args),
   },
   // #1992 superseded-handoff exclusion: guards (b′)/(c′) read the recovery
   // operations inside the same lock(1) transaction. Deliberately NO write
@@ -371,6 +374,9 @@ function primeLedger(
       if (match) reachedSibling = true;
       return match;
     }
+  );
+  mocks.paymentTransactionFindUnique.mockImplementation(
+    async ({ where }: { where: { id: string } }) => transactions.find((transaction) => transaction.id === where.id) ?? null,
   );
   mocks.findPaymentTransactionByIntentId.mockImplementation(
     async ({ paymentIntentId }: { paymentIntentId: string }) =>
@@ -1752,6 +1758,47 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
       expect.objectContaining({ reason: "settler-released", otherPaymentIntentId: null, otherHoldsMoney: false }),
       CLUB_FORMAT_TEST,
     );
+  });
+
+  it("a released settler and the replay of a duplicate whose refund is already owed: it re-sends its own refund, no alert", async () => {
+    primeLedger(
+      [
+        ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI, status: PaymentStatus.REFUNDED, refundedAmountCents: 10000 }),
+        ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI }),
+      ],
+      { settledBy: "txn-y" },
+    );
+    mocks.listDuplicateCaptureRefundIntentIds.mockResolvedValue([THIRD_PI]);
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("duplicate_capture_refunded");
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: THIRD_PI, allocationPlan: [{ paymentTransactionId: "txn-z", amountCents: 10000 }] }),
+    );
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: THIRD_PI, settledPaymentIntentId: SETTLING_PI }),
+      CLUB_FORMAT_TEST,
+    );
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
+  });
+
+  it("a recorded settler a live superseded-intent operation holds, seen by both (b′) and (c′): a silent keep, as the (c′) case", async () => {
+    primeLedger(
+      [ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: THIRD_PI })],
+      { settledBy: "txn-y" },
+    );
+    primeRecoveryOperations([
+      {
+        id: "op-superseded-y",
+        type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+        status: PaymentRecoveryOperationStatus.PENDING,
+        paymentId: "payment-1",
+        paymentIntentId: SETTLING_PI,
+      },
+    ]);
+
+    expect((await arrive(THIRD_PI)).outcome).toBe("already_paid");
+    expectNothingRefunded();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
   });
 
   it("no record and nothing else holding money (a replay of the booking's only capture): a silent keep", async () => {

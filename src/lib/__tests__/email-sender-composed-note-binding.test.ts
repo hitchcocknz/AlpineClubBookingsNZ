@@ -626,6 +626,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(notRecorded).toContain("card payment pi_other on it still holds money");
     expect(notRecorded).toContain("no record of which payment settled this booking");
     expect(notRecorded).toContain("check in Stripe that neither payment has already been refunded");
+    expect(notRecorded).toContain("refund the other one by hand");
     expect(notRecorded).toContain("Booking: booking-9");
     const [args] = mocks.sendUnmuteableAdminAlert.mock.calls[0] as [{ subject: string; templateName: string }];
     expect(args.subject).toBe("Booking may have been paid twice — check by hand: Alice Example");
@@ -651,6 +652,9 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(alone).toContain("no other payment on it still holds money");
     expect(alone).toContain("whether this payment now pays for the booking or is a duplicate");
     expect(alone).not.toContain("a cash or bank payment");
+    // #4211 review: never "refund the other one" when there is no other one.
+    expect(alone).not.toContain("refund the other one");
+    expect(alone).toContain("refund it by hand only if the booking should not be paid by it");
   });
 
   it("split-guest-portion-cancelled: {{ownBookingNote}} is supplied and renders its reassurance sentence", async () => {

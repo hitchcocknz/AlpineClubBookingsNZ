@@ -160,14 +160,35 @@ export async function judgeCaptureOnPaidBooking(
   const settlement =
     recordedSettler ??
     (await tx.paymentTransaction.findFirst({ orderBy: [...LEDGER_ROWS_OLDEST_FIRST], where, select }));
+  // Refund exactly this capture's outstanding amount, never a newest-first
+  // allocation that could touch the settlement.
+  const refundArriving = (settledPaymentIntentId: string | null): ArrivingCaptureVerdict => {
+    const refundCents = Math.min(input.amountCents, arriving.amountCents - arriving.refundedAmountCents);
+    return refundCents <= 0
+      ? { verdict: "keep" }
+      : { verdict: "refund", refundPlan: [{ paymentTransactionId: arriving.id, amountCents: refundCents }], refundCents, settledPaymentIntentId };
+  };
+  const arrivingOwned = duplicateRefundIntentIds.includes(input.paymentIntentId);
+
   if (!settlement) {
-    // #4211 review: a RECORDED settler that no longer qualifies, and nothing
-    // else holding money - the arriving capture may now pay for the booking or
-    // be a duplicate, and only a person can say. A booking with no record and
-    // no other holder (a replay of its only capture) stays a silent keep.
-    return input.recordedSettlerId
-      ? { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "settler-released", otherHoldsMoney: false }
-      : { verdict: "keep" };
+    // No record and nothing else holding money: a replay of the booking's only
+    // capture, or a stray capture the stated limit covers - a silent keep.
+    if (!input.recordedSettlerId) return { verdict: "keep" };
+    // #4211 review: a RECORDED settler that no longer qualifies and nothing else
+    // holding money. Its own intent first: a duplicate-capture refund that owns
+    // the arriving capture re-sends its own refund, as under rule 3; and a
+    // settler whose money a live superseded-intent operation holds makes the
+    // arriving capture the settlement side, a silent keep, as (c′) below.
+    const settler = await tx.paymentTransaction.findUnique({
+      where: { id: input.recordedSettlerId },
+      select: { stripePaymentIntentId: true },
+    });
+    const settlerIntent = settler?.stripePaymentIntentId ?? null;
+    if (arrivingOwned) return refundArriving(settlerIntent);
+    if (settlerIntent && (await findLiveSupersededIntentOperation(tx, settlerIntent))) return { verdict: "keep" };
+    // Otherwise the arriving capture may now pay for the booking or be a
+    // duplicate, and only a person can say.
+    return { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "settler-released", otherHoldsMoney: false };
   }
 
   // (c′) belt and braces: the settlement's own intent re-checked against the
@@ -180,7 +201,7 @@ export async function judgeCaptureOnPaidBooking(
     return { verdict: "keep" };
   }
 
-  if (!recordedSettler && !duplicateRefundIntentIds.includes(input.paymentIntentId)) {
+  if (!recordedSettler && !arrivingOwned) {
     // Rule 3.
     return {
       verdict: "keep_unrecorded_settler",
@@ -190,16 +211,7 @@ export async function judgeCaptureOnPaidBooking(
     };
   }
 
-  // Pinned to exactly this capture's outstanding amount, never a newest-first
-  // allocation that could touch the settlement.
-  const refundCents = Math.min(input.amountCents, arriving.amountCents - arriving.refundedAmountCents);
-  if (refundCents <= 0) return { verdict: "keep" };
-  return {
-    verdict: "refund",
-    refundPlan: [{ paymentTransactionId: arriving.id, amountCents: refundCents }],
-    refundCents,
-    settledPaymentIntentId: settlement.stripePaymentIntentId,
-  };
+  return refundArriving(settlement.stripePaymentIntentId);
 }
 
 /**

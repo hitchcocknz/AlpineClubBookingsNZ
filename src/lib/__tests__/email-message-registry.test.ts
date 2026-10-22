@@ -501,8 +501,12 @@ describe("newly-registered hardcoded email templates (#1797)", () => {
     expect(definition.defaultSubject).toBe("Booking may have been paid twice — check by hand: {{memberName}}");
     expect(definition.defaultBody).toContain("check in Stripe that neither payment has already been refunded");
     expect(definition.requiredTokens).toEqual(
-      expect.arrayContaining(["duplicateCaptureKeptNote", "memberName", "reviewUrl"]),
+      expect.arrayContaining(["duplicateCaptureKeptNote", "duplicateCaptureKeptAction", "memberName", "reviewUrl"]),
     );
+    // #4211 review: the action is a composed token, never fixed text that says
+    // "refund the other one" when no other payment holds money.
+    expect(definition.defaultBody).not.toContain("refund the other one by hand");
+    expect(definition.defaultBody).toContain("{{duplicateCaptureKeptAction}}");
   });
 
   it("classifies admin-school-manual-invoice as an admin alert but keeps it delivery-locked", () => {

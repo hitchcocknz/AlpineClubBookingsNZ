@@ -50,8 +50,18 @@ export function duplicateCaptureKeptParagraph(input: {
   }
 }
 
-/** Fixed wording: what to do, and the check the upgrade window needs (#4211 review). */
-export const DUPLICATE_CAPTURE_KEPT_ACTION =
-  "Check which payment settled the booking, and refund the other one by hand.";
+/**
+ * What to do, shared by the hand-built HTML and the `{{duplicateCaptureKeptAction}}`
+ * token (#4211 review): with another payment holding money one of the two is
+ * extra; with none, this payment may be the only one left paying for the
+ * booking, and refunding it would leave the booking unpaid.
+ */
+export function duplicateCaptureKeptAction(input: { otherHoldsMoney?: boolean }): string {
+  return input.otherHoldsMoney === false
+    ? "Check whether this payment should pay for the booking; refund it by hand only if the booking should not be paid by it."
+    : "Check which payment settled the booking, and refund the other one by hand.";
+}
+
+/** Fixed wording: the check the upgrade window needs (#4211 review). */
 export const DUPLICATE_CAPTURE_KEPT_STRIPE_CHECK =
   "Before you refund by hand, check in Stripe that neither payment has already been refunded: while an upgrade is switching over, the previous app version can still refund one automatically.";

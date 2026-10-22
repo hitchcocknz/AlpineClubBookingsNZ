@@ -9,8 +9,8 @@
 import { escapeHtml } from "./escape";
 import { alertBox, button, formatCents, heading, infoTable, layout, paragraph } from "./layout";
 import {
-  DUPLICATE_CAPTURE_KEPT_ACTION,
   DUPLICATE_CAPTURE_KEPT_STRIPE_CHECK,
+  duplicateCaptureKeptAction,
   duplicateCaptureKeptParagraph,
   type DuplicateCaptureKeptReason,
 } from "@/lib/duplicate-capture-kept-note";
@@ -56,7 +56,7 @@ export function adminDuplicateCaptureKeptTemplate(data: {
         }),
       )
     }
-    ${paragraph(DUPLICATE_CAPTURE_KEPT_ACTION)}
+    ${paragraph(duplicateCaptureKeptAction({ otherHoldsMoney: data.otherHoldsMoney }))}
     ${paragraph(DUPLICATE_CAPTURE_KEPT_STRIPE_CHECK)}
     ${infoTable([
       { label: "Member", value: escapeHtml(data.memberName) },

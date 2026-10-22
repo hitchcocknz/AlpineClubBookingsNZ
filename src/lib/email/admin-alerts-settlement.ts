@@ -8,6 +8,7 @@ import { adminSecondInstrumentSettlementConflictTemplate } from "@/lib/email-tem
 import { adminBankTransferSettlementFigureTemplate } from "@/lib/email-templates/admin-bank-transfer-settlement";
 import { adminDuplicateCaptureKeptTemplate } from "@/lib/email-templates/admin-duplicate-capture-kept";
 import {
+  duplicateCaptureKeptAction,
   duplicateCaptureKeptParagraph,
   type DuplicateCaptureKeptReason,
 } from "@/lib/duplicate-capture-kept-note";
@@ -203,6 +204,9 @@ export async function sendAdminDuplicateCaptureKeptAlert(data: {
         otherPaymentIntentId: data.otherPaymentIntentId,
         otherHoldsMoney: data.otherHoldsMoney,
       }),
+      // What to do differs too: with nothing else holding money this payment
+      // may be the one paying for the booking (#4211 review).
+      duplicateCaptureKeptAction: duplicateCaptureKeptAction({ otherHoldsMoney: data.otherHoldsMoney }),
     },
     requirement: { area: "finance", level: "edit" },
   });
