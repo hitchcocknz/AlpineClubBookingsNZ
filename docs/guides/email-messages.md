@@ -414,9 +414,10 @@ Two consequences worth knowing before you edit one:
   If the organiser had already cancelled the whole group, it says that
   cancellation is refunding, or has refunded, the booking to the organiser's
   card. When the organiser cancels a group they paid for by Internet Banking,
-  it says the club will repay the organiser directly. A joiner cancelling their
-  own place on a group the organiser paid for by Internet Banking gets account
-  credit, worded as above. `{{refundAmount}}` is always this booking's own
+  it says the club will repay the organiser directly. So does a joiner
+  cancelling their own place on a group the organiser paid for by Internet
+  Banking: the refund goes back to the organiser by bank transfer, never to the
+  joiner as account credit (#3949). `{{refundAmount}}` is always this booking's own
   refund, so it can read $0.00 while the sentence names the organiser's refund.
   Keep it on a line of its own.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a

@@ -256,35 +256,51 @@ const money = async (bookingId: string) =>
     expect((await payment(child!)).refundedAmountCents).toBe(GROUP_CHILD_CENTS / 2);
   }, 300_000);
 
-  it("review H1: a joiner's own cancel after a paid edit hand-back never flips the organiser's payment FAILED; a later group cancel still reconciles", async () => {
-    const g = await settledGroup("joiner-cancel");
-    const [edited, other] = g.children;
-    await complete(await editHandBack(edited!, "m1"));
-    const { cancelBooking } = await import("@/lib/booking-cancel");
-    const cancel = () => cancelBooking(edited!, NAMES.officerId, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+  it("owner decision 22 Oct 2026: a joiner's own cancel refunds the organiser by a hand-back paid onto the mirror, live and after a paid edit hand-back; a later group cancel reconciles", async () => {
+    for (const afterEdit of [false, true]) {
+      const g = await settledGroup(afterEdit ? "joiner-cancel-after-edit" : "joiner-cancel");
+      const [joiner, other] = g.children;
+      const editedCents = afterEdit ? EDIT_CENTS : 0;
+      if (afterEdit) await complete(await editHandBack(joiner!, "m1"));
+      const { cancelBooking } = await import("@/lib/booking-cancel");
 
-    // A refund due: the cancel takes the paid path, as it does for a child nobody refunded yet, and is
-    // refused there whole (where a joiner's own refund goes is the owner's open question on #3949).
-    await expect(cancel()).rejects.toThrow(/exceeds captured/);
-    expect(await payment(edited!)).toEqual({ status: "PARTIALLY_REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: EDIT_CENTS });
-    expect((await prisma.booking.findUniqueOrThrow({ where: { id: edited! } })).status).toBe("PAID");
+      // The policy's half of what the organiser's payment still holds for the place, tiered as every refund to the organiser is.
+      const dueCents = (GROUP_CHILD_CENTS - editedCents) / 2;
+      const cancelled = await cancelBooking(joiner!, NAMES.officerId, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "credit");
+      expect(cancelled, `afterEdit=${afterEdit}`).toMatchObject({
+        status: 200,
+        data: { refundMethod: "manual", refundAmountCents: dueCents, organiserRefund: { method: "organiser_by_hand", amountCents: dueCents } },
+      });
+      // Never the joiner's account credit, and the organiser's share is never read as unpaid (review H1).
+      expect(await prisma.memberCredit.count({ where: { sourceBookingId: joiner! } })).toBe(0);
+      expect(await payment(joiner!)).toEqual({ status: afterEdit ? "PARTIALLY_REFUNDED" : "SUCCEEDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: editedCents });
+      const task = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: joiner!, occurrenceKey: null, status: "OPEN" }, select: { id: true, amountCents: true, reason: true } });
+      expect(task.amountCents).toBe(dueCents);
+      expect(task.reason).toContain("to the group organiser by bank transfer");
+      expect(about(await census(), joiner!)).toEqual({ ...NOTHING, classes: [...(afterEdit ? PAID_BACK.classes : []), "IN_FLIGHT_HAND_BACK:PRICE"] });
 
-    // No refund due: the cancel commits, and the mirror is the organiser's money still - never FAILED.
-    await prisma.cancellationPolicy.updateMany({ where: { lodgeId: NAMES.lodgeId }, data: { refundPercentage: 0 } });
-    try {
-      expect(await cancel()).toMatchObject({ status: 200 });
-    } finally {
-      await prisma.cancellationPolicy.updateMany({ where: { lodgeId: NAMES.lodgeId }, data: { refundPercentage: 50 } });
+      await complete(task.id);
+      expect(await payment(joiner!)).toEqual({ status: "PARTIALLY_REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: editedCents + dueCents });
+      expect(await money(joiner!)).toEqual(
+        [
+          `BANK_RECEIPT:GROUP_SETTLEMENT:${GROUP_CHILD_CENTS}`,
+          ...(afterEdit ? [`BANK_REFUND:REVIEW_TASK:${-EDIT_CENTS}`] : []),
+          `BANK_REFUND:REVIEW_TASK:${-dueCents}`,
+          `CANCELLATION_FEE:CANCELLATION:${GROUP_CHILD_CENTS - editedCents - dueCents}`,
+        ].sort(),
+      );
+      expect(about(await census(), joiner!)).toEqual(PAID_BACK);
+
+      // The organiser later cancels the group: the joiner's place is already gone, so only the other is refunded.
+      await cancelGroupHistory(NAMES, g);
+      expect((await prisma.groupBookingSettlement.findUniqueOrThrow({ where: { id: g.settlement } })).refundPlan).toEqual({ [other!]: GROUP_CHILD_CENTS / 2 });
+      expect((await payment(joiner!)).refundedAmountCents).toBe(editedCents + dueCents);
+      const organiserTask = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: g.organiser, occurrenceKey: `group-organiser-hand-back:${g.settlement}` }, select: { amountCents: true } });
+      expect(organiserTask.amountCents).toBe(GROUP_CHILD_CENTS / 2);
+      const report = await census();
+      expect(about(report, joiner!), `afterEdit=${afterEdit}`).toEqual(PAID_BACK);
+      expect(about(report, other!), `afterEdit=${afterEdit}`).toEqual(NOTHING);
     }
-    expect(await payment(edited!)).toEqual({ status: "PARTIALLY_REFUNDED", amountCents: GROUP_CHILD_CENTS, refundedAmountCents: EDIT_CENTS });
-    expect((await prisma.booking.findUniqueOrThrow({ where: { id: edited! } })).status).toBe("CANCELLED");
-
-    await cancelGroupHistory(NAMES, g);
-    expect((await payment(other!)).refundedAmountCents).toBe(GROUP_CHILD_CENTS / 2);
-    const report = await census();
-    for (const id of g.children) expect(about(report, id!).coverage, id).toEqual([]);
-    for (const id of g.children) expect(about(report, id!).disagreements, id).toEqual([]);
-    expect(about(report, other!)).toEqual(NOTHING);
   }, 300_000);
 
   it("a group cancel after a completed edit hand-back sizes the plan net of it and mirrors both, live and on a re-drive interrupted after its plan froze", async () => {

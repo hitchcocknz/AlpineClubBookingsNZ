@@ -18,6 +18,10 @@
   such a booking goes to the organiser the same way. A joiner's own cancellation
   after such a refund no longer marks the organiser's payment as never made.
 
+  A joiner cancelling their own place on such a group with a refund due used to
+  be refused; the cancel now goes ahead and raises the same kind of task, so the
+  refund goes back to the organiser by bank transfer rather than to the joiner.
+
   A later cancellation of the group by the organiser counts a refund already
   paid this way exactly once. Dismissing a change's refund after the group is
   cancelled is still refused, as before, and the refusal now names the

@@ -2299,9 +2299,10 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
 **`INV-PAY-124`** (the organiser's own Internet Banking hand-back).
 
 - **A refund on a joiner the organiser paid for by Internet Banking goes back
-  to the organiser, onto the child's mirror** (#3949; owner decisions, 15 and
-  21 Oct 2026): an edit's or approved appeal's hand-back, and a refund-direction
-  edit review. `paidByOrganiserInternetBanking` (`group-organiser-paid.ts`) is
+  to the organiser, onto the child's mirror** (#3949; owner decisions, 15, 21
+  and 22 Oct 2026): an edit's or approved appeal's hand-back, a refund-direction
+  edit review, and the joiner's own cancel, which raises a hand-back (card tier),
+  never the joiner's credit. `paidByOrganiserInternetBanking` (`group-organiser-paid.ts`) is
   the one test. The child's payment is the settle's mirror, with no
   `PaymentTransaction`, so `applyLocalRefundAllocation` cannot carry it.
   - **Completing it** (`group-settlement-mirror-hand-back.ts`) takes `lock(1)`,

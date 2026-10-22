@@ -26,9 +26,12 @@ reason: the finance queue tells the officer the money goes to the group
   with them.
 
 file: src/lib/booking-cancel.ts
-lines: 2843
+lines: 2851
 reason: the paid-cancel gate and the cancel's capture evidence each learn that
   an Internet Banking organiser child's settle mirror is the capture (the one
   predicate lives in `group-organiser-paid.ts`), beside the card twin's line
   in the same gate; without it a joiner's cancel flipped the organiser's share
-  FAILED. Two call sites pass the booking the evidence now reads.
+  FAILED. And (owner decision, 22 Oct 2026) the joiner's own cancel of such a
+  place forces the organiser-by-hand method beside the card twin's forcing, and
+  its hand-back's email, confirmation and alert name the organiser - each
+  beside the cash hand-back's own lines in the same branch.

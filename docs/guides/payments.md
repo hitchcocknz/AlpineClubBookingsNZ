@@ -247,8 +247,10 @@ invoice of its own; the money was taken on the group's combined invoice), so onc
 you mark one paid back the finance contacts get a **Xero Sync Error** email naming the amount,
 the organiser and the invoice: in Xero, raise a credit note for that amount to
 the organiser against the group's invoice and record the bank refund against it.
-A price review on such a booking that the club settles as money owed back goes
-to the organiser the same way; once the group is cancelled, such a review is
+When the joiner cancels their own place with a refund due, the cancel raises
+one of these tasks too, for the policy's refund, to the organiser (never account
+credit for the joiner). A price review on such a booking that the club settles
+as money owed back goes to the organiser the same way; once the group is cancelled, such a review is
 refused and has to be settled by hand and dismissed. The rules above are
 unchanged: once the organiser has cancelled the group, a change's task can only
 be marked paid back, while an appeal's can still be dismissed with a note. Tasks

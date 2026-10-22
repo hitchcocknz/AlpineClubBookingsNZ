@@ -164,6 +164,8 @@ describe("the queue payload marks an edit refund hand-back for the card", () => 
     };
     expect(toOpenManualRefundTaskPayload(groupChild, null, []).paidToGroupOrganiser).toBe(true);
     expect(toOpenManualRefundTaskPayload({ ...groupChild, occurrenceKey: "refund-request-hand-back:r1" }, null, []).paidToGroupOrganiser).toBe(true);
-    expect(toOpenManualRefundTaskPayload({ ...groupChild, occurrenceKey: null }, null, []).paidToGroupOrganiser).toBe(false);
+    // Owner decision, 22 Oct 2026: the joiner's own cancellation's hand-back (keyless) goes to the organiser too.
+    expect(toOpenManualRefundTaskPayload({ ...groupChild, occurrenceKey: null }, null, []).paidToGroupOrganiser).toBe(true);
+    expect(toOpenManualRefundTaskPayload({ ...groupChild, occurrenceKey: "group-organiser-hand-back:s1" }, null, []).paidToGroupOrganiser).toBe(false);
   });
 });

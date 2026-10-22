@@ -376,3 +376,16 @@ export function editRefundHandBackReopenAfterCancelMessage(booking: PayeeBooking
     ? "This group booking has been cancelled since this edit refund was dismissed, and the cancellation's refund to the group organiser was worked out without it. Putting it back on the queue would promise the organiser money the cancellation already accounted for. If more is owed, raise it against the cancelled booking, for example as a refund appeal."
     : EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE;
 }
+
+/**
+ * B5 (#2262), #3949 (owner decision, 22 Oct 2026): THE REASON LINE of a paid
+ * cancellation's hand-back task. A cash settlement's refund goes back to the
+ * member; a joiner's own cancel of a place the group organiser paid for by
+ * internet banking goes back to the ORGANISER by bank transfer. The member
+ * wording is exactly what it was.
+ */
+export function cancellationHandBackReason({ bookingId, refundPercentage, payee }: { bookingId: string; refundPercentage: number; payee: BankTransferRefundPayee }): string {
+  return payee === "organiser"
+    ? `Booking ${bookingId} cancelled by its joiner; the group organiser paid for it by internet banking, so the club refunds ${refundPercentage}% (under the policy in effect at the time) to the group organiser by bank transfer (#3949).`
+    : `Booking ${bookingId} cancelled — cash/manual settlement, refund by hand (${refundPercentage}% under the policy in effect at the time).`;
+}

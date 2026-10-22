@@ -77,7 +77,9 @@ export type OrganiserRefundMethod =
   | "organiser_card"
   | "organiser_card_pending"
   | "group_cancel_refunding"
-  | "group_cancel_refunded";
+  | "group_cancel_refunded"
+  /** #3949 (owner decision, 22 Oct 2026): a joiner's own cancel of a place the organiser paid for by internet banking. */
+  | "organiser_by_hand";
 
 /** #3956: an approved appeal's refund to the organiser's card - made, or on its way. */
 export type OrganiserCardAppealRefund = Extract<OrganiserRefundMethod, "organiser_card" | "organiser_card_pending">;

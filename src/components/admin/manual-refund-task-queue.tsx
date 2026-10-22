@@ -1562,7 +1562,7 @@ export function ManualRefundTaskQueue() {
       task.groupOrganiserHandBack !== true &&
       task.cardShortfallHandBack !== true &&
       task.cardShortfallCheck !== true &&
-      !task.bankRefundVoidFollowUp,
+      !task.bankRefundVoidFollowUp && toMember(task),
   );
   const hasBankRefundVoidRows = openTasks.some((task) => Boolean(task.bankRefundVoidFollowUp));
   if (
@@ -1664,7 +1664,7 @@ export function ManualRefundTaskQueue() {
               >
                 Some of these are refunds on joiners&apos; bookings that a group
                 organiser paid for by internet banking, after a change lowered
-                the price or an appeal was approved. That money came from the
+                the price, an appeal was approved or the joiner cancelled. That money came from the
                 organiser, so it goes back to the organiser by bank transfer,
                 not to the joiner; the joiner has been told so. The app raises
                 no Xero credit note for these: once you mark one paid back,

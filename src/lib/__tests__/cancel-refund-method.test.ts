@@ -16,6 +16,23 @@ describe("forcedCancelRefundMethod (#3643 follow-up, the one home)", () => {
   it("forces the organiser's card for a joiner's booking the organiser paid for by card (#3653)", () => {
     expect(forcedCancelRefundMethod("STRIPE", true)).toBe("organiser_card");
   });
+
+  it("forces a bank transfer to the organiser, never the joiner's credit, for one the organiser paid for by internet banking (#3949, owner decision 22 Oct 2026)", () => {
+    expect(forcedCancelRefundMethod("INTERNET_BANKING", false, true)).toBe("organiser_by_hand");
+    expect(forcedCancelRefundMethod("INTERNET_BANKING", false, false)).toBe("credit");
+  });
+});
+
+describe("the cancellation hand-back's reason names its payee (#3949)", () => {
+  it("the organiser on an organiser-paid place; the member's wording unchanged", async () => {
+    const { cancellationHandBackReason } = await import("@/lib/manual-refund-task-copy");
+    expect(cancellationHandBackReason({ bookingId: "b1", refundPercentage: 50, payee: "organiser" })).toBe(
+      "Booking b1 cancelled by its joiner; the group organiser paid for it by internet banking, so the club refunds 50% (under the policy in effect at the time) to the group organiser by bank transfer (#3949).",
+    );
+    expect(cancellationHandBackReason({ bookingId: "b1", refundPercentage: 50, payee: "member" })).toBe(
+      "Booking b1 cancelled — cash/manual settlement, refund by hand (50% under the policy in effect at the time).",
+    );
+  });
 });
 
 describe("paidByOrganiserCard (#3653)", () => {

@@ -78,14 +78,15 @@ describe("which hand-backs complete onto a group child's mirror", () => {
     ...overrides,
   });
 
-  it("an edit's and an approved appeal's, on the child's own payment", () => {
+  it("an edit's, an approved appeal's and (owner decision, 22 Oct 2026) the joiner's own cancellation's, on the child's own payment", () => {
     expect(isGroupSettlementMirrorHandBack(task("edit-refund-hand-back:mod-1"))).toBe(true);
     expect(isGroupSettlementMirrorHandBack(task("refund-request-hand-back:req-1"))).toBe(true);
+    expect(isGroupSettlementMirrorHandBack(task(null))).toBe(true);
   });
 
-  it("never a cancellation's own, another kind, another payment, or a booking the organiser did not pay by internet banking", () => {
-    expect(isGroupSettlementMirrorHandBack(task(null))).toBe(false);
+  it("never another keyed hand-back, another kind, another payment, or a booking the organiser did not pay by internet banking", () => {
     expect(isGroupSettlementMirrorHandBack(task("group-organiser-hand-back:s1"))).toBe(false);
+    expect(isGroupSettlementMirrorHandBack(task("bank-refund-void:x"))).toBe(false);
     expect(isGroupSettlementMirrorHandBack(task("edit-refund-hand-back:mod-1", { kind: "EDIT_FINANCIAL_REVIEW" }))).toBe(false);
     expect(isGroupSettlementMirrorHandBack(task("edit-refund-hand-back:mod-1", { paymentId: "pay-other" }))).toBe(false);
     expect(isGroupSettlementMirrorHandBack(task("edit-refund-hand-back:mod-1", { paymentId: null }))).toBe(false);
@@ -136,7 +137,7 @@ describe("which hand-backs complete onto a group child's mirror", () => {
     expect(backed.$executeRaw.mock.invocationCallOrder[0]).toBeLessThan(backed.paymentTransaction.count.mock.invocationCallOrder[0]!);
     expect(backed.payment.findUnique).not.toHaveBeenCalled();
     const other = store();
-    expect(await chooseGroupSettlementMirrorRoute({ task: task(null), amountCents: 100, store: other as never })).toBeNull();
+    expect(await chooseGroupSettlementMirrorRoute({ task: task("group-organiser-hand-back:s1"), amountCents: 100, store: other as never })).toBeNull();
     expect(other.paymentTransaction.count).not.toHaveBeenCalled();
   });
 

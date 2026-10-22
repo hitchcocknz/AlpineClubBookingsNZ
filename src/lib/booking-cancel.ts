@@ -56,7 +56,8 @@ import {
   markBookingCancellationRefundRecoverySucceeded,
   recordBookingCancellationRefundRecoveryInlineError,
 } from "@/lib/payment-recovery";
-import { organiserInternetBankingMirrorCaptured, paidByOrganiserCard } from "@/lib/group-organiser-paid";
+import { organiserInternetBankingMirrorCaptured, paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
+import { cancellationHandBackReason } from "@/lib/manual-refund-task-copy";
 import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-executor";
 import {
   findGroupCancellationChildDebt,
@@ -1569,8 +1570,11 @@ async function performBookingCancellation(
     const organiserCard = paidByOrganiserCard({ ...fresh, payment })
       ? await organiserChildCancelBasis(tx, fresh, payment)
       : null;
-    const forcedMethod = forcedCancelRefundMethod(payment.source, organiserCard !== null);
-    refundMethod = forcedMethod === "credit" ? "credit" : forcedMethod === "organiser_card" ? "card" : refundMethod;
+    // #3949 (owner decision, 22 Oct 2026): one the organiser paid for by Internet Banking is refunded to the
+    // organiser by bank transfer - a hand-back task (the manual branch), tiered as every refund to the organiser is.
+    const organiserByHand = organiserCard === null && paidByOrganiserInternetBanking({ ...fresh, payment });
+    const forcedMethod = forcedCancelRefundMethod(payment.source, organiserCard !== null, organiserByHand);
+    refundMethod = forcedMethod === "credit" ? "credit" : forcedMethod === "organiser_card" || forcedMethod === "organiser_by_hand" ? "card" : refundMethod;
 
     // #1491 (review): materialize any folded (mirror-only) refund into the
     // capture ledger BEFORE executing new refunds. The inbound reconcile
@@ -1844,7 +1848,7 @@ async function performBookingCancellation(
         });
       }
     }
-    const manualDisposition = !organiserCard && Boolean(payment.manuallyMarkedPaidAt);
+    const manualDisposition = !organiserCard && (Boolean(payment.manuallyMarkedPaidAt) || organiserByHand);
     const branch = paidCancellationBranch({
       manualDisposition,
       refundMethod,
@@ -1863,10 +1867,7 @@ async function performBookingCancellation(
           // this task's amount is not admin-amendable — it was fixed at creation.
           kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
           raisedAmountCents: refundAmountCents,
-          reason: `Booking ${bookingId} cancelled — cash/manual settlement, refund by hand (${refundPercentage}% under the policy in effect at the time).`.slice(
-            0,
-            MANUAL_REFUND_TASK_REASON_MAX
-          ),
+          reason: cancellationHandBackReason({ bookingId, refundPercentage, payee: organiserByHand ? "organiser" : "member" }).slice(0, MANUAL_REFUND_TASK_REASON_MAX),
         },
         select: { id: true },
       });
@@ -2101,6 +2102,8 @@ async function performBookingCancellation(
   // refund is planned — a cash settlement has no card slice to plan against.
   if (branch === "manual") {
     await cleanupPromoRedemption(bookingId);
+    // #3949 (owner decision, 22 Oct 2026): a joiner's place the organiser paid for by Internet Banking - the hand-back is the organiser's.
+    const toOrganiser = paidByOrganiserInternetBanking({ ...fresh, payment });
 
     logBookingCancellationAudit({
       booking: fresh,
@@ -2113,6 +2116,7 @@ async function performBookingCancellation(
       ipAddress,
       metadata: {
         refundMethod: "manual",
+        ...(toOrganiser ? { refundTo: "organiser" } : {}),
         refundAmountCents,
         refundPercentage,
         refundableBaseCents,
@@ -2136,7 +2140,7 @@ async function performBookingCancellation(
         fresh.checkOut,
         refundAmountCents,
         format,
-        "manual",
+        toOrganiser ? "organiser_by_hand" : "manual",
         creditRestoredCents,
         fresh.lodgeId
       ).catch((err) => logger.error({ err, bookingId }, "Failed to send cancellation email"));
@@ -2144,8 +2148,9 @@ async function performBookingCancellation(
 
     // Admin audience, so exempt from the per-booking "No emails" switch (#2258
     // rule 2): the switch silences the MEMBER, and somebody still has to be
-    // told there is cash to hand back.
-    sendAdminManualRefundTaskAlert({
+    // told there is cash to hand back. #3949: not for an organiser's - like an
+    // edit's or an appeal's hand-back, the finance queue carries it.
+    if (!toOrganiser) sendAdminManualRefundTaskAlert({
       memberName: `${bookingOwner(fresh).member.firstName} ${bookingOwner(fresh).member.lastName}`,
       checkIn: fresh.checkIn,
       checkOut: fresh.checkOut,
@@ -2169,9 +2174,12 @@ async function performBookingCancellation(
         refundAmountCents,
         refundPercentage,
         refundMethod: "manual",
+        ...(toOrganiser ? { organiserRefund: { method: "organiser_by_hand" as const, amountCents: refundAmountCents } } : {}),
         creditRestoredCents: creditRestoredCents || undefined,
         manualRefundTaskId: manualRefundTaskId ?? undefined,
-        message: `Booking cancelled. This booking was settled in cash, so a manual refund task for ${formatCents(refundAmountCents, format)} has been raised for an admin to pay back by hand.`,
+        message: toOrganiser
+          ? `Booking cancelled. The group organiser paid for this booking, so the club will refund ${formatCents(refundAmountCents, format)} to the organiser by bank transfer.`
+          : `Booking cancelled. This booking was settled in cash, so a manual refund task for ${formatCents(refundAmountCents, format)} has been raised for an admin to pay back by hand.`,
       },
     };
   }

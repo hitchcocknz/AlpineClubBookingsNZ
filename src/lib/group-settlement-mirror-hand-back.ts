@@ -7,7 +7,8 @@ import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financia
 import { assertGroupMirrorHandBackWithinUnpromisedCash } from "@/lib/edit-refund-hand-back";
 import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import { mirrorPlanRefundedCents } from "@/lib/group-settlement-refund-plan";
-import { isEditRefundHandBackTask, isRefundRequestHandBackTask, NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
+import { NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
+import { isGroupSettlementMirrorHandBackKind } from "@/lib/group-settlement-mirror-kinds";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
@@ -94,14 +95,16 @@ type MirrorHandBackTask = {
 };
 
 /**
- * Is this an edit's or an approved appeal's hand-back on a joiner's booking the
- * organiser paid for by internet banking, raised on that booking's own payment?
+ * Is this an edit's, an approved appeal's or (owner decision, 22 Oct 2026) the
+ * joiner's own cancellation's hand-back (`isGroupSettlementMirrorHandBackKind`)
+ * on a joiner's booking the organiser paid for by internet banking, raised on
+ * that booking's own payment?
  * Pure; `chooseGroupSettlementMirrorRoute` adds the one fact it cannot see
  * (that no transaction backs the payment).
  */
 export function isGroupSettlementMirrorHandBack(task: MirrorHandBackTask): boolean {
   return (
-    (isEditRefundHandBackTask(task) || isRefundRequestHandBackTask(task)) &&
+    isGroupSettlementMirrorHandBackKind(task) &&
     task.paymentId !== null &&
     task.booking.payment?.id === task.paymentId &&
     paidByOrganiserInternetBanking(task.booking)
