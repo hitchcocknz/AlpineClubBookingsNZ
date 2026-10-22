@@ -8,13 +8,20 @@
  * Read with the TypeScript parser, not a regex (#4211 review F3: a regex missed
  * the shorthand `data: { settledByTransactionId }` and flagged `where:` reads).
  * A WRITE is a property named `settledByTransactionId` in an object literal -
- * written out or shorthand - that is not a `select`/`include` flag (`true` or
- * `false`) and does not sit inside a `where`, `select`, `include`, `orderBy`,
- * `distinct` or `cursor` argument; or a string or template that names the
- * column in raw SQL. Types, property reads and the column in a filter pass.
+ * written out or shorthand, wherever the object is built, so one built
+ * elsewhere and passed whole is caught too - that is not a `select`/`include`
+ * flag (`true` or `false`) and does not sit inside a `where`, `select`,
+ * `include`, `orderBy`, `distinct` or `cursor` argument of the same call (the
+ * walk up stops at the first function or call, so a closure under `select`
+ * that writes is still a write); any string or template naming the column
+ * inside a `$executeRaw*` / `$queryRaw*` call, however the SQL is split across
+ * literals (a raw read is flagged too: raw SQL on this column goes through the
+ * home or not at all); and, elsewhere, a literal naming it beside UPDATE, INSERT or SET.
+ * Types, property reads and the column in a filter pass.
  *
- * WHAT IT CANNOT SEE: a computed key (`["settledBy" + "TransactionId"]`), and a
- * write through an object built elsewhere and passed whole.
+ * WHAT IT CANNOT SEE: a computed key (`["settledBy" + "TransactionId"]`), and
+ * raw SQL assembled outside a raw call from literals that split the column's
+ * own name.
  *
  * `pnpm run test:related` cannot select this file (it reads the tree from disk,
  * with no import edge to it); run it by name with `pnpm run test:named`.
@@ -45,10 +52,29 @@ function propertyName(node: ts.ObjectLiteralElementLike): string | null {
   return null;
 }
 
-/** Inside a read argument: some enclosing property assignment is named where/select/... */
+/**
+ * Inside a read argument of the same call: an enclosing property assignment is
+ * named where/select/..., found before the walk leaves the call or function
+ * that holds the property (a closure under `select` can still write).
+ */
 function insideReadArgument(node: ts.Node): boolean {
   for (let parent = node.parent; parent; parent = parent.parent) {
+    if (ts.isFunctionLike(parent) || ts.isCallExpression(parent)) return false;
     if (ts.isPropertyAssignment(parent) && READ_ARGUMENTS.has(propertyName(parent) ?? "")) return true;
+  }
+  return false;
+}
+
+const RAW_SQL_CALL = /^\$(executeRaw|queryRaw)/;
+
+/** Inside an argument of a `$executeRaw*` / `$queryRaw*` call or tag. */
+function insideRawSql(node: ts.Node): boolean {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    const callee = ts.isCallExpression(parent) ? parent.expression : ts.isTaggedTemplateExpression(parent) ? parent.tag : null;
+    if (callee) {
+      const name = ts.isPropertyAccessExpression(callee) ? callee.name.text : ts.isIdentifier(callee) ? callee.text : "";
+      if (RAW_SQL_CALL.test(name)) return true;
+    }
   }
   return false;
 }
@@ -67,7 +93,7 @@ function settledByWrites(fileName: string, text: string): number[] {
     } else if (
       (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node)) &&
       node.text.includes(COLUMN) &&
-      /\b(update|insert|set)\b/i.test(node.text)
+      (insideRawSql(node) || /\b(update|insert|set)\b/i.test(node.text))
     ) {
       lines.push(at(node));
     }
@@ -109,6 +135,10 @@ describe("Payment.settledByTransactionId has one writer home (#4211, INV-PAY-043
     ["a nested where filter", "await tx.booking.findFirst({ where: { payment: { settledByTransactionId: { not: null } } } });", 0],
     ["a type", "type P = { settledByTransactionId: string | null; other?: string };", 0],
     ["a property read", "const id = payment.settledByTransactionId; const ok = id === payment?.settledByTransactionId;", 0],
+    ["a write in a closure under select", "await tx.payment.findMany({ select: { id: true, after: () => tx.payment.update({ where: { id }, data: { settledByTransactionId: x } }) } });", 1],
+    ["an object built elsewhere and passed whole", "const data = { settledByTransactionId: txId }; await tx.payment.update({ where: { id }, data });", 1],
+    ["raw SQL split across literals", 'await tx.$executeRawUnsafe(\'UPDATE "Payment" SET \' + \'"settledByTransactionId" = NULL WHERE id = $1\', id);', 1],
+    ["a raw SQL read naming it", 'await tx.$queryRaw`SELECT "settledByTransactionId" FROM "Payment"`;', 1],
   ])("discriminates %s", (_label, snippet, expected) => {
     expect(settledByWrites("planted.ts", snippet)).toHaveLength(expected);
   });
