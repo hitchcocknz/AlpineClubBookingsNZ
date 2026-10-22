@@ -89,6 +89,7 @@ import {
 } from "@/lib/xero-booking-repair-side-notes";
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
 import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
+import { addRefundRequestNoteNotQueuedFindings, paidBackRefundRequestCents } from "./xero-booking-repair-request-notes";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
 import {
@@ -1452,9 +1453,10 @@ export function classifyBookingContext(
   }
 
   if (payment) addUnsettledRefundCreditNoteFindings(findings, actionMap, booking.id, context.paymentRefundPaymentLinks, paymentOperations, paymentLinks);
+  addRefundRequestNoteNotQueuedFindings({ findings, actionMap, context }); // #4231
   addUnallocatedCardAppliedCreditFindings(findings, actionMap, context);
   if (payment && refundCreditNote) {
-    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
+    const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paidBackRefundRequestCents(context), context.modificationOperationsById);
     if (refundAmountCents !== null && refundAmountCents > 0) {
       addXeroAmountMismatchFinding({
         findings,
@@ -2284,7 +2286,7 @@ export function classifyBookingContext(
     // per-refund ones - already answer every cent a note may: nothing is
     // missing, and nothing is ambiguous.
     if (primaryInvoice && !refundCreditNote && context.refundNoteUncoveredCents !== 0) {
-      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paymentOperations, paymentLinks, context.modificationOperationsById);
+      const cashCancellationRefundCents = getCashCancellationRefundCandidateCents(booking, paidBackRefundRequestCents(context), context.modificationOperationsById);
       if (cashCancellationRefundCents === null) {
         const action = addAction(
           actionMap,
