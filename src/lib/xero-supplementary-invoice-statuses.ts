@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import type { XeroSupplementaryInvoiceAnchorModel } from "@/lib/xero-supplementary-invoice-key";
+import { XERO_REQUEUE_OPERATION_TYPE } from "@/lib/xero-hardening-shared";
 
 /**
  * The states in which a supplementary invoice for this anchor is still going to
@@ -70,6 +71,21 @@ export function outstandingSupplementaryInvoiceOperationsWhere(anchor: {
  * restate nor the enqueue reads FAILED, so a later share's invoice is a NEW
  * row, and requeuing the failed one beside it bills the edit twice (#4274).
  *
+ * Round 5: OR an operator's retry of an invoice create on this anchor that has
+ * not been cancelled (a `REQUEUE` row, which carries its original's anchor and
+ * `originalOperationType` but no `queueType`), WHATEVER the original's resolve
+ * mark says. The resolve route can WITHDRAW a mark when it finds such a retry
+ * running (`findRetryOverlappingMark`), so a row can go FAILED -> resolved ->
+ * FAILED-unresolved; a chooser whose first read landed inside that window read
+ * "not coming", then "not done", and took the card while the retry sent the
+ * invoice. A row with a live retry IS still coming, and this arm says so in
+ * every state of the mark. The retry's own correlation key names its original
+ * (`buildXeroOperationRequeueCorrelationKey`), which a `where` cannot join on,
+ * so the arm is scoped to the anchor instead: on a `BookingModification`
+ * anchor an INVOICE create is this change's supplementary invoice. A retry that
+ * already succeeded has linked the invoice, which the chooser's later "done"
+ * read refuses on, so counting it here is never the deciding answer.
+ *
  * `PARTIAL` is deliberately absent: the handler finishes `PARTIAL` only after
  * creating the invoice, and writes its `SUPPLEMENTARY_INVOICE` link in that same
  * commit, so such a row is issued, not coming. The chooser reads THIS first and
@@ -87,6 +103,15 @@ export function supplementaryInvoiceStillComingWhere(anchor: {
         ...supplementaryInvoiceAnchorOperationsWhere(anchor),
         status: "FAILED",
         manuallyResolvedAt: null,
+      },
+      {
+        direction: "OUTBOUND",
+        entityType: "INVOICE",
+        operationType: XERO_REQUEUE_OPERATION_TYPE,
+        localModel: anchor.localModel,
+        localId: anchor.localId,
+        status: { not: "CANCELLED" },
+        requestPayload: { path: ["originalOperationType"], equals: "CREATE" },
       },
     ],
   };

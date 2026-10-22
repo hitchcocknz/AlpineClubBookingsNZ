@@ -2737,6 +2737,46 @@ describe("#3947: a booking paid wholly with credit is asked by card", () => {
       expect(mocks.enqueueChargeInvoiceInTransaction).not.toHaveBeenCalled();
     });
 
+    it("a resolve mark WITHDRAWN between B's reads, because A's retry is running, still keeps B off the card (round 5)", async () => {
+      // An officer marks A's FAILED invoice resolved; the resolve route then
+      // finds a retry of it running (`findRetryOverlappingMark`) and withdraws
+      // the mark. B's first read lands while the mark stands, its second after
+      // it is withdrawn. Reading A's mark alone, B sees "not coming" (resolved)
+      // and then "not done" (unresolved) and takes the card - while the retry
+      // sends A's invoice. The live retry on the anchor is what says "coming"
+      // in every state of the mark.
+      const markedAt = new Date("2026-06-30T00:00:00.000Z");
+      const requeue: OutboxRow = {
+        id: "op-share-a-requeue",
+        direction: "OUTBOUND",
+        entityType: "INVOICE",
+        operationType: "REQUEUE",
+        localModel: "BookingModification",
+        localId: "mod-1",
+        queueType: null,
+        requestPayload: { originalOperationId: "op-share-a-invoice", originalOperationType: "CREATE", originalStatus: "FAILED" },
+        status: "RUNNING",
+        manuallyResolvedAt: null,
+      };
+      outboxRows = [shareAInvoice({ status: "FAILED", manuallyResolvedAt: markedAt }), requeue];
+      let withdrawn = false;
+      mocks.xeroSyncOperationFindFirst.mockImplementation(
+        async ({ where }: { where: Record<string, unknown> }) => {
+          const found = outboxRows.find((row) => matches(row, where)) ?? null;
+          if (!withdrawn) {
+            withdrawn = true;
+            outboxRows = [shareAInvoice({ status: "FAILED", manuallyResolvedAt: null }), requeue];
+          }
+          return found;
+        },
+      );
+
+      const result = await charge({ confirmedAmountCents: 4000 });
+
+      expectNoCardAsk(result);
+      expectInvoiceAskedFor(10000);
+    });
+
     it("the outbox worker sending A's invoice BETWEEN B's two reads still keeps B off the card (round 4, concurrency F1)", async () => {
       // The worker moves A's row from still-coming to issued (SUCCEEDED and its
       // link) in one commit, under no lock B holds. Simulated here at the
