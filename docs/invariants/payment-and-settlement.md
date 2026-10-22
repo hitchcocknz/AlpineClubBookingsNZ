@@ -412,7 +412,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   retried: the writer above, #1491's fold, `applyLocalRefundAllocation`, which
   refuses only when headroom is gone, and a capacity race's guarded correction,
   which only lowers a total to its refund rows (`INV-PAY-135`). All take the `Payment` row first
-  (`lockPaymentForRefundedTotal`), then refund rows, then transaction rows.
+  (`lockPaymentForRefundedTotal`), then refund rows, then transaction rows; so
+  does every ledger-row writer that waits while holding a row, and the rebuild (#4217).
 - Two writers set an organiser-settled child's mirror directly, because the
   child has no transaction rows: the pre-#3653 group-settlement path
   (`INV-PAY-031`–`037`) and the organiser child refund executor
@@ -3354,7 +3355,8 @@ _Split from `INV-PAY-057` (#3220)._
   builder's own row, the retry and repair leg, and the repair tool. It reads the
   note back and records what Xero shows (paid, allocated, or part-paid with
   `refundPaymentRemainingCents`) without a second payment. It skips a note
-  whose own operation was resolved by hand; an unreadable resolved row refuses.
+  whose own operation was resolved by hand; an unreadable resolved row refuses,
+  unless its note is voided or deleted (#4250).
   Otherwise it pays under the one note-keyed key, dated the note's day. A failed
   payment re-reads the note, else completes PARTIAL.
 - **What this does not cover, and why.** A replay that a recorded note already
@@ -3390,9 +3392,10 @@ _Split from `INV-PAY-057` (#3220)._
 - **The primary invoice bills the recorded fee in full.** Its link is saved
   in one transaction with what it billed, the fee then recorded and its Stripe
   cash (capped so unallocated ledger credit fits). A supplementary invoice,
-  anchored on a correction routing its fee there, bills the gap, paid from
-  cash the primary left, else unpaid; untaken cash is logged. Retries re-check
-  stored figures without re-queuing.
+  anchored on its routing correction, bills the gap, paid from cash the
+  primary left, else unpaid; untaken cash is logged. Retries re-check stored
+  figures without re-queuing; PARTIAL repairs record the attempted payment
+  (#4010).
 - Limits: a capture recorded for its intent is not re-checked against a later
   fee; a fee the ordinary settled edit (#3980, `applyPaymentAdjustments`)
   records mid-create, before the link is saved, is unclaimed: logged, not

@@ -43,6 +43,8 @@ const state = vi.hoisted(() => ({
   realResolved: false,
   /** Runs when a payment call fails, before it throws: a concurrent winner. */
   onFailedPayment: null as null | (() => void),
+  // #4256: runs as a payment call reaches the fake Xero.
+  onPayment: null as null | (() => void),
   bankTransferAccount: "090" as string | null,
   crash: null as null | "at-settlement" | "at-completion",
   xero: {
@@ -143,6 +145,15 @@ vi.mock("@/lib/prisma", () => {
         Object.assign(row, data);
         return row;
       }),
+      // #4256: the PARTIAL repair's claim and give-back. A fixture row reads
+      // with the schema's defaults (replayable, unresolved) where it omits them.
+      updateMany: vi.fn(async ({ where, data }: { where: Row; data: Row }) => {
+        const hits = state.operations.filter((operation) =>
+          matches({ replayable: true, manuallyResolvedAt: null, ...operation }, where),
+        );
+        for (const row of hits) Object.assign(row, data);
+        return { count: hits.length };
+      }),
     },
     $transaction: vi.fn(async (run: (tx: unknown) => unknown) => run(prisma)),
   };
@@ -177,7 +188,7 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
       async (
         id: string,
         completion: { status?: string; responsePayload?: unknown; xeroObjectId?: string | null; xeroObjectNumber?: string | null; extraLinks?: Row[] },
-        options?: { keepSucceeded?: boolean },
+        options?: { keepSucceeded?: boolean; onlyIfRunningSince?: Date },
       ) => {
         if (state.crash === "at-completion") {
           state.crash = null;
@@ -185,6 +196,8 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
         }
         const row = state.operations.find((operation) => operation.id === id)!;
         if (options?.keepSucceeded && row.status === "SUCCEEDED") return null;
+        // #4256: a retry's completion lands only on its own claim.
+        if (options?.onlyIfRunningSince && !(row.status === "RUNNING" && row.startedAt === options.onlyIfRunningSince)) return null;
         Object.assign(row, {
           status: completion.status ?? "SUCCEEDED",
           responsePayload: JSON.parse(JSON.stringify(completion.responsePayload ?? null)),
@@ -194,8 +207,10 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
         for (const link of completion.extraLinks ?? []) upsertLink(link);
       },
     ),
-    failXeroSyncOperation: vi.fn(async (id: string, error?: unknown) => {
+    failXeroSyncOperation: vi.fn(async (id: string, error?: unknown, _payload?: unknown, options?: { onlyIfRunningSince?: Date }) => {
       const row = state.operations.find((operation) => operation.id === id);
+      // #4256: a retry's abandon lands only on its own claim.
+      if (options?.onlyIfRunningSince && !(row?.status === "RUNNING" && row.startedAt === options.onlyIfRunningSince)) return null;
       if (row) Object.assign(row, { status: "FAILED", responsePayload: { error: "failed" }, lastErrorMessage: error instanceof Error ? error.message : null });
     }),
     upsertXeroObjectLink: vi.fn(async (link: Row) => upsertLink(link)),
@@ -318,6 +333,7 @@ function xeroApi() {
       key: string,
     ) => {
       const request = body.payments[0]!;
+      state.onPayment?.();
       state.xero.createPaymentsCalls.push({
         key,
         account: request.account.code,
@@ -537,6 +553,7 @@ beforeEach(() => {
   state.resolved = { coveredCents: 0, correlationKeys: [], operationIds: [], unreadableOperationIds: [] };
   state.realResolved = false;
   state.onFailedPayment = null;
+  state.onPayment = null;
   state.bankTransferAccount = "090";
   state.crash = null;
   state.xero.notes = new Map();
@@ -702,12 +719,13 @@ describe("a refund note interrupted between the two persists (#3548)", () => {
   it("two simultaneous retries of the row leave one payment and a completed row", async () => {
     await firstAttemptDies("at-settlement");
     xeroForgetsKeys();
-    state.xero.replayPaymentKeys = false; // Xero dedups neither: only the read-back can
-    state.xero.readBarrier = { waiting: [], size: 2 }; // both read the note unpaid
+    state.xero.replayPaymentKeys = false; // Xero dedups neither
 
     const results = await Promise.allSettled([retry(), retry()]);
 
-    expect(results.map((result) => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    // #4256: the retry claims the row first, so the second is refused before Xero.
+    expect(results.map((result) => result.status).sort()).toEqual(["fulfilled", "rejected"]);
+    expect(state.xero.createPaymentsCalls).toHaveLength(1);
     expect(state.xero.notes.get("cn_1")!.payments).toHaveLength(1);
     expect(row()).toMatchObject({ status: "SUCCEEDED" });
     expect(row().responsePayload).toMatchObject({ refundPayment: { paymentID: "pay_1" } });
@@ -803,6 +821,20 @@ describe("a refund note interrupted between the two persists (#3548)", () => {
     expect(row("op_replay")).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "cn_1" });
     expect(row("op_replay").responsePayload).toEqual({ existingCreditNoteId: "cn_1", coveredByExistingNote: true });
     expectNoSucceededRowWithNeither();
+  });
+
+  it("MUTATION (#4256 F4): a retry's settlement whose claim an operator took back mid-payment writes nothing over it", async () => {
+    await firstAttemptDies("at-settlement");
+    // An operator's Mark failed lands while the payment is in flight: the row
+    // is no longer this retry's RUNNING claim.
+    state.onPayment = () => {
+      Object.assign(row(), { status: "FAILED", lastErrorMessage: "marked failed by an operator" });
+    };
+
+    await retry();
+
+    expect(state.xero.notes.get("cn_1")!.payments).toHaveLength(1);
+    expect(row()).toMatchObject({ status: "FAILED", lastErrorMessage: "marked failed by an operator" });
   });
 
   it("the loser of two retries whose payment call fails never writes PARTIAL over the winner's SUCCEEDED (round 3 R2-6)", async () => {

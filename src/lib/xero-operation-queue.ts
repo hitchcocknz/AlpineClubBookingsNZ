@@ -14,6 +14,7 @@ import {
   refuseRetryIfResolvedInXero,
   retryAbandonedItsClaim,
   retryXeroSyncOperation,
+  XeroOperationNotReplayableError,
   XeroOperationResolvedInXeroError,
   XeroOperationRetryError,
 } from "@/lib/xero-operation-retry";
@@ -256,6 +257,22 @@ export async function processQueuedXeroOperationRetries(
             skipped: "resolved-in-xero",
             reason: error.message,
             note: "Nothing ran. The operation read as resolved in Xero when this retry started; if that mark was then withdrawn because this retry was running, the operation is unresolved and can be retried or resolved again.",
+          },
+        });
+        result.skipped += 1;
+        continue;
+      }
+      if (error instanceof XeroOperationNotReplayableError) {
+        // #4256: an officer marked the operation not replayable (before this
+        // retry read it, or before its claim). Nothing ran and there is
+        // nothing to requeue, so the queued row is skipped, not failed.
+        await completeXeroSyncOperation(queuedOperation.id, {
+          status: "CANCELLED",
+          responsePayload: {
+            originalOperationId,
+            skipped: "not-replayable",
+            reason: error.message,
+            note: "Nothing ran. The operation is marked not replayable, so there is nothing to requeue.",
           },
         });
         result.skipped += 1;

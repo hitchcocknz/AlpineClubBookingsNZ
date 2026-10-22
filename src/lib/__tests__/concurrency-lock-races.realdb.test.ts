@@ -29,6 +29,9 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 // #4107: FIRST, so its snapshot predates every imported suite's hooks and its
 // afterAll runs last: the harness leaves `process.env` as it found it.
 import "./support/race-harness-env-guard";
+// #4234: after suite teardown, no queued Xero work may remain. Consumers also
+// check ownership before processing, so an earlier leak cannot be consumed away.
+import "./support/race-harness-outbox-guard";
 // #2363 reuses this suite's already-guarded, disposable hosted PostgreSQL but
 // creates/drops its own unique schema. Importing registers the trigger proofs in
 // the explicit CI race command without changing the workflow or making ordinary
@@ -399,6 +402,41 @@ import "./prisma-exact-prefix.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4165` rows.
 import "./audit-query-exact-prefix.realdb.test";
+// #4162 reuses it to prove "undo, then ask once" for a voided bank-transfer
+// refund note: the inbound floor, the nightly undo (allocation, line, total and
+// one follow-up together), a spare note, a create in flight, #4161's heal, two
+// runs, a concurrent reconcile and recount, both answers, the previous app
+// version, report-only and the count's buckets. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4162b-` fixtures.
+import "./bank-refund-void-follow-up.realdb.test";
+// #4217 reuses it to prove every payment-ledger writer takes the Payment row
+// before its first row write and the aggregate rebuild reads under it: seven
+// forced interleavings against the refund writers, the settle, the Internet
+// Banking settle (#4094) and the manual-payment reversal, the P2028 cost among
+// them. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4217-` fixtures.
+import "./payment-lock-before-rebuild.realdb.test";
+// #4022 reuses it to prove the nightly card self-heal never fills a bank
+// hand-back's note with a card note: an edit review's (both wordings), an
+// approved refund request's and an edit's refund hand-back, each completed
+// through the REAL resolution on the internet-banking payment its writer raises
+// it on, are never read by the self-heal's list, which still lists a card
+// payment's uncovered card refund. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
+// it owns and cleans its own `race-4022-` fixtures.
+import "./self-heal-bank-hand-back-sources.realdb.test";
+// #4250 reuses it to prove a refund note an officer resolved by hand in Xero
+// stops counting as coverage once its note is voided or deleted: a live or
+// unlinked one still covers its refund once, a voided one covers nothing and
+// refuses nothing, and the nightly card self-heal then lists the gap and queues
+// a fresh card note under an after-void key. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4250-` fixtures.
+import "./resolved-voided-refund-note-coverage.realdb.test";
+// #4256 reuses it to prove a PARTIAL invoice repair claims its row before it
+// writes or calls Xero: a resolve or a mark non-replayable committed while the
+// retry waits on its claim wins, two retries make one payment write, and a
+// failed write gives the row back PARTIAL. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4256-` fixtures.
+import "./xero-partial-repair-claim.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
