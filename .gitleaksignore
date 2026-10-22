@@ -57,3 +57,9 @@
 # plan-less modification-refund replay case. Not a credential; the file now
 # builds it rather than quoting it.
 c7df5c92c2a2d419538428be36c1618cc7c13d6c:src/lib/__tests__/ledger-insertion-seq.realdb.test.ts:generic-api-key:327
+
+# #4256: a realdb fixture's invoice idempotency/correlation key, a plain test
+# label for the PARTIAL repair claim proof. Not a credential; the file now
+# builds it rather than quoting it.
+d7d8618d9b3a40143f34b06c10b4f1494fffcc3a:src/lib/__tests__/xero-partial-repair-claim.realdb.test.ts:generic-api-key:117
+d7d8618d9b3a40143f34b06c10b4f1494fffcc3a:src/lib/__tests__/xero-partial-repair-claim.realdb.test.ts:generic-api-key:118

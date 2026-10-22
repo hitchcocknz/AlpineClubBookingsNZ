@@ -37,6 +37,13 @@ import {
 } from "@/lib/xero-payment-credit-note-payload";
 import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import {
+  primaryInvoiceRepairCashCents,
+  readStoredInvoiceTotalCents,
+  recordedRepairPayment,
+  repairedPartialInvoiceCompletion,
+  zeroCashRepairOutcome,
+} from "@/lib/xero-partial-invoice-repair-amount";
 import { shouldRepairXeroContactNameOrder } from "@/lib/xero-contact-sync";
 import { parseXeroContactDateOfBirth } from "@/lib/xero-contact-date-of-birth";
 import {
@@ -52,6 +59,11 @@ import {
   resolveRefundNoteMethod,
 } from "@/lib/xero-refund-method";
 import { queuedReviewTaskId } from "@/lib/xero-review-task-key";
+import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
+import { XERO_PARTIAL_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
+
+export const PARTIAL_REPAIR_CLAIM_LOST_MESSAGE =
+  "The payment was sent to Xero, but this operation was reset while it ran. Retry it once to close it.";
 import { isRetryOfVoidedRefundRequestNote, mayRecordAsCanonicalRefundNote, VOIDED_REQUEST_NOTE_RETRY_REASON } from "@/lib/xero-refund-note-status";
 import type { CashRefundMethod } from "@/lib/xero-refund-method";
 import {
@@ -355,17 +367,28 @@ export function retryAbandonedItsClaim(error: unknown): boolean {
 
 async function runWithClaimedOriginal<T>(
   operationId: string,
-  run: () => Promise<T>,
+  // `claimedAt` lets the handler complete onto this claim only (#4256).
+  run: (claimedAt: Date) => Promise<T>,
+  // #4256: a PARTIAL repair claims only PARTIAL and stamps its marker code; a
+  // throw, or a stale reset of a dead run, gives the row back PARTIAL with its
+  // payload, so it stays repairable.
+  options?: { from: "PARTIAL" },
 ): Promise<T> {
   const claimedAt = new Date();
   const claimed = await prisma.xeroSyncOperation.updateMany({
-    // #3635: a resolve landing after the read makes this claim lose.
+    // #3635: a resolve landing after the read makes this claim lose; #4256: so
+    // does a mark non-replayable.
     where: {
       id: operationId,
-      status: { in: ["FAILED", "PARTIAL"] },
+      status: options ? options.from : { in: ["FAILED", "PARTIAL"] },
       manuallyResolvedAt: null,
+      replayable: true,
     },
-    data: { status: "RUNNING", startedAt: claimedAt },
+    data: {
+      status: "RUNNING",
+      startedAt: claimedAt,
+      ...(options ? { lastErrorCode: XERO_PARTIAL_REPAIR_RUNNING_CODE } : {}),
+    },
   });
   if (claimed.count !== 1) {
     await throwLostRetryClaim(
@@ -374,21 +397,29 @@ async function runWithClaimedOriginal<T>(
     );
   }
   try {
-    return await run();
+    return await run(claimedAt);
   } catch (error) {
     try {
-      const abandoned = await failXeroSyncOperation(operationId, error, undefined, {
-        onlyIfRunningSince: claimedAt,
-      });
-      if (abandoned && typeof error === "object" && error !== null) {
-        abandonedClaimErrors.add(error);
+      if (options) {
+        // Not `abandonedClaimErrors`: the original is back to PARTIAL, not FAILED.
+        await prisma.xeroSyncOperation.updateMany({
+          where: { id: operationId, status: "RUNNING", startedAt: claimedAt },
+          data: { status: "PARTIAL", ...xeroSyncErrorFields(error), completedAt: new Date() },
+        });
+      } else {
+        const abandoned = await failXeroSyncOperation(operationId, error, undefined, {
+          onlyIfRunningSince: claimedAt,
+        });
+        if (abandoned && typeof error === "object" && error !== null) {
+          abandonedClaimErrors.add(error);
+        }
       }
     } catch (abandonError) {
       // The run's own error is the one the operator needs; a failed abandon
       // leaves the row RUNNING, where the stale census offers Mark failed.
       logger.error(
         { err: abandonError, operationId },
-        "Failed to return a claimed Xero operation to FAILED after its retry threw",
+        "Failed to give back a claimed Xero operation after its retry threw",
       );
     }
     throw error;
@@ -412,6 +443,19 @@ export class XeroOperationResolvedInXeroError extends XeroOperationRetryError {
   }
 }
 
+const NOT_REPLAYABLE_REASON = "This operation is not marked replayable.";
+/**
+ * #4256: the row is marked not replayable, so the queued-retry drain closes its
+ * row as skipped (nothing ran, nothing to requeue). 409 when a mark landed
+ * after the retry's read and its claim lost; the read's refusal keeps its 400.
+ */
+export class XeroOperationNotReplayableError extends XeroOperationRetryError {
+  constructor(status = 409) {
+    super(NOT_REPLAYABLE_REASON, status);
+    this.name = "XeroOperationNotReplayableError";
+  }
+}
+
 /**
  * A retry claim matched nothing. If an officer resolved the row in between,
  * say so with the resolved error, so the queued-retry drain closes its row as
@@ -420,9 +464,10 @@ export class XeroOperationResolvedInXeroError extends XeroOperationRetryError {
 async function throwLostRetryClaim(operationId: string, message: string): Promise<never> {
   const current = await prisma.xeroSyncOperation.findUnique({
     where: { id: operationId },
-    select: { manuallyResolvedAt: true, queueType: true, requestPayload: true },
+    select: { manuallyResolvedAt: true, queueType: true, requestPayload: true, replayable: true },
   });
   if (current) refuseRetryIfResolvedInXero(current);
+  if (current?.replayable === false) throw new XeroOperationNotReplayableError();
   throw new XeroOperationRetryError(message, 409);
 }
 
@@ -702,46 +747,6 @@ function parseSubscriptionRetryInput(
   return { seasonYear };
 }
 
-function readStoredInvoiceTotalCents(
-  operation: Pick<RetryableOperation, "requestPayload" | "responsePayload">
-): number | null {
-  const responsePayload = asRecord(operation.responsePayload);
-  const invoiceResponse = asRecord(responsePayload?.invoice);
-  const responseInvoice = asRecord(asArray(invoiceResponse?.invoices)[0]);
-  const responseTotalCents = providerAmountToCents(readNumber(responseInvoice?.total));
-  if (responseTotalCents !== null) {
-    return responseTotalCents;
-  }
-
-  const requestPayload = asRecord(operation.requestPayload);
-  const requestInvoice = asRecord(asArray(requestPayload?.invoices)[0]);
-  const lineItems = asArray(requestInvoice?.lineItems)
-    .map(asRecord)
-    .filter((value): value is Record<string, unknown> => Boolean(value));
-
-  if (lineItems.length === 0) {
-    return null;
-  }
-
-  const totalCents = lineItems.reduce((sum, lineItem) => {
-    const quantity = readNumber(lineItem.quantity) ?? 1;
-    const unitAmount = readNumber(lineItem.unitAmount);
-    if (unitAmount === null) {
-      return sum;
-    }
-
-    // `unitAmount * quantity` first, then the cents boundary — the same
-    // left-to-right evaluation the inline `Math.round(unitAmount * quantity *
-    // 100)` performed, so the stored-total comparison is unchanged (#2685).
-    const lineTotalCents = providerAmountToCents(unitAmount * quantity);
-    return lineTotalCents === null ? sum : sum + lineTotalCents;
-  }, 0);
-
-  return totalCents > 0 || lineItems.some((lineItem) => readNumber(lineItem.unitAmount) === 0)
-    ? totalCents
-    : null;
-}
-
 /**
  * Whether a PARTIAL invoice-create operation is a PAYMENT problem at all.
  *
@@ -805,17 +810,19 @@ function partialInvoiceOperationHasPaymentFault(
 
 function parsePartialInvoiceRepairInput(
   operation: Pick<RetryableOperation, "localModel" | "localId" | "xeroObjectId" | "requestPayload" | "responsePayload">
-): { invoiceId: string; amountCents: number; linkRole: string; idempotencyKey: string; reference: string } | null {
+): { invoiceId: string; amountCents: number; linkRole: string; idempotencyKey: string; reference: string; creditTookAllCash?: boolean } | null {
   if (!operation.localModel || !operation.localId || !operation.xeroObjectId) {
     return null;
   }
 
-  const amountCents = readStoredInvoiceTotalCents(operation);
-  if (amountCents === null) {
+  const invoiceTotalCents = readStoredInvoiceTotalCents(operation);
+  if (invoiceTotalCents === null) {
     return null;
   }
 
   if (operation.localModel === "Payment") {
+    // #4010: the cash the create stored, never the total, which overstates it.
+    const amountCents = primaryInvoiceRepairCashCents(operation.requestPayload, operation.xeroObjectId, invoiceTotalCents);
     return {
       invoiceId: operation.xeroObjectId,
       amountCents,
@@ -830,10 +837,12 @@ function parsePartialInvoiceRepairInput(
         amountCents > 0
           ? `${CLUB_NAME} invoice payment ${operation.localId.slice(0, 8)}`
           : "Zero-dollar booking (100% promo discount)",
+      creditTookAllCash: amountCents === 0 && invoiceTotalCents > 0,
     };
   }
 
   if (operation.localModel === "Booking" || operation.localModel === "BookingModification") {
+    const amountCents = invoiceTotalCents; // the net its create pays; no applied credit
     return {
       invoiceId: operation.xeroObjectId,
       amountCents,
@@ -904,6 +913,7 @@ async function repairRefundCreditNoteFollowUpActions(
     needsRefundPaymentRepair: boolean;
     refundMethod?: CashRefundMethod;
   },
+  claimedAt: Date, // #4256: the row is this retry's claim; it completes onto it only
 ) {
   // #3827 (D-3813-8): a refund request's own note is an allowed extra, never
   // the payment's one refund note, so it never takes the payment's pointer.
@@ -948,6 +958,7 @@ async function repairRefundCreditNoteFollowUpActions(
         xeroDocumentDateForClubToday(await readClubTimeZoneOutsideRequest()),
       priorResponse,
       refundRequestId,
+      onlyIfRunningSince: claimedAt,
     });
     if (outcome.refundPaymentErr) throw outcome.refundPaymentErr;
     return;
@@ -964,7 +975,8 @@ async function repairRefundCreditNoteFollowUpActions(
       outcome: recordedRefundNoteOutcome(priorResponse),
       priorResponse,
       refundRequestId,
-    })
+    }),
+    { onlyIfRunningSince: claimedAt },
   );
 }
 
@@ -1005,7 +1017,7 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
   if (!operation.replayable) {
     return {
       supported: false,
-      reason: "This operation is not marked replayable.",
+      reason: NOT_REPLAYABLE_REASON,
     };
   }
 
@@ -1338,6 +1350,7 @@ export async function retryXeroSyncOperation(
   }
 
   refuseRetryIfResolvedInXero(operation);
+  if (!operation.replayable) throw new XeroOperationNotReplayableError(400);
   const retryMeta = getXeroOperationRetryMeta(operation);
   if (!retryMeta.supported) {
     throw new XeroOperationRetryError(retryMeta.reason ?? "This Xero operation cannot be retried.");
@@ -1448,51 +1461,78 @@ export async function retryXeroSyncOperation(
       operation.localModel &&
       operation.localId
     ) {
-      if (partialInvoiceRepair.amountCents === 0) {
-        const existingResponsePayload = asRecord(operation.responsePayload);
-
-        await completeXeroSyncOperation(operation.id, {
-          status: "SUCCEEDED",
-          responsePayload: {
-            ...(existingResponsePayload ?? {}),
-            payment: null,
-            paymentError: null,
-            paymentSkipped: true,
-            paymentSkipReason: "Zero-total invoice does not require Xero payment recording.",
-          },
-          xeroObjectType: "INVOICE",
-          xeroObjectId: partialInvoiceRepair.invoiceId,
-        });
-
-        return {
-          message:
-            partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
-              ? "Marked zero-total Xero booking invoice as repaired without payment recording."
-              : "Marked zero-total Xero supplementary invoice as repaired without payment recording.",
-        };
-      }
-
-      await xero.createXeroPaymentForInvoice({
-        localModel: operation.localModel,
-        localId: operation.localId,
-        invoiceId: partialInvoiceRepair.invoiceId,
-        amountCents: partialInvoiceRepair.amountCents,
-        idempotencyKey: partialInvoiceRepair.idempotencyKey,
-        reference: partialInvoiceRepair.reference,
-        role: partialInvoiceRepair.linkRole,
-        createdByMemberId,
-        metadata: {
-          invoiceId: partialInvoiceRepair.invoiceId,
-          amountCents: partialInvoiceRepair.amountCents,
+      // #4256: claim the row first, so a resolve or a second retry landing
+      // after the read makes this one write nothing and call Xero for nothing.
+      return runWithClaimedOriginal(
+        operation.id,
+        async (claimedAt) => {
+          const repair = partialInvoiceRepair;
+          // Completes onto this claim only; null when an operator reset the row meanwhile.
+          const close = async (
+            paymentOutcome: Record<string, unknown>,
+            message: string,
+            lostMessage = PARTIAL_REPAIR_CLAIM_LOST_MESSAGE,
+          ) => {
+            const closed = await completeXeroSyncOperation(
+              operation.id,
+              repairedPartialInvoiceCompletion(operation, repair.invoiceId, paymentOutcome),
+              { onlyIfRunningSince: claimedAt, alert: false },
+            );
+            if (closed) return { message };
+            logger.warn({ operationId: operation.id }, "Xero PARTIAL repair finished after its claim was reset; row left as the operator set it");
+            return { message: lostMessage };
+          };
+          if (repair.amountCents === 0) {
+            const zeroCashRepair = zeroCashRepairOutcome(repair);
+            return close(
+              { payment: null, paymentSkipped: true, paymentSkipReason: zeroCashRepair.skipReason },
+              zeroCashRepair.message,
+              "This operation was reset while the repair ran, so it was not closed. Retry it once to close it.",
+            );
+          }
+          // #4256: a payment an earlier run recorded (its link) is never sent
+          // again, whether or not Xero still remembers the idempotency key.
+          const recorded = recordedRepairPayment(
+            await prisma.xeroObjectLink.findMany({
+              where: {
+                localModel: operation.localModel!,
+                localId: operation.localId!,
+                xeroObjectType: "PAYMENT",
+                role: repair.linkRole,
+                active: true,
+                metadata: { path: ["invoiceId"], equals: repair.invoiceId },
+              },
+              select: { xeroObjectId: true, xeroObjectType: true, role: true, metadata: true },
+            }),
+            repair,
+          );
+          if (recorded) {
+            return close(
+              { payment: { paymentID: recorded.paymentId, amount: recorded.amountCents / 100 } },
+              "The payment was already recorded in Xero; closed the operation without paying again.",
+              "The payment is already recorded in Xero; retry once to close this operation.",
+            );
+          }
+          const paymentId = await xero.createXeroPaymentForInvoice({
+            localModel: operation.localModel!,
+            localId: operation.localId!,
+            invoiceId: repair.invoiceId,
+            amountCents: repair.amountCents,
+            idempotencyKey: repair.idempotencyKey,
+            reference: repair.reference,
+            role: repair.linkRole,
+            createdByMemberId,
+            metadata: { invoiceId: repair.invoiceId, amountCents: repair.amountCents },
+          });
+          return close(
+            { payment: { paymentID: paymentId, amount: repair.amountCents / 100 } },
+            repair.linkRole === "INVOICE_PAYMENT"
+              ? "Repaired Xero booking invoice payment recording."
+              : "Repaired Xero supplementary invoice payment recording.",
+          );
         },
-      });
-
-      return {
-        message:
-          partialInvoiceRepair.linkRole === "INVOICE_PAYMENT"
-            ? "Repaired Xero booking invoice payment recording."
-            : "Repaired Xero supplementary invoice payment recording.",
-      };
+        { from: "PARTIAL" },
+      );
     }
 
     const refundCreditNoteRepair = parseRefundCreditNoteRepairInput(operation);
@@ -1501,12 +1541,12 @@ export async function retryXeroSyncOperation(
       operation.operationType === "CREATE" &&
       refundCreditNoteRepair
     ) {
-      await repairRefundCreditNoteFollowUpActions(
-        operation,
-        xero,
-        refundCreditNoteRepair,
+      // #4256: claimed like the invoice repair; the shared leg completes the row.
+      await runWithClaimedOriginal(
+        operation.id,
+        (claimedAt) => repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claimedAt),
+        { from: "PARTIAL" },
       );
-
       return { message: "Repaired Xero refund credit note follow-up actions." };
     }
 
@@ -1774,10 +1814,9 @@ export async function retryXeroSyncOperation(
     if (operation.localModel === "Payment") {
       const refundCreditNoteRepair = parseRefundCreditNoteRepairInput(operation);
       if (refundCreditNoteRepair) {
-        await repairRefundCreditNoteFollowUpActions(
-          operation,
-          xero,
-          refundCreditNoteRepair,
+        // #4256: claimed like the PARTIAL repair; a throw abandons it to FAILED.
+        await runWithClaimedOriginal(operation.id, (claimedAt) =>
+          repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claimedAt),
         );
         return { message: "Repaired Xero refund credit note follow-up actions." };
       }
@@ -1819,6 +1858,7 @@ export async function retryXeroSyncOperation(
           // #3924 round 7: a paid-another-way close's note retries as its own, on the invoice it named.
           ...(retryInput.paidAnotherWayTaskId ? { paidAnotherWayTaskId: retryInput.paidAnotherWayTaskId } : {}),
           ...(retryInput.creditsInvoiceId ? { creditsInvoiceId: retryInput.creditsInvoiceId } : {}),
+          ...(retryInput.handBackTaskId ? { handBackTaskId: retryInput.handBackTaskId } : {}),
           ...(retryInput.refundRequestId ? { refundRequestId: retryInput.refundRequestId } : {}),
           ...(options?.requeueOperationId ? { requeueOperationId: options.requeueOperationId } : {}),
           ...(retriedReviewTaskId ? { reviewTaskId: retriedReviewTaskId } : {}),

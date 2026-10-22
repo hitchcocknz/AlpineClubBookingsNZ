@@ -26,9 +26,16 @@ export function isIncludedRefundCreditNoteStatus(status: unknown) {
     return true;
   }
 
-  const normalized = status.trim().toUpperCase();
-  return normalized !== "VOIDED" && normalized !== "DELETED";
+  return !(CANCELLED_CREDIT_NOTE_STATUSES as readonly string[]).includes(status.trim().toUpperCase());
 }
+
+/**
+ * The two Xero statuses that cancel a credit note, as Xero spells them. A query
+ * that filters links by their recorded status in SQL (#4162's voided
+ * bank-transfer note scan) reads them from here, then re-checks each row with
+ * `isRefundCreditNoteLinkCancelledInXero`.
+ */
+export const CANCELLED_CREDIT_NOTE_STATUSES = ["VOIDED", "DELETED"] as const;
 
 /** The link's recorded Xero status (uppercased), or null when never recorded. */
 export function readRefundCreditNoteLinkStatus(metadata: unknown): string | null {
@@ -88,23 +95,29 @@ export function canonicalRefundNoteCandidates<
 async function readRefundNoteLinks(localId: string | { in: string[] }, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
   return (await db.xeroObjectLink.findMany({
     where: { localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role: "REFUND_CREDIT_NOTE" },
-    select: { xeroObjectId: true, metadata: true },
+    select: { xeroObjectId: true, metadata: true, active: true },
   })) ?? [];
 }
 
 /**
  * The payment's refund notes, active or not, in one read on the caller's client:
- * its per-refund notes (#3880), and the notes Xero recorded VOIDED/DELETED,
- * which are never re-adopted as its one refund note (`INV-ADDPAY-041`).
+ * its per-refund notes (#3880), the notes Xero recorded VOIDED/DELETED, which
+ * are never re-adopted as its one refund note (`INV-ADDPAY-041`), and (#4250)
+ * the notes with an active link - all from the same read, so a void landing
+ * meanwhile never shows in one set and not another.
  */
 export async function refundNoteIdSets(
   paymentId: string,
   db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
-): Promise<{ perDelta: Set<string>; cancelled: Set<string> }> {
+): Promise<{ perDelta: Set<string>; cancelled: Set<string>; active: Set<string> }> {
   const links = await readRefundNoteLinks(paymentId, db);
-  const idsWhere = (keep: (metadata: unknown) => boolean) =>
-    new Set(links.filter((link) => keep(link.metadata)).map((link) => link.xeroObjectId));
-  return { perDelta: idsWhere(isPerDeltaRefundNoteLink), cancelled: idsWhere(isRefundCreditNoteLinkCancelledInXero) };
+  const idsWhere = (keep: (link: (typeof links)[number]) => boolean) =>
+    new Set(links.filter(keep).map((link) => link.xeroObjectId));
+  return {
+    perDelta: idsWhere((link) => isPerDeltaRefundNoteLink(link.metadata)),
+    cancelled: idsWhere((link) => isRefundCreditNoteLinkCancelledInXero(link.metadata)),
+    active: idsWhere((link) => link.active === true),
+  };
 }
 
 /** `refundNoteIdSets(...).cancelled` for several payments at once (the booking repair's loader). */
@@ -254,16 +267,53 @@ async function recordedRefundNoteFigure(
 ): Promise<number | null> {
   const onLink = readNumber(asRecord(link.metadata)?.[field]);
   if (onLink !== null) return onLink;
-  // Oldest first: the row that raised the note. A later row closed as covered
-  // by it carries its own enqueue figures, not the note's.
-  const create = await db.xeroSyncOperation.findFirst({
-    where: { entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: paymentId, xeroObjectId: link.xeroObjectId },
-    orderBy: { createdAt: "asc" },
-    select: { requestPayload: true },
-  });
+  const create = await readRefundNoteRaisingRow(paymentId, link.xeroObjectId, db);
   const payload = asRecord(create?.requestPayload);
   if (field === "watermarkCents") return readNumber(payload?.watermarkCents);
   return readNumber(payload?.refundAmountCents) ?? providerAmountToCents(asRecord(payload?.allocation)?.amount);
+}
+
+/**
+ * THE ROW THAT RAISED A NOTE: the oldest credit-note create on the payment
+ * naming it. A later row closed as covered by it (`coveredByExistingNote`)
+ * names it too, with its own enqueue figures, so oldest is the rule. One home
+ * (#4162, `INV-SSOT-001`): the recorded figure above, and the voided
+ * bank-transfer note scan's read of which hand-back a note recorded.
+ */
+export async function readRefundNoteRaisingRow(
+  paymentId: string,
+  creditNoteId: string,
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+) {
+  return db.xeroSyncOperation.findFirst({
+    where: { entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: paymentId, xeroObjectId: creditNoteId },
+    orderBy: { createdAt: "asc" },
+    select: { id: true, requestPayload: true },
+  });
+}
+
+/**
+ * #4162 (money re-check): an outbound refund-note create that raised nothing -
+ * it completed as covered by a note already on the payment
+ * (`createXeroCreditNote`'s `coveredByExistingNote` answer), so the note it
+ * names answers another refund, never the one this row was enqueued for.
+ */
+export function isCoveredByExistingNoteRow(row: { responsePayload: unknown }): boolean {
+  return asRecord(row.responsePayload)?.coveredByExistingNote === true;
+}
+
+/**
+ * #4162 (`INV-ADDPAY-042`): a refund note's recorded amount in cents - its
+ * link's, else its raising row's - or null when neither records one. What the
+ * nightly undo of a voided bank-transfer note takes back; null sends the note
+ * to a person, never a guess.
+ */
+export function recordedRefundNoteAmountCents(
+  paymentId: string,
+  link: { xeroObjectId: string; metadata: unknown },
+  db: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+): Promise<number | null> {
+  return recordedRefundNoteFigure(paymentId, link, "amountCents", db);
 }
 
 /**

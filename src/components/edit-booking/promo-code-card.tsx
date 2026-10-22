@@ -19,6 +19,7 @@ import type {
 } from "@/components/edit-booking/types";
 import { useClubFormat } from "@/components/club-format-provider";
 import type { EditGuestStays } from "@/components/edit-booking/guest-stay-payload";
+import type { PromoPreviewEditRerates } from "@/components/promo-preview-guest";
 import { PromoCodeList } from "@/components/promo-code-list";
 import { PromoCodeChips } from "@/components/promo-code-chips";
 import {
@@ -86,6 +87,7 @@ export function PromoCodeCard({
   quote,
   forMemberId,
   lodgeId,
+  editRerates,
   onRemovePromo,
   onKeepPromo,
   onPrefillCode,
@@ -111,6 +113,8 @@ export function PromoCodeCard({
   quote: QuoteResult | null;
   forMemberId: string | undefined;
   lodgeId: string | null | undefined;
+  /** #4202: the edit's officer re-rates, sent with every preview as the quote is sent them. */
+  editRerates: PromoPreviewEditRerates;
   onRemovePromo: () => void;
   onKeepPromo: () => void;
   onPrefillCode: (code: string) => void;
@@ -223,6 +227,7 @@ export function PromoCodeCard({
                     // An edit preview, against this booking's stored guest
                     // consent: a confirmed guest's code covers their nights.
                     bookingId,
+                    editRerates,
                   })
                 : { ok: true as const, applied: [] };
               if (!checked.ok) return checked;
@@ -330,6 +335,7 @@ export function PromoCodeCard({
               // #3492 (D-3492-4): against this booking's stored guest consent,
               // so a confirmed guest's chip previews as the save will price it.
               bookingId={bookingId}
+              editRerates={editRerates}
               checkIn={checkIn}
               checkOut={checkOut}
               guests={partyGuests}

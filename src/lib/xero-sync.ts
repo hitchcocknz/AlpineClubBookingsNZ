@@ -1,7 +1,6 @@
 import { PaymentSource, Prisma } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
-import { getXeroErrorStatusCode } from "./xero-error-shape";
 import { asRecord, readString } from "./xero-json";
 import {
   canonicalRefundNoteFromField,
@@ -20,7 +19,7 @@ import logger from "@/lib/logger";
 import { isPrismaUniqueConstraintError } from "@/lib/prisma-errors";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instruction";
-import { xeroSyncErrorText } from "@/lib/xero-sync-error-text";
+import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 
 export interface XeroSyncOperationInput {
@@ -97,6 +96,8 @@ export interface XeroSyncOperationCompletion {
   xeroObjectNumber?: string | null;
   xeroObjectUrl?: string | null;
   extraLinks?: XeroObjectLinkInput[];
+  /** #4256: a non-SUCCEEDED row's message; else it keeps the one it had. */
+  lastErrorMessage?: string;
 }
 
 export interface CanonicalPaymentRefundCreditNoteLink {
@@ -901,7 +902,8 @@ export async function completeXeroSyncOperation(
   operationId: string,
   completion: XeroSyncOperationCompletion,
   // #3548: `keepSucceeded` leaves a row a concurrent leg completed SUCCEEDED as it is, links and all, and answers null.
-  options?: { store?: Prisma.TransactionClient; keepSucceeded?: boolean },
+  // #4256: `onlyIfRunningSince` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
+  options?: { store?: Prisma.TransactionClient; keepSucceeded?: boolean; onlyIfRunningSince?: Date; alert?: false },
 ) {
   // #2314: organisation-agnostic in the column, organisation applied on read —
   // see the note on the object-link funnel above.
@@ -913,8 +915,13 @@ export async function completeXeroSyncOperation(
   );
 
   const completeWithClient = async (tx: Prisma.TransactionClient) => {
+    const status = completion.status ?? "SUCCEEDED";
     const data = {
-      status: completion.status ?? "SUCCEEDED",
+      status,
+      // #4049: no earlier wait's or failure's error stays on a SUCCEEDED row (PARTIAL keeps it).
+      ...(status === "SUCCEEDED" ? { lastErrorCode: null, lastErrorMessage: null } : {}),
+      ...(status !== "SUCCEEDED" && options?.onlyIfRunningSince ? { lastErrorCode: null } : {}),
+      ...(status !== "SUCCEEDED" && completion.lastErrorMessage ? { lastErrorMessage: completion.lastErrorMessage } : {}),
       responsePayload: sanitizeForJson(completion.responsePayload),
       xeroObjectType: completion.xeroObjectType ?? null,
       xeroObjectId: completion.xeroObjectId ?? null,
@@ -922,14 +929,14 @@ export async function completeXeroSyncOperation(
       xeroObjectUrl,
       completedAt: new Date(),
     };
-    if (options?.keepSucceeded) {
-      const claimed = await tx.xeroSyncOperation.updateMany({
-        where: { id: operationId, status: { not: "SUCCEEDED" } },
-        data,
-      });
+    const guard = options?.onlyIfRunningSince
+      ? { status: "RUNNING" as const, startedAt: options.onlyIfRunningSince }
+      : options?.keepSucceeded ? { status: { not: "SUCCEEDED" as const } } : null;
+    if (guard) {
+      const claimed = await tx.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
       if (claimed.count === 0) return null;
     }
-    const operation = options?.keepSucceeded
+    const operation = guard
       ? await tx.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } })
       : await tx.xeroSyncOperation.update({ where: { id: operationId }, data });
 
@@ -943,7 +950,7 @@ export async function completeXeroSyncOperation(
     ? await completeWithClient(options.store)
     : await prisma.$transaction(completeWithClient);
 
-  if (operation?.status === "PARTIAL") {
+  if (operation?.status === "PARTIAL" && options?.alert !== false) {
     try {
       const { maybeNotifyXeroRepeatedFailure } = await import("./xero-hardening");
       await maybeNotifyXeroRepeatedFailure(operation);
@@ -1000,13 +1007,9 @@ export async function failXeroSyncOperation(
     lastErrorMessage?: string;
   }
 ) {
-  const statusCode = getXeroErrorStatusCode(error);
-  const rawMessage = options?.lastErrorMessage ?? xeroSyncErrorText(error);
-  const message = redactSensitiveText(rawMessage);
   const data = {
     status: "FAILED" as const,
-    lastErrorCode: statusCode ? String(statusCode) : null,
-    lastErrorMessage: message,
+    ...xeroSyncErrorFields(error, options?.lastErrorMessage),
     responsePayload: sanitizeForJson(responsePayload ?? error),
     completedAt: new Date(),
   };
