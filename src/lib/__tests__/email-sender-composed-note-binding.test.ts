@@ -551,8 +551,10 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(joiner.body.startsWith("Manual Refund Needed - Group Joiner Cancelled, Refund to the Organiser\n")).toBe(true);
     expect(joiner.body).toContain("repay the organiser by bank transfer");
     expect(joiner.body).toContain("never to the joiner");
-    expect(joiner.body).toContain("Until #4292");
-    expect(joiner.body).toContain("Joiner: Alice Example");
+    expect(joiner.body).toContain("Until automatic Xero notes are added");
+    expect(joiner.body).not.toMatch(/#\d/);
+    // Review round 4: the row names the organiser it repays, as #4042's alert does.
+    expect(joiner.body).toContain("Organiser: Alice Example");
     expect(joiner.body).toContain("Amount to refund to the organiser: $75.00");
     expect(joiner.body).not.toContain("settled in cash");
   });

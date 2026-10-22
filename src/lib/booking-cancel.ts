@@ -32,6 +32,7 @@ import {
   kickQueuedXeroOutboxOperationsIfConnected,
 } from "./xero-operation-outbox";
 import { bookingOwner } from "@/lib/booking-owner";
+import { BOOKING_OWNER_NAME_SELECT, bookingOwnerName } from "@/lib/booking-owner-name";
 import logger from "@/lib/logger";
 import { cancellationKeptCents, paidCancellationMoney } from "@/lib/paid-cancellation-money";
 import { openNonCancellationHandBackCents } from "@/lib/edit-refund-hand-back";
@@ -1856,6 +1857,9 @@ async function performBookingCancellation(
       refundAmountCents,
     });
     let manualRefundTaskId: string | null = null;
+    // #3949 review round 4: the organiser it is repaid to, named in the task's reason and the admins' alert.
+    const organiserName = branch === "manual" && organiserByHand && fresh.parentBookingId
+      ? bookingOwnerName(await tx.booking.findUniqueOrThrow({ where: { id: fresh.parentBookingId }, select: BOOKING_OWNER_NAME_SELECT })) : null;
     if (branch === "manual") {
       const task = await tx.manualRefundTask.create({
         data: {
@@ -1868,7 +1872,7 @@ async function performBookingCancellation(
           // this task's amount is not admin-amendable — it was fixed at creation.
           kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
           raisedAmountCents: refundAmountCents,
-          reason: cancellationHandBackReason({ bookingId, refundPercentage, payee: organiserByHand ? "organiser" : "member" }).slice(0, MANUAL_REFUND_TASK_REASON_MAX),
+          reason: cancellationHandBackReason({ bookingId, refundPercentage, payee: organiserByHand ? "organiser" : "member", organiserName }).slice(0, MANUAL_REFUND_TASK_REASON_MAX),
         },
         select: { id: true },
       });
@@ -2010,6 +2014,7 @@ async function performBookingCancellation(
       plannedCardRefundCents,
       cardShortfall,
       manualRefundTaskId,
+      organiserName,
       clearingOperationId,
       branch,
       organiserChildDebtId,
@@ -2043,6 +2048,7 @@ async function performBookingCancellation(
     plannedCardRefundCents,
     cardShortfall,
     manualRefundTaskId,
+    organiserName,
     clearingOperationId,
     branch,
     organiserChildDebtId,
@@ -2150,15 +2156,17 @@ async function performBookingCancellation(
     // Admin audience, so exempt from the per-booking "No emails" switch (#2258
     // rule 2): the switch silences the MEMBER, and somebody still has to be
     // told there is cash to hand back. #3949: a joiner's own cancel of a place
-    // the organiser paid for by Internet Banking says the organiser is repaid.
+    // the organiser paid for by Internet Banking names the organiser it repays
+    // in the Organiser row, as #4042's alert does, and the joiner in the reason.
+    const joinerName = `${bookingOwner(fresh).member.firstName} ${bookingOwner(fresh).member.lastName}`;
     sendAdminManualRefundTaskAlert({
-      memberName: `${bookingOwner(fresh).member.firstName} ${bookingOwner(fresh).member.lastName}`,
+      memberName: toOrganiser ? organiserName ?? "the group organiser" : joinerName,
       checkIn: fresh.checkIn,
       checkOut: fresh.checkOut,
       refundAmountCents,
       bookingId,
       reason: toOrganiser
-        ? `Group joiner cancelled their own place ${days} day(s) before check-in; ${refundPercentage}% on the card tiers goes back to the group organiser by bank transfer (#3949).`
+        ? `${joinerName} cancelled their own place in the group ${days} day(s) before check-in; ${refundPercentage}% on the card refund tiers goes back to the group organiser by bank transfer.`
         : `Cash/manual settlement cancelled ${days} day(s) before check-in (${refundPercentage}% under the policy in effect at the time).`,
       ...(toOrganiser ? { situation: "joiner-cancel-organiser" as const } : {}),
     }, format).catch((err) =>

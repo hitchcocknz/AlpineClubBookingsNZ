@@ -203,7 +203,8 @@ describe("review M1: the officers are told to credit the group's invoice by hand
     expect(sent.errorType).toBe("GROUP_ORGANISER_REFUND_NOTE_BY_HAND");
     expect(sent.errorMessage).toContain("$15.00 was paid back by bank transfer to the group organiser (Olive Organiser) for Sam Joiner's place");
     expect(sent.errorMessage).toContain("invoice INV-0042");
-    expect(sent.errorMessage).toContain("Until #4292 the app does not raise this refund's Xero credit note");
+    expect(sent.errorMessage).toContain("Until automatic Xero notes are added, the app does not raise this refund's Xero credit note");
+    expect(sent.errorMessage).not.toMatch(/#\d/);
     mocks.sendAdminXeroSyncErrorAlert.mockRejectedValueOnce(new Error("mail down"));
     await expect(alertGroupMirrorRefundXeroByHand({ bookingId: "b1", taskId: "t1", refundCents: 1_500, format: CLUB_FORMAT_TEST })).resolves.toBeUndefined();
   });
@@ -230,7 +231,7 @@ describe("the route reads as a bank transfer everywhere a hand-back does", () =>
 describe("the words name the group organiser as the payee (owner decision, 21 Oct 2026)", () => {
   it("the task reasons", () => {
     expect(editRefundHandBackReason({ bookingId: "b1", editLabel: "date change", payee: "organiser" })).toBe(
-      "Booking b1 lowered by a date change; the group organiser paid for it by internet banking, so the club refunds the difference to the group organiser by bank transfer (#3949).",
+      "Booking b1 lowered by a date change; the group organiser paid for it by internet banking, so the club refunds the difference to the group organiser by bank transfer.",
     );
     expect(refundRequestHandBackReason({ bookingId: "b1", payee: "organiser" })).toContain("refunds this to the group organiser by bank transfer");
     // The member wording is exactly what it was.

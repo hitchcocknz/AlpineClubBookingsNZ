@@ -251,7 +251,8 @@ the organiser against the group's invoice and record the bank refund against it.
 When the joiner cancels their own place with a refund due, the cancel raises
 one of these tasks too, for the policy's card-tier refund, to the organiser
 (never account credit for the joiner), and admins get the **Manual refund
-needed** email saying the refund goes to the organiser (a customised message
+needed** email naming the organiser the refund goes to, and the task's reason
+names them too (a customised message
 shows that through `{{handBackNote}}`, as below). A price review on
 such a booking that the club settles as money owed back goes to the organiser
 the same way. One that finds the joiner owes the club is refused: the club

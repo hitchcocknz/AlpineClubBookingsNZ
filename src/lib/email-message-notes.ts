@@ -289,7 +289,7 @@ const ALERT_WORDS: Record<ManualRefundTaskAlertSituation, { label: string; headi
   "cash-cancellation": { label: "cash booking cancelled", heading: "Manual Refund Needed - Cash Booking Cancelled", amountLabel: "Amount to refund", recipientLabel: "Member" },
   "group-organiser-internet-banking": { label: "Internet Banking group cancelled", heading: "Manual Refund Needed - Internet Banking Group Cancelled", amountLabel: "Owed when this alert was sent", recipientLabel: "Organiser" },
   "card-refund-shortfall": { label: "card refund short on a cancelled booking", heading: "Manual Refund Needed - Card Refund Short on a Cancelled Booking", amountLabel: "Amount the card refund could not carry", recipientLabel: "Member" },
-  "joiner-cancel-organiser": { label: "group joiner cancelled, refund to the organiser", heading: "Manual Refund Needed - Group Joiner Cancelled, Refund to the Organiser", amountLabel: "Amount to refund to the organiser", recipientLabel: "Joiner" },
+  "joiner-cancel-organiser": { label: "group joiner cancelled, refund to the organiser", heading: "Manual Refund Needed - Group Joiner Cancelled, Refund to the Organiser", amountLabel: "Amount to refund to the organiser", recipientLabel: "Organiser" },
 };
 
 /** The subject phrase (`{{handBackLabel}}`). */

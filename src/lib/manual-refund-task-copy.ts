@@ -344,13 +344,13 @@ export function stillOwedNoticeText(preview: EditReviewStillOwedPreview | null, 
  */
 export function editRefundHandBackReason({ bookingId, editLabel, payee }: { bookingId: string; editLabel: string; payee: BankTransferRefundPayee }): string {
   return payee === "organiser"
-    ? `Booking ${bookingId} lowered by a ${editLabel}; the group organiser paid for it by internet banking, so the club refunds the difference to the group organiser by bank transfer (#3949).`
+    ? `Booking ${bookingId} lowered by a ${editLabel}; the group organiser paid for it by internet banking, so the club refunds the difference to the group organiser by bank transfer.`
     : `Booking ${bookingId} lowered by a ${editLabel}; paid by internet banking or by hand, so the club refunds the difference by bank transfer (#3827).`;
 }
 
 export function refundRequestHandBackReason({ bookingId, payee }: { bookingId: string; payee: BankTransferRefundPayee }): string {
   return payee === "organiser"
-    ? `Refund appeal approved on booking ${bookingId}; the group organiser paid for it by internet banking, so the club refunds this to the group organiser by bank transfer (#3949).`
+    ? `Refund appeal approved on booking ${bookingId}; the group organiser paid for it by internet banking, so the club refunds this to the group organiser by bank transfer.`
     : `Refund appeal approved on booking ${bookingId}; not paid by card, so the club refunds this by bank transfer (#3827).`;
 }
 
@@ -381,11 +381,18 @@ export function editRefundHandBackReopenAfterCancelMessage(booking: PayeeBooking
  * B5 (#2262), #3949 (owner decision, 22 Oct 2026): THE REASON LINE of a paid
  * cancellation's hand-back task. A cash settlement's refund goes back to the
  * member; a joiner's own cancel of a place the group organiser paid for by
- * internet banking goes back to the ORGANISER by bank transfer. The member
- * wording is exactly what it was.
+ * internet banking goes back to the ORGANISER by bank transfer, named when
+ * known (review round 4). Officer-facing, so it cites no issue numbers. The
+ * member wording is exactly what it was.
  */
-export function cancellationHandBackReason({ bookingId, refundPercentage, payee }: { bookingId: string; refundPercentage: number; payee: BankTransferRefundPayee }): string {
+export function cancellationHandBackReason({ bookingId, refundPercentage, payee, organiserName = null }: {
+  bookingId: string;
+  refundPercentage: number;
+  payee: BankTransferRefundPayee;
+  /** The organiser it is repaid to, named in the line (`bookingOwnerName` of the organiser's booking). */
+  organiserName?: string | null;
+}): string {
   return payee === "organiser"
-    ? `Booking ${bookingId} cancelled by its joiner; the group organiser paid for it by internet banking, so the club refunds ${refundPercentage}% (under the policy in effect at the time) to the group organiser by bank transfer (#3949).`
+    ? `Booking ${bookingId} cancelled by its joiner; the group organiser${organiserName ? ` (${organiserName})` : ""} paid for it by internet banking, so the club refunds ${refundPercentage}% (under the policy in effect at the time, on the card refund tiers) to the group organiser by bank transfer.`
     : `Booking ${bookingId} cancelled — cash/manual settlement, refund by hand (${refundPercentage}% under the policy in effect at the time).`;
 }

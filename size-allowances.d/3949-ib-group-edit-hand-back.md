@@ -30,7 +30,7 @@ reason: the finance queue tells the officer the money goes to the group
   ones have to sit with them.
 
 file: src/lib/booking-cancel.ts
-lines: 2853
+lines: 2861
 reason: the paid-cancel gate and the cancel's capture evidence each pass the
   booking to the one capture-evidence entry point (`paymentShowsCaptureEvidence`
   in `booking-payment-state.ts`), which reads an Internet Banking organiser
@@ -39,5 +39,6 @@ reason: the paid-cancel gate and the cancel's capture evidence each pass the
   own cancel of such a place takes its card-tier method and by-hand disposition
   from the helper it shares with its preview (`cancelRefundDisposition`), and
   its hand-back's reason, email, confirmation and "Manual refund needed" alert
-  name the organiser - each beside the cash hand-back's own lines in the same
-  branch.
+  name the organiser - by name in the reason and the alert's Organiser row, read
+  from the organiser's booking under the claim's locks - each beside the cash
+  hand-back's own lines in the same branch.

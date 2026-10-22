@@ -44,9 +44,10 @@ describe("cancelRefundDisposition (#3949 review round 3, the one home for the ca
 describe("the cancellation hand-back's reason names its payee (#3949)", () => {
   it("the organiser on an organiser-paid place; the member's wording unchanged", async () => {
     const { cancellationHandBackReason } = await import("@/lib/manual-refund-task-copy");
-    expect(cancellationHandBackReason({ bookingId: "b1", refundPercentage: 50, payee: "organiser" })).toBe(
-      "Booking b1 cancelled by its joiner; the group organiser paid for it by internet banking, so the club refunds 50% (under the policy in effect at the time) to the group organiser by bank transfer (#3949).",
+    expect(cancellationHandBackReason({ bookingId: "b1", refundPercentage: 50, payee: "organiser", organiserName: "Olive Organiser" })).toBe(
+      "Booking b1 cancelled by its joiner; the group organiser (Olive Organiser) paid for it by internet banking, so the club refunds 50% (under the policy in effect at the time, on the card refund tiers) to the group organiser by bank transfer.",
     );
+    expect(cancellationHandBackReason({ bookingId: "b1", refundPercentage: 50, payee: "organiser" })).toContain("the group organiser paid for it");
     expect(cancellationHandBackReason({ bookingId: "b1", refundPercentage: 50, payee: "member" })).toBe(
       "Booking b1 cancelled — cash/manual settlement, refund by hand (50% under the policy in effect at the time).",
     );
