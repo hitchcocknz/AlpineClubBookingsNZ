@@ -304,7 +304,10 @@ export async function chooseEditReviewChargeRoute({
   // refuses. The other way round, a commit landing between them reads "no
   // invoice issued" and then "nothing coming", and the share takes the card
   // beside the invoice just sent. An officer's resolve-in-Xero mark moves a
-  // FAILED row the same one way (coming -> resolved), so the same order holds.
+  // FAILED row the same one way (coming -> resolved), so the same order holds;
+  // the one mark that moves BACK - withdrawn by the resolve route because a
+  // retry of the row is running - leaves that retry on the anchor, which the
+  // still-coming read counts as coming in every state of the mark (round 5).
   const joinsQueuedInvoice =
     canChargeCard &&
     existing === null &&
