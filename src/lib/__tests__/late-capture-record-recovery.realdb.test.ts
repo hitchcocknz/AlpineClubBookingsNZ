@@ -33,7 +33,6 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type Stripe from "stripe";
 
-import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
 import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
 
@@ -93,7 +92,33 @@ function lateCaptureRefund(): Stripe.Refund {
   "a late capture's lost automatic-refund record is written once and never over-noted - real PostgreSQL (#4149)",
   { timeout: 60_000 },
   () => {
+    const pendingAuditWrites = new Set<Promise<unknown>>();
+    let restoreAuditCreate: (() => void) | undefined;
+    let recoveredAuditGate: { reached: ReturnType<typeof deferred>; release: ReturnType<typeof deferred>; details: string } | undefined;
+
+    function deferred() {
+      let resolve!: () => void;
+      const promise = new Promise<void>((done) => { resolve = done; });
+      return { promise, resolve };
+    }
+
+    // logAudit returns before its insert settles. Count polling cannot tell
+    // whether an older fixture still has a write waiting to land (#4254).
+    async function drainAuditWrites() {
+      const failures: unknown[] = [];
+      while (pendingAuditWrites.size > 0) {
+        const writes = [...pendingAuditWrites];
+        const results = await Promise.allSettled(writes);
+        for (const write of writes) pendingAuditWrites.delete(write);
+        for (const result of results) {
+          if (result.status === "rejected") failures.push(result.reason);
+        }
+      }
+      if (failures.length > 0) throw new AggregateError(failures, "Owned recovery audit inserts failed");
+    }
+
     async function deletePaymentRows() {
+      await drainAuditWrites();
       await prisma.auditLog.deleteMany({ where: { targetId: BOOKING_ID } });
       await prisma.alertCooldown.deleteMany({ where: { key: { in: ALERT_KEYS } } });
       await prisma.processedWebhookEvent.deleteMany({ where: { eventId: { startsWith: "evt_race_4149_" } } });
@@ -299,20 +324,13 @@ function lateCaptureRefund(): Stripe.Refund {
         select: { status: true, kind: true, reason: true, amountCents: true, completedAt: true },
       });
 
-    /**
-     * `logAudit` is fire-and-forget: wait (real time - `Date` is frozen) for
-     * the expected rows rather than racing them.
-     */
-    async function refundEntries(expected: number, action = REFUND_ENTRY) {
-      const startedAt = process.hrtime.bigint();
-      for (;;) {
-        const rows = await prisma.auditLog.findMany({
-          where: { targetId: BOOKING_ID, action },
-          select: { details: true },
-        });
-        if (rows.length >= expected || realElapsedMs(startedAt) > 3_000) return rows;
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
+    /** Await actual owned inserts, including any unexpected duplicate. */
+    async function refundEntries(action = REFUND_ENTRY) {
+      await drainAuditWrites();
+      return prisma.auditLog.findMany({
+        where: { targetId: BOOKING_ID, action },
+        select: { details: true },
+      });
     }
 
     const uncoveredCents = async () =>
@@ -329,6 +347,23 @@ function lateCaptureRefund(): Stripe.Refund {
       assertSafeRaceDbUrl(RACE_DB_URL, "late-capture record recovery"); // the one shared guard (INV-SSOT-001)
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
+      const createAudit = prisma.auditLog.create.bind(prisma.auditLog);
+      const auditCreate = vi.spyOn(prisma.auditLog, "create").mockImplementation((args) => {
+        if (args.data.targetId !== BOOKING_ID) return createAudit(args);
+        const gate = args.data.action === RECOVERED_ENTRY ? recoveredAuditGate : undefined;
+        const write = (async () => {
+          if (gate) {
+            gate.details = String(args.data.details);
+            gate.reached.resolve();
+            await gate.release.promise;
+          }
+          return createAudit(args);
+        })();
+        pendingAuditWrites.add(write);
+        // These audit calls are awaited, never passed to a Prisma transaction.
+        return write as ReturnType<typeof createAudit>;
+      });
+      restoreAuditCreate = () => auditCreate.mockRestore();
       webhook = await import("@/lib/stripe-webhook-service");
       recovery = await import("@/lib/late-capture-record-recovery");
       ({ readRefundCreditNoteGap } = await import("@/lib/xero-admin-health"));
@@ -357,7 +392,15 @@ function lateCaptureRefund(): Stripe.Refund {
     afterAll(async () => {
       resetStripeRaceHooks();
       if (!prisma) return;
-      await deleteFixtures();
+      try {
+        await deleteFixtures();
+      } finally {
+        try {
+          await drainAuditWrites();
+        } finally {
+          restoreAuditCreate?.();
+        }
+      }
     });
 
     it("the self-heal writes the lost record before it could raise a note, and the over-note it would have raised is gone", async () => {
@@ -383,10 +426,10 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(rows[0]?.reason).toContain(LATE_INTENT);
       expect(await uncoveredCents()).toBe(0);
       // The delivery that refunded died before its entry and alert, so the recovery writes them.
-      const entries = await refundEntries(1);
+      const entries = await refundEntries();
       expect(entries).toHaveLength(1);
       expect(JSON.parse(String(entries[0]?.details))).toMatchObject({ paymentIntentId: LATE_INTENT, recoveredLostRecord: true });
-      const recovered = await refundEntries(1, RECOVERED_ENTRY);
+      const recovered = await refundEntries(RECOVERED_ENTRY);
       expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({
         paymentIntentId: LATE_INTENT,
         refundTimeReport: "none",
@@ -408,7 +451,7 @@ function lateCaptureRefund(): Stripe.Refund {
       const rows = await recordRows();
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({ status: "DISMISSED", kind: "AUTOMATIC_LATE_CAPTURE_RECORD", completedAt: REFUNDED_ON });
-      expect(await refundEntries(1, RECOVERED_ENTRY)).toHaveLength(1);
+      expect(await refundEntries(RECOVERED_ENTRY)).toHaveLength(1);
     });
 
     it("a change capture with no landed-after evidence reads as uncovered cash until the self-heal writes its record, and not after", async () => {
@@ -426,23 +469,87 @@ function lateCaptureRefund(): Stripe.Refund {
       expect(await uncoveredCents()).toBe(0);
     });
 
+    it("drains a delayed change-capture audit before cleanup reuses the booking for a primary capture (#4254)", async () => {
+      await deletePaymentRows();
+      await seedAfterTheCrash({ cancelClaim: false, openTask: false });
+      const stripe = armStripe();
+      const gate = { reached: deferred(), release: deferred(), details: "" };
+      recoveredAuditGate = gate;
+      let cleanup: Promise<void> | undefined;
+      const auditDelete = vi.spyOn(prisma.auditLog, "deleteMany");
+      try {
+        await recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID);
+        await gate.reached.promise;
+        expect(JSON.parse(gate.details)).toMatchObject({ kind: "modification_additional" });
+        expect(await recordRows()).toHaveLength(1);
+        expect(await prisma.auditLog.count({ where: { targetId: BOOKING_ID, action: RECOVERED_ENTRY } })).toBe(0);
+        expect(pendingAuditWrites.size).toBeGreaterThan(0);
+
+        // Without the drain, deletion starts synchronously while this real
+        // modification_additional insert can still land after that delete.
+        cleanup = deletePaymentRows();
+        expect(auditDelete).not.toHaveBeenCalled();
+        gate.release.resolve();
+        await cleanup;
+        expect(auditDelete).toHaveBeenCalledOnce();
+        expect(pendingAuditWrites.size).toBe(0);
+        recoveredAuditGate = undefined;
+
+        await seedAfterTheCrash();
+        await recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID);
+        const recovered = await refundEntries(RECOVERED_ENTRY);
+        expect(recovered).toHaveLength(1);
+        expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({ kind: "primary" });
+        expect(await refundEntries()).toHaveLength(1);
+        expect(await recordRows()).toHaveLength(1);
+        expect(stripe.refundsAsked).toBe(0);
+      } finally {
+        gate.release.resolve();
+        recoveredAuditGate = undefined;
+        try {
+          await cleanup;
+          await drainAuditWrites();
+        } finally {
+          auditDelete.mockRestore();
+        }
+      }
+    });
+
     it("two redeliveries racing the self-heal still write one record and one entry, and refund nothing again", async () => {
       const stripe = armStripe();
-
-      const [first, second, healed] = await Promise.all([
+      const allReading = deferred();
+      const releaseReaders = deferred();
+      stripeRaceHooks.listRefunds = async () => {
+        stripe.listed += 1;
+        if (stripe.listed === 3) allReading.resolve();
+        await releaseReaders.promise;
+        return [lateCaptureRefund()];
+      };
+      const racing = Promise.all([
         redeliverLateCapture(),
         redeliverLateCapture(),
         recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID),
       ]);
-
-      expect(first.init?.status ?? 200).toBe(200);
-      expect(second.init?.status ?? 200).toBe(200);
-      expect(healed.unresolved).toBe(false);
+      try {
+        // Each reader has already observed the missing record. The real
+        // under-lock claim, rather than scheduling luck, must choose one winner.
+        await Promise.race([
+          allReading.promise,
+          racing.then(() => { throw new Error("recovery finished before all three readers reached Stripe"); }),
+        ]);
+        releaseReaders.resolve();
+        const [first, second, healed] = await racing;
+        expect(first.init?.status ?? 200).toBe(200);
+        expect(second.init?.status ?? 200).toBe(200);
+        expect(healed.unresolved).toBe(false);
+        expect(stripe.listed).toBe(3);
+      } finally {
+        releaseReaders.resolve();
+        await Promise.allSettled([racing]);
+      }
       expect(await recordRows()).toHaveLength(1);
-      // Give any second (wrong) entry the same time to land as the first.
-      await refundEntries(2);
-      expect(await refundEntries(1)).toHaveLength(1);
-      expect(await refundEntries(2, RECOVERED_ENTRY)).toHaveLength(1);
+      expect(await refundEntries()).toHaveLength(1);
+      expect(await refundEntries(RECOVERED_ENTRY)).toHaveLength(1);
       expect(stripe.refundsAsked).toBe(0);
       expect(await uncoveredCents()).toBe(0);
     });
@@ -450,14 +557,14 @@ function lateCaptureRefund(): Stripe.Refund {
     it("a redelivery once the record exists asks Stripe nothing and writes nothing", async () => {
       armStripe();
       await recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID);
-      await refundEntries(1);
+      await refundEntries();
       const stripe = armStripe();
 
       expect((await redeliverLateCapture()).init?.status ?? 200).toBe(200);
 
       expect(stripe.listed).toBe(0);
       expect(await recordRows()).toHaveLength(1);
-      expect(await refundEntries(2)).toHaveLength(1);
+      expect(await refundEntries()).toHaveLength(1);
     });
 
     it("writes the row and its recovered entry, and no second refund entry, when the refunding delivery's entry says its record write was lost", async () => {
@@ -477,14 +584,14 @@ function lateCaptureRefund(): Stripe.Refund {
       expect((await redeliverLateCapture()).init?.status ?? 200).toBe(200);
 
       expect(await recordRows()).toHaveLength(1);
-      const recovered = await refundEntries(1, RECOVERED_ENTRY);
+      const recovered = await refundEntries(RECOVERED_ENTRY);
       // The alert beside that entry read the database that had just failed, so it goes again (#2761).
       expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({
         paymentIntentId: LATE_INTENT,
         refundTimeReport: "record_lost",
         alertSent: true,
       });
-      expect(await refundEntries(2)).toHaveLength(1);
+      expect(await refundEntries()).toHaveLength(1);
     });
 
     /** Stripe's `charge.refunded` for the late capture's charge - the real webhook processor. */
@@ -523,9 +630,9 @@ function lateCaptureRefund(): Stripe.Refund {
       });
       expect(await recordRows()).toHaveLength(1);
       // As the repair tool records its own refund: no "refunded automatically" entry beside the record.
-      const recovered = await refundEntries(1, RECOVERED_ENTRY);
+      const recovered = await refundEntries(RECOVERED_ENTRY);
       expect(JSON.parse(String(recovered[0]?.details))).toMatchObject({ repairRefund: true, alertSent: false });
-      expect(await refundEntries(1)).toHaveLength(0);
+      expect(await refundEntries()).toHaveLength(0);
     });
 
     it("re-raises a refunded-outside-the-app alert whose claim is not held, from the nightly self-heal (#4170)", async () => {
@@ -690,7 +797,7 @@ function lateCaptureRefund(): Stripe.Refund {
         expect((await chargeRefunded(dashboard)).init?.status ?? 200).toBe(200);
 
         expect(await queuedNotes()).toBe(0);
-        expect(await refundEntries(1, "booking.payment.late_capture_refunded_outside_app")).toHaveLength(1);
+        expect(await refundEntries("booking.payment.late_capture_refunded_outside_app")).toHaveLength(1);
         expect(await uncoveredCents()).toBe(0);
       });
 
@@ -703,7 +810,7 @@ function lateCaptureRefund(): Stripe.Refund {
         expect((await chargeRefunded(dashboard)).init?.status ?? 200).toBe(200);
 
         expect(await queuedNotes()).toBe(0);
-        expect(await refundEntries(1, "booking.payment.late_capture_refunded_outside_app")).toHaveLength(1);
+        expect(await refundEntries("booking.payment.late_capture_refunded_outside_app")).toHaveLength(1);
         expect(await uncoveredCents()).toBe(0);
       });
     });
@@ -719,7 +826,7 @@ function lateCaptureRefund(): Stripe.Refund {
         const rows = await recordRows();
         expect(rows).toHaveLength(1);
         expect(rows[0]).toMatchObject({ status: "DISMISSED", completedAt: REFUNDED_ON });
-        expect(await refundEntries(1, RECOVERED_ENTRY)).toHaveLength(1);
+        expect(await refundEntries(RECOVERED_ENTRY)).toHaveLength(1);
         expect(stripe.refundsAsked).toBe(0);
       });
 
@@ -740,8 +847,7 @@ function lateCaptureRefund(): Stripe.Refund {
         const rows = await recordRows();
         expect(rows).toHaveLength(1);
         expect(rows[0]?.status).toBe("DISMISSED");
-        await refundEntries(2, RECOVERED_ENTRY);
-        expect(await refundEntries(1, RECOVERED_ENTRY)).toHaveLength(1);
+        expect(await refundEntries(RECOVERED_ENTRY)).toHaveLength(1);
         expect(stripe.refundsAsked).toBe(0);
       });
 
