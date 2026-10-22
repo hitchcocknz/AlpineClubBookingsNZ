@@ -1580,7 +1580,8 @@ decision and would need its own owner decision.
   and conflict check leave out a note a link records VOIDED or DELETED
   (`refundNoteIdSets`), so nothing writes one back into
   `Payment.xeroRefundCreditNoteId`. The nightly link cleanup heals a pre-#4091
-  active mirror (#4161).
+  active mirror (#4161). A later inbound event for the voided note still
+  recounts that payment (#4291).
 - **A refund request's own note** (`INV-PAY-118`, #4195) too: its voided
   mirror goes inactive, even racing a status-less write, and never covers
   the request. Only an officer re-raises one (#4214), never a retry; the Xero
@@ -1598,7 +1599,7 @@ decision and would need its own owner decision.
   (`INV-ADDPAY-042`), moves the detail, the `BANK_REFUND` line and the total
   together and raises the follow-up; nothing is re-raised automatically.
   Pinned by `xero-refund-note-{void-pointer,crash-window,after-void-key}`,
-  `bank-refund-void-follow-up`,
+  `xero-voided-note-recount`, `bank-refund-void-follow-up`,
   `xero-refund-request-note-void`, `xero-voided-request-note-retry-routes`,
   `xero-sync`, `xero-booking-repair`, `xero-operation-retry`,
   `xero-operation-outbox` and `xero-hardening`.
