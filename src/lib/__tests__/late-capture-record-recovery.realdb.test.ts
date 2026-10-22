@@ -94,7 +94,7 @@ function lateCaptureRefund(): Stripe.Refund {
   () => {
     const pendingAuditWrites = new Set<Promise<unknown>>();
     let restoreAuditCreate: (() => void) | undefined;
-    let recoveredAuditGate: { reached: ReturnType<typeof deferred>; release: ReturnType<typeof deferred>; details: string } | undefined;
+    let recoveredAuditGate: { release: ReturnType<typeof deferred>; details: string } | undefined;
 
     function deferred() {
       let resolve!: () => void;
@@ -354,7 +354,6 @@ function lateCaptureRefund(): Stripe.Refund {
         const write = (async () => {
           if (gate) {
             gate.details = String(args.data.details);
-            gate.reached.resolve();
             await gate.release.promise;
           }
           return createAudit(args);
@@ -473,13 +472,14 @@ function lateCaptureRefund(): Stripe.Refund {
       await deletePaymentRows();
       await seedAfterTheCrash({ cancelClaim: false, openTask: false });
       const stripe = armStripe();
-      const gate = { reached: deferred(), release: deferred(), details: "" };
+      const gate = { release: deferred(), details: "" };
       recoveredAuditGate = gate;
       let cleanup: Promise<void> | undefined;
       const auditDelete = vi.spyOn(prisma.auditLog, "deleteMany");
       try {
         await recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID);
-        await gate.reached.promise;
+        // logAudit calls create before recovery returns; a missing entry must fail, not wait forever.
+        expect(gate.details).not.toBe("");
         expect(JSON.parse(gate.details)).toMatchObject({ kind: "modification_additional" });
         expect(await recordRows()).toHaveLength(1);
         expect(await prisma.auditLog.count({ where: { targetId: BOOKING_ID, action: RECOVERED_ENTRY } })).toBe(0);
@@ -530,7 +530,6 @@ function lateCaptureRefund(): Stripe.Refund {
         redeliverLateCapture(),
         recovery.recoverLostLateCaptureRecordsForPayment(PAYMENT_ID),
       ] as const;
-      const racing = Promise.all(readers);
       let readinessDeadline: ReturnType<typeof setTimeout> | undefined;
       try {
         // Each reader has already observed the missing record. The real
@@ -545,7 +544,7 @@ function lateCaptureRefund(): Stripe.Refund {
           }),
         ]);
         releaseReaders.resolve();
-        const [first, second, healed] = await racing;
+        const [first, second, healed] = await Promise.all(readers);
         expect(first.init?.status ?? 200).toBe(200);
         expect(second.init?.status ?? 200).toBe(200);
         expect(healed.unresolved).toBe(false);
@@ -553,7 +552,7 @@ function lateCaptureRefund(): Stripe.Refund {
       } finally {
         clearTimeout(readinessDeadline);
         releaseReaders.resolve();
-        await Promise.allSettled([racing]);
+        await Promise.allSettled(readers);
       }
       expect(await recordRows()).toHaveLength(1);
       expect(await refundEntries()).toHaveLength(1);
