@@ -887,7 +887,9 @@ export async function executeGroupSettlementRefundPlan(
     // Mirror and durable Xero outbox insertion are one atomic unit (an enqueue
     // failure rolls the mirror back, so the replay never skips a stranded note).
     const mirrorResult = await prisma.$transaction(async (tx) => {
-      const payment = await readGroupChildMirrorForPlanReplay(tx, child.payment!.id);
+      const payment = await readGroupChildMirrorForPlanReplay(tx, { bookingId: child.id, paymentId: child.payment!.id });
+      // #3949 review round 3: a child its member cancelled was never the plan's to refund - nothing is written.
+      if (!payment.claimedByGroupCancel) return { applied: false, refundedCents: 0, queuedOperationId: null };
       // #3854: mirrored already, its line by the plan regardless (keyed, so a no-op when posted).
       if (payment.planShareWritten) {
         await postGroupSettlementRefundLedgerLine({ store: tx, settlement, bookingId: child.id, lodgeId: child.lodgeId, refundCents: refundForChild });

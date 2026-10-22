@@ -9,7 +9,6 @@ import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financia
 import { assertGroupMirrorHandBackWithinUnpromisedCash } from "@/lib/edit-refund-hand-back";
 import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import { mirrorPlanRefundedCents } from "@/lib/group-settlement-refund-plan";
-import { NON_CANCELLATION_HAND_BACK_WHERE } from "@/lib/manual-refund-task-settlement-rules";
 import { isGroupSettlementMirrorHandBackKind } from "@/lib/group-settlement-mirror-kinds";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
@@ -254,21 +253,30 @@ export async function applyGroupSettlementMirrorRefund({
  */
 export async function readGroupChildMirrorForPlanReplay(
   tx: Prisma.TransactionClient,
-  paymentId: string,
-): Promise<{ amountCents: number; refundedAmountCents: number; planShareWritten: boolean }> {
+  child: { bookingId: string; paymentId: string },
+): Promise<{ amountCents: number; refundedAmountCents: number; planShareWritten: boolean; claimedByGroupCancel: boolean }> {
+  const { bookingId, paymentId } = child;
   await lockPaymentForRefundedTotal(tx, paymentId);
   const payment = await tx.payment.findUniqueOrThrow({
     where: { id: paymentId },
     select: { amountCents: true, refundedAmountCents: true },
   });
-  const paidBack = await tx.manualRefundTask.findMany({
-    // The edit's and appeal's hand-backs (`INV-PAY-117`'s positive fragment), paid back.
-    where: { paymentId, status: "COMPLETED", ...NON_CANCELLATION_HAND_BACK_WHERE },
-    select: { kind: true, status: true, occurrenceKey: true, paymentId: true, amountCents: true },
+  // Review round 3: EVERY completion that may have written the mirror, sorted by the planner's own rule
+  // (`groupChildHandBacksFromRows`): an edit's, an appeal's and a joiner cancel's hand-back, and a review's refund.
+  const completed = await tx.manualRefundTask.findMany({
+    where: { paymentId, status: "COMPLETED" },
+    select: { kind: true, status: true, occurrenceKey: true, paymentId: true, amountCents: true, settlementDirection: true },
+  });
+  // Review round 3: a child its member cancelled themselves (a paid cancel's snapshot) was never the plan's to refund.
+  const cancelled = await tx.bookingEvent.findFirst({
+    where: { bookingId, type: "CANCELLED" },
+    orderBy: [{ occurredAt: "desc" }, { id: "desc" }],
+    select: { snapshot: true },
   });
   return {
     ...payment,
-    planShareWritten: mirrorPlanShareWritten(payment.refundedAmountCents, groupChildHandBacksFromRows(paymentId, paidBack)),
+    planShareWritten: mirrorPlanShareWritten(payment.refundedAmountCents, groupChildHandBacksFromRows(paymentId, completed)),
+    claimedByGroupCancel: (cancelled?.snapshot ?? null) === null,
   };
 }
 

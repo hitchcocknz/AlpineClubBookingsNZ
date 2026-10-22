@@ -57,6 +57,8 @@ const txClient = {
   payment: { update: mocks.paymentUpdate, updateMany: mocks.paymentUpdateMany, findUniqueOrThrow: mocks.paymentFindUniqueOrThrowLocked },
   // #3949: the replay reads the child's paid-back hand-backs under its Payment row; none by default.
   manualRefundTask: { findMany: vi.fn(async () => [] as unknown[]) },
+  // Review round 3: the latest CANCELLED event, whose snapshot marks a member's own cancel (none by default).
+  bookingEvent: { findFirst: vi.fn(async (): Promise<unknown> => null) },
   groupBookingSettlement: {
     updateMany: mocks.settlementUpdateMany,
     findUnique: mocks.settlementAtFenceFindUnique,
@@ -1484,6 +1486,34 @@ describe("executeGroupSettlementRefundPlan (#1351)", () => {
     // The Payment row first, then the read (a hand-back's completion holds that row before its claim).
     expect(mocks.txExecuteRaw).toHaveBeenCalled();
     expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.paymentFindUniqueOrThrowLocked.mock.invocationCallOrder[0]!);
+    txClient.manualRefundTask.findMany.mockImplementation(async () => []);
+  });
+
+  it("review round 3: a plan child its member cancelled themselves is never mirrored by the replay; a review's or joiner cancel's refund is not the plan's", async () => {
+    mocks.settlementFindUnique.mockResolvedValue(settlement({ status: PaymentStatus.REFUNDED }));
+    mocks.bookingFindUnique
+      .mockResolvedValueOnce(cancelledChild("child-1", "pay-1"))
+      .mockResolvedValueOnce({ ...cancelledChild("child-2", "pay-2", 1000), payment: { id: "pay-2", amountCents: 9000, refundedAmountCents: 1000, status: PaymentStatus.PARTIALLY_REFUNDED } });
+    // child-1 was cancelled by its member (a paid cancel's snapshot); child-2's $10 came from a completed review.
+    txClient.bookingEvent.findFirst.mockImplementation(async (args?: unknown) =>
+      (args as { where: { bookingId: string } }).where.bookingId === "child-1" ? { snapshot: { refundMethod: "card" } } : null,
+    );
+    txClient.manualRefundTask.findMany.mockImplementation(async (args?: unknown) =>
+      (args as { where: { paymentId: string } }).where.paymentId === "pay-2"
+        ? [{ kind: "EDIT_FINANCIAL_REVIEW", status: "COMPLETED", occurrenceKey: null, paymentId: "pay-2", amountCents: 1000, settlementDirection: "REFUND_TO_MEMBER" }]
+        : [],
+    );
+
+    const result = await executeGroupSettlementRefundPlan("settle-1", CLUB_FORMAT_TEST);
+
+    expect(result).toEqual({ outcome: "already_refunded", mirroredChildren: 1 });
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "pay-2", refundedAmountCents: 1000 },
+      data: { refundedAmountCents: 5500, status: PaymentStatus.PARTIALLY_REFUNDED },
+    });
+    expect(groupLedger.postGroupSettlementRefundLedgerLine).not.toHaveBeenCalledWith(expect.objectContaining({ bookingId: "child-1" }));
+    txClient.bookingEvent.findFirst.mockImplementation(async () => null);
     txClient.manualRefundTask.findMany.mockImplementation(async () => []);
   });
 
