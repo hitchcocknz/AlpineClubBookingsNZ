@@ -250,7 +250,7 @@ export async function applyPaymentAdjustments(
   },
 ): Promise<PaymentAdjustmentResult> {
   // #3949 review round 5: the one place a price change is refused mid group cancel (every door settles through here).
-  await refuseOrganiserBankChildPriceChangeInGroupCancel(tx, booking, priceDiffCents + changeFeeCents);
+  await refuseOrganiserBankChildPriceChangeInGroupCancel(tx, booking, { priceDiffCents, changeFeeCents });
   const inSettledStatus = isSettledBookingStatus(booking.status);
   const hasSettledPayment =
     inSettledStatus && hasCapturedPayment(booking.payment);

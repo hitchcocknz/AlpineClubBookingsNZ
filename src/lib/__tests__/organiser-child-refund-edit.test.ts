@@ -249,6 +249,11 @@ describe("an organiser child's reduction at the edit door (#3653)", () => {
         `${priceDiffCents} ${settlementMethod}`,
       ).rejects.toMatchObject({ status: 409, message: GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE });
     }
+    // Review round 6: each part on its own - a $20 cut with a $20 change fee nets to nothing but is still refused.
+    await expect(
+      applyPaymentAdjustments(txWithSettlement(null, "CANCELLED"), { reduction: noReductionAgainstUnpaidAsk(0),
+        ...SETTLEMENT_DAY, booking: ibChild(), priceDiffCents: -2000, changeFeeCents: 2000 }),
+    ).rejects.toMatchObject({ status: 409, message: GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE });
     // Once the cancel has claimed the child, or on a live group, it is not this refusal's to answer.
     await expect(
       applyPaymentAdjustments(txWithSettlement(null, "OPEN"), { reduction: noReductionAgainstUnpaidAsk(1000), ...SETTLEMENT_DAY, booking: ibChild(), priceDiffCents: 1000, changeFeeCents: 0 }),

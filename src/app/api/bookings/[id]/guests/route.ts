@@ -960,7 +960,7 @@ export async function POST(
           });
       const priceDiffCents = newFinalPriceCents - booking.finalPriceCents;
       // #3949 review round 6: settling itself (not through `applyPaymentAdjustments`), it asks the same refusal here.
-      await refuseOrganiserBankChildPriceChangeInGroupCancel(tx, booking, priceDiffCents);
+      await refuseOrganiserBankChildPriceChangeInGroupCancel(tx, booking, { priceDiffCents, changeFeeCents: 0 });
 
       // Update hasNonMembers
       const addingNonMembers = normalizedNewGuests.some((g) => !g.isMember);

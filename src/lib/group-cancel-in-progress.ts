@@ -55,9 +55,10 @@ export class GroupCancelInProgressError extends ApiError {
 export async function refuseOrganiserBankChildPriceChangeInGroupCancel(
   store: Pick<Prisma.TransactionClient, "groupBooking">,
   booking: Parameters<typeof paidByOrganiserInternetBanking>[0] & { status: string },
-  priceChangeCents: number,
+  /** Each part on its own (review round 6): a price cut a change fee nets to zero is still a price change. */
+  change: { priceDiffCents: number; changeFeeCents: number },
 ): Promise<void> {
-  if (priceChangeCents !== 0 && paidByOrganiserInternetBanking(booking) && (await groupCancelInProgress(store, booking))) {
+  if ((change.priceDiffCents !== 0 || change.changeFeeCents !== 0) && paidByOrganiserInternetBanking(booking) && (await groupCancelInProgress(store, booking))) {
     throw new GroupCancelInProgressError(GROUP_CANCEL_IN_PROGRESS_PRICE_MESSAGE);
   }
 }
