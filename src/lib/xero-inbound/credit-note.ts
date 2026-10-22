@@ -5,7 +5,7 @@ import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync";
 import { buildCreditNoteAllocationTargets, buildSyntheticAllocationLinkId, buildXeroPaymentDisplayNumber, getCreditNoteAmountCents } from "./amounts";
-import { dedupeResolvedXeroObjectLinks, dedupeXeroObjectLinks, findActiveXeroObjectLinks, getDerivedInboundAllocationRole, recoverBookingScopedLinksFromOutboundOperations } from "./object-links";
+import { dedupeResolvedXeroObjectLinks, dedupeXeroObjectLinks, findActiveXeroObjectLinks, findPaymentIdsWithCancelledRefundNoteMirror, getDerivedInboundAllocationRole, recoverBookingScopedLinksFromOutboundOperations } from "./object-links";
 import { writeXeroInboundAuditLogs } from "./audit";
 import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance } from "./credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "./modification-note-refunds";
@@ -34,6 +34,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     recoveredBookingScopedLinks,
     canonicalPaymentLinks,
     canonicalAccountCreditPayments,
+    voidedMirrorPaymentIds,
   ] = await Promise.all([
     findActiveXeroObjectLinks("CREDIT_NOTE", creditNote.creditNoteID),
     recoverBookingScopedLinksFromOutboundOperations("CREDIT_NOTE", creditNote.creditNoteID),
@@ -46,6 +47,13 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       },
     }),
     resolveAccountCreditPaymentsFromMemberCredits(creditNote.creditNoteID),
+    // #4291: a cancelled note still recounts the payments whose mirror its
+    // void already turned off (the pointer released with it), and only them:
+    // a live read never resolves a voided mirror. Recount only - no link,
+    // pointer or allocation is written for them.
+    isIncludedRefundCreditNoteStatus(creditNote.status)
+      ? Promise.resolve([] as string[])
+      : findPaymentIdsWithCancelledRefundNoteMirror(creditNote.creditNoteID),
   ]);
   // #1925: applied-credit notes without CANCELLATION_REFUND provenance (e.g. an
   // admin-adjustment-minted remainder note) resolve to no account-credit payment
@@ -336,6 +344,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     },
     directPaymentIds: [
       ...paymentCandidates.map((payment) => payment.id),
+      ...voidedMirrorPaymentIds,
       ...accountCreditPayments.map((payment) => payment.id),
     ],
     modificationRefundAmountsByPaymentId,
