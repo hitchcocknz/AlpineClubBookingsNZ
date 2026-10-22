@@ -1,13 +1,11 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { PaymentSource } from "@prisma/client";
+import { BookingStatus, ManualRefundTaskDirection, ManualRefundTaskKind, ManualRefundTaskStatus, PaymentSource } from "@prisma/client";
 import { describe, expect, it } from "vitest";
-import { BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX } from "@/lib/bank-refund-void-follow-up-key";
+import { BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX, BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE } from "@/lib/bank-refund-void-follow-up-key";
 import {
-  COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE,
-  EDIT_REFUND_HAND_BACK_KEY_PREFIX,
-  NON_CANCELLATION_HAND_BACK_WHERE,
-  REFUND_REQUEST_HAND_BACK_KEY_PREFIX,
+  CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX,
+  NON_CANCELLATION_HAND_BACK_KEY_PREFIXES,
 } from "@/lib/manual-refund-task-settlement-rules";
 import { EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-status";
 import { BANK_TRANSFER_REFUND_SHORTFALL_ADVICE } from "@/lib/xero-inbound/credit-note-bank-transfer-floor";
@@ -16,15 +14,15 @@ import { recoverRefundCreditNoteLinkAmountCents } from "@/lib/xero-sync";
 
 /**
  * #4230 (`INV-SSOT`, `INV-ADDPAY-021`): the deploy note's read-only SQL, which
- * lists bank-transfer payments whose completed hand-backs and card refunds
- * exceed their live refund notes, spells by hand what the code defines once -
- * the hand-back kind and status, the hand-backs another note answers, a
- * refused refund's statuses, a refund note's link and a cancelled note's
- * statuses - because an operator runs it in psql. This pins each literal to
- * the code, so a drift fails here rather than leaving a query that quietly
- * lists nothing. The real-PostgreSQL proof (`xero-bt-recount-handbacks`) runs
- * the same query. And the alert's advice is quoted word for word by the Xero
- * guide's troubleshooting row.
+ * lists bank-transfer payments whose paid-back refunds exceed their live refund
+ * notes, spells by hand what the code defines once - the task kinds and
+ * statuses, the hand-backs another note answers, the void follow-up, a refused
+ * refund's statuses, a refund note's link and a cancelled note's statuses -
+ * because an operator runs it in psql. This pins each literal to the code, so
+ * a drift fails here rather than leaving a query that quietly lists nothing.
+ * The real-PostgreSQL proof (`xero-bt-recount-handbacks`) runs the same query.
+ * It also pins that the absorbing writers the doc names still enqueue unkeyed
+ * (#4287 changes that), and that the Xero guide quotes the alert's advice.
  */
 const REPO_ROOT = resolve(__dirname, "../../..");
 const read = (path: string) => readFileSync(resolve(REPO_ROOT, path), "utf8");
@@ -33,7 +31,7 @@ function deployNoteSql(): string {
   const doc = read("docs/xero/ARCHITECTURE.md");
   const start = doc.indexOf("**Deploy note (#4230).**");
   expect(start).toBeGreaterThanOrEqual(0);
-  const sql = /`(SELECT [^`]*)`/.exec(doc.slice(start))?.[1];
+  const sql = /```sql\n([\s\S]*?)\n```/.exec(doc.slice(start))?.[1];
   expect(sql).toBeDefined();
   return sql!;
 }
@@ -44,12 +42,28 @@ const list = (text: string) => text.split(", ").map((item) => item.slice(1, -1))
 describe("the #4230 deploy note's SQL matches the code's one definition", () => {
   const sql = deployNoteSql();
 
-  it("counts completed hand-backs, leaving out exactly those another note answers", () => {
-    expect(all(sql, /m\.kind = '([^']*)'/g)).toEqual([NON_CANCELLATION_HAND_BACK_WHERE.kind]);
-    expect(all(sql, /m\.status = '([^']*)'/g)).toEqual([COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE.status]);
+  it("counts completed hand-backs and a cancelled booking's member refunds by review, by the code's kinds, status and direction", () => {
+    expect(new Set(all(sql, /m\.kind = '([^']*)'/g))).toEqual(new Set([ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK, ManualRefundTaskKind.EDIT_FINANCIAL_REVIEW]));
+    expect(all(sql, /m\.status = '([^']*)'/g)).toEqual([ManualRefundTaskStatus.COMPLETED]);
+    expect(all(sql, /m\."settlementDirection" = '([^']*)'/g)).toEqual([ManualRefundTaskDirection.REFUND_TO_MEMBER]);
+    expect(all(sql, /b\.status = '([^']*)'/g)).toEqual([BookingStatus.CANCELLED]);
+  });
+
+  it("leaves out exactly the hand-backs another note answers", () => {
     const excluded = all(sql, /NOT starts_with\(coalesce\(m\."occurrenceKey", ''\), '([^']*)'\)/g);
-    expect(new Set(excluded)).toEqual(new Set([EDIT_REFUND_HAND_BACK_KEY_PREFIX, REFUND_REQUEST_HAND_BACK_KEY_PREFIX, BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX]));
-    expect(excluded).toHaveLength(3);
+    // Every non-cancellation hand-back but a "Paid another way" close: a close is bank cash
+    // answered by its own refund credit note (`paidAnotherWayTaskId`), so it counts beside it.
+    // An edit's is answered by the edit's note, a request's by its own note, and a void
+    // follow-up re-records the hand-back it undid (counted on its own line below).
+    const expected = NON_CANCELLATION_HAND_BACK_KEY_PREFIXES.filter((prefix) => prefix !== CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX);
+    expect(excluded).toHaveLength(expected.length);
+    expect(new Set(excluded)).toEqual(new Set(expected));
+  });
+
+  it("takes back every void follow-up nobody has re-confirmed, read as the code reads a follow-up", () => {
+    expect(all(sql, /v\.kind = '([^']*)'/g)).toEqual([BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE.kind]);
+    expect(all(sql, /starts_with\(v\."occurrenceKey", '([^']*)'\)/g)).toEqual([BANK_REFUND_VOID_FOLLOW_UP_KEY_PREFIX]);
+    expect(all(sql, /v\.status <> '([^']*)'/g)).toEqual([ManualRefundTaskStatus.COMPLETED]);
   });
 
   it("counts card refunds as the ledger does, never a refused one", () => {
@@ -66,7 +80,9 @@ describe("the #4230 deploy note's SQL matches the code's one definition", () => 
     expect(cancelled).toHaveLength(1);
     expect(new Set(list(cancelled[0]!))).toEqual(new Set(CANCELLED_CREDIT_NOTE_STATUSES));
     expect(readRefundCreditNoteLinkStatus({ status: " voided " })).toBe("VOIDED");
-    for (const field of new Set(all(sql, /l\.metadata->>?'([^']*)'/g).filter((key) => key !== "status"))) {
+    const fields = new Set(all(sql, /l\.metadata->>?'([^']*)'/g).filter((key) => key !== "status"));
+    expect(fields.size).toBeGreaterThan(0);
+    for (const field of fields) {
       const noRow = { xeroSyncOperation: { findFirst: async () => null } } as never;
       expect(await recoverRefundCreditNoteLinkAmountCents("PAYMENT", { xeroObjectId: "NOTE", metadata: { [field]: 1234 } }, noRow)).toBe(1234);
     }
@@ -77,9 +93,31 @@ describe("the #4230 deploy note's SQL matches the code's one definition", () => 
   });
 });
 
-describe("the bank-transfer floor's alert advice is the one the Xero guide quotes (#4230)", () => {
-  it("is quoted word for word, in plain English with no issue numbers", () => {
-    expect(read("docs/guides/xero.md")).toContain(`"${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}"`);
+describe("the writers the deploy note names still enqueue a bank-transfer refund note unkeyed (#4287 changes them)", () => {
+  it("a refund request's card part: no keyed option, so the single-note branch absorbs it", () => {
+    const route = read("src/app/api/admin/refund-requests/[id]/route.ts");
+    expect(route).toMatch(/enqueueXeroRefundCreditNoteOperation\(payment\.id, cardNoteCents, \{\s*createdByMemberId: session\.user\.id,\s*\}\)/);
+  });
+
+  it("a cancellation hand-back's completion: keyed by nothing that steps it (`handBackTaskId` is payload only)", () => {
+    const leg = read("src/lib/edit-financial-review-xero-leg.ts");
+    expect(leg).toContain('await enqueueXeroRefundCreditNoteOperation(route.paymentId, route.refundCents, { createdByMemberId: actingMemberId, refundMethod: "internet-banking", handBackTaskId: task.id, store });');
+  });
+});
+
+describe("the bank-transfer floor's alert is the one the Xero guide describes (#4230)", () => {
+  const guide = read("docs/guides/xero.md");
+
+  it("quotes the advice word for word, in plain English with no issue numbers", () => {
+    expect(guide).toContain(`"${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}"`);
     expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).not.toMatch(/#\d|`/);
+  });
+
+  it("names the symptom in the alert's own words", () => {
+    const floor = read("src/lib/xero-inbound/credit-note-bank-transfer-floor.ts");
+    expect(guide).toContain("A Xero sync alert says **the refunds Xero accounts for on a bank-transfer payment add up to less than the refunds the club recorded on it**");
+    for (const phrase of ["the refunds Xero accounts for on it add up to", "less than the refunds the club recorded on it"]) {
+      expect(floor).toContain(phrase);
+    }
   });
 });

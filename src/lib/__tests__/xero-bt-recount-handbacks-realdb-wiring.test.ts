@@ -24,5 +24,8 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain("CURRENT BEHAVIOUR: a second cancellation hand-back is absorbed into the canonical note");
     expect(suite).toContain("CURRENT BEHAVIOUR: a refund request's card part on a bank transfer is absorbed");
     expect(suite).toContain("a payment whose refunds all have notes is not listed by the deploy note's query");
+    expect(suite).toContain("a review's refund on a cancelled booking counts with its own note");
+    expect(suite).toContain("a void the nightly follow-up undid is not listed");
+    expect(suite).toContain("which void states reach the alert");
   });
 });

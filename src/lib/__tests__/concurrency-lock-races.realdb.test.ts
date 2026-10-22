@@ -362,9 +362,11 @@ import "./xero-refund-request-note-void.realdb.test";
 // voided. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
 // own `race-4215-` fixtures.
 import "./xero-bt-repair-request-cash.realdb.test";
-// #4230 reuses it to pin two kinds of bank-transfer cash the inbound recount
-// was suspected of dropping: a group organiser's hand-back moves no payment's
-// total, and the recount never writes the charge rows the #4162 floor keeps.
+// #4230 reuses it to pin the bank-transfer recount: a group organiser's
+// hand-back moves no payment's total; the recount never writes the charge rows
+// the #4162 floor keeps; a later refund absorbed into the canonical note (#4287)
+// is kept by the floor and alerted; which void states reach that alert; and the
+// deploy note's read-only query.
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4230-` fixtures.
 import "./xero-bt-recount-handbacks.realdb.test";

@@ -23,8 +23,9 @@
  * floor keeps the total and the alert is true; it names that cause and asks for
  * the note by hand. The recount deliberately does not add the absorbed cash
  * (that would silence the only signal). Giving each such refund its own note is
- * the subject of #4287; these cases change with it. The
- * deploy note's read-only query that lists such payments is run here too.
+ * the subject of #4287; these cases change with it. Which void states reach
+ * the alert is pinned too (only an answered void with its cash kept), and the
+ * deploy note's read-only query is run here as an operator would run it.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
@@ -48,6 +49,7 @@ const JOINER_PAYMENT_ID = "race-4230-joiner-payment";
 const TASK_ID = "race-4230-organiser-task";
 const SETTLEMENT_ID = "race-4230-settlement";
 const CANONICAL_NOTE = "cn-race-4230-canonical";
+const OTHER_NOTE = "cn-race-4230-other";
 
 const BOOKING_IDS = [ORGANISER_BOOKING_ID, JOINER_BOOKING_ID];
 const PAYMENT_IDS = [ORGANISER_PAYMENT_ID, JOINER_PAYMENT_ID];
@@ -166,7 +168,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const { resolve } = await import("node:path");
       const doc = readFileSync(resolve(__dirname, "../../../docs/xero/ARCHITECTURE.md"), "utf8");
       const section = doc.slice(doc.indexOf("**Deploy note (#4230).**"));
-      const sql = /`(SELECT [^`]*)`/.exec(section)?.[1];
+      const sql = /```sql\n([\s\S]*?)\n```/.exec(section)?.[1];
       expect(sql).toBeDefined();
       const rows = await prisma.$queryRawUnsafe<Array<{ id: string }>>(sql!);
       return rows.map((row) => row.id).filter((id) => PAYMENT_IDS.includes(id));
@@ -295,8 +297,16 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         { taskId: TASK_ID, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: "REFUND_TO_MEMBER", recordedNightPrices: null },
         CLUB_FORMAT_TEST,
       );
-      // Paid and recorded, but absorbed: the completion queued no note of its own.
+      // Paid and recorded, but absorbed: the completion queued no note of its own, and the
+      // payment still points at its one canonical note.
       expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 13_000, status: "PARTIALLY_REFUNDED" });
+      expect(await refundNoteRows()).toBe(0);
+      expect((await prisma.payment.findUniqueOrThrow({ where: { id: ORGANISER_PAYMENT_ID }, select: { xeroRefundCreditNoteId: true } })).xeroRefundCreditNoteId).toBe(CANONICAL_NOTE);
+      // The completion's own enqueue (`queueCancelledBookingHandBackNoteInTransaction`'s options), asked again: the single-note branch absorbs it.
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      expect(await enqueueXeroRefundCreditNoteOperation(ORGANISER_PAYMENT_ID, 3_000, { createdByMemberId: OFFICER_ID, refundMethod: "internet-banking", handBackTaskId: TASK_ID })).toEqual(
+        expect.objectContaining({ queueOperationId: null, message: "Xero refund credit note already linked for this payment." }),
+      );
       expect(await refundNoteRows()).toBe(0);
       expect(await deployNoteListedPaymentIds()).toEqual([ORGANISER_PAYMENT_ID]);
 
@@ -343,6 +353,149 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const alerts = await watchDivergenceAlertMessages(() => reconcileCanonicalNote(100));
       expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 14_000, status: "PARTIALLY_REFUNDED" });
       expect(alerts).toEqual([{ operation: `inbound-credit-note-repair:${CANONICAL_NOTE}`, errorMessage: expect.stringContaining(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE) }]);
+    });
+
+    /** A link on the canonical note, as the inbound sync leaves a voided one: inactive, status VOIDED, any marker. */
+    async function voidCanonicalNote(marker?: "answered") {
+      await prisma.xeroObjectLink.updateMany({
+        where: { localId: ORGANISER_PAYMENT_ID, xeroObjectId: CANONICAL_NOTE },
+        data: {
+          active: false,
+          metadata: { amountCents: 10_000, status: "VOIDED", ...(marker ? { bankRefundVoid: { outcome: marker, at: "2026-06-30T00:00:00.000Z" } } : {}) },
+        },
+      });
+    }
+
+    it("a review's refund on a cancelled booking counts with its own note: listed only when a refund beside it has none (lens Q1)", async () => {
+      await seedRefundedUnderCanonicalNote();
+      // A review that refunded the member $30 on the cancelled booking, under its own keyed note (#3880).
+      await prisma.manualRefundTask.create({
+        data: {
+          id: "race-4230-review", bookingId: ORGANISER_BOOKING_ID, paymentId: ORGANISER_PAYMENT_ID, amountCents: 3_000, raisedAmountCents: 3_000,
+          kind: "EDIT_FINANCIAL_REVIEW", occurrenceKey: "edit-review:race-4230", status: "COMPLETED", settlementDirection: "REFUND_TO_MEMBER", reason: "race 4230 review",
+          completedAt: new Date("2026-06-02T00:00:00.000Z"), completedByMemberId: OFFICER_ID,
+        },
+      });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: ORGANISER_PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn-race-4230-review",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 3_000, status: "AUTHORISED", perDelta: true },
+        },
+      });
+      expect(await deployNoteListedPaymentIds()).toEqual([]);
+
+      // A later $20 hand-back absorbed beside them: $150 paid back against $130 of notes.
+      await prisma.manualRefundTask.create({
+        data: {
+          id: TASK_ID, bookingId: ORGANISER_BOOKING_ID, paymentId: ORGANISER_PAYMENT_ID, amountCents: 2_000, raisedAmountCents: 2_000,
+          kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", settlementDirection: "REFUND_TO_MEMBER", reason: "race 4230 absorbed",
+          completedAt: new Date("2026-06-03T00:00:00.000Z"), completedByMemberId: OFFICER_ID,
+        },
+      });
+      // Before the lens fix the review's $30 was a note with no cash beside it, so this hid the $20.
+      expect(await deployNoteListedPaymentIds()).toEqual([ORGANISER_PAYMENT_ID]);
+    });
+
+    it("a void the nightly follow-up undid is not listed; re-confirmed against its fresh note it is not listed either (lens Q2)", async () => {
+      await seedRefundedUnderCanonicalNote();
+      await voidCanonicalNote();
+      // Waiting for the follow-up: its refund still counts and no live note answers it, so it is listed (a stated limit).
+      expect(await deployNoteListedPaymentIds()).toEqual([ORGANISER_PAYMENT_ID]);
+
+      // The follow-up undid it: an open follow-up for the $100 it took back.
+      const followUpId = "race-4230-void-follow-up";
+      await prisma.manualRefundTask.create({
+        data: {
+          id: followUpId, bookingId: ORGANISER_BOOKING_ID, paymentId: ORGANISER_PAYMENT_ID, amountCents: 10_000, raisedAmountCents: 10_000,
+          kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: `bank-refund-void:${ORGANISER_PAYMENT_ID}:${CANONICAL_NOTE}`, reason: "race 4230 void follow-up",
+        },
+      });
+      expect(await deployNoteListedPaymentIds()).toEqual([]);
+
+      // Dismissed (the transfer bounced): still not listed.
+      await prisma.manualRefundTask.update({ where: { id: followUpId }, data: { status: "DISMISSED", note: "bounced", completedAt: new Date("2026-06-04T00:00:00.000Z"), completedByMemberId: OFFICER_ID } });
+      expect(await deployNoteListedPaymentIds()).toEqual([]);
+
+      // Re-confirmed instead, with its fresh note: counted once, answered once.
+      await prisma.manualRefundTask.update({ where: { id: followUpId }, data: { status: "COMPLETED", note: null, settlementDirection: "REFUND_TO_MEMBER" } });
+      expect(await deployNoteListedPaymentIds()).toEqual([ORGANISER_PAYMENT_ID]);
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: ORGANISER_PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn-race-4230-fresh",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 10_000, status: "AUTHORISED", perDelta: true },
+        },
+      });
+      expect(await deployNoteListedPaymentIds()).toEqual([]);
+    });
+
+    it("which void states reach the alert: none while the void waits for the follow-up or once it is undone; an answered void with its cash kept does (lens A2)", async () => {
+      // $100 under the canonical note, and a later $30 hand-back under a note of its own, whose
+      // reconcile recounts the payment (a voided note's own later events no longer resolve to it).
+      await seedRefundedUnderCanonicalNote();
+      await prisma.manualRefundTask.create({
+        data: {
+          id: TASK_ID, bookingId: ORGANISER_BOOKING_ID, paymentId: ORGANISER_PAYMENT_ID, amountCents: 3_000, raisedAmountCents: 3_000,
+          kind: "CANCELLED_BOOKING_HAND_BACK", status: "COMPLETED", settlementDirection: "REFUND_TO_MEMBER", reason: "race 4230 noted hand-back",
+          completedAt: new Date("2026-06-03T00:00:00.000Z"), completedByMemberId: OFFICER_ID,
+        },
+      });
+      await prisma.xeroObjectLink.create({
+        data: {
+          localModel: "Payment", localId: ORGANISER_PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: OTHER_NOTE, xeroObjectNumber: "CN-4230-B",
+          role: "REFUND_CREDIT_NOTE", active: true, metadata: { amountCents: 3_000, status: "AUTHORISED", perDelta: true },
+        },
+      });
+      const setCash = async (cents: number) => {
+        const status = cents > 0 ? "PARTIALLY_REFUNDED" : "SUCCEEDED";
+        await prisma.paymentTransaction.update({ where: { id: "race-4230-txn" }, data: { refundedAmountCents: cents, status } });
+        await prisma.payment.update({ where: { id: ORGANISER_PAYMENT_ID }, data: { refundedAmountCents: cents, status } });
+      };
+      await setCash(13_000);
+      await voidCanonicalNote();
+      const reconcileOther = () =>
+        watchDivergenceAlertMessages(async () => {
+          const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+          const note = { creditNoteID: OTHER_NOTE, creditNoteNumber: "CN-4230-B", status: "AUTHORISED", total: 30, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [] };
+          const xero = { accountingApi: { getCreditNote: async () => ({ body: { creditNotes: [note] } }) } };
+          const apiClient = await import("@/lib/xero-api-client");
+          const spies = [
+            vi.spyOn(apiClient, "getAuthenticatedXeroClient").mockResolvedValue({ xero, tenantId: "tenant-4230" } as never),
+            vi.spyOn(apiClient, "callXeroApi").mockImplementation(((call: () => unknown) => call()) as never),
+          ];
+          try {
+            expect((await reconcileXeroCreditNote(OTHER_NOTE)).matchedRefundedPayments).toBe(1);
+          } finally {
+            for (const spy of spies) spy.mockRestore();
+          }
+        });
+
+      // Waiting for the nightly follow-up: kept at the rows, logged, no alert.
+      expect(await reconcileOther()).toEqual([]);
+      expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 13_000, status: "PARTIALLY_REFUNDED" });
+
+      // Undone by the follow-up: its task raised, the rows and total no longer hold the $100, so nothing is short.
+      await prisma.manualRefundTask.create({
+        data: {
+          id: "race-4230-void-follow-up", bookingId: ORGANISER_BOOKING_ID, paymentId: ORGANISER_PAYMENT_ID, amountCents: 10_000, raisedAmountCents: 10_000,
+          kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: `bank-refund-void:${ORGANISER_PAYMENT_ID}:${CANONICAL_NOTE}`, reason: "race 4230 void follow-up",
+        },
+      });
+      await setCash(3_000);
+      expect(await reconcileOther()).toEqual([]);
+      expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 3_000, status: "PARTIALLY_REFUNDED" });
+
+      // Answered on Stuck States with the cash kept (a marker, no follow-up, the rows still holding it): the
+      // alert fires, and its advice says the replacement comes from that answer, never by hand.
+      await prisma.manualRefundTask.delete({ where: { id: "race-4230-void-follow-up" } });
+      await setCash(13_000);
+      await voidCanonicalNote("answered");
+      const { BANK_TRANSFER_REFUND_SHORTFALL_ADVICE } = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
+      const alerts = await reconcileOther();
+      expect(alerts).toEqual([{ operation: `inbound-credit-note-repair:${OTHER_NOTE}`, errorMessage: expect.stringContaining(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE) }]);
+      expect(alerts[0]!.errorMessage).toContain(`Bank-transfer payment ${ORGANISER_PAYMENT_ID} on booking ${ORGANISER_BOOKING_ID}:`);
+      expect(alerts[0]!.errorMessage).toContain("Found when credit note CN-4230-B changed in Xero.");
+      expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).toContain("Never raise one by hand for a refund whose credit note was voided");
+      expect(await paymentState(ORGANISER_PAYMENT_ID)).toEqual({ refundedAmountCents: 13_000, status: "PARTIALLY_REFUNDED" });
     });
   },
 );
