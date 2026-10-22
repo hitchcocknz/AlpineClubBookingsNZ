@@ -56,7 +56,7 @@ import {
   markBookingCancellationRefundRecoverySucceeded,
   recordBookingCancellationRefundRecoveryInlineError,
 } from "@/lib/payment-recovery";
-import { organiserInternetBankingMirrorCaptured, paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
+import { paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 import { cancellationHandBackReason } from "@/lib/manual-refund-task-copy";
 import { runOrganiserChildRefundDebtNow } from "@/lib/organiser-child-refund-executor";
 import {
@@ -94,7 +94,7 @@ import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { CAPTURED_TRANSACTION_STATUS_LIST, ownCardRefundMade } from "@/lib/payment-transaction-status";
 import { keepRefusedPrePersistedRefundOwed, markCancellationAttempt } from "@/lib/refused-card-refund-retry";
 import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
-import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
+import { organiserInternetBankingMirrorCaptured, paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
 
 // #3497: the cancellable sets live in `booking-cancel-eligibility.ts`, a leaf
 // module the member-facing doors also read — one home, no copy.
@@ -2739,8 +2739,6 @@ export async function paymentHasCaptureEvidence(
   db: Prisma.TransactionClient | typeof prisma = prisma
 ) {
   const { payment } = booking;
-  // #3949 review H1: an organiser's Internet Banking settle mirror is the capture (`organiserInternetBankingMirrorCaptured`).
-  if (organiserInternetBankingMirrorCaptured(booking)) return true;
   const capturedTransaction = await db.paymentTransaction.findFirst({
     where: {
       paymentId: payment.id,
@@ -2750,7 +2748,7 @@ export async function paymentHasCaptureEvidence(
     },
     select: { id: true },
   });
-  return paymentShowsCaptureEvidence(payment, Boolean(capturedTransaction));
+  return paymentShowsCaptureEvidence(payment, Boolean(capturedTransaction), booking); // #3949: an IB organiser child's mirror counts
 }
 
 // #1547: every cancel branch that restores applied credit appends this line to

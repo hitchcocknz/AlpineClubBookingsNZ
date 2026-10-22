@@ -25,6 +25,9 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/email", () => ({ sendAdminXeroSyncErrorAlert: (input: unknown) => mocks.sendAdminXeroSyncErrorAlert(input) }));
 
 import { bankTransferRefundPayee, paidByOrganiserCard, paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
+import { paymentShowsCaptureEvidence } from "@/lib/booking-payment-state";
+import { netCollectedPaymentTookMoney } from "@/lib/payment-net-collected";
+import { paymentHasCaptureEvidence as flattenedCaptureEvidence } from "@/lib/cancel-flattened-payment-backfill";
 import {
   alertGroupMirrorRefundXeroByHand,
   applyGroupSettlementMirrorRefund,
@@ -229,5 +232,27 @@ describe("the words name the group organiser as the payee (owner decision, 21 Oc
     expect(bookingModifiedRefundSentence("$15.00", "member", "own")).toBe("The club will refund $15.00 to you by bank transfer.");
     expect(refundRequestApprovedRefundSentence(1_500, 1_500, fmt, null, "organiser")).toBe(organiserByHandRefundSentence("$15.00"));
     expect(refundRequestApprovedRefundSentence(1_500, 1_500, fmt)).toBe("The club will refund $15.00 to you by bank transfer.");
+  });
+});
+
+describe("review round 3: an IB organiser child's settle mirror is capture evidence everywhere (INV-SSOT)", () => {
+  const organiser = { organiserSettled: true, parentBookingId: "organiser-booking" };
+  const member = { organiserSettled: false, parentBookingId: null };
+  const partlyRefunded = { source: "INTERNET_BANKING", status: "PARTIALLY_REFUNDED", refundedAmountCents: 1_500 };
+
+  it("the one helper: the organiser's mirror counts, an ordinary folded IB mirror does not", () => {
+    expect(paymentShowsCaptureEvidence(partlyRefunded, false, organiser)).toBe(true);
+    expect(paymentShowsCaptureEvidence({ ...partlyRefunded, status: "REFUNDED" }, false, organiser)).toBe(true);
+    expect(paymentShowsCaptureEvidence({ ...partlyRefunded, status: "PENDING" }, false, organiser)).toBe(false);
+    expect(paymentShowsCaptureEvidence(partlyRefunded, false, member)).toBe(false);
+  });
+
+  it("Net Collected counts a paid-back IB organiser child as money taken; the flattened backfill restores one", () => {
+    const row = { ...partlyRefunded, amountCents: 4_500, _count: { transactions: 0 }, recoveryOperations: [], refunds: [] };
+    expect(netCollectedPaymentTookMoney({ ...row, booking: organiser })).toBe(true);
+    expect(netCollectedPaymentTookMoney({ ...row, booking: member })).toBe(false);
+    const flattened = { id: "p", bookingId: "b", source: "INTERNET_BANKING" as const, status: "FAILED" as const, amountCents: 4_500, refundedAmountCents: 1_500, transactions: [] };
+    expect(flattenedCaptureEvidence({ ...flattened, status: "PARTIALLY_REFUNDED", booking: organiser })).toBe(true);
+    expect(flattenedCaptureEvidence({ ...flattened, status: "PARTIALLY_REFUNDED", booking: member })).toBe(false);
   });
 });
