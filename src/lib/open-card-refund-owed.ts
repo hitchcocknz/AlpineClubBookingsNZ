@@ -227,6 +227,8 @@ export interface CardRefundSlice {
   madeRefundId?: string;
   /** #4083: the key generation it moved to after Stripe refused it: it was refused, so is certainly unmade. */
   stripeKeySuffix?: string;
+  /** #4104: the refunds that made it and that Stripe failed later, carried from the plan (`cardRefundSliceOwesFailedLaterRefund`). */
+  failedRefundIds?: string[];
 }
 
 /**

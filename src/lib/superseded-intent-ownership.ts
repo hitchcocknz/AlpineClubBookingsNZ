@@ -59,12 +59,14 @@ import {
   PaymentRecoveryOperationType,
   type Prisma,
 } from "@prisma/client";
+import { netCollectedCardRefundSelect } from "@/lib/additional-ledger-gap";
 import {
-  cardRefundOperationUnmadeCents,
+  cardRefundSlicesByOperation,
   cardRefundSliceOwesFailedLaterRefund,
+  type CardRefundOwedPaymentRow,
   isOpenCardRefundOperationStatus,
   OPEN_CARD_REFUND_OPERATION_WHERE,
-  parseRefundAllocationPlan,
+  unsentSliceCents,
 } from "@/lib/open-card-refund-owed";
 import { PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
 import {
@@ -79,6 +81,9 @@ export const SUPERSEDED_INTENT_OPERATION_TYPES = [
 ] as const;
 
 type RecoveryOperationReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation">;
+
+/** The Xero reader also reads the payment, for what each open row still owes (#4221). */
+type OwnershipReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation" | "payment">;
 
 /** The one liveness predicate both reads below share. */
 function liveSupersededOperation() {
@@ -124,13 +129,12 @@ export async function findLiveSupersededIntentOperation(
 
 /** A row the Xero reader reads: the superseded machinery's, or an open card refund row. */
 type OwnershipRow = {
+  id: string;
   type: PaymentRecoveryOperationType;
   status: PaymentRecoveryOperationStatus;
   paymentIntentId: string;
   paymentTransactionId: string | null;
   idempotencyKey: string;
-  amountCents: number;
-  allocationPlan: unknown;
 };
 
 /** A capture the Xero reader may name: what it holds is its amount less its counted refunds. */
@@ -162,23 +166,27 @@ const SUPERSEDED_REFUND_OWED_AGAIN_WHERE = [
 ] satisfies Prisma.PaymentRecoveryOperationWhereInput[];
 
 /**
- * #4221: how many cents an open row owes back again, by capture, on a capture
- * a superseded refund operation exists for:
+ * #4221: how many cents open rows still owe back again, by capture, on a
+ * capture a superseded refund operation exists for - what each still OWES by
+ * the owed figure's own attribution (`cardRefundSlicesByOperation`,
+ * `unsentSliceCents`), never what it was raised for. A re-send already
+ * recorded fills its slice and owes nothing, whether its row has closed yet
+ * or not (a worker that crashed before its close; a dead row the treasurer
+ * paid by a refund in the Stripe dashboard, which never closes):
  *
  * - an open failed-later row whose OWN `paymentIntentId` is the capture (the
  *   intent Stripe's failed refund named, as `late-capture-paid-another-way`
- *   keys it): what it has not made (`cardRefundOperationUnmadeCents`). Rows
- *   carry the failed-later key's own rule (`cardRefundFailedLaterRefundId`,
- *   #4146), not just its prefix;
+ *   keys it): all its slices still owe. Rows carry the failed-later key's own
+ *   rule (`cardRefundFailedLaterRefundId`, #4146), not just its prefix;
  * - each slice of another open card refund row on the capture's transaction
  *   (the superseded refund's `paymentTransactionId`) that a refund Stripe
  *   failed later re-planned and that is not made again
- *   (`cardRefundSliceOwesFailedLaterRefund`). That row sends it again; no
- *   failed-later row is raised.
+ *   (`cardRefundSliceOwesFailedLaterRefund`): what it still owes. That row
+ *   sends it again; no failed-later row is raised.
  *
- * Open rows only, read in the rows too: the where reads every superseded
- * refund, and one that closed after re-sending a refusal keeps a re-planned
- * slice in its plan (#4103's one-slice plan, re-planned by #4104).
+ * Open rows only: the where reads every superseded refund, and one that closed
+ * after re-sending a refusal keeps a re-planned slice in its plan (#4103's
+ * one-slice plan, re-planned by #4104).
  *
  * A failure the club owes again (`keepFailedLaterCardRefundOwed`) raises a
  * failed-later row on the failed refund's intent or re-plans the open row's
@@ -186,26 +194,34 @@ const SUPERSEDED_REFUND_OWED_AGAIN_WHERE = [
  * in Stripe, `not-resent` - raises nothing, so its cash is owed by nothing:
  * the caller compares cents, never a row's mere presence.
  *
- * Pure over the rows `SUPERSEDED_REFUND_OWED_AGAIN_WHERE` reads, so guards
- * (b′) and (c′) can share it (#4227).
+ * Pure over the rows `SUPERSEDED_REFUND_OWED_AGAIN_WHERE` reads and the
+ * payment as the owed figure reads it, so guards (b′) and (c′) can share it
+ * (#4227). No payment: nothing is owed, and every capture counts.
  */
-function supersededRefundsOwedAgainCents(rows: readonly OwnershipRow[]): Map<string, number> {
+function supersededRefundsOwedAgainCents(
+  rows: readonly OwnershipRow[],
+  payment: CardRefundOwedPaymentRow | null,
+): Map<string, number> {
   const supersededRefunds = rows.filter((row) => row.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
   const superseded = new Set(supersededRefunds.map((row) => row.paymentIntentId));
   const intentOfTransaction = new Map(
     supersededRefunds.flatMap((row) => (row.paymentTransactionId === null ? [] : [[row.paymentTransactionId, row.paymentIntentId] as const])),
   );
+  const slicesOf = new Map(
+    (payment ? cardRefundSlicesByOperation(payment) : []).map(({ operation, slices }) => [operation.id, slices] as const),
+  );
   const owed = new Map<string, number>();
   const add = (intent: string, cents: number) => owed.set(intent, (owed.get(intent) ?? 0) + cents);
   for (const row of rows) {
     if (!isOpenCardRefundOperationStatus(row.status)) continue;
+    const slices = slicesOf.get(row.id) ?? [];
     if (cardRefundFailedLaterRefundId(row.idempotencyKey) !== null) {
-      if (superseded.has(row.paymentIntentId)) add(row.paymentIntentId, cardRefundOperationUnmadeCents(row));
+      if (superseded.has(row.paymentIntentId)) add(row.paymentIntentId, slices.reduce((sum, slice) => sum + unsentSliceCents(slice), 0));
       continue;
     }
-    for (const slice of parseRefundAllocationPlan(row.allocationPlan) ?? []) {
+    for (const slice of slices) {
       const intent = intentOfTransaction.get(slice.paymentTransactionId);
-      if (intent !== undefined && cardRefundSliceOwesFailedLaterRefund(slice)) add(intent, slice.amountCents);
+      if (intent !== undefined && cardRefundSliceOwesFailedLaterRefund(slice)) add(intent, unsentSliceCents(slice));
     }
   }
   return owed;
@@ -224,7 +240,7 @@ function supersededRefundsOwedAgainCents(rows: readonly OwnershipRow[]): Map<str
  * counts, since it still owes the member. Read under lock(1).
  */
 export async function listSupersededIntentIdsOwningCaptures(
-  tx: RecoveryOperationReader,
+  tx: OwnershipReader,
   paymentId: string,
   captures: readonly OwnershipCapture[],
 ): Promise<string[]> {
@@ -240,17 +256,22 @@ export async function listSupersededIntentIdsOwningCaptures(
       ],
     },
     select: {
+      id: true,
       type: true,
       status: true,
       paymentIntentId: true,
       paymentTransactionId: true,
       idempotencyKey: true,
-      amountCents: true,
-      allocationPlan: true,
     },
   });
+  // What each card refund row still owes, as the owed figure reads it, under
+  // the same lock(1).
+  const payment = await tx.payment.findUnique({
+    where: { id: paymentId },
+    select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
+  });
   const owned = new Set<string>();
-  for (const [intent, owedCents] of supersededRefundsOwedAgainCents(operations)) {
+  for (const [intent, owedCents] of supersededRefundsOwedAgainCents(operations, payment)) {
     const capture = captures.find((each) => each.stripePaymentIntentId === intent);
     if (capture && owedCents >= capture.amountCents - capture.refundedAmountCents) owned.add(intent);
   }
