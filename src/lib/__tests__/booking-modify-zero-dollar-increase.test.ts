@@ -57,12 +57,14 @@ const { OrganiserChildRefundRefusedError } = await import("@/lib/organiser-child
 const TODAY = "2026-07-01" as CalendarDate;
 
 const paymentUpdate = vi.fn();
+// #3980: an edit that read no invoice link claims the payment row, its fee with it.
+const paymentUpdateMany = vi.fn(async () => ({ count: 1 }));
 const NO_HAND_BACKS = {
   manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })) },
   // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
   paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
 };
-const tx = { payment: { update: paymentUpdate }, ...NO_HAND_BACKS } as unknown as Parameters<typeof applyPaymentAdjustments>[0];
+const tx = { payment: { update: paymentUpdate, updateMany: paymentUpdateMany }, ...NO_HAND_BACKS } as unknown as Parameters<typeof applyPaymentAdjustments>[0];
 
 /** $200, paid entirely by account credit: a $0 SUCCEEDED card-source payment, PAID. */
 function zeroDollarBooking(overrides: {
@@ -156,11 +158,14 @@ describe("#3502: a credit-paid ($0) booking that grows is asked by card", () => 
     expect(result.pendingRefundAmountCents).toBe(0);
     expect(result.appliedCreditGivenBackCents).toBe(0);
     expect(credit.giveBack).not.toHaveBeenCalled();
-    // In the transaction, on the same row the locks already cover.
-    expect(paymentUpdate).toHaveBeenCalledWith({
-      where: { id: "payment_1" },
+    // In the transaction, on the same row the locks already cover - claimed
+    // against the invoice link it read (none, Xero off), #3980.
+    expect(paymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroInvoiceId: null },
       data: { changeFeeCents: { increment: 500 } },
     });
+    expect(paymentUpdate).not.toHaveBeenCalled();
+    expect(result.settledAgainstPrimaryInvoice).toBe(true);
   });
 
   it("MUTATION: with an issued invoice, the supplementary invoice waits for the card payment and records it - never billed twice", async () => {
@@ -215,6 +220,7 @@ describe("#3502: a credit-paid ($0) booking that grows is asked by card", () => 
     await expect(adjust(booking, 5_000)).rejects.toBeInstanceOf(OrganiserChildRefundRefusedError);
     expect(organiserChildChargeRefusal({ booking, netChargeCents: 5_000 })).not.toBeNull();
     expect(paymentUpdate).not.toHaveBeenCalled();
+    expect(paymentUpdateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -240,7 +246,7 @@ describe("#3502: the census reads the grown $0 booking (INV-PAY-047)", () => {
 
   it("MUTATION: is `balanced` once the door's own ask and fee are on the row", async () => {
     const result = await adjust(zeroDollarBooking(), 5_000, 500);
-    const feeRecorded = paymentUpdate.mock.calls
+    const feeRecorded = [...paymentUpdate.mock.calls, ...(paymentUpdateMany.mock.calls as unknown as Array<[{ data: { changeFeeCents?: { increment: number } } }]>)]
       .map(([call]) => call.data.changeFeeCents?.increment ?? 0)
       .reduce((sum: number, cents: number) => sum + cents, 0);
 
@@ -283,10 +289,14 @@ describe("#3502 leaves every reduction exactly as it was (#3809)", () => {
     expect(result.additionalAsk.amountCents).toBe(1_000);
   });
 
-  it("a zero-net edit asks nothing and writes nothing", async () => {
+  it("a zero-net edit asks nothing and writes nothing but its claim on the unlinked invoice (#3980)", async () => {
     const result = await adjust(zeroDollarBooking(), 0, 0);
     expect(result.hasSucceededPayment).toBe(false);
     expect(result.additionalAsk.amountCents).toBe(0);
     expect(paymentUpdate).not.toHaveBeenCalled();
+    expect(paymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroInvoiceId: null },
+      data: { changeFeeCents: { increment: 0 } },
+    });
   });
 });

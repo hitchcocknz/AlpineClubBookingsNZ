@@ -162,6 +162,7 @@ import {
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { unpaidAskOffsetHistory } from "@/lib/unpaid-ask-offset-marker";
+import { primaryInvoiceSettlementHistory } from "@/lib/booking-primary-invoice-claim";
 import type { BookingModifiedRefundDestination } from "@/lib/booking-modified-email-copy";
 
 export type ModifyBookingDatesInput = {
@@ -1343,6 +1344,7 @@ export async function modifyBookingDates({
           ...creditGiveBackHistory(payments.appliedCreditGiveBack),
           // #3954: what an unpaid ask took of this reduction, for the Xero repair pass.
           ...unpaidAskOffsetHistory(payments),
+          ...primaryInvoiceSettlementHistory(payments), // #3980: the gap's anchor
           // #2390: the same sentence the member was shown at the edit, kept on
           // the booking's own history so the split has an answer later.
           ...(promoCoverage ? { promoCoverageNote: promoCoverage.message } : {}),

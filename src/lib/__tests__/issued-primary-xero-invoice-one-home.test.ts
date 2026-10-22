@@ -487,6 +487,63 @@ describe("no edit door states the rule a second time", () => {
     ).toMatch(/canAskCardForIncrease\(booking\)/);
   });
 
+  it("both edit-review charge sites ask the one review-charge question (#3947)", () => {
+    // INV-PAY-047 / INV-PAY-112. An officer's settled review charge decides
+    // "card or not" TWICE: the route chooser before the claim, and the sync's
+    // mint after the commit (which the recovery replay re-enters). Both used
+    // to ask `hasCapturedPayment`, so a credit-paid ($0) booking was refused or
+    // invoiced; fixing only the chooser would route it to the card and then
+    // mint nothing, leaving a replay that reports `not-raised` until FAILED.
+    const sites = [
+      {
+        file: "src/lib/edit-financial-review-charge.ts",
+        call: /canAskCardForReviewCharge\(\{\s*status:\s*booking\.status,\s*payment:\s*bookingPayment\s*\}\)/,
+      },
+      {
+        file: "src/lib/edit-financial-review-charge-sync.ts",
+        call: /hasSucceededPayment:\s*canAskCardForReviewCharge\(\{\s*status:\s*payment\?\.booking\.status\s*\?\?\s*"",\s*payment,?\s*\}\)/,
+      },
+    ];
+    for (const { file, call } of sites) {
+      const source = read(file);
+      expect(
+        source,
+        `INV-PAY-047 (#3947): ${file} must import canAskCardForReviewCharge from booking-payment-state.`,
+      ).toMatch(
+        /import\s*\{[^}]*\bcanAskCardForReviewCharge\b[^}]*\}\s*from\s*"@\/lib\/booking-payment-state"/,
+      );
+      expect(
+        source,
+        `INV-PAY-047 (#3947): ${file} must decide the card with canAskCardForReviewCharge, ` +
+          `or the chooser and the mint disagree on a credit-paid booking.`,
+      ).toMatch(call);
+      expect(
+        source,
+        `INV-PAY-047 (#3947): ${file} must not ask hasCapturedPayment for the charge: ` +
+          `its amount clause answers "no card" for a booking paid wholly with credit.`,
+      ).not.toMatch(/\bhasCapturedPayment\(/);
+    }
+
+    // The helper IS the edit doors' increase question plus the captured-card
+    // test this path had before, so it can only add the credit-paid shape.
+    const home = read("src/lib/booking-payment-state.ts");
+    const body = home.match(
+      /export function canAskCardForReviewCharge\([\s\S]*?\n\}\n/,
+    )?.[0];
+    expect(body, "canAskCardForReviewCharge is missing from booking-payment-state.ts").toBeDefined();
+    expect(body).toMatch(/canAskCardForIncrease\(booking\)\s*\|\|/);
+
+    // And nothing else asks it: a third caller is a third answer to review.
+    expect(
+      filesMentioning(sourceFilesUnder("src"), /\bcanAskCardForReviewCharge\b/),
+      `INV-PAY-047 (#3947): the set of files asking canAskCardForReviewCharge changed. ` +
+        `It is the review charge's question only; an edit door asks canAskCardForIncrease.`,
+    ).toEqual([
+      "src/lib/booking-payment-state.ts",
+      ...sites.map((site) => site.file),
+    ].sort());
+  });
+
   it("every file that reaches applyPaymentAdjustments is one of the doors above", () => {
     // The other half of "measure, do not name": if a fifth settlement path
     // appears, it shows up HERE even though the ban above only covers routes.

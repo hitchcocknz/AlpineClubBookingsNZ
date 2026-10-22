@@ -471,7 +471,8 @@ describe("applyPaymentAdjustments sizes the real ask", () => {
 
   function stubTx() {
     return {
-      payment: { update: vi.fn().mockResolvedValue({}) },
+      // #3980: an edit that read no invoice link claims the row, fee and all.
+      payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       // #3954 round 4: no reduction's re-issue is waiting on its mint.
       paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
       // #3827 (`INV-PAY-117`): no open edit refund hand-back on file.
@@ -543,11 +544,13 @@ describe("applyPaymentAdjustments sizes the real ask", () => {
       ...SETTLEMENT_DAY,
     });
     expect(result.additionalAmountCents).toBe(15500);
-    // The fee itself is still recorded on the payment exactly as before.
-    expect(tx.payment.update).toHaveBeenCalledWith({
-      where: { id: "payment_1" },
+    // The fee itself is still recorded on the payment, once - claimed against
+    // the invoice link the edit read, none here (#3980).
+    expect(tx.payment.updateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroInvoiceId: null },
       data: { changeFeeCents: { increment: 1500 } },
     });
+    expect(tx.payment.update).not.toHaveBeenCalled();
   });
 
   it("leaves the Xero-only arm on the edit's own net, which supersedes nothing", async () => {
