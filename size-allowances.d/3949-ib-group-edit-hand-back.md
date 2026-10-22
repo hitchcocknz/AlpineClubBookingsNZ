@@ -1,12 +1,14 @@
 # File-size allowances for #3949
 
 file: src/app/api/admin/refund-requests/[id]/route.ts
-lines: 731
+lines: 732
 reason: the approval names who its bank-transfer part goes back to - the
   group organiser on a joiner the organiser paid for by internet banking - for
   the hand-back it raises and the email it sends, from the one predicate in
-  `group-organiser-paid.ts`; the one line is that predicate's import, and the
-  approval that raises the task and sends the email is the only place both
+  `group-organiser-paid.ts`; and its raise is refused while the organiser's
+  group cancel is part-way through, answered 409 beside the organiser card's
+  own refusal in the same catch. The two lines are those imports, and the
+  approval that raises the task and sends the email is the only place these
   facts meet.
 
 file: src/lib/email/booking.ts

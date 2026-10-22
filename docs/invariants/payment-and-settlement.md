@@ -2309,8 +2309,10 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
     then the `Payment` row; caps at what the payment still holds less every
     OTHER open hand-back; raises `refundedAmountCents` and posts the
     `BANK_REFUND` line and `REFUNDED` event. The `GroupBookingSettlement` is
-    untouched. A payment a transaction backs keeps the ledger route. Refused
-    while the organiser's group cancel is part-way through.
+    untouched. A payment a transaction backs keeps the ledger route.
+  - **Not while the organiser's group cancel is part-way through**
+    (`groupCancelInProgress`): no such hand-back is completed, nor raised by
+    an edit or appeal.
   - **No Xero note yet** (#4292): admins are alerted to credit the group's
     combined invoice by hand.
   - **The mirror is capture evidence** (`paymentShowsCaptureEvidence`, the one

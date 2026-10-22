@@ -1,8 +1,8 @@
 import "server-only";
 
-import { GroupBookingStatus, PaymentStatus, type Prisma } from "@prisma/client";
+import { PaymentStatus, type Prisma } from "@prisma/client";
 
-import { ORGANISER_CANCEL_ACTIVE_CHILD_STATUSES } from "@/lib/booking-status";
+import { groupCancelInProgress } from "@/lib/group-cancel-in-progress";
 
 import { groupChildHandBacksFromRows, mirrorPlanShareWritten } from "@/lib/booking-ledger-group-child-plan";
 import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
@@ -158,29 +158,25 @@ export async function chooseReviewGroupSettlementMirrorRoute({
 
 /**
  * #3949 review round 3 (item 2): NOT WHILE THE ORGANISER'S GROUP CANCEL IS
- * BETWEEN ITS PLAN AND THIS CHILD'S CLAIM. The cancel fences the group
- * CANCELLED under `lock(1)`, then freezes each child's refund outside it from
- * the payment as it stood, and books that whole planned share - on the mirror,
- * the ledger and the organiser's hand-back - when it claims the child. A
- * refund recorded on the child in between would be paid to the organiser
- * twice. So, read under the completion's `lock(1)` (the fence's own key), a
- * completion is refused, task OPEN, while the group is CANCELLED and this
- * child is still one the cancel will claim (`ORGANISER_CANCEL_ACTIVE_CHILD_STATUSES`);
- * once the claim (or the reaper's resume of it) has cancelled the child, the
- * plan was sized net of every hand-back then open and the task is paid as
- * normal. Refusing beats re-sizing the claim: the frozen plan is what the
- * cancel's ledger line, its replay, the census and the organiser's hand-back
- * all read, and re-sizing one would leave the others disagreeing.
+ * BETWEEN ITS PLAN AND THIS CHILD'S CLAIM (`groupCancelInProgress`, the one
+ * test). The cancel froze this child's refund net of the hand-backs open when
+ * it planned, and books that whole share when it claims the child, so a refund
+ * recorded on the child in between would be paid to the organiser twice. Read
+ * under the completion's `lock(1)` (the fence's own key), a completion is
+ * refused, task OPEN, in that window. No hand-back can be RAISED in it either
+ * (review round 4: `raiseEditRefundHandBackIfOwed` and
+ * `raiseRefundRequestHandBack` ask the same test), so every one open once the
+ * claim has cancelled the child was open when the plan froze and was netted
+ * there; it is then paid as normal. Refusing beats re-sizing the claim: the
+ * frozen plan is what the cancel's ledger line, its replay, the census and the
+ * organiser's hand-back all read, and re-sizing one would leave the others
+ * disagreeing.
  */
 async function assertGroupCancelNotInProgress(
   store: Prisma.TransactionClient,
   booking: { status: string; parentBookingId: string | null },
 ): Promise<void> {
-  if (!booking.parentBookingId || !(ORGANISER_CANCEL_ACTIVE_CHILD_STATUSES as readonly string[]).includes(booking.status)) return;
-  const group = await store.groupBooking.findUnique({ where: { organiserBookingId: booking.parentBookingId }, select: { status: true } });
-  if (group?.status === GroupBookingStatus.CANCELLED) {
-    throw new ManualBookingPaymentError(GROUP_CANCEL_IN_PROGRESS_MESSAGE, 409);
-  }
+  if (await groupCancelInProgress(store, booking)) throw new ManualBookingPaymentError(GROUP_CANCEL_IN_PROGRESS_MESSAGE, 409);
 }
 
 /** #3949 review round 3: the refusal while the organiser's group cancel is still working through its joiners. */

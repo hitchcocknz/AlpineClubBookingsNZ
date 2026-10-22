@@ -9,7 +9,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   editRefundGoesBackByHand,
   raiseEditRefundHandBackIfOwed,
+  raiseRefundRequestHandBack,
 } from "@/lib/edit-refund-hand-back";
+import { GROUP_CANCEL_IN_PROGRESS_RAISE_MESSAGE } from "@/lib/group-cancel-in-progress";
 import {
   EDIT_REFUND_HAND_BACK_KEY_PREFIX,
   editRefundHandBackOccurrenceKey,
@@ -79,6 +81,42 @@ describe("raising the edit's refund hand-back", () => {
       });
       expect(raised).toBe(false);
       expect(store.manualRefundTask.createMany).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("#3949 review round 4: no refund to the organiser is raised while the group cancel is part-way through", () => {
+  const ORGANISER_PAID = { organiserSettled: true, parentBookingId: "organiser-1", payment: { source: "INTERNET_BANKING" } };
+  function groupTx(childStatus: string, groupStatus: string) {
+    return {
+      ...tx(),
+      booking: { findUnique: vi.fn(async () => ({ status: childStatus, parentBookingId: "organiser-1" })) },
+      groupBooking: { findUnique: vi.fn(async () => ({ status: groupStatus })) },
+    };
+  }
+  const editRaise = (store: ReturnType<typeof groupTx>) =>
+    raiseEditRefundHandBackIfOwed(store as never, {
+      bookingId: "child-1", paymentId: "pay-1", bookingModificationId: "mod-1",
+      adjusted: { refundAmountCents: 10_000, hasSucceededPayment: false }, editLabel: "date change", booking: ORGANISER_PAID,
+    });
+  const appealRaise = (store: ReturnType<typeof groupTx>) =>
+    raiseRefundRequestHandBack(store as never, { bookingId: "child-1", paymentId: "pay-1", refundRequestId: "rr-1", amountCents: 10_000, booking: ORGANISER_PAID });
+
+  it("an edit's and an appeal's are refused (409) while the group is CANCELLED and the child not yet claimed; nothing is raised", async () => {
+    for (const raise of [editRaise, appealRaise]) {
+      const store = groupTx("PAID", "CANCELLED");
+      await expect(raise(store)).rejects.toMatchObject({ status: 409, message: GROUP_CANCEL_IN_PROGRESS_RAISE_MESSAGE });
+      expect(store.manualRefundTask.createMany).not.toHaveBeenCalled();
+    }
+  });
+
+  it("raised as before on a live group, and once the cancel has claimed the child", async () => {
+    for (const raise of [editRaise, appealRaise]) {
+      for (const [child, group] of [["PAID", "OPEN"], ["CANCELLED", "CANCELLED"]] as const) {
+        const store = groupTx(child, group);
+        await raise(store);
+        expect(store.manualRefundTask.createMany).toHaveBeenCalledTimes(1);
+      }
     }
   });
 });

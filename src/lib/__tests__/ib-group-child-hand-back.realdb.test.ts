@@ -19,7 +19,7 @@
  * imports this file so CI reaches it; it owns and cleans its own `race-3949-`
  * fixtures.
  */
-import type { PrismaClient } from "@prisma/client";
+import type { Prisma, PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { BookingLedgerCensusReport } from "@/lib/booking-ledger-projection-census-report";
@@ -309,7 +309,7 @@ const money = async (bookingId: string) =>
     }
   }, 300_000);
 
-  it("review round 3: between the group cancel's plan and its claim a completion is refused, so the organiser is never paid twice; after the resume claims the child it pays", async () => {
+  it("review rounds 3 and 4: between the group cancel's plan and its claim a completion is refused and no new hand-back is raised, so the organiser is never paid twice; after the resume claims the child it pays", async () => {
     const g = await settledGroup("mid-cancel");
     const [edited, other] = g.children;
     const taskId = await editHandBack(edited!, "m1");
@@ -322,6 +322,25 @@ const money = async (bookingId: string) =>
     await expect(complete(taskId)).rejects.toMatchObject({ status: 409, message: GROUP_CANCEL_IN_PROGRESS_MESSAGE });
     expect((await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: taskId } })).status).toBe("OPEN");
     expect((await payment(edited!)).refundedAmountCents).toBe(0);
+
+    // Review round 4: nor is a NEW refund to the organiser raised in that window - by an edit door's raiser or an
+    // appeal's - under the door's own lock(1); the throw rolls the whole change back.
+    const { raiseEditRefundHandBackIfOwed, raiseRefundRequestHandBack } = await import("@/lib/edit-refund-hand-back");
+    const { GROUP_CANCEL_IN_PROGRESS_RAISE_MESSAGE } = await import("@/lib/group-cancel-in-progress");
+    const underLock = (raise: (tx: Prisma.TransactionClient, booking: Prisma.BookingGetPayload<{ include: { payment: true } }>) => Promise<unknown>) =>
+      prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        return raise(tx, await tx.booking.findUniqueOrThrow({ where: { id: edited! }, include: { payment: true } }));
+      });
+    const refused = { status: 409, message: GROUP_CANCEL_IN_PROGRESS_RAISE_MESSAGE };
+    await expect(underLock((tx, booking) => raiseEditRefundHandBackIfOwed(tx, {
+      bookingId: edited!, paymentId: booking.payment!.id, bookingModificationId: `${edited}-mid-edit`,
+      adjusted: { refundAmountCents: 1_000, hasSucceededPayment: false }, editLabel: "date change", booking,
+    }))).rejects.toMatchObject(refused);
+    await expect(underLock((tx, booking) => raiseRefundRequestHandBack(tx, {
+      bookingId: edited!, paymentId: booking.payment!.id, refundRequestId: `${edited}-mid-appeal`, amountCents: 1_000, booking,
+    }))).rejects.toMatchObject(refused);
+    expect(await prisma.manualRefundTask.count({ where: { bookingId: edited! } })).toBe(1);
 
     // The reaper's resume claims the children, then the hand-back is paid on top of the plan - once each.
     await cancelGroupHistory(NAMES, g);

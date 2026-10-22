@@ -36,6 +36,7 @@ import { clubFormat } from "@/lib/club-format-server";
 import { renderEmailHtml } from "@/lib/email-theme";
 import { refundRequestApprovedRefundSentence } from "@/lib/booking-modified-email-copy";
 import { bankTransferRefundPayee } from "@/lib/group-organiser-paid";
+import { GroupCancelInProgressError } from "@/lib/group-cancel-in-progress";
 import {
   OrganiserChildRefundRefusedError,
   organiserCardAppealCap,
@@ -289,7 +290,7 @@ export async function PUT(
         return { kind: "handBackNotRaised" as const };
       }
       // Thrown after the claim, so the claim rolls back with it.
-      if (err instanceof OrganiserChildRefundRefusedError) {
+      if (err instanceof OrganiserChildRefundRefusedError || err instanceof GroupCancelInProgressError) {
         return { kind: "organiserCardRefused" as const, message: err.message };
       }
       throw err;

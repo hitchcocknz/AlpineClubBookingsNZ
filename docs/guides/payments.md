@@ -257,8 +257,10 @@ such a booking that the club settles as money owed back goes to the organiser
 the same way. Once the joiner's booking is cancelled, by the joiner or by the
 organiser's cancellation of the group, such a review is refused and has to be
 settled by hand and dismissed. While the organiser's cancellation of the group
-is still part-way through, marking one of these paid back is refused; try again
-once it has finished. The rules above are unchanged: once the organiser has
+is still part-way through, marking one of these paid back is refused: mark it
+once the cancellation has finished. A change or an approved appeal that would
+raise a new one is refused too; once the booking shows as cancelled, decide
+whether anything more is owed. The rules above are unchanged: once the organiser has
 cancelled the group, a change's task can only be marked paid back, while an
 appeal's can still be dismissed with a note. Tasks raised before this change,
 which could not be marked paid back at all, now can.
