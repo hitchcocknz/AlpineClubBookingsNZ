@@ -668,17 +668,17 @@ detail, line and total together (`INV-ADDPAY-042`).
 - **A refund request's paid-back cash is not Xero's to drop** (#4215,
   `INV-PAY-118`). Its own note is outside the notes the repair sums, so the
   recount adds what each request's completed hand-back recorded
-  (`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`), never its note, which may
-  be queued or voided, or never queued (completed before the invoice), and
-  never the canonical note, so the floor never alerts on it and a total
-  dropped before #4215 is raised back. It reads them after the payment row, so a
-  completion in between loses the claim and the repair re-runs. The booking
+  (`COMPLETED_REFUND_REQUEST_HAND_BACK_TASK_WHERE`), never its note (queued,
+  voided or never raised) nor the canonical note, so the floor never alerts
+  on it and a total dropped before #4215 is raised back. It reads them after
+  the payment row, so a completion in between loses the claim and the repair
+  re-runs. The booking
   repair tool nets the same figure from the cash a cancellation's note answers
-  (`readPaidBackRefundRequests`, #4231), and queues a request's own note its
-  completion could not (no invoice yet) through the completion's enqueue,
-  only where the request has no note row at all: a voided one stays the
-  officer's (`INV-ADDPAY-041`). Pinned by
-  `xero-credit-note-repairs`, `xero-booking-repair` and
+  (`readPaidBackRefundRequests`, #4231), and offers, for an officer to
+  confirm, a request's own note its completion could not queue (no invoice
+  yet): only with no note row at all (a voided one stays the officer's,
+  `INV-ADDPAY-041`), never beside refund notes already holding its cash.
+  Pinned by `xero-credit-note-repairs`, `xero-booking-repair` and
   `xero-bt-repair-request-cash`.
 
 ### INV-ADDPAY-022

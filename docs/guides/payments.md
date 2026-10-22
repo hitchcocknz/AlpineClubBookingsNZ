@@ -223,7 +223,12 @@ refund cannot carry), and the member's email says the club **will** refund
 them by bank transfer. Pay it and mark it paid back exactly as above. Marking
 it paid back queues that appeal's own Xero refund credit note for the amount
 you paid back; each appeal gets its own note, beside the payment's one refund
-note for its cancellation. While it is open its amount counts as already promised, so a second
+note for its cancellation. A booking with no Xero invoice yet gets no note
+then; once its invoice exists, the booking repair tool offers that appeal's
+note (#4231). An officer first checks Xero for a credit already raised by hand
+for it, then confirms the offer by its action key - the tool never raises it
+alone, and offers nothing while the cancellation's note already holds the
+appeal's money. While it is open its amount counts as already promised, so a second
 appeal can only be approved for what is left. An appeal's limit also leaves
 out every other task still open on the payment, a cancellation's own
 included, any account credit already given for a bank transfer that

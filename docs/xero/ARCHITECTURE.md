@@ -1182,14 +1182,25 @@ answers is the refunded total less the requests' paid-back cash, so a request
 with no note of its own is never sized into the cancellation's note and then
 counted again by the recount. And because a completion queues the request's
 own note only against an invoice, a request paid back before the booking had
-one gets that note from the tool once the invoice exists
-(`REFUND_REQUEST_NOTE_NOT_QUEUED`, action `QUEUE_REFUND_REQUEST_CREDIT_NOTE`,
-auto-applied): queued through the completion's own enqueue
+one is offered that note by the tool once the invoice exists
+(`REFUND_REQUEST_NOTE_NOT_QUEUED`, action `QUEUE_REFUND_REQUEST_CREDIT_NOTE`):
+queued through the completion's own enqueue
 (`enqueueXeroRefundRequestCreditNoteOperation`), keyed by the request and sized
 from its task, and only for a request with no request-note CREATE row of any
 status and no request-note link. A request whose note was raised and then
 voided in Xero has its row, so the tool never re-raises it: that stays the
-officer's decision (#4195, #4214).
+officer's decision (#4195, #4214). The action is **never auto-applied**: a
+credit an officer raised by hand in Xero is invisible to the tool, so the
+officer checks Xero for one first and then confirms the action by its key
+(`--apply-action`). And where the payment's own refund notes (live, or queued
+by their row; never a request's, an account-credit note or a voided one)
+already record more than the cash that is neither an edit's nor a request's -
+measured against the charge rows when they are lower, so a total the recount
+already raised still shows it - or one records no readable amount, the tool
+offers no action at all: before #4231 the tool, or an officer, could size the
+cancellation's note with the request's cash folded in, and a second note would
+credit it twice. The finding then goes to a person (`manual_review`), saying
+so.
 
 **Deploy and rollback note (#4215).** No schema changes. A payment is only
 recounted when Xero sends an event for one of the notes above, which may never
@@ -1240,16 +1251,40 @@ cancellation's note for the whole refunded total, the request's cash included.
 The new recount adds the request's cash beside that note, so the payment reads,
 say, $200 refunded against $150 on its rows. List these (read-only; only
 requests with no request-note CREATE row, read by the row's payload or its
-key):
-`SELECT p.id, p."bookingId", p."refundedAmountCents", (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) AS "rowsRefundedCents", (SELECT SUM(m."amountCents") FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:')) AS "requestsPaidBackCents" FROM "Payment" p WHERE p.source = 'INTERNET_BANKING' AND EXISTS (SELECT 1 FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':')))) AND p."refundedAmountCents" > (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) ORDER BY p.id`.
+key, and no request-note link, as the repair tool reads it):
+`SELECT p.id, p."bookingId", p."refundedAmountCents", (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) AS "rowsRefundedCents", (SELECT SUM(m."amountCents") FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':'))) AND NOT EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = p.id AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role = 'REFUND_REQUEST_CREDIT_NOTE' AND l.metadata->>'refundRequestId' = substr(m."occurrenceKey", 26))) AS "requestsWithoutNoteCents" FROM "Payment" p WHERE p.source = 'INTERNET_BANKING' AND EXISTS (SELECT 1 FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':'))) AND NOT EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = p.id AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role = 'REFUND_REQUEST_CREDIT_NOTE' AND l.metadata->>'refundRequestId' = substr(m."occurrenceKey", 26))) AND p."refundedAmountCents" > (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) ORDER BY p.id`.
+
 The settled-cash audit lists the same payments under `folded`, a label that
 misleads here: no credit note was folded in, the request's cash is counted by
-both the cancellation's note and the recount. To remedy one, correct the
-cancellation's note in Xero so it carries only the cancellation's own cash
-(here, $100: the total less the requests' paid-back cash). Its update event
-recounts the payment. Then run the booking repair tool, which queues the
-request's own note (`REFUND_REQUEST_NOTE_NOT_QUEUED`), so Xero carries each
-refund once.
+both the cancellation's note and the recount.
+
+*Every request the repair tool would note beside a cancellation note* - the
+same folding, found before the recount has raised anything, whatever the
+payment's refunded total. The tool sends each of these to a person when the
+notes it reads already hold the request's cash, but it cannot see a credit
+raised by hand in Xero, so list them all (read-only; a cancellation note is
+the payment's pointer, a `REFUND_CREDIT_NOTE` link, or a refund-note create
+row that is no request's):
+`SELECT p.id, p."bookingId", p."refundedAmountCents", (SELECT SUM(t."refundedAmountCents") FROM "PaymentTransaction" t WHERE t."paymentId" = p.id) AS "rowsRefundedCents", (SELECT SUM(m."amountCents") FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':'))) AND NOT EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = p.id AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role = 'REFUND_REQUEST_CREDIT_NOTE' AND l.metadata->>'refundRequestId' = substr(m."occurrenceKey", 26))) AS "requestsWithoutNoteCents", p."xeroRefundCreditNoteId" FROM "Payment" p WHERE p.source = 'INTERNET_BANKING' AND EXISTS (SELECT 1 FROM "ManualRefundTask" m WHERE m."paymentId" = p.id AND m.kind = 'CANCELLED_BOOKING_HAND_BACK' AND m.status = 'COMPLETED' AND starts_with(m."occurrenceKey", 'refund-request-hand-back:') AND NOT EXISTS (SELECT 1 FROM "XeroSyncOperation" o WHERE o."localModel" = 'Payment' AND o."localId" = p.id AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE' AND (o."requestPayload"->>'refundRequestId' = substr(m."occurrenceKey", 26) OR starts_with(o."correlationKey", 'payment:' || p.id || ':refund-request-credit-note:' || substr(m."occurrenceKey", 26) || ':'))) AND NOT EXISTS (SELECT 1 FROM "XeroObjectLink" l WHERE l."localModel" = 'Payment' AND l."localId" = p.id AND l."xeroObjectType" = 'CREDIT_NOTE' AND l.role = 'REFUND_REQUEST_CREDIT_NOTE' AND l.metadata->>'refundRequestId' = substr(m."occurrenceKey", 26))) AND p."xeroInvoiceId" IS NOT NULL AND (p."xeroRefundCreditNoteId" IS NOT NULL OR EXISTS (SELECT 1 FROM "XeroObjectLink" c WHERE c."localModel" = 'Payment' AND c."localId" = p.id AND c."xeroObjectType" = 'CREDIT_NOTE' AND c.role = 'REFUND_CREDIT_NOTE') OR EXISTS (SELECT 1 FROM "XeroSyncOperation" c WHERE c."localModel" = 'Payment' AND c."localId" = p.id AND c."entityType" = 'CREDIT_NOTE' AND c."operationType" = 'CREATE' AND coalesce(c."queueType", c."requestPayload"->>'queueType') = 'REFUND_CREDIT_NOTE' AND c."requestPayload"->>'refundRequestId' IS NULL AND position(':refund-request-credit-note:' in coalesce(c."correlationKey", '')) = 0)) ORDER BY p.id`.
+
+To remedy a payment from either list, first check Xero for a credit raised by
+hand for the request. Then correct the cancellation's note **in place** so it
+carries only the cancellation's own cash (here, $100: the total less the
+requests' paid-back cash): remove its refund payment or allocation, change its
+amount, then record the refund payment or allocation again. **Never void it**:
+on a bank transfer a void is #4162's to carry - the nightly follow-up undoes
+the hand-back it recorded and puts the money back on the refund list as owed,
+and a replacement raised by hand is linked to nothing. The note's update event
+recounts the payment. Then confirm the request's own note in the booking repair
+tool (`--apply-action` on its `queue:refund-request-credit-note:…` key), so
+Xero carries each refund once. Where Xero will not let the note be edited, void
+it and let #4162 take it (only once `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`;
+before that nothing moves): a note holding two refunds matches no single
+hand-back, so it is listed on Stuck States, where a person picks the
+cancellation's own refund; that refund then comes back on the refund list,
+answered "Already in Xero" with the number of the replacement note raised by
+hand for the cancellation's own cash. The request's note follows from the
+repair tool as above.
 
 Stated limit of both checks: the rows are not the whole story wherever an
 invoice correction legitimately puts the refunded total above them
