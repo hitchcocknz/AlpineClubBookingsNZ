@@ -16,6 +16,8 @@ import {
  */
 
 const mocks = vi.hoisted(() => ({
+  // #4287: whether a cancellation hand-back's note stands on its own record; the payment's canonical note by default.
+  cancellationHandBackNotedOnItsOwnRecord: vi.fn().mockResolvedValue(false),
   transaction: vi.fn(),
   executeRaw: vi.fn().mockResolvedValue(0),
   manualRefundTaskFindUnique: vi.fn(),
@@ -198,6 +200,9 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
     mocks.enqueueXeroRefundCreditNoteOperation(...a),
   kickQueuedXeroOutboxOperationsIfConnected: (...a: unknown[]) =>
     mocks.kickQueuedXeroOutboxOperationsIfConnected(...a),
+}));
+vi.mock("@/lib/bank-hand-back-refund-note", () => ({
+  cancellationHandBackNotedOnItsOwnRecord: (...a: unknown[]) => mocks.cancellationHandBackNotedOnItsOwnRecord(...a),
 }));
 vi.mock("@/lib/xero-refund-request-credit-note-outbox", () => ({
   enqueueXeroRefundRequestCreditNoteOperation: (...a: unknown[]) =>
@@ -2324,6 +2329,41 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     );
     expect(mocks.kickQueuedXeroOutboxOperationsIfConnected).toHaveBeenCalledWith({ limit: 1 });
     expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+    expect(mocks.cancellationHandBackNotedOnItsOwnRecord).toHaveBeenCalledWith(tx, "payment-1", "task-1");
+  });
+
+  it("a LATER cancellation hand-back's note is keyed and sized on its own task, never absorbed into the canonical note (#4287, INV-PAY-101)", async () => {
+    mocks.cancellationHandBackNotedOnItsOwnRecord.mockResolvedValueOnce(true);
+    mocks.manualRefundTaskFindUnique.mockResolvedValue({
+      id: "task-1",
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      amountCents: 3000,
+      raisedAmountCents: 3000,
+      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+      status: ManualRefundTaskStatus.OPEN,
+      booking: {
+        memberId: "member-1",
+        status: "CANCELLED",
+        payment: { id: "payment-1", status: "PARTIALLY_REFUNDED", xeroInvoiceId: "inv-1" },
+      },
+    });
+
+    await resolveManualRefundTask({
+      taskId: "task-1",
+      resolution: "completed",
+      note: null,
+      actingMemberId: "admin-1",
+      confirmedAmountCents: null,
+      direction: "REFUND_TO_MEMBER",
+      recordedNightPrices: null,
+    }, CLUB_FORMAT_TEST);
+
+    expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
+      "payment-1",
+      3000,
+      { createdByMemberId: "admin-1", refundMethod: "internet-banking", handBackTaskId: "task-1", paidAnotherWayTaskId: "task-1", store: tx }
+    );
   });
 
   it("completes an EDIT refund hand-back like any hand-back but sends Xero nothing: the edit's credit note already stands (D-3813-6, INV-PAY-117)", async () => {

@@ -34,3 +34,24 @@ describe("a capacity race's part to check, as the note pipeline reads its bank c
     await expect(readPaidAnotherWayCash(db({ reviewContext: null }, 0), "payment-1")).resolves.toEqual({ notedCents: 0, unnotedCents: 20_000, awaitingReceiptCents: 0 });
   });
 });
+
+describe("a cancellation hand-back noted on its own record, as the note pipeline reads its bank cash (#4287)", () => {
+  function handBackDb(noteRows: number) {
+    const row = { id: "task-hand-back", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: null, amountCents: 3_000, reviewContext: null };
+    return {
+      manualRefundTask: { findMany: vi.fn(async () => [row]), findFirst: vi.fn(async () => row) },
+      xeroSyncOperation: { count: vi.fn(async () => noteRows) },
+      xeroObjectLink: {},
+      paymentRecoveryOperation: {},
+    } as never;
+  }
+
+  it("MUTATION: once a note row names it, it is noted bank cash - so a card note's coverage counts it beside its cash", async () => {
+    await expect(readPaidAnotherWayCash(handBackDb(1), "payment-1")).resolves.toEqual({ notedCents: 3_000, unnotedCents: 0, awaitingReceiptCents: 0 });
+    await expect(readPaidAnotherWayCloseShare(handBackDb(1), "payment-1", "task-hand-back")).resolves.toMatchObject({ amountCents: 3_000, uncoveredCents: 3_000 });
+  });
+
+  it("CONTROL: with no note row of its own (the canonical note's, or one the old release absorbed) it is no record here at all - never un-noted", async () => {
+    await expect(readPaidAnotherWayCash(handBackDb(0), "payment-1")).resolves.toEqual({ notedCents: 0, unnotedCents: 0, awaitingReceiptCents: 0 });
+  });
+});
