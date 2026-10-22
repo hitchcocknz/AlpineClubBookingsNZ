@@ -550,6 +550,68 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       ).toBe(0);
     });
 
+    it("#4283 review: a capture whose cancel is DEAD (handed to nobody), redelivered, is refunded as a duplicate", async () => {
+      const asked = stripeMakesRefunds();
+      const [settling, superseded] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      const row = await prisma.paymentTransaction.findFirstOrThrow({
+        where: { paymentId: PAYMENT_ID, stripePaymentIntentId: superseded },
+        select: { id: true },
+      });
+      await holdUnowned(superseded);
+      // Out of retries: the runner will never hand this capture to a refund.
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "CANCEL_PAYMENT_INTENT",
+          status: "FAILED",
+          attempts: 5,
+          nextRetryAt: null,
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentTransactionId: row.id,
+          paymentIntentId: superseded,
+          amountCents: PRICE_CENTS,
+          idempotencyKey: `race-4211-cancel-dead-${superseded}`,
+        },
+      });
+      await reconcile();
+
+      expect((await arrive(superseded)).outcome).toBe("duplicate_capture_refunded");
+      expect(asked).toEqual([superseded]);
+    });
+
+    it("#4227/#4283 review: a superseded capture owed back in full after a failed-later refund, redelivered, is not refunded on top", async () => {
+      const asked = stripeMakesRefunds();
+      const [settling, superseded] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      const { transactionId, refundOperationId } = await handedOffToSupersededRefund(superseded, "SUCCEEDED");
+      const { CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } = await import("@/lib/payment-recovery-keys");
+      const key = `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}re_race_4211_superseded_again`;
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_BOOKING_MODIFICATION",
+          status: "PENDING",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentIntentId: superseded,
+          amountCents: PRICE_CENTS,
+          idempotencyKey: key,
+          stripeKeyPrefix: key,
+          allocationPlan: [{ paymentTransactionId: transactionId, amountCents: PRICE_CENTS, madeByOperationId: refundOperationId }],
+        },
+      });
+      await reconcile();
+      const before = await snapshot();
+
+      const delivered = await deliverWebhook(superseded);
+      expect(delivered.init?.status ?? 200, JSON.stringify(delivered.body)).toBe(200);
+      expect(asked).toEqual([]);
+      expect(await snapshot()).toEqual(before);
+      expect(
+        await prisma.paymentRecoveryOperation.count({ where: { bookingId: BOOKING_ID, idempotencyKey: { startsWith: "duplicate_capture_" } } }),
+      ).toBe(0);
+    });
+
     it("#4227: with no record, a superseded capture whose refund failed later and is owed back in full is not 'another payment holding money': no false alert", async () => {
       const asked = stripeMakesRefunds();
       const [settling, superseded] = TABS;
