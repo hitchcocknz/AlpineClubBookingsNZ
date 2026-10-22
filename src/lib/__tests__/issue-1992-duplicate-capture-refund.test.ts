@@ -131,7 +131,7 @@ vi.mock("@/lib/alert-cooldown-fail-open", () => ({
 
 // #4227: the owed-again reading, real elsewhere; its own suites cover the rows it reads.
 vi.mock("@/lib/superseded-intent-ownership", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/superseded-intent-ownership")>()),
+  ...((await importOriginal()) as typeof import("@/lib/superseded-intent-ownership")),
   listSupersededIntentIdsOwedBackAgain: (...args: unknown[]) => mocks.supersededOwedBackAgain(...args),
 }));
 
