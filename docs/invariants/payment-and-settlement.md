@@ -95,32 +95,30 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 ## INV-PAY-043
 
 - **The settlement is recorded, never guessed** (#4211, owner decision 17 Oct
-  2026). The PAID claim that wins under `lock(1)` writes
-  `Payment.settledByTransactionId` through `payment-settler.ts`: the card
-  capture, the manual cash row, or the bank receipt's PRIMARY row, recorded
-  only when exactly one receipt row holds money. The manual reversal clears it.
+  2026). The PAID claim winning under `lock(1)` writes
+  `Payment.settledByTransactionId` (`payment-settler.ts`): the card capture,
+  the cash row, or the bank receipt's PRIMARY row when exactly one holds
+  money. The manual reversal clears it.
 - **The recorded settler is never refunded.** Its redelivery is kept whatever
-  else holds money: a capture kept before #4211, a Xero bank receipt
-  (`INV-PAY-102`), or a superseded capture whose refund failed later (#4227).
+  else holds money (a capture kept before #4211, a Xero bank receipt).
 - **Every other card capture arriving on a PAID booking is refunded** while
-  the settler still holds net cash no superseded-intent operation or
-  duplicate-capture refund owns: a third capture, or a stray capture on a
-  cash- or Xero-settled booking (#2262). The alert names the settlement; the
-  history entry names it when the refund completes inline.
+  the settler still holds net cash nothing else owns: a third capture, or a
+  stray on a cash- or Xero-settled booking (#2262). The alert names the
+  settlement; the history entry names it when the refund completes inline.
+- **What the superseded machinery holds** (a live operation, or a failed-later
+  refund open rows owe back in full, #4227) is never the settlement, never
+  another payment, and never refunded on top when it arrives (#4283).
 - **No record, no automatic refund.** Paid before this release or by the
   draining old colour, if another capture holds money; or a recorded settler
   no longer holding money, whether or not another does: the arriving capture is
   kept (`duplicate_capture_kept`, no second confirmation or invoice) and the
   unmuteable `admin-duplicate-capture-kept` alert asks for a check, once a day
-  per capture. An owned duplicate still re-sends its own refund; a settler a
-  live superseded-intent operation holds keeps silently.
-- **Limit:** PAID transitions no transaction settles never write it - zero-cash
-  confirmations, the fully credit-covered settle, the $0 auto-pay after an
-  edit, group settlement - so a stray capture there, beside nothing else
-  holding money, is kept without an alert.
-- **One home**: `duplicate-capture-guard.ts`; ownership is
-  `listDuplicateCaptureRefundIntentIds`, shared with the Xero conflict, which
-  names the recorded settler first.
+  per capture. An owned duplicate still re-sends its own refund.
+- **Limit:** PAID transitions no transaction settles (zero cash, full credit,
+  the $0 auto-pay after an edit, group settlement) never write it: a lone
+  stray capture there is kept without an alert.
+- **One home**: `duplicate-capture-guard.ts`; its ownership readings are the
+  Xero conflict's too, which names the recorded settler first.
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per
   (booking, intent).
 - Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,

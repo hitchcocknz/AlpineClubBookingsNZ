@@ -4078,10 +4078,13 @@ settlement is ever recorded, and the reversal that clears it holds the same
 lock. When a Stripe success arrives for an already-PAID booking,
 `markBookingPaymentSucceeded` keeps the recorded settler, and refunds any other
 arriving capture with no refund history (#1765) only while the recorded settler
-still holds net cash, is a card capture that neither a live superseded-intent
-operation (b′) nor a duplicate-capture refund operation
+still holds net cash, is a card capture that neither the superseded-intent
+machinery (b′: a live operation, or #4227 a failed-later refund open rows owe
+back in full) nor a duplicate-capture refund operation
 (`duplicate_capture_<bookingId>_<pi>`, at any status) owns, or is a non-card
 settlement (#2262); with no usable record it refunds nothing new and alerts.
+An arriving capture the superseded machinery holds is never refunded on top
+(#4283).
 That check-then-enqueue is race-free only because every caller runs it under
 `lock(1)`: interleaved webhook replays of BOTH captures would otherwise refund
 both sides and settle the booking at zero net cash. The

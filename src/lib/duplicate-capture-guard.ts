@@ -24,8 +24,10 @@
  * 1. **The recorded settler is never refunded.** Its replay is kept whatever
  *    else holds money on the booking.
  * 2. **Any other arriving capture is refunded** while the recorded settler
- *    still holds net cash that neither the superseded-intent machinery nor a
- *    duplicate-capture refund owns. A capture a duplicate-capture refund
+ *    still holds net cash that neither the superseded-intent machinery (a live
+ *    operation, or #4227 a failed-later refund open rows owe back in full) nor
+ *    a duplicate-capture refund owns. An arriving capture that machinery holds
+ *    is its own: never refunded on top, never re-sent, never alerted (#4283). A capture a duplicate-capture refund
  *    already owns re-sends only its own frozen refund (one operation per
  *    booking and intent, so the replay is idempotent).
  * 3. **No usable record** - paid before this release or by the draining old

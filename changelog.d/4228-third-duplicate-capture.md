@@ -24,3 +24,10 @@
   record it now waits for an admin. Nothing goes back through past
   bookings. Deploy note: the column is additive, and a booking the old colour
   settles during the switch is treated as paid before this release.
+
+  Two related gaps close with it (#4227, #4283). A payment the club is already
+  refunding because it was replaced by a newer one - including one whose
+  refund the card provider failed later and the club is sending again - no
+  longer counts as a second payment: it no longer triggers a false "paid
+  twice" email, and when that same payment's confirmation arrives again it is
+  no longer refunded a second time on top of the refund already under way.
