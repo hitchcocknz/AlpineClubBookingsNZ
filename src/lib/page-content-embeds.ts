@@ -25,7 +25,6 @@ import {
   loadPublicAnnualFees,
   loadPublicBookingPolicy,
   loadPublicCancellationPolicy,
-  loadPublicFirstYearCosts,
   loadPublicHutFees,
   loadPublicJoiningFees,
   type PublicBookingPolicy,
@@ -33,6 +32,7 @@ import {
   type PublicFeeGroup,
   type PublicFeeTable,
 } from "@/lib/public-page-content-tokens";
+import { loadPublicFirstYearCosts } from "@/lib/public-first-year-costs";
 import { resolveFeeTokenParameters } from "@/lib/token-parameters";
 import { clubFormatValues } from "@/lib/club-format-server";
 import type { ClubFormat } from "@/lib/club-format";

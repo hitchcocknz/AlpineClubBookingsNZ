@@ -57,12 +57,14 @@ vi.mock("@/lib/club-format-server", async () => {
     clubFormat: vi.fn(async () => bindClubFormat(CLUB_FORMAT_TEST)),
   };
 });
-vi.mock("@/lib/public-page-content-tokens", () => ({
-  loadPublicAnnualFees: vi.fn(async () => [{ heading: "Annual membership fees", rows: [{ label: "Public member", fee: { amountCents: 1000, label: "$10.00" } }] }]),
-  loadPublicJoiningFees: vi.fn(async () => [{ heading: "Adult", rows: [] }]),
+vi.mock("@/lib/public-first-year-costs", () => ({
   loadPublicFirstYearCosts: vi.fn(async (_format: unknown, options?: { typeKey?: string }) => [
     { heading: "Joining fee plus first year's subscription", rows: [{ label: options?.typeKey ?? "all", fee: { amountCents: 50000, label: "$500.00" } }] },
   ]),
+}));
+vi.mock("@/lib/public-page-content-tokens", () => ({
+  loadPublicAnnualFees: vi.fn(async () => [{ heading: "Annual membership fees", rows: [{ label: "Public member", fee: { amountCents: 1000, label: "$10.00" } }] }]),
+  loadPublicJoiningFees: vi.fn(async () => [{ heading: "Adult", rows: [] }]),
   loadPublicHutFees: vi.fn(async (_format: unknown, slug?: string) => [{ heading: slug ?? "all", rowHeading: "Age", columns: [], rows: [] }]),
   loadPublicBookingPolicy: vi.fn(async (slug?: string) => ({ lodge: slug ?? null })),
   loadPublicCancellationPolicy: vi.fn(async (_format: unknown, slug?: string) => ({ lodge: slug ?? null })),
