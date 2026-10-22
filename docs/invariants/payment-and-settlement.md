@@ -1438,9 +1438,9 @@ short).
     refund recovery with no frozen `allocationPlan` derives its slices at
     replay, so on a tied payment its Stripe keys can change at this release;
     check for open ones after the old colour drains.
-  - **The settling capture, when none is recorded (`INV-PAY-043`), is the
-    oldest-inserted qualifying one** (#4177). The duplicate-capture refund and
-    Xero's conflict (#4163) skip one a duplicate-capture refund owns, at any
+  - **The settling capture: the recorded one, else the oldest-inserted
+    qualifying one** (#4177, `INV-PAY-043`). Xero's conflict (#4163) and the
+    duplicate-capture guard skip duplicate-refund-owned captures, at any
     status. When
     paid, the Xero conflict also skips a capture a superseded refund or
     in-flight cancel holds, and #1765 refund history (ranked last when
