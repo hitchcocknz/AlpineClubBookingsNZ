@@ -15,8 +15,12 @@ import { editReviewRefundGoesBackOnCard, editReviewRefundSettlementPayment, hasC
 import {
   chooseEditReviewChargeRoute,
   executeEditReviewCharge,
+  finishEditReviewChargeInvoice,
+  type QueuedEditReviewChargeInvoice,
   type EditReviewChargeRoute,
 } from "@/lib/edit-financial-review-charge";
+// #3947: re-exported so the completion reaches the charge's in-transaction invoice through its one settlement import.
+export { queueEditReviewChargeInvoiceInTransaction } from "@/lib/edit-financial-review-charge";
 import { REVIEW_CHARGE_WRONG_KIND_MESSAGE } from "@/lib/edit-financial-review-charge-refusals";
 import {
   REVIEW_CREDIT_ANCHOR_TAKEN_MESSAGE,
@@ -519,6 +523,7 @@ export async function executeEditReviewSettlement({
   bookingPaymentStatus,
   bookingXeroInvoiceId = null,
   format,
+  chargeInvoice = null,
   ...handBackXero
 }: {
   bookingId: string;
@@ -534,6 +539,8 @@ export async function executeEditReviewSettlement({
   bookingPaymentStatus: string | null;
   /** The club's format (#3565), resolved once by the caller, before its transaction. */
   format: ClubFormat;
+  /** #3947: the `invoice` route's invoice, queued inside the completion's transaction. */
+  chargeInvoice?: QueuedEditReviewChargeInvoice | null;
 } & EditReviewHandBackXeroFacts): Promise<{
   stripeRefundId: string | null;
   additionalPaymentIntentId: string | null;
@@ -611,6 +618,23 @@ export async function executeEditReviewSettlement({
       hasIssuedXeroInvoice,
       bookingXeroInvoiceId,
       bookingPaymentStatus,
+    });
+    return { stripeRefundId, additionalPaymentIntentId };
+  }
+
+  // #3947: the `invoice` route's invoice was queued inside the completion's
+  // transaction, so the dispatch below must not restate or enqueue it again;
+  // what is left is the kick and the short-ask record.
+  if (route?.kind === "additional-charge" && route.collectVia === "invoice" && chargeInvoice) {
+    await finishEditReviewChargeInvoice({
+      queued: chargeInvoice,
+      bookingId,
+      taskId,
+      bookingModificationId: route.bookingModificationId,
+      shareCents: amountCents,
+      memberId: route.member?.id ?? null,
+      actingMemberId,
+      format,
     });
     return { stripeRefundId, additionalPaymentIntentId };
   }

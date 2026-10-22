@@ -48,17 +48,18 @@ admin surface showed one. These rules now hold:
   page's `AdditionalPaymentCard` and
   `GET /api/bookings/[id]/additional-payment-secret`. The member dashboard's
   owed total is scoped instead by its own query (`ACTIVE_BOOKING_STATUSES` +
-  `COMPLETED`), wider again. **What every one of them excludes is CANCELLED and
+  `COMPLETED`), wider again. **Every one of them excludes CANCELLED and
   BUMPED**, and that is the invariant: a member is never shown, and can never
   complete, a card payment for a booking the club has stopped counting.
   Enforcement is not cosmetic — cancellation marks the additional intent
   `FAILED` without zeroing the amount, and the cancel path asks Stripe to cancel
   only an intent that was still *outstanding*, so an intent that had already
   failed (a declined card) stays confirmable at Stripe. Before this gate the
-  owner of a cancelled booking could open the booking, be offered "pay this
+  owner of a cancelled booking could open it, be offered "pay this
   extra", fetch a live client secret and complete the charge; the late-capture
   backstop (#1350) auto-refunded and alerted, but the member had still been
-  charged for a booking that no longer existed.
+  charged for a booking that no longer existed. A credit-paid card ask
+  ([INV-PAY-047]) is raised only on these statuses.
 
   **The rule is about a RETIRED OBLIGATION, of which a cancelled booking is one
   case and a SUPERSEDED ask is the other (#3340).** A booking edit that raises a
@@ -70,15 +71,15 @@ admin surface showed one. These rules now hold:
   inside it. The same shape as a cancelled booking, and the same harm: a member
   charged against an obligation the club had already withdrawn.
 
-  Three things close it, and all three are needed because each alone leaves the
-  charge possible. The cancellation is attempted SYNCHRONOUSLY at mint, before
-  the new client secret is returned, with the enqueued operation kept as the
-  durable backstop for a provider failure. The secret route returns the
-  INTENT'S own amount and id, so the figure a member reads and the intent the
-  button confirms cannot come from different places. And `<Elements>` is keyed on
-  the client secret, because Stripe treats `options.clientSecret` as immutable
-  after mount — without the key a changed secret rebinds nothing and the mounted
-  form goes on confirming the intent it was born with.
+  Three things close it; each alone leaves the charge possible. The cancellation
+  is attempted SYNCHRONOUSLY at mint, before the new client secret is returned,
+  with the enqueued operation kept as the durable backstop for a provider
+  failure. The secret route returns the INTENT'S own amount and id, so the
+  figure a member reads and the intent the button confirms cannot come from
+  different places. And `<Elements>` is keyed on the client secret, because
+  Stripe treats `options.clientSecret` as immutable after mount — without the
+  key a changed secret rebinds nothing and the mounted form goes on confirming
+  the intent it was born with.
 
   **"Cancelled at mint" is BEST-EFFORT, and the queued operation is the durable
   guarantee.** The immediate attempt cannot run when the recovery row is not
@@ -87,9 +88,9 @@ admin surface showed one. These rules now hold:
   retired intent then stays confirmable until the cron reaches it, and a capture
   landing in that window is caught by the compensating refund below rather than
   prevented. Every declined immediate attempt is logged with the intent it left
-  live, so such a charge can be explained rather than investigated from scratch.
+  live, so such a charge can be explained, not investigated from scratch.
 
-  When a capture does land on a retired intent anyway, the refund that follows is
+  When a capture lands on a retired intent anyway, the refund that follows is
   no longer silent: it writes a `booking.payment.superseded_payment_refunded`
   audit row and a REFUNDED `BookingEvent` (discriminated so the cancellation
   narrative can never read it as a settlement clause), emails the member naming
