@@ -458,6 +458,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(asked, "nothing is refunded").toEqual([]);
       expect(await snapshot()).toEqual(before);
       expect(await recordedSettlerIntent()).toBe(settling);
+      // Known, not merely kept: no "check by hand" alert is raised for it.
+      expect(await prisma.alertCooldown.count({ where: { key: { contains: BOOKING_ID } } })).toBe(0);
     });
 
     it("(a) the kept third capture's own replay is refunded against the recorded settler", async () => {
