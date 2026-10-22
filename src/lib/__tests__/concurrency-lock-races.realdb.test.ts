@@ -424,6 +424,19 @@ import "./payment-lock-before-rebuild.realdb.test";
 // payment's uncovered card refund. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
 // it owns and cleans its own `race-4022-` fixtures.
 import "./self-heal-bank-hand-back-sources.realdb.test";
+// #4250 reuses it to prove a refund note an officer resolved by hand in Xero
+// stops counting as coverage once its note is voided or deleted: a live or
+// unlinked one still covers its refund once, a voided one covers nothing and
+// refuses nothing, and the nightly card self-heal then lists the gap and queues
+// a fresh card note under an after-void key. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4250-` fixtures.
+import "./resolved-voided-refund-note-coverage.realdb.test";
+// #4256 reuses it to prove a PARTIAL invoice repair claims its row before it
+// writes or calls Xero: a resolve or a mark non-replayable committed while the
+// retry waits on its claim wins, two retries make one payment write, and a
+// failed write gives the row back PARTIAL. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4256-` fixtures.
+import "./xero-partial-repair-claim.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

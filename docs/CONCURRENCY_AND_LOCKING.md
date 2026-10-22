@@ -146,6 +146,33 @@ after the completion's
 (`lockPaymentForRefundedTotal`), with no provider call. Proven against real
 PostgreSQL by `edit-financial-review-cancelled-refund-xero.realdb.test.ts`.
 
+### A Xero retry claims the original row it writes (#2262 H3, #3462, #4256)
+
+A retry that writes the original operation row - the booking invoice replay,
+the PARTIAL invoice payment repair, and the PARTIAL and FAILED refund-note
+repairs - first claims it with a status-guarded `updateMany`
+(`runWithClaimedOriginal`, `xero-operation-retry.ts`): FAILED/PARTIAL
+(PARTIAL only for a PARTIAL repair) -> RUNNING, unresolved and replayable. The
+resolve route refuses a RUNNING row, and the mark non-replayable route writes
+only onto a FAILED or PARTIAL row (a status-guarded `updateMany`, 409 and no
+audit otherwise), so either mark lands before the claim, which then loses with
+no write and no Xero call, or is refused. Two retries of one row: one claims,
+the other gets 409. The repairs complete onto their claim only
+(`completeXeroSyncOperation(..., { onlyIfRunningSince })`), so one finishing
+after an operator's Mark failed writes nothing. A throw gives the row back
+guarded on the claim (still RUNNING, still its `startedAt`): FAILED for the
+replay, PARTIAL with its payload for a PARTIAL repair. A PARTIAL repair's claim
+carries `lastErrorCode = PARTIAL_REPAIR_RUNNING`, so if its process dies the
+stale reset and Mark failed return it to PARTIAL rather than FAILED. No
+advisory key and no lock is held across the Xero call. The booking invoice
+replay's own completion (`createXeroInvoiceForBooking`) is not yet guarded on
+the claim. A repair whose process died after its payment was recorded is
+closed by the next retry from the payment's link (live, this invoice, this
+amount), with no second Xero call.
+During a blue/green overlap the old version's stale reset sends a stuck repair
+to FAILED, which then needs Resolve in Xero or a by-hand payment check. Proven against real PostgreSQL by
+`xero-partial-repair-claim.realdb.test.ts`.
+
 ### The Xero token refresh uses a row lease, shared across colours (#3454)
 
 `xero-token-store.ts` composes no booking, capacity, membership or money

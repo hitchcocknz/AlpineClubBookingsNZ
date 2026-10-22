@@ -1,9 +1,12 @@
 /**
  * What the Xero Operations repair of a PARTIAL invoice create records as paid
  * (`xero-operation-retry.ts`): the invoice total read from the stored payloads
- * and, for a primary booking invoice, the cash its create stored (#4010).
+ * and, for a primary booking invoice, the cash its create stored (#4010); and
+ * how the repaired row is closed (#4256).
  */
 import { providerAmountToCents } from "@/lib/money-provider-amount";
+import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
+import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { asArray, asRecord, readNumber } from "@/lib/xero-json";
 import {
   parsePrimaryInvoiceFeeAtLink,
@@ -97,4 +100,54 @@ export function zeroCashRepairOutcome(repair: {
     skipReason: "Zero-total invoice does not require Xero payment recording.",
     message: `Marked zero-total Xero ${invoice} invoice as repaired without payment recording.`,
   };
+}
+
+/**
+ * #4256: the completion of a claimed PARTIAL invoice row whose payment leg the
+ * repair settled. SUCCEEDED, unless the invoice email also failed: the repair
+ * sends no email, so the row stays PARTIAL for that, which the retry fence then
+ * refuses to repair as a payment again.
+ */
+export const PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE =
+  "The payment is now recorded in Xero, but the invoice email still failed. Send the invoice from Xero.";
+
+export function repairedPartialInvoiceCompletion(
+  operation: { responsePayload: unknown; xeroObjectNumber: string | null },
+  invoiceId: string,
+  paymentOutcome: Record<string, unknown>,
+) {
+  const emailStillFailed = readXeroInvoiceOperationOutcome(operation.responsePayload)?.invoiceEmailFailed;
+  return {
+    status: emailStillFailed ? ("PARTIAL" as const) : ("SUCCEEDED" as const),
+    responsePayload: { ...(asRecord(operation.responsePayload) ?? {}), paymentError: null, ...paymentOutcome },
+    xeroObjectType: "INVOICE",
+    xeroObjectId: invoiceId,
+    xeroObjectNumber: operation.xeroObjectNumber,
+    // The payment fault's message would be stale; say what is left instead.
+    ...(emailStillFailed ? { lastErrorMessage: PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE } : {}),
+  };
+}
+
+/**
+ * #4256: the payment an earlier run of THIS repair already recorded against the
+ * invoice, read from its links, or null. The inbound sync links every payment
+ * Xero reports on the invoice (a hand or bank-feed one, a part payment, one
+ * since DELETED), so a link counts only when it is live money
+ * (`isRecordedBookingInvoicePayment`) for this invoice at exactly the repair's
+ * amount. The repair's own link stores `amountCents`; the create's and the
+ * inbound sync's store Xero's dollar `amount`. Anything else is not this
+ * payment, and the repair pays under its idempotency key as before.
+ */
+export function recordedRepairPayment(
+  links: Array<{ xeroObjectId: string; xeroObjectType: string; role: string | null; metadata: unknown }>,
+  repair: { invoiceId: string; amountCents: number },
+): { paymentId: string; amountCents: number } | null {
+  for (const link of links) {
+    if (!isRecordedBookingInvoicePayment(link)) continue;
+    const metadata = asRecord(link.metadata);
+    if (metadata?.invoiceId !== repair.invoiceId) continue;
+    const amountCents = readNumber(metadata.amountCents) ?? providerAmountToCents(readNumber(metadata.amount));
+    if (amountCents === repair.amountCents) return { paymentId: link.xeroObjectId, amountCents };
+  }
+  return null;
 }
