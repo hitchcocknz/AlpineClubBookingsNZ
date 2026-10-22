@@ -1,6 +1,5 @@
 import type { Prisma } from "@prisma/client";
 
-import { liveLines } from "@/lib/booking-ledger-modification-posting";
 import { findPostedSettlementLines } from "@/lib/booking-ledger-read";
 import { ledgerLineAmountCents } from "@/lib/booking-ledger-write";
 
@@ -23,8 +22,8 @@ type Reader = Pick<Prisma.TransactionClient, "payment" | "paymentTransaction" | 
  *   would post a second receipt (`syncBookingLedgerSettlements`). So before
  *   #4290 a joiner's detail read 0, and a voided or short note took its total
  *   down with no alert. Its own refund line is the joiner's record, as it is
- *   the organiser's hand-back's proof (`group-organiser-hand-back.ts`). A
- *   reversed line counts nothing (`liveLines`).
+ *   the organiser's hand-back's proof (`group-organiser-hand-back.ts`),
+ *   net of any reversal.
  *
  * This is the floor's figure only. The nightly void follow-up's detail stays
  * the charge rows' (`bank-refund-void-scan.ts`): what an undo can unwind. A
@@ -37,10 +36,8 @@ export async function bankTransferRefundDetailCents(db: Reader, paymentId: strin
   const chargeRowsCents = Math.max(0, detail._sum.refundedAmountCents ?? 0);
   const payment = await db.payment.findUnique({ where: { id: paymentId }, select: { bookingId: true } });
   if (!payment) return chargeRowsCents;
-  const joinerLines = liveLines(
-    await findPostedSettlementLines(db, payment.bookingId, { kind: "BANK_REFUND", anchorKind: "GROUP_SETTLEMENT" }),
-  );
-  // A refund line is a credit to the member: its figure is negative.
+  const joinerLines = await findPostedSettlementLines(db, payment.bookingId, { kind: "BANK_REFUND", anchorKind: "GROUP_SETTLEMENT" });
+  // A refund line is a credit to the member (negative); its reversal, same kind and anchor, nets it out.
   const joinerRefundCents = joinerLines.reduce((sum, line) => sum - ledgerLineAmountCents(line), 0);
   return chargeRowsCents + Math.max(0, joinerRefundCents);
 }

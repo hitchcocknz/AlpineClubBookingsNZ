@@ -55,7 +55,7 @@ describe("bankTransferRefundDetailCents (#4290)", () => {
     );
   });
 
-  it("counts nothing for a reversed settlement refund line", async () => {
+  it("MUTATION (netting): counts nothing for a reversed settlement refund line", async () => {
     const { db } = store({ chargeRowsCents: 500, lines: [refundLine("line-1", 2_250), refundLine("line-2", 2_250, "line-1")] });
     expect(await bankTransferRefundDetailCents(db, "payment-1")).toBe(500);
   });
