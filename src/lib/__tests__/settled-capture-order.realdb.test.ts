@@ -70,6 +70,8 @@ const NIGHT = new Date("2026-08-01T00:00:00.000Z");
 const CHECK_OUT = new Date("2026-08-02T00:00:00.000Z");
 const EARLIER = new Date("2026-06-14T00:00:00.000Z");
 const TIED_AT = new Date("2026-06-15T00:00:00.000Z");
+/** #4221 round 5: what a capture holds again that nothing owes back (a hand refund that failed later). */
+const HELD_UNOWED = 3_000;
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
@@ -351,6 +353,8 @@ function capturesOnPayment() {
         "replanned_closed",
         "short",
         "closed_plan",
+        "resent",
+        "dashboard",
       ] as const;
       type Case = (typeof cases)[number];
       const txn = (name: Case) => `race-4177-txn-4221-${name}`;
@@ -366,7 +370,11 @@ function capturesOnPayment() {
           amountCents: PRICE_CENTS,
           // Each re-planned capture holds the 5000 its slice owes back again,
           // after its superseded refund took the rest; short holds all of it.
-          refundedAmountCents: ["replanned", "remade", "replanned_closed", "closed_plan"].includes(name) ? PRICE_CENTS - 5000 : 0,
+          refundedAmountCents: ["replanned", "remade", "replanned_closed", "closed_plan"].includes(name)
+            ? PRICE_CENTS - 5000
+            : ["resent", "dashboard"].includes(name)
+              ? PRICE_CENTS - HELD_UNOWED
+              : 0,
           status: "SUCCEEDED" as const,
           createdAt: EARLIER,
         })),
@@ -499,6 +507,48 @@ function capturesOnPayment() {
           },
         ],
       });
+      // Round 5: a re-send already recorded owes nothing, closed or not. Each
+      // of resent and dashboard holds HELD_UNOWED again only because a refund
+      // made by hand in Stripe failed later too (owed by nothing), beside its
+      // superseded refund's, which a failed-later row owed and has re-sent:
+      // resent's row has not closed (a worker that crashed before its close);
+      // dashboard's is dead, paid by a refund in the Stripe dashboard.
+      const resentCents = PRICE_CENTS - HELD_UNOWED;
+      for (const [name, state] of [
+        ["resent", { status: "PROCESSING" as const, attempts: 1 }],
+        ["dashboard", { status: "PENDING" as const, attempts: 5 }],
+      ] as const) {
+        const key = `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}re_race_4221_${name}_s`;
+        await prisma.paymentRecoveryOperation.create({
+          data: {
+            ...base,
+            ...state,
+            id: `race-4177-op-4221-failed-${name}`,
+            type: "REFUND_BOOKING_MODIFICATION",
+            amountCents: resentCents,
+            nextRetryAt: TIED_AT,
+            paymentIntentId: intent(name),
+            idempotencyKey: key,
+            stripeKeyPrefix: key,
+            allocationPlan: [{ paymentTransactionId: txn(name), amountCents: resentCents, madeByOperationId: refundOp(name) }],
+          },
+        });
+        // Recorded after the row was raised, as Stripe's answers are.
+        await prisma.paymentRefund.createMany({
+          data: [
+            [`re_race_4221_${name}_a`, HELD_UNOWED, "failed"],
+            [`re_race_4221_${name}_s`, resentCents, "failed"],
+            [`re_race_4221_${name}_again`, resentCents, "succeeded"],
+          ].map(([stripeRefundId, amountCents, status]) => ({
+            paymentId: PAYMENT_ID,
+            paymentTransactionId: txn(name),
+            stripeRefundId: stripeRefundId as string,
+            amountCents: amountCents as number,
+            currency: "nzd",
+            status: status as string,
+          })),
+        });
+      }
       const { listSupersededIntentIdsOwningCaptures } = await import("@/lib/superseded-intent-ownership");
 
       expect((await listSupersededIntentIdsOwningCaptures(prisma, PAYMENT_ID, await capturesOnPayment())).sort()).toEqual(
