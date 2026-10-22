@@ -2148,15 +2148,18 @@ async function performBookingCancellation(
 
     // Admin audience, so exempt from the per-booking "No emails" switch (#2258
     // rule 2): the switch silences the MEMBER, and somebody still has to be
-    // told there is cash to hand back. #3949: not for an organiser's - like an
-    // edit's or an appeal's hand-back, the finance queue carries it.
-    if (!toOrganiser) sendAdminManualRefundTaskAlert({
+    // told there is cash to hand back. #3949: a joiner's own cancel of a place
+    // the organiser paid for by Internet Banking says the organiser is repaid.
+    sendAdminManualRefundTaskAlert({
       memberName: `${bookingOwner(fresh).member.firstName} ${bookingOwner(fresh).member.lastName}`,
       checkIn: fresh.checkIn,
       checkOut: fresh.checkOut,
       refundAmountCents,
       bookingId,
-      reason: `Cash/manual settlement cancelled ${days} day(s) before check-in (${refundPercentage}% under the policy in effect at the time).`,
+      reason: toOrganiser
+        ? `Group joiner cancelled their own place ${days} day(s) before check-in; ${refundPercentage}% on the card tiers goes back to the group organiser by bank transfer (#3949).`
+        : `Cash/manual settlement cancelled ${days} day(s) before check-in (${refundPercentage}% under the policy in effect at the time).`,
+      ...(toOrganiser ? { situation: "joiner-cancel-organiser" as const } : {}),
     }, format).catch((err) =>
       logger.error(
         { err, bookingId, manualRefundTaskId },

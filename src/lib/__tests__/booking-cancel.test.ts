@@ -2977,6 +2977,23 @@ describe("cancelBooking credit refunds", () => {
         expect(mocks.sendAdminManualRefundTaskAlert.mock.calls[0][0].situation).toBeUndefined();
       });
 
+      it("#3949 (owner decision, 22 Oct 2026): a joiner's own cancel of a place the organiser paid for by internet banking raises the organiser's hand-back, emails the organiser wording and alerts with it", async () => {
+        const base = (await mocks.txBookingFindUnique()) as { payment: Record<string, unknown> };
+        const child = { ...base, organiserSettled: true, parentBookingId: "organiser_booking", payment: { ...base.payment, source: "INTERNET_BANKING", manuallyMarkedPaidAt: null } };
+        mocks.bookingFindUnique.mockResolvedValue(child);
+        mocks.txBookingFindUnique.mockResolvedValue(child);
+        mocks.txManualRefundTaskCreate.mockResolvedValue({ id: "task_organiser" });
+        prime(0);
+
+        const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "credit");
+
+        expect(result).toMatchObject({ status: 200, data: { refundMethod: "manual", organiserRefund: { method: "organiser_by_hand" } } });
+        expect(mocks.txManualRefundTaskCreate.mock.calls[0][0].data.reason).toContain("to the group organiser by bank transfer");
+        expect(mocks.sendBookingCancelledEmail.mock.calls[0][7]).toBe("organiser_by_hand");
+        expect(mocks.sendAdminManualRefundTaskAlert).toHaveBeenCalledTimes(1);
+        expect(mocks.sendAdminManualRefundTaskAlert.mock.calls[0][0].situation).toBe("joiner-cancel-organiser");
+      });
+
       it("a refund the plan carries in full raises no task and no alert", async () => {
         const result = await cancelBooking("booking_1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 

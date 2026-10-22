@@ -498,7 +498,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
   });
 
   it("admin-manual-refund-task: {{handBackNote}} and {{handBackLabel}} say which hand-back it is (#4042)", async () => {
-    const send = async (situation?: "group-organiser-internet-banking") => {
+    const send = async (situation?: "group-organiser-internet-banking" | "joiner-cancel-organiser") => {
       mocks.sendToAdmins.mockClear();
       await sendAdminManualRefundTaskAlert({
         memberName: "Alice Example",
@@ -544,6 +544,17 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(group.body).not.toContain("settled in cash");
     expect(group.body).not.toContain("no Xero invoice to credit");
     expect(group.body).not.toMatch(/in Xero/);
+
+    // #3949 (owner decision, 22 Oct 2026): a joiner's own cancel of a place the organiser paid for by Internet Banking.
+    const joiner = await send("joiner-cancel-organiser");
+    expect(joiner.subject).toBe("Manual refund needed — group joiner cancelled, refund to the organiser: Alice Example");
+    expect(joiner.body.startsWith("Manual Refund Needed - Group Joiner Cancelled, Refund to the Organiser\n")).toBe(true);
+    expect(joiner.body).toContain("repay the organiser by bank transfer");
+    expect(joiner.body).toContain("never to the joiner");
+    expect(joiner.body).toContain("Until #4292");
+    expect(joiner.body).toContain("Joiner: Alice Example");
+    expect(joiner.body).toContain("Amount to refund to the organiser: $75.00");
+    expect(joiner.body).not.toContain("settled in cash");
   });
 
   it("admin-second-instrument-settlement-conflict: {{secondInstrumentConflictNote}} says what the card money already did (#3638)", async () => {
