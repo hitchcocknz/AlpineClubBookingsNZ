@@ -1,4 +1,4 @@
-- **The club-timezone test suite no longer depends on which tz database Node ships (triyder/AlpineClubBookingsNZ#84; thatskiff33/AlpineClubBookingsNZ#4303).**
+- **The club-timezone test suite no longer depends on which tz database Node ships (#4303).**
   tzdata 2026d, which arrived with Node 24.22.1, turned `EST5EDT` and
   `PST8PDT` back into POSIX rule zones of their own instead of links to New
   York and Los Angeles, and five test cases that had pinned the old link went
