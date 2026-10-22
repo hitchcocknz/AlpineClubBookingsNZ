@@ -41,7 +41,8 @@ export type BookingModificationSettlementOptions = {
   /**
    * #3949: and the organiser paid by Internet Banking, so it goes back to them by
    * bank transfer - the edit's hand-back (`raiseEditRefundHandBackIfOwed`) -
-   * never to a card. False wherever `returnsToOrganiser` is.
+   * never to a card. Always false where `returnsToOrganiser` is false; where it
+   * is true, false means the organiser's card.
    */
   organiserRefundByBankTransfer: boolean;
 };
