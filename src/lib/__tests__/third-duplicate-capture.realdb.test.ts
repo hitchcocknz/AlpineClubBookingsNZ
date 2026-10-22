@@ -462,6 +462,26 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await prisma.alertCooldown.count({ where: { key: { contains: BOOKING_ID } } })).toBe(0);
     });
 
+    it("a change fee recorded after the settle: a duplicate delivered at the old amount is refunded in full and the settler kept", async () => {
+      const asked = stripeMakesRefunds();
+      const [settling, duplicate] = TABS;
+      expect((await arrive(settling)).outcome).toBe("paid");
+      // A later correction records a fee on the payment, so the booking now owes more.
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { changeFeeCents: 2_500 } });
+
+      expect((await arrive(duplicate)).outcome).toBe("duplicate_capture_refunded");
+      expect(asked).toEqual([duplicate]);
+      const after = await snapshot();
+      expect(after.refunds.map((refund) => refund.amountCents)).toEqual([PRICE_CENTS]);
+      expect(
+        after.transactions.filter((row) => row.status !== "PENDING").map((row) => [row.stripePaymentIntentId, row.status]),
+      ).toEqual([
+        [settling, "SUCCEEDED"],
+        [duplicate, "REFUNDED"],
+      ]);
+      expect(await recordedSettlerIntent()).toBe(settling);
+    });
+
     it("(a) the kept third capture's own replay is refunded against the recorded settler", async () => {
       const asked = stripeMakesRefunds();
       const [settling, , third] = TABS;
