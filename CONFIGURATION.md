@@ -768,7 +768,10 @@ menu.
   `{{joining-fees}}`, and `{{annual-fees}}` (with `{{entrance-fees}}` and
   `{{membership-types}}` retained as deprecated aliases of `{{joining-fees}}`
   and `{{annual-fees}}` respectively); the policy embeds are
-  `{{booking-policy-summary}}` and `{{cancellation-policy}}`. Each defaults
+  `{{booking-policy-summary}}` and `{{cancellation-policy}}`. `{{first-year-costs}}`
+  shows the joining fee plus the first year's subscription as one total per
+  publicly listed membership type and age tier; it appears only while both the
+  **Joining fees** and **Annual membership fees** toggles are on. Each defaults
   hidden until its family is enabled in Admin > Page Content — hut fees use the
   **Hut fees** toggle, joining fees the **Joining fees** toggle, and annual fees
   their own dedicated **Annual membership fees** double-opt-in (which also
