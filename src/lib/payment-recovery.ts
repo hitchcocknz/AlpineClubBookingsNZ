@@ -2470,7 +2470,9 @@ async function processCreateAdditionalPaymentIntentOperation(
       // #1358: the cancel flow retired this booking's asks, so a mint here would resurrect one nobody
       // can pay (#4272). The shares it leaves uncollected get their officer-findable record instead.
       const { recordCancelledEditReviewChargeShare } = await import("@/lib/edit-financial-review-charge-cancelled");
-      await recordCancelledEditReviewChargeShare({ format, bookingId: operation.bookingId, paymentId: operation.paymentId, bookingModificationId, memberId: bookingOwner(booking).member?.id ?? null });
+      await recordCancelledEditReviewChargeShare({
+        format, bookingId: operation.bookingId, paymentId: operation.paymentId, bookingModificationId, memberId: bookingOwner(booking).member.id ?? null,
+      });
       await completePaymentRecoveryOperation(operation.id);
       return;
     }
