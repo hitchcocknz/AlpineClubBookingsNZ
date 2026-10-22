@@ -10,19 +10,30 @@ import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 
 /**
  * #4230 (owner decision 22 Oct 2026, `INV-ADDPAY-021`): what the floor's alert
- * tells the officer to do. Below the detail is a real shortfall in Xero, with
- * two causes: a refund that has no credit note of its own (a later refund on a
- * bank-transfer payment can be counted under the payment's first refund note
- * instead of getting its own), or a refund note voided in Xero. The one
- * wording, shown in the alert and quoted by the Xero guide's troubleshooting
- * row, which a test holds to this constant.
+ * tells the officer to do. Below the detail is a real shortfall in Xero. The
+ * alert never fires while a voided refund note waits for the nightly follow-up
+ * (`hasVoidAwaitingFollowUp`, below), so the cause it usually means is a refund
+ * whose note was never raised: a later refund on a bank-transfer payment can be
+ * counted under the payment's first refund note instead of getting its own
+ * (#4287). A void reaches it only once the follow-up or a person has answered
+ * it (a marker on the note's link) with the cash still recorded, and its
+ * replacement comes from that answer, never by hand. The one wording, shown in
+ * the alert and quoted by the Xero guide's troubleshooting row, which a test
+ * holds to this constant.
  */
 export const BANK_TRANSFER_REFUND_SHORTFALL_ADVICE =
-  "Either a refund on this payment has no Xero credit note of its own yet - for example a later refund that was counted under the payment's first refund note instead of getting its own - so raise the missing refund credit note by hand in Xero; or a refund credit note was voided in Xero, and the nightly follow-up puts that refund back on the treasurer's refund list to confirm.";
+  "A refund on this payment may have no Xero credit note of its own: a later refund can be counted under the payment's first refund note instead of getting its own. Check the booking's invoice in Xero and raise a credit note by hand only for a refund whose credit note was never raised. Never raise one by hand for a refund whose credit note was voided in Xero: a voided note is handled on the treasurer's refund list or on Stuck States, and once it has been answered there, any replacement note comes from that answer.";
 
-/** The floor's alert, in plain English: the two totals, what was kept, and the advice above. */
-export function bankTransferRefundShortfallMessage(input: { paymentId: string; xeroNotesTotal: string; recordedRefundsTotal: string }): string {
-  return `The Xero refund credit notes for bank-transfer payment ${input.paymentId} add up to ${input.xeroNotesTotal}, less than the refunds the club recorded on it (${input.recordedRefundsTotal}). The recorded refunds were kept. ${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}`;
+/** The floor's alert, in plain English: where to look, the two totals, what was kept, and the advice above. */
+function bankTransferRefundShortfallMessage(input: {
+  paymentId: string;
+  bookingId: string;
+  creditNoteNumber: string | null;
+  xeroTotal: string;
+  recordedTotal: string;
+}): string {
+  const found = input.creditNoteNumber ? ` Found when credit note ${input.creditNoteNumber} changed in Xero.` : "";
+  return `Bank-transfer payment ${input.paymentId} on booking ${input.bookingId}: the refunds Xero accounts for on it add up to ${input.xeroTotal}, less than the refunds the club recorded on it (${input.recordedTotal}). The recorded refunds were kept.${found} ${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}`;
 }
 
 /**
@@ -37,14 +48,16 @@ export function bankTransferRefundShortfallMessage(input: { paymentId: string; x
  * alone. When Xero shows less, the detail is kept, logged and alerted, as the
  * card floor is (#1353) - at info and with no alert while a voided refund note
  * on the payment waits for that follow-up, which is the expected divergence.
- * The alert names both causes of a shortfall (`BANK_TRANSFER_REFUND_SHORTFALL_ADVICE`).
+ * What the alert advises is `BANK_TRANSFER_REFUND_SHORTFALL_ADVICE`.
  * A total already below its detail is never raised here; one above it may
  * still come down to it. Any other source passes through untouched.
  */
 export async function floorBankTransferRefundedTotal(input: {
-  payment: { id: string; source: PaymentSource; refundedAmountCents: number };
+  payment: { id: string; bookingId: string; source: PaymentSource; refundedAmountCents: number };
   xeroDerivedCents: number;
   creditNoteId: string;
+  /** The reconciled note's number, when Xero gave one: named in the alert so the treasurer can find it. */
+  creditNoteNumber?: string | null;
   format: ClubFormat;
 }): Promise<number> {
   const { payment, xeroDerivedCents } = input;
@@ -76,8 +89,10 @@ export async function floorBankTransferRefundedTotal(input: {
     operation: `inbound-credit-note-repair:${input.creditNoteId}`,
     errorMessage: bankTransferRefundShortfallMessage({
       paymentId: payment.id,
-      xeroNotesTotal: formatCents(xeroDerivedCents, input.format),
-      recordedRefundsTotal: formatCents(floorCents, input.format),
+      bookingId: payment.bookingId,
+      creditNoteNumber: input.creditNoteNumber ?? null,
+      xeroTotal: formatCents(xeroDerivedCents, input.format),
+      recordedTotal: formatCents(floorCents, input.format),
     }),
   });
   return floorCents;

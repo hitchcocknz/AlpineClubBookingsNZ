@@ -83,6 +83,7 @@ beforeEach(() => {
 function payment(overrides: Record<string, unknown> = {}) {
   return {
     id: "pay-1",
+    bookingId: "booking-1",
     amountCents: 10000,
     refundedAmountCents: 0,
     status: PaymentStatus.SUCCEEDED,
@@ -104,6 +105,7 @@ async function runRepair(input: {
     total: number | null;
     appliedAmount?: number | null;
     remainingCredit?: number | null;
+    creditNoteNumber?: string;
   };
 }) {
   mocks.paymentFindMany.mockResolvedValue([input.paymentRow]);
@@ -117,6 +119,7 @@ async function runRepair(input: {
       total: input.creditNote.total,
       appliedAmount: input.creditNote.appliedAmount ?? null,
       remainingCredit: input.creditNote.remainingCredit ?? null,
+      creditNoteNumber: input.creditNote.creditNoteNumber,
     } as never,
     directPaymentIds: [input.paymentRow.id as string],
     modificationRefundAmountsByPaymentId: new Map(),
@@ -210,21 +213,34 @@ describe("repairRefundedPaymentBusinessState raise-only Stripe ledger floor (#13
     mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 5000 } });
     const result = await runRepair({
       paymentRow: payment({ source: PaymentSource.INTERNET_BANKING, refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED }),
-      creditNote: { status: "VOIDED", total: 50 },
+      creditNote: { status: "VOIDED", total: 50, creditNoteNumber: "CN-0042" },
     });
 
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
     expect(result).toEqual({ matchedPayments: 1, updatedPayments: 0 });
     expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({ errorType: "refund-ledger-divergence" }));
-    // #4230: the alert names both causes - a refund with no note of its own, or a voided note - and what to do.
+    // #4230: where to look (payment, booking, note), the recount's total against the recorded refunds, and what to do.
     const { BANK_TRANSFER_REFUND_SHORTFALL_ADVICE } = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
     expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(
       expect.objectContaining({
-        errorMessage: `The Xero refund credit notes for bank-transfer payment pay-1 add up to $0.00, less than the refunds the club recorded on it ($50.00). The recorded refunds were kept. ${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}`,
+        errorMessage: `Bank-transfer payment pay-1 on booking booking-1: the refunds Xero accounts for on it add up to $0.00, less than the refunds the club recorded on it ($50.00). The recorded refunds were kept. Found when credit note CN-0042 changed in Xero. ${BANK_TRANSFER_REFUND_SHORTFALL_ADVICE}`,
       }),
     );
-    expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).toMatch(/no Xero credit note of its own yet.*raise the missing refund credit note by hand in Xero.*voided in Xero/);
+    expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).toMatch(/no Xero credit note of its own.*raise a credit note by hand only for a refund whose credit note was never raised\. Never raise one by hand for a refund whose credit note was voided/);
     expect(BANK_TRANSFER_REFUND_SHORTFALL_ADVICE).not.toMatch(/#\d/);
+  });
+
+  it("#4230: with no note number from Xero, the alert names the payment and booking and leaves the note out", async () => {
+    mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 5000 } });
+    await runRepair({
+      paymentRow: payment({ source: PaymentSource.INTERNET_BANKING, refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED }),
+      creditNote: { status: "AUTHORISED", total: 30 },
+    });
+    expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorMessage: expect.stringMatching(/^Bank-transfer payment pay-1 on booking booking-1: the refunds Xero accounts for on it add up to \$30\.00, less than the refunds the club recorded on it \(\$50\.00\)\. The recorded refunds were kept\. A refund/),
+      }),
+    );
   });
 
   it("#4162: lowers a bank-transfer total to its detail, never below it", async () => {

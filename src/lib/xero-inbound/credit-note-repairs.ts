@@ -123,7 +123,7 @@ async function includeDeletedAppliedCreditAllocationTargets(
 
 export async function repairRefundedPaymentBusinessState(input: {
   creditNoteId: string;
-  creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit">;
+  creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit" | "creditNoteNumber">;
   directPaymentIds: string[];
   modificationRefundAmountsByPaymentId: Map<string, number>;
   /**
@@ -166,6 +166,7 @@ export async function repairRefundedPaymentBusinessState(input: {
     },
     select: {
       id: true,
+      bookingId: true, // #4230: named in the bank-transfer floor's alert
       amountCents: true,
       refundedAmountCents: true,
       status: true,
@@ -455,7 +456,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       effectiveRefundedTotalCents = payment.refundedAmountCents;
     }
     // #4162 (`INV-ADDPAY-021`): never below a bank-transfer payment's own refund detail; less is alerted, not applied.
-    effectiveRefundedTotalCents = await floorBankTransferRefundedTotal({ payment, xeroDerivedCents: effectiveRefundedTotalCents, creditNoteId: input.creditNoteId, format });
+    effectiveRefundedTotalCents = await floorBankTransferRefundedTotal({ payment, xeroDerivedCents: effectiveRefundedTotalCents, creditNoteId: input.creditNoteId, creditNoteNumber: input.creditNote.creditNoteNumber ?? null, format });
     // #3653 (`INV-PAY-114`): a Xero note never raises an organiser child's cash
     // mirror past the refunds Stripe recorded for it.
     if (isStripePayment && payment.booking.organiserSettled) {
