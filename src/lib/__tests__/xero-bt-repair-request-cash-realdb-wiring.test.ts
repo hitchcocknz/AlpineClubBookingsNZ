@@ -26,6 +26,8 @@ describe("the bank-transfer request-cash recount real-database proof stays wired
     expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(suite).toContain("a canonical-note reconcile keeps the request's $50 beside the note's $100");
     expect(suite).toContain("keeps it while the request's note is still queued, and after Xero voids it");
-    expect(suite).toContain("the canonical note voided: its $100 goes (INV-ADDPAY-041), the request's $50 stays");
+    expect(suite).toContain("the canonical note voided: the recount keeps the payment's detail for the nightly follow-up (#4162)");
+    expect(suite).toContain("a payment an earlier release recounted too low is put right by a replay of its canonical note");
+    expect(suite).toContain("a request paid back before the booking had an invoice");
   });
 });

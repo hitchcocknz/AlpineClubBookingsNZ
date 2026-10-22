@@ -191,6 +191,21 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       }
     }
 
+    /** The refund-ledger divergence alerts raised while `run` executes (#1353, #4162 floors). */
+    async function watchDivergenceAlerts(run: () => Promise<unknown>): Promise<string[]> {
+      const alerting = await import("@/lib/xero-error-alert");
+      const spy = vi.spyOn(alerting, "notifyXeroSyncError").mockResolvedValue(undefined as never);
+      try {
+        await run();
+        return spy.mock.calls
+          .map(([input]) => (input as { errorType: string; operation: string }))
+          .filter((input) => input.errorType === "refund-ledger-divergence")
+          .map((input) => input.operation);
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
     const canonicalNote = (status: string) => ({
       creditNoteID: CANONICAL_NOTE, creditNoteNumber: "CN-4215", status,
       total: 100, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [],
@@ -210,11 +225,16 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         });
       }
 
-      const result = await reconcileFromXero(canonicalNote("PAID"));
+      let result!: Awaited<ReturnType<typeof reconcileFromXero>>;
+      const alerts = await watchDivergenceAlerts(async () => {
+        result = await reconcileFromXero(canonicalNote("PAID"));
+      });
 
-      // Before #4215: { refundedAmountCents: 10_000 } - the request's cash dropped out.
+      // Before #4215: { refundedAmountCents: 10_000 } - the request's cash dropped out. Since
+      // #4162's floor keeps the detail, the drop shows as a false divergence alert instead.
       expect(result.matchedRefundedPayments).toBe(1);
       expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
+      expect(alerts).toEqual([]);
       // A redelivery moves nothing.
       await reconcileFromXero(canonicalNote("PAID"));
       expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
@@ -234,13 +254,28 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
     });
 
-    it("the canonical note voided: its $100 goes (INV-ADDPAY-041), the request's $50 stays - never attributed to the canonical note", async () => {
+    it("the canonical note voided: the recount keeps the payment's detail for the nightly follow-up (#4162), and keeps the request's $50 out of the void", async () => {
       await seedInvoiced();
       await linkRequestNote("PAID");
 
-      await reconcileFromXero(canonicalNote("VOIDED"));
+      const alerts = await watchDivergenceAlerts(() => reconcileFromXero(canonicalNote("VOIDED")));
 
-      expect(await paymentState()).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+      // #4162 (`INV-ADDPAY-021`): the void is the nightly follow-up's to carry through the
+      // detail, the ledger line and the total together; the recount only keeps the detail,
+      // and, a void awaiting that follow-up being expected, alerts nothing.
+      expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
+      expect(alerts).toEqual([]);
+    });
+
+    it("a payment an earlier release recounted too low is put right by a replay of its canonical note (#4231 deploy note)", async () => {
+      await seedInvoiced();
+      // The previous release's recount dropped the request's $50; its charge rows kept it.
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { refundedAmountCents: 10_000 } });
+
+      await reconcileFromXero(canonicalNote("PAID"));
+
+      // The #4162 floor never raises a total already below its detail: only the request's own term does.
+      expect(await paymentState()).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
     });
     /**
      * The booking repair tool's dry run: what it would queue for the
