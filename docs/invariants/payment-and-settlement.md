@@ -1501,6 +1501,38 @@ refunded total it corrects).
     `booking-ledger-projection-census.test.ts` and
     `capacity-race-refund-shortfall-task.realdb.test.ts`.
 
+## INV-PAY-136
+
+**Related: `INV-PAY-119`** (worth, and what the primary invoice bills).
+
+- **An edit racing the primary invoice create is refused, or measured and
+  billed or handed on** (#3980; owner, 21 Oct 2026).
+- **Who claims.** A writer changing a booking's worth that read no invoice
+  link makes one guarded `Payment` write (`writeEditOnPayment`, `updateMany
+  where {id, xeroInvoiceId: null}`, carrying its fee) or is refused, 409: the
+  date, batch, guest-removal and acceptance doors (`applyPaymentAdjustments`),
+  the guests route, the review re-base (against the closure's own read) and
+  school naming. Doors mark their history row.
+- **What is measured.** The create reads the booking and its marked edits in
+  one REPEATABLE READ snapshot. Its link save is guarded on the link being
+  unset and stores, in one transaction, what Xero billed, the worth and lines
+  built from, and the worth after the row write. Gap: worth moved since the
+  build plus built less billed.
+- **What follows.** A shortfall goes on one signed supplementary invoice
+  anchored on the newest marked edit outside the snapshot (and, on a replay,
+  after the first create) that moved money and has no review, paid from cash
+  the primary left, else unpaid. Otherwise, or for an overcharge, one Xero
+  Operations task; never an automatic credit note.
+- **Limits.** A card capture of the anchor's own ask is not recorded against
+  the gap invoice (#3953). The other link writers store no figures: an edit
+  just before them is unmeasured, and a create finding one's link hands any
+  gap to the treasurer. The credit election changes no price. No payment row,
+  no claim.
+- Pinned by `primary-invoice-edit-race.realdb.test.ts`,
+  `primary-invoice-claim-call-sites.test.ts`,
+  `xero-primary-invoice-fee-gap.test.ts` and
+  `booking-primary-invoice-claim.test.ts`.
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the
@@ -3400,26 +3432,22 @@ _Split from `INV-PAY-057` (#3220)._
   An edit's credit clamp, zero-dollar decision and stale-intent comparison
   read worth; a guest's acceptance nets credit to the price, its return route
   admitting only credit and cash summing to it.
-- A fee a finished-stay correction keeps on a stay with nothing captured is
-  recorded on the payment, claimed against the invoice link the edit read, and
-  posts its `CHANGE_FEE` line under its modification's key at the settle,
-  counting as income once captured.
-- **The primary invoice bills the recorded fee in full.** Its link is saved
-  in one transaction with what it billed, the fee then recorded and its Stripe
-  cash (capped so unallocated ledger credit fits). A supplementary invoice,
-  anchored on its routing correction, bills the gap, paid from cash the
-  primary left, else unpaid; untaken cash is logged. Retries re-check stored
-  figures without re-queuing; PARTIAL repairs record the attempted payment
-  (#4010).
-- Limits: a capture recorded for its intent is not re-checked against a later
-  fee; a fee the ordinary settled edit (#3980, `applyPaymentAdjustments`)
-  records mid-create, before the link is saved, is unclaimed: logged, not
-  billed; an invoice linked without stored figures is unchecked, warning when
-  a fee is recorded.
+- A finished-stay correction's fee on a stay with nothing captured is recorded
+  on the payment and posts its `CHANGE_FEE` line under its modification's key
+  at the settle, counting as income once captured.
+- **The primary invoice bills worth as the create read it**; an edit racing
+  its create is refused or measured (`INV-PAY-136`). The link's transaction
+  stores what was billed and Stripe cash (capped so ledger credit fits); a
+  shortfall's supplementary invoice is paid from leftover cash, else unpaid.
+  Retries re-check stored figures; PARTIAL repairs record the attempted
+  payment (#4010).
+- Limits: a capture is not re-checked against a later fee; an invoice linked
+  without stored figures is unchecked.
 - Pinned by `amount-owed-one-home.test.ts`,
   `booking-detail-history-amount-owed.test.ts`,
-  `booking-change-request-execution.realdb.test.ts` and
-  `xero-primary-invoice-fee-gap.test.ts`.
+  `booking-change-request-execution.realdb.test.ts`,
+  `xero-primary-invoice-fee-gap.test.ts` and
+  `primary-invoice-edit-race.realdb.test.ts`.
 
 ## INV-PAY-124
 

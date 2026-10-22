@@ -168,6 +168,14 @@ const state = vi.hoisted(() => ({
 }));
 
 const paymentUpdate = vi.fn();
+// #3980: an edit that read no invoice link claims the payment row, carrying its fee.
+const paymentUpdateMany = vi.fn(async () => ({ count: 1 }));
+/** Every change-fee increment the edit wrote on the payment, through either write. */
+function feeIncrements(): number[] {
+  return [...paymentUpdate.mock.calls, ...(paymentUpdateMany.mock.calls as unknown as unknown[][])]
+    .map(([call]) => (call as { data: { changeFeeCents?: { increment: number } } }).data.changeFeeCents?.increment ?? 0)
+    .filter((cents) => cents > 0);
+}
 // The REAL `reconcilePaymentAggregates` runs on this client (INV-OPS-015). It
 // finds no payment here, so it writes nothing: the mirror it derives from the
 // retired rows is proved on real PostgreSQL (`additional-ask-reduction.realdb.test.ts`);
@@ -180,7 +188,7 @@ const recoveryUpdateMany = vi.fn();
 const executeRaw = vi.fn(async () => 0);
 const tx = {
   $executeRaw: executeRaw,
-  payment: { update: paymentUpdate, findUnique: paymentFindUnique },
+  payment: { update: paymentUpdate, updateMany: paymentUpdateMany, findUnique: paymentFindUnique },
   manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })) },
   paymentTransaction: {
     findMany: vi.fn(async () => state.rows),
@@ -279,9 +287,7 @@ function ledgerAfter(
   result: Awaited<ReturnType<typeof adjust>>,
 ) {
   const payment = booking.payment!;
-  const feeRecorded = paymentUpdate.mock.calls
-    .map(([call]) => call.data.changeFeeCents?.increment ?? 0)
-    .reduce((sum: number, cents: number) => sum + cents, 0);
+  const feeRecorded = feeIncrements().reduce((sum: number, cents: number) => sum + cents, 0);
   // The retired ask projects nothing; a re-issued one is the new live ask.
   const askCents = result.retiredAdditionalAsks.length > 0 ? result.additionalAsk.amountCents : payment.additionalAmountCents;
   return {
@@ -411,8 +417,12 @@ describe("#3954: a card-paid booking's reduction is set against its unpaid ask f
 
     expect(result.unpaidAskOffsetCents).toBe(1_500);
     expect(result.additionalAsk.amountCents).toBe(3_500);
-    expect(paymentUpdate).toHaveBeenCalledTimes(1);
-    expect(paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment_1" }, data: { changeFeeCents: { increment: 500 } } });
+    expect(feeIncrements()).toEqual([500]);
+    // #3980: read no invoice link, so the fee rides the edit's claim on the row.
+    expect(paymentUpdateMany).toHaveBeenCalledWith({
+      where: { id: "payment_1", xeroInvoiceId: null },
+      data: { changeFeeCents: { increment: 500 } },
+    });
     expect(bookingLedgerResidualCents(ledgerAfter(booking, -2_000, result))).toBe(0);
   });
 
@@ -423,35 +433,33 @@ describe("#3954: a card-paid booking's reduction is set against its unpaid ask f
       booking, priceDiffCents: -2_000, changeFeeCents: 500, reduction,
       todayAtClub: TODAY, format: CLUB_FORMAT_TEST, changeFeeRecordedByCaller: true,
     });
-    expect(paymentUpdate).not.toHaveBeenCalledWith(
-      expect.objectContaining({ data: { changeFeeCents: { increment: 500 } } }),
-    );
+    expect(feeIncrements()).not.toContain(500);
 
     paymentUpdate.mockClear();
+    paymentUpdateMany.mockClear();
     await applyPaymentAdjustments(tx, {
       booking, priceDiffCents: -2_000, changeFeeCents: 500, reduction: await readReductionAgainstUnpaidAsk(tx, booking, -1_500),
       todayAtClub: TODAY, format: CLUB_FORMAT_TEST,
     });
-    expect(paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment_1" }, data: { changeFeeCents: { increment: 500 } } });
+    expect(feeIncrements()).toContain(500);
   });
 
   it("MUTATION (round 6, F4): an INCREASE whose fee the caller records on the amount owed records it once too - a credit-paid finished-stay swap", async () => {
     const booking = grownBooking({ creditPaid: true });
     paymentUpdate.mockClear();
+    paymentUpdateMany.mockClear();
     const result = await applyPaymentAdjustments(tx, {
       booking, priceDiffCents: 1_000, changeFeeCents: 500, reduction: noReductionAgainstUnpaidAsk(1_500),
       todayAtClub: TODAY, format: CLUB_FORMAT_TEST, changeFeeRecordedByCaller: true,
     });
     expect(result.additionalAsk.amountCents).toBe(6_500);
-    expect(paymentUpdate).not.toHaveBeenCalledWith(
-      expect.objectContaining({ data: { changeFeeCents: { increment: 500 } } }),
-    );
+    expect(feeIncrements()).not.toContain(500);
 
     await applyPaymentAdjustments(tx, {
       booking, priceDiffCents: 1_000, changeFeeCents: 500, reduction: noReductionAgainstUnpaidAsk(1_500),
       todayAtClub: TODAY, format: CLUB_FORMAT_TEST,
     });
-    expect(paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment_1" }, data: { changeFeeCents: { increment: 500 } } });
+    expect(feeIncrements()).toContain(500);
   });
 
   it("a fully absorbed reduction needs no card-or-credit choice and raises no Xero note", async () => {
@@ -494,7 +502,7 @@ describe("#3954: a credit-paid ($0) booking's reduction is set against its unpai
     expect(result.appliedCreditGivenBackCents).toBe(0);
     // The settled arm never reaches a credit-paid reduction, so the fee is
     // recorded by the ask's own branch - once.
-    expect(paymentUpdate).toHaveBeenCalledTimes(1);
+    expect(feeIncrements()).toEqual([500]);
     expect(bookingLedgerResidualCents(ledgerAfter(booking, -2_000, result))).toBe(0);
   });
 });

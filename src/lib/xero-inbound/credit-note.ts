@@ -359,6 +359,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       total: creditNote.total ?? undefined,
       appliedAmount: creditNote.appliedAmount ?? undefined,
       remainingCredit: creditNote.remainingCredit ?? undefined,
+      creditNoteNumber: creditNote.creditNoteNumber ?? undefined, // #4230: named in the bank-transfer floor's alert
     },
     directPaymentIds: [
       ...paymentCandidates.map((payment) => payment.id),
