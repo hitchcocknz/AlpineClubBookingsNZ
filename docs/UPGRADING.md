@@ -119,6 +119,38 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The app records which payment settled each booking (#4211)
+
+`20261121010000_payment_settled_by_transaction` adds one nullable column,
+`Payment.settledByTransactionId`. It is **additive only** (no backfill, no
+index, no rewrite), so it is safe in the ordinary deploy window with the
+previous colour still serving.
+
+**What changes.** When a booking is paid, the app now records which payment
+paid it. If the member pays again (a second or third card payment from old
+browser tabs), the extra payments are refunded automatically and the recorded
+one never is.
+
+**Bookings paid before this release, or by the old colour during the switch,**
+have no record. The old colour does not know the column, so a booking it
+settles stays unrecorded. For those bookings, if a card payment arrives while
+another payment on the booking still holds money, the app keeps it, refunds
+nothing, and sends the admins a *"Booking may have been paid twice — check by
+hand"* alert that cannot be muted. The same email repeats at most once a day
+per payment while the payment repeats - a Stripe redelivery, or a reconcile or
+cron re-run. A payment the app had already started refunding as a duplicate
+still finishes its own refund.
+
+**During the switch the old colour still refunds automatically**, by the rule
+it shipped with, and on a repeat of the real payment it can refund that one.
+So before refunding anything by hand, check in Stripe that neither payment has
+already been refunded; the alert says so too.
+
+**What admins will notice.** Before this release a second card payment on a
+paid booking was refunded automatically. On a booking with no record it now
+waits for an admin to decide. Nothing goes back through past bookings, and the
+alert only comes for a booking that is already holding two payments.
+
 ### Count voided bank-transfer refund notes, then switch the follow-up on (#4162)
 
 **What changes.** A bank-transfer refund whose Xero refund credit note is voided

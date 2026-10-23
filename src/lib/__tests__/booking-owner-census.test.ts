@@ -522,8 +522,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1344",
-  "src/lib/payment-recovery.ts:2596",
-  "src/lib/payment-recovery.ts:2648",
+  "src/lib/payment-recovery.ts:2564",
+  "src/lib/payment-recovery.ts:2616",
   "src/lib/xero-admin-health.ts:394",
 ];
 
@@ -786,7 +786,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // under its `booking` relation, which declares it.
   "src/lib/booking-change-request-admin-decision.ts:88",
   "src/lib/cron-additional-payment-reminders.ts:440",
-  "src/lib/cron-confirm-pending.ts:209",
+  "src/lib/cron-confirm-pending.ts:210",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #4042: the organiser hand-back's owner-name select, shared by its two
   // booking reads. Verified by hand: written through
@@ -808,7 +808,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // build. The walk cannot root it only because the literal names no delegate.
   "src/lib/member-lodge-roster.ts:112",
   "src/lib/payment-link.ts:81",
-  "src/lib/payment-reconciliation.ts:104",
+  "src/lib/payment-reconciliation.ts:100",
   "src/lib/stuck-state-dashboard.ts:620",
   "src/lib/xero-booking-repair-types.ts:225",
   "src/lib/xero-inbound/settlement-conflicts.ts:155",
