@@ -8972,7 +8972,7 @@ describe("#3954: a reduction set against an unpaid ask", () => {
 });
 
 /**
- * #3953 (`INV-PAY-139`): "card payment not recorded in Xero" - a change's card
+ * #3953 (`INV-PAY-138`): "card payment not recorded in Xero" - a change's card
  * capture on a booking whose primary invoice exists, that no supplementary
  * invoice and no receipt of its own records.
  */

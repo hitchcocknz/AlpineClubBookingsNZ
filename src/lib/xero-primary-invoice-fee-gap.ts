@@ -464,7 +464,8 @@ async function reviewUnstoredRelink(input: {
  *    already queued, and why it never raises another edit's queued figure. Its
  *    lines are the fee recorded since the build as a change fee and the rest
  *    as price, signed as an edit's are (#1356). A card capture of the
- *    anchor's own ask is not recorded against it here: that is #3953's.
+ *    anchor's own ask is recorded against it later, by that capture's own
+ *    receipt (#3953, `INV-PAY-138`, `additional-capture-xero-receipt.ts`).
  *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
  *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
  *    credit note is raised automatically (owner, 21 Oct 2026). An overcharge's

@@ -1016,7 +1016,7 @@ describe("Stripe webhook Xero alerting", () => {
     );
   });
 
-  // #3953 (`INV-PAY-139`): a change's capture its own receipt recorded against
+  // #3953 (`INV-PAY-138`): a change's capture its own receipt recorded against
   // the gap invoice - its refund's note names that invoice, not the primary.
   it("names the invoice a change capture's own receipt paid on that capture's refund note", async () => {
     mockConstructWebhookEvent.mockReturnValue({

@@ -1277,6 +1277,10 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // callers (the Stripe webhook's additional-payment handler, the
   // confirm-modification-payment route, the waiting-invoice reaper) hold no
   // transaction or other advisory lock there, and no provider call runs inside.
+  // #3953 (`INV-PAY-138`): the change-capture receipt's enqueue
+  // (`additional-capture-receipt-enqueue.ts`) calls the same helper on the
+  // change its capture pays for (else the booking), holding nothing, for
+  // find-by-key -> create of one outbox row; no new raw site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,

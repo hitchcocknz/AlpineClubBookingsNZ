@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-139`): QUEUE THE RECEIPT of a booking change's card capture
+ * #3953 (`INV-PAY-138`): QUEUE THE RECEIPT of a booking change's card capture
  * that no supplementary invoice was waiting on, once per capture. Called by
  * the late-success release (`releaseXeroSupplementaryInvoiceForCapturedPaymentIntent`)
  * when it answers `none-queued`, from each caller that has seen the capture -

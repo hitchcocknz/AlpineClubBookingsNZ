@@ -47,7 +47,7 @@ export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
    */
   readonly worth?: PrimaryInvoiceWorthAtLink;
   /**
-   * #3953 (`INV-PAY-139`): the Stripe intents whose captures the create's
+   * #3953 (`INV-PAY-138`): the Stripe intents whose captures the create's
    * snapshot held - the cash it sized its payment from. A change's capture
    * not in it is recorded by its own receipt (`additional-capture-xero-receipt.ts`).
    * Absent on a record written before it, which cannot tell.

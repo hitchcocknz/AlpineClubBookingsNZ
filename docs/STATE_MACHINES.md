@@ -3655,7 +3655,7 @@ stale RUNNING (> 15 min) -> FAILED by an officer's Mark failed (one row) or
   a PARTIAL repair's claim (code PARTIAL_REPAIR_RUNNING) -> PARTIAL instead,
   payload kept, code ORPHANED_STALE_RUNNING; Retry repairs it again (#4256)
 retry of an outbox-run row (group invoice and its VOIDs, kept late capture,
-  membership subscription invoice) -> the SAME row back to PENDING, same
+  membership subscription invoice, a change capture's receipt) -> the SAME row back to PENDING, same
   correlation key, status-guarded; the outbox claim runs it. Refused (409, no
   write) when a sibling for the same document was resolved in Xero after the
   row was queued, which the outbox would cancel unsent (#3994). A subscription
@@ -3668,11 +3668,32 @@ primary booking invoice create saves its link -> worth gap check (#3980,
   moved money, with no review
     -> supplementary invoice operation queued PENDING (once per anchor set),
        paid from cash the primary left, else unpaid; a later card capture of
-       the anchor's own ask is not recorded against it (#3953)
+       the anchor's own ask is recorded against it by its own receipt (below)
   overcharge, or a shortfall no marked edit anchors -> REVIEW operation
     PRIMARY_INVOICE_WORTH_GAP written FAILED, replayable false (Retry
     refused) -> treasurer acts in Xero, then Resolve (fixed in Xero); one per
     booking, invoice and direction
+change's card capture kept, nothing parked on its intent, primary invoice
+  linked (#3953, INV-PAY-138) -> late-success release answers receipt-queued:
+  ADDITIONAL_CAPTURE_RECEIPT PENDING, one per capture (key: the intent), found
+  or created under the change's supplementary-invoice anchor lock; a replay,
+  or the webhook and the confirm route at once, find it (already-released)
+  receipt worker:
+    payment already linked -> SUCCEEDED, no Xero call
+    capture counted by the primary's create -> SUCCEEDED (skipped)
+    capture no longer kept -> CANCELLED
+    gap invoice still PENDING/RUNNING -> busy -> back to PENDING (no failure)
+    no room anywhere and no gap invoice -> #3980's re-check:
+      gap raised now from this capture's cash -> SUCCEEDED (recorded by it)
+      gap queued -> busy -> back to PENDING; else refused
+    room on the gap invoice, else the primary -> decision stored on the row
+      -> Xero payment (or an earlier run's, found by reference) -> SUCCEEDED,
+         ADDITIONAL_CAPTURE_PAYMENT link; cash left over -> officer alerted
+    cancelled booking, not captured, nothing due, gap invoice not in Xero,
+      the invoice's own payment still owed, or a retry's figures changed
+      -> FAILED, code ADDITIONAL_CAPTURE_RECEIPT_REFUSED, officer alerted;
+         Retry re-runs it on the same row, any stored decision unchanged
+    Xero write error -> FAILED (decision kept); Retry sends the same payment
 ```
 
 To verify: status strings, stale processing reset, tenant selection, link
@@ -3683,6 +3704,8 @@ The claimed-original abandon and Mark failed are pinned by
 `xero-operation-queue.test.ts` and `xero-operation-routes.test.ts` (#3462).
 The PARTIAL repair's claim is pinned by `xero-operation-retry.test.ts` and,
 against real PostgreSQL, `xero-partial-repair-claim.realdb.test.ts` (#4256).
+A change capture's receipt is pinned by `additional-capture-xero-receipt.test.ts`
+and, against real PostgreSQL, `additional-capture-receipt.realdb.test.ts` (#3953).
 
 ## Cron And Recovery Lifecycle
 
