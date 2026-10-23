@@ -284,6 +284,32 @@ describe("planModificationChargeLines — an edit's own lines, per guest-night (
     ]);
   });
 
+  it("posts NOTHING where the valued before side disagrees with the live lines (R3; #4317 review M3)", () => {
+    // g2 was confirmed with two $50 lines, but its stored total is $120: the
+    // rows do not add up, so the edit credits each night at its R3 value, $60.
+    // Reversing the $50 lines would post a removal that does not sum to the
+    // edit's -$120, and re-posting at $60 would rewrite history the ledger never
+    // carried - so nothing posts, and the census counts the edit UNPOSTED_EDIT
+    // until wave B's re-base re-posts those lines (D5). Never a wrong line.
+    const valued = side([guest("g1", [[D1, 5_000], [D2, 5_000]]), guest("g2", [[D1, 6_000], [D2, 6_000]])], -2_000);
+    const plan = planModificationChargeLines(
+      input({ before: valued, after: side(BEFORE.guests.slice(0, 1), -2_000), expectedCents: -12_000 }),
+    );
+    expect(plan).toEqual({ kind: "none", reason: "LIVE_LINE_DISAGREES" });
+  });
+
+  it("posts NOTHING for a night valued after confirmation posted no line for it (#4317 review M3)", () => {
+    // Confirmation skipped g2's second night (its row was blank). The edit values
+    // it, so the before side names a night with no live line to reverse.
+    const postedLines = asPosted(confirmed()).filter(
+      (line) => line.id !== "line:confirmation:b1:night:g2:2026-08-02",
+    );
+    const plan = planModificationChargeLines(
+      input({ after: side(BEFORE.guests.slice(0, 1), -2_000), expectedCents: -10_000, postedLines }),
+    );
+    expect(plan).toEqual({ kind: "none", reason: "NO_LIVE_LINE" });
+  });
+
   it("TWO EDITS: the second reverses the first edit's re-post, never the line the first already reversed", () => {
     // Edit 1 reprices g1's second night from $50 to $60.
     const after1 = side([guest("g1", [[D1, 5_000], [D2, 6_000]]), BEFORE.guests[1]!], -2_000);

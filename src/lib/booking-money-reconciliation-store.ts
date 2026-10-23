@@ -11,6 +11,10 @@ import {
   type BookingMoneyReconciliationSummary,
 } from "@/lib/booking-money-reconciliation";
 import {
+  summarizeLedgerNightValues,
+  type LedgerNightValueCensus,
+} from "@/lib/ledger-night-value-census";
+import {
   summarizeEditFinancialReviews,
   summarizeNightPriceProvenance,
   type EditFinancialReviewCensus,
@@ -85,6 +89,12 @@ export type BookingMoneyReconciliationCensus = BookingMoneyReconciliationSummary
    */
   nightPriceProvenance: NightPriceProvenanceCensus;
   editFinancialReviews: EditFinancialReviewCensus;
+  /**
+   * #4317 review M3: the bookings confirmed on the ledger whose live per-night
+   * lines differ from what an edit now values those nights at - each one an
+   * edit would leave unposted (an `UNPOSTED_EDIT` gap) until wave B's re-base.
+   */
+  ledgerNightValues: LedgerNightValueCensus;
 };
 
 /**
@@ -111,10 +121,41 @@ export async function censusBookingMoneyReconciliation(
         orderBy: { id: "asc" },
         select: { createdAt: true, status: true, reviewContext: true },
       });
+      // #4317 review M3: the guests as an edit values them, and every guest-night
+      // ledger line with its reversals, from the same snapshot.
+      const guests = await tx.bookingGuest.findMany({
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          bookingId: true,
+          priceCents: true,
+          stayStart: true,
+          stayEnd: true,
+          nights: { select: { stayDate: true, priceCents: true, priceSource: true } },
+        },
+      });
+      const lines = await tx.bookingLedgerLine.findMany({
+        where: { side: "CHARGE" },
+        orderBy: { id: "asc" },
+        select: {
+          id: true,
+          bookingId: true,
+          kind: true,
+          sign: true,
+          quantity: true,
+          unitCents: true,
+          bookingGuestId: true,
+          nightStart: true,
+          nightEndExclusive: true,
+          reversesLineId: true,
+          anchorKind: true,
+        },
+      });
       return {
         ...summarizeBookingMoneyReconciliations(bookings),
         nightPriceProvenance: summarizeNightPriceProvenance(bookings, zone),
         editFinancialReviews: summarizeEditFinancialReviews(reviews, zone),
+        ledgerNightValues: summarizeLedgerNightValues({ bookings, guests, lines }),
       };
     },
     { isolationLevel: "RepeatableRead" },
