@@ -46,6 +46,10 @@ vi.mock("@/lib/prisma", () => ({
     paymentRecoveryOperation: {
       findFirst: vi.fn().mockResolvedValue(null),
     },
+    // ...and the intent's own ledger row, which names its payment; none here.
+    paymentTransaction: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     $transaction: vi.fn(),
   },
 }));
@@ -528,6 +532,53 @@ describe("payment intent routes", () => {
     expect(JSON.stringify(data)).not.toContain("cs_aud");
     expect(mocks.queueSupersededPrimaryIntentCancellations).not.toHaveBeenCalled();
     expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+  });
+
+  describe("#4300 (INV-PAY-138): an intent an edit superseded is never handed out again", () => {
+    function primeSupersededAtMatchingAmount(status: string) {
+      mockPrisma.booking.findUnique.mockResolvedValue({
+        id: "booking-1",
+        memberId: "member-1",
+        status: "PAYMENT_PENDING",
+        finalPriceCents: 12500,
+        member: { id: "member-1", email: "member@example.com", firstName: "Test", lastName: "Member" },
+        payment: { id: "pay-1", stripePaymentIntentId: "pi_superseded", status: "PENDING" },
+      });
+      // The price moved away and came back: the amount matches again.
+      mockGetPaymentIntent.mockResolvedValue({ id: "pi_superseded", client_secret: "cs_superseded", currency: "nzd", status, amount: 12500 });
+      // ...but its cancel row is still live (Stripe was down for the edit's cancel).
+      mockPrisma.paymentRecoveryOperation.findFirst.mockResolvedValueOnce({ id: "op-cancel" });
+      mockStripeCreatePaymentIntent.mockResolvedValue({ id: "pi_fresh", client_secret: "cs_fresh", currency: "nzd", amount: 12500 });
+      mockPrisma.payment.upsert.mockResolvedValue({ id: "pay-1" });
+    }
+    const request = () =>
+      createPaymentIntentRoute(
+        new NextRequest("http://localhost/api/payments/create-payment-intent", {
+          method: "POST",
+          body: JSON.stringify({ bookingId: "booking-1" }),
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+    it("mints a fresh intent instead of reusing the superseded one's secret", async () => {
+      primeSupersededAtMatchingAmount("requires_payment_method");
+      const res = await request();
+      const data = await res.json();
+      expect(res.status).toBe(200);
+      expect(data.clientSecret).toBe("cs_fresh");
+      expect(JSON.stringify(data)).not.toContain("cs_superseded");
+      expect(mockStripeCreatePaymentIntent).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 12500 }));
+    });
+
+    it("answers PAYMENT_PROCESSING while the superseded intent is being paid, minting nothing beside it", async () => {
+      primeSupersededAtMatchingAmount("processing");
+      const res = await request();
+      const data = await res.json();
+      expect(res.status).toBe(409);
+      expect(data.code).toBe("PAYMENT_PROCESSING");
+      expect(JSON.stringify(data)).not.toContain("cs_superseded");
+      expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
+    });
   });
 
   it("refuses a club currency without two decimal places with a 409 before reading the booking (#3567)", async () => {
@@ -1725,6 +1776,32 @@ describe("payment intent routes", () => {
       createdByMemberId: "member-1",
     });
     expect(mocks.logAudit).toHaveBeenCalled();
+  });
+
+  it("#4300: answers the superseded body when the settle's own check (under lock(1)) refuses the capture", async () => {
+    mockPrisma.payment.findUnique.mockResolvedValue({
+      id: "payment-1",
+      stripePaymentIntentId: "pi_raced",
+      status: "PROCESSING",
+      booking: { memberId: "member-1", finalPriceCents: 12500, status: "PAYMENT_PENDING" },
+    });
+    mockGetPaymentIntent.mockResolvedValue({ id: "pi_raced", amount: 12500, payment_method: "pm_123", status: "succeeded" });
+    mocks.markBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
+
+    const res = await confirmPaymentRoute(
+      new NextRequest("http://localhost/api/bookings/booking-1/confirm-payment", {
+        method: "POST",
+        body: JSON.stringify({ paymentIntentId: "pi_raced" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+      { params: Promise.resolve({ id: "booking-1" }) },
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY);
+    expect(mocks.sendBookingConfirmedEmail).not.toHaveBeenCalled();
+    expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+    expect(mocks.logAudit).not.toHaveBeenCalled();
   });
 
   it("#4300: refuses to settle with an intent the superseded machinery is refunding, and says so", async () => {

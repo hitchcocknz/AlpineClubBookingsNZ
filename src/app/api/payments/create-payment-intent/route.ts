@@ -38,6 +38,7 @@ import {
 } from "@/lib/booking-payment-cleanup";
 import { drainSupersededPrimaryIntents } from "@/lib/booking-modification-settlement";
 import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
+import { findLiveSupersededIntentOperation } from "@/lib/superseded-intent-ownership";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 import {
@@ -53,6 +54,7 @@ import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
   PAYMENT_PROCESSING_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
   SWITCHED_TO_INTERNET_BANKING_BODY,
 } from "@/lib/payment-recovery-contract";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -610,7 +612,7 @@ export async function POST(request: NextRequest) {
           paymentStatus: booking.payment.status,
         });
         // #4300 (`INV-PAY-138`): a superseded intent's capture is repaid like refund history.
-        const supersededCapture = !refundedHistory && (await queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: existingIntent.id, amountCents: existingIntent.amount, paymentMethodId: getStripePaymentMethodId(existingIntent) }));
+        const supersededCapture = !refundedHistory && (await queueSupersededPaymentIntentRefundRecovery(existingIntent));
 
         if (!refundedHistory && !supersededCapture) {
           receivedPaymentIntentId = existingIntent.id;
@@ -620,10 +622,7 @@ export async function POST(request: NextRequest) {
               bookingId: booking.id,
               paymentIntentId: existingIntent.id,
               amountCents: existingIntent.amount,
-              paymentMethodId:
-                typeof existingIntent.payment_method === "string"
-                  ? existingIntent.payment_method
-                  : existingIntent.payment_method?.id ?? null,
+              paymentMethodId: getStripePaymentMethodId(existingIntent),
             });
 
             if (
@@ -640,6 +639,10 @@ export async function POST(request: NextRequest) {
                 },
                 { status: 409 }
               );
+            }
+            // #4300: the settle's own check under lock(1) found it superseded.
+            if (reconciliation.outcome === "superseded_capture") {
+              return NextResponse.json({ ...SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, creditElection }, { status: 409 });
             }
           }
 
@@ -705,6 +708,13 @@ export async function POST(request: NextRequest) {
             ...(intentCurrencyDiffers(existingIntent, format) ? { wrongCurrencyPaymentIntentId: existingIntent.id } : {}),
           });
         }
+      } else if (existingIntent.status !== "canceled" && (await findLiveSupersededIntentOperation(prisma, existingIntent.id))) {
+        // #4300 (`INV-PAY-138`): an intent an edit superseded is never handed out
+        // again, even once the price is back at its amount: its cancel row will
+        // kill it, or refund what it took. Being paid now -> wait; else mint fresh.
+        if (staleIntentAction(existingIntent) === "in_flight") {
+          return NextResponse.json({ ...PAYMENT_PROCESSING_BODY, creditElection }, { status: 409 });
+        }
       } else if (
         existingIntent.client_secret &&
         existingIntent.status !== "canceled"
@@ -758,11 +768,11 @@ export async function POST(request: NextRequest) {
         // `bookingOwnerProviderMetadata`.
         ...bookingOwnerProviderMetadata(booking),
       },
-      // #3864: the amount and currency are in the key, so two tabs minting
+      // #3864 (and #4300 for the repay key): the amount and currency are in the key, so two tabs minting
       // different amounts off one pointer each get their own intent rather than
       // Stripe's idempotency_error (a 500); a retry of the same mint replays.
       idempotencyKey: repaySupersededIntentId
-        ? `pi_${booking.id}_repay_${repaySupersededIntentId}`
+        ? `pi_${booking.id}_repay_${repaySupersededIntentId}_${effectivePriceCents}_${stripeChargeCurrency(format)}`
         : `pi_${booking.id}_${booking.payment?.stripePaymentIntentId ?? "initial"}_${effectivePriceCents}_${stripeChargeCurrency(format)}`,
     });
 

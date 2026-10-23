@@ -145,7 +145,7 @@ export async function POST(
       );
     }
     // #4300 (`INV-PAY-138`): a superseded intent's capture is refunded, never settled with.
-    if (await queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: pi.id, amountCents: pi.amount, paymentMethodId: getStripePaymentMethodId(pi) })) {
+    if (await queueSupersededPaymentIntentRefundRecovery(pi)) {
       logger.warn({ bookingId, paymentIntentId: pi.id }, "A superseded PaymentIntent was confirmed; it is being refunded and settled nothing (#4300)");
       return NextResponse.json(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, { status: 409 });
     }
@@ -199,10 +199,7 @@ export async function POST(
       bookingId,
       paymentIntentId: pi.id,
       amountCents: pi.amount,
-      paymentMethodId:
-        typeof pi.payment_method === "string"
-          ? pi.payment_method
-          : pi.payment_method?.id ?? null,
+      paymentMethodId: getStripePaymentMethodId(pi),
     });
 
     if (
@@ -219,6 +216,11 @@ export async function POST(
         },
         { status: 409 }
       );
+    }
+
+    // #4300: the settle's own check under lock(1) found the capture superseded.
+    if (reconciliation.outcome === "superseded_capture") {
+      return NextResponse.json(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, { status: 409 });
     }
 
     // Send the confirmation email only on a fresh transition to PAID. If the

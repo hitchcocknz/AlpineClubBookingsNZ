@@ -68,7 +68,7 @@ import { formatCents } from "@/lib/utils";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { finishApprovedLateCaptureRefundAfterReplay } from "@/lib/late-capture-refund-credit-note";
 import { holdSupersededLateCaptureIfRequired } from "@/lib/late-capture-refund-hold";
-import { findLiveSupersededIntentOperation } from "@/lib/superseded-intent-ownership";
+import { supersededMachineryOwnsCapture } from "@/lib/superseded-capture-ownership";
 import { compareLedgerRowsNewestFirst, LEDGER_ROWS_NEWEST_FIRST, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 type PaymentRecoveryStore = Prisma.TransactionClient | typeof prisma;
@@ -1712,7 +1712,7 @@ async function handoffSucceededSupersededIntentToRefund({
    * on the attempt). The worker's own hand-off stays inside its attempt.
    */
   takenFromOutside?: boolean;
-}) {
+}): Promise<boolean> {
   if (!operation.paymentTransactionId) {
     throw new Error("Payment recovery operation is missing paymentTransactionId");
   }
@@ -1748,7 +1748,7 @@ async function handoffSucceededSupersededIntentToRefund({
       },
       "Superseded-intent refund handoff ABANDONED: the operation is gone or already terminal (deleted by a manual mark-paid reversal, or completed elsewhere). No transaction flip, no refund enqueued."
     );
-    return;
+    return false;
   }
 
   await markSupersededTransactionSucceeded({
@@ -1767,7 +1767,7 @@ async function handoffSucceededSupersededIntentToRefund({
     })
   ) {
     await completePaymentRecoveryOperation(operation.id);
-    return;
+    return true;
   }
 
   await enqueueSupersededPaymentRefundRecovery({
@@ -1779,6 +1779,7 @@ async function handoffSucceededSupersededIntentToRefund({
   });
 
   await completePaymentRecoveryOperation(operation.id);
+  return true;
 }
 
 async function processCancelPaymentIntentOperation(
@@ -3307,44 +3308,47 @@ export async function completeCanceledSupersededPaymentIntentRecovery({
 }
 
 /**
- * THE ONE CHECK every door that brings a succeeded intent back asks before it
+ * THE CHECK every door that brings a succeeded intent back asks before it
  * settles a booking with it (#4300, `INV-PAY-138`): the webhook,
  * `confirm-payment`, and the pay step's and `/pay` link's reconcile arms.
  * `true`: the superseded machinery owns the capture, so the door settles
- * nothing. A cancel row not SUCCEEDED hands it to its refund here; failing
- * that, a superseded-intent row not SUCCEEDED (guard (c′)) means it was handed
- * off already. Unlocked, as the webhook always read it.
+ * nothing. A cancel row not SUCCEEDED hands it on here (to its refund, or held
+ * for the treasurer on a cancelled booking, `holdSupersededLateCaptureIfRequired`);
+ * otherwise, or when that hand-off lost its claim, the shared reading answers
+ * (`supersededMachineryOwnsCapture`). Unlocked; the settle asks that reading
+ * again under lock(1).
  */
-export async function queueSupersededPaymentIntentRefundRecovery({
-  paymentIntentId,
-  amountCents,
-  paymentMethodId,
-}: {
-  paymentIntentId: string;
-  amountCents: number;
-  paymentMethodId?: string | null;
-}) {
+export async function queueSupersededPaymentIntentRefundRecovery(
+  paymentIntent: Pick<Stripe.PaymentIntent, "id" | "amount" | "payment_method">,
+): Promise<boolean> {
   const operation = await prisma.paymentRecoveryOperation.findFirst({
     where: {
       type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-      paymentIntentId,
+      paymentIntentId: paymentIntent.id,
       status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
     },
     orderBy: { createdAt: "desc" },
   });
 
-  if (!operation) {
-    return (await findLiveSupersededIntentOperation(prisma, paymentIntentId)) !== null;
+  // A hand-off abandoned on its claim (the row went terminal or was deleted
+  // meanwhile) moved nothing: ask the rows again rather than assume.
+  if (
+    operation &&
+    (await handoffSucceededSupersededIntentToRefund({
+      operation,
+      amountCents: paymentIntent.amount,
+      paymentMethodId: getStripePaymentMethodId(paymentIntent),
+      takenFromOutside: true,
+    }))
+  ) {
+    return true;
   }
 
-  await handoffSucceededSupersededIntentToRefund({
-    operation,
-    amountCents,
-    paymentMethodId,
-    takenFromOutside: true,
+  const row = await prisma.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: paymentIntent.id },
+    select: { paymentId: true },
   });
-
-  return true;
+  return supersededMachineryOwnsCapture(prisma, { paymentId: row?.paymentId ?? null, paymentIntentId: paymentIntent.id });
 }
 
 /**

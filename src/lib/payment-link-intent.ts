@@ -18,6 +18,7 @@ import { formatCents } from "@/lib/utils";
 import logger from "@/lib/logger";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
+import { findLiveSupersededIntentOperation } from "@/lib/superseded-intent-ownership";
 import { attachMintedCardIntent } from "@/lib/card-intent-attach";
 import { isRefundedPaymentIntentHistory } from "@/lib/card-intent-retirement";
 import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
@@ -41,7 +42,7 @@ import {
 } from "@/lib/stripe";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { clubFormatValues } from "@/lib/club-format-server";
-import { chargeCurrencyRefusal, UNSUPPORTED_CHARGE_CURRENCY_MEMBER_MESSAGE } from "@/lib/stripe-charge-currency";
+import { chargeCurrencyRefusal, stripeChargeCurrency, UNSUPPORTED_CHARGE_CURRENCY_MEMBER_MESSAGE } from "@/lib/stripe-charge-currency";
 import { intentCurrencyDiffers } from "@/lib/additional-intent-currency";
 import { staleIntentAction } from "@/lib/stale-intent-action";
 import {
@@ -55,7 +56,9 @@ export type PaymentLinkPaymentRecoveryKind =
   | "payment_received_status_unconfirmed"
   | "existing_card_status_unconfirmed"
   | "cancelled_refunded"
-  | "cancelled_refund_pending";
+  | "cancelled_refund_pending"
+  // #4300: the settle refused a capture the superseded machinery owns.
+  | "superseded_capture_refunding";
 
 /**
  * Provider-safe recovery signal for failures after Stripe reports a successful
@@ -107,7 +110,13 @@ function switchedToInternetBankingError() {
 
 export type PaymentLinkIntentResult =
   | { type: "alreadyPaid" }
-  | { type: "clientSecret"; clientSecret: string; paymentIntentId: string };
+  | {
+      type: "clientSecret";
+      clientSecret: string;
+      paymentIntentId: string;
+      /** #4300: the payer's earlier capture was superseded and is going back to the card. */
+      previousPaymentRefunding?: true;
+    };
 
 /**
  * Token-authenticated Stripe payment intent creation. Runs the SAME
@@ -164,6 +173,7 @@ export async function createPaymentIntentForPaymentLink(
   // to the generic equal-amount/client-secret reuse arm, and so retries use a
   // Stripe idempotency key disjoint from every non-repayment generation.
   let repaySupersededIntentId: string | null = null;
+  let previousPaymentRefunding = false;
   if (booking.payment?.stripePaymentIntentId) {
     const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
@@ -179,7 +189,8 @@ export async function createPaymentIntentForPaymentLink(
           paymentStatus: booking.payment.status,
         });
         // #4300 (`INV-PAY-138`): a superseded intent's capture is repaid like refund history.
-        repaymentRequired ||= await queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: existingIntent.id, amountCents: existingIntent.amount, paymentMethodId: getStripePaymentMethodId(existingIntent) });
+        previousPaymentRefunding = !repaymentRequired && (await queueSupersededPaymentIntentRefundRecovery(existingIntent));
+        repaymentRequired ||= previousPaymentRefunding;
       } catch (error) {
         logger.error(
           { err: error, bookingId: booking.id },
@@ -212,10 +223,7 @@ export async function createPaymentIntentForPaymentLink(
               bookingId: booking.id,
               paymentIntentId: existingIntent.id,
               amountCents: existingIntent.amount,
-              paymentMethodId:
-                typeof existingIntent.payment_method === "string"
-                  ? existingIntent.payment_method
-                  : existingIntent.payment_method?.id ?? null,
+              paymentMethodId: getStripePaymentMethodId(existingIntent),
             });
 
             if (reconciliation.outcome === "cancelled_refunded") {
@@ -225,6 +233,9 @@ export async function createPaymentIntentForPaymentLink(
               throw new PaymentLinkPaymentRecoveryError(
                 "cancelled_refund_pending",
               );
+            }
+            if (reconciliation.outcome === "superseded_capture") {
+              throw new PaymentLinkPaymentRecoveryError("superseded_capture_refunding");
             }
           }
 
@@ -267,6 +278,16 @@ export async function createPaymentIntentForPaymentLink(
           newFinalPriceCents: owedCents,
           ...(intentCurrencyDiffers(existingIntent, format) ? { wrongCurrencyPaymentIntentId: existingIntent.id } : {}),
         });
+      }
+    } else if (
+      repaySupersededIntentId === null &&
+      existingIntent.status !== "canceled" &&
+      (await findLiveSupersededIntentOperation(prisma, existingIntent.id))
+    ) {
+      // #4300 (`INV-PAY-138`): an intent an edit superseded is never handed out
+      // again, even once the price is back at its amount. Being paid -> wait.
+      if (staleIntentAction(existingIntent) === "in_flight") {
+        throw new PaymentLinkError(PAYMENT_PROCESSING_MESSAGE, 409, PAYMENT_PROCESSING_CODE);
       }
     } else if (
       repaySupersededIntentId === null &&
@@ -442,8 +463,11 @@ export async function createPaymentIntentForPaymentLink(
       ...bookingOwnerProviderMetadata(booking),
       paymentLinkId: link.id,
     },
+    // #4300: the repay key carries the amount and currency, so a repay
+    // generation minted again at a moved price is a new intent, never
+    // Stripe's idempotency_error.
     idempotencyKey: repaySupersededIntentId
-      ? `pl_pi_${booking.id}_repay_${repaySupersededIntentId}`
+      ? `pl_pi_${booking.id}_repay_${repaySupersededIntentId}_${owedCents}_${stripeChargeCurrency(format)}`
       : `pl_pi_${booking.id}_${booking.payment?.stripePaymentIntentId ?? "initial"}`,
   });
 
@@ -484,5 +508,6 @@ export async function createPaymentIntentForPaymentLink(
     type: "clientSecret",
     clientSecret: paymentIntent.client_secret,
     paymentIntentId: paymentIntent.id,
+    ...(previousPaymentRefunding ? { previousPaymentRefunding: true as const } : {}),
   };
 }

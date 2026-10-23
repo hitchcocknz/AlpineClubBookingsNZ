@@ -417,6 +417,21 @@ describe("POST /api/payments/charge-saved-method", () => {
     expect(releaseCall()).toBeUndefined();
   });
 
+  it("#4300: a charge the settle refuses as superseded answers not paid, queues no invoice and keeps the claim", async () => {
+    mockChargePaymentMethod.mockResolvedValue({ id: "pi_superseded", status: "succeeded", amount: 12500 });
+    mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
+
+    const response = await POST(makeRequest());
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body).toMatchObject({ success: false, paymentIntentId: "pi_superseded", paymentReceived: true, finalisationPending: true });
+    expect(mockLogAudit).not.toHaveBeenCalledWith(expect.objectContaining({ action: "booking.payment.confirmed" }));
+    expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+    // A captured charge never releases the claim; an admin resolves it.
+    expect(releaseCall()).toBeUndefined();
+  });
+
   it("refuses a club currency without two decimal places with a 409 before the claim (#3567)", async () => {
     clubFormatMock.mockResolvedValue({ currencyCode: "JPY", locale: "ja-JP" });
 

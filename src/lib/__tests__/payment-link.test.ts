@@ -38,6 +38,10 @@ vi.mock("@/lib/prisma", () => ({
       findMany: vi.fn().mockResolvedValue([]),
       count: vi.fn().mockResolvedValue(0),
     },
+    // #4300: the superseded-intent check reads the intent's own ledger row; none by default.
+    paymentTransaction: {
+      findUnique: vi.fn().mockResolvedValue(null),
+    },
     paymentRecoveryOperation: {
       // #4300: the superseded-intent check before a succeeded intent settles; none by default.
       findFirst: vi.fn().mockResolvedValue(null),
@@ -1142,6 +1146,60 @@ describe("createPaymentIntentForPaymentLink", () => {
     expect(mockedFindOrCreateCustomer).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["requires_payment_method", "mints a fresh intent"],
+    ["processing", "answers PAYMENT_PROCESSING"],
+  ])("#4300: a superseded intent at the matching amount (%s) is never handed out again: %s", async (status) => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        booking: baseBooking({
+          payment: { id: "pay-1", stripePaymentIntentId: "pi_superseded", status: PaymentStatus.PENDING },
+        }),
+      }) as never,
+    );
+    mockedGetPaymentIntent.mockResolvedValue({
+      id: "pi_superseded",
+      status,
+      client_secret: "secret_superseded", currency: "nzd",
+      amount: 12000,
+      payment_method: null,
+    } as never);
+    // Its cancel row is still live: Stripe was down for the edit's cancel.
+    vi.mocked(prisma.paymentRecoveryOperation.findFirst).mockResolvedValueOnce({ id: "op-cancel" } as never);
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue(baseBooking({ guests: [{ id: "guest-1" }] }) as never);
+    mockedFindOrCreateCustomer.mockResolvedValue({ id: "cus_123" } as never);
+    mockedCreatePaymentIntent.mockResolvedValue({ id: "pi_fresh", client_secret: "secret_fresh", currency: "nzd" } as never);
+    vi.mocked(prisma.payment.upsert).mockResolvedValue({ id: "pay-1" } as never);
+
+    if (status === "processing") {
+      await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).rejects.toMatchObject({ status: 409, code: "PAYMENT_PROCESSING" });
+      expect(mockedCreatePaymentIntent).not.toHaveBeenCalled();
+    } else {
+      await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).resolves.toEqual({
+        type: "clientSecret",
+        clientSecret: "secret_fresh",
+        paymentIntentId: "pi_fresh",
+      });
+    }
+  });
+
+  it("#4300: a capture the settle refuses as superseded is reported as refunding, never as paid", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        booking: baseBooking({
+          payment: { id: "pay-1", stripePaymentIntentId: "pi_raced", status: PaymentStatus.PENDING },
+        }),
+      }) as never,
+    );
+    mockedGetPaymentIntent.mockResolvedValue({
+      id: "pi_raced", status: "succeeded", client_secret: "secret_raced", currency: "nzd", amount: 12000, payment_method: "pm_1",
+    } as never);
+    mockedMarkSucceeded.mockResolvedValue({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] } as never);
+
+    await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).rejects.toMatchObject({ kind: "superseded_capture_refunding" });
+    expect(queueXeroInvoiceForPaidBookingMock).not.toHaveBeenCalled();
+  });
+
   it("reuses an existing PaymentIntent's client secret instead of creating a new one", async () => {
     mockedFindUnique.mockResolvedValue(
       baseLink({
@@ -1385,7 +1443,7 @@ describe("createPaymentIntentForPaymentLink", () => {
       expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(
         expect.objectContaining({
           amountCents: 12000,
-          idempotencyKey: "pl_pi_booking-1_repay_pi_refunded",
+          idempotencyKey: "pl_pi_booking-1_repay_pi_refunded_12000_nzd",
         }),
       );
       expect(mockedUpsertPaymentIntentTransaction).toHaveBeenCalledWith(
@@ -1427,11 +1485,13 @@ describe("createPaymentIntentForPaymentLink", () => {
       type: "clientSecret",
       clientSecret: "secret_repay",
       paymentIntentId: "pi_repay",
+      // The payer is told the earlier payment is going back.
+      previousPaymentRefunding: true,
     });
     expect(mockedMarkSucceeded).not.toHaveBeenCalled();
     expect(queueXeroInvoiceForPaidBookingMock).not.toHaveBeenCalled();
     expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(
-      expect.objectContaining({ amountCents: 12000, idempotencyKey: "pl_pi_booking-1_repay_pi_superseded" }),
+      expect.objectContaining({ amountCents: 12000, idempotencyKey: "pl_pi_booking-1_repay_pi_superseded_12000_nzd" }),
     );
   });
 

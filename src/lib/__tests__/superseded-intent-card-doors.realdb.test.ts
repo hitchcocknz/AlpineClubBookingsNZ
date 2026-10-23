@@ -1,9 +1,10 @@
 /**
- * Real-PostgreSQL proof for #4300 (`INV-PAY-043`): a card intent an edit
- * superseded never settles the booking, whichever door carries its capture
- * back - the member's confirm call, the pay step's reload, the `/pay` link's
- * reload, or the Stripe webhook after the cancel worker has already handed the
- * capture to its refund.
+ * Real-PostgreSQL proof for #4300 (`INV-PAY-138`): a card intent an edit
+ * superseded never settles the booking - not through the member's confirm
+ * call, the pay step's reload, the `/pay` link's reload, the Stripe webhook
+ * after the cancel worker has already handed the capture to its refund, nor
+ * the settle itself under lock(1) (the saved-card doors' path) - and neither
+ * reuse arm hands its secret out again once the price is back at its amount.
  *
  * The superseded-intent machinery refunds such a capture
  * (`REFUND_SUPERSEDED_PAYMENT`). Before #4300 only the webhook's first look
@@ -580,6 +581,8 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
     capture(superseded);
 
     const reload = await linkStep(token);
+    // The payer is told the earlier payment is going back.
+    expect(reload.body.previousPaymentRefunding).toBe(true);
     await deliverSucceededWebhook(superseded);
     await drainRecovery();
 
@@ -587,4 +590,54 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
     await expectSupersededCaptureRefunded(superseded);
     await expectFreshPaymentSettles(reload, superseded, async (id) => deliverSucceededWebhook(id));
   });
+
+  it("the settle itself, under lock(1): a superseded capture brought straight to markBookingPaymentSucceeded settles nothing", async () => {
+    const superseded = await mintOnPayStep();
+    stripe.failCancel = true;
+    await editAwayAndBack();
+    capture(superseded);
+
+    // A saved-card door, or a door whose own check an edit overtook, calls the
+    // settle directly with the capture.
+    const { markBookingPaymentSucceeded } = await import("@/lib/payment-reconciliation");
+    const settled = await markBookingPaymentSucceeded({
+      bookingId: BOOKING_ID,
+      paymentIntentId: superseded,
+      amountCents: PRICE_CENTS,
+      paymentMethodId: "pm_race_4300",
+      format: CLUB_FORMAT_TEST,
+    });
+    expect(settled.outcome).toBe("superseded_capture");
+    expect((await money()).status).toBe("PAYMENT_PENDING");
+    await drainRecovery();
+
+    await expectNeverPaidWithoutMoney();
+    await expectSupersededCaptureRefunded(superseded);
+    await expectFreshPaymentSettles(await payStep(), superseded, confirm);
+  });
+
+  for (const door of ["the pay step", "the /pay link"] as const) {
+    it(`${door} never hands out a superseded intent's secret again once the price is back at its amount`, async () => {
+      const token = door === "the /pay link" ? await issueLink() : null;
+      const step = () => (token ? linkStep(token) : payStep());
+      const minted = await step();
+      expect(minted.status, JSON.stringify(minted.body)).toBe(200);
+      const superseded = minted.body.paymentIntentId as string;
+      // X -> Y while Stripe is down (the cancel row waits), then Y -> X.
+      stripe.failCancel = true;
+      await editAwayAndBack();
+      expect(stripe.intents.get(superseded)!.status).toBe("requires_payment_method");
+
+      const reload = await step();
+      expect(reload.status, JSON.stringify(reload.body)).toBe(200);
+      expect(reload.body.paymentIntentId).not.toBe(superseded);
+      expect(reload.body.clientSecret).not.toBe(stripe.intents.get(superseded)!.client_secret);
+
+      // The cancel row's retry kills the old intent; the fresh one pays.
+      await drainRecovery();
+      expect(stripe.intents.get(superseded)!.status).toBe("canceled");
+      await expectFreshPaymentSettles(reload, superseded, async (id) => deliverSucceededWebhook(id));
+      expect(stripe.refunds).toEqual([]);
+    });
+  }
 });

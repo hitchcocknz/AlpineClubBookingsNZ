@@ -9,6 +9,7 @@ import { HOSTING_COVERAGE_RETRY_BODY } from "@/lib/adult-member-hosting-queue-pa
 import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
 } from "@/lib/payment-recovery-contract";
 
 /**
@@ -36,6 +37,8 @@ export async function POST(
     return NextResponse.json({
       clientSecret: result.clientSecret,
       paymentIntentId: result.paymentIntentId,
+      // #4300: the payer's earlier capture is going back to the card.
+      ...(result.previousPaymentRefunding ? { previousPaymentRefunding: true } : {}),
     });
   } catch (err) {
     if (err instanceof PaymentLinkPaymentRecoveryError) {
@@ -53,6 +56,9 @@ export async function POST(
         return NextResponse.json(PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, {
           status: 409,
         });
+      }
+      if (err.kind === "superseded_capture_refunding") {
+        return NextResponse.json(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, { status: 409 });
       }
       if (err.kind === "existing_card_status_unconfirmed") {
         return NextResponse.json(

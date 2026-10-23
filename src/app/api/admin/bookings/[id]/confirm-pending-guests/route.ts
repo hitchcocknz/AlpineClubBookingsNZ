@@ -843,6 +843,22 @@ export async function POST(
       );
     }
 
+    if (reconciliation.outcome === "superseded_capture") {
+      // #4300 (`INV-PAY-138`): the charge landed on a payment an edit had
+      // superseded; it is going back to the card and settled nothing. The
+      // booking stays confirmed for an admin, who was alerted. No email, no invoice.
+      await audit("charged_superseded_capture", true);
+      return NextResponse.json(
+        {
+          error:
+            "The charge was taken on a payment a later change had replaced, so it is being returned and the booking is not paid; admins have been alerted.",
+          paymentReceived: true,
+          finalisationPending: true,
+        },
+        { status: 409 }
+      );
+    }
+
     if (settledByAnotherCapture(reconciliation.outcome)) {
       // #1992 — the booking had ALREADY been settled by a different capture
       // (e.g. the member paid an in-flight /pay link intent in the same

@@ -32,6 +32,10 @@ vi.mock("@/lib/prisma", () => {
       paymentRecoveryOperation: {
         findFirst: vi.fn().mockResolvedValue(null),
       },
+      // ...and the intent's own ledger row, which names its payment; none here.
+      paymentTransaction: {
+        findUnique: vi.fn().mockResolvedValue(null),
+      },
       // #3638: the mint attaches its intent under lock(1), re-reading the
       // payment's source first; nothing here has switched to Internet Banking.
       $transaction: vi.fn(async (fn: (tx: unknown) => unknown) =>
@@ -229,7 +233,7 @@ describe("#1765 repay-after-refund: create-payment-intent", () => {
     expect(mockStripeCreatePaymentIntent).toHaveBeenCalledWith(
       expect.objectContaining({
         amountCents: REPRICED_FINAL,
-        idempotencyKey: "pi_booking-1_repay_pi_refunded",
+        idempotencyKey: "pi_booking-1_repay_pi_refunded_9000_nzd",
       })
     );
     // The fresh PRIMARY transaction lands on the SAME payment row; the
@@ -366,7 +370,7 @@ describe("#1765 repay-after-refund: create-payment-intent", () => {
     expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
     expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
     expect(mockStripeCreatePaymentIntent).toHaveBeenCalledWith(
-      expect.objectContaining({ amountCents: REPRICED_FINAL, idempotencyKey: "pi_booking-1_repay_pi_superseded" })
+      expect.objectContaining({ amountCents: REPRICED_FINAL, idempotencyKey: "pi_booking-1_repay_pi_superseded_9000_nzd" })
     );
   });
 
@@ -476,9 +480,9 @@ describe("#1765 repay-after-refund: create-payment-intent", () => {
     await createPaymentIntentRoute(makeRequest());
     const keyGen2 = mockStripeCreatePaymentIntent.mock.calls[0][0].idempotencyKey;
 
-    expect(keyGen1Attempt1).toBe("pi_booking-1_repay_pi_refunded");
+    expect(keyGen1Attempt1).toBe("pi_booking-1_repay_pi_refunded_9000_nzd");
     expect(keyGen1Attempt2).toBe(keyGen1Attempt1);
-    expect(keyGen2).toBe("pi_booking-1_repay_pi_repay_gen1");
+    expect(keyGen2).toBe("pi_booking-1_repay_pi_repay_gen1_9000_nzd");
     expect(keyGen2).not.toBe(keyGen1Attempt1);
     expect([keyGen1Attempt1, keyGen2]).not.toContain("pi_booking-1_initial");
     // Disjoint from the non-repay scheme for the same pointers.

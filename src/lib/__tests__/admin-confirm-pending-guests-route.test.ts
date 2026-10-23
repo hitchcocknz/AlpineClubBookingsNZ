@@ -1125,6 +1125,24 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     );
   });
 
+  it("#4300: a charge the settle refuses as superseded is reported as not paid, with no confirmation or invoice", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.chargePaymentMethod.mockResolvedValue({ id: "pi_superseded", status: "succeeded", amount: 10000, payment_method: "pm_1" });
+    mocks.markBookingPaymentSucceeded.mockResolvedValue({ outcome: "superseded_capture", bookingId: "b1", bumpedBookingIds: [] });
+
+    const res = await POST(makeRequest(), { params });
+    const body = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(body).toMatchObject({ paymentReceived: true, finalisationPending: true });
+    expect(body.error).toMatch(/not paid/);
+    expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
+    expect(mocks.enqueueXero).not.toHaveBeenCalled();
+    expect(mocks.createStructuredAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: expect.objectContaining({ outcome: "charged_superseded_capture" }) }),
+    );
+  });
+
   it("moves a no-card (request-origin) booking to payment-owed without charging or capacity gate", async () => {
     mocks.bookingFindUnique.mockResolvedValue(makeBooking({ payment: null }));
 

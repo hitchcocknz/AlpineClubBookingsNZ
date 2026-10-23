@@ -8,10 +8,16 @@ import { PaymentStatus } from "@prisma/client";
 
 const mocks = vi.hoisted(() => ({
   findPaymentTransactionByIntentId: vi.fn(),
+  supersededMachineryOwnsCapture: vi.fn(),
 }));
 
 vi.mock("@/lib/payment-transactions", () => ({
   findPaymentTransactionByIntentId: mocks.findPaymentTransactionByIntentId,
+}));
+
+// #4300: the superseded machinery's reading, real in its own suites.
+vi.mock("@/lib/superseded-capture-ownership", () => ({
+  supersededMachineryOwnsCapture: mocks.supersededMachineryOwnsCapture,
 }));
 
 import {
@@ -24,6 +30,7 @@ const intent = (status: string) => ({ id: "pi_1", status }) as never;
 
 beforeEach(() => {
   mocks.findPaymentTransactionByIntentId.mockReset();
+  mocks.supersededMachineryOwnsCapture.mockReset().mockResolvedValue(false);
 });
 
 describe("isPaymentIntentCancelConfirmed", () => {
@@ -122,6 +129,18 @@ describe("isCardIntentRetired", () => {
         paymentStatus: PaymentStatus.PENDING,
       }),
     ).resolves.toBe(false);
+  });
+
+  it("#4300: is retired for a succeeded capture the superseded machinery owns - it is going back to the card", async () => {
+    mocks.findPaymentTransactionByIntentId.mockResolvedValue({ status: PaymentStatus.SUCCEEDED, paymentId: "pay-1" });
+    mocks.supersededMachineryOwnsCapture.mockResolvedValue(true);
+    await expect(
+      isCardIntentRetired({
+        result: { paymentIntent: intent("succeeded"), canceled: false },
+        paymentStatus: PaymentStatus.PENDING,
+      }),
+    ).resolves.toBe(true);
+    expect(mocks.supersededMachineryOwnsCapture).toHaveBeenCalledWith(expect.anything(), { paymentId: "pay-1", paymentIntentId: "pi_1" });
   });
 
   it("never asks the ledger about a status that is neither cancelled nor succeeded", async () => {

@@ -10,6 +10,9 @@ import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
   PAYMENT_PROCESSING_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
+  PREVIOUS_PAYMENT_REFUNDING_NOTICE,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 import {
@@ -52,7 +55,14 @@ vi.mock("@/components/stripe/StripeProvider", () => ({
 }));
 
 vi.mock("@/components/stripe/PaymentForm", () => ({
-  default: () => <div>card-entry-form</div>,
+  default: ({ onSuccess }: { onSuccess?: (paymentIntentId: string) => void }) => (
+    <>
+      <div>card-entry-form</div>
+      <button type="button" onClick={() => onSuccess?.("pi_paid")}>
+        trigger-card-success
+      </button>
+    </>
+  ),
 }));
 
 const payableContext = {
@@ -143,6 +153,78 @@ function installFreshRepaymentFetch() {
     }) as typeof fetch,
   );
 }
+
+/** Each POST to the link's payment-intent route answers the next body, in order. */
+function installIntentSequence(answers: Array<{ status: number; body: Record<string, unknown> }>) {
+  const queue = [...answers];
+  const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url === "/api/pay/public-token" && !init?.method) return { ok: true, json: async () => payableContext } as Response;
+    if (url === "/api/booking-messages") return { ok: true, json: async () => ({ messages: {} }) } as Response;
+    if (url === "/api/pay/public-token/payment-intent" && init?.method === "POST") {
+      const next = queue.shift();
+      if (!next) throw new Error("no more payment-intent answers");
+      return { ok: next.status < 400, status: next.status, json: async () => next.body } as Response;
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+  vi.stubGlobal("fetch", fetchMock as typeof fetch);
+  return fetchMock;
+}
+
+describe("#4300 (INV-PAY-138): a superseded earlier payment on the /pay link", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+  });
+
+  it("says the earlier payment is going back, beside the fresh payment form", async () => {
+    installIntentSequence([{ status: 200, body: { clientSecret: "secret_repay", paymentIntentId: "pi_repay", previousPaymentRefunding: true } }]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+
+    expect(await screen.findByText(PREVIOUS_PAYMENT_REFUNDING_NOTICE)).toBeInTheDocument();
+    expect(screen.getByTestId("stripe-provider")).toHaveAttribute("data-client-secret", "secret_repay");
+  });
+
+  it("a stale tab's card success is checked with the server, and a superseded payment never reads 'confirmed'", async () => {
+    const fetchMock = installIntentSequence([
+      { status: 200, body: { clientSecret: "secret_stale", paymentIntentId: "pi_stale" } },
+      { status: 200, body: { clientSecret: "secret_repay", paymentIntentId: "pi_repay", previousPaymentRefunding: true } },
+    ]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    expect(await screen.findByText(PREVIOUS_PAYMENT_REFUNDING_NOTICE)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("stripe-provider")).toHaveAttribute("data-client-secret", "secret_repay"));
+    expect(document.body.textContent).not.toMatch(/is confirmed|payment is complete/i);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/payment-intent"))).toHaveLength(2);
+  });
+
+  it("a card success the server settled reads as complete", async () => {
+    installIntentSequence([
+      { status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } },
+      { status: 200, body: { alreadyPaid: true } },
+    ]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    expect(await screen.findByText(/your payment is complete/i)).toBeInTheDocument();
+  });
+
+  it("a capture the settle refused shows the refunding notice with a reload, and no form", async () => {
+    installIntentSequence([{ status: 409, body: { ...SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, error: "raw server text" } }]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+
+    expect(await screen.findByText(SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE)).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("raw server text");
+    expect(screen.queryByText("card-entry-form")).toBeNull();
+    expect(screen.getByRole("button", { name: "Reload payment status", hidden: true })).toBeInTheDocument();
+  });
+});
 
 describe("public payment-link captured-payment recovery", () => {
   beforeEach(() => {

@@ -1251,11 +1251,10 @@ describe("Stripe webhook Xero alerting", () => {
     const response = await POST(makeRequest());
 
     expect(response.status).toBe(200);
-    expect(mockQueueSupersededPaymentIntentRefundRecovery).toHaveBeenCalledWith({
-      paymentIntentId: "pi_superseded_succeeded",
-      amountCents: 6000,
-      paymentMethodId: "pm_superseded",
-    });
+    // #4300: the check takes the intent itself.
+    expect(mockQueueSupersededPaymentIntentRefundRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "pi_superseded_succeeded", amount: 6000, payment_method: "pm_superseded" }),
+    );
     expect(mockMarkBookingPaymentSucceeded).not.toHaveBeenCalled();
     expect(mockSendBookingConfirmedEmail).not.toHaveBeenCalled();
     expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();

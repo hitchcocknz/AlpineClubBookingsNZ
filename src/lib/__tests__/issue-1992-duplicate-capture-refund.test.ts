@@ -45,6 +45,9 @@ const mocks = vi.hoisted(() => ({
   paymentTransactionFindMany: vi.fn(),
   // #4227: what the owed-again reading answers (the real one reads card refund rows).
   supersededHoldsForMember: vi.fn(),
+  // #4300: what open rows owe back any part of (the settle's reading).
+  supersededOwedBackAtAll: vi.fn(),
+  queueSupersededPaymentIntentRefundRecovery: vi.fn(),
   paymentRecoveryOperationFindMany: vi.fn(),
   paymentRecoveryOperationFindFirst: vi.fn(),
   upsertPaymentIntentTransaction: vi.fn(),
@@ -110,6 +113,9 @@ vi.mock("@/lib/payment-recovery", () => ({
     mocks.markDuplicateCaptureRefundRecoverySucceeded(...args),
   recordDuplicateCaptureRefundRecoveryInlineError: (...args: unknown[]) =>
     mocks.recordDuplicateCaptureRefundRecoveryInlineError(...args),
+  // #4300: the refused superseded capture's hand-off, after the commit.
+  queueSupersededPaymentIntentRefundRecovery: (...args: unknown[]) =>
+    mocks.queueSupersededPaymentIntentRefundRecovery(...args),
 }));
 
 // #4211: guard (c)'s reading, shared with the Xero second-instrument conflict.
@@ -129,10 +135,15 @@ vi.mock("@/lib/alert-cooldown-fail-open", () => ({
   claimAlertCooldownFailOpen: (...args: unknown[]) => mocks.claimAlertCooldownFailOpen(...args),
 }));
 
-// #4227: the owed-again reading, real elsewhere; its own suites cover the rows it reads.
+// #4227: the owed-again reading, real elsewhere; its own suites cover the rows it
+// reads. #4300: the composed reading (`superseded-capture-ownership.ts`) stays
+// real and reads it through this one seam.
 vi.mock("@/lib/superseded-intent-ownership", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/superseded-intent-ownership")),
-  listSupersededIntentIdsOwningCaptures: (...args: unknown[]) => mocks.supersededHoldsForMember(...args),
+  readSupersededCaptureHolds: async (...args: unknown[]) => ({
+    holdsForMember: new Set<string>(await mocks.supersededHoldsForMember(...args)),
+    owedBackAtAll: new Set<string>(await mocks.supersededOwedBackAtAll(...args)),
+  }),
 }));
 
 vi.mock("@/lib/member-credit", () => ({
@@ -511,6 +522,7 @@ beforeEach(() => {
   mocks.recoveryFindUnique.mockResolvedValue(null);
   mocks.claimAlertCooldownFailOpen.mockResolvedValue(true);
   mocks.supersededHoldsForMember.mockResolvedValue([]);
+  mocks.supersededOwedBackAtAll.mockResolvedValue([]);
   mocks.paymentTransactionFindMany.mockResolvedValue([]);
 });
 
@@ -1363,6 +1375,46 @@ describe("#1992 duplicate-capture auto-refund", () => {
     expect(mocks.paymentTransactionFindFirst).not.toHaveBeenCalled();
     expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
     expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+  });
+
+  describe("#4300 (INV-PAY-138): the settle refuses a capture the superseded machinery owns, under lock(1)", () => {
+    function settleUnpaid(paymentIntentId: string) {
+      mocks.bookingFindUnique.mockResolvedValue({ ...makePaidBooking(), status: BookingStatus.PAYMENT_PENDING });
+      return markBookingPaymentSucceeded({ format: CLUB_FORMAT_TEST, bookingId: "booking-1", paymentIntentId, amountCents: 10000, paymentMethodId: "pm_1" });
+    }
+    function expectNotSettled() {
+      expect(mocks.bookingUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: BookingStatus.PAID }) }));
+      expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
+      expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    }
+
+    it("a live superseded-intent row on the capture: superseded_capture, not settled, handed off and alerted", async () => {
+      primeLedger([]);
+      primeRecoveryOperations([{ id: "op-x", type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, status: PaymentRecoveryOperationStatus.PENDING, paymentId: "payment-1", paymentIntentId: "pi_superseded" }]);
+
+      expect((await settleUnpaid("pi_superseded")).outcome).toBe("superseded_capture");
+      expectNotSettled();
+      expect(mocks.queueSupersededPaymentIntentRefundRecovery).toHaveBeenCalledWith({ id: "pi_superseded", amount: 10000, payment_method: "pm_1" });
+      expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      expect(mocks.sendAdminPaymentFailureAlert.mock.calls[0]![0]).toMatchObject({ paymentIntentId: "pi_superseded", errorMessage: expect.stringMatching(/did NOT mark the booking paid/) });
+    });
+
+    it("a capture open rows owe back only PART of (no live row): still refused - never settle with money partly going back", async () => {
+      primeLedger([]);
+      primeRecoveryOperations([]);
+      mocks.supersededOwedBackAtAll.mockResolvedValue(["pi_superseded"]);
+
+      expect((await settleUnpaid("pi_superseded")).outcome).toBe("superseded_capture");
+      expectNotSettled();
+    });
+
+    it("an ordinary capture nothing owns settles as before", async () => {
+      primeLedger([]);
+      primeRecoveryOperations([]);
+
+      expect((await settleUnpaid("pi_fresh")).outcome).toBe("paid");
+      expect(mocks.queueSupersededPaymentIntentRefundRecovery).not.toHaveBeenCalled();
+    });
   });
 
   it("a duplicate whose transaction row cannot be resolved falls back to already_paid (no blind refund)", async () => {

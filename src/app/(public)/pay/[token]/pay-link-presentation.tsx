@@ -30,6 +30,7 @@ import {
   parseInstant,
   type BoundClubTime,
 } from "@/lib/club-time";
+import { PREVIOUS_PAYMENT_REFUNDING_NOTICE } from "@/lib/payment-recovery-contract";
 
 export interface Narrative {
   state: string;
@@ -229,6 +230,18 @@ export function CardPaymentUnavailableNotice() {
     <p className="rounded-md bg-muted px-3 py-2 text-sm text-foreground">
       This booking is being paid by internet banking, so it can&apos;t be paid by
       card here. Use the bank-transfer details below.
+    </p>
+  );
+}
+
+/**
+ * #4300 (`INV-PAY-138`): above a fresh payment form when the payer's earlier
+ * card payment was on an intent an edit superseded, so it is going back.
+ */
+export function PreviousPaymentRefundingNotice() {
+  return (
+    <p role="status" className="rounded-md bg-muted px-3 py-2 text-sm text-foreground">
+      {PREVIOUS_PAYMENT_REFUNDING_NOTICE}
     </p>
   );
 }

@@ -1730,6 +1730,14 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           continue;
         }
 
+        if (reconciliation.outcome === "superseded_capture") {
+          // #4300 (`INV-PAY-138`): the capture is going back to the card and
+          // settled nothing; the booking stays claimed for an admin, who was
+          // alerted (#1418's leave-claimed choice). No email, no invoice.
+          result.failedBookingIds.push(resolution.booking.id);
+          continue;
+        }
+
         if (settledByAnotherCapture(reconciliation.outcome)) {
           // #1992 — the member's in-flight link intent won the race and had
           // already settled the booking; this saved-card charge was the

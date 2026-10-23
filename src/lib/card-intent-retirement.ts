@@ -26,6 +26,8 @@ import { PaymentStatus } from "@prisma/client";
 import type Stripe from "stripe";
 import logger from "@/lib/logger";
 import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
+import { prisma } from "@/lib/prisma";
+import { supersededMachineryOwnsCapture } from "@/lib/superseded-capture-ownership";
 import { cancelPaymentIntentIfCancellableWithResult } from "@/lib/stripe";
 
 type CancelResult = {
@@ -78,8 +80,9 @@ export async function isRefundedPaymentIntentHistory({
 /**
  * The card intent can never take money again, so an Internet Banking invoice
  * may exist beside it: Stripe confirmed it cancelled, or it `succeeded` and
- * the local ledger shows it refunded (#1765's repay-after-refund booking). A
- * succeeded intent with no refund history is a live capture and is NOT
+ * the local ledger shows it refunded (#1765's repay-after-refund booking), or
+ * (#4300, `INV-PAY-138`) its capture is the superseded machinery's, going
+ * back to the card. Any other succeeded intent is a live capture and is NOT
  * retired, whatever the local Payment row says.
  */
 export async function isCardIntentRetired({
@@ -91,10 +94,10 @@ export async function isCardIntentRetired({
 }): Promise<boolean> {
   if (isPaymentIntentCancelConfirmed(result)) return true;
   if (result.paymentIntent.status !== "succeeded") return false;
-  return isRefundedPaymentIntentHistory({
-    paymentIntentId: result.paymentIntent.id,
-    paymentStatus,
-  });
+  const paymentIntentId = result.paymentIntent.id;
+  if (await isRefundedPaymentIntentHistory({ paymentIntentId, paymentStatus })) return true;
+  const row = await findPaymentTransactionByIntentId({ paymentIntentId });
+  return supersededMachineryOwnsCapture(prisma, { paymentId: row?.paymentId ?? null, paymentIntentId });
 }
 
 /**

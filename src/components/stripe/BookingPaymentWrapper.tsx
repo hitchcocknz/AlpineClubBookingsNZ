@@ -9,6 +9,7 @@ import SetupForm from "./SetupForm";
 import { capacityCancellationRecovery } from "@/lib/booking-card-refund-copy";
 import { useClubFormat } from "@/components/club-format-provider";
 import { FocusedActionError } from "@/components/focused-action-error";
+import { Button } from "@/components/ui/button";
 import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_MESSAGE,
   isCreditElectionNotApplied,
@@ -89,6 +90,8 @@ export default function BookingPaymentWrapper({
   const [initRecoveryError, setInitRecoveryError] = useState("");
   const [confirmationError, setConfirmationError] = useState("");
   const [recoveryHeading, setRecoveryHeading] = useState("");
+  // #4300: the payment just made was on a superseded intent; the form is gone.
+  const [supersededRefunding, setSupersededRefunding] = useState(false);
   const [loading, setLoading] = useState(true);
   const handleAlreadyComplete = useEffectEvent(() => onPaymentComplete());
 
@@ -171,6 +174,13 @@ export default function BookingPaymentWrapper({
           if (response.status === 409 && isPaymentProcessing(data)) {
             setRecoveryHeading("Payment being processed");
             setInitRecoveryError(data.error);
+            return;
+          }
+          // #4300: the pay step met a superseded capture the settle refused.
+          if (response.status === 409 && isSupersededCardPaymentRefunding(data)) {
+            setRecoveryHeading("Card payment being refunded");
+            setInitRecoveryError(SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE);
+            setSupersededRefunding(true);
             return;
           }
           // #3864: the member's credit was not spent and the booking is still
@@ -279,11 +289,13 @@ export default function BookingPaymentWrapper({
           );
           return;
         }
-        // #4300: the payment was on an intent an edit superseded; it is being
-        // refunded and the booking still owes. The fixed message, never data.error.
+        // #4300: the payment was on an intent an edit superseded; it is going
+        // back and the booking still owes. The fixed message, never data.error,
+        // and no "Payment successful!" box left on screen beside it.
         if (isSupersededCardPaymentRefunding(data)) {
           setRecoveryHeading("Card payment being refunded");
           setConfirmationError(SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE);
+          setSupersededRefunding(true);
           return;
         }
       }
@@ -304,7 +316,7 @@ export default function BookingPaymentWrapper({
   const visibleHeading =
     initRecoveryError || confirmationError ? recoveryHeading : "Payment Error";
   const suppressPaymentContent = Boolean(
-    initFailed || initRecoveryError || (!loading && !clientSecret),
+    initFailed || initRecoveryError || supersededRefunding || (!loading && !clientSecret),
   );
 
   return (
@@ -314,6 +326,13 @@ export default function BookingPaymentWrapper({
         error={visibleError}
         heading={visibleHeading}
         className="mb-4"
+        action={
+          supersededRefunding ? (
+            <Button variant="outline" onClick={() => window.location.reload()}>
+              Reload booking
+            </Button>
+          ) : undefined
+        }
       />
       {loading ? (
         <div className="flex items-center justify-center p-8">

@@ -89,7 +89,7 @@ export const SUPERSEDED_INTENT_OPERATION_TYPES = [
 type RecoveryOperationReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation">;
 
 /** The Xero reader also reads the payment, for what each open row still owes (#4221). */
-type OwnershipReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation" | "payment">;
+export type OwnershipReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation" | "payment">;
 
 /** The one liveness predicate both reads below share. */
 function liveSupersededOperation() {
@@ -280,6 +280,19 @@ export async function listSupersededIntentIdsOwningCaptures(
   paymentId: string,
   captures: readonly OwnershipCapture[],
 ): Promise<string[]> {
+  return [...(await readSupersededCaptureHolds(tx, paymentId, captures)).holdsForMember];
+}
+
+/**
+ * The Xero reading's set (`holdsForMember`), and (#4300) every capture open
+ * rows owe back ANY part of (`owedBackAtAll`), from one read. Composed with
+ * (c′) into one payment's reading by `superseded-capture-ownership.ts`.
+ */
+export async function readSupersededCaptureHolds(
+  tx: OwnershipReader,
+  paymentId: string,
+  captures: readonly OwnershipCapture[],
+): Promise<{ holdsForMember: Set<string>; owedBackAtAll: Set<string> }> {
   const { operations, payment } = await readSupersededRefundsOwedAgain(tx, paymentId, [
     { type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, AND: [PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE] },
   ]);
@@ -298,5 +311,8 @@ export async function listSupersededIntentIdsOwningCaptures(
       owned.add(operation.paymentIntentId);
     }
   }
-  return [...owned];
+  const owedBackAtAll = new Set(
+    [...supersededRefundsOwedAgainCents(operations, payment)].flatMap(([intent, cents]) => (cents > 0 ? [intent] : [])),
+  );
+  return { holdsForMember: owned, owedBackAtAll };
 }

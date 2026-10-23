@@ -24,7 +24,9 @@ import {
   isPaymentReceivedFinalisationPending,
   isPaymentProcessing,
   isPaymentReceivedStatusUnconfirmed,
+  isSupersededCardPaymentRefunding,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 // The presentation layer this page renders through, split out when the club-time
 // migration carried this file past its 500-line route-page budget. See that
@@ -35,6 +37,7 @@ import {
   formatLinkExpiry,
   internetBankingHeading,
   NarrativeCard,
+  PreviousPaymentRefundingNotice,
   toneForState,
   type Narrative,
   type PaymentLinkContext,
@@ -72,6 +75,7 @@ export default function PayByLinkPage() {
   const [paymentRecovery, setPaymentRecovery] =
     useState<PaymentRecovery | null>(null);
   const [paymentComplete, setPaymentComplete] = useState(false);
+  const [previousPaymentRefunding, setPreviousPaymentRefunding] = useState(false); // #4300
   const [refreshState, setRefreshState] = useState<"idle" | "sending" | "sent">(
     "idle"
   );
@@ -182,12 +186,17 @@ export default function PayByLinkPage() {
           setPaymentRecovery({ heading: "Payment being processed", message: data.error });
           return;
         }
+        if (res.status === 409 && isSupersededCardPaymentRefunding(data)) {
+          setPaymentRecovery({ heading: "Card payment being refunded", message: SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE });
+          return;
+        }
         throw new Error(data.error || "Unable to start payment");
       }
       if (data.alreadyPaid) {
         setPaymentComplete(true);
         return;
       }
+      setPreviousPaymentRefunding(data.previousPaymentRefunding === true);
       setClientSecret(data.clientSecret);
     } catch (err) {
       setIntentError(err instanceof Error ? err.message : "Unable to start payment");
@@ -447,12 +456,18 @@ export default function PayByLinkPage() {
           }
         />
 
+        {!paymentRecovery && previousPaymentRefunding ? <PreviousPaymentRefundingNotice /> : null}
         {paymentRecovery ? null : clientSecret ? (
-          <StripeProvider clientSecret={clientSecret}>
+          <StripeProvider key={clientSecret} clientSecret={clientSecret}>
             <PaymentForm
               amountCents={payable.amountCents}
               returnUrl={typeof window !== "undefined" ? window.location.href : ""}
-              onSuccess={() => setPaymentComplete(true)}
+              // #4300: the server says what the payment did - settled, or (an
+              // intent an edit superseded) going back with a fresh one to pay.
+              onSuccess={() => {
+                setClientSecret(null);
+                void startCardPayment();
+              }}
               onError={() => undefined}
             />
           </StripeProvider>

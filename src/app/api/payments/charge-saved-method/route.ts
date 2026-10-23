@@ -464,6 +464,23 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      if (reconciliation.outcome === "superseded_capture") {
+        // #4300 (`INV-PAY-138`): the charge landed on a payment an edit had
+        // superseded; it is going back to the card and settled nothing. The
+        // claim stays for an admin, who was alerted. No invoice.
+        return NextResponse.json(
+          {
+            success: false,
+            error:
+              "The charge was taken on a payment a later change had replaced, so it is being returned and the booking is not paid; admins have been alerted.",
+            paymentIntentId: paymentIntent.id,
+            paymentReceived: true,
+            finalisationPending: true,
+          },
+          { status: 409 }
+        );
+      }
+
       finalCapacityClaimed = true;
 
       logAudit({

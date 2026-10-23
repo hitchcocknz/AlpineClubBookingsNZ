@@ -3046,6 +3046,19 @@ describe("Cron: Confirm Pending Bookings", () => {
       expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
     });
 
+    it("#4300: a charge the settle refuses as superseded counts as failed: no confirmation, no invoice", async () => {
+      primeChargeableSplitChild();
+      mockPaymentTransactionFindMany.mockResolvedValue([]);
+      mockMarkBookingPaymentSucceeded.mockResolvedValue({ outcome: "superseded_capture", bookingId: "child_1", bumpedBookingIds: [] });
+
+      const result = await confirmPendingBookings();
+
+      expect(result.confirmedBookingIds).toHaveLength(0);
+      expect(result.failedBookingIds).toEqual(["child_1"]);
+      expect(mockSendConfirmedEmail).not.toHaveBeenCalled();
+      expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+    });
+
     it("tolerates a cancel API error (best-effort): logged, charge proceeds, booking confirms", async () => {
       primeChargeableSplitChild();
       mockPaymentTransactionFindMany.mockResolvedValue([

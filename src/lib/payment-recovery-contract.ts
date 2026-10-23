@@ -109,16 +109,24 @@ export const REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY = Object.freeze({
 });
 
 /**
- * #4300 (`INV-PAY-043`): the card payment the member just made was on an intent
- * an edit had superseded, so the superseded-intent machinery is refunding it
+ * #4300 (`INV-PAY-138`): the card payment the member just made was on an intent
+ * an edit had superseded, so the superseded-intent machinery is sending it back
  * and the booking still waits for its money. Not a failure, and not "payment
- * received" either: the member pays the amount the booking shows now.
+ * received" either: the member pays the amount the booking shows now. Worded
+ * so it never promises a refund the machinery might not complete by itself.
  */
 export const SUPERSEDED_CARD_PAYMENT_REFUNDING_CODE =
   "SUPERSEDED_CARD_PAYMENT_REFUNDING" as const;
 
 export const SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE =
-  "This card payment was for an earlier version of the booking, so it is being refunded to your card. Reload the booking and pay the amount it shows now.";
+  "This card payment was for an earlier version of the booking, so it will be returned to your card; the club will contact you if it cannot be. Reload the booking and pay the amount it shows now.";
+
+/**
+ * #4300: the `/pay` link's notice beside a fresh payment, when the payer's
+ * earlier payment was superseded (`previousPaymentRefunding`).
+ */
+export const PREVIOUS_PAYMENT_REFUNDING_NOTICE =
+  "Your earlier card payment was for an out-of-date amount, so it will be returned to your card; the club will contact you if it cannot be. Pay the amount below to complete the booking.";
 
 export const SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY = Object.freeze({
   code: SUPERSEDED_CARD_PAYMENT_REFUNDING_CODE,

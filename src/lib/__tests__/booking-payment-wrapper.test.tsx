@@ -814,6 +814,33 @@ describe("BookingPaymentWrapper", () => {
     expect(alert).not.toHaveTextContent("Payment received");
     expect(alert).not.toHaveTextContent("raw server text");
     expect(onPaymentComplete).not.toHaveBeenCalled();
+    // No green "Payment successful!" box beside it, and a way to reload.
+    await waitFor(() => expect(screen.queryByText("Payment successful!")).toBeNull());
+    expect(screen.getByRole("button", { name: "Reload booking", hidden: true })).not.toBeNull();
+  });
+
+  it("#4300: the pay step's own superseded refusal is shown with a reload, and no payment form", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: false,
+      status: 409,
+      json: async () => ({ ...SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, error: "raw server text must not be shown" }),
+    });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={vi.fn()}
+      />,
+    );
+
+    const alert = await screen.findByRole("alert", { hidden: true });
+    await waitFor(() => expect(alert).toHaveTextContent(SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE));
+    expect(alert).not.toHaveTextContent("raw server text");
+    expect(screen.queryByText("trigger-success")).toBeNull();
+    expect(screen.getByRole("button", { name: "Reload booking", hidden: true })).not.toBeNull();
   });
 
   it.each(capacityCancellationCases)(
