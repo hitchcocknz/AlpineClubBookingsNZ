@@ -1445,9 +1445,9 @@ actually taken.
 
 **It holds on EVERY edit door, and none of them parks** (#4317). The doors in
 `INV-MOD-044` price every edit from stored data; a door added later prices the
-same way, or this heading changes. A booking with no stored night rows, or one
-parked before #4317, no longer parks: its nights are valued from the stay
-envelope and its stored total.
+same way, or this heading changes. A booking with no stored night rows no
+longer parks: its nights are valued from the stay envelope and its stored total.
+One parked before #4317 prices the same way once its review is settled.
 
 **Legacy: the fence stays until every review raised before #4317 is settled**
 (waves B and C). `assertNoPendingEditFinancialReview` sits ahead of every
@@ -1459,7 +1459,7 @@ a consent-authority removal is exempt.
 ## INV-MOD-042
 
 **No door parks, so none freezes the money** (#4317). Every edit re-prices,
-recalculates the promotion, charges the change fee its policy sets (owner
+recalculates the promotion (bar a stay under way, `INV-MOD-043`), charges the change fee its policy sets (owner
 decision D8), computes the settlement options, moves the booking's stored totals
 and each strand's `BookingGuest.priceCents`, and records the rate-type snapshot,
 as a priced edit always did. The capacity check is unchanged. No
@@ -1499,8 +1499,7 @@ peculiar to each:
 - the IN-PROGRESS planner, `buildInProgressGuestRangePlan`
   (`src/lib/booking-edit-guest-ranges.ts`), behind both the modify-quote preview
   and the modify save (#3031). Its windows come from the guest's held night rows,
-  not the stored stay envelope (`INV-DATE-020`), and its result is priced-only.
-  Which way a price increase sends the money is `INV-PAY-051`;
+  not the stored stay envelope (`INV-DATE-020`), and its result is priced-only;
 - the single-guest removal, `removeBookingGuestInTransaction`
   (`src/lib/booking-guest-removal-service.ts`), from the guest DELETE route
   (#3032). It credits the guest's stored `priceCents`, or $0 if that is negative

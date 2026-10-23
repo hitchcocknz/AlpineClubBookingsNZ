@@ -37,8 +37,12 @@ import {
   buildInProgressGuestRangePlan,
   type BuildInProgressGuestRangePlanInput,
 } from "@/lib/booking-edit-guest-ranges";
-import { calculateModifiedPricing } from "@/lib/booking-modify-plan";
-import type { SeasonRateData } from "@/lib/pricing";
+import {
+  calculateModifiedPricing,
+  editedGuestPricingLocks,
+} from "@/lib/booking-modify-plan";
+import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
+import { calculateBookingPrice, type SeasonRateData } from "@/lib/pricing";
 
 /**
  * THE PREVIEW AND THE SAVE PRICE ONE EDIT IDENTICALLY (#3031; #4317, epic #4302).
@@ -241,6 +245,163 @@ describe("#4317 quote and save price every shape of stored history identically",
     const g1 = quote.proposedExistingGuests[0]!;
     expect(g1.perNightCents.every((cents) => Number.isInteger(cents))).toBe(true);
     expect(g1.perNightCents[0]).toBe(SHAPES[shape].values[0]);
+  });
+});
+
+/**
+ * THE SAME SHAPES BEFORE THE STAY STARTS (#4317 T1-T5, T7-T9, D11).
+ *
+ * A stay yet to start is priced by the ordinary pass in
+ * `calculateModifiedPricing`, which hands every held night to the engine as a
+ * lock at its valued figure (`editedGuestPricingLocks`, the one home the save
+ * and the preview share) and adds back each strand's unattached money (D11).
+ * The engine here is the REAL one, behind the membership-type policy wrapper,
+ * so a lock the plan fails to hand over shows up as today's $50 instead of the
+ * stored value. Each edit is worked by hand from the shape's values:
+ *
+ *  - extend (T1, T4): both guests keep their nights and buy the 23rd and 24th;
+ *  - shorten (T7-T9): both give back the 22nd, g1 at its value;
+ *  - remove (T2): g1 leaves and is credited its stored total, $0 if negative;
+ *  - reprice (T3): g1's locks are cleared (a #2337 link), so it is charged the
+ *    fresh $150 less what it carried;
+ *  - move (T5): the whole stay moves, so g1's nights are credited at their
+ *    values and three new ones bought fresh.
+ */
+const PRE_CHECK_IN_EDITS = {
+  extend: { newCheckIn: "2026-08-20", newCheckOut: "2026-08-25" },
+  shorten: { newCheckIn: "2026-08-20", newCheckOut: "2026-08-22" },
+  remove: { newCheckIn: "2026-08-20", newCheckOut: "2026-08-23", removeG1: true },
+  reprice: { newCheckIn: "2026-08-20", newCheckOut: "2026-08-23", repriceG1: true },
+  move: { newCheckIn: "2026-08-26", newCheckOut: "2026-08-29" },
+} as const;
+
+function preCheckInExpectedDiff(
+  shape: keyof typeof SHAPES,
+  edit: keyof typeof PRE_CHECK_IN_EDITS,
+): number {
+  const { total, values } = SHAPES[shape];
+  const unattached = total - values.reduce((sum, cents) => sum + cents, 0);
+  switch (edit) {
+    case "extend":
+      return 4 * RATE;
+    case "shorten":
+      return 0 - (RATE + values[2]);
+    case "remove":
+      return 0 - Math.max(total, 0);
+    case "reprice":
+    case "move":
+      // Fresh $150, plus what g1 carries beyond its nights, less its total.
+      return 3 * RATE + unattached - total;
+  }
+}
+
+function nightsBetween(checkIn: string, checkOut: string): Date[] {
+  const nights: Date[] = [];
+  for (let night = D(checkIn); night < D(checkOut); night = new Date(night.getTime() + 86_400_000)) {
+    nights.push(night);
+  }
+  return nights;
+}
+
+/** The edit as the batch save hands it to `calculateModifiedPricing`. */
+function preCheckInArgs(
+  shape: keyof typeof SHAPES,
+  edit: keyof typeof PRE_CHECK_IN_EDITS,
+) {
+  const { nights, total } = SHAPES[shape];
+  const guests = [guest("g1", "m1", [...nights], total), COMPANION];
+  const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
+  const change = PRE_CHECK_IN_EDITS[edit];
+  const booking = {
+    id: "bk-pre",
+    memberId: "m1",
+    lodgeId: "lodge-1",
+    checkIn: D(HELD[0]),
+    checkOut: D("2026-08-23"),
+    totalPriceCents,
+    discountCents: 0,
+    promoAdjustmentCents: 0,
+    finalPriceCents: totalPriceCents,
+    guests,
+  };
+  const remaining = "removeG1" in change ? guests.filter((g) => g.id !== "g1") : guests;
+  const nightsHeld = nightsBetween(change.newCheckIn, change.newCheckOut);
+  return {
+    booking: booking as never,
+    bookingId: "bk-pre",
+    isInProgressEdit: false,
+    editableFrom: null,
+    newCheckIn: D(change.newCheckIn),
+    newCheckOut: D(change.newCheckOut),
+    normalizedAddGuests: undefined,
+    removeGuestIds: "removeG1" in change ? ["g1"] : undefined,
+    guestsForPricing: remaining.map((g) => ({
+      bookingGuestId: g.id,
+      ageTier: "ADULT" as const,
+      isMember: true,
+      memberId: g.memberId,
+      rateMembershipTypeId: MEMBER_TYPE,
+      rateSource: "OWN_TYPE" as const,
+      stayStart: D(change.newCheckIn),
+      stayEnd: D(change.newCheckOut),
+      nights: nightsHeld,
+      ...editedGuestPricingLocks(g, booking, "repriceG1" in change && g.id === "g1"),
+    })),
+    skipBookingLifecycleRules: false,
+    seasonRateData: SEASONS as never,
+    partnerSharedGuests: [],
+  };
+}
+
+describe("#4317 an edit before the stay starts prices every shape of stored history", () => {
+  const CASES = (Object.keys(SHAPES) as Array<keyof typeof SHAPES>).flatMap((shape) =>
+    (Object.keys(PRE_CHECK_IN_EDITS) as Array<keyof typeof PRE_CHECK_IN_EDITS>).map(
+      (edit) => [shape, edit] as const,
+    ),
+  );
+
+  it.each(CASES)("%s, %s: the hand-worked amount, through the real engine", async (shape, edit) => {
+    h.checkCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    });
+    vi.mocked(priceBookingGuestsWithMembershipTypePolicy).mockImplementation(
+      async (_db, input) =>
+        calculateBookingPrice(input.checkIn, input.checkOut, input.guests as never, input.seasons),
+    );
+    const args = preCheckInArgs(shape, edit);
+    const oldTotal = (args.booking as { totalPriceCents: number }).totalPriceCents;
+
+    const save = await calculateModifiedPricing(NO_DISCOUNT_TX, args);
+
+    expect(save.inProgressPlan).toBeNull();
+    expect(save.newTotalPriceCents - oldTotal).toBe(preCheckInExpectedDiff(shape, edit));
+    // Every night the save will write carries an integer, never NULL.
+    for (const priced of save.priceBreakdown.guests) {
+      expect(priced.perNightCents.every((cents) => Number.isInteger(cents))).toBe(true);
+    }
+  });
+
+  it("keeps g1's held nights at their values and buys only the new ones (partly priced, extend)", async () => {
+    h.checkCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    });
+    vi.mocked(priceBookingGuestsWithMembershipTypePolicy).mockImplementation(
+      async (_db, input) =>
+        calculateBookingPrice(input.checkIn, input.checkOut, input.guests as never, input.seasons),
+    );
+
+    const save = await calculateModifiedPricing(
+      NO_DISCOUNT_TX,
+      preCheckInArgs("partly priced", "extend"),
+    );
+
+    // $50 + $50 + the blank's $56 kept, then two new nights at $50.
+    expect(save.priceBreakdown.guests[0]!.perNightCents).toEqual([5000, 5000, 5600, RATE, RATE]);
+    expect(save.priceBreakdown.guests[0]!.priceCents).toBe(15600 + 2 * RATE);
   });
 });
 
