@@ -4,50 +4,33 @@ import {
   parseRefundMethod, readModificationNoteWording, readRefundNoteWording,
   type ModificationNoteWording, type RefundMethod, type RefundNoteWording,
 } from "@/lib/xero-refund-method";
-import {
-  readAdditionalCaptureReceiptPayload, XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
-  type QueuedAdditionalCaptureReceiptOutboxPayload,
-} from "@/lib/additional-capture-receipt-payload";
-// #3953: a change's card capture recorded against the invoice billing it.
-export { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
+import { readAdditionalCaptureReceiptPayload, XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE, type QueuedAdditionalCaptureReceiptOutboxPayload } from "@/lib/additional-capture-receipt-payload";
+export { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE }; // #3953: a change's card capture's own receipt
 
 export const XERO_OUTBOX_ENTRANCE_FEE_TYPE = "ENTRANCE_FEE_INVOICE";
 export const XERO_OUTBOX_BOOKING_INVOICE_TYPE = "BOOKING_INVOICE";
-export const XERO_OUTBOX_BOOKING_INVOICE_UPDATE_TYPE =
-  "BOOKING_INVOICE_UPDATE";
+export const XERO_OUTBOX_BOOKING_INVOICE_UPDATE_TYPE = "BOOKING_INVOICE_UPDATE";
 export const XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE = "REFUND_CREDIT_NOTE";
 export const XERO_OUTBOX_ACCOUNT_CREDIT_NOTE_TYPE = "ACCOUNT_CREDIT_NOTE";
-export const XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE =
-  "SUPPLEMENTARY_INVOICE";
-export const XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE =
-  "MODIFICATION_CREDIT_NOTE";
-export const XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE =
-  "MODIFICATION_ACCOUNT_CREDIT_NOTE";
-export const XERO_OUTBOX_CREDIT_NOTE_ALLOCATION_TYPE =
-  "CREDIT_NOTE_ALLOCATION";
+export const XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE = "SUPPLEMENTARY_INVOICE";
+export const XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE = "MODIFICATION_CREDIT_NOTE";
+export const XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE = "MODIFICATION_ACCOUNT_CREDIT_NOTE";
+export const XERO_OUTBOX_CREDIT_NOTE_ALLOCATION_TYPE = "CREDIT_NOTE_ALLOCATION";
 // #1620 — orchestration op: on IB invoice raise, allocate the member's existing
 // floating credit notes against the booking's invoice (allocate-existing applied
 // credit). The handler does the local lot math + enqueues the per-note
 // CREDIT_NOTE_ALLOCATION ops; it is NOT itself a single Xero call.
-export const XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE =
-  "APPLIED_CREDIT_ALLOCATION";
-export const XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE =
-  "APPLIED_CREDIT_DEALLOCATION";
-export const XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CREDIT_NOTE_TYPE =
-  "MEMBERSHIP_CANCELLATION_CREDIT_NOTE";
-export const XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CONTACT_TYPE =
-  "MEMBERSHIP_CANCELLATION_CONTACT";
-export const XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_TYPE =
-  "GROUP_SETTLEMENT_INVOICE";
-export const XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_VOID_TYPE =
-  "GROUP_SETTLEMENT_INVOICE_VOID";
-export const XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE =
-  "MEMBERSHIP_SUBSCRIPTION_INVOICE";
+export const XERO_OUTBOX_APPLIED_CREDIT_ALLOCATION_TYPE = "APPLIED_CREDIT_ALLOCATION";
+export const XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE = "APPLIED_CREDIT_DEALLOCATION";
+export const XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CREDIT_NOTE_TYPE = "MEMBERSHIP_CANCELLATION_CREDIT_NOTE";
+export const XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CONTACT_TYPE = "MEMBERSHIP_CANCELLATION_CONTACT";
+export const XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_TYPE = "GROUP_SETTLEMENT_INVOICE";
+export const XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_VOID_TYPE = "GROUP_SETTLEMENT_INVOICE_VOID";
+export const XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE = "MEMBERSHIP_SUBSCRIPTION_INVOICE";
 // #3635: the invoice, paid from the Stripe account, that records a late card
 // capture on a cancelled booking a treasurer KEPT. Anchored on the #3639
 // approval task (`xero-kept-late-capture-invoice.ts`).
-export const XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE =
-  "KEPT_LATE_CAPTURE_INVOICE";
+export const XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE = "KEPT_LATE_CAPTURE_INVOICE";
 
 /**
  * The complete set of outbox queue types the pending scan dispatches (#1272,
@@ -618,9 +601,7 @@ export function getQueuedOutboxExpectedOperation(
     };
   }
 
-  if (queueType === XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE) {
-    return { entityType: "PAYMENT", operationType: "CREATE", localModels: ["PaymentTransaction"] };
-  }
+  if (queueType === XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE) return { entityType: "PAYMENT", operationType: "CREATE", localModels: ["PaymentTransaction"] };
   if (queueType === XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_VOID_TYPE) {
     return {
       entityType: "INVOICE",

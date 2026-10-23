@@ -30,6 +30,7 @@ import {
 } from "./xero-booking-repair-types";
 import { addAction, addFinding, buildManualReviewAction, buildRetryAction } from "./xero-booking-repair-findings";
 import { getBlockingOperation } from "./xero-booking-repair-object-resolution";
+import type { RepairDependencies } from "./xero-booking-repair-deps";
 
 /** What the repair pass knows about one booking's change captures in Xero. */
 export type AdditionalCaptureReceiptEvidence = {
@@ -204,4 +205,23 @@ export function addUnrecordedAdditionalCaptureFindings({
       actionKeys: [action.key],
     });
   }
+}
+
+/**
+ * Applies the finding's action: the receipt is queued under the change's
+ * anchor lock, once per capture (`enqueueAdditionalCaptureReceiptOperation`);
+ * the worker reads Xero before it records anything.
+ */
+export async function applyAdditionalCaptureReceiptAction(
+  action: BookingXeroRepairAction,
+  deps: Pick<RepairDependencies, "enqueueAdditionalCaptureReceiptOperation">,
+): Promise<void> {
+  const result = await deps.enqueueAdditionalCaptureReceiptOperation(String(action.payload.paymentIntentId));
+  action.status = result.outcome === "queued" ? "queued" : "skipped";
+  action.resultMessage =
+    result.outcome === "not-eligible"
+      ? `Not queued: ${result.reason}.`
+      : result.outcome === "queued"
+        ? "Card payment receipt queued for background processing."
+        : "Card payment receipt already queued.";
 }
