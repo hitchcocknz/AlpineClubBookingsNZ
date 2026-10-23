@@ -78,13 +78,14 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 
 import {
   ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE,
-  AdditionalCaptureReceiptWaitError,
+  ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE_CODE,
   chooseAdditionalCaptureReceiptTarget,
   recordAdditionalCaptureReceipt,
   type AdditionalCaptureReceiptProviders,
 } from "@/lib/additional-capture-xero-receipt";
 import { enqueueAdditionalCaptureReceiptOperation } from "@/lib/additional-capture-receipt-enqueue";
 import { readAdditionalCaptureReceiptPayload } from "@/lib/additional-capture-receipt-payload";
+import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 
 const PRIMARY = "11111111-1111-4111-8111-111111111111";
@@ -293,7 +294,8 @@ describe("recordAdditionalCaptureReceipt", () => {
     });
     const seam = providers();
 
-    await expect(run(seam)).rejects.toBeInstanceOf(AdditionalCaptureReceiptWaitError);
+    await expect(run(seam)).rejects.toBeInstanceOf(XeroAppliedCreditOperationBusyError);
+    await expect(run(seam)).rejects.toMatchObject({ waitCode: ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE_CODE });
 
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
     expect(seam.getAuthenticatedXeroClient).not.toHaveBeenCalled();
@@ -413,7 +415,7 @@ describe("recordAdditionalCaptureReceipt", () => {
       reviewOperationId: null,
     });
 
-    await expect(run()).rejects.toBeInstanceOf(AdditionalCaptureReceiptWaitError);
+    await expect(run()).rejects.toBeInstanceOf(XeroAppliedCreditOperationBusyError);
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
   });
 

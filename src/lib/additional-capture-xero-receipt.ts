@@ -125,16 +125,17 @@ export function chooseAdditionalCaptureReceiptTarget(
   };
 }
 
+/** The `lastErrorCode` a receipt carries while it waits for the gap invoice. */
+export const ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE_CODE = "ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE";
+
 /**
- * Raised while the gap invoice is still on its way to Xero. A busy error, so
- * the outbox returns this row to PENDING rather than failing it; the gap
- * invoice's row is older, so the next scan sends it first.
+ * Thrown while the gap invoice is still on its way to Xero: a busy error, so
+ * the outbox returns this row to PENDING, carrying the code above, rather than
+ * failing it; the gap invoice's row is older, so the next scan sends it first.
+ * Built at the throw, never subclassed at module load.
  */
-export class AdditionalCaptureReceiptWaitError extends XeroAppliedCreditOperationBusyError {
-  constructor(message: string) {
-    super(message);
-    this.name = "AdditionalCaptureReceiptWaitError";
-  }
+function awaitingGapInvoice(message: string): XeroAppliedCreditOperationBusyError {
+  return new XeroAppliedCreditOperationBusyError(message, null, ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE_CODE);
 }
 
 /**
@@ -368,7 +369,7 @@ export async function recordAdditionalCaptureReceipt(
 
     const gap = stored ? await findPrimaryInvoiceGapInvoice(bookingId, stored) : null;
     if (gap?.operation && OUTSTANDING_STATUSES.has(gap.operation.status)) {
-      throw new AdditionalCaptureReceiptWaitError(
+      throw awaitingGapInvoice(
         `The supplementary invoice for this booking's change (operation ${gap.operation.id}) is still on its way to Xero; this card payment is recorded once it is there`,
       );
     }
@@ -461,7 +462,7 @@ export async function recordAdditionalCaptureReceipt(
         return null;
       }
       if (recheck.queueOperationId) {
-        throw new AdditionalCaptureReceiptWaitError(
+        throw awaitingGapInvoice(
           `The supplementary invoice for this booking's gap (operation ${recheck.queueOperationId}) was queued; this card payment is recorded once it is in Xero`,
         );
       }

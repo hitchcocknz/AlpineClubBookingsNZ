@@ -28,6 +28,8 @@ const mocks = vi.hoisted(() => {
     // booking read is shared with the global client's.
     booking: { findUniqueOrThrow: vi.fn().mockResolvedValue({ finalPriceCents: 0 }), findUnique: vi.fn() },
     bookingModification: { findMany: vi.fn().mockResolvedValue([]) },
+    // #3953: and the captures the payment's cash figure holds.
+    paymentTransaction: { findMany: vi.fn().mockResolvedValue([]) },
   };
 
   const prisma = {
@@ -549,6 +551,10 @@ describe("createXeroInvoiceForBooking", () => {
 
   it("#3980 review M1: reads the booking and its marked edits from one REPEATABLE READ snapshot", async () => {
     mocks.tx.bookingModification.findMany.mockResolvedValueOnce([{ id: "mod_marked" }]);
+    mocks.tx.paymentTransaction.findMany.mockResolvedValueOnce([
+      { stripePaymentIntentId: "pi_primary" },
+      { stripePaymentIntentId: "pi_change" },
+    ]);
     await expect(createXeroInvoiceForBooking("booking_1")).resolves.toBe("inv_1");
     const [, options] = mocks.prisma.$transaction.mock.calls[0] as unknown as [unknown, { isolationLevel?: string }];
     expect(options).toEqual({ isolationLevel: "RepeatableRead" });
@@ -566,6 +572,8 @@ describe("createXeroInvoiceForBooking", () => {
         requestPayload: expect.objectContaining({
           primaryInvoiceBilledFee: expect.objectContaining({
             worth: expect.objectContaining({ markedModificationIdsAtBuild: ["mod_marked"] }),
+            // #3953: the captures this create's cash figure counted, from the same snapshot.
+            capturedPaymentIntentIdsAtBuild: ["pi_primary", "pi_change"],
           }),
         }),
       },
@@ -622,6 +630,8 @@ describe("createXeroInvoiceForBooking", () => {
       primaryInvoiceCashCents: 0,
       primaryInvoiceAttemptedCashCents: 0,
       worth: { atBuildCents: 10_000, builtTotalCents: 10_000, atLinkCents: 13_000, markedModificationIdsAtBuild: [] },
+      // #3953: no capture in the snapshot.
+      capturedPaymentIntentIdsAtBuild: [],
     };
     expect(mocks.prisma.payment.updateMany).toHaveBeenCalledWith({
       where: { id: "pay_1", xeroInvoiceId: null },
