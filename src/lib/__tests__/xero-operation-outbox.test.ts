@@ -252,17 +252,9 @@ vi.mock("@/lib/xero-kept-late-capture-invoice", () => ({
 vi.mock("@/lib/additional-capture-receipt-enqueue", () => ({
   enqueueAdditionalCaptureReceiptOperation: mocks.enqueueAdditionalCaptureReceiptOperation,
 }));
-vi.mock("@/lib/additional-capture-xero-receipt", async () => {
-  // The scan's filter is the real one; only the worker is stood in for.
-  const { outboxScanSpacesWaitingReceipts } = (await vi.importActual("@/lib/additional-capture-xero-receipt")) as typeof import("@/lib/additional-capture-xero-receipt");
-  const actual = (await vi.importActual("@/lib/additional-capture-xero-receipt")) as typeof import("@/lib/additional-capture-xero-receipt");
-  return {
-    recordAdditionalCaptureReceipt: mocks.recordAdditionalCaptureReceipt,
-    outboxScanSpacesWaitingReceipts,
-    ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS: actual.ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS,
-    ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE: actual.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
-  };
-});
+vi.mock("@/lib/additional-capture-xero-receipt", () => ({
+  recordAdditionalCaptureReceipt: mocks.recordAdditionalCaptureReceipt,
+}));
 
 vi.mock("@/lib/xero-token-store", () => ({
   isXeroConnected: mocks.isXeroConnected,
@@ -2399,7 +2391,7 @@ describe("processQueuedXeroOutboxOperations", () => {
 
   it("MUTATION (#3954 round 8): a billed-offset note waiting for its edit's own note is requeued under its wait code, and the scan spaces it out", async () => {
     const { BILLED_OFFSET_AWAITING_OWN_NOTE_CODE, BILLED_OFFSET_OWN_NOTE_RECHECK_MS } = await import("@/lib/unpaid-ask-billed-offset-order");
-    const { ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS, ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } = await import("@/lib/additional-capture-xero-receipt");
+    const { ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS, ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } = await import("@/lib/additional-capture-receipt-gate");
     mocks.findManyOperations.mockResolvedValue([
       {
         id: "op_dealloc_waiting",

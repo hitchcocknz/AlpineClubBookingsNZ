@@ -67,7 +67,8 @@ import {
 } from "@/lib/xero-resolved-in-xero-fences";
 import { createXeroSupplementaryInvoice } from "@/lib/xero-supplementary-invoices";
 import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-invoice";
-import { outboxScanSpacesWaitingReceipts, recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
+import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
+import { outboxScanSpacesWaitingReceipts } from "@/lib/additional-capture-receipt-gate";
 import { primaryInvoiceGapPayload } from "@/lib/additional-capture-receipt-payload";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";

@@ -30,13 +30,16 @@ reason: the classifier is where every booking's findings are gathered before
   that action.
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3348
+lines: 3349
 reason: the outbox dispatch chain routes every queue type to its worker, and
   its census requires one branch per member of `XERO_OUTBOX_QUEUE_TYPES`; the
   new type's branch, its import and its constant. Review round 1: the
   supplementary enqueue's payload is written in this one place, so the #3980
   gap invoice's mark and the captures it pays itself from ride its one
-  options type, forwarded field by field like the others.
+  options type, forwarded field by field like the others; and (round 3) the
+  pending scan leaves a waiting receipt out until its recheck, beside the
+  billed-offset note's own spacing, through one import from the receipt's
+  gate module.
 
 file: src/lib/xero-operation-retry.ts
 lines: 2076

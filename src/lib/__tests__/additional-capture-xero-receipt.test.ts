@@ -81,7 +81,6 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
 
 import {
   ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE,
-  ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
   chooseAdditionalCaptureReceiptTarget,
   recordAdditionalCaptureReceipt,
   type AdditionalCaptureReceiptProviders,
@@ -91,6 +90,7 @@ import {
   queueReceiptsForUnrecordedCaptures,
 } from "@/lib/additional-capture-receipt-enqueue";
 import { readAdditionalCaptureReceiptPayload } from "@/lib/additional-capture-receipt-payload";
+import { ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } from "@/lib/additional-capture-receipt-gate";
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 

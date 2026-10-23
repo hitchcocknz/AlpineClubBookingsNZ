@@ -65,6 +65,7 @@ let invoiceKey: typeof import("@/lib/xero-booking-invoice-key");
 let worker: typeof import("@/lib/additional-capture-xero-receipt");
 let busy: typeof import("@/lib/xero-applied-credit-operation-serialization");
 let claim: typeof import("@/lib/xero-operation-claim");
+let gate: typeof import("@/lib/additional-capture-receipt-gate");
 
 async function receiptRows() {
   return prisma.xeroSyncOperation.findMany({
@@ -163,6 +164,7 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     worker = await import("@/lib/additional-capture-xero-receipt");
     busy = await import("@/lib/xero-applied-credit-operation-serialization");
     claim = await import("@/lib/xero-operation-claim");
+    gate = await import("@/lib/additional-capture-receipt-gate");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -533,7 +535,7 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
       expect(waiter).toMatchObject({
         status: "rejected",
         reason: expect.objectContaining({
-          waitCode: worker.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
+          waitCode: gate.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
           message: expect.stringContaining(reached[0]!),
         }),
       });
