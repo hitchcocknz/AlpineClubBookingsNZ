@@ -16,10 +16,11 @@
  *     unpaid and names nothing) when the link's figures say the primary's cash
  *     did not cover it, or by the gap invoice (which names it, and the
  *     receipt then stands down) when the figures cannot say.
- *  5. Review round 3 (C3): two receipts on one booking claimed RUNNING and run
- *     at once - only the one claimed earlier gets past its wait and reaches
- *     Xero, the later waits; a create dead past the staleness threshold blocks
- *     neither, a live one blocks both.
+ *  5. Review rounds 3 and 4: two receipts on one booking go through the
+ *     outbox's real claim and the real worker from one barrier - only one
+ *     passes the planning gate and reaches Xero, the other waits for it; a
+ *     create dead past the staleness threshold blocks neither, a live one
+ *     blocks both.
  *  3. The enqueue runs under the existing per-anchor supplementary-invoice lock
  *     (`lockSupplementaryInvoiceAnchor`) on the change the capture pays for: a
  *     session holding that lock makes the enqueue queue behind it, and the
@@ -63,6 +64,7 @@ let gapCheck: typeof import("@/lib/xero-primary-invoice-fee-gap");
 let invoiceKey: typeof import("@/lib/xero-booking-invoice-key");
 let worker: typeof import("@/lib/additional-capture-xero-receipt");
 let busy: typeof import("@/lib/xero-applied-credit-operation-serialization");
+let claim: typeof import("@/lib/xero-operation-claim");
 
 async function receiptRows() {
   return prisma.xeroSyncOperation.findMany({
@@ -160,6 +162,7 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     invoiceKey = await import("@/lib/xero-booking-invoice-key");
     worker = await import("@/lib/additional-capture-xero-receipt");
     busy = await import("@/lib/xero-applied-credit-operation-serialization");
+    claim = await import("@/lib/xero-operation-claim");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -401,11 +404,11 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     });
   });
 
-  describe("two receipts on one booking, claimed at once (review round 3, C3)", () => {
+  describe("two receipts on one booking, claimed and run at once (review rounds 3 and 4)", () => {
     const STALE_MINUTES_AGO = 24 * 60;
-    async function claimedReceipt(id: string, transactionId: string, intent: string, startedAt: Date) {
+    async function pendingReceipt(id: string, transactionId: string, intent: string) {
       const key = `payment-intent:${intent}:additional-capture-receipt:v1`;
-      return prisma.xeroSyncOperation.create({
+      await prisma.xeroSyncOperation.create({
         data: {
           id,
           direction: "OUTBOUND",
@@ -413,8 +416,7 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
           operationType: "CREATE",
           localModel: "PaymentTransaction",
           localId: transactionId,
-          status: "RUNNING",
-          startedAt,
+          status: "PENDING",
           queueType: "ADDITIONAL_CAPTURE_RECEIPT",
           correlationKey: key,
           idempotencyKey: key,
@@ -445,24 +447,66 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
         },
       });
     }
-    /** The provider seam: who reached Xero. It stops there, writing nothing, as a wait does. */
-    function seam(reached: string[]) {
-      return (operationId: string) => ({
-        getAuthenticatedXeroClient: async () => {
-          reached.push(operationId);
-          throw new busy.XeroAppliedCreditOperationBusyError("test: stop at the Xero call");
-        },
-        callXeroApi: (async () => {
-          throw new Error("unreachable");
-        }) as never,
-        createXeroPaymentForInvoice: async () => {
-          throw new Error("unreachable");
-        },
-        readStripeCaptureDocumentDate: async () => null,
+
+    /**
+     * Both receipts go through the outbox's REAL claim (PENDING -> RUNNING)
+     * and the REAL worker from one barrier. A receipt that reaches Xero (the
+     * provider seam) is held there until the other has finished, so the other
+     * plans while the first is mid-flight - the case the gate exists for.
+     */
+    async function runTwoAtOnce(ids: string[]) {
+      const reached: string[] = [];
+      let settledCount = 0;
+      let releaseSeam!: () => void;
+      const seamHeld = new Promise<void>((resolve) => {
+        releaseSeam = resolve;
       });
+      let go!: () => void;
+      const barrier = new Promise<void>((resolve) => {
+        go = resolve;
+      });
+      const runs = ids.map((id) =>
+        (async () => {
+          await barrier;
+          const claimed = await claim.claimXeroSyncOperationToRunning(id, {
+            direction: "OUTBOUND",
+            entityType: "PAYMENT",
+            operationType: "CREATE",
+            localModel: { in: ["PaymentTransaction"] },
+          });
+          if (!claimed) throw new Error(`claim of ${id} lost`);
+          return worker.recordAdditionalCaptureReceipt(
+            { syncOperationId: id },
+            {
+              getAuthenticatedXeroClient: async () => {
+                reached.push(id);
+                await seamHeld;
+                throw new busy.XeroAppliedCreditOperationBusyError("test: stop at the Xero call");
+              },
+              callXeroApi: (async () => {
+                throw new Error("unreachable");
+              }) as never,
+              createXeroPaymentForInvoice: async () => {
+                throw new Error("unreachable");
+              },
+              readStripeCaptureDocumentDate: async () => null,
+            },
+          );
+        })().finally(() => {
+          settledCount += 1;
+        }),
+      );
+      // Observed now, so a run that settles before the end is never an unhandled rejection.
+      for (const run of runs) run.catch(() => undefined);
+      go();
+      // Every run either finishes or is parked at the seam; neither may take long.
+      const startedAt = process.hrtime.bigint();
+      while (settledCount + reached.length < ids.length && realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      releaseSeam();
+      return { reached, outcomes: await Promise.allSettled(runs) };
     }
-    const runBoth = (reached: string[], ids: string[]) =>
-      Promise.allSettled(ids.map((id) => worker.recordAdditionalCaptureReceipt({ syncOperationId: id }, seam(reached)(id))));
 
     beforeEach(async () => {
       await prisma.paymentTransaction.create({
@@ -477,45 +521,46 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
           bookingModificationId: "race-3953-modification-2",
         },
       });
+      await pendingReceipt("race-3953-receipt-1", CHANGE_TX_ID, CHANGE_INTENT);
+      await pendingReceipt("race-3953-receipt-2", CHANGE_TX_2_ID, CHANGE_INTENT_2);
     });
 
-    it("only the one claimed earlier gets past its wait; the later waits for it", async () => {
-      const now = Date.now();
-      await claimedReceipt("race-3953-receipt-early", CHANGE_TX_ID, CHANGE_INTENT, new Date(now - 2_000));
-      await claimedReceipt("race-3953-receipt-late", CHANGE_TX_2_ID, CHANGE_INTENT_2, new Date(now - 1_000));
-      const reached: string[] = [];
+    it("only one of two receipts claimed at once reaches Xero; the other waits for it", async () => {
+      const { reached, outcomes } = await runTwoAtOnce(["race-3953-receipt-1", "race-3953-receipt-2"]);
 
-      const [early, late] = await runBoth(reached, ["race-3953-receipt-early", "race-3953-receipt-late"]);
-
-      expect(reached).toEqual(["race-3953-receipt-early"]);
-      expect(early.status).toBe("rejected");
-      expect(late).toMatchObject({
+      expect(reached).toHaveLength(1);
+      const waiter = outcomes.find((_outcome, index) => ["race-3953-receipt-1", "race-3953-receipt-2"][index] !== reached[0]);
+      expect(waiter).toMatchObject({
         status: "rejected",
         reason: expect.objectContaining({
           waitCode: worker.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
-          message: expect.stringContaining("race-3953-receipt-early"),
+          message: expect.stringContaining(reached[0]!),
         }),
       });
     });
 
     it("a create dead past the staleness threshold blocks neither; a live one blocks both", async () => {
-      const now = Date.now();
-      await claimedReceipt("race-3953-receipt-only", CHANGE_TX_ID, CHANGE_INTENT, new Date(now - 1_000));
-      await runningCreate(new Date(now - STALE_MINUTES_AGO * 60_000));
-      const reached: string[] = [];
-      await runBoth(reached, ["race-3953-receipt-only"]);
-      expect(reached).toEqual(["race-3953-receipt-only"]);
+      await runningCreate(new Date(Date.now() - STALE_MINUTES_AGO * 60_000));
+      const dead = await runTwoAtOnce(["race-3953-receipt-1", "race-3953-receipt-2"]);
+      // Not blocked by the dead create: one passes, the other waits only for it.
+      expect(dead.reached).toHaveLength(1);
 
-      // The stale reset retires the dead row (one active create per key); a live create starts.
+      // The stale reset retires the dead row (one active create per key); a live
+      // create starts; both receipts, back to PENDING, run again.
       await prisma.xeroSyncOperation.updateMany({
         where: { localModel: "Payment", localId: PAYMENT_ID, status: "RUNNING" },
         data: { status: "FAILED" },
       });
-      await runningCreate(new Date(now));
-      const blocked: string[] = [];
-      const [outcome] = await runBoth(blocked, ["race-3953-receipt-only"]);
-      expect(blocked).toEqual([]);
-      expect(outcome).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("still being raised") }) });
+      await prisma.xeroSyncOperation.updateMany({
+        where: { id: { in: ["race-3953-receipt-1", "race-3953-receipt-2"] } },
+        data: { status: "PENDING", startedAt: null, lastErrorCode: null },
+      });
+      await runningCreate(new Date());
+      const live = await runTwoAtOnce(["race-3953-receipt-1", "race-3953-receipt-2"]);
+      expect(live.reached).toEqual([]);
+      for (const outcome of live.outcomes) {
+        expect(outcome).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("still being raised") }) });
+      }
     });
   });
 });
