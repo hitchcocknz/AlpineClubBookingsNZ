@@ -1770,6 +1770,8 @@ function promoPreviewParty(
         memberId: guest.memberId,
         stayStart: guest.stayStart,
         stayEnd: guest.stayEnd,
+        // #4317: the preview reads the stored total to value the held nights.
+        priceCents: guest.priceCents,
         nights: guest.nights,
       })),
     } : null,

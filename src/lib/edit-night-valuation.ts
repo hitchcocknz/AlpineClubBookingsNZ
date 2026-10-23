@@ -210,18 +210,22 @@ export function withUnattachedStrandMoney<
   pricedGuests: ReadonlyArray<{ unattachedCents?: number } & object>,
   removed: ReadonlyArray<StoredEditStrand>,
 ): Breakdown {
-  if (pricedGuests.length !== breakdown.guests.length) {
-    throw new Error(
-      `withUnattachedStrandMoney: ${pricedGuests.length} pricing inputs for ${breakdown.guests.length} priced guests (#4317).`,
-    );
-  }
   const retainedOnRemoval = removed.reduce(
     (sum, guest) => sum + (guest.priceCents - strandRemovalCreditCents(guest.priceCents)),
     0,
   );
   const unattached = pricedGuests.map((guest) => guest.unattachedCents ?? 0);
+  if (unattached.every((cents) => cents === 0) && retainedOnRemoval === 0) {
+    // Nothing to add: the breakdown is returned as the engine produced it, so a
+    // caller's own check of its shape still answers a malformed one.
+    return breakdown;
+  }
+  if (pricedGuests.length !== breakdown.guests.length) {
+    throw new Error(
+      `withUnattachedStrandMoney: ${pricedGuests.length} pricing inputs for ${breakdown.guests.length} priced guests (#4317).`,
+    );
+  }
   const totalUnattached = unattached.reduce((sum, cents) => sum + cents, 0);
-  if (totalUnattached === 0 && retainedOnRemoval === 0) return breakdown;
   return {
     ...breakdown,
     totalPriceCents: breakdown.totalPriceCents + totalUnattached + retainedOnRemoval,
