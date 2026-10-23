@@ -573,6 +573,8 @@ export async function executeEditReviewCharge({
   totalCents: number;
   /** The sync's answer on the card route (#4272: `booking-cancelled` asks nothing). */
   outcome?: EditReviewChargeSyncOutcome;
+  /** #4272: on `booking-cancelled`, whether that run wrote the uncollected-share record. */
+  recordedUncollected?: boolean;
 }> {
   // Derived here as well as inside the sync, because BOTH arms need it and the
   // failure arm needs it after the sync has thrown: the supplementary Xero

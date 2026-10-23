@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   findRequest: vi.fn(),
   record: vi.fn(),
   auditLogFindMany: vi.fn(),
+  recoveryUpdateMany: vi.fn(),
 }));
 
 vi.mock("server-only", () => ({}));
@@ -26,14 +27,17 @@ vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findUnique: (...a: unknown[]) => mocks.bookingFindUnique(...a) },
     auditLog: { findMany: (...a: unknown[]) => mocks.auditLogFindMany(...a) },
-    paymentTransaction: { findUnique: async () => ({ refundedAmountCents: 0 }) },
+    paymentTransaction: { findUnique: async () => ({ refundedAmountCents: 0, refunds: [] }) },
+    // The real hold's fenced write (#4272 review): asserted, not stubbed.
+    paymentRecoveryOperation: { updateMany: (...a: unknown[]) => mocks.recoveryUpdateMany(...a) },
   },
 }));
 vi.mock("@/lib/edit-financial-review-charge-raise-claim", () => ({
   claimEditReviewChargeRaise: (...a: unknown[]) => mocks.claim(...a),
   releaseEditReviewChargeRaise: (...a: unknown[]) => mocks.release(...a),
 }));
-vi.mock("@/lib/edit-financial-review-charge-recovery", () => ({
+vi.mock("@/lib/edit-financial-review-charge-recovery", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/edit-financial-review-charge-recovery")>()),
   completeEditFinancialReviewChargeRecovery: (...a: unknown[]) => mocks.complete(...a),
 }));
 vi.mock("@/lib/edit-financial-review-charge-request", () => ({
@@ -48,6 +52,8 @@ const operation = {
   id: "op-1",
   bookingId: "booking-1",
   paymentId: "payment-1",
+  // This claim's attempt: the third.
+  attempts: 3,
   nextRetryAt: null,
   processingStartedAt: new Date("2026-07-01T00:00:00.000Z"),
 };
@@ -62,6 +68,7 @@ beforeEach(() => {
   mocks.findRequest.mockResolvedValue(null);
   mocks.record.mockResolvedValue(undefined);
   mocks.auditLogFindMany.mockResolvedValue([]);
+  mocks.recoveryUpdateMany.mockResolvedValue({ count: 1 });
 });
 
 describe("closeCancelledEditReviewChargeReplay (#4272)", () => {
@@ -113,5 +120,31 @@ describe("closeCancelledEditReviewChargeReplay (#4272)", () => {
 
     expect(mocks.release).toHaveBeenCalledTimes(1);
     expect(mocks.complete).not.toHaveBeenCalled();
+  });
+
+  it("waits, WITHOUT spending an attempt, while the request is still processing at Stripe", async () => {
+    // A bank debit can sit PROCESSING for days; five ordinary retries would
+    // kill the row and hand a cancelled booking to the repair pass.
+    mocks.findRequest.mockResolvedValue({
+      paymentTransactionId: "ptx-1",
+      stripePaymentIntentId: "pi_1",
+      amountCents: 20000,
+      carriedAskCents: 0,
+      status: "PROCESSING",
+    });
+
+    await expect(closeCancelledEditReviewChargeReplay({ ...args, status: "CANCELLED" })).resolves.toBe(true);
+
+    expect(mocks.record).not.toHaveBeenCalled();
+    expect(mocks.complete).not.toHaveBeenCalled();
+    expect(mocks.release).toHaveBeenCalledTimes(1);
+    expect(mocks.recoveryUpdateMany).toHaveBeenCalledTimes(1);
+    const [{ where, data }] = mocks.recoveryUpdateMany.mock.calls[0] as [
+      { where: Record<string, unknown>; data: Record<string, unknown> },
+    ];
+    // Fenced on this exact attempt, and handed back with the attempt it took returned.
+    expect(where).toMatchObject({ id: "op-1", status: "PROCESSING", processingStartedAt: operation.processingStartedAt });
+    expect(data).toMatchObject({ status: "PENDING", attempts: 2, processingStartedAt: null });
+    expect((data.nextRetryAt as Date).getTime()).toBeGreaterThan(Date.now());
   });
 });

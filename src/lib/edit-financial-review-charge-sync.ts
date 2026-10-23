@@ -108,6 +108,8 @@ export type EditReviewChargeSyncResult = {
   totalCents: number;
   /** #3371: the carried part; the member is asked `totalCents + carriedCents`. */
   carriedCents: number;
+  /** #4272, `booking-cancelled` only: whether this run wrote the uncollected-share record. */
+  recordedUncollected?: boolean;
 };
 
 /**

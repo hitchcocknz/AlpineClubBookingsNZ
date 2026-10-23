@@ -15,6 +15,7 @@
   nothing is asked of the member and the officer is told so straight away. The
   amount still owed is recorded once in the audit log as a review share that
   was not collected: the settled total less anything the member paid towards
-  it and kept, with any refund stated. An officer can find it there and
+  it and kept, with any refund stated, and it waits while that payment or a
+  refund of it is still going through. An officer can find it there and
   collect it another way. Reviews on bookings that are not cancelled are
   unchanged.

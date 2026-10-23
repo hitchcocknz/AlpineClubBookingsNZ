@@ -13,9 +13,13 @@ import {
   claimEditReviewChargeRaise,
   releaseEditReviewChargeRaise,
 } from "@/lib/edit-financial-review-charge-raise-claim";
-import { completeEditFinancialReviewChargeRecovery } from "@/lib/edit-financial-review-charge-recovery";
+import {
+  completeEditFinancialReviewChargeRecovery,
+  holdEditFinancialReviewChargeRecovery,
+} from "@/lib/edit-financial-review-charge-recovery";
 import type { EditReviewChargeSyncResult } from "@/lib/edit-financial-review-charge-sync";
 import logger from "@/lib/logger";
+import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { isCapturedTransactionStatus } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
@@ -33,6 +37,18 @@ export type UncollectedShareOverride = {
   details: string;
   metadata: Record<string, unknown>;
 };
+
+/**
+ * #4272: the edit's request, or a refund of it, is still moving at Stripe, so
+ * what the member paid and kept is not known yet. Thrown rather than guessed;
+ * the replay waits without spending an attempt
+ * (`holdEditFinancialReviewChargeRecovery`), and an inline caller's catch makes
+ * the debt durable on the recovery row.
+ */
+export class EditReviewChargeStillMovingError extends Error {}
+
+/** How long the replay waits before looking again at a request still moving. */
+const STILL_MOVING_RECHECK_MS = 6 * 60 * 60 * 1000;
 
 /**
  * #4272: a review charge whose booking was cancelled after the completion
@@ -54,11 +70,16 @@ export type UncollectedShareOverride = {
  * and records nothing.
  *
  * IDEMPOTENT. A replay can run again - a reaper re-claim, a failed close, a later
- * share re-arming the row - so earlier `booking-cancelled` records for this edit
- * are summed and only the part they do not already cover is written.
+ * share re-arming the row - so what earlier records for this edit already told
+ * an officer to collect is subtracted, and only the rest is written
+ * (`sumRecordedShortfallCents`).
  *
- * A request still PROCESSING at Stripe throws: what it collects is not known
- * yet, so the caller's durable row retries rather than recording a guess.
+ * A request still PROCESSING, or with a refund Stripe has not settled, throws
+ * `EditReviewChargeStillMovingError`: what the member kept is not known yet.
+ * The figure is otherwise measured at the refunds recorded at that moment, and
+ * the record says so.
+ *
+ * `recordedUncollected` on the result says whether a record was written.
  */
 export async function settleCancelledEditReviewCharge({
   bookingId,
@@ -79,17 +100,25 @@ export async function settleCancelledEditReviewCharge({
   }
   const request = await findEditReviewChargeRequest({ paymentId, bookingModificationId });
   if (request?.status === PaymentStatus.PROCESSING) {
-    throw new Error(
-      `The charge request for booking modification ${bookingModificationId} is still processing at Stripe on a cancelled booking; leaving it open to retry`,
+    throw new EditReviewChargeStillMovingError(
+      `The charge request for booking modification ${bookingModificationId} is still processing at Stripe on a cancelled booking`,
     );
   }
   const paid = request && isCapturedTransactionStatus(request.status) ? request : null;
-  const refundedCents = paid
-    ? ((await prisma.paymentTransaction.findUnique({
+  const paidRow = paid
+    ? await prisma.paymentTransaction.findUnique({
         where: { id: paid.paymentTransactionId },
-        select: { refundedAmountCents: true },
-      }))?.refundedAmountCents ?? 0)
-    : 0;
+        select: { refundedAmountCents: true, refunds: { select: { status: true } } },
+      })
+    : null;
+  // A refund Stripe accepted but has not settled can still fail and put the
+  // money back, so the figure waits for it rather than overstating what is owed.
+  if (paidRow?.refunds.some((refund) => refund.status !== "succeeded" && isRecordedRefundStatus(refund.status))) {
+    throw new EditReviewChargeStillMovingError(
+      `A refund of the charge request for booking modification ${bookingModificationId} is still settling at Stripe`,
+    );
+  }
+  const refundedCents = paidRow?.refundedAmountCents ?? 0;
   const paidForEditCents = paid ? paid.amountCents - paid.carriedAskCents : 0;
   const netPaidCents = Math.max(paidForEditCents - refundedCents, 0);
   if (paid && netPaidCents >= totalCents) {
@@ -101,14 +130,14 @@ export async function settleCancelledEditReviewCharge({
     };
   }
   const owedCents = totalCents - netPaidCents;
-  const recordedCents = await sumRecordedCancelledShortfallCents({ bookingId, bookingModificationId });
+  const recordedCents = await sumRecordedShortfallCents({ bookingId, bookingModificationId });
   const newCents = owedCents - recordedCents;
   if (newCents > 0) {
     const money = (cents: number) => formatCents(cents, format);
     const paidSentence = !paid
       ? "Nothing was collected towards it."
       : refundedCents > 0
-        ? `The member paid ${money(paidForEditCents)} towards it by card and ${money(refundedCents)} of that was refunded, so ${money(netPaidCents)} counts as collected.`
+        ? `The member paid ${money(paidForEditCents)} towards it by card and ${money(refundedCents)} of that had been refunded when this was recorded, so ${money(netPaidCents)} counts as collected.`
         : `The member paid ${money(paidForEditCents)} towards it by card.`;
     const carriedSentence = paid && paid.carriedAskCents > 0
       ? ` A further ${money(paid.carriedAskCents)} on that payment was an earlier change's unpaid extra and is not counted here.`
@@ -141,16 +170,22 @@ export async function settleCancelledEditReviewCharge({
         },
       },
     });
+    return { outcome: "booking-cancelled", paymentIntentId: null, totalCents, carriedCents: 0, recordedUncollected: true };
   }
-  return { outcome: "booking-cancelled", paymentIntentId: null, totalCents, carriedCents: 0 };
+  return { outcome: "booking-cancelled", paymentIntentId: null, totalCents, carriedCents: 0, recordedUncollected: false };
 }
 
 /**
- * What earlier `booking-cancelled` records for this edit already told an officer
- * to collect. The action is the one `recordUncollectedEditReviewChargeShare`
- * writes; the cause and edit are read off each row's metadata.
+ * What earlier records for this edit already told an officer to collect by
+ * hand. Both kinds of card-leg record count, read off each row's metadata under
+ * the one action `recordUncollectedEditReviewChargeShare` writes:
+ *
+ *   * `ask-closed` - the sync's paid-request record. Each states the edit's
+ *     whole shortfall at that moment, a RUNNING total, so the largest is taken.
+ *   * `booking-cancelled` - this path's own records. Each states only what the
+ *     ones before it did not cover, an INCREMENT, so they are summed.
  */
-async function sumRecordedCancelledShortfallCents({
+async function sumRecordedShortfallCents({
   bookingId,
   bookingModificationId,
 }: {
@@ -161,18 +196,21 @@ async function sumRecordedCancelledShortfallCents({
     where: { action: "booking.editFinancialReview.chargeShareUncollected", targetId: bookingId },
     select: { metadata: true },
   });
-  let recorded = 0;
+  let closedMax = 0;
+  let cancelledSum = 0;
   for (const { metadata } of rows) {
     const fields = (metadata ?? {}) as Record<string, unknown>;
     if (
-      fields.cause === "booking-cancelled" &&
-      fields.bookingModificationId === bookingModificationId &&
-      typeof fields.uncollectedCents === "number"
+      fields.leg !== "payment-request" ||
+      fields.bookingModificationId !== bookingModificationId ||
+      typeof fields.uncollectedCents !== "number"
     ) {
-      recorded += fields.uncollectedCents;
+      continue;
     }
+    if (fields.cause === "ask-closed") closedMax = Math.max(closedMax, fields.uncollectedCents);
+    if (fields.cause === "booking-cancelled") cancelledSum += fields.uncollectedCents;
   }
-  return recorded;
+  return closedMax + cancelledSum;
 }
 
 /**
@@ -182,8 +220,9 @@ async function sumRecordedCancelledShortfallCents({
  *
  * False when the booking is not cancelled, and the replay carries on. Otherwise
  * it takes the edit's raise claim, settles (`settleCancelledEditReviewCharge`:
- * records what is uncollected, idempotently), and closes the row. A held claim,
- * a PROCESSING request or a failed audit insert THROWS, so the row retries
+ * records what is uncollected, idempotently), and closes the row. A request or
+ * refund still moving at Stripe hands the row back to wait, without spending an
+ * attempt. A held claim or a failed audit insert THROWS, so the row retries
  * rather than closing with no record.
  */
 export async function closeCancelledEditReviewChargeReplay({
@@ -194,7 +233,7 @@ export async function closeCancelledEditReviewChargeReplay({
   status,
 }: {
   format: ClubFormat;
-  operation: Pick<PaymentRecoveryOperation, "id" | "bookingId" | "paymentId" | "nextRetryAt" | "processingStartedAt">;
+  operation: Pick<PaymentRecoveryOperation, "id" | "bookingId" | "paymentId" | "attempts" | "nextRetryAt" | "processingStartedAt">;
   bookingModificationId: string;
   memberId: string | null;
   /** The booking's status as the caller read it; re-read here when absent. */
@@ -218,6 +257,11 @@ export async function closeCancelledEditReviewChargeReplay({
       bookingModificationId,
       memberId,
     });
+  } catch (err) {
+    if (!(err instanceof EditReviewChargeStillMovingError)) throw err;
+    // Wait without spending an attempt: the row stays open, and alive.
+    await holdEditFinancialReviewChargeRecovery(operation, new Date(Date.now() + STILL_MOVING_RECHECK_MS), err.message);
+    return true;
   } finally {
     await releaseEditReviewChargeRaise(claim).catch((err) =>
       logger.error(

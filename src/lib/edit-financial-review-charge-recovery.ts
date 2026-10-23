@@ -140,3 +140,34 @@ export async function completeEditFinancialReviewChargeRecovery(
       : "Edit financial review charge recovery completion matched no live attempt (already succeeded, re-claimed by another worker after this one stalled, or deleted by a manual mark-paid reversal); nothing was resurrected",
   );
 }
+
+/**
+ * #4272: hand a cancelled booking's review-charge row back to PENDING, due at
+ * `retryAt`, WITHOUT spending the attempt this claim took. The cancelled path
+ * waits this way while the edit's request, or a refund of it, is still moving
+ * at Stripe: a bank debit can sit PROCESSING for days, and five ordinary
+ * retries would kill the row - whose death hands the edit to the repair pass
+ * and withdraws its request (`INV-PAY-057`), the wrong ending for a booking
+ * that only needs its uncollected share recorded. Fenced on the exact attempt,
+ * as the close above is, so a stalled worker cannot rewind a live claim.
+ */
+export async function holdEditFinancialReviewChargeRecovery(
+  operation: Pick<PaymentRecoveryOperation, "id" | "attempts" | "processingStartedAt">,
+  retryAt: Date,
+  reason: string,
+): Promise<void> {
+  await prisma.paymentRecoveryOperation.updateMany({
+    where: {
+      id: operation.id,
+      status: PaymentRecoveryOperationStatus.PROCESSING,
+      processingStartedAt: operation.processingStartedAt,
+    },
+    data: {
+      status: PaymentRecoveryOperationStatus.PENDING,
+      attempts: Math.max(operation.attempts - 1, 0),
+      nextRetryAt: retryAt,
+      processingStartedAt: null,
+      lastError: reason,
+    },
+  });
+}
