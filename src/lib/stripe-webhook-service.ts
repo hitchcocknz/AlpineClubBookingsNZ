@@ -1,5 +1,6 @@
 import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment-state";
 import { bookingOwner, bookingOwnerEmail } from "@/lib/booking-owner";
+import { isPaidLikeBookingStatus } from "@/lib/booking-status";
 import { bookingPromoEmailFields } from "@/lib/booking-promo-email-options";
 import { prisma } from "@/lib/prisma";
 import { listRefundsForCharge, listRefundsForPaymentIntent, processRefund } from "@/lib/stripe";
@@ -68,7 +69,7 @@ import {
   markGroupSettlementIntentRefunded,
 } from "@/lib/group-settlement";
 import { adoptSavedCardChargeAttemptForIntent } from "@/lib/saved-card-charge-settle";
-import { BookingStatus, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
+import { PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 import { isCapturedTransactionStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { keyAfterStripeRefusals, refusedRefundMessage } from "@/lib/refused-card-refund-retry";
 import { formatCents } from "@/lib/utils";
@@ -556,14 +557,13 @@ async function handlePaymentIntentSucceeded(
   //
   // #3955 review F5 / #4211: not compared with what the booking owes NOW (a later fee or edit would refuse money
   // already taken, retried by Stripe for days): a replay of the recorded settler (any status, this payment's row),
-  // else of a SUCCEEDED row the intent pointer (the latest row) names; and any capture of a booking exactly PAID,
-  // which the settle only keeps or refunds (#1992), never settles on its amount. An unpaid booking keeps the
-  // #1161 check, where a stale amount would settle it. On a COMPLETED booking the settle refuses the capture
-  // itself (a separate issue); skipping here promises nothing there. A reversal landing between this pre-lock
-  // read and the settle's lock costs one retry with no alert (the settle's own amount check throws); the next
-  // delivery re-reads and self-heals.
+  // else of a SUCCEEDED row the intent pointer (the latest row) names; and any capture of a PAID or (#4285)
+  // COMPLETED booking (`isPaidLikeBookingStatus`), which the settle only keeps or refunds (#1992,
+  // `INV-PAY-043`), never settles on its amount. An unpaid booking keeps the #1161 check, where a stale amount
+  // would settle it. A reversal landing between this pre-lock read and the settle's lock costs one retry with
+  // no alert (the settle's own amount check throws); the next delivery re-reads and self-heals.
   const payment = bookingRecord?.payment, settler = payment?.settledByTransactionId;
-  const alreadySettledWithThisIntent = (settler ? settler === paymentTransaction.id && paymentTransaction.paymentId === payment?.id : paymentTransaction.status === PaymentStatus.SUCCEEDED && payment?.stripePaymentIntentId === paymentIntent.id) || (bookingRecord?.status === BookingStatus.PAID && !!payment && paymentTransaction.paymentId === payment.id);
+  const alreadySettledWithThisIntent = (settler ? settler === paymentTransaction.id && paymentTransaction.paymentId === payment?.id : paymentTransaction.status === PaymentStatus.SUCCEEDED && payment?.stripePaymentIntentId === paymentIntent.id) || (!!bookingRecord && isPaidLikeBookingStatus(bookingRecord.status) && !!payment && paymentTransaction.paymentId === payment.id);
   const expectedOwedCents =
     bookingRecord && !alreadySettledWithThisIntent
       ? bookingAmountOwedCents({

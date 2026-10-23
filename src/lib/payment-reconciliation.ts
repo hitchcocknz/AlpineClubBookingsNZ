@@ -77,6 +77,7 @@ import { SUPERSEDED_INTENT_OPERATION_TYPES } from "@/lib/superseded-intent-owner
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import {
   bookingHasCapacityOverride,
+  isPaidLikeBookingStatus,
   RELEASE_ADMIN_CAPACITY_HOLD_UPDATE,
   RELEASE_WHOLE_LODGE_HOLD_UPDATE,
 } from "@/lib/booking-status";
@@ -1053,21 +1054,29 @@ async function settleBookingPaymentInTransaction(
       }
     }
 
-    if (booking.status === BookingStatus.PAID) {
-      await reconcileBedAllocationsForBookingWithLodgeLockHeld({
-        bookingId: booking.id,
-        db: tx,
-        previousRange: {
-          checkIn: booking.checkIn,
-          checkOut: booking.checkOut,
-        },
-      });
+    // #4285 (`INV-PAY-043`): a COMPLETED booking is a PAID one whose stay has
+    // ended (the post-stay cron's PAID -> COMPLETED), so a capture arriving on
+    // it is judged exactly as on a PAID booking - its settler's redelivery is
+    // `already_paid`, never the "not payable" throw Stripe retried for days.
+    if (isPaidLikeBookingStatus(booking.status)) {
+      // A finished stay's beds are left alone: a redelivery is not a reason to
+      // place anyone on nights already behind us.
+      if (booking.status === BookingStatus.PAID) {
+        await reconcileBedAllocationsForBookingWithLodgeLockHeld({
+          bookingId: booking.id,
+          db: tx,
+          previousRange: {
+            checkIn: booking.checkIn,
+            checkOut: booking.checkOut,
+          },
+        });
+      }
 
-      // #1992 / #4211 (`INV-PAY-043`): a capture arriving on a PAID booking is
-      // judged by `duplicate-capture-guard.ts` - the recorded settler is kept,
-      // any other capture refunded, and with no record nothing is refunded and
-      // the admins check by hand. The refund debt is enqueued here, ATOMIC with
-      // this transaction and BEFORE any Stripe call (the #1349 pattern).
+      // #1992 / #4211 (`INV-PAY-043`): a capture arriving on a PAID or COMPLETED
+      // booking is judged by `duplicate-capture-guard.ts` - the recorded settler
+      // is kept, any other capture refunded, and with no record nothing is
+      // refunded and the admins check by hand. The refund debt is enqueued here,
+      // ATOMIC with this transaction and BEFORE any Stripe call (the #1349 pattern).
       if (!refundedIntentHistory && settlement.kind === "stripe") {
         const verdict = await judgeCaptureOnPaidBooking(tx, {
           bookingId: booking.id,
@@ -1108,8 +1117,8 @@ async function settleBookingPaymentInTransaction(
         }
       }
 
-      // A refunded-history redelivery on an already-PAID booking (e.g. a
-      // Stripe event replay after a partial goodwill refund) stays benign —
+      // A refunded-history redelivery on an already-PAID or COMPLETED booking
+      // (e.g. a Stripe event replay after a partial goodwill refund) stays benign —
       // and, with the guard above, no longer clobbers the refund marker.
       return {
         outcome: "already_paid" as const,

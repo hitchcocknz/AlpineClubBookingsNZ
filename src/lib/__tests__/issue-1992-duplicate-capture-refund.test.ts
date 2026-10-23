@@ -1843,6 +1843,111 @@ describe("#4211 the recorded settler is never refunded; with no record the admin
   });
 });
 
+// #4285 (`INV-PAY-043`): the post-stay cron moves PAID -> COMPLETED, so a
+// capture arriving on a COMPLETED booking is judged exactly as on a PAID one,
+// never thrown as "not payable" (a 500 Stripe retried for three days).
+describe("#4285 a capture arriving on a COMPLETED booking is judged as on a PAID one", () => {
+  const SETTLING_PI = "pi_settling_completed";
+  const OTHER_PI = "pi_other_completed";
+
+  const arrive = (paymentIntentId: string) =>
+    markBookingPaymentSucceeded({
+      format: CLUB_FORMAT_TEST,
+      bookingId: "booking-1",
+      paymentIntentId,
+      amountCents: 10000,
+      paymentMethodId: "pm_1",
+    });
+
+  beforeEach(() => {
+    mocks.bookingFindUnique.mockResolvedValue({ ...makePaidBooking(), status: BookingStatus.COMPLETED });
+  });
+
+  function expectNothingWritten() {
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
+    expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+    // A finished stay's beds are left alone.
+    expect(mocks.reconcileBedAllocationsForBooking).not.toHaveBeenCalled();
+  }
+
+  it("the recorded settler's redelivery is already_paid, and nothing is written", async () => {
+    primeLedger(
+      [ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI })],
+      { settledBy: "txn-y" },
+    );
+
+    expect(await arrive(SETTLING_PI)).toEqual({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
+    expectNothingWritten();
+  });
+
+  it("paid before the record existed: the booking's only capture's redelivery is already_paid, with no alert", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI })]);
+
+    expect(await arrive(SETTLING_PI)).toEqual({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
+    expectNothingWritten();
+  });
+
+  it("another capture while the recorded settler holds money is refunded as a duplicate, naming the settler", async () => {
+    primeLedger(
+      [ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: PaymentStatus.PROCESSING })],
+      { settledBy: "txn-y" },
+    );
+
+    expect((await arrive(OTHER_PI)).outcome).toBe("duplicate_capture_refunded");
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: OTHER_PI, allocationPlan: [{ paymentTransactionId: "txn-z", amountCents: 10000 }] }),
+    );
+    expect(mocks.sendAdminDuplicateCaptureRefundAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: OTHER_PI, settledPaymentIntentId: SETTLING_PI }),
+      CLUB_FORMAT_TEST,
+    );
+    // The booking stays COMPLETED: no status claim, and the settler is not rewritten.
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("with no record and another capture holding money, the arriving capture is kept and the admins are told", async () => {
+    primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }), ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI })]);
+
+    expect(await arrive(OTHER_PI)).toEqual({ outcome: "duplicate_capture_kept", bookingId: "booking-1", bumpedBookingIds: [] });
+    expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
+    expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: OTHER_PI, otherPaymentIntentId: SETTLING_PI, reason: "not-recorded" }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
+  it("a refunded capture's redelivery stays already_paid (#1765), never the refunded-intent throw", async () => {
+    primeLedger(
+      [
+        ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI }),
+        ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: PaymentStatus.REFUNDED, refundedAmountCents: 10000 }),
+      ],
+      { settledBy: "txn-y" },
+    );
+
+    expect((await arrive(OTHER_PI)).outcome).toBe("already_paid");
+    expect(mocks.upsertPaymentIntentTransaction).not.toHaveBeenCalled();
+    expectNothingWritten();
+  });
+
+  it.each([BookingStatus.CANCELLED, BookingStatus.BUMPED, BookingStatus.WAITLISTED, BookingStatus.WAITLIST_OFFERED, BookingStatus.AWAITING_REVIEW])(
+    "a booking %s is still not payable: the settle throws and judges nothing",
+    async (status) => {
+      mocks.bookingFindUnique.mockResolvedValue({ ...makePaidBooking(), status });
+      primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: SETTLING_PI })], { settledBy: "txn-y" });
+
+      await expect(arrive(SETTLING_PI)).rejects.toThrow(`Booking is not payable from status ${status}`);
+      expect(mocks.paymentTransactionFindFirst).not.toHaveBeenCalled();
+      expectNothingWritten();
+    },
+  );
+});
+
 // #4227 / #4283: what the superseded-intent machinery holds - a live operation,
 // or (#4227) a superseded refund Stripe failed later that open rows owe back in
 // full - is never another capture holding money, and never refunded as a
