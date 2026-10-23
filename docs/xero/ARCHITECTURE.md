@@ -649,7 +649,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | --- | --- |
 | `xero-booking-invoices` | Primary booking invoice create/update (`buildInvoiceLineItems`). |
 | `xero-invoice-payments` | Recording Stripe payments against invoices and Stripe refunds as credit-note payments. |
-| `xero-credit-notes` | Refund credit notes, unapplied (account-credit) credit notes, allocation to invoices. Stripe refunds settle **per delta** (#1162): a payment refunded in several steps gets one credit note per uncovered delta, keyed on a cumulative refunded-cents watermark; non-Stripe refunds keep one note per payment, except that a later cancellation hand-back on a bank transfer gets its own note keyed and sized on its task (#4287, `INV-ADDPAY-043`), and each refund request (appeal) paid back by bank transfer gets its own note when its task is marked paid back, for the amount paid back, keyed by the request (`payment:<id>:refund-request-credit-note:<request>:v1`) and linked under its own role `REFUND_REQUEST_CREDIT_NOTE` (#3827, owner decision D-3813-8, `INV-PAY-118`). That role is selected by none of the one-note machinery (the link normaliser's single-note rule in `xero-sync.ts`, `cleanupStaleCanonicalXeroObjectLinks`, the drift report), never takes `Payment.xeroRefundCreditNoteId`, and is left out of `findCanonicalPaymentRefundCreditNote`'s fallbacks, so a cancellation's note and a request's never absorb each other. The booking repair tool and the failed-operations panel leave a request's note out of everything that answers for the payment's one refund note (`isRefundRequestNoteOperation`), and the request's note is queued in the same transaction as the completion that records its refund. A cash refund note's settling payment is recorded only where the money verifiably moved (`resolveRefundSettlement`, `INV-PAY-101`): Stripe for a card refund, the configured bank-transfer refund account for a recorded bank transfer, and otherwise the note is left unsettled with `refundPaymentSkipped` on the operation. The note is recorded (payment field, covering link, the row's `xeroObjectId`) in one transaction the moment Xero returns it, so an attempt that dies before its payment leaves a FAILED row naming its note; the retry and repair legs and the repair tool finish it through one read-back-then-settle (`xero-refund-note-settlement.ts`, `INV-PAY-111`): the payment or the skip, PARTIAL if the payment fails, one note-keyed payment key, dated the note's own day, and never a second payment on a note Xero already shows paid, part-paid or allocated. Rows written before #3548 with neither are listed by the reconciliation report and the repair tool (`xero-refund-note-unsettled.ts`) and settled only by an operator. |
+| `xero-credit-notes` | Refund credit notes, unapplied (account-credit) credit notes, allocation to invoices. Stripe refunds settle **per delta** (#1162): a payment refunded in several steps gets one credit note per uncovered delta, keyed on a cumulative refunded-cents watermark; non-Stripe refunds keep one note per payment, except that a later cancellation hand-back on a bank transfer gets its own note keyed and sized on its task (#4287, `INV-ADDPAY-043`), and so does each card refund on one, keyed and sized on its `PaymentRefund` row (#4312, `INV-ADDPAY-044`), and each refund request (appeal) paid back by bank transfer gets its own note when its task is marked paid back, for the amount paid back, keyed by the request (`payment:<id>:refund-request-credit-note:<request>:v1`) and linked under its own role `REFUND_REQUEST_CREDIT_NOTE` (#3827, owner decision D-3813-8, `INV-PAY-118`). That role is selected by none of the one-note machinery (the link normaliser's single-note rule in `xero-sync.ts`, `cleanupStaleCanonicalXeroObjectLinks`, the drift report), never takes `Payment.xeroRefundCreditNoteId`, and is left out of `findCanonicalPaymentRefundCreditNote`'s fallbacks, so a cancellation's note and a request's never absorb each other. The booking repair tool and the failed-operations panel leave a request's note out of everything that answers for the payment's one refund note (`isRefundRequestNoteOperation`), and the request's note is queued in the same transaction as the completion that records its refund. A cash refund note's settling payment is recorded only where the money verifiably moved (`resolveRefundSettlement`, `INV-PAY-101`): Stripe for a card refund, the configured bank-transfer refund account for a recorded bank transfer, and otherwise the note is left unsettled with `refundPaymentSkipped` on the operation. The note is recorded (payment field, covering link, the row's `xeroObjectId`) in one transaction the moment Xero returns it, so an attempt that dies before its payment leaves a FAILED row naming its note; the retry and repair legs and the repair tool finish it through one read-back-then-settle (`xero-refund-note-settlement.ts`, `INV-PAY-111`): the payment or the skip, PARTIAL if the payment fails, one note-keyed payment key, dated the note's own day, and never a second payment on a note Xero already shows paid, part-paid or allocated. Rows written before #3548 with neither are listed by the reconciliation report and the repair tool (`xero-refund-note-unsettled.ts`) and settled only by an operator. |
 | `xero-refund-method` | Leaf, pure: how the money went back — `card`, `internet-banking`, `account-credit` — as the ONE home for the wording every refund or credit document carries (#3529, `INV-PAY-101`), the default a method-less legacy row falls to (Stripe → card, anything else → bank transfer), and which mapping key settles a cash refund. The method is threaded from the settlement decision through the outbox payload; the builders never infer it from `Payment.source` when the caller said. Two booking-edit wordings (#3536) — *Invoice correction — nothing refunded* (an unpaid pay-on-account invoice lowered) and *Refunded in cash* (an edit-review refund paid back by hand, when the resolving officer says it went in cash; never inferred, `INV-PAY-116`) — ride beside the method as `noteWording`, which retries and the repair tool carry forward; words only, no settlement changes. Since #3935 the cash wording also reaches a since-cancelled booking's review refund note (`readRefundNoteWording`: cash only beside the internet-banking method). |
 | `xero-supplementary-invoices` | Positive booking-modification delta invoices. Since #3530 (stage 2b) itemised from the edit's stored lines when they sum exactly to what the invoice bills; otherwise the single price-adjustment line, with the reason under `requestPayload.priceLines`. |
 | `xero-modification-credit-notes` | Negative booking-modification credit notes. Itemised the same way, every sign inverted, only when the note returns the whole reduction (#3530). |
@@ -1832,11 +1832,12 @@ less than the rows, and the floor (`INV-ADDPAY-021`) keeps the rows and alerts.
 payment has its canonical note, it gets a note of its own, keyed and sized on
 its task
 ([A later bank-transfer hand-back gets its own note](#a-later-bank-transfer-hand-back-gets-its-own-note-4287)).
-The card writers still fold - a refund request's card part, the webhook's card
-delta and a late capture's note - while the owner decides how a card refund on a
-bank-transfer payment is sized from its own record (#4312). Refunds folded before the
-release stay folded: nothing raises their notes, and the deploy note below is
-how they are found.
+**Since #4312 the card writers no longer fold either.** A refund request's card
+part, a refund made in the Stripe dashboard and a late capture's refund each get
+a note of their own, keyed and sized on the card refund
+([A card refund on a bank transfer gets its own note](#a-card-refund-on-a-bank-transfer-gets-its-own-note-4312)).
+Refunds folded before either release stay folded: nothing raises their notes,
+and the deploy note below is how they are found.
 
 **The alert is true, so the recount does not add the cash (owner decision 22
 Oct 2026).** Adding the folded refund to the recount, as #4215 does for a
@@ -1853,8 +1854,8 @@ nothing (`hasVoidAwaitingFollowUp`), and once the follow-up has undone it the
 rows no longer hold its cash. What is left is a void answered with the cash
 still recorded (a `bankRefundVoid` marker on its link), whose replacement comes
 from that answer on the refund list or Stuck States, never by hand. #4287
-gives a later cancellation hand-back its own note (`INV-ADDPAY-043`); a card
-part still folds, as above. Pinned on real PostgreSQL by
+gives a later cancellation hand-back its own note (`INV-ADDPAY-043`), and #4312
+a card refund (`INV-ADDPAY-044`). Pinned on real PostgreSQL by
 `xero-bt-recount-handbacks`, which also pins two cases that are safe: a group
 organiser's hand-back (#4042) moves no payment's total, since each joiner's
 refund sits on the joiner's payment under its own note; and the recount writes
@@ -2056,23 +2057,107 @@ On rollback the older release folds a later hand-back again; notes already
 raised per task stay valid in Xero and every reader still counts them through
 their links.
 
-**Stopped for the owner: the card writers (#4312).** A refund request's card
-part, the webhook's card-refund delta and a late capture's note still reach the
-single-note branch on a bank-transfer payment and fold. None can be keyed and
-sized on its own record with the per-record routes that exist:
-
-- a card refund's record is its `PaymentRefund` row, which names no refund
-  request, and an approval whose card refund goes to the recovery queue has no
-  row at all when its note is queued;
-- sizing by capture (the late-capture rule, `noteLateCaptureRefunds`) would
-  count again a refund an older canonical note answered without naming the
-  capture, and a re-ask by the receipt's credit-back or the lost-record check
-  would then raise a note for a refund the old release folded.
+**The card writers: #4312.** A refund request's card part, the webhook's
+card-refund delta and a late capture's note were stopped here for the owner,
+because none could be keyed and sized on a record of its own with the
+per-record routes that existed: a card refund's `PaymentRefund` row names no
+refund request, an approval whose card refund goes to the recovery queue has no
+row when its note is queued, and sizing by capture would count again a refund an
+older canonical note answered. The owner approved a blueprint on 24 Oct 2026,
+built as the next section describes.
 
 The nightly self-heal never reaches the branch: its list
 (`getRefundsMissingXeroCreditNotes`) reads card payments only (#4022). Pinned
 on real PostgreSQL by `xero-bt-per-refund-notes`, beside
-`xero-bt-recount-handbacks`, whose card-part pin still shows the fold.
+`xero-bt-recount-handbacks` and `xero-bt-card-refund-notes`.
+
+### A card refund on a bank transfer gets its own note (#4312)
+
+Owner decision, 24 Oct 2026 (`INV-ADDPAY-044`). On an `INTERNET_BANKING`
+payment, a card refund - an edit's card capture refunded by an approved refund
+request, a refund made in the Stripe dashboard, or a late capture's refund - gets
+a Xero refund note of its own, keyed on its `PaymentRefund` row: the payload
+names it (`cardRefundId`, its `stripeRefundId`), and the note answers the
+refund's amount less what its own notes already cover
+(`readCardRefundNoteShare`, read by the enqueue and the note's execution alike).
+It never takes the payment's canonical pointer: its link is `perDelta`, like a
+hand-back's own note (#4287). The note credits the payment's invoice, or for a
+late capture its receipt, and settles as a card refund (`INV-PAY-101`). One key
+serves the outbox row and Xero (`cardRefundNoteKey`: the refund, its own notes'
+cover, and after a void the voided notes of its own, `INV-ADDPAY-041`), so two
+writers asking for one refund at once collide on one row.
+
+**Who asks, and when** - each writer, where it first knows the refund
+(`card-refund-own-note.ts`):
+
+- **A refund request's approval** (`refund-requests/[id]`,
+  `queueRefundRequestCardNotes`) asks for each refund its inline attempt made
+  (the plan's `madeRefundId`s). What went to the recovery queue is asked for by
+  the **recovery replay** as it makes each refund
+  (`queueRefundRequestReplayCardNotes`), so a refund that did not exist at
+  approval still gets its note. The approval records on its recovery row that
+  it left the notes to the refunds: the row's Stripe key prefix, the one the
+  replay sends under anyway (`notesEachRefund`). A row an older release wrote
+  carries none - that approval queued the card part's note itself - and its
+  replay asks for nothing (`refundRequestRecoveryNotesEachRefund`). On a card
+  payment the approval's one per-delta note is unchanged.
+- **`charge.refunded`** (`queueWebhookCardRefundNotes`) asks only for a refund
+  its own sync is the first to record (`newlyCountedRefundIds`), sorted by the
+  Stripe metadata every app door stamps (`cardRefundDoorOf`): a refund with
+  none - made in the Stripe dashboard - gets its own note here; a refund
+  request's is left to its approval; any other door's stays in the delta,
+  queued as before, which converges on that door's own note.
+- **A late capture's note** (`noteLateCaptureRefunds`) keeps its one ask per
+  capture and splits it (`planLateCaptureCardNotes`): each refund made since the
+  cutover is asked for on its own record, naming the capture, oldest first; the
+  older refunds keep the capture's one note. A capture-wide note that already
+  answers more than the older refunds takes the excess off the own asks, so no
+  refund is noted twice.
+
+**Never for a historical refund.** Only a refund Stripe made since the cutover
+marker migration finished on the install
+(`20261122010000_bt_card_refund_notes_cutover`, a `SELECT 1`;
+`madeSinceCardRefundNoteCutover`) qualifies, read again when the note runs; if
+the marker never finished, none does. A refund made before it keeps what an
+older release gave it - the canonical note, a fold, or the officer's hand-made
+note - and stays on the #4230 deploy note's list.
+
+**Readers.** No new term anywhere. The coverage sum, the gap reader and the
+inbound recount count the note through its link, so a payment whose refunds all
+have notes shows nothing uncovered, the #4162 floor raises no alert once each
+note's own Xero event is reconciled, and the deploy note does not list it. The
+card refund is cash evidence through its row (`resolveStripeCashRefundEvidence`)
+and its note is coverage, so the hand-back cash reader (#4287,
+`readPaidAnotherWayCash`) neither counts it nor is squeezed by it. A voided card
+note goes to a person on Stuck States (`card-refund`) and is never matched by
+amount to a bank refund and undone (`bank-refund-void-scan.ts`).
+
+**Locks.** Enqueued outside any transaction, as these writers' notes always
+were; the collision on one row is the outbox's partial unique index on an
+active correlation key. No Payment row lock is taken (nothing here writes the
+Payment row) and no new advisory key.
+
+**Deploy, the switch window and rollback.** No schema change; one marker
+migration. A card refund's own row carries no watermark, so a previous
+release's worker - in the switch window, or after a rollback - runs it as the
+one note it would have folded into: closed as covered when the payment has its
+canonical note, else raised for the refund's amount as that note. Either way the
+older release folds again; notes already raised per refund stay valid and are
+still counted through their links.
+
+Stated limits:
+
+- **The switch window.** A late-capture refund the previous release recorded
+  after the marker finished and before cutover, and folded, can be asked for
+  again by that capture's note under this release (a credit-back, or a later
+  refund of the same capture) and given a note of its own. Check late-capture
+  refunds made in that window in Xero before raising any note for them by hand.
+- **A refund request's card refund Stripe fails later** is asked for again by
+  its failed-later row (#4104), whose refund carries that row's own metadata,
+  not the request's: its note goes in the delta, as before.
+- **A crash after Stripe answered and before the note was queued** loses the
+  note, as it always did; the #4162 floor's alert and the deploy note find it.
+  So does a recovery row that exhausts its attempts after making a refund.
 
 ### Stripe refund notes cover cash evidence, never the mirror (#2902)
 

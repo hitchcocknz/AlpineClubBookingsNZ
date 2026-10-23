@@ -726,6 +726,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-041` | A voided refund note is never re-adopted or replayed by Xero |
 | `INV-ADDPAY-042` | A voided bank-transfer refund note is undone once, then asked once |
 | `INV-ADDPAY-043` | A later bank-transfer hand-back gets its own note, sized on its task |
+| `INV-ADDPAY-044` | A bank-transfer card refund gets its own note, keyed on its refund |
 
 ## Analytics And Privacy
 

@@ -19,6 +19,7 @@
  */
 import { Role, type PrismaClient } from "@prisma/client";
 import type Stripe from "stripe";
+import { authRaceSession } from "./support/auth-race-double";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
@@ -151,10 +152,9 @@ vi.mock("stripe", async (importOriginal) => {
   return { ...actual, default: FakeAwareStripe };
 });
 
-/** The member's session, only while a case here installs one. */
-const session = vi.hoisted(() => ({ current: null as null | { user: Record<string, unknown> } }));
-// No other realdb suite reads a session, so signed-out is the pass-through.
-vi.mock("@/lib/auth", () => ({ auth: () => Promise.resolve(session.current) }));
+/** The member's session, only while a case here installs one: the harness's one shared `@/lib/auth` double (#4312). */
+vi.mock("@/lib/auth", async () => (await import("./support/auth-race-double")).authRaceDouble());
+const session = authRaceSession;
 
 /** Standalone fail-closed copy: importing this file must not register another suite. */
 export function assertSafeElectionDoublePayRaceDbUrl(url: string): void {

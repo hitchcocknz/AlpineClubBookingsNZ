@@ -1104,7 +1104,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
     requestPayload: {
       queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
       refundAmountCents: noteAmountCents,
-      watermarkCents,
+      // #4312: none on a card refund's own row - an older release's worker then runs it as the one note it would fold into.
+      ...(options?.cardRefundId && cardRefundCoveredCents !== null ? {} : { watermarkCents }),
       ...(options?.refundMethod ? { refundMethod: options.refundMethod } : {}),
       // Normalised at write time too (a cast or untyped caller): cash wording
       // is stored only with the internet-banking method (`readRefundNoteWording`).

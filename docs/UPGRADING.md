@@ -230,10 +230,9 @@ applies to the first refund handed back too. No migration runs.
 refund handed back before the upgrade that never got its own note is not given
 one now: keep using the read-only query in
 [the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
-to find those payments, and raise their notes by hand as that entry says. A
-refund appeal's card-refunded part, a dashboard card refund and a late card
-capture's refund on a bank-transfer payment still have no note of their own
-(#4312); the query lists those too.
+to find those payments, and raise their notes by hand as that entry says.
+Card refunds on a bank-transfer payment get their own notes from #4312 (next
+entry); one made before that upgrade is listed by the query too.
 
 **During the switch, and if you roll back.** While the previous version still
 runs - the blue/green switch window, or after a rollback - its Xero worker
@@ -244,6 +243,36 @@ rows. In the same window a card refund's credit note on a bank-transfer
 payment that also had a hand-back noted this way can come out short; check
 those payments in Xero. Details:
 [A later bank-transfer hand-back gets its own note](xero/ARCHITECTURE.md#a-later-bank-transfer-hand-back-gets-its-own-note-4287).
+
+### A card refund on a bank-transfer payment gets its own Xero credit note (#4312)
+
+`20261122010000_bt_card_refund_notes_cutover` is a **marker, not a schema
+change**: a `SELECT 1` whose finish time on your database is the cutover. It
+touches no table and is safe with the previous app colour still serving.
+
+**What changes.** On a bank-transfer payment, a card refund now gets a credit
+note of its own in Xero, for exactly that refund, instead of being counted
+under the payment's first refund note: the card part of an approved refund
+appeal (including one the payment recovery job finishes later), a refund made
+in the Stripe dashboard, and a refund of a card payment captured after the
+booking was cancelled. Only refunds Stripe makes after the marker migration has
+run qualify.
+
+**After upgrading.** Nothing to do for card refunds made from now on. A card
+refund made before the upgrade is never given a note of its own: keep using the
+read-only query in
+[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
+to find those payments, and raise their notes by hand as that entry says. A
+late-capture card refund made in the few minutes between the migration and the
+switch to this version can still get a note of its own later, so check those in
+Xero before raising one by hand.
+
+**During the switch, and if you roll back.** The previous version's Xero worker
+treats a card refund's new credit-note row as the one note it would have used,
+so it either closes it as covered by the payment's first note or raises it as
+that first note - exactly what the previous version did with such refunds.
+Notes already raised per refund stay valid. Details:
+[A card refund on a bank transfer gets its own note](xero/ARCHITECTURE.md#a-card-refund-on-a-bank-transfer-gets-its-own-note-4312).
 
 ### One-off correction of the starter privacy policy's audit-log retention (#4031)
 

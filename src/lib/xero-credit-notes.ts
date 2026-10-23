@@ -254,7 +254,9 @@ export async function createXeroCreditNote(
     throw new Error(`No Xero invoice linked to payment: ${paymentId}`);
   }
   const refundRequestId = options?.refundRequestId ?? null;
-  const watermarkCents = options?.watermarkCents;
+  // #4312: a card refund's own row carries no watermark (so an older release's worker runs it as the one note it
+  // would have folded into, never a payment-wide delta); it is a delta note all the same, sized on its refund.
+  const watermarkCents = options?.watermarkCents ?? (options?.cardRefundId && !options.paidAnotherWayTaskId ? 0 : undefined);
   // #3827 (D-3813-8): a refund request's own note is never per-delta.
   const isDeltaMode =
     refundRequestId === null &&

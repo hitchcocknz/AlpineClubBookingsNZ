@@ -14,10 +14,8 @@
 
   Nothing is raised for refunds handed back before this release: the
   read-only query in the deploy notes still lists those payments so their
-  notes can be raised by hand. A refund appeal's card-refunded part, a card
-  refund made in the Stripe dashboard and a late card capture's refund on a
-  bank-transfer payment are not changed yet and still need checking by hand
-  (#4312).
+  notes can be raised by hand. Card refunds on a bank-transfer payment get
+  their own notes too, from #4312.
 
   While the previous version still runs during an upgrade, or after rolling
   back, its Xero worker cannot raise these new credit notes and leaves them

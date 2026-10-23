@@ -3986,6 +3986,13 @@ the pre-#4217 code). Now:
   taken the `Payment` row, on the same transaction, and relies on that lock:
   a second completion on the payment reads the first's committed note row, so
   two hand-backs never both take the canonical route. It adds no key.
+- A card refund's own Xero note on a bank transfer (#4312, `INV-ADDPAY-044`)
+  takes no lock and needs none: its writers queue it after the refund's ledger
+  write has committed under the `Payment` row (`recordStripeRefundsAgainstTransaction`,
+  whose order is unchanged; it only reports which refunds it newly counted), and
+  never write the `Payment` row. Two writers asking for one refund at once
+  build one key (`cardRefundNoteKey`) and collide on the outbox's partial
+  unique index on an active correlation key, so one row stands. It adds no key.
 - The waiting ask's recovery row comes after the `Payment` row too (#4217
   review). A reduction that gives credit back has written the `Payment` row
   before its retire closes the recovery; the runner's claim hold
