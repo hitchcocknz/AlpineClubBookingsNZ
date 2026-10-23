@@ -342,7 +342,8 @@ Prefix `INV-PAY`.
 | `INV-PAY-134` | A cancel's card refund is recorded once, by the close making it |
 | `INV-PAY-135` | A capacity race's unrefunded rest is a hand-back task to check |
 | `INV-PAY-136` | An edit racing the primary invoice create is refused or measured |
-| `INV-PAY-137` | An unminted approved whole-lodge booking reprices as unpaid |
+| `INV-PAY-137` | An IB organiser-paid joiner's refund goes to the organiser, on its mirror |
+| `INV-PAY-138` | An unminted approved whole-lodge booking reprices as unpaid |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |
@@ -435,7 +436,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-022` | The admin exemption is not one predicate, and is stated per path |
 | `INV-MOD-023` | Advisory surfaces report the same facts and gate nothing; nothing persisted |
 | `INV-MOD-024` | Minimum-stay policy administration is versioned; a stale version is refused, not overwritten |
-| `INV-MOD-028` | Historical nights value only from sold-price rows; else `NULL` and parked review |
+| `INV-MOD-028` | `valueStrandNights`: stored rows, else even split, always summing to guest total |
 | `INV-MOD-036` | A blank is filled only by a person, on four conditions |
 | `INV-MOD-037` | The repair is optional, and four things it deliberately does not repair |
 | `INV-MOD-038` | Three consumers read a re-based strand total; none restates a billed amount |
