@@ -21,16 +21,22 @@ reason: the primary invoice create is the one writer of the figures stored
   read in its existing snapshot. One destructured name and one field.
 
 file: src/lib/xero-booking-repair-classify.ts
-lines: 2394
+lines: 2396
 reason: the classifier is where every booking's findings are gathered before
   its summary is built; the new finding lives in its own module and this adds
-  only its import and the one call beside the summary.
+  only its import, the one call beside the summary, and (review round 1) the
+  one payload field that raises a change's missing invoice unpaid where its
+  capture's receipt already records the payment, inside the arm that builds
+  that action.
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3343
+lines: 3348
 reason: the outbox dispatch chain routes every queue type to its worker, and
   its census requires one branch per member of `XERO_OUTBOX_QUEUE_TYPES`; the
-  new type's branch, its import and its constant.
+  new type's branch, its import and its constant. Review round 1: the
+  supplementary enqueue's payload is written in this one place, so the #3980
+  gap invoice's mark and the captures it pays itself from ride its one
+  options type, forwarded field by field like the others.
 
 file: src/lib/xero-operation-retry.ts
 lines: 2076
