@@ -29,7 +29,7 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain("which void states reach the alert");
   });
 
-  it("#4287's per-refund note proofs are imported by the race harness too", () => {
+  it("#4287's per-refund note proofs (INV-ADDPAY-043) are imported by the race harness too", () => {
     const harness = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"), "utf8");
     expect(harness).toContain('import "./xero-bt-per-refund-notes.realdb.test";');
     const suite = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/xero-bt-per-refund-notes.realdb.test.ts"), "utf8");
@@ -39,5 +39,9 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain("the hand-back's own note never squeezes the card note raised after it");
     expect(suite).toContain("a refund the old release absorbed is never given a note");
     expect(suite).toContain("the nightly self-heal never selects a bank-transfer payment");
+    expect(suite).toContain("two hand-backs of the same amount completed at once: two notes");
+    expect(suite).toContain("a card refund landing after the hand-back completes cannot shrink its note");
+    expect(suite).toContain("a later card note is raised in full (review F1)");
+    expect(suite).toContain("a later canonical note on a bank transfer is raised in full (review F1)");
   });
 });

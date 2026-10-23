@@ -8,7 +8,8 @@ import {
   NOT_NON_CANCELLATION_HAND_BACK_WHERE,
   paidAnotherWayCloseXeroNote,
 } from "@/lib/manual-refund-task-settlement-rules";
-import { BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE } from "@/lib/bank-refund-void-follow-up-key";
+import { BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE, isBankRefundVoidFollowUpTask } from "@/lib/bank-refund-void-follow-up-key";
+import { BANK_REFUND_VOID_FOLLOW_UP_CONTEXT_KEY } from "@/lib/bank-refund-void-follow-up-copy";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
 
 /**
@@ -68,6 +69,16 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
  * the payment's cash is never squeezed by that note's coverage. One whose note
  * is the payment's canonical one, or that has none, is not a record here at
  * all: the canonical note is sized from the mirror as before.
+ *
+ * #4287 review (F1): ONLY WHILE ITS REFUND STANDS. When Xero voids its note
+ * and the #4162 undo reverses its `BANK_REFUND` line, the task stays COMPLETED
+ * with its amount, but that refund is off the payment's records; the undo's
+ * follow-up names it (`originalTaskId`). So the hand-back counts here, and its
+ * own note is sized, at its amount less every follow-up's that names it
+ * (`standingHandBackCents`). Counted forever, it would read as noted cash no
+ * note answers and shrink every later card or canonical note by it. The
+ * follow-up's own cash is the follow-up's, never added to the original's, so
+ * counting follow-ups as records too (#4315) cannot count the refund twice.
  */
 
 /**
@@ -125,6 +136,40 @@ interface PaidAnotherWayCloseCash {
   counted: "noted" | "unnoted" | "awaiting-receipt";
 }
 
+/** #4287: a plain cancellation hand-back - not a close, a card refund shortfall or a void follow-up. */
+function isPlainCancellationHandBack(task: { kind: string | null; occurrenceKey: string | null }): boolean {
+  return (
+    task.kind === "CANCELLED_BOOKING_HAND_BACK" &&
+    !isCancelCardShortfallTask(task) &&
+    paidAnotherWayCloseXeroNote(task) === null &&
+    !isBankRefundVoidFollowUpTask(task)
+  );
+}
+
+/**
+ * #4287 review (F1): what of a plain hand-back's refund still stands - its
+ * amount less what every `bank-refund-void:` follow-up naming it took back
+ * (the undo reverses the hand-back's whole `BANK_REFUND` line), never below
+ * nothing. A follow-up counts in any status: dismissed or re-confirmed, the
+ * original line stays reversed.
+ */
+async function standingHandBackCents(
+  db: Pick<Prisma.TransactionClient, "manualRefundTask">,
+  paymentId: string,
+  task: { id: string; amountCents: number | null },
+): Promise<number> {
+  const undone = await db.manualRefundTask.findMany({
+    where: {
+      paymentId,
+      ...BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE,
+      reviewContext: { path: [BANK_REFUND_VOID_FOLLOW_UP_CONTEXT_KEY, "originalTaskId"], equals: task.id },
+    },
+    select: { amountCents: true },
+  });
+  const undoneCents = (undone ?? []).reduce((sum, followUp) => sum + Math.max(0, followUp.amountCents ?? 0), 0);
+  return Math.max(0, Math.max(0, task.amountCents ?? 0) - undoneCents);
+}
+
 async function readPaidAnotherWayCloses(db: CashStore, paymentId: string): Promise<PaidAnotherWayCloseCash[]> {
   const tasks = await db.manualRefundTask.findMany({
     where: { paymentId, ...BANK_CASH_RECORD_WHERE },
@@ -141,9 +186,9 @@ async function readPaidAnotherWayCloses(db: CashStore, paymentId: string): Promi
     }
     const note = paidAnotherWayCloseXeroNote(task);
     if (note === null) {
-      // #4287: a cancellation hand-back is a record here only once its own note row names it.
-      if ((await db.xeroSyncOperation.count({ where: paidAnotherWayCloseNoteRowsWhere(paymentId, task.id) })) > 0) {
-        closes.push({ id: task.id, amountCents, counted: "noted" });
+      // #4287: a cancellation hand-back is a record here only once its own note row names it, and (F1) only for what still stands.
+      if (isPlainCancellationHandBack(task) && (await db.xeroSyncOperation.count({ where: paidAnotherWayCloseNoteRowsWhere(paymentId, task.id) })) > 0) {
+        closes.push({ id: task.id, amountCents: await standingHandBackCents(db, paymentId, task), counted: "noted" });
       }
       continue;
     }
@@ -221,10 +266,11 @@ export async function readPaidAnotherWayCloseShare(
       paymentId,
       OR: [...BANK_CASH_RECORD_WHERE.OR, { ...BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE, status: "COMPLETED" }],
     },
-    select: { amountCents: true, reviewContext: true },
+    select: { id: true, kind: true, occurrenceKey: true, amountCents: true, reviewContext: true },
   });
   if (!record) return null;
-  const amountCents = Math.max(0, record.amountCents ?? 0);
+  // #4287 review (F1): a plain hand-back answers only what of its refund still stands.
+  const amountCents = isPlainCancellationHandBack(record) ? await standingHandBackCents(db, paymentId, record) : Math.max(0, record.amountCents ?? 0);
   const coveredCents = await sumRefundCreditNoteCoverageOfRowsCents(
     paymentId,
     paidAnotherWayCloseNoteRowsWhere(paymentId, closeId),

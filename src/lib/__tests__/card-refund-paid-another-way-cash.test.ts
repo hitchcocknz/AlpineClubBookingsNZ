@@ -35,11 +35,15 @@ describe("a capacity race's part to check, as the note pipeline reads its bank c
   });
 });
 
-describe("a cancellation hand-back noted on its own record, as the note pipeline reads its bank cash (#4287)", () => {
-  function handBackDb(noteRows: number) {
+describe("a cancellation hand-back noted on its own record, as the note pipeline reads its bank cash (#4287, INV-ADDPAY-043)", () => {
+  /** The hand-back, its own note rows, and the `bank-refund-void:` follow-ups whose undo named it. */
+  function handBackDb(noteRows: number, undoneCents: number[] = []) {
     const row = { id: "task-hand-back", kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: null, amountCents: 3_000, reviewContext: null };
+    const findMany = vi.fn(async (args: { where: { occurrenceKey?: unknown } }) =>
+      args.where.occurrenceKey ? undoneCents.map((amountCents) => ({ amountCents })) : [row],
+    );
     return {
-      manualRefundTask: { findMany: vi.fn(async () => [row]), findFirst: vi.fn(async () => row) },
+      manualRefundTask: { findMany, findFirst: vi.fn(async () => row) },
       xeroSyncOperation: { count: vi.fn(async () => noteRows) },
       xeroObjectLink: {},
       paymentRecoveryOperation: {},
@@ -53,5 +57,10 @@ describe("a cancellation hand-back noted on its own record, as the note pipeline
 
   it("CONTROL: with no note row of its own (the canonical note's, or one the old release absorbed) it is no record here at all - never un-noted", async () => {
     await expect(readPaidAnotherWayCash(handBackDb(0), "payment-1")).resolves.toEqual({ notedCents: 0, unnotedCents: 0, awaitingReceiptCents: 0 });
+  });
+
+  it("MUTATION (review F1): once its note is voided and the nightly undo took its refund back, it counts for nothing, in both readers", async () => {
+    await expect(readPaidAnotherWayCash(handBackDb(1, [3_000]), "payment-1")).resolves.toEqual({ notedCents: 0, unnotedCents: 0, awaitingReceiptCents: 0 });
+    await expect(readPaidAnotherWayCloseShare(handBackDb(1, [3_000]), "payment-1", "task-hand-back")).resolves.toMatchObject({ amountCents: 0, uncoveredCents: 0 });
   });
 });

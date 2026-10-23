@@ -2332,9 +2332,14 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     expect(mocks.kickQueuedXeroOutboxOperationsIfConnected).toHaveBeenCalledWith({ limit: 1 });
     expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
     expect(mocks.cancellationHandBackNotedOnItsOwnRecord).toHaveBeenCalledWith(tx, "payment-1", "task-1");
+    // #4287 review (F4, INV-ADDPAY-043): decided AFTER the allocation, on its transaction - so under the
+    // Payment row lock the allocation took first (`payment-lock-before-rebuild.test.ts`) - and before the enqueue.
+    expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "payment-1", store: tx }));
+    expect(mocks.applyLocalRefundAllocation.mock.invocationCallOrder[0]).toBeLessThan(mocks.cancellationHandBackNotedOnItsOwnRecord.mock.invocationCallOrder[0]!);
+    expect(mocks.cancellationHandBackNotedOnItsOwnRecord.mock.invocationCallOrder[0]).toBeLessThan(mocks.enqueueXeroRefundCreditNoteOperation.mock.invocationCallOrder[0]!);
   });
 
-  it("a LATER cancellation hand-back's note is keyed and sized on its own task, never absorbed into the canonical note (#4287, INV-PAY-101)", async () => {
+  it("a LATER cancellation hand-back's note is keyed and sized on its own task, never absorbed into the canonical note (#4287, INV-ADDPAY-043)", async () => {
     mocks.cancellationHandBackNotedOnItsOwnRecord.mockResolvedValueOnce(true);
     mocks.manualRefundTaskFindUnique.mockResolvedValue({
       id: "task-1",

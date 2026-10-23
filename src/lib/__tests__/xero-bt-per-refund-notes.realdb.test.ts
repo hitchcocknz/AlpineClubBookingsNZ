@@ -1,29 +1,33 @@
 /**
- * Real-PostgreSQL proofs for #4287 (owner decision 22 Oct 2026, `INV-PAY-101`,
- * `INV-ADDPAY-020`): on a bank-transfer payment, a cancellation hand-back
- * completed after the payment has its canonical refund note gets a note of its
- * own, keyed and sized on its task - never absorbed into the canonical note.
+ * Real-PostgreSQL proofs for #4287 (owner decision 22 Oct 2026,
+ * `INV-ADDPAY-043`): on a bank-transfer payment, a cancellation hand-back
+ * completed after the payment has its canonical refund note, or on a payment
+ * holding card money, gets a note of its own, keyed and sized on its task -
+ * never absorbed into the canonical note.
  *
- * Every state is reached through the real writers, and each seeded row names
- * the code path that writes it:
- * - the payment, its charge rows and the booking: what an Internet Banking
- *   receipt (and, on the mixed payment, an edit's card capture) leaves;
- * - an OPEN cancellation hand-back: what the cancel's manual branch raises
- *   (`booking-cancel.ts`, `kind: CANCELLED_BOOKING_HAND_BACK`, no key). No
- *   writer raises a second one beside an existing one; #4230 reproduced the
- *   absorption with exactly this shape, so the second is raised the same way;
- * - completions run through `resolveManualRefundTask`; card refunds through
- *   `refundPaymentTransactions` with Stripe's create answered as Stripe would;
- *   the card note through the cancel's own enqueue call; every note through the
- *   outbox worker, against a fake Xero transport (no provider call).
+ * What is driven through the app's own writers, and what is seeded:
+ * - SEEDED: the booking; the payment and its charge rows (what an Internet
+ *   Banking receipt, and on the mixed payment an edit's card capture, leave);
+ *   each OPEN cancellation hand-back (the shape the cancel's manual branch
+ *   raises - no writer raises a second one beside an existing one, and #4230
+ *   reproduced the absorption with exactly this shape); and, in one case, what
+ *   a completion before #4287 left (task, allocation and ledger line, written
+ *   through `applyLocalRefundAllocation` and `postHandBackLedgerLine`).
+ * - REAL: completions (`resolveManualRefundTask`); card refunds
+ *   (`refundPaymentTransactions`, Stripe's create answered as Stripe would);
+ *   the card note through the refund-request approval's own enqueue call; every
+ *   note through the outbox worker and every Xero event through the inbound
+ *   reconcile, both against a fake Xero transport (no provider call); the
+ *   nightly undo of a voided note (`followUpVoidedBankRefundNote`).
  *
- * Proven: one note per refund and no absorption; a second completion racing
- * the first takes its own note; on a payment with card refunds the hand-back's
- * note never squeezes the card note, and the first hand-back is noted on its
- * own record too; the coverage and gap readers show nothing uncovered, the
- * #4162 floor raises no alert, and the deploy note lists nothing; a refund the
- * old release absorbed is never given a note; the nightly self-heal never
- * selects a bank-transfer payment.
+ * Proven: one note per refund and no absorption, including two equal-amount
+ * hand-backs racing; a card refund landing after the completion cannot shrink
+ * the note; the hand-back's note never squeezes a card note, and once Xero
+ * voids it and the nightly undo takes its refund back it no longer counts
+ * anywhere; the coverage and gap readers show nothing uncovered, the #4162
+ * floor raises no alert, and the deploy note lists nothing; a refund the old
+ * release absorbed is never given a note; the nightly self-heal never selects a
+ * bank-transfer payment.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
@@ -134,7 +138,8 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
       });
       if (options.withCard) {
         await prisma.paymentTransaction.create({
-          data: { id: CARD_TXN_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: CARD_INTENT_ID, amountCents: cardCents, status: "SUCCEEDED" },
+          // Captured before the receipt was recorded, so a hand-back's allocation (newest first) takes the bank row.
+          data: { id: CARD_TXN_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: CARD_INTENT_ID, amountCents: cardCents, status: "SUCCEEDED", createdAt: new Date("2026-06-01T00:00:00.000Z") },
         });
       }
     }
@@ -213,8 +218,8 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
     }
 
     /** The inbound reconcile of one note, read from a fake Xero, and the refund-ledger divergence alerts it raised. */
-    async function reconcile(noteId: string, cents: number): Promise<string[]> {
-      const note = { creditNoteID: noteId, creditNoteNumber: `CN-${noteId}`, status: "AUTHORISED", total: cents / 100, appliedAmount: 0, remainingCredit: cents / 100, allocations: [], payments: [] };
+    async function reconcile(noteId: string, cents: number, status = "AUTHORISED"): Promise<string[]> {
+      const note = { creditNoteID: noteId, creditNoteNumber: `CN-${noteId}`, status, total: cents / 100, appliedAmount: 0, remainingCredit: cents / 100, allocations: [], payments: [] };
       const xero = { accountingApi: { getCreditNote: async () => ({ body: { creditNotes: [note] } }) } };
       const apiClient = await import("@/lib/xero-api-client");
       const alerting = await import("@/lib/xero-error-alert");
@@ -234,6 +239,15 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
         for (const spy of spies) spy.mockRestore();
         alertSpy.mockRestore();
       }
+    }
+
+    /** Xero voids the note (its event reconciled), then the #4162 nightly follow-up undoes its refund. */
+    async function voidAndUndo(noteId: string, cents: number) {
+      await reconcile(noteId, cents, "VOIDED");
+      const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: noteId }, select: { id: true, active: true } });
+      expect(link.active).toBe(false);
+      const { followUpVoidedBankRefundNote } = await import("@/lib/bank-refund-void-follow-up");
+      expect(await followUpVoidedBankRefundNote(link.id)).toMatchObject({ outcome: "undone" });
     }
 
     /** The #4230 deploy note's read-only query, run as an operator would: whether it lists this payment. */
@@ -340,10 +354,77 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
       expect(await deployNoteLists()).toBe(false);
     });
 
+    it("two hand-backs of the same amount completed at once: two notes, never one key deduped into one row (review F5)", async () => {
+      await paid();
+      const a = await raiseHandBack(`${P}-equal-a`, 5_000);
+      const b = await raiseHandBack(`${P}-equal-b`, 5_000);
+      await Promise.all([complete(a), complete(b)]);
+
+      const rows = await noteRows();
+      expect(rows).toHaveLength(2);
+      expect(new Set(rows.map((row) => row.handBackTaskId))).toEqual(new Set([a, b]));
+      expect(rows.filter((row) => row.ownRecord !== null)).toHaveLength(1);
+      const raised = [...(await raiseQueuedNote(rows[0]!.id, `${P}-equal-1`)), ...(await raiseQueuedNote(rows[1]!.id, `${P}-equal-2`))];
+      expect(raised).toEqual([5_000, 5_000]);
+      expect((await readers()).coveredCents).toBe(10_000);
+    });
+
+    it("a card refund landing after the hand-back completes cannot shrink its note: a payment holding card money takes the own route (review F2)", async () => {
+      await paid({ withCard: true });
+      const handBack = await raiseHandBack(`${P}-before-card`, 10_000);
+      await complete(handBack);
+      const [own] = await noteRows();
+      expect(own).toMatchObject({ cents: 10_000, ownRecord: handBack });
+      // The edit capture's card refund lands before the hand-back's note runs.
+      await refundCard(4_000);
+      expect(await raiseQueuedNote(own!.id, `${P}-before-card-note`)).toEqual([10_000]);
+    });
+
+    it("once Xero voids the hand-back's own note and the nightly undo takes its refund back, a later card note is raised in full (review F1)", async () => {
+      await paid({ withCard: true });
+      const handBack = await raiseHandBack(`${P}-voided-own`, 10_000);
+      await complete(handBack);
+      const [own] = await noteRows();
+      expect(own).toMatchObject({ ownRecord: handBack });
+      await raiseQueuedNote(own!.id, `${P}-voided-own-note`);
+      await reconcile(`${P}-voided-own-note`, 10_000);
+      await voidAndUndo(`${P}-voided-own-note`, 10_000);
+      expect((await readers()).refundedCents).toBe(0);
+
+      // Later, a card refund and its note: the refund-request approval's own call (no keyed options).
+      await refundCard(4_000);
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 4_000, { createdByMemberId: OFFICER_ID });
+      expect(await raiseQueuedNote(queued.queueOperationId!, `${P}-after-void-card`)).toEqual([4_000]);
+    });
+
+    it("once Xero voids a hand-back's own note and the nightly undo takes it back, a later canonical note on a bank transfer is raised in full (review F1)", async () => {
+      await paid();
+      const first = await firstHandBackNoted();
+      const second = await raiseHandBack(`${P}-voided-second`, 4_000);
+      await complete(second);
+      const [, own] = await noteRows();
+      expect(own).toMatchObject({ ownRecord: second });
+      await raiseQueuedNote(own!.id, `${P}-voided-second-note`);
+      await reconcile(`${P}-voided-second-note`, 4_000);
+      // Xero voids both notes; the nightly undo takes both refunds back, so the payment has no canonical note.
+      await voidAndUndo(`${P}-voided-second-note`, 4_000);
+      await voidAndUndo(`${P}-canonical`, 10_000);
+      expect((await readers()).refundedCents).toBe(0);
+      expect(await prisma.manualRefundTask.count({ where: { bookingId: BOOKING_ID, reviewContext: { path: ["bankRefundVoidFollowUp", "originalTaskId"], equals: first } } })).toBe(1);
+
+      // A new hand-back is the payment's canonical refund again, and its note is its whole amount.
+      const third = await raiseHandBack(`${P}-after-voids`, 5_000);
+      await complete(third);
+      const latest = (await noteRows()).at(-1)!;
+      expect(latest).toMatchObject({ ownRecord: null, handBackTaskId: third });
+      expect(await raiseQueuedNote(latest.id, `${P}-after-voids-note`)).toEqual([5_000]);
+    });
+
     it("on a payment with a card refund, the hand-back's own note never squeezes the card note raised after it", async () => {
       await paid({ withCard: true });
       await refundCard(4_000);
-      // The cancel's card branch's own call (`booking-cancel.ts`): the card note, still queued.
+      // The cancel's card branch's own call (`booking-cancel.ts`, no keyed options): the card note, still queued.
       const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
       await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 4_000, { createdByMemberId: OFFICER_ID });
       const handBack = await raiseHandBack(`${P}-mixed`, 10_000);

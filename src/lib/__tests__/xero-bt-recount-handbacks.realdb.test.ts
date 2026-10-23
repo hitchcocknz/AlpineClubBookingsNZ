@@ -21,7 +21,7 @@
  * Xero and the readers. CURRENT BEHAVIOUR, still pinned on purpose: a refund
  * request's card part on such a payment is ABSORBED by the single-note branch
  * of `enqueueXeroRefundCreditNoteOperation` and gets no note of its own - #4287
- * stopped on the card writers for the owner. Xero is then genuinely short a
+ * stopped on the card writers for the owner (#4312). Xero is then genuinely short a
  * note, so the floor keeps the total and the alert is true; it names that cause
  * and asks for the note by hand. The recount deliberately does not add the
  * absorbed cash (that would silence the only signal). Which void states reach
@@ -344,7 +344,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       });
       await prisma.payment.update({ where: { id: ORGANISER_PAYMENT_ID }, data: { refundedAmountCents: 14_000 } });
       // The approval's own call (`refund-requests/[id]`): no keyed options. Still absorbed:
-      // #4287 stopped on the card writers for the owner (no record of its own sizes this note).
+      // #4287 stopped on the card writers for the owner (no record of its own sizes this note; #4312).
       const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
       expect(await enqueueXeroRefundCreditNoteOperation(ORGANISER_PAYMENT_ID, 4_000, { createdByMemberId: OFFICER_ID })).toEqual(
         expect.objectContaining({ queueOperationId: null, message: "Xero refund credit note already linked for this payment." }),
