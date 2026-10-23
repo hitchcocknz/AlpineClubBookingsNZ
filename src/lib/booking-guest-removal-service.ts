@@ -1024,12 +1024,14 @@ export async function removeBookingGuestInTransaction({
   /**
    * Whether this booking's money still sits under an earlier review as the
    * member's email is written: a review task raised before #4317 that is still
-   * open (waves B and C retire them). This removal raises none — it priced —
-   * and is asked under the locks this transaction holds, so the answer is the
-   * one the removal committed beside.
+   * open (waves B and C retire them). This removal raises none — it priced.
+   * Only a consent removal can get here with one open, because every other
+   * removal is fenced on exactly that question above; it is asked under the
+   * locks this transaction holds, so the answer is the one it committed beside.
    */
-  const financialReviewPending =
-    (await findOpenEditFinancialReviewTask(bookingId, tx)) !== null;
+  const financialReviewPending = consentAuthorityApplies
+    ? (await findOpenEditFinancialReviewTask(bookingId, tx)) !== null
+    : false;
 
   if (paymentImpact.accountCreditAmountCents > 0) {
     await createBookingModificationCredit(
