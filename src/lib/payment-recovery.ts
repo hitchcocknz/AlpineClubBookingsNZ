@@ -3307,28 +3307,13 @@ export async function completeCanceledSupersededPaymentIntentRecovery({
 }
 
 /**
- * IS THIS SUCCEEDED CARD INTENT THE SUPERSEDED-INTENT MACHINERY'S? (#4300,
- * `INV-PAY-043`) The one check every door that carries a succeeded intent back
- * to a booking asks before it may settle the booking with it: the Stripe
- * webhook, the confirm-payment route, and the pay step's and the `/pay` link's
- * reconcile arms. `true` means the door settles nothing with this capture:
- *
- * - a CANCEL_PAYMENT_INTENT row not SUCCEEDED (live, retrying or dead) still
- *   owns the intent: the capture beat the cancel, so it is handed to its refund
- *   here (`handoffSucceededSupersededIntentToRefund`);
- * - otherwise a superseded-intent row still not SUCCEEDED
- *   (`findLiveSupersededIntentOperation`, guard (c′)'s reading) means it was
- *   handed off already - by the cancel worker, or by another door - and its
- *   REFUND_SUPERSEDED_PAYMENT row owns the money. Nothing more is queued.
- *
- * Before #4300 only the webhook asked, and only the first question: a capture
- * the cancel worker had handed off, or any capture brought back by another
- * door, settled the booking, and the machinery then refunded it - the booking
- * PAID with no money. A refund that SUCCEEDED leaves the transaction REFUNDED,
- * which every door already refuses as #1765 history.
- *
- * Unlocked, as the webhook always read it: the settle's own amount check under
- * lock(1) still stands behind it.
+ * THE ONE CHECK every door that brings a succeeded intent back asks before it
+ * settles a booking with it (#4300, `INV-PAY-138`): the webhook,
+ * `confirm-payment`, and the pay step's and `/pay` link's reconcile arms.
+ * `true`: the superseded machinery owns the capture, so the door settles
+ * nothing. A cancel row not SUCCEEDED hands it to its refund here; failing
+ * that, a superseded-intent row not SUCCEEDED (guard (c′)) means it was handed
+ * off already. Unlocked, as the webhook always read it.
  */
 export async function queueSupersededPaymentIntentRefundRecovery({
   paymentIntentId,

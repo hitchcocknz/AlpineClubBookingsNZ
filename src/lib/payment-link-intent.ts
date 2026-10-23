@@ -178,15 +178,8 @@ export async function createPaymentIntentForPaymentLink(
           paymentIntentId: existingIntent.id,
           paymentStatus: booking.payment.status,
         });
-        // #4300 (`INV-PAY-043`): a capture on an intent an edit superseded is
-        // the superseded machinery's, as the webhook reads it - handed to its
-        // refund (or already there), so it is repaid like refund history,
-        // never reconciled.
-        repaymentRequired ||= await queueSupersededPaymentIntentRefundRecovery({
-          paymentIntentId: existingIntent.id,
-          amountCents: existingIntent.amount,
-          paymentMethodId: getStripePaymentMethodId(existingIntent),
-        });
+        // #4300 (`INV-PAY-138`): a superseded intent's capture is repaid like refund history.
+        repaymentRequired ||= await queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: existingIntent.id, amountCents: existingIntent.amount, paymentMethodId: getStripePaymentMethodId(existingIntent) });
       } catch (error) {
         logger.error(
           { err: error, bookingId: booking.id },
