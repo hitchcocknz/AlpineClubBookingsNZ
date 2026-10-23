@@ -165,7 +165,7 @@ beforeEach(() => {
     atLink: { xeroInvoiceId: PRIMARY, capturedPaymentIntentIdsAtBuild: ["pi_primary"] },
   });
   mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(null);
-  mocks.findFirstOperation.mockResolvedValue({ status: "SUCCEEDED", responsePayload: {} });
+  mocks.findFirstOperation.mockResolvedValue({ status: "SUCCEEDED", responsePayload: {}, manuallyResolvedAt: null });
   mocks.cardSettleAppliedCreditCents.mockResolvedValue(0);
   mocks.recheckPrimaryInvoiceWorthGap.mockResolvedValue({
     gapCents: 0,
@@ -353,13 +353,30 @@ describe("recordAdditionalCaptureReceipt", () => {
   });
 
   it("refuses while the primary invoice's own card payment is still owed (its create PARTIAL)", async () => {
-    mocks.findFirstOperation.mockResolvedValue({ status: "PARTIAL", responsePayload: { paymentError: { message: "x" } } });
+    mocks.findFirstOperation.mockResolvedValue({
+      status: "PARTIAL",
+      responsePayload: { paymentError: { message: "x" } },
+      manuallyResolvedAt: null,
+    });
     const seam = providers();
 
     await run(seam);
 
     expectRefused("own-payment-pending");
     expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+  });
+
+  it("records it once an officer resolved that PARTIAL create in Xero (its payment recorded by hand)", async () => {
+    mocks.findFirstOperation.mockResolvedValue({
+      status: "PARTIAL",
+      responsePayload: { paymentError: { message: "x" } },
+      manuallyResolvedAt: new Date("2026-06-30T00:00:00.000Z"),
+    });
+    const seam = providers();
+
+    await run(seam);
+
+    expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: PRIMARY }));
   });
 
   it("refuses a gap invoice that never reached Xero", async () => {
