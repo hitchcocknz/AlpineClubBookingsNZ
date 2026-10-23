@@ -10,6 +10,7 @@ import {
   requireCalendarDate,
   type CalendarDate,
 } from "@/lib/club-time";
+import { compareOrdinal } from "@/lib/ordinal-order";
 import {
   storedNightPriceDetailsByKey,
   type StoredNightPriceInput,
@@ -258,7 +259,7 @@ export function valuedStrandNightPrices(
 ): StrandNightPrices[] {
   return guests.map((guest) => {
     const nights = [...valueEditStrand(guest, booking).nights].sort((a, b) =>
-      a.date < b.date ? -1 : a.date > b.date ? 1 : 0,
+      compareOrdinal(a.date, b.date),
     );
     return {
       bookingGuestId: guest.id,

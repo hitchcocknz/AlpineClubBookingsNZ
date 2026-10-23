@@ -2141,7 +2141,8 @@ OPEN -> COMPLETED   (#3032: and the confirmed amount now MOVES, down whichever o
                      `BookingModification`, because ONE BOOKING can hold two
                      review tasks against one modification row - before #4317
                      a consent removal exempted from the pending-review fence
-                     could raise its own beside an open one. (Until #3498 one EDIT could raise
+                     could raise its own beside an open one. (Until #3498 one
+                     EDIT could raise
                      several, one per guest strand; since then it raises one
                      per EDIT, except where the edit moved two or more guests'
                      nights - then one per recorded strand again, because a row
@@ -2449,7 +2450,8 @@ There are FOUR creators, and only the first, second and fourth ever make an OPEN
   tasks already OPEN are worked through this lifecycle until waves B and C of
   epic #4302 settle them and retire it. It was created by a **booking edit whose
   exact sold price could not be read from the booking's own stored history**
-  (#3030, epic #2797; `kind` `EDIT_FINANCIAL_REVIEW`). Owner decision D1: the stay change is applied and
+  (#3030, epic #2797; `kind` `EDIT_FINANCIAL_REVIEW`). Owner decision D1: the
+  stay change is applied and
   only the MONEY is held, so the booking never disagrees with reality while an
   admin prices the adjustment. Raised by `raiseEditFinancialReviewTask`
   (`src/lib/edit-financial-review.ts`) INSIDE the caller's transaction, so the

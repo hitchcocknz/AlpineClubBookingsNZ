@@ -525,8 +525,8 @@ The rows still on this card were raised before that. Work them as described belo
 until the club's clean-up has settled them; while one is open, a further price
 change to its booking is refused.
 
-Before that, sometimes a member changed a booking — gives back a night, takes a guest off —
-and the change itself was fine, but the club's records did not say clearly enough
+Before that, sometimes a member changed a booking — gave back a night, took a
+guest off — and the change itself was fine, but the club's records did not say clearly enough
 what those nights were sold for. Rather than work out a plausible-looking number
 that was never actually charged, the system **saved the booking change and held
 the money for you to decide**. No refund was made, no account credit was created,

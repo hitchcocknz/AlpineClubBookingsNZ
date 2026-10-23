@@ -248,10 +248,11 @@ Booking** is exactly what saving charges or credits.
 - **Nights given back** are credited at what they were sold for. Where the club's
   records do not say what each night sold for on its own — an older booking, one
   created from a public request, or nights whose recorded prices do not add up to
-  the guest's total — the guest's total is shared across their nights: nights
-  with a recorded price keep it, and the rest of the total is split evenly over
-  the others. Either way the credits never add up to more or less than the guest
-  was charged.
+  the guest's total — the guest's total is shared across their nights. Nights
+  with a recorded price keep it where those prices fit inside the total, and the
+  rest is split evenly over the others; where they do not fit, the whole total is
+  split evenly. Either way the credits never add up to more or less than the
+  guest was charged.
 - **Taking a guest off** credits everything stored for that guest.
 - **Nights added** are charged at today's prices.
 - **The club's normal change fee** applies, as on any other change.
