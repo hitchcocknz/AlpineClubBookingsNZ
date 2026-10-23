@@ -3682,20 +3682,24 @@ change's card capture kept, nothing parked on its intent, primary invoice
   the capture (the primary's payment, the change's own supplementary invoice,
   or one naming or covering it); a replay, or the webhook and the confirm
   route at once, find it (already-released)
-  gap check: pays the gap invoice only from cash no receipt row claimed, and
-    names the captures it took on its payload (coveredPaymentIntentIds)
+  gap check: pays the gap invoice only from cash no receipt row claims and no
+    supplementary invoice records, and names the captures it took, with the
+    cents, on its payload (coveredPaymentIntentIds, coveredCaptureCents)
   receipt worker:
-    another receipt for the booking RUNNING, or the booking's invoice create
-      RUNNING -> busy -> back to PENDING (code ADDITIONAL_CAPTURE_RECEIPT_WAITING)
+    another LIVE receipt for the booking claimed earlier, or a LIVE invoice
+      create for it -> busy -> back to PENDING (code
+      ADDITIONAL_CAPTURE_RECEIPT_WAITING), left out of the scan for a minute
     payment already linked -> SUCCEEDED, no Xero call
     another writer records the capture -> SUCCEEDED (stood down)
     capture no longer kept, booking cancelled or paid by internet banking
       -> CANCELLED
-    the gap invoice for its change PENDING, RUNNING or WAITING_PAYMENT -> busy
-      -> back to PENDING (no failure)
+    its target - the gap invoice for its change, or the change's own invoice
+      raised unpaid - PENDING, RUNNING or WAITING_PAYMENT -> busy -> back to
+      PENDING (no failure)
     no room on the primary and no gap invoice -> #3980's re-check:
       gap queued -> busy -> back to PENDING; a review task -> refused
-    room on the gap invoice for its change, else the primary -> decision
+    room on that target, else the primary (the capture less any part another
+      writer recorded) -> decision
       stored on the row -> Xero payment (or an earlier run's, found by
       reference) -> SUCCEEDED, ADDITIONAL_CAPTURE_PAYMENT link; cash left over
       -> officer alerted; a refund note named another invoice -> flagged
