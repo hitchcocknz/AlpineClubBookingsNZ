@@ -1713,6 +1713,16 @@ The PAID claim records which row settled the booking
 (`Payment.settledByTransactionId`, #4211): the card capture, or the cash or
 bank receipt's PRIMARY row. The manual mark-paid reversal clears it.
 
+A COMPLETED booking is judged exactly as a PAID one (#4285): the post-stay
+cron's `PAID -> COMPLETED` ends the stay, not the settlement, so every row
+below holds on it, the booking stays COMPLETED, and a finished stay's beds are
+not reconciled. Before #4285 any success arriving on a COMPLETED booking threw
+"not payable", a 500 Stripe retried for three days. Every other status the
+settle cannot pay from (CANCELLED, BUMPED, WAITLISTED, WAITLIST_OFFERED,
+AWAITING_REVIEW) still throws, and the webhook's stale-amount check (#1161)
+still guards an unpaid booking; it skips a PAID or COMPLETED one, whose capture
+the settle only keeps or refunds.
+
 ```text
 recorded settler arrives again             -> already_paid, never refunded
 other capture arrives, settler holds cash  -> duplicate refund (below)
@@ -1733,7 +1743,7 @@ net cash is double money (the residual #1967 split-child link-vs-auto-charge
 window, or a third capture from stale tabs) and is auto-refunded: the
 duplicate's transaction goes `SUCCEEDED -> REFUNDED` via a durable
 `duplicate_capture_<bookingId>_<pi>` recovery operation, the settlement
-transaction and the booking's PAID status are untouched, and
+transaction and the booking's PAID (or COMPLETED) status are untouched, and
 `markBookingPaymentSucceeded` reports `duplicate_capture_refunded` /
 `duplicate_capture_refund_failed`. A fully `REFUNDED` prior capture is history
 (#1765), never a settlement a repay generation could "duplicate". All of it is

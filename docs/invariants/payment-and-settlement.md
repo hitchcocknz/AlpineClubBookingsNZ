@@ -99,12 +99,13 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `Payment.settledByTransactionId` (`payment-settler.ts`): the card capture,
   the cash row, or the bank receipt's PRIMARY row when exactly one holds
   money. The manual reversal clears it.
-- **The recorded settler is never refunded.** Its redelivery is kept whatever
-  else holds money (a capture kept before #4211, a Xero bank receipt).
-- **Every other card capture arriving on a PAID booking is refunded** while
-  the settler still holds net cash nothing else owns: a third capture, or a
-  stray on a cash- or Xero-settled booking (#2262). The alert names the
-  settlement; the history entry names it when the refund completes inline.
+- **The recorded settler is never refunded.** Its redelivery is
+  `already_paid` whatever else holds money (a capture kept before #4211, a Xero
+  bank receipt), on a COMPLETED stay too (#4285).
+- **Every other card capture arriving on a PAID or COMPLETED booking is
+  refunded** while the settler still holds net cash nothing else owns: a third
+  capture, or a stray on a cash- or Xero-settled booking (#2262). The alert
+  names the settlement, as does an inline refund's history entry.
 - **What the superseded machinery holds** (a live operation, or a failed-later
   refund open rows owe back in full, #4227) is never the settlement, never
   another payment, and never refunded on top when it arrives (#4283).
@@ -118,12 +119,11 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   the $0 auto-pay after an edit, group settlement) never write it: a lone
   stray capture there is kept without an alert.
 - **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
-  readings for duplicate-refund-owned and owed-back captures and, since #4283,
-  the arriving capture.
+  owned and owed-back readings, the arriving capture's too (#4283).
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per
   (booking, intent).
-- Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,
-  `third-duplicate-capture.realdb.test.ts`.
+- Proven by `issue-1992-duplicate-capture-refund.test.ts` and the
+  `third-duplicate-capture` and `completed-redelivery` realdb suites.
 
 ## INV-PAY-102
 

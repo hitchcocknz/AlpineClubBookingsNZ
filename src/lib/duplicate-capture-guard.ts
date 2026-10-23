@@ -1,6 +1,7 @@
 /**
  * THE DUPLICATE-CAPTURE GUARD (#1992, #4211, `INV-PAY-043`): what a card
- * capture arriving on an already-PAID booking is.
+ * capture arriving on an already-PAID booking is - or (#4285) a COMPLETED one,
+ * a paid booking whose stay has ended (`isPaidLikeBookingStatus`).
  *
  * `already_paid` is the exactly-once replay outcome for a success that carries
  * the intent that settled the booking: webhook redelivery, the confirm-payment
@@ -125,7 +126,7 @@ export type ArrivingCaptureVerdict =
     };
 
 /**
- * Judge a card capture arriving on a booking already PAID. The caller has
+ * Judge a card capture arriving on a booking already PAID or COMPLETED. The caller has
  * already recorded the capture on its own row and ruled out refund history
  * (#1765); this only reads.
  */
