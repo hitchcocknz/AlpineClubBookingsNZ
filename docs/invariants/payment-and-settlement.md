@@ -125,6 +125,36 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,
   `third-duplicate-capture.realdb.test.ts`.
 
+## INV-PAY-138
+
+**Related: `INV-PAY-043`** (what the superseded machinery holds) **and #1765**
+(refund history).
+
+- **A card intent an edit superseded never settles its booking, through any
+  door** (#4300). Its capture is the superseded machinery's: a
+  `REFUND_SUPERSEDED_PAYMENT` row sends it back, so settling with it leaves
+  the booking PAID holding nothing.
+- **One check, the webhook's own**
+  (`queueSupersededPaymentIntentRefundRecovery`), asked by every door that
+  brings a succeeded intent back before it settles: the Stripe webhook,
+  `confirm-payment`, and the pay step's and the `/pay` link's reconcile arms.
+  A cancel row not SUCCEEDED hands the capture to its refund; a
+  superseded-intent row not SUCCEEDED (guard (c′)'s reading) means it was
+  handed off already, by the cancel worker or another door. Either way the
+  door settles nothing.
+- **What each door says.** `confirm-payment` answers 409
+  `SUPERSEDED_CARD_PAYMENT_REFUNDING`: being refunded, pay the amount shown
+  now. The pay step and the link mint a fresh intent under the repay key, as
+  for refund history. The webhook returns.
+- **Limits.** Read without a lock, as the webhook always read it: an edit
+  superseding the intent between the check and the settle's `lock(1)` is
+  stopped only by the settle's amount check. A superseded refund that
+  succeeded and later failed at Stripe leaves a SUCCEEDED row the check does
+  not read.
+- Proven on PostgreSQL by `superseded-intent-card-doors.realdb.test.ts`, and
+  by `payment-recovery.test.ts`, `payment-intent-routes.test.ts`,
+  `issue-1765-repay-after-refund-route.test.ts` and `payment-link.test.ts`.
+
 ## INV-PAY-102
 
 - **Card first, then bank: a booking is never collected by two instruments

@@ -5157,9 +5157,12 @@ Stripe call:
   attempt may re-stamp that itself (`holdAdditionalIntentRecoveryClaim`, the
   worker's own superseded hand-off). The reaper's write takes both fences, each
   its own clause. Every claim therefore counts an attempt: the worker's claim,
-  and the webhook's superseded hand-off
-  (`queueSupersededPaymentIntentRefundRecovery`), which takes the row from
-  outside any attempt and so spends one of its five.
+  and the superseded hand-off a succeeded-intent door makes
+  (`queueSupersededPaymentIntentRefundRecovery`: the webhook, and since #4300
+  `confirm-payment` and the pay step's and `/pay` link's reconcile arms,
+  `INV-PAY-138`), which takes the row from outside any attempt and so spends
+  one of its five. That check takes no advisory lock, before the door's
+  settle; the settle's `lock(1)` and amount check stand behind it.
 
 The legacy group settlement replay and the superseded group intent's webhook
 refund carry no plan: each reads Stripe's refunds on the intent before it asks

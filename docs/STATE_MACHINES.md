@@ -1618,6 +1618,16 @@ at repay settlement (see `docs/DOMAIN_INVARIANTS.md`). The repay path assumes
 no saved card: it always goes through the immediate card-entry PaymentIntent
 flow.
 
+Superseded capture (#4300, `INV-PAY-138`): a capture on an intent an edit
+superseded belongs to the superseded-intent machinery, which refunds it, so
+no door settles the booking with it. Every door that brings a succeeded intent
+back asks `queueSupersededPaymentIntentRefundRecovery` first: a live cancel row
+hands the capture to `REFUND_SUPERSEDED_PAYMENT`; a superseded-intent row not
+SUCCEEDED means it was handed off already. The booking stays payable: the pay
+step and the `/pay` link mint a repay intent under the same
+`..._repay_<supersededIntentId>` key, and `confirm-payment` answers 409
+`SUPERSEDED_CARD_PAYMENT_REFUNDING`.
+
 Saved-card provenance (#3269, `INV-PAY-053`). Two writers put a
 `stripePaymentMethodId` on a `Payment` row and only one of them saves a card:
 `markBookingSetupIntentSucceeded` writes it together with `stripeSetupIntentId`
