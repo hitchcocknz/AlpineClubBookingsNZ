@@ -244,7 +244,7 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
     /** Xero voids the note (its event reconciled), then the #4162 nightly follow-up undoes its refund. */
     async function voidAndUndo(noteId: string, cents: number) {
       await reconcile(noteId, cents, "VOIDED");
-      const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: noteId }, select: { id: true, active: true } });
+      const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: noteId, role: "REFUND_CREDIT_NOTE" }, select: { id: true, active: true } });
       expect(link.active).toBe(false);
       const { followUpVoidedBankRefundNote } = await import("@/lib/bank-refund-void-follow-up");
       expect(await followUpVoidedBankRefundNote(link.id)).toMatchObject({ outcome: "undone" });
@@ -399,6 +399,77 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
       const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
       const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 4_000, { createdByMemberId: OFFICER_ID });
       expect(await raiseQueuedNote(queued.queueOperationId!, `${P}-after-void-card`)).toEqual([4_000]);
+    });
+
+    /** The follow-up the nightly undo raised for a task's voided note. */
+    async function followUpOf(taskId: string) {
+      return prisma.manualRefundTask.findFirstOrThrow({
+        where: { bookingId: BOOKING_ID, occurrenceKey: { startsWith: "bank-refund-void:" }, reviewContext: { path: ["bankRefundVoidFollowUp", "originalTaskId"], equals: taskId } },
+        select: { id: true, amountCents: true, status: true },
+      });
+    }
+
+    /** The treasurer re-confirms a follow-up with a fresh note (`resolveManualRefundTask`'s "fresh-note" answer). */
+    async function reconfirmWithFreshNote(followUpId: string) {
+      const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
+      await resolveManualRefundTask(
+        { taskId: followUpId, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: null, recordedNightPrices: null, bankRefundVoidAnswer: { answer: "fresh-note" } },
+        CLUB_FORMAT_TEST,
+      );
+    }
+
+    /** A later card refund and its note, through the refund-request approval's own call: what Xero is asked to raise. */
+    async function laterCardNote(noteId: string) {
+      await refundCard(4_000);
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 4_000, { createdByMemberId: OFFICER_ID });
+      return raiseQueuedNote(queued.queueOperationId!, noteId);
+    }
+
+    async function notedBankCents() {
+      const { readPaidAnotherWayCash } = await import("@/lib/card-refund-paid-another-way-cash");
+      return (await readPaidAnotherWayCash(prisma, PAYMENT_ID)).notedCents;
+    }
+
+    /** A mixed payment's hand-back noted on its own task, its note voided in Xero and undone, and the follow-up re-confirmed with a fresh note. */
+    async function reconfirmedAfterVoid() {
+      await paid({ withCard: true });
+      const handBack = await raiseHandBack(`${P}-reconfirm`, 10_000);
+      await complete(handBack);
+      const [own] = await noteRows();
+      await raiseQueuedNote(own!.id, `${P}-reconfirm-note`);
+      await reconcile(`${P}-reconfirm-note`, 10_000);
+      await voidAndUndo(`${P}-reconfirm-note`, 10_000);
+      const followUp = await followUpOf(handBack);
+      await reconfirmWithFreshNote(followUp.id);
+      const fresh = (await noteRows()).at(-1)!;
+      expect(fresh).toMatchObject({ cents: 10_000, ownRecord: followUp.id });
+      expect(await raiseQueuedNote(fresh.id, `${P}-fresh-note`)).toEqual([10_000]);
+      await reconcile(`${P}-fresh-note`, 10_000);
+      return followUp.id;
+    }
+
+    it("a re-confirmed follow-up's fresh note counts beside its cash: a later card note is raised in full (#4315 item 2)", async () => {
+      await reconfirmedAfterVoid();
+      // The hand-back nets to nothing; the re-confirmed refund counts once, as the follow-up's.
+      expect(await notedBankCents()).toBe(10_000);
+      expect(await laterCardNote(`${P}-after-reconfirm-card`)).toEqual([4_000]);
+      expect(await readers()).toMatchObject({ refundedCents: 14_000, rowsCents: 14_000, coveredCents: 14_000, uncoveredCents: 0 });
+    });
+
+    it("the re-confirmed follow-up's own note voided and undone in turn: it counts for nothing, dismissed after it too, and a later card note is raised in full (#4315 item 2)", async () => {
+      const followUpId = await reconfirmedAfterVoid();
+      await voidAndUndo(`${P}-fresh-note`, 10_000);
+      const second = await followUpOf(followUpId);
+      expect(await notedBankCents()).toBe(0);
+      // The transfer bounced: the second follow-up is dismissed, and nothing counts.
+      const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
+      await resolveManualRefundTask(
+        { taskId: second.id, resolution: "dismissed", note: "The transfer bounced.", actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: null, recordedNightPrices: null },
+        CLUB_FORMAT_TEST,
+      );
+      expect(await notedBankCents()).toBe(0);
+      expect(await laterCardNote(`${P}-after-second-void-card`)).toEqual([4_000]);
     });
 
     it("once Xero voids a hand-back's own note and the nightly undo takes it back, a later canonical note on a bank transfer is raised in full (review F1)", async () => {
