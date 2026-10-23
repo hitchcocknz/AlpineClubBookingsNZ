@@ -677,5 +677,72 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       logged.mockRestore();
       expect(await owedMarkers()).toEqual([]);
     });
+
+    /** Move the stay to after the frozen today, so the booking can still be cancelled. */
+    async function moveStayToFuture() {
+      const N1 = new Date("2027-08-01T00:00:00.000Z"), N2 = new Date("2027-08-02T00:00:00.000Z"), OUT = new Date("2027-08-03T00:00:00.000Z");
+      // The database holds a booking's range around its guests' ranges, so the guests go first.
+      await prisma.bookingGuestNight.deleteMany({ where: { bookingGuest: { bookingId: BOOKING_ID } } });
+      await prisma.bookingGuest.deleteMany({ where: { bookingId: BOOKING_ID } });
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { checkIn: N1, checkOut: OUT } });
+      for (const guest of ["g1", "g2"]) {
+        await prisma.bookingGuest.create({
+          data: {
+            id: `${BOOKING_ID}-${guest}`,
+            bookingId: BOOKING_ID,
+            firstName: "Finished",
+            lastName: guest,
+            ageTier: "ADULT",
+            isMember: true,
+            stayStart: N1,
+            stayEnd: OUT,
+            priceCents: 0,
+            nights: { create: [{ stayDate: N1, priceCents: 0, priceSource: "SOLD" }, { stayDate: N2, priceCents: 0, priceSource: "SOLD" }] },
+          },
+        });
+      }
+    }
+
+    it("#4285 review F3: a booking cancelled after its stray capture was kept: the cancel's refund (at most its $0 worth) leaves the payment held, and the drain tells it as closed rather than clearing it", async () => {
+      const asked = stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await moveStayToFuture();
+      await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+      await crashedBeforeTheAlert();
+
+      const { cancelBooking } = await import("@/lib/booking-cancel");
+      const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
+      await cancelBooking(BOOKING_ID, OFFICER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+      const cancelled = await snapshot();
+      expect(cancelled.booking.status).toBe("CANCELLED");
+      expect(asked, "the cancel refunds at most the booking's worth: nothing of the stray capture").toEqual([]);
+      expect(cancelled.transactions.find((row) => row.stripePaymentIntentId === OTHER)).toMatchObject({ status: "SUCCEEDED", refundedAmountCents: 0 });
+      expect(await owedMarkers(), "still owed").toHaveLength(1);
+
+      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+      expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture-closed"]]);
+      logged.mockRestore();
+      expect(await owedMarkers()).toEqual([]);
+    });
+
+    it("#4285 review F4: once another payment holds money, the drain tells the owed alert as the no-record case, never 'nothing else holds money'", async () => {
+      stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+      await crashedBeforeTheAlert();
+      // A second card payment recorded since, on the same payment.
+      await prisma.paymentTransaction.create({
+        data: { paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: SETTLING, amountCents: PRICE_CENTS, status: "SUCCEEDED", createdAt: MINTED_AT },
+      });
+
+      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+      expect(keptAlertReasons(logged)).toEqual([[OTHER, "not-recorded"]]);
+      logged.mockRestore();
+      expect(await owedMarkers()).toEqual([]);
+    });
   },
 );

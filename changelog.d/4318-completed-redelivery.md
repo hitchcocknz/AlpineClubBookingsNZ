@@ -20,8 +20,10 @@
   still acknowledged quietly. If that alert cannot be sent (or the app stops
   before sending it), it stays owed: the payment's next arrival sends it, and a
   new payments task, "Kept card payment alert", sends it an hour later
-  otherwise. One case stays quiet: a saved-card charge whose charging request
-  stopped between recording the payment and settling it.
+  otherwise - about a day later at worst, when the app stopped just after
+  claiming that day's alert - and says so if the booking was cancelled since.
+  One case stays quiet: a saved-card charge whose charging request stopped or
+  failed between recording the payment and settling it.
 
   **After upgrading,** run the read-only query in the upgrade notes to list
   completed bookings that may hold a second card payment whose retries ran out

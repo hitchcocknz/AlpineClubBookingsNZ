@@ -103,10 +103,12 @@ describe("the #4285 deploy query matches the code's one definition", () => {
     expect(sql).toContain(`OR b."organiserSettled"`);
     const schema = readFileSync(resolve(REPO_ROOT, "prisma/schema.prisma"), "utf8");
     const model = (name: string) => schema.slice(schema.indexOf(`model ${name} {`), schema.indexOf("\n}", schema.indexOf(`model ${name} {`)));
-    expect(model("Booking")).toMatch(/\n\s+organiserSettled\s+Boolean/);
-    expect(model("Booking")).toMatch(/\n\s+finalPriceCents\s+Int/);
-    expect(model("Payment")).toMatch(/\n\s+creditAppliedCents\s+Int/);
-    expect(model("Payment")).toMatch(/\n\s+changeFeeCents\s+Int/);
+    // NOT NULL, every one: a nullable column would turn the comparison NULL and
+    // silently drop the booking from the list (#4285 review F2).
+    expect(model("Booking")).toMatch(/\n\s+organiserSettled\s+Boolean\s+@default\(false\)/);
+    expect(model("Booking")).toMatch(/\n\s+finalPriceCents\s+Int\s*(\n|\/\/)/);
+    expect(model("Payment")).toMatch(/\n\s+creditAppliedCents\s+Int\s+@default\(0\)/);
+    expect(model("Payment")).toMatch(/\n\s+changeFeeCents\s+Int\s+@default\(0\)/);
     expect(bookingWorthCents({ finalPriceCents: 100, changeFeeCents: 25 })).toBe(125);
   });
 

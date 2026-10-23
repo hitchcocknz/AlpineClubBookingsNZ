@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   settleOwedAlert: vi.fn(),
   bookingFindUnique: vi.fn(),
   transactionFindUnique: vi.fn(),
+  transactionFindFirst: vi.fn(),
   alert: vi.fn(),
   clubFormatValues: vi.fn(),
 }));
@@ -24,7 +25,10 @@ vi.mock("@/lib/alert-cooldown", () => ({
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     booking: { findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args) },
-    paymentTransaction: { findUnique: (...args: unknown[]) => mocks.transactionFindUnique(...args) },
+    paymentTransaction: {
+      findUnique: (...args: unknown[]) => mocks.transactionFindUnique(...args),
+      findFirst: (...args: unknown[]) => mocks.transactionFindFirst(...args),
+    },
   },
 }));
 vi.mock("@/lib/club-format-server", () => ({ clubFormatValues: () => mocks.clubFormatValues() }));
@@ -51,7 +55,8 @@ function prime({ status = "COMPLETED", captureStatus = "SUCCEEDED" }: { status?:
     member: { firstName: "Alice", lastName: "Example", email: "alice@example.com" },
     organisation: null,
   });
-  mocks.transactionFindUnique.mockResolvedValue({ status: captureStatus, amountCents: 20000 });
+  mocks.transactionFindUnique.mockResolvedValue({ id: "txn-new", paymentId: "payment-1", status: captureStatus, amountCents: 20000 });
+  mocks.transactionFindFirst.mockResolvedValue(null);
 }
 
 beforeEach(() => {
@@ -92,13 +97,46 @@ describe("the owed new-capture alert's drain (#4285 review)", () => {
   it.each([
     ["refunded since", { captureStatus: "REFUNDED" }],
     ["never captured", { captureStatus: "PENDING" }],
-    ["on a booking no longer paid", { status: "CANCELLED" }],
   ])("clears a marker with nothing to tell (%s) without an email", async (_label, state) => {
     prime(state);
 
     expect(await drainOwedNewCaptureAlerts(NOW)).toEqual({ checked: 1, sent: 0 });
     expect(mocks.alert).not.toHaveBeenCalled();
     expect(mocks.settleOwedAlert).toHaveBeenCalledWith({ key: KEY });
+  });
+
+  it("clears a marker whose booking is gone without an email", async () => {
+    prime();
+    mocks.bookingFindUnique.mockResolvedValue(null);
+
+    expect(await drainOwedNewCaptureAlerts(NOW)).toEqual({ checked: 1, sent: 0 });
+    expect(mocks.alert).not.toHaveBeenCalled();
+    expect(mocks.settleOwedAlert).toHaveBeenCalledWith({ key: KEY });
+  });
+
+  it("F3: a booking cancelled since still holds the payment (a cancel refunds at most its worth): told as closed, never cleared silently", async () => {
+    prime({ status: "CANCELLED" });
+
+    expect(await drainOwedNewCaptureAlerts(NOW)).toEqual({ checked: 1, sent: 1 });
+    expect(mocks.alert).toHaveBeenCalledWith(expect.objectContaining({ reason: "new-capture-closed", paymentIntentId: "pi_new" }));
+    expect(mocks.settleOwedAlert).not.toHaveBeenCalled();
+  });
+
+  it("F4: another payment holding money now makes 'nothing else holds money' untrue: told as the no-record case, naming it", async () => {
+    prime();
+    mocks.transactionFindFirst.mockResolvedValue({ stripePaymentIntentId: "pi_other" });
+
+    await drainOwedNewCaptureAlerts(NOW);
+
+    expect(mocks.alert).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "not-recorded", otherPaymentIntentId: "pi_other", otherHoldsMoney: true }),
+    );
+    // Read as the guard reads a settlement: another captured PRIMARY row on the same payment, any source.
+    expect(mocks.transactionFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ paymentId: "payment-1", id: { not: "txn-new" }, kind: "PRIMARY", status: { in: ["SUCCEEDED", "PARTIALLY_REFUNDED"] } }),
+      }),
+    );
   });
 
   it("a send the day's cooldown blocked is tried again later; one that threw stays due for the next run", async () => {

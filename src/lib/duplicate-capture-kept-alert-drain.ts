@@ -12,16 +12,24 @@
  * else guarantees. It goes through the same alert, so the once-a-day cooldown
  * still holds; a marker the cooldown blocks waits an hour before the next try.
  *
- * A capture that no longer holds money (refunded since), or a booking no
- * longer paid, leaves nothing to tell: its marker is cleared without an email.
+ * It re-judges what it says before sending (#4285 review). A capture that no
+ * longer holds money (refunded since), or a booking gone, leaves nothing to
+ * tell: its marker is cleared without an email. A booking cancelled or closed
+ * since still holds the payment - a cancellation refunds at most what the
+ * booking was worth - so it is told as `new-capture-closed`. Another payment
+ * on the booking holding money now makes "nothing else holds money" untrue, so
+ * it is told as the guard's `not-recorded` case, naming that payment. Any
+ * delivered alert for the capture clears the marker.
  * Runs outside every transaction; never throws for one marker.
  */
+import { PaymentTransactionKind } from "@prisma/client";
 import { listOwedAlertKeys, noteOwedAlertAttempt, settleOwedAlert } from "@/lib/alert-cooldown";
 import { bookingOwner } from "@/lib/booking-owner";
 import { isPaidLikeBookingStatus } from "@/lib/booking-status";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { alertCaptureKeptWithoutRecordedSettler, NEW_CAPTURE_ALERT_OWED_PREFIX } from "@/lib/duplicate-capture-guard";
 import logger from "@/lib/logger";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 
@@ -45,22 +53,33 @@ export async function drainOwedNewCaptureAlerts(now: Date = new Date()): Promise
         }),
         prisma.paymentTransaction.findUnique({
           where: { stripePaymentIntentId: paymentIntentId },
-          select: { status: true, amountCents: true },
+          select: { id: true, paymentId: true, status: true, amountCents: true },
         }),
       ]);
-      if (!booking || !capture || !isPaidLikeBookingStatus(booking.status) || !CAPTURED.has(capture.status)) {
+      if (!booking || !capture || !CAPTURED.has(capture.status)) {
         await settleOwedAlert({ key });
         continue;
       }
+      // Another PRIMARY row on the payment holding money now, of any source.
+      const other = await prisma.paymentTransaction.findFirst({
+        where: {
+          paymentId: capture.paymentId,
+          id: { not: capture.id },
+          kind: PaymentTransactionKind.PRIMARY,
+          status: { in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST] },
+        },
+        orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+        select: { stripePaymentIntentId: true },
+      });
       const owner = bookingOwner(booking).member;
       const outcome = await alertCaptureKeptWithoutRecordedSettler({
         booking,
         memberName: `${owner.firstName} ${owner.lastName}`,
         paymentIntentId,
         amountCents: capture.amountCents,
-        otherPaymentIntentId: null,
-        otherHoldsMoney: false,
-        reason: "new-capture",
+        otherPaymentIntentId: other?.stripePaymentIntentId ?? null,
+        otherHoldsMoney: !!other,
+        reason: !isPaidLikeBookingStatus(booking.status) ? "new-capture-closed" : other ? "not-recorded" : "new-capture",
         format,
       });
       if (outcome === "sent") sent += 1;

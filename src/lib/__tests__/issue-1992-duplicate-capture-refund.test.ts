@@ -2019,6 +2019,17 @@ describe("#4285 a capture arriving on a COMPLETED booking is judged as on a PAID
       expect(mocks.owedMarkers.has(owedKey), "cleared once delivered").toBe(false);
     });
 
+    it("F4: any delivered alert for the capture answers its owed one - here the no-record alert, once another payment holds money", async () => {
+      const owedKey = `duplicate-capture-new-capture-owed:booking-1:${OTHER_PI}`;
+      mocks.owedMarkers.add(owedKey);
+      primeLedger([ledgerRow({ id: "txn-y", stripePaymentIntentId: "pi_since" }), ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI })]);
+
+      expect((await arriveAt(10000)).outcome).toBe("duplicate_capture_kept");
+
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(expect.objectContaining({ reason: "not-recorded", otherPaymentIntentId: "pi_since" }), CLUB_FORMAT_TEST);
+      expect(mocks.owedMarkers.has(owedKey), "the delivered alert cleared the owed new-capture marker").toBe(false);
+    });
+
     it("F2: a send that throws leaves the alert owed, so the capture's replay alerts again; once delivered, a replay is silent", async () => {
       const rows = primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: PaymentStatus.PENDING })]);
       mocks.upsertPaymentIntentTransaction.mockImplementation(async () => {

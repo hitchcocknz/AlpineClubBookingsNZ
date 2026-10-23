@@ -50,8 +50,8 @@
  *    as owed in the same transaction (`recordNewCaptureAlertOwed`), so a crash
  *    or a failed send is retried by a replay or the payments cron's drain until
  *    an alert is delivered. Limit: a saved-card capture whose caller crashed
- *    between its pre-record and the settle reads as a replay on its next
- *    arrival.
+ *    or threw between its pre-record and the settle reads as a replay on its
+ *    next arrival.
  *
  * Every read runs under the lock(1) every caller of `markBookingPaymentSucceeded`
  * holds, so the check-then-enqueue cannot interleave with another settlement,
@@ -312,8 +312,8 @@ export async function recordNewCaptureAlertOwed(
  * Stripe redelivery, a reconcile or cron re-run), sent anyway if the claim
  * cannot be read (`claimAlertCooldownFailOpen`), and the claim is given back if
  * the send throws so the next repeat tries again (`releaseAlertCooldown`, as
- * `internet-banking-hold-kept.ts`). A delivered `new-capture` alert clears its
- * owed marker (#4285 review). Never throws; says what happened.
+ * `internet-banking-hold-kept.ts`). Any delivered alert for the capture clears
+ * its owed `new-capture` marker (#4285 review). Never throws; says what happened.
  */
 export async function alertCaptureKeptWithoutRecordedSettler({
   booking,
@@ -365,10 +365,10 @@ export async function alertCaptureKeptWithoutRecordedSettler({
     );
     return "send-threw";
   }
-  if (reason === "new-capture") {
-    await settleOwedAlert({ key: newCaptureAlertOwedKey(booking.id, paymentIntentId) }).catch((err) =>
-      logger.error({ err, ...context }, "Failed to clear a delivered new-capture alert's owed marker; it may be sent again (#4285)"),
-    );
-  }
+  // #4285 review: ANY delivered alert for this capture answers an owed one, so
+  // the drain never later sends "no other payment holds money" once untrue.
+  await settleOwedAlert({ key: newCaptureAlertOwedKey(booking.id, paymentIntentId) }).catch((err) =>
+    logger.error({ err, ...context }, "Failed to clear a delivered kept-capture alert's owed marker; it may be sent again (#4285)"),
+  );
   return "sent";
 }

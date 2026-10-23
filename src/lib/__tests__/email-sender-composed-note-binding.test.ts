@@ -681,6 +681,19 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(stray).not.toContain("no record of which payment settled");
     // Only one payment: no "neither payment" Stripe check (#4285 review).
     expect(stray).not.toContain("neither payment");
+
+    // #4285 review F3: the same payment's owed alert, after the booking was cancelled.
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminDuplicateCaptureKeptAlert(
+      { ...alert, reason: "new-capture-closed", otherPaymentIntentId: null, otherHoldsMoney: false },
+      CLUB_FORMAT_TEST,
+    );
+    const closed = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(closed).toContain("the booking has since been cancelled or closed");
+    expect(closed).toContain("A cancellation refunds at most what the booking was worth");
+    expect(closed).toContain("refund by hand what the booking no longer needs");
+    expect(closed).not.toContain("should pay for the booking");
+    expect(closed).not.toContain("neither payment");
     expect(stray).not.toContain("refund the other one");
     expect(stray).toContain("refund it by hand only if the booking should not be paid by it");
   });
