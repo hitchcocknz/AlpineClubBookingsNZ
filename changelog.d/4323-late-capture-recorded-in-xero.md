@@ -13,11 +13,17 @@
   paid by card - Xero shows $380 billed and $380 paid. Each payment is
   recorded once, however many times Stripe or the member's browser report it.
 
-  Nothing is guessed. If Xero can't be read, nothing is due on either invoice,
-  the booking has since been cancelled, or the invoice's own payment hasn't
-  been recorded yet, the payment is not recorded and the treasurer is emailed;
-  the operation in **Xero Operations** says why, and **Retry** runs it again
-  once the cause is fixed.
+  Each payment is recorded by one document only: if the booking's own invoice
+  payment, a supplementary invoice for the change, or the supplementary invoice
+  for a change made while the invoice was being raised already records it, the
+  app leaves it there.
+
+  Nothing is guessed. If Xero can't be read, the invoice the payment belongs to
+  has nothing left due, or the invoice's own payment hasn't been recorded yet,
+  the payment is not recorded and the treasurer is emailed; the operation in
+  **Xero Operations** says why, and **Retry** runs it again once the cause is
+  fixed. Payments on cancelled bookings, and on bookings paid by internet
+  banking, are not recorded this way.
 
   A refund of such a payment from Stripe names the invoice it paid on its
   credit note. The booking-vs-Xero repair tool now reports **card payment not

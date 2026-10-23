@@ -1564,35 +1564,36 @@ refunded total it corrects).
 **Related: `INV-PAY-136`** (the gap invoice) and **`INV-PAY-104`** (the
 late-success release).
 
-- **A change's card capture that nothing waited on is recorded against the
-  Xero invoice that bills it** (#3953; owner, 21 Oct 2026).
-- **When.** The late-success release finds no supplementary invoice waiting,
-  retired or released for a kept capture of an `ADDITIONAL` card ask on a booking
-  whose primary invoice is linked. It queues one `ADDITIONAL_CAPTURE_RECEIPT`
-  row per capture, keyed on the intent, under the per-anchor
-  supplementary-invoice lock on the change (else the booking).
-- **Where.** The worker reads Xero: the gap invoice first, then the primary,
-  whose room is its AmountDue less the applied credit its settle still
-  allocates. One invoice, the gross capture capped at that room; any rest is told
-  to an officer. A capture the primary's create counted
-  (`capturedPaymentIntentIdsAtBuild`) is never recorded again. With no room and
-  no gap invoice, #3980's own check raises the gap, never a second.
-- **Never twice.** The payment's link returns early, an earlier run's payment is
-  found by its reference, and the decision is stored before Xero is called; a
-  retry sends it unchanged or refuses.
-- **Refused, never guessed.** A cancelled booking, nothing due, a gap invoice not
-  in Xero, the invoice's own payment still owed, or changed figures: the row
-  fails `ADDITIONAL_CAPTURE_RECEIPT_REFUSED` and an officer is told. It waits
-  while the gap invoice is being sent.
-- **Refunds and repair.** A Stripe refund of the capture names the invoice it
-  paid on its note. The repair tool reports "card payment not recorded in Xero"
-  and queues the receipt, automatically only where the invoice's figures say it
-  was not counted.
-- **Limits.** A capture whose release ran before the primary's link was saved
-  is left to the repair tool.
+- **A change's card capture that nothing else records is recorded against the
+  Xero invoice that bills it, by one recorder** (#3953; owner, 21 Oct 2026).
+- **One recorder.** The primary's create stores the captures its recorded cash
+  covers (`paymentIntentIdsRecordedAtLink`). Every other captured change gets an
+  `ADDITIONAL_CAPTURE_RECEIPT` row: from the link save, before the gap check,
+  or from the late-success release. The gap invoice pays itself only from cash
+  no receipt claimed and names what it took. A receipt stands down where the
+  primary, the change's own supplementary invoice, or one naming or covering
+  the capture records it (`readCaptureRecorder`).
+- **Once.** Queued per capture under the per-anchor supplementary-invoice lock;
+  never on a cancelled or internet-banking booking.
+- **Where.** The gap invoice if it bills the capture's change, else the
+  primary, less applied credit still to allocate. The capture, less what the
+  primary took, capped at that room; any rest goes to an officer.
+  With no room and no gap invoice, #3980's check raises the gap and the
+  receipt waits for it.
+- **Never twice.** One receipt plans per booking, never while the create runs;
+  an earlier payment is found by reference; the decision is stored before Xero
+  is called, and a retry sends it or refuses.
+- **Refused, never guessed.** Xero unreadable, nothing due, a gap invoice not in
+  Xero, an own payment still owed, or changed figures: FAILED
+  `ADDITIONAL_CAPTURE_RECEIPT_REFUSED`, an officer told.
+- **Refunds and repair.** A Stripe refund names the receipt's invoice. The
+  repair tool reports "card payment not recorded in Xero", queues the receipt,
+  and raises a change's missing invoice unpaid where a receipt records it.
+- **Limits.** A kept capture on a cancelled booking is not recorded here.
 - Pinned by `additional-capture-xero-receipt.test.ts`,
-  `additional-capture-receipt.realdb.test.ts`, `xero-booking-repair.test.ts`
-  and `stripe-webhook-alerts.test.ts`.
+  `additional-capture-recorder.test.ts`,
+  `additional-capture-receipt.realdb.test.ts` and
+  `xero-booking-repair.test.ts`.
 
 ## INV-PAY-031
 

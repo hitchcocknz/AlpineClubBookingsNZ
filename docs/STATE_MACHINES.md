@@ -3674,25 +3674,35 @@ primary booking invoice create saves its link -> worth gap check (#3980,
     refused) -> treasurer acts in Xero, then Resolve (fixed in Xero); one per
     booking, invoice and direction
 change's card capture kept, nothing parked on its intent, primary invoice
-  linked (#3953, INV-PAY-139) -> late-success release answers receipt-queued:
+  linked (#3953, INV-PAY-139), or the primary's link save for every captured
+  change its recorded cash does not cover (before its gap check) ->
   ADDITIONAL_CAPTURE_RECEIPT PENDING, one per capture (key: the intent), found
-  or created under the change's supplementary-invoice anchor lock; a replay,
-  or the webhook and the confirm route at once, find it (already-released)
+  or created under the change's supplementary-invoice anchor lock - unless the
+  booking is cancelled or paid by internet banking, or another writer records
+  the capture (the primary's payment, the change's own supplementary invoice,
+  or one naming or covering it); a replay, or the webhook and the confirm
+  route at once, find it (already-released)
+  gap check: pays the gap invoice only from cash no receipt row claimed, and
+    names the captures it took on its payload (coveredPaymentIntentIds)
   receipt worker:
+    another receipt for the booking RUNNING, or the booking's invoice create
+      RUNNING -> busy -> back to PENDING (code ADDITIONAL_CAPTURE_RECEIPT_WAITING)
     payment already linked -> SUCCEEDED, no Xero call
-    capture counted by the primary's create -> SUCCEEDED (skipped)
-    capture no longer kept -> CANCELLED
-    gap invoice still PENDING/RUNNING -> busy -> back to PENDING (no failure)
-    no room anywhere and no gap invoice -> #3980's re-check:
-      gap raised now from this capture's cash -> SUCCEEDED (recorded by it)
-      gap queued -> busy -> back to PENDING; else refused
-    room on the gap invoice, else the primary -> decision stored on the row
-      -> Xero payment (or an earlier run's, found by reference) -> SUCCEEDED,
-         ADDITIONAL_CAPTURE_PAYMENT link; cash left over -> officer alerted
-    cancelled booking, not captured, nothing due, gap invoice not in Xero,
-      the invoice's own payment still owed, or a retry's figures changed
-      -> FAILED, code ADDITIONAL_CAPTURE_RECEIPT_REFUSED, officer alerted;
-         Retry re-runs it on the same row, any stored decision unchanged
+    another writer records the capture -> SUCCEEDED (stood down)
+    capture no longer kept, booking cancelled or paid by internet banking
+      -> CANCELLED
+    the gap invoice for its change PENDING, RUNNING or WAITING_PAYMENT -> busy
+      -> back to PENDING (no failure)
+    no room on the primary and no gap invoice -> #3980's re-check:
+      gap queued -> busy -> back to PENDING; a review task -> refused
+    room on the gap invoice for its change, else the primary -> decision
+      stored on the row -> Xero payment (or an earlier run's, found by
+      reference) -> SUCCEEDED, ADDITIONAL_CAPTURE_PAYMENT link; cash left over
+      -> officer alerted; a refund note named another invoice -> flagged
+    not captured, Xero unreadable, nothing due, gap invoice not in Xero, the
+      invoice's own payment still owed, or a retry's room gone -> FAILED, code
+      ADDITIONAL_CAPTURE_RECEIPT_REFUSED, officer alerted; Retry re-runs it on
+      the same row, any stored decision unchanged
     Xero write error -> FAILED (decision kept); Retry sends the same payment
 ```
 
@@ -3704,8 +3714,9 @@ The claimed-original abandon and Mark failed are pinned by
 `xero-operation-queue.test.ts` and `xero-operation-routes.test.ts` (#3462).
 The PARTIAL repair's claim is pinned by `xero-operation-retry.test.ts` and,
 against real PostgreSQL, `xero-partial-repair-claim.realdb.test.ts` (#4256).
-A change capture's receipt is pinned by `additional-capture-xero-receipt.test.ts`
-and, against real PostgreSQL, `additional-capture-receipt.realdb.test.ts` (#3953).
+A change capture's receipt is pinned by `additional-capture-xero-receipt.test.ts`,
+`additional-capture-recorder.test.ts` and, against real PostgreSQL,
+`additional-capture-receipt.realdb.test.ts` (#3953).
 
 ## Cron And Recovery Lifecycle
 
