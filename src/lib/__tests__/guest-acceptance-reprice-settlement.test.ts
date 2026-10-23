@@ -164,7 +164,8 @@ function tx(loaded: ReturnType<typeof booking>) {
       update: vi.fn(async () => loaded),
     },
     bookingModification: { create: vi.fn(async () => ({ id: "mod-1" })) },
-    payment: { update: vi.fn() },
+    // #3980: an acceptance that read no invoice link claims the payment row.
+    payment: { update: vi.fn(), updateMany: vi.fn(async () => ({ count: 1 })) },
     // #3954: no increase is waiting on its mint's recovery for a reduction to net off.
     paymentRecoveryOperation: { findMany: vi.fn(async () => []) },
     manualRefundTask: { aggregate: vi.fn(async () => ({ _sum: { amountCents: null } })), createMany: vi.fn(async () => ({ count: 1 })) },

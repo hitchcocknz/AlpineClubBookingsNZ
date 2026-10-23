@@ -16,6 +16,7 @@ import {
   type BookingMoneyBuildUpSelection,
 } from "@/lib/booking-money-build-up";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
+import { PrimaryInvoiceRaisedDuringEditError, writeEditOnPayment } from "@/lib/booking-primary-invoice-claim";
 import type { ClubFormat } from "@/lib/club-format";
 
 /**
@@ -178,6 +179,10 @@ export const REBASE_STRAND_NOT_ON_BOOKING_MESSAGE =
 export const REBASE_RACED_MESSAGE =
   "This booking's price changed while you were closing the review, so nothing was saved. Reload the page and check the booking before trying again.";
 
+/** #3980 review C4: the primary invoice was linked while the review re-priced the booking. */
+export const REBASE_INVOICE_RAISED_MESSAGE =
+  "This booking's invoice was being raised while you were closing the review, so nothing was saved. Please try again in a moment.";
+
 /**
  * The assertion that must never fire. It is not a refusal an operator can act
  * on, so it is deliberately not a `ManualBookingPaymentError`: reaching it means
@@ -272,6 +277,8 @@ export function rebaseChangedTheBooking(rebase: BookingPriceRebase): boolean {
 }
 
 const REBASE_BOOKING_INCLUDE = {
+  // #3980 review C4: the invoice link the re-price claims (`writeEditOnPayment`).
+  payment: { select: { id: true, xeroInvoiceId: true } },
   promoRedemptions: {
     include: {
       guestTargets: { select: { bookingGuestId: true } },
@@ -308,6 +315,7 @@ export async function rebaseBookingPriceFromStrands({
   todayAtClub,
   store,
   format,
+  paymentLinkRead,
 }: {
   bookingId: string;
   /**
@@ -335,6 +343,15 @@ export async function rebaseBookingPriceFromStrands({
    * transaction, like `todayAtClub` above.
    */
   format: ClubFormat;
+  /**
+   * #3980 review round 2 F4: the invoice link the CALLER read, under its own
+   * locks - the review closure's, which also decided whether an issued invoice
+   * needs correcting. The re-price claims against that read, so a link saved
+   * between the two reads refuses the closure (409) rather than letting both
+   * the claim and the closure's invoice-divergence check pass it by. Absent,
+   * this function's own read is used.
+   */
+  paymentLinkRead?: { id: string; xeroInvoiceId: string | null } | null;
 }): Promise<BookingPriceRebaseOutcome> {
   const booking = await store.booking.findUnique({
     where: { id: bookingId },
@@ -487,6 +504,25 @@ export async function rebaseBookingPriceFromStrands({
   });
   if (rebased.count !== 1) {
     throw new ManualBookingPaymentError(REBASE_RACED_MESSAGE, 409);
+  }
+  // #3980 review C4 (`INV-PAY-136`): a re-price that read no primary invoice
+  // link claims it on the payment row, as an edit does, so it never lands
+  // after the invoice create's link save unseen. It writes no history row and
+  // so anchors nothing: a gap it leaves while a create is in flight is billed
+  // only where an edit that landed in the same window anchors the gap, and is
+  // otherwise the treasurer's Xero Operations task (round 2 F1).
+  if (verifiedNewFinalPriceCents !== booking.finalPriceCents) {
+    try {
+      await writeEditOnPayment(store, {
+        payment: paymentLinkRead === undefined ? booking.payment : paymentLinkRead,
+        changeFeeCents: 0,
+      });
+    } catch (err) {
+      if (err instanceof PrimaryInvoiceRaisedDuringEditError) {
+        throw new ManualBookingPaymentError(REBASE_INVOICE_RAISED_MESSAGE, 409);
+      }
+      throw err;
+    }
   }
 
   return {

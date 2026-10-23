@@ -40,6 +40,37 @@ export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
    * PARTIAL repair records. Absent on a record written before it existed.
    */
   readonly primaryInvoiceAttemptedCashCents?: number;
+  /**
+   * #3980: what the booking was worth, and what the create built, so the gap
+   * check measures the whole booking rather than its fee alone. Absent on a
+   * record written before #3980, which is checked for its fee only.
+   */
+  readonly worth?: PrimaryInvoiceWorthAtLink;
+}
+
+/**
+ * #3980 (`INV-PAY-136`): the booking's worth (`bookingWorthCents`: its
+ * `finalPriceCents` plus the recorded change fee) at two instants, and what the
+ * create asked Xero to bill.
+ *
+ *  - `atBuildCents`: the worth the create's own read gave, which its lines were
+ *    built from.
+ *  - `builtTotalCents`: the total of the lines it sent, promotion and fee
+ *    lines included.
+ *  - `atLinkCents`: the worth read in the transaction that saves the link,
+ *    after the link's row update, so it holds every edit that committed
+ *    before the link and none after.
+ */
+export interface PrimaryInvoiceWorthAtLink {
+  readonly atBuildCents: number;
+  readonly builtTotalCents: number;
+  readonly atLinkCents: number;
+  /**
+   * #3980 review M5: the edits already marked as settled against the primary
+   * invoice in the create's snapshot; one marked since landed mid-create.
+   * Absent on a record written before it.
+   */
+  readonly markedModificationIdsAtBuild?: readonly string[];
 }
 
 /**
@@ -61,7 +92,8 @@ export const PRIMARY_INVOICE_FEE_AT_LINK_KEY = "primaryInvoiceBilledFee";
  * carries no `primaryInvoiceBilledFee` record at all, and one written before
  * its round 5 carries the record without `primaryInvoiceCashCents`. A record
  * for a different invoice is not this invoice's figure and also reads as null.
- * One written before #4010 parses, without `primaryInvoiceAttemptedCashCents`.
+ * One written before #4010 parses, without `primaryInvoiceAttemptedCashCents`,
+ * and one written before #3980 without `worth`.
  */
 export function parsePrimaryInvoiceFeeAtLink(
   requestPayload: unknown,
@@ -87,5 +119,29 @@ export function parsePrimaryInvoiceFeeAtLink(
     ...(typeof record.primaryInvoiceAttemptedCashCents === "number"
       ? { primaryInvoiceAttemptedCashCents: record.primaryInvoiceAttemptedCashCents }
       : {}),
+    ...parseWorth(record.worth),
+  };
+}
+
+function parseWorth(value: unknown): { worth?: PrimaryInvoiceWorthAtLink } {
+  const worth = asRecord(value);
+  if (
+    !worth ||
+    typeof worth.atBuildCents !== "number" ||
+    typeof worth.builtTotalCents !== "number" ||
+    typeof worth.atLinkCents !== "number"
+  ) {
+    return {};
+  }
+  const marked = worth.markedModificationIdsAtBuild;
+  return {
+    worth: {
+      atBuildCents: worth.atBuildCents,
+      builtTotalCents: worth.builtTotalCents,
+      atLinkCents: worth.atLinkCents,
+      ...(Array.isArray(marked) && marked.every((id) => typeof id === "string")
+        ? { markedModificationIdsAtBuild: marked as string[] }
+        : {}),
+    },
   };
 }

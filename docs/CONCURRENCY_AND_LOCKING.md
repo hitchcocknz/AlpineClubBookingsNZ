@@ -5280,6 +5280,80 @@ two unlocked reads (eligible cash and the closes' uncovered cash) and re-reads
 the closes' figure either side of the cash until both agree, so a close that
 commits between them is counted on both sides or neither.
 
+## An edit against the primary invoice's link: the Payment row lock, no advisory key (#3980)
+
+An edit decides whether to adjust a booking's primary Xero invoice from the
+invoice link it read, but the invoice create (`createXeroInvoiceForBooking`)
+reads the booking once, calls Xero, and saves the link seconds later, outside
+every lock. The two are ordered on the **Payment row** alone (`INV-PAY-136`):
+
+- **The claim.** Every writer that changes a booking's worth and read no
+  invoice link makes one guarded write in its own transaction,
+  `writeEditOnPayment` (`src/lib/booking-primary-invoice-claim.ts`):
+  `payment.updateMany where {id, xeroInvoiceId: null}`, carrying the fee
+  increment the edit records (else an increment of 0). `applyPaymentAdjustments`
+  makes it for the date, batch, guest-removal and acceptance doors (and the
+  finished-stay correction through the batch door); the guests route, the
+  review price re-base (`booking-review-price-rebase.ts`) and the school
+  pending-adult naming (`school-pending-adult-resolution.ts`) make it
+  themselves; the re-base claims against the review closure's own read of the
+  link (`paymentLinkRead`), so a link saved between the two reads refuses the
+  closure. A count other than 1 refuses the whole change with a 409 and it
+  rolls back. The credit election changes no price and makes none.
+- **The link's save.** `persistPrimaryInvoiceLink` writes the link with an
+  `updateMany` guarded on it being unset, then reads the fee and the booking's
+  `finalPriceCents` in later statements of the same transaction, then writes
+  its figures onto its own operation row. Finding the link already set, it
+  reads the row: the same invoice is a second save (a stale-RUNNING reset
+  retried, or two runs at once) and stores nothing, so the first save's figures
+  stand and the create re-checks from them; a different invoice is overwritten
+  and measured, as before.
+- **Why it holds.** Whichever writes the Payment row second waits for the
+  other's commit and then sees it. A claim made first has committed every
+  booking write with it, so the save's later read of the booking holds it; a
+  claim made second re-evaluates its `xeroInvoiceId: null` predicate after the
+  wait (Read Committed), matches nothing, and is refused. Two saves of one
+  invoice serialise the same way, and the second finds the link set. An edit
+  that committed before the create's read is in the invoice's lines; the
+  create's read is one REPEATABLE READ snapshot (`xero-primary-invoice-read.ts`),
+  so an edit committing between its statements is in all of them or none.
+
+**Order.** The edit doors already take global `lock(1)`, then
+`acquireLodgeCapacityLock`, then any member keys, and write the Payment row
+inside that (`INV-LOCK-002`); the claim is one more Payment-row write in that
+position, as it is for the re-base and the school naming under their own keys.
+The link's save takes no advisory key and no lock after the Payment row but its
+own operation row, which no edit writes, so there is no cycle. No new advisory
+key, no raw row lock and no migration: it is an ordinary status-guarded
+`updateMany`, like the finished-stay fee write it generalises
+(`recordFinishedStayFeeOwed`, #3955), which still runs and now always matches
+behind the claim. A long edit holding the Payment row can make the link's save
+wait past its transaction budget; the create then fails and its retry replays
+Xero's idempotency key, gets the same invoice back and saves the link.
+
+**The other link writers.** Five more writes set `Payment.xeroInvoiceId`, and
+each takes the same row, so a claim queued behind one finds the link and is
+refused: the inbound "invoice paid" match (guarded on an unset link) and its
+settle (`xero-inbound/invoice-paid-effects.ts`, an unguarded update under
+`lock(1)`), the inbound payment's canonical link (`xero-inbound/payment.ts`,
+where none is set), the reconcile mirror of a primary transaction's invoice
+(`payment-transactions.ts`) and an operator's field repair
+(`xero-booking-repair-passes.ts`). None stores figures, so an edit that claimed
+just before one of them is not measured, like any invoice linked without stored
+figures. The census `primary-invoice-claim-call-sites.test.ts` lists every
+write that sets the link and every writer that claims.
+
+**Not covered.** A change on a booking with no Payment row has nothing to
+claim. The create needs a Payment row to run, and such an edit is still marked,
+so one that commits before the link is in the worth read back.
+
+Proved against PostgreSQL in `primary-invoice-edit-race.realdb.test.ts`: the
+create held between its read and its link save while a price increase and a
+reduction commit (gap invoice, treasurer task); an edit paused right after its
+claim, with the create's real link save seen queued behind it (by
+`pg_blocking_pids`) and, once the edit commits, reading its worth back; and an
+edit queued behind a held link save, refused.
+
 ## Stripe refund-note link repair: deliberately lock-free (#2901)
 
 `applyStripeRefundNoteLinkRepairs` (`src/lib/xero-refund-note-link-repair.ts`,
@@ -5468,30 +5542,101 @@ another payment's line, a reversed one, one larger than what is left or one
 its own live note records in full or in part refused. The order is pinned by
 `bank-refund-void-follow-up.test.ts`.
 
-## Refund-request note link writes (#4195)
+## Refund-note link writes racing a void (#4195, #4223)
 
-A refund request's own Xero note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`)
-goes inactive when the inbound sync records it VOIDED or DELETED
-(`INV-ADDPAY-041`). A retry or completion that read the note as live before
-that void committed would otherwise write the link back active. So when a
-request-note link write names no Xero status, `keepStoredRequestNoteVoid`
-(`xero-refund-note-status.ts`, called from the link normaliser in
-`upsertXeroObjectLink`) locks that one link row (`SELECT 1 … FOR UPDATE`),
-re-reads it through Prisma, and keeps a stored VOIDED/DELETED: inactive, its
-status kept on the row.
+A refund note's mirror goes inactive when the inbound sync records it VOIDED
+or DELETED (`INV-ADDPAY-041`): the payment's own notes (`REFUND_CREDIT_NOTE`,
+its one canonical note among them) and a refund request's own note
+(`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`). A retry, completion or repair
+that read the note as live before that void committed would otherwise write
+the link back active. On the canonical role the retry's write fell back to the
+note itself once the void had released the pointer, so it re-armed the mirror
+(#4223, reproduced on a real database).
+
+So every refund-note link write, either role, starts in
+`keepStoredRefundNoteVoid` (`xero-refund-note-status.ts`, called from the link
+normaliser in `upsertXeroObjectLink`): it first ensures an inactive row with
+only the five natural-key fields (`createMany`, `skipDuplicates: true`), then
+locks that row (`SELECT 1 … FOR UPDATE`, the #4161 heal's statement). The
+unique key serialises concurrent first insertions: if the mirror was missing,
+a competing inbound insert must commit or roll back before the status read.
+An existing row is untouched by the reservation. The reservation, lock, read
+and final link write share the caller's transaction; failure rolls them all
+back, so no identity-only placeholder commits alone. A write that names no
+Xero status then re-reads the row through Prisma and keeps a stored
+VOIDED/DELETED: the link stays inactive, the status and incoming metadata
+merge over the stored figures and provenance, and no sibling is retired for
+it. A pointer naming it is released if its Payment row is available without
+waiting; otherwise the inactive mirror commits and the #4161 heal can release
+the pointer later. A write that names a status is judged on it.
 
 It writes no money column, no booking status and calls no provider; under
 `INV-LOCK-001` it joins no advisory cohort and takes no advisory key, so
 `INV-LOCK-003`'s Tier-2 registry has no entry for it, and its row lock is in
-the advisory-lock guard's row-lock inventory. The lock is the row the write
-that follows updates anyway, so it adds no row to the transaction and changes
-no order. Its counterpart is the inbound void, which holds only that link row
-(a request note never names the payment pointer), so the two cannot form a
-cycle: whichever takes the row first finishes, and the other then sees its
-write. The nightly heal (#4161) never selects this role. A real-PostgreSQL
-proof (`xero-refund-request-note-void.realdb.test.ts`) holds the void open on
-another connection, shows the retry's write queued behind it, and finds the
-link inactive with its status after both commit.
+the advisory-lock guard's row-lock inventory. Where a caller holds an advisory
+key (an enqueue inside a group cancel), the row lock comes after it, as the
+protocol requires.
+
+**Lock order.** Inside the link write, always: the link's own row, then any
+active sibling note the single-canonical rule retires. A statusless write
+keeping a stored void then tries its Payment row with
+`FOR NO KEY UPDATE SKIP LOCKED` before conditionally releasing the pointer;
+it never waits on Payment. A Payment row the caller already holds is returned
+and its pointer can be released in that transaction. Explicit-status inbound
+voids retain their existing link-then-Payment order (#4200). Before #4223
+the canonical branch retired siblings before it wrote its own row; the own-row lock now comes first on
+every write, status or not, so two writers of one note always take the pair in
+the same order. (A mixed order, the retry's own row first and an inbound live
+write's siblings first, could deadlock two writers of one note that both
+retire an active sibling.) The lock protects the same natural-key row the
+final write updates. Two writers of two different notes on one
+payment that each retire the other can still take that pair in opposite
+orders; that needs two notes both acting as the payment's one note at once,
+predates #4223, and is not changed here.
+
+Counterparts:
+
+- **The inbound void** holds its link row, then the Payment row when the
+  pointer names that note. A waiting write re-reads after it commits.
+- **The nightly heal (#4161)** takes the link row and the Payment row
+  `NOWAIT`, then calls the same write, whose own-row lock it already holds. It
+  never waits, so it is never one side of a cycle.
+- **The Payment-first writers** (the create's record and the enqueue's
+  existing-note branch, see "Refund-note link heal (#4161)" above) take the
+  Payment row, then the link write. A kept void must never wait back on their
+  Payment row. Three writers can otherwise cycle on one note: an inbound void
+  holds the link with a null pointer, a real covered retry commits the pointer
+  back and queues on the link, then a Payment-first enqueue reads the old live
+  note and queues behind the retry. Once the inbound void commits, a blocking
+  retry would hold the link and wait for the enqueue's Payment while that
+  enqueue waits for its link (40P01). The retry's `SKIP LOCKED` removes that
+  wait, preserving the inactive mirror even when pointer cleanup is deferred.
+  The explicit inbound void's pre-existing inversion is tracked separately
+  in #4200.
+
+Two real-PostgreSQL proofs hold the void open on another connection and show
+the waiting write queued behind it, then find the link inactive with its
+status after both commit: `xero-refund-request-note-void.realdb.test.ts` for a
+request's note, and `xero-canonical-refund-note-void-race.realdb.test.ts`
+for the canonical note through the real `createXeroCreditNote` retry, with the
+pointer released. The canonical suite also forces an inbound first insertion
+of a missing mirror, for VOIDED and DELETED, and proves the caller's rollback
+leaves neither the mirror nor its reservation. Its three-writer proof uses
+the real retry, the shared Payment-row lock, and the actual
+`enqueueXeroRefundCreditNoteOperation` existing-note branch: both statusless
+writes finish, the note remains inactive and VOIDED, and the final pointer is
+null. This schedule does not force which waiter acquires the link first after
+the inbound commit. A separate busy-Payment case forces the nonblocking branch
+and proves fresh metadata commits while the pointer stays put; the existing
+nightly heal then selects that inactive shape and releases it.
+
+**Mixed releases.** The own-row-first order is consistent within this release;
+the old canonical writer takes siblings before its own row. Running both on
+the same note with an active historical sibling can deadlock (40P01). The
+[deploy and rollback boundary](xero/ARCHITECTURE.md#flow-2--inbound-reconciliation-webhooks--incremental-cursors)
+therefore excludes old refund-note writers, including web/direct retries,
+before new ones start. Nightly healing of old mirror state does not make the
+two lock orders compatible.
 
 ## One Xero contact, one local home: the contact-home key (#3367)
 
