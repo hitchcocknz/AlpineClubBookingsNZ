@@ -1,23 +1,46 @@
 # File-size allowances for #4300
 
-Each door that brings a succeeded card intent back now asks the webhook's own
-superseded-intent check before it settles a booking (`INV-PAY-138`). The check
-stays one function in the recovery module, beside the hand-off it runs; each
-door gains only the call and its answer.
+A card capture on an intent an edit superseded never settles its booking
+(`INV-PAY-138`). The settle refuses it under lock(1) with a new outcome; the
+doors ask the same reading first; each caller answers the outcome. The reading
+itself, the post-commit hand-off and alert, and the `/pay` page's refusal table
+live in their own modules; each file below gains only its call and its answer.
 
 file: src/lib/payment-recovery.ts
-lines: 3360
-reason: the extended check needs the module's private hand-off
+lines: 3364
+reason: the doors' check needs the module's private hand-off
   (`handoffSucceededSupersededIntentToRefund`), so it cannot move out without
-  exporting that writer; the growth is its docblock, one import and one line.
+  exporting that writer; the growth is its docblock, the claim result and the
+  shared reading's call.
+
+file: src/lib/payment-reconciliation.ts
+lines: 3029
+reason: the refusal has to sit inside the settle's transaction under lock(1),
+  beside the #1765 refund-history refusal it mirrors; the post-commit work is
+  one call into superseded-capture-refusal.ts.
 
 file: src/app/api/bookings/[id]/confirm-payment/route.ts
-lines: 345
-reason: the refusal has to sit in the route's classification window, between
-  the refund-history check and the settle, so a failed check keeps the
-  route's existing status-unconfirmed answer.
+lines: 347
+reason: the door's check sits in the route's classification window, between
+  the refund-history check and the settle, and the settle's new outcome needs
+  its own answer; both are one statement each.
 
 file: src/app/api/payments/create-payment-intent/route.ts
-lines: 899
-reason: the check joins the existing refund-history discriminator in the
-  succeeded-intent arm, so the repay mint it shares stays one path.
+lines: 909
+reason: the check joins the existing refund-history discriminator and the
+  reuse arm it guards, so the repay mint they share stays one path.
+
+file: src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts
+lines: 931
+reason: the settle's new outcome needs its own answer among the route's
+  existing outcome branches; the body is shared from the recovery contract.
+
+file: src/app/api/payments/charge-saved-method/route.ts
+lines: 656
+reason: the settle's new outcome needs its own answer among the route's
+  existing outcome branches; the body is shared from the recovery contract.
+
+file: src/lib/cron-confirm-pending.ts
+lines: 2063
+reason: the settle's new outcome needs its own branch among the cron's
+  existing outcome branches, counted as failed for the alerted admins.

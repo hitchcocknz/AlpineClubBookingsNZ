@@ -3,8 +3,10 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * #4300 (`INV-PAY-043`): the real-PostgreSQL proof that a superseded card
- * intent never settles a booking through any door self-skips without
+ * #4300 (`INV-PAY-138`): the real-PostgreSQL proof that a superseded card
+ * capture never settles its booking (at the card doors, the webhook and the
+ * settle itself) and that neither reuse arm hands its intent out again
+ * self-skips without
  * `RUN_CONCURRENCY_RACE_TESTS`, and hosted CI reaches it only because the race
  * harness imports it. Lose that import and the proof silently becomes a no-op
  * while every suite stays green - so the edge is pinned here, as
@@ -12,7 +14,7 @@ import { describe, expect, it } from "vitest";
  */
 const REPO_ROOT = resolve(__dirname, "../../..");
 
-describe("the superseded-intent card-doors real-database proof stays wired into CI (#4300)", () => {
+describe("INV-PAY-138: the superseded-intent card-doors real-database proof stays wired into CI (#4300)", () => {
   it("is imported by the race harness CI runs against a real database", () => {
     const harness = readFileSync(
       resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
@@ -30,6 +32,8 @@ describe("the superseded-intent card-doors real-database proof stays wired into 
       "the webhook after the cancel worker's retry lost to the capture",
       "the pay step's reload, holding the superseded capture",
       "the /pay link's reload, holding the superseded capture",
+      "the settle itself, under lock(1)",
+      "never hands out a superseded intent's secret again once the price is back at its amount",
     ]) {
       expect(suite).toContain(door);
     }

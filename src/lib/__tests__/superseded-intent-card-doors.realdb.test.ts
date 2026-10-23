@@ -399,7 +399,7 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
   expect(await money()).toMatchObject({ status: "PAID", heldCents: PRICE_CENTS });
 }
 
-(RUN ? describe : describe.skip)("a superseded card intent never settles a booking, through any door, on PostgreSQL (#4300)", { timeout: 120_000 }, () => {
+(RUN ? describe : describe.skip)("a superseded card capture never settles its booking, nor is its intent handed out again, on PostgreSQL (#4300, INV-PAY-138)", { timeout: 120_000 }, () => {
   beforeAll(async () => {
     assertSafeRaceDbUrl(RACE_DB_URL, "Superseded-intent card doors");
     process.env.DATABASE_URL = RACE_DB_URL;

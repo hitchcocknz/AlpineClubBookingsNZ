@@ -42,7 +42,11 @@
  *   is never refunded on top as a duplicate, while one behind a dead cancel is
  *   a duplicate like any other (wrongly keeping it would keep money twice with
  *   nobody told). The guard's (b′) and (c′) add this reading's owed-back
- *   captures to their own (#4227).
+ *   captures to their own (#4227);
+ * - the settle and the card doors (#4300, `INV-PAY-138`) ask whether they may
+ *   settle a booking with a capture at all: (c′), the Xero reading, and any
+ *   capture open rows owe back ANY part of - never settle with money partly
+ *   going back. Composed with the guard's in `superseded-capture-ownership.ts`.
  *
  * Under (b′) and (c′) a superseded-machinery operation counts as LIVE while it
  * is not SUCCEEDED:

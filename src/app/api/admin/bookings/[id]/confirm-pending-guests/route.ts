@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { SUPERSEDED_CHARGE_NOT_SETTLED_BODY } from "@/lib/payment-recovery-contract";
 import { bookingOwner } from "@/lib/booking-owner";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { BookingStatus, PaymentStatus } from "@prisma/client";
@@ -843,20 +844,10 @@ export async function POST(
       );
     }
 
+    // #4300 (`INV-PAY-138`): superseded, going back; stays confirmed for the alerted admins.
     if (reconciliation.outcome === "superseded_capture") {
-      // #4300 (`INV-PAY-138`): the charge landed on a payment an edit had
-      // superseded; it is going back to the card and settled nothing. The
-      // booking stays confirmed for an admin, who was alerted. No email, no invoice.
       await audit("charged_superseded_capture", true);
-      return NextResponse.json(
-        {
-          error:
-            "The charge was taken on a payment a later change had replaced, so it is being returned and the booking is not paid; admins have been alerted.",
-          paymentReceived: true,
-          finalisationPending: true,
-        },
-        { status: 409 }
-      );
+      return NextResponse.json(SUPERSEDED_CHARGE_NOT_SETTLED_BODY, { status: 409 });
     }
 
     if (settledByAnotherCapture(reconciliation.outcome)) {

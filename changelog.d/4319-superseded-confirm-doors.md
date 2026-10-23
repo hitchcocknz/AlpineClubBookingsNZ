@@ -8,7 +8,12 @@
   queued could mark the booking paid with it. The refund then went through,
   and the booking showed as paid with no money held.
 
-  Every way a payment reaches the booking now makes the same check. That
-  payment is refunded as before, the booking stays unpaid, and the member is
-  told the payment is being refunded and asked to pay the amount the booking
-  shows now. The payment page and the payment link offer a fresh payment.
+  The booking's settlement now refuses that payment itself, whichever way it
+  arrives, including the club's own saved-card charges. The payment goes back
+  as before, the booking stays unpaid, and admins are told if it got as far as
+  the settlement. A member who has just paid that way on the booking page is
+  told the payment will be returned to their card and asked to reload and pay
+  the amount the booking shows now; a payer on a payment link sees a notice
+  that their earlier payment is going back, beside a fresh payment.
+  Neither page offers the out-of-date payment again once the price comes back
+  to its amount.

@@ -1730,10 +1730,8 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           continue;
         }
 
+        // #4300 (`INV-PAY-138`): superseded, going back; stays claimed for the alerted admins.
         if (reconciliation.outcome === "superseded_capture") {
-          // #4300 (`INV-PAY-138`): the capture is going back to the card and
-          // settled nothing; the booking stays claimed for an admin, who was
-          // alerted (#1418's leave-claimed choice). No email, no invoice.
           result.failedBookingIds.push(resolution.booking.id);
           continue;
         }

@@ -130,30 +130,31 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 **Related: `INV-PAY-043`** (what the superseded machinery holds) **and #1765**
 (refund history).
 
-- **A card intent an edit superseded never settles its booking, through any
-  door** (#4300). Its capture is the superseded machinery's: a
-  `REFUND_SUPERSEDED_PAYMENT` row sends it back, so settling with it leaves
-  the booking PAID holding nothing.
-- **One check, the webhook's own**
-  (`queueSupersededPaymentIntentRefundRecovery`), asked by every door that
-  brings a succeeded intent back before it settles: the Stripe webhook,
-  `confirm-payment`, and the pay step's and the `/pay` link's reconcile arms.
-  A cancel row not SUCCEEDED hands the capture to its refund; a
-  superseded-intent row not SUCCEEDED (guard (c′)'s reading) means it was
-  handed off already, by the cancel worker or another door. Either way the
-  door settles nothing.
-- **What each door says.** `confirm-payment` answers 409
-  `SUPERSEDED_CARD_PAYMENT_REFUNDING`: being refunded, pay the amount shown
-  now. The pay step and the link mint a fresh intent under the repay key, as
-  for refund history. The webhook returns.
-- **Limits.** Read without a lock, as the webhook always read it: an edit
-  superseding the intent between the check and the settle's `lock(1)` is
-  stopped only by the settle's amount check. A superseded refund that
-  succeeded and later failed at Stripe leaves a SUCCEEDED row the check does
-  not read.
+- **A card capture on an intent an edit superseded never settles its
+  booking** (#4300). It belongs to the superseded machinery, which sends it
+  back or, on a cancelled booking with the club's hold on, holds it for the
+  treasurer (`holdSupersededLateCaptureIfRequired`).
+- **One reading** (`superseded-capture-ownership.ts`), shared with the
+  duplicate-capture guard: a superseded-intent row not SUCCEEDED, the Xero
+  reading's captures, and here any capture open rows owe back ANY part of.
+- **The settle refuses it under `lock(1)`**, beside the #1765 refusal: outcome
+  `superseded_capture`, never a throw. No confirmation, no invoice; the
+  capture is handed off and admins alerted. Every Stripe settle passes it,
+  the saved-card doors included.
+- **The doors ask first** (`queueSupersededPaymentIntentRefundRecovery`, given
+  the intent): the webhook, `confirm-payment`, and the pay step's and `/pay`
+  link's reconcile arms. A live cancel row hands the capture off; a lost claim
+  asks the reading again. `confirm-payment` answers 409
+  `SUPERSEDED_CARD_PAYMENT_REFUNDING`. The pay step and link mint a repay
+  intent (`_repay_<intent>_<amount>_<currency>`); the link adds
+  `previousPaymentRefunding`.
+- **Never handed out again.** Neither reuse arm returns the secret of an intent
+  with a superseded row not SUCCEEDED; one `processing` answers
+  `PAYMENT_PROCESSING`.
+- **Retired** (`isCardIntentRetired`) once the machinery owns it.
 - Proven on PostgreSQL by `superseded-intent-card-doors.realdb.test.ts`, and
-  by `payment-recovery.test.ts`, `payment-intent-routes.test.ts`,
-  `issue-1765-repay-after-refund-route.test.ts` and `payment-link.test.ts`.
+  by `superseded-capture-ownership.test.ts`, `payment-recovery.test.ts`,
+  `issue-1992-duplicate-capture-refund.test.ts` and the door suites.
 
 ## INV-PAY-102
 

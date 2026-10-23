@@ -122,6 +122,17 @@ export const SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE =
   "This card payment was for an earlier version of the booking, so it will be returned to your card; the club will contact you if it cannot be. Reload the booking and pay the amount it shows now.";
 
 /**
+ * #4300: what a saved-card door (an admin's or the cron's charge) answers when
+ * the settle refused its capture as superseded: taken, going back, not paid.
+ */
+export const SUPERSEDED_CHARGE_NOT_SETTLED_BODY = Object.freeze({
+  error:
+    "The charge was taken on a payment a later change had replaced, so it is being returned and the booking is not paid; admins have been alerted.",
+  paymentReceived: true as const,
+  finalisationPending: true as const,
+});
+
+/**
  * #4300: the `/pay` link's notice beside a fresh payment, when the payer's
  * earlier payment was superseded (`previousPaymentRefunding`).
  */

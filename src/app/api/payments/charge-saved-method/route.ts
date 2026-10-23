@@ -43,7 +43,7 @@ import {
   type SavedCardChargeAnswer,
 } from "@/lib/saved-card-charge-settle";
 import { hasAdminAccess } from "@/lib/access-roles";
-import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY } from "@/lib/payment-recovery-contract";
+import { PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY, SUPERSEDED_CHARGE_NOT_SETTLED_BODY } from "@/lib/payment-recovery-contract";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { chargeCurrencyRefusal, UNSUPPORTED_CHARGE_CURRENCY_ADMIN_MESSAGE as CURRENCY_REFUSED } from "@/lib/stripe-charge-currency";
 
@@ -464,21 +464,9 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // #4300 (`INV-PAY-138`): superseded, going back; the claim stays for the alerted admins.
       if (reconciliation.outcome === "superseded_capture") {
-        // #4300 (`INV-PAY-138`): the charge landed on a payment an edit had
-        // superseded; it is going back to the card and settled nothing. The
-        // claim stays for an admin, who was alerted. No invoice.
-        return NextResponse.json(
-          {
-            success: false,
-            error:
-              "The charge was taken on a payment a later change had replaced, so it is being returned and the booking is not paid; admins have been alerted.",
-            paymentIntentId: paymentIntent.id,
-            paymentReceived: true,
-            finalisationPending: true,
-          },
-          { status: 409 }
-        );
+        return NextResponse.json({ success: false, ...SUPERSEDED_CHARGE_NOT_SETTLED_BODY, paymentIntentId: paymentIntent.id }, { status: 409 });
       }
 
       finalCapacityClaimed = true;

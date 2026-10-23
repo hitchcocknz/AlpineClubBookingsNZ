@@ -124,9 +124,7 @@ export type MarkBookingPaymentSucceededResult = {
     // KEPT, nothing refunded, the admins asked to check by hand. Settled like
     // the two above: no confirmation email, no invoice of its own.
     | "duplicate_capture_kept"
-    // #4300 (`INV-PAY-138`): the capture is the superseded-intent machinery's
-    // (going back to the card, any part of it owed back included), so the
-    // booking was NOT settled: no confirmation, no invoice; it still owes.
+    // #4300 (`INV-PAY-138`): the superseded machinery's; NOT settled, no confirmation or invoice.
     | "superseded_capture";
   bookingId: string;
   bumpedBookingIds: string[];
@@ -1135,11 +1133,8 @@ async function settleBookingPaymentInTransaction(
       );
     }
 
-    // #4300 (`INV-PAY-138`): nor a capture the superseded machinery owns, any
-    // part of it owed back included: it is going back to the card, so settling
-    // with it leaves the booking PAID holding nothing. Under lock(1), so an edit
-    // in a door's unlocked check window, and every saved-card door, meet it too.
-    // Returned, not thrown: a webhook delivery is not retried for days.
+    // #4300 (`INV-PAY-138`): nor one the superseded machinery owns (any part owed
+    // back counts). Returned, not thrown, so a webhook is not retried for days.
     if (
       settlement.kind === "stripe" &&
       (await supersededMachineryOwnsCapture(tx, { paymentId: payment.id, paymentIntentId: settlement.paymentIntentId }))
