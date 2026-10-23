@@ -1912,7 +1912,7 @@ total at apply).
   re-repaired.
 - **On a cancelled booking a completed `CANCELLED_BOOKING_HAND_BACK`, and a
   review's netted card refund or hand-back (#3880), raise
-  the cancellation's refund note** against the invoice's id,
+  a refund note** (`INV-ADDPAY-043`) against the invoice's id,
   never `hasIssuedPrimaryXeroInvoice` (false here); a cash settlement
   (#2262) has none. Cancellation policy is untouched (D2,
   #3527). Pinned by
