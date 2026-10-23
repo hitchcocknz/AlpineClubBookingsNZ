@@ -3117,6 +3117,49 @@ describe("#4317 modify-dates prices a blank night from the guest's stored total"
     expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
   });
 
+  it("D11: a negative stored total values its kept nights at $0 and keeps its -$5 on the strand", async () => {
+    // Unreachable on a live database (`BookingGuest_price_nonnegative`, which no
+    // row has ever failed), and so pinned here, at the door: the code still
+    // has to value it rather than invent money from it.
+    // The headline agrees with its one strand, so the edit is a plain increase.
+    const booking = makeBooking({ totalPriceCents: -500, finalPriceCents: -500 });
+    const g1 = (booking.guests as Array<Record<string, unknown>>)[0];
+    g1.priceCents = -500;
+    g1.nights = [
+      { stayDate: new Date("2026-08-01"), priceCents: 2500, priceSource: "SOLD" },
+      { stayDate: new Date("2026-08-02"), priceCents: 2500, priceSource: "SOLD" },
+    ];
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+    mockedCreatePaymentIntent.mockResolvedValue({
+      id: "pi_additional",
+      client_secret: "pi_additional_secret_xxx", currency: "nzd",
+    } as any);
+
+    // Keeps the 1st and 2nd, buys the 3rd at today's $75.
+    const res = await moveTheDates("2026-08-01", "2026-08-04");
+    const data = await res.json();
+    expect(res.status).toBe(200);
+    // The edit charges the one night it buys: $75, and nothing for the kept two.
+    expect(data.priceDiffCents).toBe(7500);
+
+    expect(writtenRows(tx)).toEqual([
+      { date: "2026-08-01", priceCents: 0, priceSource: "UNKNOWN" },
+      { date: "2026-08-02", priceCents: 0, priceSource: "UNKNOWN" },
+      { date: "2026-08-03", priceCents: 7500, priceSource: "SOLD" },
+    ]);
+    // $0 + $0 + $75, plus the -$5 the strand carries beyond its nights.
+    expect(tx.bookingGuest.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ priceCents: 7000 }) }),
+    );
+    expect(tx.booking.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ totalPriceCents: 7000, finalPriceCents: 7000 }),
+      }),
+    );
+    expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
+  });
+
   it("CONTROL: the same date change on a fully readable booking prices the same way", async () => {
     const tx = makeTx(makeBooking());
     mockTransaction.mockImplementation((fn: any) => fn(tx));
