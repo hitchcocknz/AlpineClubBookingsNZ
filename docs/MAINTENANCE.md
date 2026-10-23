@@ -1461,8 +1461,9 @@ if it is missing. A receipt that failed is offered for retry
 `ADDITIONAL_CAPTURE_RECEIPT_REFUSED`) is reported for an officer - its
 operation says why; record the payment by hand and mark it resolved, or fix the
 cause and **Retry**. The tool's own missing-supplementary-invoice action raises
-that invoice unpaid only where the change's capture is already recorded by its
-receipt (its Xero payment linked); a receipt still queued then records the
+that invoice unpaid where the change's capture is recorded, or may be being
+recorded, by its receipt (its Xero payment linked, the operation running, or its
+payment already decided); a receipt that has decided nothing yet then records the
 payment against that unpaid invoice.
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe

@@ -3686,9 +3686,11 @@ change's card capture kept, nothing parked on its intent, primary invoice
     supplementary invoice records, and names the captures it took, with the
     cents, on its payload (coveredPaymentIntentIds, coveredCaptureCents)
   receipt worker:
-    another LIVE receipt for the booking claimed earlier, or a LIVE invoice
-      create for it -> busy -> back to PENDING (code
-      ADDITIONAL_CAPTURE_RECEIPT_WAITING), left out of the scan for a minute
+    a LIVE invoice create for the booking, or (under the booking's anchor
+      lock) a LIVE receipt for it stamped ADDITIONAL_CAPTURE_RECEIPT_PLANNING
+      -> busy -> back to PENDING (code ADDITIONAL_CAPTURE_RECEIPT_WAITING),
+      left out of the scan for a minute; otherwise its own row is stamped
+      PLANNING under that lock and it goes on
     payment already linked -> SUCCEEDED, no Xero call
     another writer records the capture -> SUCCEEDED (stood down)
     capture no longer kept, booking cancelled or paid by internet banking
@@ -3704,7 +3706,8 @@ change's card capture kept, nothing parked on its intent, primary invoice
       reference) -> SUCCEEDED, ADDITIONAL_CAPTURE_PAYMENT link; cash left over
       -> officer alerted; a refund note named another invoice -> flagged
     not captured, Xero unreadable, nothing due, gap invoice not in Xero, the
-      invoice's own payment still owed, or a retry's room gone -> FAILED, code
+      invoice's own payment still owed, a retry's room gone, or a stored
+      decision another document now records -> FAILED, code
       ADDITIONAL_CAPTURE_RECEIPT_REFUSED, officer alerted; Retry re-runs it on
       the same row, any stored decision unchanged
     Xero write error -> FAILED (decision kept); Retry sends the same payment

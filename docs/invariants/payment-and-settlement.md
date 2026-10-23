@@ -1579,10 +1579,10 @@ late-success release).
   change's own invoice raised unpaid, else the primary, less applied credit
   still to allocate. The capture, less what another writer took, capped at
   that room; any rest goes to an officer.
-- **Never twice.** One receipt plans per booking, after any earlier live claim,
-  never while a live create runs; an earlier payment is found by reference;
-  the decision is stored before Xero is called, and a retry sends it or
-  refuses.
+- **Never twice.** One receipt plans per booking, past a stamp under its
+  anchor lock, never during a live create; an earlier payment is found by
+  reference; a decision is stored before Xero is called, and a retry sends it
+  or refuses.
 - **Refused, never guessed.** Xero unreadable, nothing due, a target not in
   Xero, an own payment still owed, or changed figures: FAILED
   `ADDITIONAL_CAPTURE_RECEIPT_REFUSED`, an officer told.

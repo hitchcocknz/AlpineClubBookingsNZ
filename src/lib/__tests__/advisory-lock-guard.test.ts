@@ -1280,7 +1280,10 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // #3953 (`INV-PAY-139`): the change-capture receipt's enqueue
   // (`additional-capture-receipt-enqueue.ts`) calls the same helper on the
   // change its capture pays for (else the booking), holding nothing, for
-  // find-by-key -> create of one outbox row; no new raw site, no new key.
+  // find-by-key -> create of one outbox row; and its worker's planning gate
+  // (`passPlanningGate`) calls it on the booking, holding nothing, for
+  // check-stamp -> stamp, with every Xero call after it commits. No new raw
+  // site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,
