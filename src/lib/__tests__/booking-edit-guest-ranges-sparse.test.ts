@@ -1320,6 +1320,48 @@ describe("#2736 a sparse stay", () => {
     expect(plan.priceDiffCents).toBe(HIGH);
   });
 
+  it("T6 on the check-out-day extension: a short stored stayEnd does not re-sell the last held night (#4317, #2029)", () => {
+    // The shape where the stored envelope actually moves a window: the edit is
+    // made on the morning after the guest's last held night (#2029's
+    // check-out-day extension), so the new-price window starts at the guest's
+    // own stay end. Read off a stored `stayEnd` one morning short, that start
+    // fell on the 22nd — a night already held and paid for — and the edit sold
+    // it a second time. Read off the rows it starts on the 23rd.
+    const rowsPastEnvelope = {
+      ...guestFromNights(["2026-08-20", "2026-08-21", "2026-08-22"]),
+      stayEnd: D("2026-08-22"),
+    };
+    const plan = pricedPlan(
+      planInput({
+        guests: [rowsPastEnvelope],
+        editableFrom: "2026-08-23",
+        newCheckOut: "2026-08-25",
+        checkIn: "2026-08-20",
+        checkOut: "2026-08-23",
+      }),
+    );
+    const entry = plan.proposedExistingGuests[0];
+    const bought = rateFor("2026-08-23") + rateFor("2026-08-24");
+
+    expect(entry.nights.map(key)).toEqual([
+      "2026-08-20",
+      "2026-08-21",
+      "2026-08-22",
+      "2026-08-23",
+      "2026-08-24",
+    ]);
+    expect(entry.perNightCents).toEqual([
+      LOW,
+      LOW,
+      LOW,
+      rateFor("2026-08-23"),
+      rateFor("2026-08-24"),
+    ]);
+    expect(entry.priceCents).toBe(3 * LOW + bought);
+    // The charge is the two nights bought, and nothing for the 22nd.
+    expect(plan.priceDiffCents).toBe(bought);
+  });
+
   it("prices the SAME edit on the SAME guest once the envelope agrees with the rows", () => {
     // The control for the case above: one field moves — the stored `stayEnd`
     // back onto the morning after the last row — and the money is identical,
