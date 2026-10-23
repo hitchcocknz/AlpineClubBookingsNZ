@@ -38,6 +38,7 @@ export function refundMethodForEditReviewRoute(
     case "account-credit":
       return "account-credit";
     case "local-allocation":
+    case "group-settlement-mirror": // #3949: a bank transfer to the group organiser
       return "internet-banking";
     default:
       return "card";
@@ -299,7 +300,7 @@ export function refundRequestCreditNoteAsk({
 }): { paymentId: string; refundRequestId: string; amountCents: number } | null {
   if (
     !refundRequestId ||
-    route?.kind !== "local-allocation" ||
+    route?.kind !== "local-allocation" || // #3949 review M1: a group child's mirror route raises no note (`alertGroupMirrorRefundXeroByHand`)
     cancellationHandBackInvoiceId === null ||
     amountCents === null ||
     amountCents <= 0
