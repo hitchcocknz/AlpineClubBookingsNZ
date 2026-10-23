@@ -379,7 +379,7 @@ vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
     mockReleaseXeroSupplementaryInvoiceForCapturedPaymentIntent(...args),
 }));
 // #3953: a change's capture recorded by its own receipt names that receipt's invoice; none here unless a case says so.
-const mockFindAdditionalCaptureReceiptInvoiceId = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<string | null> => null));
+const mockFindAdditionalCaptureReceiptInvoiceId = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string | null>>(async () => null));
 vi.mock("@/lib/additional-capture-receipt-link", () => ({
   findAdditionalCaptureReceiptInvoiceId: (...args: unknown[]) => mockFindAdditionalCaptureReceiptInvoiceId(...args),
 }));
