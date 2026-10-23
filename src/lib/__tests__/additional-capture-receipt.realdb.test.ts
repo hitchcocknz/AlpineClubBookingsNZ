@@ -4,11 +4,18 @@
  * waited on gets ONE receipt operation, whoever sees the capture first.
  *
  *  1. The Stripe webhook and the confirm route reporting the same capture at
- *     once, and a replay after both, go through the REAL late-success release
+ *     once - held at a barrier until both are queued on the anchor lock - and
+ *     a replay after both, go through the REAL late-success release
  *     (`releaseXeroSupplementaryInvoiceForCapturedPaymentIntent`): one row, one
  *     `receipt-queued`, every other caller `already-released`.
  *  2. Many enqueues at once (`enqueueAdditionalCaptureReceiptOperation`) make
  *     one row.
+ *  4. Review round 1 (one recorder per capture): a capture that landed between
+ *     the primary create's read and its gap check, on a change that raced the
+ *     create, is recorded ONCE - by its receipt (the gap invoice is raised
+ *     unpaid and names nothing) when the link's figures say the primary's cash
+ *     did not cover it, or by the gap invoice (which names it, and the
+ *     receipt then stands down) when the figures cannot say.
  *  3. The enqueue runs under the existing per-anchor supplementary-invoice lock
  *     (`lockSupplementaryInvoiceAnchor`) on the change the capture pays for: a
  *     session holding that lock makes the enqueue queue behind it, and the
@@ -46,6 +53,7 @@ let observerClient: PrismaClient;
 let release: typeof import("@/lib/xero-supplementary-invoice-late-capture");
 let enqueue: typeof import("@/lib/additional-capture-receipt-enqueue");
 let outbox: typeof import("@/lib/xero-operation-outbox");
+let gapCheck: typeof import("@/lib/xero-primary-invoice-fee-gap");
 
 async function receiptRows() {
   return prisma.xeroSyncOperation.findMany({
@@ -58,6 +66,7 @@ async function clean(): Promise<void> {
   await prisma.xeroSyncOperation.deleteMany({
     where: { localId: { in: [CHANGE_TX_ID, PRIMARY_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID] } },
   });
+  await prisma.bookingModification.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
   await prisma.payment.deleteMany({ where: { id: PAYMENT_ID } });
   await prisma.booking.deleteMany({ where: { id: BOOKING_ID } });
@@ -115,7 +124,7 @@ async function seed(): Promise<void> {
 }
 
 /** How many sessions are queued behind this backend (`pg_blocking_pids`). */
-async function untilQueuedBehind(blockerPid: number): Promise<number> {
+async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number> {
   const startedAt = process.hrtime.bigint();
   let queued = 0;
   while (realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
@@ -124,7 +133,7 @@ async function untilQueuedBehind(blockerPid: number): Promise<number> {
       WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
     `;
     queued = rows[0]?.count ?? 0;
-    if (queued >= 1) break;
+    if (queued >= target) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   return queued;
@@ -138,6 +147,7 @@ async function untilQueuedBehind(blockerPid: number): Promise<number> {
     release = await import("@/lib/xero-supplementary-invoice-late-capture");
     enqueue = await import("@/lib/additional-capture-receipt-enqueue");
     outbox = await import("@/lib/xero-operation-outbox");
+    gapCheck = await import("@/lib/xero-primary-invoice-fee-gap");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -182,10 +192,36 @@ async function untilQueuedBehind(blockerPid: number): Promise<number> {
   });
 
   it("the webhook and the confirm route at once, then a replay, queue one receipt", async () => {
-    const [webhook, confirmRoute] = await Promise.all([
+    // A barrier: a session holds the change's anchor lock until BOTH releases
+    // are queued on it, so they genuinely contend rather than run in turn.
+    let holderPid = 0;
+    let releaseHolder!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    const holder = prisma.$transaction(
+      async (tx) => {
+        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+        holderPid = rows[0]?.pid ?? 0;
+        await outbox.lockSupplementaryInvoiceAnchor(tx, MODIFICATION_ID);
+        locked();
+        await held;
+      },
+      { timeout: 20_000 },
+    );
+    await lockTaken;
+    const both = Promise.all([
       release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT),
       release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT),
     ]);
+    expect(await untilQueuedBehind(holderPid, 2)).toBe(2);
+    releaseHolder();
+    await holder;
+    const [webhook, confirmRoute] = await both;
     const replay = await release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT);
 
     const rows = await receiptRows();
@@ -261,5 +297,76 @@ async function untilQueuedBehind(blockerPid: number): Promise<number> {
     const result = await waiting;
     expect(result.outcome).toBe("already-queued");
     expect(await receiptRows()).toHaveLength(1);
+  });
+
+  describe("a capture landing between the primary create's read and its gap check (review round 1)", () => {
+    const INVOICE_LINES_CENTS = 30_000;
+    /** The figures the create stored at its link: it billed and recorded the booking's own 300.00. */
+    const atLink = (recordedIntents: string[] | undefined) => ({
+      xeroInvoiceId: INVOICE_ID,
+      billedChangeFeeCents: 0,
+      billedTotalCents: INVOICE_LINES_CENTS,
+      recordedChangeFeeCentsAtLink: 0,
+      primaryInvoiceCashCents: INVOICE_LINES_CENTS,
+      worth: { atBuildCents: INVOICE_LINES_CENTS, builtTotalCents: INVOICE_LINES_CENTS, atLinkCents: 38_000, markedModificationIdsAtBuild: [] },
+      ...(recordedIntents ? { paymentIntentIdsRecordedAtLink: recordedIntents } : {}),
+    });
+
+    beforeEach(async () => {
+      // The change raced the create: it settled against the primary invoice,
+      // outside the create's snapshot, and moved 80.00 - the gap's anchor.
+      await prisma.bookingModification.create({
+        data: {
+          id: MODIFICATION_ID,
+          bookingId: BOOKING_ID,
+          memberId: OWNER_ID,
+          modificationType: "GUEST_ADD",
+          previousData: {},
+          newData: { primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true } },
+          priceDiffCents: 8_000,
+        },
+      });
+    });
+
+    async function gapRows() {
+      return prisma.xeroSyncOperation.findMany({
+        where: { localModel: "BookingModification", localId: MODIFICATION_ID, queueType: "SUPPLEMENTARY_INVOICE" },
+        select: { requestPayload: true },
+      });
+    }
+
+    it("is recorded once, by its receipt, where the figures say the primary's cash did not cover it", async () => {
+      const result = await gapCheck.queuePrimaryInvoiceWorthGap({ bookingId: BOOKING_ID, atLink: atLink([PRIMARY_INTENT]) });
+
+      expect(result).toMatchObject({ gapCents: 8_000, cashTakenCents: 0 });
+      const gaps = await gapRows();
+      expect(gaps).toHaveLength(1);
+      expect(gaps[0]!.requestPayload).toMatchObject({ recordPayment: false, primaryInvoiceGap: true, coveredPaymentIntentIds: [] });
+      expect(await receiptRows()).toHaveLength(1);
+
+      // The capture's own release, replayed after the link: still one receipt.
+      await release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT);
+      expect(await receiptRows()).toHaveLength(1);
+    });
+
+    it("is recorded once, by the gap invoice that names it, where the figures cannot say - and its receipt stands down", async () => {
+      const result = await gapCheck.queuePrimaryInvoiceWorthGap({ bookingId: BOOKING_ID, atLink: atLink(undefined) });
+
+      expect(result).toMatchObject({ gapCents: 8_000, cashTakenCents: 8_000 });
+      const gaps = await gapRows();
+      expect(gaps[0]!.requestPayload).toMatchObject({
+        recordPayment: true,
+        coveredPaymentIntentIds: [CHANGE_INTENT],
+        coveredCaptureCents: { [CHANGE_INTENT]: 8_000 },
+      });
+      expect(await receiptRows()).toHaveLength(0);
+
+      await expect(enqueue.enqueueAdditionalCaptureReceiptOperation(CHANGE_INTENT)).resolves.toEqual({
+        outcome: "not-eligible",
+        reason: "recorded-by-supplementary-invoice",
+      });
+      expect((await release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT)).outcome).toBe("none-queued");
+      expect(await receiptRows()).toHaveLength(0);
+    });
   });
 });

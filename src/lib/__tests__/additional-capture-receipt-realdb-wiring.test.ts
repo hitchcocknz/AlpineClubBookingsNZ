@@ -25,5 +25,7 @@ describe("the change capture receipt proof stays wired into CI (#3953)", () => {
     expect(suite).toContain("the webhook and the confirm route at once, then a replay, queue one receipt");
     expect(suite).toContain("many enqueues at once make one row");
     expect(suite).toContain("queues behind a session holding the change's supplementary-invoice anchor lock");
+    expect(suite).toContain("is recorded once, by its receipt, where the figures say the primary's cash did not cover it");
+    expect(suite).toContain("is recorded once, by the gap invoice that names it, where the figures cannot say");
   });
 });
