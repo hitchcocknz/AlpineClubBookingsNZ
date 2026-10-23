@@ -1836,11 +1836,17 @@ describe("payment intent routes", () => {
     expect(await res.json()).toEqual(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY);
     expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
 
-    // Another booking's intent is never looked into: a plain 400, as before.
+    // Another booking's intent is never looked into: a plain 400, as before -
+    // even though a superseded row would claim it, so only the metadata guard
+    // stands between this and the refunding body.
     mockGetPaymentIntent.mockResolvedValue({ id: "pi_stale", amount: 12500, status: "succeeded", metadata: { bookingId: "booking-2" } });
-    mockPrisma.paymentRecoveryOperation.findFirst.mockReset().mockResolvedValue(null);
-    const other = await request();
-    expect(other.status).toBe(400);
+    mockPrisma.paymentRecoveryOperation.findFirst.mockReset().mockResolvedValue({ id: "op-superseded-refund" });
+    try {
+      const other = await request();
+      expect(other.status).toBe(400);
+    } finally {
+      mockPrisma.paymentRecoveryOperation.findFirst.mockReset().mockResolvedValue(null);
+    }
   });
 
   it("#4300: answers the superseded body when the settle's own check (under lock(1)) refuses the capture", async () => {

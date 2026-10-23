@@ -7,7 +7,13 @@
  * module so a suite can stand in for `readSupersededCaptureHolds` (an import
  * across modules) while this composition stays real.
  */
-import { PaymentSource, PaymentTransactionKind, type Prisma } from "@prisma/client";
+import {
+  PaymentRecoveryOperationStatus,
+  PaymentRecoveryOperationType,
+  PaymentSource,
+  PaymentTransactionKind,
+  type Prisma,
+} from "@prisma/client";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { staleIntentAction } from "@/lib/stale-intent-action";
@@ -38,6 +44,13 @@ export type SupersededOwnership = {
    * is partly going back.
    */
   owns(paymentIntentId: string, options?: { anyOwedBack?: boolean }): Promise<boolean>;
+  /**
+   * #4300: is the money of a capture it owns already on its way back - a
+   * superseded refund row not SUCCEEDED, or open rows owing it back - rather
+   * than named only by a cancel row the worker has yet to hand off? What a
+   * saved-card charge asks before it charges beside such a capture.
+   */
+  returning(paymentIntentId: string): Promise<boolean>;
 };
 
 /**
@@ -68,6 +81,16 @@ export async function readSupersededOwnership(
     : { holdsForMember: new Set<string>(), owedBackAtAll: new Set<string>() };
   return {
     holdsForMember,
+    returning: async (paymentIntentId) =>
+      owedBackAtAll.has(paymentIntentId) ||
+      (await tx.paymentRecoveryOperation.findFirst({
+        where: {
+          paymentIntentId,
+          type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
+        select: { id: true },
+      })) !== null,
     owns: async (paymentIntentId, options) =>
       holdsForMember.has(paymentIntentId) ||
       (options?.anyOwedBack === true && owedBackAtAll.has(paymentIntentId)) ||

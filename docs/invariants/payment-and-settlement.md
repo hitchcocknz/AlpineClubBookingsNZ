@@ -140,7 +140,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   outcome `superseded_capture`, never a throw. Nothing confirmed or invoiced;
   the capture is handed off and the unmuteable
   `admin-superseded-capture-refused` alert sent, worded by booking status.
-  The saved-card doors release their claim.
+  The saved-card doors release their claim; the next attempt charges once the
+  superseded refund is under way, and waits until then.
 - **The doors ask first** (`queueSupersededPaymentIntentRefundRecovery`, given
   the intent; a lost claim asks the reading again): the webhook,
   `confirm-payment` (also for a captured intent of the booking its pointer

@@ -85,6 +85,7 @@ describe("POST /api/pay/[token]/payment-intent repayment response", () => {
     });
     expect(h.createPaymentIntentForPaymentLink).toHaveBeenCalledWith(
       "public-token",
+      { paidPaymentIntentId: null },
     );
     expect(JSON.stringify(body)).not.toContain(
       "secret_refunded_must_not_be_reused",
@@ -103,6 +104,18 @@ describe("POST /api/pay/[token]/payment-intent repayment response", () => {
       { params: Promise.resolve({ token: "public-token" }) },
     );
     expect(await response.json()).toEqual({ clientSecret: "secret_repay", paymentIntentId: "pi_repay", previousPaymentRefunding: true });
+  });
+
+  it("#4300: passes on the intent the payer says they have just paid, and nothing else from the body", async () => {
+    h.createPaymentIntentForPaymentLink.mockResolvedValue({ type: "clientSecret", clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" });
+    await POST(
+      new NextRequest("http://localhost/api/pay/public-token/payment-intent", {
+        method: "POST",
+        body: JSON.stringify({ paidPaymentIntentId: "pi_paid", bookingId: "someone-else" }),
+      }),
+      { params: Promise.resolve({ token: "public-token" }) },
+    );
+    expect(h.createPaymentIntentForPaymentLink).toHaveBeenCalledWith("public-token", { paidPaymentIntentId: "pi_paid" });
   });
 
   it("#4300: a superseded capture the settle refused answers the shared refunding body", async () => {

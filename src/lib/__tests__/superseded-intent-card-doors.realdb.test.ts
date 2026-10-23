@@ -618,6 +618,51 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
     await expectFreshPaymentSettles(await payStep(), superseded, confirm);
   });
 
+  describe("a saved-card charge beside a superseded capture (the released claim's next attempt)", () => {
+    async function nextChargeAttempt() {
+      const { beginSavedCardChargeAttempt, SAVED_CARD_CHARGE_REASON } = await import("@/lib/saved-card-charge-attempt");
+      const payment = await prisma.payment.findUniqueOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
+      // Under the claim's lock(1), as every saved-card door begins its attempt.
+      return prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+        return beginSavedCardChargeAttempt(tx, {
+          paymentId: payment.id,
+          bookingId: BOOKING_ID,
+          amountCents: PRICE_CENTS,
+          card: { stripePaymentMethodId: "pm_race_4300_saved" },
+          reason: SAVED_CARD_CHARGE_REASON.cron,
+        });
+      });
+    }
+
+    it("once the settle refused it and handed it to its refund, the next attempt charges as usual", async () => {
+      const superseded = await mintOnPayStep();
+      stripe.failCancel = true;
+      await editAwayAndBack();
+      capture(superseded);
+      const { markBookingPaymentSucceeded } = await import("@/lib/payment-reconciliation");
+      expect(
+        (await markBookingPaymentSucceeded({ bookingId: BOOKING_ID, paymentIntentId: superseded, amountCents: PRICE_CENTS, paymentMethodId: "pm_race_4300", format: CLUB_FORMAT_TEST })).outcome,
+      ).toBe("superseded_capture");
+      expect((await supersededOperations(superseded)).map((row) => row.type)).toContain(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
+
+      await expect(nextChargeAttempt()).resolves.toMatchObject({ kind: "fresh" });
+    });
+
+    it("named only by its cancel row (no refund under way yet), the next attempt waits instead of charging on top", async () => {
+      const superseded = await mintOnPayStep();
+      stripe.failCancel = true;
+      await editAwayAndBack();
+      capture(superseded);
+      // The capture is on the ledger, as a webhook or a door recording it leaves it.
+      const { upsertPaymentIntentTransaction } = await import("@/lib/payment-transactions");
+      const payment = await prisma.payment.findUniqueOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
+      await upsertPaymentIntentTransaction({ paymentId: payment.id, kind: "PRIMARY", paymentIntentId: superseded, amountCents: PRICE_CENTS, status: "SUCCEEDED", paymentMethodId: "pm_race_4300" });
+
+      await expect(nextChargeAttempt()).rejects.toMatchObject({ why: "superseded_capture_returning", paymentIntentId: superseded });
+    });
+  });
+
   for (const door of ["the pay step", "the /pay link"] as const) {
     it(`${door} never hands out a superseded intent's secret again once the price is back at its amount`, async () => {
       const token = door === "the /pay link" ? await issueLink() : null;

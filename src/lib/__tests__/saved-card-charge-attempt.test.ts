@@ -224,6 +224,16 @@ const { ledger, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("../prisma", () => ({ prisma: ledger }));
+// #4300 (`INV-PAY-138`): which captures the superseded machinery owns, and
+// which of those it is already sending back; none unless a case says so.
+const superseded = vi.hoisted(() => ({ owned: new Set<string>(), returning: new Set<string>() }));
+vi.mock("@/lib/superseded-capture-ownership", () => ({
+  readSupersededOwnership: async () => ({
+    holdsForMember: new Set<string>(),
+    owns: async (intent: string) => superseded.owned.has(intent),
+    returning: async (intent: string) => superseded.returning.has(intent),
+  }),
+}));
 vi.mock("../stripe", () => ({
   chargePaymentMethod: (...args: unknown[]) => mocks.chargePaymentMethod(...args),
   getPaymentIntent: (...args: unknown[]) => mocks.getPaymentIntent(...args),
@@ -523,6 +533,30 @@ describe("beginSavedCardChargeAttempt", () => {
       since: capturedAt,
     });
     expect(ledger.paymentTransaction.create).not.toHaveBeenCalled();
+  });
+
+  describe("#4300 (INV-PAY-138): a capture the superseded machinery owns", () => {
+    beforeEach(() => {
+      superseded.owned.clear();
+      superseded.returning.clear();
+      ledger.seed({ paymentId: PAYMENT, status: PaymentStatus.SUCCEEDED, stripePaymentIntentId: "pi_superseded", reference: null });
+    });
+
+    it("already going back: is not 'money already taken' - a fresh attempt charges the booking", async () => {
+      superseded.owned.add("pi_superseded");
+      superseded.returning.add("pi_superseded");
+      await expect(begin()).resolves.toMatchObject({ kind: "fresh" });
+    });
+
+    it("named only by its cancel row (no refund under way yet): refused, wait for the refund", async () => {
+      superseded.owned.add("pi_superseded");
+      await expect(begin()).rejects.toMatchObject({ name: "SavedCardChargeRefusedError", why: "superseded_capture_returning", paymentIntentId: "pi_superseded" });
+      expect(ledger.paymentTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it("CONTROL: not the machinery's - still captured_primary_exists", async () => {
+      await expect(begin()).rejects.toMatchObject({ why: "captured_primary_exists" });
+    });
   });
 
   it("refuse: PARTIALLY_REFUNDED still holds cash and refuses; a fully REFUNDED row is #1765 history and a fresh attempt proceeds", async () => {

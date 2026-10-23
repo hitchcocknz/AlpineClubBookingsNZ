@@ -1192,6 +1192,40 @@ describe("createPaymentIntentForPaymentLink", () => {
     }
   });
 
+  it("#4300: the payer's just-paid intent, the pointer since moved past it, is said to be going back - this booking's only", async () => {
+    const primeMovedPointer = (metadataBookingId: string) => {
+      mockedFindUnique.mockResolvedValue(
+        baseLink({ booking: baseBooking({ payment: { id: "pay-1", stripePaymentIntentId: "pi_fresh", status: PaymentStatus.PENDING } }) }) as never,
+      );
+      mockedGetPaymentIntent.mockImplementation(async (id: string) =>
+        (id === "pi_fresh"
+          ? { id: "pi_fresh", status: "requires_payment_method", client_secret: "secret_fresh", currency: "nzd", amount: 12000, payment_method: null }
+          : { id: "pi_paid", status: "succeeded", amount: 12000, payment_method: "pm_1", metadata: { bookingId: metadataBookingId } }) as never,
+      );
+      // The paid intent's superseded refund row owns it (the fresh one has none).
+      vi.mocked(prisma.paymentRecoveryOperation.findFirst).mockImplementation((async (args: { where: { paymentIntentId?: string; type?: unknown } }) =>
+        args.where.paymentIntentId === "pi_paid" && typeof args.where.type === "object" ? { id: "op-refund" } : null) as never);
+    };
+    try {
+      primeMovedPointer("booking-1");
+      await expect(createPaymentIntentForPaymentLink(RAW_TOKEN, { paidPaymentIntentId: "pi_paid" })).resolves.toEqual({
+        type: "clientSecret",
+        clientSecret: "secret_fresh",
+        paymentIntentId: "pi_fresh",
+        previousPaymentRefunding: true,
+      });
+      primeMovedPointer("booking-2");
+      await expect(createPaymentIntentForPaymentLink(RAW_TOKEN, { paidPaymentIntentId: "pi_paid" })).resolves.toEqual({
+        type: "clientSecret",
+        clientSecret: "secret_fresh",
+        paymentIntentId: "pi_fresh",
+      });
+    } finally {
+      vi.mocked(prisma.paymentRecoveryOperation.findFirst).mockReset().mockResolvedValue(null);
+      mockedGetPaymentIntent.mockReset();
+    }
+  });
+
   it("#4300: a capture the settle refuses as superseded is reported as refunding, never as paid", async () => {
     mockedFindUnique.mockResolvedValue(
       baseLink({

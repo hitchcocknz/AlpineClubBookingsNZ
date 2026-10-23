@@ -157,6 +157,8 @@ export default function PayByLinkPage() {
       if (outcome.context) setContext(outcome.context);
       setPaymentComplete(true);
     } else if (outcome.kind === "fresh") {
+      // The refreshed context: "Amount due" and the form match the new intent.
+      if (outcome.context) setContext(outcome.context);
       setPreviousPaymentRefunding(outcome.previousPaymentRefunding);
       setClientSecret(outcome.clientSecret);
     } else setPaymentRecovery(outcome.recovery);

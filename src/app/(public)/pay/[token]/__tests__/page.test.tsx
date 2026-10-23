@@ -276,6 +276,86 @@ describe("#4300 (INV-PAY-138): a superseded earlier payment on the /pay link", (
     expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/payment-intent"))).toHaveLength(1);
   });
 
+  it("on a fresh secret after a card success, the amount shown is the new one (100 -> 120)", async () => {
+    const at100 = { ...payableContext, payable: { ...payableContext.payable, amountCents: 10000 } };
+    const at120 = { ...payableContext, payable: { ...payableContext.payable, amountCents: 12000 } };
+    installIntentSequence(
+      [
+        { status: 200, body: { clientSecret: "secret_stale", paymentIntentId: "pi_stale" } },
+        { status: 200, body: { clientSecret: "secret_new", paymentIntentId: "pi_new", previousPaymentRefunding: true } },
+      ],
+      [at100, at120],
+    );
+    render(<PayByLinkPage />);
+    expect(await screen.findByText("Amount due: $100.00")).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    await waitFor(() => expect(screen.getByTestId("stripe-provider")).toHaveAttribute("data-client-secret", "secret_new"));
+    expect(screen.getByText("Amount due: $120.00")).toBeInTheDocument();
+    expect(screen.queryByText("Amount due: $100.00")).toBeNull();
+  });
+
+  it("the going-back notice is the server's word alone: a different fresh intent without the flag shows none", async () => {
+    installIntentSequence([
+      { status: 200, body: { clientSecret: "secret_stale", paymentIntentId: "pi_stale" } },
+      { status: 200, body: { clientSecret: "secret_new", paymentIntentId: "pi_new" } },
+    ]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    await waitFor(() => expect(screen.getByTestId("stripe-provider")).toHaveAttribute("data-client-secret", "secret_new"));
+    expect(screen.getByTestId("previous-payment-refunding").textContent).toBe("");
+  });
+
+  it("tells the route which intent was just paid", async () => {
+    const fetchMock = installIntentSequence([
+      { status: 200, body: { clientSecret: "secret_stale", paymentIntentId: "pi_stale" } },
+      { status: 200, body: { alreadyPaid: true } },
+    ]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+    await screen.findByText(/your payment is complete/i);
+    const second = fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/payment-intent"))[1]!;
+    expect(JSON.parse(String((second[1] as RequestInit).body))).toEqual({ paidPaymentIntentId: "pi_paid" });
+  });
+
+  it("a 410 because the webhook settled between the two reads shows the paid page, read once more", async () => {
+    const paidContext = {
+      ...payableContext,
+      state: "paid",
+      narrative: { state: "paid", headline: "Payment received", message: "Thanks Riley — we've received your payment.", nextStep: "Nothing more to do." },
+    };
+    installIntentSequence(
+      [
+        { status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } },
+        { status: 410, body: { error: "This payment link has already been used." } },
+      ],
+      [payableContext, payableContext, paidContext],
+    );
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    expect(await screen.findByText("Payment received")).toBeInTheDocument();
+    expect(screen.queryByText("Payment received - check booking status")).toBeNull();
+  });
+
+  it("the paid intent handed back as if unpaid is never a fresh form: 'check booking status'", async () => {
+    installIntentSequence([
+      { status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } },
+      { status: 200, body: { clientSecret: "secret_paid", paymentIntentId: "pi_paid" } },
+    ]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    expect(await screen.findByText("Payment received - check booking status")).toBeInTheDocument();
+    expect(screen.queryByTestId("stripe-provider")).toBeNull();
+  });
+
   it("keeps the notice's live region mounted, and fills it only when the earlier payment is going back", async () => {
     installIntentSequence([{ status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } }]);
     render(<PayByLinkPage />);

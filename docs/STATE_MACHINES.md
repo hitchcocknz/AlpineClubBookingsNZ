@@ -292,7 +292,11 @@ exception (#4300, `INV-PAY-138`): a charge the settle refuses as
 back to the card, so the door releases the claim like a failed charge
 (`PENDING`, hold restored, beds reconciled) for the next charge, and admins get
 the `admin-superseded-capture-refused` alert. The cron and
-`charge-saved-method` do the same.
+`charge-saved-method` do the same. The next attempt
+(`beginSavedCardChargeAttempt`) does not count that capture as money already
+taken once its superseded refund is under way, so it charges as usual; while
+only its cancel row names it, it refuses as `superseded_capture_returning`
+(wait for the refund), never charging on top.
 
 Split-booking guest-portion settlement with no card on file (#1967). A split
 non-member child (#738) is normally auto-charged at its hold deadline to the

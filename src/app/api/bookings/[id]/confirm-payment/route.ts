@@ -19,6 +19,7 @@ import { hasAdminAccess } from "@/lib/access-roles";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
 import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
+import { isSupersededCaptureOfBooking } from "@/lib/superseded-paid-intent";
 import { PaymentStatus } from "@prisma/client";
 import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
@@ -94,8 +95,7 @@ export async function POST(
     if (payment.stripePaymentIntentId !== paymentIntentId) {
       // #4300 (`INV-PAY-138`): the pointer moved on to a fresh intent, but this
       // one is the booking's own and captured: a superseded capture is going back.
-      const stray = await getPaymentIntent(paymentIntentId).catch(() => null);
-      if (stray?.status === "succeeded" && stray.metadata?.bookingId === bookingId && (await queueSupersededPaymentIntentRefundRecovery(stray))) {
+      if (await isSupersededCaptureOfBooking(paymentIntentId, bookingId)) {
         return NextResponse.json(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, { status: 409 });
       }
       return NextResponse.json(

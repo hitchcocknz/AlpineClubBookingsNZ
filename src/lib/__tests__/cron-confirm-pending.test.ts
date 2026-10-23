@@ -35,6 +35,13 @@ const mockCancelPaymentIntentIfCancellableWithResult = vi.fn();
 const cancellationLedger = vi.hoisted(() => ({
   postCancellationLedgerLines: vi.fn<(input: unknown) => Promise<void>>(async () => {}),
 }));
+// #4300 (`INV-PAY-138`): step (b) asks whether the superseded machinery owns a
+// captured row; nothing here is superseded unless a case says so.
+vi.mock("@/lib/superseded-capture-ownership", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/superseded-capture-ownership")),
+  readSupersededOwnership: async () => ({ holdsForMember: new Set<string>(), owns: async () => false, returning: async () => false }),
+}));
+
 vi.mock("@/lib/booking-ledger-cancellation-sync", () => cancellationLedger);
 
 vi.mock("../stripe", () => ({

@@ -21,11 +21,13 @@ import { readSupersededOwnership, supersededMachineryOwnsCapture } from "@/lib/s
 
 const captures = [{ stripePaymentIntentId: "pi_a", amountCents: 10000, refundedAmountCents: 0 }];
 const findMany = vi.fn();
-const tx = { paymentTransaction: { findMany } } as never;
+const recoveryFindFirst = vi.fn();
+const tx = { paymentTransaction: { findMany }, paymentRecoveryOperation: { findFirst: recoveryFindFirst } } as never;
 
 beforeEach(() => {
   vi.clearAllMocks();
   findMany.mockResolvedValue(captures);
+  recoveryFindFirst.mockResolvedValue(null);
   mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set() });
   mocks.findLiveSupersededIntentOperation.mockResolvedValue(null);
 });
@@ -70,6 +72,28 @@ describe("readSupersededOwnership", () => {
     await expect((await readSupersededOwnership(tx, null)).owns("pi_a")).resolves.toBe(true);
     expect(findMany).not.toHaveBeenCalled();
     expect(mocks.readSupersededCaptureHolds).not.toHaveBeenCalled();
+  });
+});
+
+describe("SupersededOwnership.returning (#4300: may a saved-card charge go ahead beside it?)", () => {
+  it("is true while a superseded refund row not SUCCEEDED names the capture", async () => {
+    recoveryFindFirst.mockResolvedValue({ id: "op-refund" });
+    await expect((await readSupersededOwnership(tx, "pay-1")).returning("pi_a")).resolves.toBe(true);
+    expect(recoveryFindFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ paymentIntentId: "pi_a", type: "REFUND_SUPERSEDED_PAYMENT", status: { not: "SUCCEEDED" } }) }),
+    );
+  });
+
+  it("is true while open rows owe it back", async () => {
+    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set(["pi_a"]) });
+    await expect((await readSupersededOwnership(tx, "pay-1")).returning("pi_a")).resolves.toBe(true);
+  });
+
+  it("is false when only a cancel row names it - no refund under way yet", async () => {
+    mocks.findLiveSupersededIntentOperation.mockResolvedValue({ id: "op-cancel" });
+    const ownership = await readSupersededOwnership(tx, "pay-1");
+    await expect(ownership.owns("pi_a")).resolves.toBe(true);
+    await expect(ownership.returning("pi_a")).resolves.toBe(false);
   });
 });
 

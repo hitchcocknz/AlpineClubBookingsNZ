@@ -141,6 +141,7 @@ import {
 
 import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
+import { readSupersededOwnership } from "@/lib/superseded-capture-ownership";
 import { isCapturedTransactionStatus } from "./payment-transactions";
 
 /**
@@ -278,12 +279,17 @@ export type SavedCardChargeAttempt =
  *
  * - `captured_primary_exists`: a PRIMARY row on this payment already holds
  *   captured money while the booking is somehow still PENDING.
+ * - `superseded_capture_returning` (#4300, `INV-PAY-138`): the captured row is
+ *   the superseded machinery's, but no superseded refund is under way for it
+ *   yet (only its cancel row names it). Wait for the refund; charging on top
+ *   would take the price twice if the refund never starts.
  * - `attempt_key_expired`: an earlier attempt's POST never answered and its key
  *   is now past the window in which Stripe would replay rather than re-execute
  *   it (`SAVED_CARD_CHARGE_KEY_RESEND_WINDOW_MS`).
  */
 export type SavedCardChargeRefusal =
   | "captured_primary_exists"
+  | "superseded_capture_returning"
   | "attempt_key_expired";
 
 const REFUSAL_MESSAGES: Record<
@@ -292,6 +298,8 @@ const REFUSAL_MESSAGES: Record<
 > = {
   captured_primary_exists: ({ paymentIntentId }) =>
     `A captured charge${paymentIntentId ? ` (${paymentIntentId})` : ""} is already recorded on this booking's payment while the booking is still pending, so no new charge was attempted. An administrator needs to check the payment and either settle the booking or refund the charge by hand.`,
+  superseded_capture_returning: ({ paymentIntentId }) =>
+    `A card payment${paymentIntentId ? ` (${paymentIntentId})` : ""} on this booking was made on a payment that a later change replaced, and it is being returned to the card, so no new charge was attempted yet. Nothing needs doing by hand: the next attempt charges the booking once that refund has started. If it has not started within a day, check the Payments page.`,
   attempt_key_expired: () =>
     "An earlier charge attempt for this booking was started more than 23 hours ago and Stripe never confirmed whether it went through. Re-sending it now would be a new charge, so no charge was attempted. An administrator needs to check Stripe for a payment on this booking: if there is one, resend its payment_intent.succeeded event from the Stripe dashboard so it is recorded; if there is none, ask the member to save their card again, which closes this attempt and starts a fresh one.",
 };
@@ -555,11 +563,35 @@ export async function beginSavedCardChargeAttempt(
   });
 
   // (b) Money already taken. A fully REFUNDED row is history, not cash.
-  const captured = rows.find(
+  // #4300 (`INV-PAY-138`): nor is a capture the superseded machinery owns and is
+  // already sending back (a superseded refund under way, or open rows owing it
+  // back): it never settles this booking, which still owes - charge as usual. One
+  // only a cancel row names has no refund under way yet: wait for it, never
+  // charge on top. Read under the claim's lock(1).
+  const capturedRows = rows.filter(
     (row) =>
       isCapturedTransactionStatus(row.status) &&
       row.amountCents - row.refundedAmountCents > 0
   );
+  const ownership = capturedRows.some((row) => row.stripePaymentIntentId)
+    ? await readSupersededOwnership(tx, paymentId)
+    : null;
+  let captured: AttemptLedgerRow | undefined;
+  for (const row of capturedRows) {
+    const intent = row.stripePaymentIntentId;
+    if (!intent || !ownership || !(await ownership.owns(intent, { anyOwedBack: true }))) {
+      captured = row;
+      break;
+    }
+    if (!(await ownership.returning(intent))) {
+      throw new SavedCardChargeRefusedError({
+        why: "superseded_capture_returning",
+        bookingId,
+        since: row.updatedAt,
+        paymentIntentId: intent,
+      });
+    }
+  }
   if (captured) {
     throw new SavedCardChargeRefusedError({
       why: "captured_primary_exists",

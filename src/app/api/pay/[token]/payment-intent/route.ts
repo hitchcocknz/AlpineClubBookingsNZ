@@ -28,7 +28,10 @@ export async function POST(
   const { token } = await params;
 
   try {
-    const result = await createPaymentIntentForPaymentLink(token);
+    // #4300: an optional body naming the intent the payer has just paid.
+    const body = (await request.json().catch(() => null)) as { paidPaymentIntentId?: unknown } | null;
+    const paidPaymentIntentId = typeof body?.paidPaymentIntentId === "string" ? body.paidPaymentIntentId : null;
+    const result = await createPaymentIntentForPaymentLink(token, { paidPaymentIntentId });
 
     if (result.type === "alreadyPaid") {
       return NextResponse.json({ alreadyPaid: true });

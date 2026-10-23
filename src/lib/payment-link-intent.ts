@@ -19,6 +19,7 @@ import logger from "@/lib/logger";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
 import { supersededIntentReuseRefusal } from "@/lib/superseded-capture-ownership";
+import { isSupersededCaptureOfBooking } from "@/lib/superseded-paid-intent";
 import { attachMintedCardIntent } from "@/lib/card-intent-attach";
 import { isRefundedPaymentIntentHistory } from "@/lib/card-intent-retirement";
 import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
@@ -130,7 +131,13 @@ export type PaymentLinkIntentResult =
  * as it does for session payments and webhooks.
  */
 export async function createPaymentIntentForPaymentLink(
-  token: string
+  token: string,
+  /**
+   * #4300: the intent the payer has just paid on this page, if any. When the
+   * booking's pointer has moved past it and it is the superseded machinery's,
+   * the fresh secret goes back with `previousPaymentRefunding`.
+   */
+  options: { paidPaymentIntentId?: string | null } = {},
 ): Promise<PaymentLinkIntentResult> {
   // The club's format (#3565), resolved once, before any transaction or
   // lock below — never per amount and never inside a transaction.
@@ -175,6 +182,11 @@ export async function createPaymentIntentForPaymentLink(
   // Stripe idempotency key disjoint from every non-repayment generation.
   let repaySupersededIntentId: string | null = null;
   let previousPaymentRefunding = false;
+  // #4300: the payer's just-paid intent, the pointer since moved past it, going back.
+  const paidIntentGoingBack = async (returnedIntentId: string) =>
+    !!options.paidPaymentIntentId &&
+    options.paidPaymentIntentId !== returnedIntentId &&
+    (await isSupersededCaptureOfBooking(options.paidPaymentIntentId, booking.id).catch(() => false));
   let reuseRefusal: "mint" | "wait" | null = null;
   if (booking.payment?.stripePaymentIntentId) {
     const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
@@ -293,6 +305,7 @@ export async function createPaymentIntentForPaymentLink(
         type: "clientSecret",
         clientSecret: existingIntent.client_secret,
         paymentIntentId: existingIntent.id,
+        ...((await paidIntentGoingBack(existingIntent.id)) ? { previousPaymentRefunding: true as const } : {}),
       };
     }
   }
@@ -503,6 +516,6 @@ export async function createPaymentIntentForPaymentLink(
     type: "clientSecret",
     clientSecret: paymentIntent.client_secret,
     paymentIntentId: paymentIntent.id,
-    ...(previousPaymentRefunding ? { previousPaymentRefunding: true as const } : {}),
+    ...(previousPaymentRefunding || (await paidIntentGoingBack(paymentIntent.id)) ? { previousPaymentRefunding: true as const } : {}),
   };
 }

@@ -42,6 +42,13 @@ const mocks = vi.hoisted(() => ({
   hostingCoverageReevaluationFindMany: vi.fn().mockResolvedValue([]),
 }));
 
+// #4300 (`INV-PAY-138`): step (b) asks whether the superseded machinery owns a
+// captured row; nothing here is superseded unless a case says so.
+vi.mock("@/lib/superseded-capture-ownership", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/superseded-capture-ownership")),
+  readSupersededOwnership: async () => ({ holdsForMember: new Set<string>(), owns: async () => false, returning: async () => false }),
+}));
+
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
 
 vi.mock("@/lib/prisma", () => ({
