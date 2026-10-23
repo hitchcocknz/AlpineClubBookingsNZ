@@ -98,7 +98,7 @@ export function readAdditionalCaptureReceiptPayload(
  * queued payload when it sends, so the names survive the send.
  */
 export const GAP_COVERED_INTENTS_KEY = "coveredPaymentIntentIds";
-export const GAP_COVERED_CENTS_KEY = "coveredCaptureCents";
+const GAP_COVERED_CENTS_KEY = "coveredCaptureCents";
 
 export function primaryInvoiceGapPayload(
   gap: { coveredCaptures: ReadonlyArray<{ paymentIntentId: string; cents: number }> } | undefined,
