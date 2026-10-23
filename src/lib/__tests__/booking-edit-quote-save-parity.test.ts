@@ -280,7 +280,7 @@ function preCheckInExpectedDiff(
   edit: keyof typeof PRE_CHECK_IN_EDITS,
 ): number {
   const { total, values } = SHAPES[shape];
-  const unattached = total - values.reduce((sum, cents) => sum + cents, 0);
+  const unattached = total - values.reduce<number>((sum, cents) => sum + cents, 0);
   switch (edit) {
     case "extend":
       return 4 * RATE;
