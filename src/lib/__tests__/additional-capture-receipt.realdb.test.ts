@@ -54,6 +54,7 @@ let release: typeof import("@/lib/xero-supplementary-invoice-late-capture");
 let enqueue: typeof import("@/lib/additional-capture-receipt-enqueue");
 let outbox: typeof import("@/lib/xero-operation-outbox");
 let gapCheck: typeof import("@/lib/xero-primary-invoice-fee-gap");
+let invoiceKey: typeof import("@/lib/xero-booking-invoice-key");
 
 async function receiptRows() {
   return prisma.xeroSyncOperation.findMany({
@@ -148,6 +149,7 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     enqueue = await import("@/lib/additional-capture-receipt-enqueue");
     outbox = await import("@/lib/xero-operation-outbox");
     gapCheck = await import("@/lib/xero-primary-invoice-fee-gap");
+    invoiceKey = await import("@/lib/xero-booking-invoice-key");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -350,7 +352,26 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     });
 
     it("is recorded once, by the gap invoice that names it, where the figures cannot say - and its receipt stands down", async () => {
-      const result = await gapCheck.queuePrimaryInvoiceWorthGap({ bookingId: BOOKING_ID, atLink: atLink(undefined) });
+      // The create's own row, with the figures it stored at its link, so the
+      // gap invoice is known to bill this change: only its naming the capture
+      // stands the receipt down.
+      const figures = atLink(undefined);
+      const key = invoiceKey.buildXeroBookingInvoiceCorrelationKey(BOOKING_ID);
+      const create = await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND",
+          entityType: "INVOICE",
+          operationType: "CREATE",
+          localModel: "Payment",
+          localId: PAYMENT_ID,
+          status: "SUCCEEDED",
+          correlationKey: key,
+          idempotencyKey: key,
+          xeroObjectId: INVOICE_ID,
+          requestPayload: { primaryInvoiceBilledFee: figures },
+        },
+      });
+      const result = await gapCheck.queuePrimaryInvoiceWorthGap({ bookingId: BOOKING_ID, atLink: figures, figuresOperationId: create.id });
 
       expect(result).toMatchObject({ gapCents: 8_000, cashTakenCents: 8_000 });
       const gaps = await gapRows();
