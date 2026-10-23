@@ -220,7 +220,7 @@ function capturesOnPayment() {
           paymentIntentId: ARRIVING_PI,
           amountCents: PRICE_CENTS,
           // #4285: read only when nothing else holds money, never in this proof.
-          isOwedAmount: async () => true,
+          arrivingAlreadyCaptured: true,
         }),
       );
       expect(verdict.verdict).toBe("keep_unrecorded_settler");

@@ -1936,8 +1936,8 @@ describe("#4285 a capture arriving on a COMPLETED booking is judged as on a PAID
   });
 
   // #4285 review: with no record and nothing else holding money, a lone capture
-  // keeps silently only at what the booking owes; at any other amount it may be a
-  // stray on a booking no capture paid for, so it is kept and the admins told.
+  // keeps silently only as a replay of a capture already recorded; one the app
+  // never recorded before is new money - kept, and the admins told, whatever its amount.
   describe.each([BookingStatus.PAID, BookingStatus.COMPLETED])("no record, a lone capture on a %s booking", (status) => {
     const arriveAt = (amountCents: number) =>
       markBookingPaymentSucceeded({ format: CLUB_FORMAT_TEST, bookingId: "booking-1", paymentIntentId: OTHER_PI, amountCents, paymentMethodId: "pm_1" });
@@ -1946,49 +1946,43 @@ describe("#4285 a capture arriving on a COMPLETED booking is judged as on a PAID
       mocks.bookingFindUnique.mockResolvedValue({ ...makePaidBooking(), status });
     });
 
-    it("at an amount the booking does not owe: kept, nothing refunded, and the unmuteable alert names the reason", async () => {
-      primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, amountCents: 7000 })]);
+    it.each([PaymentStatus.PENDING, PaymentStatus.PROCESSING, PaymentStatus.FAILED])(
+      "never recorded before (its row was %s): kept, nothing refunded, and the unmuteable alert names it new - at the amount owed too",
+      async (priorStatus) => {
+        primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: priorStatus })]);
 
-      expect(await arriveAt(7000)).toEqual({ outcome: "duplicate_capture_kept", bookingId: "booking-1", bumpedBookingIds: [] });
-      expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
-      expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
-      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledTimes(1);
-      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentIntentId: OTHER_PI, amountCents: 7000, otherPaymentIntentId: null, otherHoldsMoney: false, reason: "amount-not-owed" }),
-        CLUB_FORMAT_TEST,
-      );
-    });
+        expect(await arriveAt(10000)).toEqual({ outcome: "duplicate_capture_kept", bookingId: "booking-1", bumpedBookingIds: [] });
+        expect(mocks.enqueueDuplicateCaptureRefundRecovery).not.toHaveBeenCalled();
+        expect(mocks.refundPaymentTransactions).not.toHaveBeenCalled();
+        expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledTimes(1);
+        expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+          expect.objectContaining({ paymentIntentId: OTHER_PI, amountCents: 10000, otherPaymentIntentId: null, otherHoldsMoney: false, reason: "new-capture" }),
+          CLUB_FORMAT_TEST,
+        );
+      },
+    );
 
-    it("at the booking's worth less its applied credit (#1641): a silent keep", async () => {
-      mocks.deriveBookingAppliedCreditCents.mockResolvedValue(3000);
+    it("a replay of the booking's only capture, already recorded: a silent keep at any amount, a later fee notwithstanding", async () => {
       primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, amountCents: 7000 })]);
 
       expect((await arriveAt(7000)).outcome).toBe("already_paid");
       expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
     });
 
-    it("at the booking's full worth with no credit applied: a silent keep", async () => {
-      primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI })]);
-
-      expect((await arriveAt(10000)).outcome).toBe("already_paid");
-      expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
-    });
-
-    it("at full worth on a booking credit paid for in full (owes nothing by card): kept and the admins told", async () => {
-      mocks.deriveBookingAppliedCreditCents.mockResolvedValue(10000);
-      primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI })]);
+    it("the guard decides on the row's status before this delivery wrote it, never after", async () => {
+      // The settle's own write turns the row SUCCEEDED before the guard runs.
+      const rows = primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: PaymentStatus.PENDING })]);
+      mocks.upsertPaymentIntentTransaction.mockImplementation(async () => {
+        rows[0]!.status = PaymentStatus.SUCCEEDED;
+      });
 
       expect((await arriveAt(10000)).outcome).toBe("duplicate_capture_kept");
-      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
-        expect.objectContaining({ reason: "amount-not-owed", otherHoldsMoney: false }),
-        CLUB_FORMAT_TEST,
-      );
     });
 
-    it("a RECORDED settler's replay at an amount the booking no longer owes is still a silent keep (rule 1)", async () => {
-      primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, amountCents: 7000 })], { settledBy: "txn-z" });
+    it("a RECORDED settler's replay is still a silent keep (rule 1)", async () => {
+      primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: PaymentStatus.PENDING })], { settledBy: "txn-z" });
 
-      expect((await arriveAt(7000)).outcome).toBe("already_paid");
+      expect((await arriveAt(10000)).outcome).toBe("already_paid");
       expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
     });
   });

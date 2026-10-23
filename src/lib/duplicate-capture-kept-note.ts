@@ -19,12 +19,13 @@
  *   reversed, or going back to the member), so it says nothing about which
  *   remaining payment to keep - or, with nothing else holding money
  *   (`otherHoldsMoney: false`), whether this payment now pays for the booking.
- * - `amount-not-owed` (#4285): no record and nothing else holds money, but this
- *   payment's amount is not what the booking owes - a stray on a booking no card
- *   capture paid for (zero cash, full credit, a group child), or a replay of an
- *   unrecorded settlement after the price changed. Always `otherHoldsMoney: false`.
+ * - `new-capture` (#4285): no record and nothing else holds money, and the app
+ *   had never recorded this payment before - new money on a booking that was
+ *   paid some other way (account credit, a zero total, a group settlement) or
+ *   whose earlier payment was refunded.
+ *   Always `otherHoldsMoney: false`.
  */
-export type DuplicateCaptureKeptReason = "not-recorded" | "settler-released" | "amount-not-owed";
+export type DuplicateCaptureKeptReason = "not-recorded" | "settler-released" | "new-capture";
 
 /** The other payment, as the alert names it. */
 function otherPaymentLabel(otherPaymentIntentId: string | null): string {
@@ -52,8 +53,8 @@ export function duplicateCaptureKeptParagraph(input: {
       return input.otherHoldsMoney === false
         ? `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell whether this payment now pays for the booking or is a duplicate, and nothing was refunded automatically.`
         : `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell which of the remaining payments to keep, and nothing was refunded automatically.`;
-    case "amount-not-owed":
-      return `${lead} The app has no record of which payment settled this booking, and this payment's amount is not what the booking owes, so it may be a stray payment on a booking paid some other way (account credit, a zero total or a group settlement) rather than the payment that paid for it. Nothing was refunded automatically.`;
+    case "new-capture":
+      return "A new card payment was recorded on this booking after it was already paid, and no card or bank payment on it holds money: the booking was paid some other way (with account credit, at a zero total, or by a group organiser), or its earlier payment was refunded, so this payment may be extra. Nothing was refunded automatically.";
   }
 }
 

@@ -42,8 +42,10 @@
  *    re-sends its own refund, which an earlier delivery decided; a released
  *    settler a live superseded-intent operation holds keeps silently. With no
  *    record and nothing else holding money, the arriving capture keeps silently
- *    only at an amount the booking owes (a replay of its only capture); at any
- *    other it is kept and the admins told (#4285, `amount-not-owed`).
+ *    only as a replay of a capture already recorded (the booking's only
+ *    capture); one never recorded before is kept and the admins told (#4285,
+ *    `new-capture`). Limit: a saved-card attempt row is written SUCCEEDED before
+ *    the settle, so its first arrival reads as a replay here.
  *
  * Every read runs under the lock(1) every caller of `markBookingPaymentSucceeded`
  * holds, so the check-then-enqueue cannot interleave with another settlement,
@@ -142,8 +144,12 @@ export async function judgeCaptureOnPaidBooking(
     recordedSettlerId: string | null;
     paymentIntentId: string;
     amountCents: number;
-    /** #4285: whether this amount is what the booking owes by card - its worth less applied credit. */
-    isOwedAmount: (amountCents: number) => Promise<boolean>;
+    /**
+     * #4285 review: the arriving capture's row was SUCCEEDED before this delivery
+     * - a replay of a capture already recorded - rather than new money. Read by
+     * the caller before it wrote the row.
+     */
+    arrivingAlreadyCaptured: boolean;
   },
 ): Promise<ArrivingCaptureVerdict> {
   const arriving = await findPaymentTransactionByIntentId({
@@ -214,14 +220,15 @@ export async function judgeCaptureOnPaidBooking(
   const arrivingOwned = duplicateRefundIntentIds.includes(input.paymentIntentId);
 
   if (!settlement) {
-    // No record and nothing else holding money: a replay of the booking's only
-    // capture at what the booking owes is a silent keep. #4285 review: at any
-    // other amount it may be a stray on a booking no capture paid for (zero cash,
-    // full credit, the $0 auto-pay, a group child) - kept, and the admins told.
+    // No record and nothing else holding money. #4285 review: a replay of a
+    // capture already recorded (the booking's only capture) is a silent keep;
+    // a capture never recorded before is new money on a booking nothing else
+    // holds money for (zero cash, full credit, the $0 auto-pay, a group child) -
+    // kept whatever its amount, and the admins told.
     if (!input.recordedSettlerId) {
-      return (await input.isOwedAmount(input.amountCents))
+      return input.arrivingAlreadyCaptured
         ? { verdict: "keep" }
-        : { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "amount-not-owed", otherHoldsMoney: false };
+        : { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "new-capture", otherHoldsMoney: false };
     }
     // #4211 review: a RECORDED settler that no longer qualifies and nothing else
     // holding money. Its own intent first: a duplicate-capture refund that owns
@@ -264,7 +271,7 @@ export async function judgeCaptureOnPaidBooking(
  * Rule 3's alert, after the commit: a card capture was kept on a PAID (or COMPLETED) booking
  * with no usable record of which payment settled it - while another payment on
  * it still holds money, beside a released settler and nothing else, or (#4285) alone
- * at an amount the booking does not owe. Its own unmuteable, delivery-locked template
+ * and never recorded before. Its own unmuteable, delivery-locked template
  * (`admin-duplicate-capture-kept`): the duplicate-capture refund's alert says a
  * refund was made or queued, and the generic payment alert says "Payment Failed"
  * and can be muted. Once a day per (booking, capture) while repeats arrive (a

@@ -1719,9 +1719,9 @@ below holds on it, the booking stays COMPLETED, and a finished stay's beds are
 not reconciled. Before #4285 any success arriving on a COMPLETED booking threw
 "not payable" (or was refused as a stale amount), a 500 Stripe retried for
 three days. With no record and nothing else holding money, a lone capture keeps
-silently only at what the booking owes by card (its worth less applied credit);
-at any other amount it is `duplicate_capture_kept` with the `amount-not-owed`
-alert. Every other status the
+silently only as a replay of one the app had already recorded (its row was
+`SUCCEEDED` before this delivery); one never recorded before is new money, kept
+whatever its amount as `duplicate_capture_kept` with the `new-capture` alert. Every other status the
 settle cannot pay from (CANCELLED, BUMPED, WAITLISTED, WAITLIST_OFFERED,
 AWAITING_REVIEW) still throws, and the webhook's stale-amount check (#1161)
 still guards an unpaid booking; it skips a PAID or COMPLETED one, whose capture

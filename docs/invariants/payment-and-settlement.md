@@ -116,8 +116,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   unmuteable `admin-duplicate-capture-kept` alert asks for a check, once a day
   per capture. An owned duplicate still re-sends its own refund.
 - **Limit:** PAID transitions no transaction settles (zero cash, full credit,
-  the $0 auto-pay, group settlement) never write it; a lone stray capture there
-  alerts unless it is what the booking owes by card (#4285).
+  the $0 auto-pay, group settlement) never write it; a lone capture there
+  alerts unless the app had already recorded it, a replay (#4285).
 - **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
   owned and owed-back readings, the arriving capture's too (#4283).
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per

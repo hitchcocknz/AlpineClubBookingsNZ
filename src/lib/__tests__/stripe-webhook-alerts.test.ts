@@ -778,7 +778,7 @@ describe("Stripe webhook Xero alerting", () => {
       discountCents: 0,
       guests: [{ id: "g1" }],
       member: { firstName: "Alice", lastName: "Example", email: "alice@example.com" },
-      payment: { status: "SUCCEEDED", stripePaymentIntentId: "pi_settled", changeFeeCents: 2500 },
+      payment: { id: "payment-1", status: "SUCCEEDED", stripePaymentIntentId: "pi_settled", changeFeeCents: 2500 },
       promoRedemption: null,
     });
     mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
@@ -797,8 +797,7 @@ describe("Stripe webhook Xero alerting", () => {
   // `outcome` is mocked here: it is the value the REAL settle returns for that
   // capture (#4285: on a COMPLETED booking as on a PAID one, `INV-PAY-043`), as
   // `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,
-  // `completed-redelivery.realdb.test.ts` prove. "refused" is the settle's own
-  // #1641 amount check throwing on a booking still payable: no #1161 alert, a 500.
+  // `completed-redelivery.realdb.test.ts` prove.
   const SETTLER = "txn-1";
   it.each([
     {
@@ -838,22 +837,16 @@ describe("Stripe webhook Xero alerting", () => {
       handed: true, outcome: "duplicate_capture_refunded",
     },
     {
-      label: "#4285 review: the intent pointer arm, no settler recorded and the pointer naming this SUCCEEDED row",
+      label: "#4285 review F7: off a paid-like booking, not the intent pointer naming this SUCCEEDED row (no settler)",
       bookingStatus: "CONFIRMED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_settled", settledByTransactionId: null },
-      handed: true, outcome: "refused",
-    },
-    {
-      label: "#4285 review: a recorded settler outranks the pointer - another row recorded, the pointer naming this one",
-      bookingStatus: "CONFIRMED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
-      payment: { stripePaymentIntentId: "pi_settled", settledByTransactionId: "txn-other" },
       handed: false, outcome: null,
     },
     {
-      label: "#4285 review: the recorded-settler arm alone, this row recorded on a booking no longer paid-like",
+      label: "#4285 review F7: off a paid-like booking, not this row recorded as the settler",
       bookingStatus: "CONFIRMED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: SETTLER },
-      handed: true, outcome: "refused",
+      handed: false, outcome: null,
     },
     {
       label: "not widened to an unpaid booking: a stale intent there is refused (#1161)",
@@ -905,15 +898,13 @@ describe("Stripe webhook Xero alerting", () => {
       payment: { id: "payment-1", status: "SUCCEEDED", changeFeeCents: 2500, ...payment },
       promoRedemption: null,
     });
-    if (outcome === "refused") mockMarkBookingPaymentSucceeded.mockRejectedValueOnce(new Error("Payment amount does not match booking total"));
-    else if (outcome) mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome, bookingId: "booking-1", bumpedBookingIds: [] });
+    if (outcome) mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome, bookingId: "booking-1", bumpedBookingIds: [] });
 
     const response = await POST(makeRequest());
 
     if (handed) {
-      // Not re-checked against the later fee: handed to the settle, which keeps or
-      // refunds it on a paid-like booking and applies its own amount check otherwise.
-      expect(response.status).toBe(outcome === "refused" ? 500 : 200);
+      // Not re-checked against the later fee: handed to the settle, which keeps or refunds it.
+      expect(response.status).toBe(200);
       expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalledWith(
         expect.objectContaining({ paymentIntentId: "pi_settled", amountCents: 15000 }),
       );

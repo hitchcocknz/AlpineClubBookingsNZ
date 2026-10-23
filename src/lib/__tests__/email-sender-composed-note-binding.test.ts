@@ -669,15 +669,16 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(alone).not.toContain("refund the other one");
     expect(alone).toContain("refund it by hand only if the booking should not be paid by it");
 
-    // #4285 review: a lone capture at an amount the booking does not owe.
+    // #4285 review: a lone capture the app had never recorded, on a booking paid some other way.
     mocks.sendUnmuteableAdminAlert.mockClear();
     await sendAdminDuplicateCaptureKeptAlert(
-      { ...alert, reason: "amount-not-owed", otherPaymentIntentId: null, otherHoldsMoney: false },
+      { ...alert, reason: "new-capture", otherPaymentIntentId: null, otherHoldsMoney: false },
       CLUB_FORMAT_TEST,
     );
     const stray = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
-    expect(stray).toContain("no other payment on it still holds money");
-    expect(stray).toContain("this payment's amount is not what the booking owes");
+    expect(stray).toContain("A new card payment was recorded on this booking after it was already paid");
+    expect(stray).toContain("the booking was paid some other way");
+    expect(stray).not.toContain("no record of which payment settled");
     expect(stray).not.toContain("refund the other one");
     expect(stray).toContain("refund it by hand only if the booking should not be paid by it");
   });

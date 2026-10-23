@@ -134,56 +134,90 @@ record of which payment settled the booking.
 
 **After upgrading.** Payments whose retries ran out before the upgrade are not
 replayed by anything. Run this read-only query against the live database (it
-writes nothing) and check each listed booking with the treasurer.
+writes nothing) and check each listed booking with the treasurer. Every booking
+it lists was paid before this release, so the app has no record of which
+payment settled it.
 
-**Deploy query (#4285).** Completed bookings with more than one card payment
-that may still hold money, beside at least one the app recorded as captured,
-leaving out a payment a duplicate-capture refund already owns or the
-superseded-payment refund is sending back:
+**Deploy query (#4285).** Completed bookings holding a card payment beside
+another payment that holds money, or holding one when no payment on the booking
+holds money (account credit, a zero total, a group organiser's settlement). A
+card payment counts unless it is fully refunded, a duplicate-capture refund is
+still sending it back, the superseded-payment refund owns it, or Stripe
+cancelled its intent:
 
 ```sql
-SELECT b.id AS "bookingId", b."checkOut", p.id AS "paymentId", p."settledByTransactionId",
-       string_agg(t."stripePaymentIntentId" || ' ' || t.status, ', ' ORDER BY t."createdAt") AS "cardPayments"
+SELECT b.id AS "bookingId", b."checkOut", p.id AS "paymentId",
+       string_agg(t.source || ' ' || coalesce(t."stripePaymentIntentId", t.id) || ' ' || t.status, ', ' ORDER BY t."createdAt") AS "payments"
 FROM "Booking" b
 JOIN "Payment" p ON p."bookingId" = b.id
 JOIN "PaymentTransaction" t ON t."paymentId" = p.id
 WHERE b.status = 'COMPLETED'
   AND t.kind = 'PRIMARY'
-  AND t.source = 'STRIPE'
-  AND t."stripePaymentIntentId" IS NOT NULL
-  AND t.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED', 'PENDING', 'PROCESSING')
+  AND (
+    t.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')
+    OR (
+      t.source = 'STRIPE'
+      AND t."stripePaymentIntentId" IS NOT NULL
+      AND t.status IN ('PENDING', 'PROCESSING', 'FAILED')
+      AND NOT EXISTS (
+        SELECT 1 FROM "PaymentRecoveryOperation" c
+        WHERE c."paymentIntentId" = t."stripePaymentIntentId"
+          AND c.type = 'CANCEL_PAYMENT_INTENT'
+          AND c.status = 'SUCCEEDED'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM "AuditLog" a
+        WHERE a."targetId" = b.id
+          AND a.action = 'booking.payment.canceled'
+          AND position('"paymentIntentId":"' || t."stripePaymentIntentId" || '"' IN a.details) > 0
+      )
+    )
+  )
   AND NOT EXISTS (
     SELECT 1 FROM "PaymentRecoveryOperation" o
     WHERE o."bookingId" = b.id
       AND o."idempotencyKey" = 'duplicate_capture_' || b.id || '_' || t."stripePaymentIntentId"
+      AND (
+        o.status = 'PROCESSING'
+        OR (o.status = 'PENDING' AND o.attempts < 5)
+        OR (o.status = 'FAILED' AND o."nextRetryAt" IS NOT NULL AND o.attempts < 5)
+      )
   )
   AND NOT EXISTS (
     SELECT 1 FROM "PaymentRecoveryOperation" s
     WHERE s."paymentIntentId" = t."stripePaymentIntentId"
       AND s.type = 'REFUND_SUPERSEDED_PAYMENT'
   )
-GROUP BY b.id, b."checkOut", p.id, p."settledByTransactionId"
-HAVING count(*) > 1
-   AND count(*) FILTER (WHERE t.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')) >= 1
+GROUP BY b.id, b."checkOut", p.id
+HAVING count(*) FILTER (WHERE t.source = 'STRIPE') >= 1
+   AND count(*) > least(count(*) FILTER (WHERE t.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')), 1)
 ORDER BY b."checkOut";
 ```
 
 **Reading it.** A refused success never reached the app's records, so the
-second payment shows as `PENDING` or `PROCESSING`, exactly like a tab the member
-opened and abandoned. Look each listed intent up in Stripe. One that Stripe
-shows as not paid needs nothing. One that Stripe shows as paid, beyond the
-payment that paid for the stay (the row `settledByTransactionId` names, where
-set), is the member's extra payment. If Stripe still offers to resend that
-payment's `payment_intent.succeeded` event to the app's webhook, resend it: the
-app now refunds it automatically, records the refund and tells the admins, as
-for any duplicate. Otherwise refund it by hand in Stripe and tell the
-treasurer: the app never recorded that payment or its refund, so any Xero
-entry for either is made by hand.
+second payment usually shows as `PENDING`, `PROCESSING` or `FAILED`, exactly
+like a tab the member opened and abandoned. Look each listed card payment up in
+Stripe. One that Stripe shows as not paid needs nothing. One that Stripe shows
+as paid, beyond the payment that paid for the stay, is the member's extra
+payment:
 
-**Limit.** The query cannot see whether Stripe captured a `PENDING` payment, so
-abandoned tabs are listed too; and a capture still owed back after a
-superseded refund Stripe failed later (#4227) is left out only by the app,
-not by the query, so such a booking may be listed with nothing to do.
+1. If Stripe still offers to resend its `payment_intent.succeeded` event
+   (Stripe keeps events for about 30 days; check in Stripe), you may resend it.
+   The app then records the payment and, because it has no record of which
+   payment settled the booking, keeps it and sends the admins its *"Booking may
+   have been paid twice — check by hand"* alert. It does not refund it.
+   Most affected events will be older than that, so step 2 is the usual path.
+2. Refund it by hand in the Stripe dashboard. The app records that refund from
+   Stripe's `charge.refunded` event and queues a Xero refund credit note for
+   it, so do not enter anything in Xero by hand; check Xero instead. Until
+   #4322 is fixed that queued credit note is wrong for a payment the app never
+   recorded as received: once it reaches Xero, delete it there if it is still
+   a draft, or void it.
+
+**Limit.** The query cannot see whether Stripe captured a payment it shows as
+`PENDING`, `PROCESSING` or `FAILED`, so abandoned tabs are listed too, as is
+an intent Stripe cancelled without the app recording it. An audit entry older than the club's audit retention is gone,
+so an intent cancelled that long ago is listed too.
 
 ### The app records which payment settled each booking (#4211)
 

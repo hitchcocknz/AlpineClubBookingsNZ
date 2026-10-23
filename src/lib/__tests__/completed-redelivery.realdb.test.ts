@@ -17,10 +17,12 @@
  * fixture writes are the booking itself, the intents' PENDING rows each tab
  * minted, a change fee recorded on the payment after the stay (as a later
  * correction would), the second tab's capture set SUCCEEDED by hand for a
- * booking paid before #4211, for such a booking clearing the record the
- * draining colour never wrote, and the second tab's row set FAILED (its
- * refund operation removed) by hand to show the deploy query
- * (`docs/UPGRADING.md`, #4285) leaves a dead intent out.
+ * booking paid before #4211, and for such a booking clearing the record the
+ * draining colour never wrote. An officer's refund in the Stripe dashboard and
+ * Stripe's decline and cancel arrive as `charge.refunded`,
+ * `payment_intent.payment_failed` and `payment_intent.canceled` through the same
+ * webhook processor, and the deploy query (`docs/UPGRADING.md`, #4285) runs
+ * exactly as the doc prints it.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -116,13 +118,13 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     }
 
     /** Stripe's `payment_intent.succeeded` for one intent, through the real webhook processor; a fresh event id each time. */
-    async function deliverWebhook(paymentIntentId: string) {
+    async function deliverWebhook(paymentIntentId: string, type = "payment_intent.succeeded") {
       webhookEventSequence += 1;
       const { processStripeWebhookEvent } = await import("@/lib/stripe-webhook-service");
       const event = {
         id: `evt_race_4285_${webhookEventSequence}`,
         object: "event",
-        type: "payment_intent.succeeded",
+        type,
         request: null,
         data: {
           object: {
@@ -130,19 +132,61 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
             object: "payment_intent",
             amount: PRICE_CENTS,
             currency: "nzd",
-            status: "succeeded",
+            status: type === "payment_intent.succeeded" ? "succeeded" : type === "payment_intent.canceled" ? "canceled" : "requires_payment_method",
             payment_method: "pm_race_4285",
             metadata: { bookingId: BOOKING_ID },
             latest_charge: null,
+            cancellation_reason: null,
+            last_payment_error: null,
           },
         },
       } as unknown as import("stripe").Stripe.Event;
       return processStripeWebhookEvent(event);
     }
 
+    async function answeredWith(paymentIntentId: string, type: string) {
+      return (await deliverWebhook(paymentIntentId, type)).init?.status ?? 200;
+    }
+
     async function expectAnswered(paymentIntentId: string, status: number) {
       const delivered = await deliverWebhook(paymentIntentId);
       expect(delivered.init?.status ?? 200, JSON.stringify(delivered.body)).toBe(status);
+    }
+
+    /** An officer refunds a card payment by hand in the Stripe dashboard: Stripe's `charge.refunded`, through the real webhook processor. */
+    async function chargeRefundedInStripe(paymentIntentId: string) {
+      webhookEventSequence += 1;
+      const refund = {
+        id: `re_race_4285_dashboard_${paymentIntentId}`,
+        object: "refund",
+        amount: PRICE_CENTS,
+        currency: "nzd",
+        status: "succeeded",
+        reason: "requested_by_customer",
+        created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+        charge: `ch_race_4285_${paymentIntentId}`,
+        payment_intent: paymentIntentId,
+        metadata: {},
+      };
+      stripeRaceHooks.listChargeRefunds = async () => [refund];
+      const { processStripeWebhookEvent } = await import("@/lib/stripe-webhook-service");
+      const delivered = await processStripeWebhookEvent({
+        id: `evt_race_4285_${webhookEventSequence}`,
+        object: "event",
+        type: "charge.refunded",
+        request: null,
+        data: {
+          object: {
+            id: `ch_race_4285_${paymentIntentId}`,
+            object: "charge",
+            payment_intent: paymentIntentId,
+            amount: PRICE_CENTS,
+            amount_refunded: PRICE_CENTS,
+            refunds: { data: [refund] },
+          },
+        },
+      } as unknown as import("stripe").Stripe.Event);
+      expect(delivered.init?.status ?? 200, JSON.stringify(delivered.body)).toBe(200);
     }
 
     /** The settle itself, for its outcome (the webhook only answers 200 or 500). */
@@ -395,7 +439,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       return rows.map((row) => row.bookingId).filter((id) => id === BOOKING_ID);
     }
 
-    it("the deploy query lists a finished stay whose second card payment may have captured, until the app refunds it; a failed second intent is never listed", async () => {
+    it("the deploy query lists a finished stay whose second card payment may have captured, until the app refunds it", async () => {
       const asked = stripeMakesRefunds();
       await settleAndComplete();
       // The second tab's success, refused before #4285, never wrote its row: still PENDING.
@@ -404,16 +448,27 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await expectAnswered(OTHER, 200);
       expect(asked).toEqual([OTHER]);
       expect(await deployQueryLists(), "a refunded, duplicate-owned capture is not listed").toEqual([]);
-
-      await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: BOOKING_ID } });
-      await prisma.paymentTransaction.updateMany({
-        where: { paymentId: PAYMENT_ID, stripePaymentIntentId: OTHER },
-        data: { status: "FAILED", refundedAmountCents: 0 },
-      });
-      expect(await deployQueryLists(), "a cancelled or declined intent is not listed").toEqual([]);
     });
 
-    it("#4285 review: a booking paid before the record existed, its only capture replayed after a fee raised what it owes: kept, nothing refunded, and the admins alerted", async () => {
+    it("#4285 review F5: a declined intent stays listed (it can still be paid); one Stripe cancelled is not", async () => {
+      await settleAndComplete();
+
+      expect(await answeredWith(OTHER, "payment_intent.payment_failed")).toBe(200);
+      expect((await snapshot()).transactions.map((row) => [row.stripePaymentIntentId, row.status])).toEqual([
+        [OTHER, "FAILED"],
+        [SETTLING, "SUCCEEDED"],
+      ]);
+      expect(await deployQueryLists(), "a declined first try the member may then have paid").toEqual([BOOKING_ID]);
+
+      expect(await answeredWith(OTHER, "payment_intent.canceled")).toBe(200);
+      // The webhook's audit entry is written after its answer.
+      await vi.waitFor(async () => {
+        expect(await prisma.auditLog.count({ where: { targetId: BOOKING_ID, action: "booking.payment.canceled" } })).toBe(1);
+      });
+      expect(await deployQueryLists(), "an intent Stripe cancelled cannot be paid").toEqual([]);
+    });
+
+    it("#4285 review F3: a booking paid before the record existed, its only capture replayed after a fee raised what it owes: a replay, already paid, no alert", async () => {
       const asked = stripeMakesRefunds();
       await settleAndComplete();
       await clearRecordedSettler();
@@ -421,14 +476,71 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const before = await snapshot();
 
       await expectAnswered(SETTLING, 200);
-      expect((await arrive(SETTLING)).outcome).toBe("duplicate_capture_kept");
+      expect((await arrive(SETTLING)).outcome).toBe("already_paid");
+
+      expect(asked).toEqual([]);
+      expect(await snapshot()).toEqual(before);
+      expect(await prisma.alertCooldown.count({ where: { key: { contains: BOOKING_ID } } })).toBe(0);
+    });
+
+    it("#4285 review F3: no record and nothing else holding money (the only payment refunded in Stripe): a second tab's payment the app never recorded is kept and the admins told", async () => {
+      const asked = stripeMakesRefunds();
+      await settleAndComplete();
+      await clearRecordedSettler();
+      await chargeRefundedInStripe(SETTLING);
+      expect((await snapshot()).transactions.find((row) => row.stripePaymentIntentId === SETTLING)?.status).toBe("REFUNDED");
+
+      await expectAnswered(OTHER, 200);
 
       expect(asked, "nothing is refunded automatically").toEqual([]);
-      expect(await snapshot()).toEqual(before);
+      const after = await snapshot();
+      expect(after.booking.status).toBe("COMPLETED");
+      expect(after.transactions.find((row) => row.stripePaymentIntentId === OTHER)?.status).toBe("SUCCEEDED");
       expect(
         (await prisma.alertCooldown.findMany({ where: { key: { contains: BOOKING_ID } }, select: { key: true } })).map((row) => row.key),
         "the kept-capture alert's once-a-day claim",
-      ).toEqual([`duplicate-capture-unrecorded-settler:${BOOKING_ID}:${SETTLING}`]);
+      ).toEqual([`duplicate-capture-unrecorded-settler:${BOOKING_ID}:${OTHER}`]);
+
+      // Its replay is now a replay: kept quietly, no second alert window.
+      expect((await arrive(OTHER)).outcome).toBe("already_paid");
+    });
+
+    it("#4285 review F1/F2: a booking the deploy query lists (no record): a resend is kept and alerted, never refunded; the officer's refund in Stripe is recorded and queues a credit note", async () => {
+      const asked = stripeMakesRefunds();
+      await settleAndComplete();
+      await clearRecordedSettler();
+      expect(await deployQueryLists()).toEqual([BOOKING_ID]);
+
+      // Step 1: the event resent from Stripe.
+      await expectAnswered(OTHER, 200);
+      expect(asked, "a resend refunds nothing: there is no record of which payment settled the booking").toEqual([]);
+      expect(
+        (await prisma.alertCooldown.findMany({ where: { key: { contains: BOOKING_ID } }, select: { key: true } })).map((row) => row.key),
+      ).toEqual([`duplicate-capture-unrecorded-settler:${BOOKING_ID}:${OTHER}`]);
+      expect(await deployQueryLists(), "still listed until someone refunds it").toEqual([BOOKING_ID]);
+
+      // Step 2: refunded by hand in the Stripe dashboard.
+      const notesBefore = await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } });
+      await chargeRefundedInStripe(OTHER);
+      const after = await snapshot();
+      expect(after.transactions.find((row) => row.stripePaymentIntentId === OTHER)?.status).toBe("REFUNDED");
+      expect(after.refunds.map((refund) => refund.stripeRefundId)).toEqual([`re_race_4285_dashboard_${OTHER}`]);
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } }), "a refund credit note is queued (#4322)").toBe(notesBefore + 1);
+      expect(await deployQueryLists()).toEqual([]);
+    });
+
+    it("#4285 review F2: refunded by hand in Stripe with no resend, the app still records the refund and queues a credit note", async () => {
+      await settleAndComplete();
+      await clearRecordedSettler();
+      const notesBefore = await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } });
+
+      await chargeRefundedInStripe(OTHER);
+
+      const after = await snapshot();
+      expect(after.refunds.map((refund) => refund.stripeRefundId)).toEqual([`re_race_4285_dashboard_${OTHER}`]);
+      expect(after.transactions.find((row) => row.stripePaymentIntentId === OTHER)?.status).toBe("REFUNDED");
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } })).toBe(notesBefore + 1);
+      expect(await deployQueryLists()).toEqual([]);
     });
 
     it("a booking paid before the record existed, another capture holding money: the arriving capture is kept, nothing refunded, and the admins alerted", async () => {

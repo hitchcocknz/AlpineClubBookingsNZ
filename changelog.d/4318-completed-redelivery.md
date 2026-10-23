@@ -10,13 +10,17 @@
   and flagged for an administrator to check when the system has no record of
   which payment settled the booking, just as on a paid booking.
 
-  A single card payment on a paid or completed booking with no record of
-  which payment settled it, and nothing else holding money, is now flagged to
-  the administrators when its amount is not what the booking owes by card,
-  rather than kept without a word: it may be a stray payment on a booking paid
-  with account credit, a zero total or a group settlement. A repeat at the
-  amount owed is still acknowledged quietly.
+  A card payment that reaches the app for the first time on a paid or
+  completed booking that has no other payment holding money and no record of
+  which payment settled it (a booking paid with account credit, at a zero
+  total or by a group organiser, or one whose earlier payment was refunded) is
+  now kept and flagged to the administrators, whatever its amount, rather than
+  kept without a word. A repeat of a payment the app had already recorded is
+  still acknowledged quietly.
 
   **After upgrading,** run the read-only query in the upgrade notes to list
   completed bookings that may hold a second card payment whose retries ran out
-  before the upgrade, and check each in Stripe with the treasurer.
+  before the upgrade, and check each in Stripe with the treasurer. An extra
+  payment found there is refunded by hand in Stripe; the app records that
+  refund and queues a Xero credit note, which must be deleted or voided in
+  Xero until #4322 is fixed.
