@@ -17,9 +17,11 @@ import {
   isPaymentProcessing,
   isPaymentReceivedStatusUnconfirmed,
   isRefundedCardTransactionRepaymentRequired,
+  isSupersededCardPaymentRefunding,
   isSwitchedToInternetBanking,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
   REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE,
   SWITCHED_TO_INTERNET_BANKING_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 
@@ -275,6 +277,13 @@ export default function BookingPaymentWrapper({
           setConfirmationError(
             REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
           );
+          return;
+        }
+        // #4300: the payment was on an intent an edit superseded; it is being
+        // refunded and the booking still owes. The fixed message, never data.error.
+        if (isSupersededCardPaymentRefunding(data)) {
+          setRecoveryHeading("Card payment being refunded");
+          setConfirmationError(SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE);
           return;
         }
       }

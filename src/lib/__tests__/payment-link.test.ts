@@ -39,6 +39,8 @@ vi.mock("@/lib/prisma", () => ({
       count: vi.fn().mockResolvedValue(0),
     },
     paymentRecoveryOperation: {
+      // #4300: the superseded-intent check before a succeeded intent settles; none by default.
+      findFirst: vi.fn().mockResolvedValue(null),
       findUnique: vi.fn().mockResolvedValue(null),
       // #4125: a cancelled booking's card refund rows; none here.
       findMany: vi.fn().mockResolvedValue([]),
@@ -1394,6 +1396,44 @@ describe("createPaymentIntentForPaymentLink", () => {
       );
     },
   );
+
+  it("#4300: repays, never reconciles, a capture on an intent the superseded machinery is refunding", async () => {
+    mockedFindUnique.mockResolvedValue(
+      baseLink({
+        booking: baseBooking({
+          payment: { id: "pay-1", stripePaymentIntentId: "pi_superseded", status: PaymentStatus.PENDING },
+        }),
+      }) as never,
+    );
+    // An edit superseded it and the price came back to its amount.
+    mockedGetPaymentIntent.mockResolvedValue({
+      id: "pi_superseded",
+      status: "succeeded",
+      client_secret: "secret_superseded_must_not_be_reused", currency: "nzd",
+      amount: 12000,
+      payment_method: "pm_old",
+    } as never);
+    mockedFindPaymentTransaction.mockResolvedValueOnce({ status: PaymentStatus.SUCCEEDED } as never);
+    // Its cancel row already handed the capture off; its refund row still owns it.
+    vi.mocked(prisma.paymentRecoveryOperation.findFirst)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: "op-superseded-refund" } as never);
+    vi.mocked(prisma.booking.findUnique).mockResolvedValue(baseBooking({ guests: [{ id: "guest-1" }] }) as never);
+    mockedFindOrCreateCustomer.mockResolvedValue({ id: "cus_123" } as never);
+    mockedCreatePaymentIntent.mockResolvedValue({ id: "pi_repay", client_secret: "secret_repay", currency: "nzd" } as never);
+    vi.mocked(prisma.payment.upsert).mockResolvedValue({ id: "pay-1" } as never);
+
+    await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).resolves.toEqual({
+      type: "clientSecret",
+      clientSecret: "secret_repay",
+      paymentIntentId: "pi_repay",
+    });
+    expect(mockedMarkSucceeded).not.toHaveBeenCalled();
+    expect(queueXeroInvoiceForPaidBookingMock).not.toHaveBeenCalled();
+    expect(mockedCreatePaymentIntent).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 12000, idempotencyKey: "pl_pi_booking-1_repay_pi_superseded" }),
+    );
+  });
 
   it("does not claim receipt when the succeeded prior intent cannot be classified", async () => {
     mockedFindUnique.mockResolvedValue(

@@ -108,6 +108,37 @@ export const REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY = Object.freeze({
   repaymentRequired: true as const,
 });
 
+/**
+ * #4300 (`INV-PAY-043`): the card payment the member just made was on an intent
+ * an edit had superseded, so the superseded-intent machinery is refunding it
+ * and the booking still waits for its money. Not a failure, and not "payment
+ * received" either: the member pays the amount the booking shows now.
+ */
+export const SUPERSEDED_CARD_PAYMENT_REFUNDING_CODE =
+  "SUPERSEDED_CARD_PAYMENT_REFUNDING" as const;
+
+export const SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE =
+  "This card payment was for an earlier version of the booking, so it is being refunded to your card. Reload the booking and pay the amount it shows now.";
+
+export const SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY = Object.freeze({
+  code: SUPERSEDED_CARD_PAYMENT_REFUNDING_CODE,
+  error: SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE,
+  paymentRefunding: true as const,
+  repaymentRequired: true as const,
+});
+
+export function isSupersededCardPaymentRefunding(
+  value: unknown,
+): value is typeof SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.code === SUPERSEDED_CARD_PAYMENT_REFUNDING_CODE &&
+    candidate.paymentRefunding === true &&
+    candidate.repaymentRequired === true
+  );
+}
+
 export type PaymentReceivedFinalisationPending = Readonly<{
   paymentReceived: true;
   finalisationPending: true;

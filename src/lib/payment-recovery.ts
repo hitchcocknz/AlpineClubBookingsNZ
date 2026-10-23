@@ -68,6 +68,7 @@ import { formatCents } from "@/lib/utils";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { finishApprovedLateCaptureRefundAfterReplay } from "@/lib/late-capture-refund-credit-note";
 import { holdSupersededLateCaptureIfRequired } from "@/lib/late-capture-refund-hold";
+import { findLiveSupersededIntentOperation } from "@/lib/superseded-intent-ownership";
 import { compareLedgerRowsNewestFirst, LEDGER_ROWS_NEWEST_FIRST, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 type PaymentRecoveryStore = Prisma.TransactionClient | typeof prisma;
@@ -3305,6 +3306,30 @@ export async function completeCanceledSupersededPaymentIntentRecovery({
   return true;
 }
 
+/**
+ * IS THIS SUCCEEDED CARD INTENT THE SUPERSEDED-INTENT MACHINERY'S? (#4300,
+ * `INV-PAY-043`) The one check every door that carries a succeeded intent back
+ * to a booking asks before it may settle the booking with it: the Stripe
+ * webhook, the confirm-payment route, and the pay step's and the `/pay` link's
+ * reconcile arms. `true` means the door settles nothing with this capture:
+ *
+ * - a CANCEL_PAYMENT_INTENT row not SUCCEEDED (live, retrying or dead) still
+ *   owns the intent: the capture beat the cancel, so it is handed to its refund
+ *   here (`handoffSucceededSupersededIntentToRefund`);
+ * - otherwise a superseded-intent row still not SUCCEEDED
+ *   (`findLiveSupersededIntentOperation`, guard (c′)'s reading) means it was
+ *   handed off already - by the cancel worker, or by another door - and its
+ *   REFUND_SUPERSEDED_PAYMENT row owns the money. Nothing more is queued.
+ *
+ * Before #4300 only the webhook asked, and only the first question: a capture
+ * the cancel worker had handed off, or any capture brought back by another
+ * door, settled the booking, and the machinery then refunded it - the booking
+ * PAID with no money. A refund that SUCCEEDED leaves the transaction REFUNDED,
+ * which every door already refuses as #1765 history.
+ *
+ * Unlocked, as the webhook always read it: the settle's own amount check under
+ * lock(1) still stands behind it.
+ */
 export async function queueSupersededPaymentIntentRefundRecovery({
   paymentIntentId,
   amountCents,
@@ -3324,7 +3349,7 @@ export async function queueSupersededPaymentIntentRefundRecovery({
   });
 
   if (!operation) {
-    return false;
+    return (await findLiveSupersededIntentOperation(prisma, paymentIntentId)) !== null;
   }
 
   await handoffSucceededSupersededIntentToRefund({

@@ -5621,3 +5621,49 @@ describe("#3220 - the stale-worker reaper cannot kill a re-claimed attempt", () 
     expect(sweep?.orderBy).toEqual({ processingStartedAt: "asc" });
   });
 });
+
+/**
+ * #4300 (`INV-PAY-043`): the superseded-intent check every door asks before it
+ * settles a booking with a succeeded intent. A capture the cancel worker (or
+ * another door) has already handed to its refund - its cancel row SUCCEEDED,
+ * its REFUND_SUPERSEDED_PAYMENT row not yet - is still the machinery's, so the
+ * door settles nothing with it; and nothing is handed off a second time.
+ */
+describe("#4300 — a capture already handed to its superseded refund is still the machinery's", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("answers true, writes nothing, when only a live superseded refund row owns the intent", async () => {
+    mockPaymentRecoveryFindFirst.mockImplementation((args: { where: { type: unknown } }) =>
+      Promise.resolve(args.where.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT ? null : { id: "op_superseded_refund" }),
+    );
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: "pi_handed_off", amountCents: 6000, paymentMethodId: "pm_1" }),
+    ).resolves.toBe(true);
+
+    // Guard (c′)'s reading: either superseded-intent type, any status but SUCCEEDED.
+    expect(mockPaymentRecoveryFindFirst).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        where: {
+          paymentIntentId: "pi_handed_off",
+          type: { in: [PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT] },
+          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+        },
+      }),
+    );
+    expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalled();
+    expect(mockPaymentTransactionUpdate).not.toHaveBeenCalled();
+    expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
+  });
+
+  it("answers false when no superseded-intent row owns the intent, so the door settles as before", async () => {
+    mockPaymentRecoveryFindFirst.mockResolvedValue(null);
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: "pi_ordinary", amountCents: 6000, paymentMethodId: "pm_1" }),
+    ).resolves.toBe(false);
+    expect(mockPaymentRecoveryFindFirst).toHaveBeenCalledTimes(2);
+  });
+});

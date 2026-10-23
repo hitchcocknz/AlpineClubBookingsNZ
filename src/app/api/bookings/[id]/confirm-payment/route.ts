@@ -18,11 +18,13 @@ import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue
 import { hasAdminAccess } from "@/lib/access-roles";
 import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
 import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
+import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
 import { PaymentStatus } from "@prisma/client";
 import {
   EXISTING_CARD_TRANSACTION_STATUS_UNCONFIRMED_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
   REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
 } from "@/lib/payment-recovery-contract";
 import { clubFormatValues } from "@/lib/club-format-server";
 
@@ -141,6 +143,23 @@ export async function POST(
         REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
         { status: 409 },
       );
+    }
+    // #4300 (`INV-PAY-043`): an intent an edit superseded is the superseded
+    // machinery's, as the webhook reads it: handed to its refund (or already
+    // there), never settled with - settling would leave the booking PAID once
+    // that refund lands.
+    if (
+      await queueSupersededPaymentIntentRefundRecovery({
+        paymentIntentId: pi.id,
+        amountCents: pi.amount,
+        paymentMethodId: getStripePaymentMethodId(pi),
+      })
+    ) {
+      logger.warn(
+        { bookingId, paymentIntentId: pi.id },
+        "A superseded PaymentIntent was confirmed; it is being refunded and did not settle the booking",
+      );
+      return NextResponse.json(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, { status: 409 });
     }
     successfulIntentClassificationPending = false;
     // Stripe is authoritative for capture. From this point onward, an

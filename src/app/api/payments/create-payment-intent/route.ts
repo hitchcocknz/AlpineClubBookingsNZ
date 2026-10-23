@@ -37,6 +37,7 @@ import {
   type SupersededPrimaryPaymentIntent,
 } from "@/lib/booking-payment-cleanup";
 import { drainSupersededPrimaryIntents } from "@/lib/booking-modification-settlement";
+import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 import {
@@ -608,8 +609,19 @@ export async function POST(request: NextRequest) {
           paymentIntentId: existingIntent.id,
           paymentStatus: booking.payment.status,
         });
+        // #4300 (`INV-PAY-043`): a capture on an intent an edit superseded is
+        // the superseded machinery's, as the webhook reads it - handed to its
+        // refund (or already there), so it is repaid like refund history,
+        // never reconciled.
+        const supersededCapture =
+          !refundedHistory &&
+          (await queueSupersededPaymentIntentRefundRecovery({
+            paymentIntentId: existingIntent.id,
+            amountCents: existingIntent.amount,
+            paymentMethodId: getStripePaymentMethodId(existingIntent),
+          }));
 
-        if (!refundedHistory) {
+        if (!refundedHistory && !supersededCapture) {
           receivedPaymentIntentId = existingIntent.id;
           if (booking.payment.status !== "SUCCEEDED") {
             const reconciliation = await markBookingPaymentSucceeded({
@@ -658,7 +670,8 @@ export async function POST(request: NextRequest) {
         }
 
         // The local ledger has now authoritatively proved that this succeeded
-        // intent was refunded. Any later failure belongs to the new repayment
+        // intent was refunded, or (#4300) that the superseded machinery is
+        // refunding it. Any later failure belongs to the new repayment
         // attempt, so it must retain the ordinary initialization retry contract
         // instead of being misreported as an unknown existing card transaction.
         succeededPaymentIntentObserved = false;

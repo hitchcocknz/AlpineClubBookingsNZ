@@ -15,6 +15,8 @@ import {
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
   REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
   REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_MESSAGE,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE,
   SWITCHED_TO_INTERNET_BANKING_BODY,
   SWITCHED_TO_INTERNET_BANKING_MESSAGE,
 } from "@/lib/payment-recovery-contract";
@@ -777,6 +779,41 @@ describe("BookingPaymentWrapper", () => {
     expect(alert).not.toHaveTextContent("raw server text");
     expect(onPaymentComplete).not.toHaveBeenCalled();
     expect(screen.getByText("Payment successful!")).not.toBeNull();
+  });
+
+  it("#4300: says a payment on a superseded intent is being refunded, never that the booking is paid", async () => {
+    const onPaymentComplete = vi.fn();
+    fetchMock
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ clientSecret: "cs_test" }),
+      })
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          ...SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
+          error: "raw server text must not be shown",
+        }),
+      });
+
+    render(
+      <BookingPaymentWrapper
+        bookingId="booking-1"
+        amountCents={12500}
+        paymentMode="payment"
+        returnUrl="http://localhost/bookings/booking-1"
+        onPaymentComplete={onPaymentComplete}
+      />,
+    );
+    fireEvent.click(await screen.findByText("trigger-success"));
+
+    const alert = screen.getByRole("alert", { hidden: true });
+    await waitFor(() => expect(alert).toHaveTextContent("Card payment being refunded"));
+    expect(alert).toHaveTextContent(SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE);
+    expect(alert).not.toHaveTextContent("Payment received");
+    expect(alert).not.toHaveTextContent("raw server text");
+    expect(onPaymentComplete).not.toHaveBeenCalled();
   });
 
   it.each(capacityCancellationCases)(

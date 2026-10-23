@@ -17,6 +17,7 @@ import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { formatCents } from "@/lib/utils";
 import logger from "@/lib/logger";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
+import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
 import { attachMintedCardIntent } from "@/lib/card-intent-attach";
 import { isRefundedPaymentIntentHistory } from "@/lib/card-intent-retirement";
 import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
@@ -171,11 +172,20 @@ export async function createPaymentIntentForPaymentLink(
       // local transaction row is therefore the discriminator between a
       // captured payment that needs reconciliation and refund history that
       // must lead to a fresh repayment intent.
-      let refundedHistory: boolean;
+      let repaymentRequired: boolean;
       try {
-        refundedHistory = await isRefundedPaymentIntentHistory({
+        repaymentRequired = await isRefundedPaymentIntentHistory({
           paymentIntentId: existingIntent.id,
           paymentStatus: booking.payment.status,
+        });
+        // #4300 (`INV-PAY-043`): a capture on an intent an edit superseded is
+        // the superseded machinery's, as the webhook reads it - handed to its
+        // refund (or already there), so it is repaid like refund history,
+        // never reconciled.
+        repaymentRequired ||= await queueSupersededPaymentIntentRefundRecovery({
+          paymentIntentId: existingIntent.id,
+          amountCents: existingIntent.amount,
+          paymentMethodId: getStripePaymentMethodId(existingIntent),
         });
       } catch (error) {
         logger.error(
@@ -187,7 +197,7 @@ export async function createPaymentIntentForPaymentLink(
         );
       }
 
-      if (refundedHistory) {
+      if (repaymentRequired) {
         repaySupersededIntentId = existingIntent.id;
         await queueSupersededPrimaryIntentCancellations(prisma, {
           bookingId: booking.id,
