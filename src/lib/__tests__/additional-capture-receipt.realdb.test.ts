@@ -16,6 +16,10 @@
  *     unpaid and names nothing) when the link's figures say the primary's cash
  *     did not cover it, or by the gap invoice (which names it, and the
  *     receipt then stands down) when the figures cannot say.
+ *  5. Review round 3 (C3): two receipts on one booking claimed RUNNING and run
+ *     at once - only the one claimed earlier gets past its wait and reaches
+ *     Xero, the later waits; a create dead past the staleness threshold blocks
+ *     neither, a live one blocks both.
  *  3. The enqueue runs under the existing per-anchor supplementary-invoice lock
  *     (`lockSupplementaryInvoiceAnchor`) on the change the capture pays for: a
  *     session holding that lock makes the enqueue queue behind it, and the
@@ -41,6 +45,8 @@ const BOOKING_ID = "race-3953-booking";
 const PAYMENT_ID = "race-3953-payment";
 const PRIMARY_TX_ID = "race-3953-primary-capture";
 const CHANGE_TX_ID = "race-3953-change-capture";
+const CHANGE_TX_2_ID = "race-3953-change-capture-2";
+const CHANGE_INTENT_2 = "pi_race_3953_change_2";
 /** The change the capture pays for: a provenance stamp, no foreign key. */
 const MODIFICATION_ID = "race-3953-modification";
 const PRIMARY_INTENT = "pi_race_3953_primary";
@@ -55,6 +61,8 @@ let enqueue: typeof import("@/lib/additional-capture-receipt-enqueue");
 let outbox: typeof import("@/lib/xero-operation-outbox");
 let gapCheck: typeof import("@/lib/xero-primary-invoice-fee-gap");
 let invoiceKey: typeof import("@/lib/xero-booking-invoice-key");
+let worker: typeof import("@/lib/additional-capture-xero-receipt");
+let busy: typeof import("@/lib/xero-applied-credit-operation-serialization");
 
 async function receiptRows() {
   return prisma.xeroSyncOperation.findMany({
@@ -65,7 +73,7 @@ async function receiptRows() {
 
 async function clean(): Promise<void> {
   await prisma.xeroSyncOperation.deleteMany({
-    where: { localId: { in: [CHANGE_TX_ID, PRIMARY_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID] } },
+    where: { localId: { in: [CHANGE_TX_ID, CHANGE_TX_2_ID, PRIMARY_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID] } },
   });
   await prisma.bookingModification.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
@@ -150,6 +158,8 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     outbox = await import("@/lib/xero-operation-outbox");
     gapCheck = await import("@/lib/xero-primary-invoice-fee-gap");
     invoiceKey = await import("@/lib/xero-booking-invoice-key");
+    worker = await import("@/lib/additional-capture-xero-receipt");
+    busy = await import("@/lib/xero-applied-credit-operation-serialization");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -388,6 +398,124 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
       });
       expect((await release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT)).outcome).toBe("none-queued");
       expect(await receiptRows()).toHaveLength(0);
+    });
+  });
+
+  describe("two receipts on one booking, claimed at once (review round 3, C3)", () => {
+    const STALE_MINUTES_AGO = 24 * 60;
+    async function claimedReceipt(id: string, transactionId: string, intent: string, startedAt: Date) {
+      const key = `payment-intent:${intent}:additional-capture-receipt:v1`;
+      return prisma.xeroSyncOperation.create({
+        data: {
+          id,
+          direction: "OUTBOUND",
+          entityType: "PAYMENT",
+          operationType: "CREATE",
+          localModel: "PaymentTransaction",
+          localId: transactionId,
+          status: "RUNNING",
+          startedAt,
+          queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+          correlationKey: key,
+          idempotencyKey: key,
+          requestPayload: {
+            queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+            bookingId: BOOKING_ID,
+            paymentId: PAYMENT_ID,
+            paymentTransactionId: transactionId,
+            paymentIntentId: intent,
+          },
+        },
+      });
+    }
+    async function runningCreate(startedAt: Date) {
+      const key = invoiceKey.buildXeroBookingInvoiceCorrelationKey(BOOKING_ID);
+      await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND",
+          entityType: "INVOICE",
+          operationType: "CREATE",
+          localModel: "Payment",
+          localId: PAYMENT_ID,
+          status: "RUNNING",
+          startedAt,
+          correlationKey: key,
+          idempotencyKey: key,
+          requestPayload: {},
+        },
+      });
+    }
+    /** The provider seam: who reached Xero. It stops there, writing nothing, as a wait does. */
+    function seam(reached: string[]) {
+      return (operationId: string) => ({
+        getAuthenticatedXeroClient: async () => {
+          reached.push(operationId);
+          throw new busy.XeroAppliedCreditOperationBusyError("test: stop at the Xero call");
+        },
+        callXeroApi: (async () => {
+          throw new Error("unreachable");
+        }) as never,
+        createXeroPaymentForInvoice: async () => {
+          throw new Error("unreachable");
+        },
+        readStripeCaptureDocumentDate: async () => null,
+      });
+    }
+    const runBoth = (reached: string[], ids: string[]) =>
+      Promise.allSettled(ids.map((id) => worker.recordAdditionalCaptureReceipt({ syncOperationId: id }, seam(reached)(id))));
+
+    beforeEach(async () => {
+      await prisma.paymentTransaction.create({
+        data: {
+          id: CHANGE_TX_2_ID,
+          paymentId: PAYMENT_ID,
+          kind: "ADDITIONAL",
+          source: "STRIPE",
+          stripePaymentIntentId: CHANGE_INTENT_2,
+          amountCents: 2_000,
+          status: "SUCCEEDED",
+          bookingModificationId: "race-3953-modification-2",
+        },
+      });
+    });
+
+    it("only the one claimed earlier gets past its wait; the later waits for it", async () => {
+      const now = Date.now();
+      await claimedReceipt("race-3953-receipt-early", CHANGE_TX_ID, CHANGE_INTENT, new Date(now - 2_000));
+      await claimedReceipt("race-3953-receipt-late", CHANGE_TX_2_ID, CHANGE_INTENT_2, new Date(now - 1_000));
+      const reached: string[] = [];
+
+      const [early, late] = await runBoth(reached, ["race-3953-receipt-early", "race-3953-receipt-late"]);
+
+      expect(reached).toEqual(["race-3953-receipt-early"]);
+      expect(early.status).toBe("rejected");
+      expect(late).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({
+          waitCode: worker.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
+          message: expect.stringContaining("race-3953-receipt-early"),
+        }),
+      });
+    });
+
+    it("a create dead past the staleness threshold blocks neither; a live one blocks both", async () => {
+      const now = Date.now();
+      await claimedReceipt("race-3953-receipt-only", CHANGE_TX_ID, CHANGE_INTENT, new Date(now - 1_000));
+      await runningCreate(new Date(now - STALE_MINUTES_AGO * 60_000));
+      const reached: string[] = [];
+      await runBoth(reached, ["race-3953-receipt-only"]);
+      expect(reached).toEqual(["race-3953-receipt-only"]);
+
+      // The stale reset retires the dead row (one active create per key); a live create starts.
+      await prisma.xeroSyncOperation.updateMany({
+        where: { localModel: "Payment", localId: PAYMENT_ID, status: "RUNNING" },
+        data: { status: "FAILED" },
+      });
+      await runningCreate(new Date(now));
+      const blocked: string[] = [];
+      const [outcome] = await runBoth(blocked, ["race-3953-receipt-only"]);
+      expect(blocked).toEqual([]);
+      expect(outcome).toMatchObject({ status: "rejected", reason: expect.objectContaining({ message: expect.stringContaining("still being raised") }) });
     });
   });
 });

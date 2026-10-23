@@ -27,5 +27,7 @@ describe("the change capture receipt proof stays wired into CI (#3953)", () => {
     expect(suite).toContain("queues behind a session holding the change's supplementary-invoice anchor lock");
     expect(suite).toContain("is recorded once, by its receipt, where the figures say the primary's cash did not cover it");
     expect(suite).toContain("is recorded once, by the gap invoice that names it, where the figures cannot say");
+    expect(suite).toContain("only the one claimed earlier gets past its wait; the later waits for it");
+    expect(suite).toContain("a create dead past the staleness threshold blocks neither; a live one blocks both");
   });
 });
