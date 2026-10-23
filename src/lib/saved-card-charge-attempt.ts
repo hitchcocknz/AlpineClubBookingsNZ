@@ -279,10 +279,8 @@ export type SavedCardChargeAttempt =
  *
  * - `captured_primary_exists`: a PRIMARY row on this payment already holds
  *   captured money while the booking is somehow still PENDING.
- * - `superseded_capture_returning` (#4300, `INV-PAY-138`): the captured row is
- *   the superseded machinery's, but no superseded refund is under way for it
- *   yet (only its cancel row names it). Wait for the refund; charging on top
- *   would take the price twice if the refund never starts.
+ * - `superseded_capture_returning` (#4300): the captured row is the superseded
+ *   machinery's but only its cancel row names it - no refund under way yet.
  * - `attempt_key_expired`: an earlier attempt's POST never answered and its key
  *   is now past the window in which Stripe would replay rather than re-execute
  *   it (`SAVED_CARD_CHARGE_KEY_RESEND_WINDOW_MS`).
@@ -562,20 +560,12 @@ export async function beginSavedCardChargeAttempt(
     },
   });
 
-  // (b) Money already taken. A fully REFUNDED row is history, not cash.
-  // #4300 (`INV-PAY-138`): nor is a capture the superseded machinery owns and is
-  // already sending back (a superseded refund under way, or open rows owing it
-  // back): it never settles this booking, which still owes - charge as usual. One
-  // only a cancel row names has no refund under way yet: wait for it, never
-  // charge on top. Read under the claim's lock(1).
-  const capturedRows = rows.filter(
-    (row) =>
-      isCapturedTransactionStatus(row.status) &&
-      row.amountCents - row.refundedAmountCents > 0
-  );
-  const ownership = capturedRows.some((row) => row.stripePaymentIntentId)
-    ? await readSupersededOwnership(tx, paymentId)
-    : null;
+  // (b) Money already taken. A fully REFUNDED row is history, not cash. #4300
+  // (`INV-PAY-138`): nor is a capture the superseded machinery is already
+  // sending back - this booking still owes; one only its cancel row names has no
+  // refund under way yet, so wait. Read under the claim's lock(1).
+  const capturedRows = rows.filter((row) => isCapturedTransactionStatus(row.status) && row.amountCents - row.refundedAmountCents > 0);
+  const ownership = capturedRows.some((row) => row.stripePaymentIntentId) ? await readSupersededOwnership(tx, paymentId) : null;
   let captured: AttemptLedgerRow | undefined;
   for (const row of capturedRows) {
     const intent = row.stripePaymentIntentId;
@@ -584,12 +574,7 @@ export async function beginSavedCardChargeAttempt(
       break;
     }
     if (!(await ownership.returning(intent))) {
-      throw new SavedCardChargeRefusedError({
-        why: "superseded_capture_returning",
-        bookingId,
-        since: row.updatedAt,
-        paymentIntentId: intent,
-      });
+      throw new SavedCardChargeRefusedError({ why: "superseded_capture_returning", bookingId, since: row.updatedAt, paymentIntentId: intent });
     }
   }
   if (captured) {
