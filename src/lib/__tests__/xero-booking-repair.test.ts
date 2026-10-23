@@ -6898,6 +6898,61 @@ describe("runBookingXeroRepair - primary invoice vs edit timing (#3199)", () => 
     expect(deps.enqueueXeroSupplementaryInvoiceOperation).not.toHaveBeenCalled();
   });
 
+  /**
+   * #3980 review R1: an edit that settled against the primary invoice (it read
+   * no invoice link, so it is marked) expects no document of its own - what the
+   * primary invoice missed of it is the create's gap check's. Neither a
+   * supplementary invoice nor "that invoice already bills it" advice.
+   */
+  const MARKED = {
+    newData: {
+      primaryInvoiceSettlement: {
+        settledAgainstPrimaryInvoice: true,
+        refundAmountCents: 0,
+        accountCreditAmountCents: 0,
+        appliedCreditGivenBackCents: 0,
+        unpaidAskOffsetCents: 0,
+      },
+    },
+  };
+
+  it.each([
+    ["before", new Date("2026-05-01T00:00:00Z")],
+    ["after", new Date("2026-05-03T00:00:00Z")],
+  ])("MUTATION #3980: a marked increase expects no supplementary invoice of its own, invoice raised %s it", async (_when, raisedAt) => {
+    const booking = makeBooking({ modifications: [priceIncreaseModification(MARKED)] });
+    const deps = createDependencies({
+      bookings: [booking],
+      operations: [
+        makePrimaryInvoiceCreateOperation({ startedAt: raisedAt, completedAt: raisedAt, createdAt: raisedAt, updatedAt: raisedAt }),
+      ],
+    });
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+    expect(supplementaryInvoiceFinding(report)).toBeUndefined();
+    expect(deps.enqueueXeroSupplementaryInvoiceOperation).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION #3980: a marked reduction expects no modification credit note of its own", async () => {
+    const booking = makeBooking({
+      modifications: [
+        {
+          id: "mod_marked_reduction",
+          bookingId: "booking_1",
+          modificationType: "GUEST_REMOVE",
+          priceDiffCents: -3000,
+          changeFeeCents: 0,
+          createdAt: new Date("2026-05-02T00:00:00Z"),
+          ...MARKED,
+        },
+      ],
+    });
+    const deps = createDependencies({ bookings: [booking], operations: [makePrimaryInvoiceCreateOperation()] });
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+    expect(
+      report.passes[0].bookings[0].findings.find((finding) => finding.code === "MISSING_MODIFICATION_CREDIT_NOTE"),
+    ).toBeUndefined();
+  });
+
   it("reports when NO operation row says the primary invoice was ever raised", async () => {
     const booking = makeBooking({ modifications: [priceIncreaseModification()] });
     const deps = createDependencies({ bookings: [booking] });

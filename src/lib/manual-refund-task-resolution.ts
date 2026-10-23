@@ -538,7 +538,7 @@ export async function resolveManualRefundTask(
         resolution,
         note: trimmedNote,
         todayAtClub,
-        hasIssuedXeroInvoice,
+        hasIssuedXeroInvoice, paymentLinkRead: task.booking.payment ?? null, // #3980 r2 F4: the re-price claims this read
         settlementRoute,
         settlementAmountCents: settledCents,
         settlementDirection: settlement ? settlementDirection : null,
