@@ -2158,8 +2158,8 @@ _Legacy: settles tasks raised before #4317._
   completion that states no direction is refused before the claim; silence on a
   legacy kind means `REFUND_TO_MEMBER`, and `CHARGE_TO_MEMBER` on one is refused
   outright. A dismissal records no direction.
-- **The charging direction is the additional-payment path, not a new mechanism**
-  (#3170). A `CHARGE_TO_MEMBER` completion re-enters
+- **The charging direction is the additional-payment path, not a new mechanism.**
+  A `CHARGE_TO_MEMBER` completion re-enters
   `createModificationAdditionalPaymentIntent`, as every ordinary edit increase
   does, so the PENDING `ADDITIONAL` row, chase, pay link and Xero
   wait-for-payment are the existing ones. NOTHING IS TAKEN FROM THE CARD BY THE
@@ -2167,9 +2167,9 @@ _Legacy: settles tasks raised before #4317._
   (`canAskCardForReviewCharge`) nor an issued Xero invoice is REFUSED before the
   claim, with the task left OPEN. The Xero leg bills the same supplementary
   invoice a POSITIVE amount: the only place direction becomes a sign.
-- **Which instrument a charge uses** (#3947; owner decisions 15 and 22 Oct
-  2026). A CANCELLED booking is refused first (#4272, 21 Oct 2026): nobody
-  can pay its ask ([INV-ADDPAY-023]). Else the card when
+- **Which instrument a charge uses** (#3947; owner, 15 and 22 Oct 2026). A
+  CANCELLED booking is refused first (#4272): nobody can pay its ask
+  ([INV-ADDPAY-023]). Else the card when
   `canAskCardForReviewCharge` says so: the edit doors' `canAskCardForIncrease`,
   so a settled credit-paid booking too, Xero or not, plus captured card money
   on an unsettled booking that is not cancelled. Otherwise the issued invoice.
@@ -2277,8 +2277,7 @@ _Legacy: settles tasks raised before #4317._
 
 - **ONE EDIT'S CHARGE REQUEST IS RAISED BY ONE RUN AT A TIME** (#3402). Refusing
   to lower ([INV-PAY-062]) orders nothing between two runs that each derive more
-  than is stored: both raised the intent, and the LAST to land won even when it
-  was smaller.
+  than is stored: the LAST to land won even when it was smaller.
   - **Claim before the provider call.** A run must win the edit's
     `EditReviewChargeRaiseClaim` lease and record its intended amount under that
     exact token before ANY Stripe call. A loser calls nothing, arms the edit's
