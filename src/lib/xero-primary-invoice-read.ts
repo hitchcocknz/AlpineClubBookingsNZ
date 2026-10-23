@@ -27,6 +27,7 @@ import { prisma } from "@/lib/prisma";
 import { FEE_ON_PRIMARY_INVOICE_PATH } from "@/lib/booking-finished-stay-correction";
 import { SETTLED_AGAINST_PRIMARY_INVOICE_PATH } from "@/lib/booking-primary-invoice-claim";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 
 /**
  * The edits that settled against the primary invoice: an ordinary edit's #3980
@@ -72,6 +73,7 @@ export async function readBookingForPrimaryInvoice(bookingId: string) {
               status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] },
               stripePaymentIntentId: { not: null },
             },
+            orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
             select: { stripePaymentIntentId: true },
           })
         : [];

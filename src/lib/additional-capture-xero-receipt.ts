@@ -199,7 +199,9 @@ async function readInvoice(
   client: { xero: Awaited<ReturnType<typeof getAuthenticatedXeroClient>>["xero"]; tenantId: string },
   invoiceId: string,
 ): Promise<InvoiceRead | null> {
-  const response = await providers.callXeroApi(
+  // The seam's metered call, under the one name the Xero wrapper audit reads.
+  const { callXeroApi } = providers;
+  const response = await callXeroApi(
     () => client.xero.accountingApi.getInvoice(client.tenantId, invoiceId),
     {
       operation: "getInvoice",
