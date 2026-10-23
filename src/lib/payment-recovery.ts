@@ -2435,17 +2435,11 @@ async function processCreateAdditionalPaymentIntentOperation(
         `Booking ${operation.bookingId} not found for edit-financial-review charge recovery`,
       );
     }
-    if (booking.status === BookingStatus.CANCELLED) {
-      // Same reasoning as the ordinary path's cancelled-booking skip (#1358):
-      // the cancel flow retired this booking's additional intents, so minting a
-      // live one here would resurrect a collectable that must never be captured.
-      logger.info(
-        { operationId: operation.id, bookingId: operation.bookingId },
-        "Skipping edit-financial-review charge recovery for cancelled booking",
-      );
-      await completePaymentRecoveryOperation(operation.id);
-      return;
-    }
+    // #1358: the cancel flow retired a cancelled booking's asks, so a mint here would resurrect one
+    // nobody can pay (#4272). Its uncollected shares are recorded and the row closed instead.
+    const { closeCancelledEditReviewChargeReplay } = await import("@/lib/edit-financial-review-charge-cancelled");
+    const cancelledReplay = { format, operation, bookingModificationId, memberId: bookingOwner(booking).member.id ?? null };
+    if (await closeCancelledEditReviewChargeReplay({ ...cancelledReplay, status: booking.status })) return;
     const synced = await syncEditFinancialReviewChargeRequest({
       format,
       bookingId: operation.bookingId,
@@ -2655,6 +2649,8 @@ async function processCreateAdditionalPaymentIntentOperation(
      * being processed is already this debt's durable retry, and a second row for
      * one debt is a second debt.
      */
+    // #4272: a cancellation landing mid-replay takes the cancelled path, not a retry.
+    if (synced.outcome === "not-raised" && (await closeCancelledEditReviewChargeReplay(cancelledReplay))) return;
     if (!EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY[synced.outcome]) {
       throw new Error(
         `Edit financial review charge request for booking modification ${bookingModificationId} was not raised (${formatCents(synced.totalCents, format)} still owed); leaving the recovery operation open to retry`,
