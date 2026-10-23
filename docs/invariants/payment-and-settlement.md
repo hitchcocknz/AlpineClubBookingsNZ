@@ -131,27 +131,27 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 (refund history).
 
 - **A card capture on an intent an edit superseded never settles its
-  booking** (#4300). It belongs to the superseded machinery, which sends it
-  back or, on a cancelled booking with the club's hold on, holds it for the
-  treasurer (`holdSupersededLateCaptureIfRequired`).
+  booking** (#4300). The superseded machinery sends it back or, on a
+  cancelled booking with the club's hold on, holds it for the treasurer.
 - **One reading** (`superseded-capture-ownership.ts`), shared with the
-  duplicate-capture guard: a superseded-intent row not SUCCEEDED, the Xero
-  reading's captures, and here any capture open rows owe back ANY part of.
-- **The settle refuses it under `lock(1)`**, beside the #1765 refusal: outcome
-  `superseded_capture`, never a throw. No confirmation, no invoice; the
-  capture is handed off and admins alerted. Every Stripe settle passes it,
-  the saved-card doors included.
+  duplicate-capture guard; here any capture open rows owe back ANY part of
+  counts too.
+- **The settle refuses it under `lock(1)`**, beside the #1765 refusal:
+  outcome `superseded_capture`, never a throw. Nothing confirmed or invoiced;
+  the capture is handed off and the unmuteable
+  `admin-superseded-capture-refused` alert sent, worded by booking status.
+  The saved-card doors release their claim.
 - **The doors ask first** (`queueSupersededPaymentIntentRefundRecovery`, given
-  the intent): the webhook, `confirm-payment`, and the pay step's and `/pay`
-  link's reconcile arms. A live cancel row hands the capture off; a lost claim
-  asks the reading again. `confirm-payment` answers 409
-  `SUPERSEDED_CARD_PAYMENT_REFUNDING`. The pay step and link mint a repay
-  intent (`_repay_<intent>_<amount>_<currency>`); the link adds
-  `previousPaymentRefunding`.
-- **Never handed out again.** Neither reuse arm returns the secret of an intent
-  with a superseded row not SUCCEEDED; one `processing` answers
-  `PAYMENT_PROCESSING`.
-- **Retired** (`isCardIntentRetired`) once the machinery owns it.
+  the intent; a lost claim asks the reading again): the webhook,
+  `confirm-payment` (also for a captured intent of the booking its pointer
+  moved past) and the reconcile arms. `confirm-payment` answers 409
+  `SUPERSEDED_CARD_PAYMENT_REFUNDING`; the pay step and link mint a repay
+  intent (`_repay_<intent>_<amount>_<currency>`) and return
+  `previousPaymentRefunding`, shown by one notice on both pages.
+- **Never handed out again** (`supersededIntentReuseRefusal`): one
+  `processing` answers `PAYMENT_PROCESSING` in its own words.
+- **Retired** (`isCardIntentRetired`, through the doors' check) once the
+  machinery owns it.
 - Proven on PostgreSQL by `superseded-intent-card-doors.realdb.test.ts`, and
   by `superseded-capture-ownership.test.ts`, `payment-recovery.test.ts`,
   `issue-1992-duplicate-capture-refund.test.ts` and the door suites.

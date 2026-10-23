@@ -562,6 +562,8 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
     capture(superseded);
 
     const reload = await payStep();
+    // The member is told the earlier payment is going back.
+    expect(reload.body.previousPaymentRefunding).toBe(true);
     await deliverSucceededWebhook(superseded);
     await drainRecovery();
 

@@ -20,27 +20,33 @@ reason: the refusal has to sit inside the settle's transaction under lock(1),
   one call into superseded-capture-refusal.ts.
 
 file: src/app/api/bookings/[id]/confirm-payment/route.ts
-lines: 347
+lines: 353
 reason: the door's check sits in the route's classification window, between
   the refund-history check and the settle, and the settle's new outcome needs
   its own answer; both are one statement each.
 
 file: src/app/api/payments/create-payment-intent/route.ts
-lines: 909
+lines: 911
 reason: the check joins the existing refund-history discriminator and the
   reuse arm it guards, so the repay mint they share stays one path.
 
 file: src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts
-lines: 931
+lines: 932
 reason: the settle's new outcome needs its own answer among the route's
   existing outcome branches; the body is shared from the recovery contract.
 
 file: src/app/api/payments/charge-saved-method/route.ts
-lines: 656
+lines: 658
 reason: the settle's new outcome needs its own answer among the route's
   existing outcome branches; the body is shared from the recovery contract.
 
 file: src/lib/cron-confirm-pending.ts
-lines: 2063
+lines: 2065
 reason: the settle's new outcome needs its own branch among the cron's
   existing outcome branches, counted as failed for the alerted admins.
+
+file: src/lib/email-message-registry.ts
+lines: 2369
+reason: the alert's own template is registered beside its siblings - audience,
+  delivery lock, required tokens, trigger metadata, sample and approved tokens
+  are each one entry in the registry's existing tables, as #4211's was.

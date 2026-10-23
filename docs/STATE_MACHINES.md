@@ -286,7 +286,13 @@ promote to PAID. A failed or requires-action charge releases the claim back to
 charge is durably recorded as a PRIMARY payment transaction before promotion,
 so if the promotion fails the booking stays CONFIRMED holding its beds, admins
 are alerted, and the Stripe webhook finishes the promotion idempotently —
-captured money is never silently orphaned.
+captured money is never silently orphaned. One captured charge is the
+exception (#4300, `INV-PAY-138`): a charge the settle refuses as
+`superseded_capture` (an edit had replaced the payment it landed on) is going
+back to the card, so the door releases the claim like a failed charge
+(`PENDING`, hold restored, beds reconciled) for the next charge, and admins get
+the `admin-superseded-capture-refused` alert. The cron and
+`charge-saved-method` do the same.
 
 Split-booking guest-portion settlement with no card on file (#1967). A split
 non-member child (#738) is normally auto-charged at its hold deadline to the
@@ -1623,12 +1629,17 @@ superseded belongs to the superseded-intent machinery, which refunds it (or
 holds it for the treasurer on a cancelled booking), so it never settles the
 booking. The settle refuses it under `lock(1)` with the outcome
 `superseded_capture`: the transaction row records the capture, the booking
-stays payable, nothing is confirmed or invoiced. The webhook and the card doors
-ask the same reading first (`queueSupersededPaymentIntentRefundRecovery`); the
-pay step and the `/pay` link then mint a repay intent under
-`..._repay_<supersededIntentId>_<amount>_<currency>`, and `confirm-payment`
-answers 409 `SUPERSEDED_CARD_PAYMENT_REFUNDING`. Neither reuse arm hands out an
-intent a superseded row still names.
+stays payable, nothing is confirmed or invoiced, and admins get the unmuteable
+`admin-superseded-capture-refused` alert. The webhook and the card doors ask
+the same reading first (`queueSupersededPaymentIntentRefundRecovery`); the pay
+step and the `/pay` link then mint a repay intent under
+`..._repay_<supersededIntentId>_<amount>_<currency>` and say the earlier
+payment is going back (`previousPaymentRefunding`), and `confirm-payment`
+answers 409 `SUPERSEDED_CARD_PAYMENT_REFUNDING`, also for a captured intent of
+the booking its pointer has moved past. Neither reuse arm hands out an intent
+a superseded row still names; one being paid answers `PAYMENT_PROCESSING` in
+its own words. After a card success the `/pay` link asks the server what it
+did and never shows the pay buttons again.
 
 Saved-card provenance (#3269, `INV-PAY-053`). Two writers put a
 `stripePaymentMethodId` on a `Payment` row and only one of them saves a card:

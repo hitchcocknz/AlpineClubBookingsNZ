@@ -482,7 +482,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/refund-request/route.ts:49",
   "src/app/api/bookings/[id]/requested-room/options/route.ts:85",
   "src/app/api/bookings/[id]/send-guest-payment-link/route.ts:67",
-  "src/app/api/payments/create-payment-intent/route.ts:168",
+  "src/app/api/payments/create-payment-intent/route.ts:169",
   "src/app/api/payments/create-setup-intent/route.ts:59",
   "src/app/api/payments/switch-to-internet-banking/route.ts:118",
   "src/lib/adult-member-hosting-review.ts:3256",
@@ -522,8 +522,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1344",
-  "src/lib/payment-recovery.ts:2560",
-  "src/lib/payment-recovery.ts:2612",
+  "src/lib/payment-recovery.ts:2561",
+  "src/lib/payment-recovery.ts:2613",
   "src/lib/xero-admin-health.ts:394",
 ];
 

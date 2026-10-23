@@ -343,7 +343,9 @@ export default function BookingPaymentWrapper({
         className="mb-4"
         action={
           paymentFormClosed ? (
-            // The booking's own page: a reload of the /book wizard would lose it.
+            // The booking's own page, fully loaded: a reload of the /book wizard
+            // would lose the booking, and a client push would keep stale state.
+            // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- a full load on purpose (#4300)
             <Button variant="outline" onClick={() => window.location.assign(`/bookings/${bookingId}`)}>
               Reload booking
             </Button>
