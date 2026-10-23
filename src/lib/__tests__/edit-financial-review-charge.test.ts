@@ -40,6 +40,9 @@ const mocks = vi.hoisted(() => ({
   manualRefundTaskUpdateMany: vi.fn(),
   manualRefundTaskFindMany: vi.fn(),
   paymentTransactionFindFirst: vi.fn(),
+  // #4272: the paid request's refunds, and the earlier cancelled-share records.
+  paymentTransactionFindUnique: vi.fn(),
+  auditLogFindMany: vi.fn(),
   paymentFindUnique: vi.fn(),
   xeroObjectLinkFindFirst: vi.fn(),
   xeroSyncOperationFindFirst: vi.fn(),
@@ -119,7 +122,9 @@ vi.mock("@/lib/prisma", () => ({
       findFirst: (...a: unknown[]) => mocks.paymentTransactionFindFirst(...a),
       // The real supersede's read of the live asks a mint retires (#3341).
       findMany: (...a: unknown[]) => mocks.supersedeRead(...a),
+      findUnique: (...a: unknown[]) => mocks.paymentTransactionFindUnique(...a),
     },
+    auditLog: { findMany: (...a: unknown[]) => mocks.auditLogFindMany(...a) },
     payment: {
       findUnique: (...a: unknown[]) => mocks.paymentFindUnique(...a),
       // The re-issue's real `reconcilePaymentAggregates` writes the mirror (#3635).
@@ -258,7 +263,8 @@ import {
   syncEditFinancialReviewChargeRequest,
 } from "@/lib/edit-financial-review-charge";
 import { recordUncollectedEditReviewChargeShare } from "@/lib/edit-financial-review-charge-request";
-import { recordCancelledEditReviewChargeShare } from "@/lib/edit-financial-review-charge-cancelled";
+import { settleCancelledEditReviewCharge } from "@/lib/edit-financial-review-charge-cancelled";
+import { CHARGE_BOOKING_CANCELLED_COMPLETION, completionMessage } from "@/lib/manual-refund-task-copy";
 import { EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY } from "@/lib/edit-financial-review-charge-recovery";
 import {
   canAskCardForReviewCharge,
@@ -538,6 +544,13 @@ beforeEach(() => {
   mocks.bookingModificationCreate.mockResolvedValue({ id: "mod-rebase-1" });
   // No request for this edit yet, and no supplementary invoice out.
   mocks.paymentTransactionFindFirst.mockResolvedValue(null);
+  // #4272: nothing refunded off a request, and no earlier cancelled-share record
+  // beyond what this run itself writes - read back from the audit mock, so a
+  // second run sees the first one's record exactly as the database would.
+  mocks.paymentTransactionFindUnique.mockResolvedValue({ refundedAmountCents: 0 });
+  mocks.auditLogFindMany.mockImplementation(async () =>
+    mocks.createAuditLog.mock.calls.map((call) => ({ metadata: (call[0] as { metadata?: unknown }).metadata ?? null })),
+  );
   mocks.xeroObjectLinkFindFirst.mockResolvedValue(null);
   // ...and no supplementary invoice queued for it either (#3947 review).
   mocks.xeroSyncOperationFindFirst.mockResolvedValue(null);
@@ -3048,11 +3061,11 @@ describe("#4272: a review charge on a cancelled booking is refused", () => {
     expect(result.additionalPaymentIntentId).toBe("pi_additional_1");
   });
 
-  it("a cancellation landing after the commit stops the sync's mint, leaving the debt to the replay's skip", async () => {
+  it("a cancellation landing after the commit asks nothing, records the share, skips the Xero leg and tells the officer so", async () => {
     // The chooser saw PAID under lock(1) and chose the card; the booking was
-    // cancelled before the sync's post-commit re-read. The helper refuses there
-    // too, so no ask is minted on the cancelled booking. The recovery row the
-    // sync writes is closed by the replay's cancelled-booking skip.
+    // cancelled before the sync's post-commit re-read. Nothing is minted, the
+    // share is recorded as uncollected, and no supplementary invoice is queued
+    // to wait on a card request that will never exist.
     mocks.paymentFindUnique.mockResolvedValue({
       id: "payment-1",
       status: PaymentStatus.SUCCEEDED,
@@ -3068,7 +3081,19 @@ describe("#4272: a review charge on a cancelled booking is refused", () => {
     expect(mocks.manualRefundTaskUpdateMany).toHaveBeenCalledTimes(1);
     expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
     expect(result.additionalPaymentIntentId).toBeNull();
-    expect(mocks.enqueueEditFinancialReviewChargeRecovery).toHaveBeenCalledTimes(1);
+    expect(result.chargeBookingCancelled).toBe(true);
+    // Recorded now, so nothing is left for a recovery row to retry.
+    expect(mocks.enqueueEditFinancialReviewChargeRecovery).not.toHaveBeenCalled();
+    expect(
+      mocks.createAuditLog.mock.calls.filter(
+        (call) => (call[0] as { metadata?: { cause?: string } }).metadata?.cause === "booking-cancelled",
+      ),
+    ).toHaveLength(1);
+    expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+    // The officer is told the truth: not "will be retried automatically".
+    const message = completionMessage(result, CLUB_FORMAT_TEST);
+    expect(message).toBe(CHARGE_BOOKING_CANCELLED_COMPLETION);
+    expect(message).not.toContain("retried automatically");
   });
 
   /** The sync's own arguments, as the inline completion passes them. */
@@ -3106,14 +3131,15 @@ describe("#4272: a review charge on a cancelled booking is refused", () => {
 
     const result = await syncEditFinancialReviewChargeRequest(syncArgs);
 
-    expect(result).toMatchObject({ outcome: "not-raised", paymentIntentId: null, totalCents: 23000 });
+    expect(result).toMatchObject({ outcome: "booking-cancelled", paymentIntentId: null, totalCents: 23000 });
     // No provider call of any kind: no raise, no currency re-issue, no mint.
     expect(mocks.getPaymentIntent).not.toHaveBeenCalled();
     expect(mocks.updatePaymentIntentAmount).not.toHaveBeenCalled();
     expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
     expect(mocks.writeRaisedAdditionalRequestAmount).not.toHaveBeenCalled();
-    // The debt goes to the recovery row, whose cancelled skip records it.
-    expect(mocks.enqueueEditFinancialReviewChargeRecovery).toHaveBeenCalledTimes(1);
+    // Recorded under the claim, so no recovery row is needed.
+    expect(mocks.enqueueEditFinancialReviewChargeRecovery).not.toHaveBeenCalled();
+    expect(EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY["booking-cancelled"]).toBe(true);
 
     // CONTROL: the same edit on a live booking raises the request as before.
     vi.clearAllMocks();
@@ -3131,6 +3157,20 @@ describe("#4272: a review charge on a cancelled booking is refused", () => {
     expect(mocks.updatePaymentIntentAmount).toHaveBeenCalledWith("pi_additional_1", 23000);
   });
 
+  it("answers already-paid with no provider call when a paid request covers every share on the cancelled booking", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(
+      chargeRequestRow({ status: PaymentStatus.SUCCEEDED, amountCents: 20000 }),
+    );
+    mocks.paymentFindUnique.mockResolvedValue(rereadWithStatus("CANCELLED"));
+
+    const result = await syncEditFinancialReviewChargeRequest(syncArgs);
+
+    expect(result).toMatchObject({ outcome: "already-paid", paymentIntentId: "pi_additional_1" });
+    expect(mocks.getPaymentIntent).not.toHaveBeenCalled();
+    expect(mocks.updatePaymentIntentAmount).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).not.toHaveBeenCalled();
+  });
+
   it("the mint's own card question still refuses a cancellation landing after the sync's first read", async () => {
     // The first re-read sees PAID; the cancellation commits before the mint's.
     mocks.paymentFindUnique
@@ -3146,9 +3186,10 @@ describe("#4272: a review charge on a cancelled booking is refused", () => {
 });
 
 /**
- * #4272: the replay's cancelled-booking skip records what the cancellation left
- * uncollected (`recordCancelledEditReviewChargeShare`), through the one record
- * function, so a task that reads COMPLETED still has a findable trace.
+ * #4272: what a cancellation left uncollected is recorded
+ * (`settleCancelledEditReviewCharge`), through the one record function, so a
+ * task that reads COMPLETED still has a findable trace - once per figure, net of
+ * refunds, and never as a guess.
  */
 describe("#4272: the uncollected share on a cancelled booking is recorded", () => {
   const args = {
@@ -3176,24 +3217,97 @@ describe("#4272: the uncollected share on a cancelled booking is recorded", () =
     // The cancellation marks the edit's request FAILED (`INV-ADDPAY-023`): it collected nothing.
     mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow({ status: PaymentStatus.FAILED }));
 
-    await recordCancelledEditReviewChargeShare(args);
+    await settleCancelledEditReviewCharge(args);
 
     const [row] = uncollectedRows();
     expect(uncollectedRows()).toHaveLength(1);
     expect(row.metadata).toMatchObject({ leg: "payment-request", cause: "booking-cancelled", uncollectedCents: 23000 });
     expect(row.summary).toContain("$230.00");
     expect(row.summary).toContain("cancelled");
-    expect(row.details).toContain("Collect the rest another way");
+    expect(row.details).toContain("Nothing was collected towards it.");
+    expect(row.details).toContain("Collect $230.00 another way");
     expect(row.details).not.toContain("had already been paid");
+  });
+
+  it("writes ONE record when the replay runs twice for the same figure (reaper re-claim, failed close, re-arm)", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow({ status: PaymentStatus.FAILED }));
+
+    await settleCancelledEditReviewCharge(args);
+    await settleCancelledEditReviewCharge(args);
+
+    expect(uncollectedRows()).toHaveLength(1);
+  });
+
+  it("writes only the difference when a later share grows what is owed", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow({ status: PaymentStatus.FAILED }));
+    mocks.manualRefundTaskFindMany.mockResolvedValueOnce([settledShare()]);
+    await settleCancelledEditReviewCharge(args);
+
+    await settleCancelledEditReviewCharge(args);
+
+    const rows = uncollectedRows();
+    expect(rows.map((row) => row.metadata.uncollectedCents)).toEqual([20000, 3000]);
+    expect(rows[1].details).toContain("An earlier record already covers $200.00 of the $230.00 still owed");
+    expect(rows[1].metadata).toMatchObject({ alreadyRecordedCents: 20000, owedCents: 23000 });
+  });
+
+  it("CONTROL: another edit's or another cause's record does not count against this one", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow({ status: PaymentStatus.FAILED }));
+    mocks.auditLogFindMany.mockResolvedValue([
+      { metadata: { cause: "booking-cancelled", bookingModificationId: "mod-other", uncollectedCents: 23000 } },
+      { metadata: { cause: "ask-closed", bookingModificationId: "mod-1", uncollectedCents: 23000 } },
+    ]);
+
+    await settleCancelledEditReviewCharge(args);
+
+    expect(uncollectedRows()[0].metadata).toMatchObject({ uncollectedCents: 23000 });
+  });
+
+  it("nets a fully refunded request out of what was collected, and says so", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(
+      chargeRequestRow({ status: PaymentStatus.REFUNDED, amountCents: 20000 }),
+    );
+    mocks.paymentTransactionFindUnique.mockResolvedValue({ refundedAmountCents: 20000 });
+
+    await settleCancelledEditReviewCharge(args);
+
+    const [row] = uncollectedRows();
+    expect(row.metadata).toMatchObject({ uncollectedCents: 23000, refundedCents: 20000, netPaidCents: 0 });
+    expect(row.details).toContain("$200.00 of that was refunded, so $0.00 counts as collected");
+  });
+
+  it("nets a partly refunded request: owed less what was kept", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(
+      chargeRequestRow({ status: PaymentStatus.PARTIALLY_REFUNDED, amountCents: 20000 }),
+    );
+    mocks.paymentTransactionFindUnique.mockResolvedValue({ refundedAmountCents: 5000 });
+
+    await settleCancelledEditReviewCharge(args);
+
+    expect(uncollectedRows()[0].metadata).toMatchObject({ uncollectedCents: 8000, refundedCents: 5000, netPaidCents: 15000 });
+  });
+
+  it("leaves a request still PROCESSING at Stripe to a retry rather than recording a guess", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow({ status: PaymentStatus.PROCESSING }));
+
+    await expect(settleCancelledEditReviewCharge(args)).rejects.toThrow(/still processing/);
+    expect(uncollectedRows()).toHaveLength(0);
+  });
+
+  it("throws when the audit insert fails, so the durable row retries instead of closing with no record", async () => {
+    mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow({ status: PaymentStatus.FAILED }));
+    mocks.createAuditLog.mockRejectedValueOnce(new Error("audit sink down"));
+
+    await expect(settleCancelledEditReviewCharge(args)).rejects.toThrow("audit sink down");
   });
 
   it("records only the part a paid request did not cover", async () => {
     mocks.paymentTransactionFindFirst.mockResolvedValue(chargeRequestRow({ status: PaymentStatus.SUCCEEDED }));
 
-    await recordCancelledEditReviewChargeShare(args);
+    await settleCancelledEditReviewCharge(args);
 
     expect(uncollectedRows()).toHaveLength(1);
-    expect(uncollectedRows()[0].metadata).toMatchObject({ cause: "booking-cancelled", uncollectedCents: 3000 });
+    expect(uncollectedRows()[0].metadata).toMatchObject({ cause: "booking-cancelled", uncollectedCents: 3000, refundedCents: 0 });
   });
 
   it("CONTROL: records nothing when a paid request already covers every settled share", async () => {
@@ -3201,7 +3315,10 @@ describe("#4272: the uncollected share on a cancelled booking is recorded", () =
       chargeRequestRow({ status: PaymentStatus.SUCCEEDED, amountCents: 23000 }),
     );
 
-    await recordCancelledEditReviewChargeShare(args);
+    await expect(settleCancelledEditReviewCharge(args)).resolves.toMatchObject({
+      outcome: "already-paid",
+      paymentIntentId: "pi_additional_1",
+    });
 
     expect(uncollectedRows()).toHaveLength(0);
   });

@@ -675,7 +675,7 @@ export async function resolveManualRefundTask(
    * there" is one question; this module is the DOOR - validate, claim, audit -
    * and it ends at the commit.
    */
-  const { stripeRefundId, additionalPaymentIntentId } =
+  const { stripeRefundId, additionalPaymentIntentId, chargeBookingCancelled } =
     await executeEditReviewSettlement({
       bookingId: result.bookingId,
       taskId: result.taskId,
@@ -696,5 +696,5 @@ export async function resolveManualRefundTask(
   const { keptLateCaptureXeroPlan, ...closed } = result;
   await finishKeptLateCaptureXeroRecord(keptLateCaptureXeroPlan);
 
-  return { ...closed, stripeRefundId, additionalPaymentIntentId };
+  return { ...closed, stripeRefundId, additionalPaymentIntentId, chargeBookingCancelled };
 }

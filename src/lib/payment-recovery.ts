@@ -59,7 +59,6 @@ import { ORDINARY_ASK_RECOVERY_REASON, planOrdinaryAskMint } from "@/lib/ordinar
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { closeCancellationRefundAfterReplay, closeCapacityRaceRefundRecordingEvent, recordDuplicateCaptureRefundEvent } from "@/lib/booking-events";
 import { reportSupersededPaymentRefund } from "@/lib/superseded-additional-refund";
-import { refusesReviewChargeForCancellation } from "@/lib/booking-payment-state";
 import logger from "@/lib/logger";
 import { createAuditLog } from "@/lib/audit";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE } from "@/lib/payment-recovery-constants";
@@ -2466,16 +2465,11 @@ async function processCreateAdditionalPaymentIntentOperation(
         `Booking ${operation.bookingId} not found for edit-financial-review charge recovery`,
       );
     }
-    if (refusesReviewChargeForCancellation(booking)) {
-      // #1358: the cancel flow retired this booking's asks, so a mint here would resurrect one nobody
-      // can pay (#4272). The shares it leaves uncollected get their officer-findable record instead.
-      const { recordCancelledEditReviewChargeShare } = await import("@/lib/edit-financial-review-charge-cancelled");
-      await recordCancelledEditReviewChargeShare({
-        format, bookingId: operation.bookingId, paymentId: operation.paymentId, bookingModificationId, memberId: bookingOwner(booking).member.id ?? null,
-      });
-      await completePaymentRecoveryOperation(operation.id);
-      return;
-    }
+    // #1358: the cancel flow retired a cancelled booking's asks, so a mint here would resurrect one
+    // nobody can pay (#4272). Its uncollected shares are recorded and the row closed instead.
+    const { closeCancelledEditReviewChargeReplay } = await import("@/lib/edit-financial-review-charge-cancelled");
+    const cancelledReplay = { format, operation, bookingModificationId, memberId: bookingOwner(booking).member.id ?? null };
+    if (await closeCancelledEditReviewChargeReplay({ ...cancelledReplay, status: booking.status })) return;
     const synced = await syncEditFinancialReviewChargeRequest({
       format,
       bookingId: operation.bookingId,
@@ -2685,6 +2679,8 @@ async function processCreateAdditionalPaymentIntentOperation(
      * being processed is already this debt's durable retry, and a second row for
      * one debt is a second debt.
      */
+    // #4272: a cancellation landing mid-replay takes the cancelled path, not a retry.
+    if (synced.outcome === "not-raised" && (await closeCancelledEditReviewChargeReplay(cancelledReplay))) return;
     if (!EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY[synced.outcome]) {
       throw new Error(
         `Edit financial review charge request for booking modification ${bookingModificationId} was not raised (${formatCents(synced.totalCents, format)} still owed); leaving the recovery operation open to retry`,

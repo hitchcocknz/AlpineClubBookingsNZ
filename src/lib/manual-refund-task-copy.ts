@@ -124,6 +124,14 @@ const NOTHING_FURTHER_RETURNED =
   "Nothing further was credited or refunded: the booking's cancellation had already returned this share to the member.";
 
 /**
+ * #4272: a charge whose booking was cancelled after the completion committed.
+ * Nothing was asked of the member and nothing will be retried; the uncollected
+ * share is in the audit log (`settleCancelledEditReviewCharge`).
+ */
+export const CHARGE_BOOKING_CANCELLED_COMPLETION =
+  "The booking was cancelled before the request for payment could be raised, so the member has not been asked for this. Collect it another way. A record of the amount still owed has been added to the audit log.";
+
+/**
  * What the operator is told a completion actually did.
  *
  * One sentence per route, because the four outcomes are materially different
@@ -147,6 +155,8 @@ export function completionMessage(result: {
   accountCredit?: { givenBackCents: number; mintedCents: number } | null;
   /** #3835: the share the officer typed, beside what a cancelled booking still owed. */
   amountCents?: number | null;
+  /** #4272: the booking was cancelled before the charge's request was raised. */
+  chargeBookingCancelled?: boolean;
 }, format: ClubFormat) {
   const amended = result.amountAmended ? " at the confirmed amount" : "";
   // #3835: on a cancelled booking, the applied-credit part of what was still owed went back as credit.
@@ -172,6 +182,7 @@ export function completionMessage(result: {
     case "charge-on-invoice":
       return `Added to this booking's invoice for the member to pay${amended}.`;
     case "charge-as-payment-request":
+      if (result.chargeBookingCancelled) return CHARGE_BOOKING_CANCELLED_COMPLETION;
       return result.additionalPaymentIntentId
         ? `The member has been asked to pay this${amended}. It is on the booking as an additional payment and they will be reminded until it is paid.`
         : "The request for payment could not be raised just now. It has been recorded and will be retried automatically — check this booking's payment history before asking the member another way.";

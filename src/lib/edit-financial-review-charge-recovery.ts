@@ -26,6 +26,9 @@ export const EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY: Record<EditReviewChargeSy
   raised: true,
   "already-paid": true,
   "not-raised": false,
+  // #4272: terminal - nothing may be asked on a cancelled booking, and the
+  // uncollected share is already on record.
+  "booking-cancelled": true,
   deferred: false,
 };
 

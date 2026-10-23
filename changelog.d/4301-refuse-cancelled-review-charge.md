@@ -12,7 +12,9 @@
   the message says to agree the amount with the organiser.
 
   If the booking is cancelled in the moment just after a review is settled,
-  nothing is asked of the member, and the amount still owed is recorded in the
-  audit log as a review share that was not collected, so an officer can find
-  it and collect it another way. Reviews on bookings that are not cancelled
-  are unchanged.
+  nothing is asked of the member and the officer is told so straight away. The
+  amount still owed is recorded once in the audit log as a review share that
+  was not collected: the settled total less anything the member paid towards
+  it and kept, with any refund stated. An officer can find it there and
+  collect it another way. Reviews on bookings that are not cancelled are
+  unchanged.

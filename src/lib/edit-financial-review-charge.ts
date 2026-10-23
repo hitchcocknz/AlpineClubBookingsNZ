@@ -29,6 +29,7 @@ import {
 import {
   syncEditFinancialReviewChargeRequest,
   type EditReviewChargeMember,
+  type EditReviewChargeSyncOutcome,
 } from "@/lib/edit-financial-review-charge-sync";
 import logger from "@/lib/logger";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
@@ -567,7 +568,12 @@ export async function executeEditReviewCharge({
   taskId: string;
   route: EditReviewChargeRoute;
   format: ClubFormat; // #3565: resolved before any transaction by the caller
-}): Promise<{ paymentIntentId: string | null; totalCents: number }> {
+}): Promise<{
+  paymentIntentId: string | null;
+  totalCents: number;
+  /** The sync's answer on the card route (#4272: `booking-cancelled` asks nothing). */
+  outcome?: EditReviewChargeSyncOutcome;
+}> {
   // Derived here as well as inside the sync, because BOTH arms need it and the
   // failure arm needs it after the sync has thrown: the supplementary Xero
   // invoice the caller queues must bill the whole edit rather than this one share

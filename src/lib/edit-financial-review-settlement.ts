@@ -544,6 +544,8 @@ export async function executeEditReviewSettlement({
 } & EditReviewHandBackXeroFacts): Promise<{
   stripeRefundId: string | null;
   additionalPaymentIntentId: string | null;
+  /** #4272: the booking was cancelled before the charge was asked; nothing was. */
+  chargeBookingCancelled?: boolean;
 }> {
   let stripeRefundId: string | null = null;
 
@@ -604,6 +606,12 @@ export async function executeEditReviewSettlement({
     });
     additionalPaymentIntentId = charged.paymentIntentId;
     chargeTotalCents = charged.totalCents;
+    // #4272: cancelled after the commit, so nothing was asked and the share is
+    // on record. No Xero leg either: its supplementary invoice would wait on a
+    // card request that will never exist, for a booking the club no longer counts.
+    if (charged.outcome === "booking-cancelled") {
+      return { stripeRefundId, additionalPaymentIntentId, chargeBookingCancelled: true };
+    }
   }
 
   // #3791: an account-credit share's event and Xero leg - given back, minted,

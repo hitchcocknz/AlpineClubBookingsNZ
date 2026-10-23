@@ -2253,10 +2253,10 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   - **A lease, never a lock**: nothing is held across Stripe and no advisory key
     is taken; an expired token is taken over, safe because the derived total
     only grows and a raise is absolute.
-  - **One card question** (#3947): the chooser and the mint both ask
+  - **One card question** (#3947): chooser and mint both ask
     `canAskCardForReviewCharge` ([INV-PAY-069]), so a card route is always
     minted for. A booking cancelled since the commit is asked nothing (#4272);
-    the replay records its share as uncollected. One cancelled mid-call is
+    its shortfall, net of refunds, is recorded once. A cancellation mid-call is
     missed.
   - **Stated limits**, ordering and interleavings:
     [`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md).

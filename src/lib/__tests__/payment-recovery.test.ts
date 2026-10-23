@@ -46,7 +46,7 @@ const {
   mockCompleteDeferredSupplementaryInvoice,
   mockRecordShortEditReviewChargeInvoice,
   mockRecordUncollectedEditReviewChargeShare,
-  mockRecordCancelledEditReviewChargeShare,
+  mockCloseCancelledEditReviewChargeReplay,
   mockFindEditReviewChargeRequest,
   mockCreateAuditLog,
   settlementModuleLoadFailure,
@@ -118,7 +118,8 @@ const {
     .mockResolvedValue("covers-total"),
   mockRecordShortEditReviewChargeInvoice: vi.fn().mockResolvedValue(false),
   mockRecordUncollectedEditReviewChargeShare: vi.fn().mockResolvedValue(undefined),
-  mockRecordCancelledEditReviewChargeShare: vi.fn().mockResolvedValue(undefined),
+  // #4272: the real one answers from the booking's status; so does this.
+  mockCloseCancelledEditReviewChargeReplay: vi.fn(async (args: { status?: string }) => args.status === "CANCELLED"),
   /**
    * #3181 fix round: arms a failure to LOAD the settlement module, as distinct
    * from a failure of the call inside it. The worker reaches that module through
@@ -310,11 +311,11 @@ vi.mock("@/lib/edit-financial-review-charge-request", () => ({
     mockFindEditReviewChargeRequest(...args),
 }));
 
-// #4272: the cancelled-booking skip's record, proved against the real request
+// #4272: the cancelled-booking path, its record proved against the real request
 // module in `edit-financial-review-charge.test.ts`.
 vi.mock("@/lib/edit-financial-review-charge-cancelled", () => ({
-  recordCancelledEditReviewChargeShare: (...args: unknown[]) =>
-    mockRecordCancelledEditReviewChargeShare(...args),
+  closeCancelledEditReviewChargeReplay: (args: { status?: string }) =>
+    mockCloseCancelledEditReviewChargeReplay(args),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -5103,24 +5104,61 @@ describe("edit-financial-review charge recovery (#3170)", () => {
     expect(result.succeeded).toBe(1);
     expect(mockSyncEditFinancialReviewChargeRequest).not.toHaveBeenCalled();
     expect(mockAttachIntentToWaitingOps).not.toHaveBeenCalled();
-    // #4272: and the shares it leaves uncollected are recorded for an officer,
-    // before the row closes - not left to a log line under a COMPLETED task.
-    expect(mockRecordCancelledEditReviewChargeShare).toHaveBeenCalledTimes(1);
-    expect(mockRecordCancelledEditReviewChargeShare).toHaveBeenCalledWith(
+    // #4272: and the shares it leaves uncollected are recorded for an officer
+    // and the row closed, by the cancelled path - not by a bare log line.
+    expect(mockCloseCancelledEditReviewChargeReplay).toHaveBeenCalledTimes(1);
+    expect(mockCloseCancelledEditReviewChargeReplay).toHaveBeenCalledWith(
       expect.objectContaining({
-        bookingId: "booking-1",
-        paymentId: "payment-1",
+        status: "CANCELLED",
         bookingModificationId: "mod-1",
         memberId: "m1",
+        operation: expect.objectContaining({ bookingId: "booking-1", paymentId: "payment-1" }),
       }),
     );
   });
 
-  it("CONTROL: a live booking's replay writes no cancelled-share record (#4272)", async () => {
+  it("CONTROL: a live booking's replay takes the ordinary path (#4272)", async () => {
     await processPaymentRecoveryOperations({ limit: 1 });
 
     expect(mockSyncEditFinancialReviewChargeRequest).toHaveBeenCalledTimes(1);
-    expect(mockRecordCancelledEditReviewChargeShare).not.toHaveBeenCalled();
+    // Asked once, with the live status, and declined.
+    expect(mockCloseCancelledEditReviewChargeReplay).toHaveBeenCalledTimes(1);
+    expect(mockCloseCancelledEditReviewChargeReplay).toHaveBeenCalledWith(expect.objectContaining({ status: "PAID" }));
+  });
+
+  it("a cancellation landing mid-replay takes the cancelled path instead of burning an attempt (#4272)", async () => {
+    // The sync found the booking cancelled at its mint and raised nothing; the
+    // replay re-reads the status (no `status` passed) and closes via the record.
+    mockSyncEditFinancialReviewChargeRequest.mockResolvedValue({
+      outcome: "not-raised",
+      paymentIntentId: null,
+      totalCents: 23000,
+    });
+    // Live when the replay began; cancelled by the time it re-reads.
+    mockCloseCancelledEditReviewChargeReplay.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+    expect(result.succeeded).toBe(1);
+    expect(result.retried).toBe(0);
+    expect(mockCloseCancelledEditReviewChargeReplay).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({ status: expect.anything() }),
+    );
+    expect(mockCloseCancelledEditReviewChargeReplay).toHaveBeenCalledTimes(2);
+  });
+
+  it("CONTROL: a not-raised replay on a live booking still leaves the row open to retry (#4272)", async () => {
+    mockSyncEditFinancialReviewChargeRequest.mockResolvedValue({
+      outcome: "not-raised",
+      paymentIntentId: null,
+      totalCents: 23000,
+    });
+
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+    expect(result.succeeded).toBe(0);
+    expect(result.retried).toBe(1);
+    expect(mockCloseCancelledEditReviewChargeReplay).toHaveBeenCalledTimes(2);
   });
 
   /**
