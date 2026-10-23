@@ -107,8 +107,14 @@ describe("attributeGapCash (A)", () => {
 });
 
 describe("readCaptureRecorder (B, C)", () => {
+  /** What each of the recorder's three supplementary-invoice reads finds, answered by the query's shape. */
+  let found: { naming: unknown; covering: unknown; own: unknown };
   const store = {
-    xeroSyncOperation: { findFirst: vi.fn() },
+    xeroSyncOperation: {
+      findFirst: vi.fn(async ({ where }: { where: { localModel?: string; requestPayload?: { path: string[] } } }) =>
+        where.localModel ? found.own : where.requestPayload?.path[0] === "paymentIntentId" ? found.naming : found.covering,
+      ),
+    },
     xeroObjectLink: { findFirst: vi.fn() },
     paymentTransaction: { findUnique: vi.fn() },
     bookingModification: {},
@@ -117,11 +123,16 @@ describe("readCaptureRecorder (B, C)", () => {
   const input = { bookingId: "booking_1", primaryInvoiceId: "inv_primary", paymentIntentId: "pi_change", bookingModificationId: "mod_change" };
   const figures = { operationId: "op_primary", atLink: { xeroInvoiceId: "inv_primary", paymentIntentIdsRecordedAtLink: ["pi_primary"] } };
   const read = () => readCaptureRecorder(input, store as never);
+  const gapCovering = (cents: number) => ({
+    id: "op_gap",
+    requestPayload: { primaryInvoiceGap: true, coveredPaymentIntentIds: ["pi_change"], coveredCaptureCents: { pi_change: cents } },
+  });
 
   beforeEach(() => {
     vi.clearAllMocks();
-    store.xeroSyncOperation.findFirst.mockResolvedValue(null);
+    found = { naming: null, covering: null, own: null };
     store.xeroObjectLink.findFirst.mockResolvedValue(null);
+    store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 8_000 });
     mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValue(figures);
     mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(null);
   });
@@ -130,17 +141,25 @@ describe("readCaptureRecorder (B, C)", () => {
     await expect(read()).resolves.toEqual({ kind: "receipt", figures, gap: null, target: null, alreadyRecordedCents: 0 });
   });
 
-  it("is a supplementary invoice naming the capture, or a gap invoice whose payment took it", async () => {
-    store.xeroSyncOperation.findFirst.mockResolvedValueOnce({ id: "op_supp", requestPayload: { paymentIntentId: "pi_change" } });
-    await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_supp" });
-    expect(store.xeroSyncOperation.findFirst.mock.calls[0][0].where).toEqual({
-      queueType: "SUPPLEMENTARY_INVOICE",
-      status: { not: "CANCELLED" },
-      OR: [
-        { requestPayload: { path: ["paymentIntentId"], equals: "pi_change" } },
-        { requestPayload: { path: ["coveredPaymentIntentIds"], array_contains: ["pi_change"] } },
-      ],
+  it("MUTATION round 4 (item 4): is the supplementary invoice naming the intent, read first and on its own, whatever a gap covers", async () => {
+    found = { naming: { id: "op_named" }, covering: gapCovering(3_000), own: null };
+    await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_named" });
+    const [first] = store.xeroSyncOperation.findFirst.mock.calls.map((call) => call[0]);
+    expect(first).toEqual({
+      where: {
+        queueType: "SUPPLEMENTARY_INVOICE",
+        status: { not: "CANCELLED" },
+        requestPayload: { path: ["paymentIntentId"], equals: "pi_change" },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { id: true },
     });
+    expect(store.xeroSyncOperation.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it("is the gap invoice where its payment took all of the capture", async () => {
+    found.covering = gapCovering(8_000);
+    await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_gap" });
   });
 
   it("is the primary invoice where its recorded cash covered the capture", async () => {
@@ -152,20 +171,15 @@ describe("readCaptureRecorder (B, C)", () => {
   });
 
   it("MUTATION: is the change's own supplementary invoice where that invoice records a payment and the gap does not bill the change", async () => {
-    store.xeroSyncOperation.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "op_change_invoice", requestPayload: { recordPayment: true } });
+    found.own = { id: "op_change_invoice", requestPayload: { recordPayment: true } };
     await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_change_invoice" });
-    expect(store.xeroSyncOperation.findFirst.mock.calls[1][0].where).toMatchObject({
-      localModel: "BookingModification",
-      localId: "mod_change",
-      status: { not: "CANCELLED" },
-    });
+    const ownRead = store.xeroSyncOperation.findFirst.mock.calls.map((call) => call[0]).find((args) => args.where.localModel);
+    expect(ownRead?.where).toMatchObject({ localModel: "BookingModification", localId: "mod_change", status: { not: "CANCELLED" } });
   });
 
   it("is the receipt, against the gap invoice, where the capture's change is one the gap bills for", async () => {
     const gap = { operation: { id: "op_gap" }, link: { xeroObjectId: "inv_gap", active: true }, anchorIds: ["mod_change"] };
     mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(gap);
-    // The gap invoice is a supplementary invoice on the change; it is not the change's own.
-    store.xeroSyncOperation.findFirst.mockResolvedValue(null);
     await expect(read()).resolves.toEqual({
       kind: "receipt",
       figures,
@@ -178,7 +192,7 @@ describe("readCaptureRecorder (B, C)", () => {
   it("MUTATION round 3 (F1): is the receipt, against the change's own invoice, where that invoice was raised UNPAID", async () => {
     const own = { id: "op_change_invoice", status: "SUCCEEDED", requestPayload: { recordPayment: false } };
     const ownLink = { id: "link_change", xeroObjectId: "inv_change", active: true };
-    store.xeroSyncOperation.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(own);
+    found.own = own;
     store.xeroObjectLink.findFirst.mockResolvedValueOnce(ownLink);
     await expect(read()).resolves.toEqual({
       kind: "receipt",
@@ -190,19 +204,26 @@ describe("readCaptureRecorder (B, C)", () => {
   });
 
   it("MUTATION round 3 (F2): records the rest where the gap invoice's payment took only part of the capture", async () => {
-    store.xeroSyncOperation.findFirst.mockResolvedValueOnce({
-      id: "op_gap",
-      requestPayload: { primaryInvoiceGap: true, coveredPaymentIntentIds: ["pi_change"], coveredCaptureCents: { pi_change: 3_000 } },
-    });
-    store.paymentTransaction.findUnique.mockResolvedValueOnce({ amountCents: 8_000, refundedAmountCents: 0 });
+    found.covering = gapCovering(3_000);
     await expect(read()).resolves.toMatchObject({ kind: "receipt", alreadyRecordedCents: 3_000 });
+  });
 
-    // All of it: the gap invoice is its recorder.
-    store.xeroSyncOperation.findFirst.mockResolvedValueOnce({
-      id: "op_gap",
-      requestPayload: { primaryInvoiceGap: true, coveredPaymentIntentIds: ["pi_change"], coveredCaptureCents: { pi_change: 8_000 } },
+  it("MUTATION round 4 (item 3): compares what the gap and the primary took against the GROSS capture, never net of a refund", async () => {
+    // 80.00 captured, 30.00 refunded since, the gap took 50.00: net is covered,
+    // gross is not, so the receipt records the 30.00 rest (the refund is its own note).
+    store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 8_000 });
+    found.covering = gapCovering(5_000);
+    await expect(read()).resolves.toMatchObject({ kind: "receipt", alreadyRecordedCents: 5_000 });
+    expect(store.paymentTransaction.findUnique).toHaveBeenCalledWith({
+      where: { stripePaymentIntentId: "pi_change" },
+      select: { amountCents: true },
     });
-    store.paymentTransaction.findUnique.mockResolvedValueOnce({ amountCents: 8_000, refundedAmountCents: 0 });
+
+    // The gap's 50.00 and the primary's 30.00 make the whole gross 80.00: it stands down.
+    mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValue({
+      ...figures,
+      atLink: { ...figures.atLink, partiallyRecordedCaptureAtLink: { paymentIntentId: "pi_change", cents: 3_000 } },
+    });
     await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_gap" });
   });
 

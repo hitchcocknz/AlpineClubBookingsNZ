@@ -216,6 +216,10 @@ beforeEach(() => {
     return {};
   });
   mocks.updateManyOperation.mockResolvedValue({ count: 1 });
+  // Round 4: the planning gate runs on a transaction of its own.
+  mocks.transaction.mockImplementation(async (fn: (client: unknown) => unknown) =>
+    fn({ xeroSyncOperation: { findFirst: mocks.findFirstOperation, updateMany: mocks.updateManyOperation } }),
+  );
 });
 
 const run = (seam = providers()) => recordAdditionalCaptureReceipt({ syncOperationId: "op_receipt" }, seam);
@@ -375,25 +379,36 @@ describe("recordAdditionalCaptureReceipt", () => {
       expect(mocks.readCaptureRecorder).not.toHaveBeenCalled();
     });
 
-    it("counts only LIVE running rows, and only a receipt claimed EARLIER (round 3, C1, C2)", async () => {
-      mocks.findUniqueOperation.mockResolvedValue({ requestPayload: PAYLOAD, startedAt: new Date("2026-07-01T00:00:00.000Z") });
+    it("passes a gate under the booking's anchor lock: waits for a LIVE receipt past it, else stamps its own row (round 4, item 2)", async () => {
       await run();
-      const [receiptWait, createWait] = mocks.findFirstOperation.mock.calls.slice(0, 2).map((call) => call[0].where);
-      expect(receiptWait).toMatchObject({
+      expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(expect.anything(), "booking_1");
+      const gateRead = mocks.findFirstOperation.mock.calls.map((call) => call[0].where).find((where) => where.queueType === "ADDITIONAL_CAPTURE_RECEIPT");
+      expect(gateRead).toMatchObject({
         id: { not: "op_receipt" },
+        lastErrorCode: "ADDITIONAL_CAPTURE_RECEIPT_PLANNING",
         status: "RUNNING",
+        // Live only: a dead row past the staleness threshold blocks nothing (C1).
         startedAt: { gte: expect.any(Date) },
-        AND: [
-          {
-            OR: [
-              { startedAt: { lt: new Date("2026-07-01T00:00:00.000Z") } },
-              { startedAt: new Date("2026-07-01T00:00:00.000Z"), id: { lt: "op_receipt" } },
-            ],
-          },
-        ],
       });
+      expect(gateRead).not.toHaveProperty("AND");
+      expect(mocks.updateManyOperation).toHaveBeenCalledWith({
+        where: { id: "op_receipt", status: "RUNNING" },
+        data: { lastErrorCode: "ADDITIONAL_CAPTURE_RECEIPT_PLANNING" },
+      });
+      expect(mocks.lockSupplementaryInvoiceAnchor.mock.invocationCallOrder[0]).toBeLessThan(
+        mocks.readCaptureRecorder.mock.invocationCallOrder[0],
+      );
       // A create dead past the staleness threshold blocks nothing.
-      expect(createWait).toMatchObject({ status: "RUNNING", startedAt: { gte: expect.any(Date) } });
+      const createRead = mocks.findFirstOperation.mock.calls.map((call) => call[0].where).find((where) => where.correlationKey && where.status);
+      expect(createRead).toMatchObject({ status: "RUNNING", startedAt: { gte: expect.any(Date) } });
+    });
+
+    it("stamps nothing, and plans nothing, while another receipt holds the gate", async () => {
+      rows.otherReceiptRunning = true;
+      await expectWait();
+      expect(mocks.updateManyOperation).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: { lastErrorCode: "ADDITIONAL_CAPTURE_RECEIPT_PLANNING" } }),
+      );
     });
 
     it("waits while the booking's invoice create is still running (D)", async () => {
@@ -580,8 +595,8 @@ describe("recordAdditionalCaptureReceipt", () => {
 
       await run(seam);
 
-      expect(mocks.findUniqueTransaction).not.toHaveBeenCalled();
-      expect(mocks.readCaptureRecorder).not.toHaveBeenCalled();
+      // Round 4 (1b): who records it is read again, but nothing is decided again.
+      expect(mocks.readCaptureRecorder).toHaveBeenCalledTimes(1);
       expect(mocks.updateOperation).not.toHaveBeenCalled();
       expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -591,6 +606,21 @@ describe("recordAdditionalCaptureReceipt", () => {
           idempotencyKey: `payment-intent:pi_change:additional-capture-payment:${GAP}:v1`,
         }),
       );
+    });
+
+    it.each([
+      ["a supplementary invoice now names or covers it", { kind: "supplementary-invoice", operationId: "op_repair_invoice" }],
+      ["the primary's own payment records it", { kind: "primary-invoice" }],
+    ])("MUTATION round 4 (1b): refuses, telling an officer, rather than send a stored decision where %s", async (_label, recorder) => {
+      invoices[GAP] = { amountDue: 8000 };
+      mocks.readCaptureRecorder.mockResolvedValue(recorder);
+      const seam = providers();
+
+      await run(seam);
+
+      expectRefused("recorded-elsewhere");
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+      expect(seam.getAuthenticatedXeroClient).not.toHaveBeenCalled();
     });
 
     it("links what the first try recorded, if Xero has it", async () => {

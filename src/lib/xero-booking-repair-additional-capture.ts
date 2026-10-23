@@ -23,6 +23,7 @@ import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receip
 import { ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE } from "@/lib/additional-capture-xero-receipt";
 import { readPrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-gap-anchors";
 import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
+import { asRecord } from "@/lib/xero-json";
 import {
   xeroOperationSelect,
   type BookingXeroRepairAction,
@@ -48,11 +49,13 @@ export type AdditionalCaptureReceiptEvidence = {
   /** Whether the primary's stored figures say which captures its cash covered. */
   primaryCoverageKnown: boolean;
   /**
-   * Changes a capture of which its receipt has RECORDED in Xero (its payment
-   * linked): a supplementary invoice the repair tool queues for one is raised
+   * Changes a capture of which its receipt has recorded, or may be recording
+   * (its payment linked, the row RUNNING, or a decision stored on it - round
+   * 4): a supplementary invoice the repair tool queues for one is raised
    * unpaid, so the capture is recorded once. Round 3 (F1): never for a receipt
-   * still queued or refused - that one records against the change's invoice
-   * once it exists, or the invoice records it.
+   * that has decided nothing yet, or was refused before deciding - that one
+   * records against the change's invoice once it exists, or the invoice
+   * records it.
    */
   receiptModificationIds: ReadonlySet<string>;
 };
@@ -123,9 +126,15 @@ export async function loadAdditionalCaptureReceiptEvidence(
       const hasReceipt =
         recordedTransactionIds.has(capture.id) ||
         (operationsByTransactionId.get(capture.id) ?? []).some((operation) => operation.status !== "CANCELLED");
-      if (recordedTransactionIds.has(capture.id) && capture.bookingModificationId) {
-        receiptModificationIds.add(capture.bookingModificationId);
-      }
+      // Round 4 (1a): a receipt that may be recording right now - one running,
+      // or one that stored its decision (it sends that on its retry) - counts
+      // as recording, as a linked one does.
+      const recording =
+        recordedTransactionIds.has(capture.id) ||
+        (operationsByTransactionId.get(capture.id) ?? []).some(
+          (operation) => operation.status === "RUNNING" || asRecord(operation.requestPayload)?.plan != null,
+        );
+      if (recording && capture.bookingModificationId) receiptModificationIds.add(capture.bookingModificationId);
       if (hasReceipt) continue;
       const recorder = await readCaptureRecorder(
         {

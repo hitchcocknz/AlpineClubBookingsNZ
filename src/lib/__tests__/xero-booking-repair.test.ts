@@ -515,12 +515,14 @@ function createDependencies(state: {
           if (where?.correlationKey) return state.primaryInvoiceFiguresOperation ?? null;
           const live = operations.filter((op: any) => op.queueType === where?.queueType && op.status !== "CANCELLED");
           if (where?.localId) return live.find((op: any) => op.localModel === where.localModel && op.localId === where.localId) ?? null;
-          const intents = (where?.OR ?? []).map((arm: any) => arm.requestPayload?.equals ?? arm.requestPayload?.array_contains?.[0]);
+          // The intent naming read (`paymentIntentId`), or the gap-coverage read (`coveredPaymentIntentIds`).
+          const intent = where?.requestPayload?.equals ?? where?.requestPayload?.array_contains?.[0];
+          const byCoverage = where?.requestPayload?.path?.[0] === "coveredPaymentIntentIds";
           return (
             live.find((op: any) =>
-              intents.some((intent: string) =>
-                op.requestPayload?.paymentIntentId === intent || (op.requestPayload?.coveredPaymentIntentIds ?? []).includes(intent),
-              ),
+              byCoverage
+                ? (op.requestPayload?.coveredPaymentIntentIds ?? []).includes(intent)
+                : op.requestPayload?.paymentIntentId === intent,
             ) ?? null
           );
         }),
@@ -9160,7 +9162,7 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
       xeroObjectNumber: null,
       xeroObjectUrl: null,
     };
-    const withChange = (receipt: "linked" | "queued" | "none") =>
+    const withChange = (receipt: "linked" | "queued" | "running" | "planned" | "none") =>
       run({
         booking: makeBooking({
           payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture({ bookingModificationId: "mod_change" })] },
@@ -9168,7 +9170,25 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
         }),
         operations: [
           makePrimaryInvoiceCreateOperation(),
-          ...(receipt === "none" ? [] : [receiptOperation({ status: receipt === "linked" ? "SUCCEEDED" : "PENDING" })]),
+          ...(receipt === "none"
+            ? []
+            : [
+                receiptOperation({
+                  status: receipt === "linked" ? "SUCCEEDED" : receipt === "running" ? "RUNNING" : receipt === "planned" ? "FAILED" : "PENDING",
+                  ...(receipt === "planned"
+                    ? {
+                        requestPayload: {
+                          queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+                          bookingId: "booking_1",
+                          paymentId: "payment_1",
+                          paymentTransactionId: "txn_change",
+                          paymentIntentId: "pi_change",
+                          plan: { target: "PRIMARY_INVOICE", invoiceId: "inv_primary", amountCents: 8000, capturedCents: 8000, date: "2026-06-30" },
+                        },
+                      }
+                    : {}),
+                }),
+              ]),
         ],
         links: receipt === "linked" ? [receiptLink] : [],
       });
@@ -9210,6 +9230,16 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
       const queued = (await withChange("queued")).bookingReport;
       expect(queueAction(queued)?.payload).not.toHaveProperty("recordPayment");
     });
+
+    it.each(["running", "planned"] as const)(
+      "MUTATION round 4 (1a): raises it unpaid where the capture's receipt may be recording it (%s)",
+      async (receipt) => {
+        const queueAction = (bookingReport: { actions: Array<{ type: string; payload: Record<string, unknown> }> }) =>
+          bookingReport.actions.find((action) => action.type === "QUEUE_SUPPLEMENTARY_INVOICE");
+        const report = (await withChange(receipt)).bookingReport;
+        expect(queueAction(report)?.payload).toMatchObject({ bookingModificationId: "mod_change", recordPayment: false });
+      },
+    );
 
     it("MUTATION round 3 (F1): still reports a capture whose change's own invoice was raised UNPAID - the receipt records against it", async () => {
       const { bookingReport } = await run({

@@ -108,39 +108,53 @@ export async function readCaptureRecorder(
   },
   store: RecorderStore = prisma,
 ): Promise<CaptureRecorder> {
+  // Round 4 (item 4): a supplementary invoice naming the intent first - that
+  // invoice records it, whatever any gap invoice covers.
   const naming = await store.xeroSyncOperation.findFirst({
     where: {
       queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
       status: { not: "CANCELLED" },
-      OR: [
-        { requestPayload: { path: ["paymentIntentId"], equals: input.paymentIntentId } },
-        { requestPayload: { path: [GAP_COVERED_INTENTS_KEY], array_contains: [input.paymentIntentId] } },
-      ],
+      requestPayload: { path: ["paymentIntentId"], equals: input.paymentIntentId },
     },
-    select: { id: true, requestPayload: true },
+    orderBy: { createdAt: "desc" },
+    select: { id: true },
   });
-  let gapCoveredCents = 0;
-  if (naming) {
-    const payload = asRecord(naming.requestPayload);
-    if (payload?.paymentIntentId === input.paymentIntentId) return { kind: "supplementary-invoice", operationId: naming.id };
-    // F2: the gap invoice's payment took part or all of this capture's cash.
-    const covered = asRecord(payload?.[GAP_COVERED_CENTS_KEY])?.[input.paymentIntentId];
-    if (typeof covered !== "number") return { kind: "supplementary-invoice", operationId: naming.id };
-    const capture = await store.paymentTransaction.findUnique({
-      where: { stripePaymentIntentId: input.paymentIntentId },
-      select: { amountCents: true, refundedAmountCents: true },
-    });
-    const netCents = capture ? Math.max(0, capture.amountCents - capture.refundedAmountCents) : 0;
-    if (covered >= netCents) return { kind: "supplementary-invoice", operationId: naming.id };
-    gapCoveredCents = covered;
-  }
+  if (naming) return { kind: "supplementary-invoice", operationId: naming.id };
 
   const figures = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.primaryInvoiceId, store);
   if (figures?.atLink.paymentIntentIdsRecordedAtLink?.includes(input.paymentIntentId)) {
     return { kind: "primary-invoice" };
   }
   const partial = figures?.atLink.partiallyRecordedCaptureAtLink;
-  const alreadyRecordedCents = gapCoveredCents + (partial?.paymentIntentId === input.paymentIntentId ? partial.cents : 0);
+  const primaryPartCents = partial?.paymentIntentId === input.paymentIntentId ? partial.cents : 0;
+
+  // Then a gap invoice whose payment took some of it (F2). GROSS, round 4
+  // (item 3): what the gap and the primary took, against the capture as it
+  // was captured - the receipt records the gross rest, and a refund is its
+  // own note - so the stand-down and the remainder read the one figure.
+  let gapCoveredCents = 0;
+  const covering = await store.xeroSyncOperation.findFirst({
+    where: {
+      queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
+      status: { not: "CANCELLED" },
+      requestPayload: { path: [GAP_COVERED_INTENTS_KEY], array_contains: [input.paymentIntentId] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { id: true, requestPayload: true },
+  });
+  if (covering) {
+    const covered = asRecord(asRecord(covering.requestPayload)?.[GAP_COVERED_CENTS_KEY])?.[input.paymentIntentId];
+    if (typeof covered !== "number") return { kind: "supplementary-invoice", operationId: covering.id };
+    const capture = await store.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: input.paymentIntentId },
+      select: { amountCents: true },
+    });
+    if (covered + primaryPartCents >= (capture?.amountCents ?? 0)) {
+      return { kind: "supplementary-invoice", operationId: covering.id };
+    }
+    gapCoveredCents = covered;
+  }
+  const alreadyRecordedCents = gapCoveredCents + primaryPartCents;
   const gap = figures ? await findPrimaryInvoiceGapInvoice(input.bookingId, figures, store) : null;
   const modificationId = input.bookingModificationId;
   if (gap && modificationId && gap.anchorIds.includes(modificationId)) {

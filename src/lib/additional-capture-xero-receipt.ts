@@ -187,6 +187,8 @@ const REFUSAL_TEXT = {
     "the invoice's own card payment has not been recorded in Xero yet (its operation is PARTIAL); retry this once that is repaired",
   "nothing-due":
     "the Xero invoice this payment belongs to has nothing left due once any account credit still to be allocated to it is allowed for, so recording it would overpay that invoice",
+  "recorded-elsewhere":
+    "it was decided and stored before another document came to record the same payment (a supplementary invoice for the change, naming it or covering it). Check Xero shows the payment on one invoice only, correct it by hand if not, then mark this operation resolved",
   "figures-changed":
     "the invoice no longer has the amount due this payment was sized at when it was first tried, and Xero shows no payment under its reference. Record it by hand in Xero, then mark this operation resolved",
 } as const;
@@ -260,48 +262,66 @@ function ownPaymentPending(
   );
 }
 
+/** Round 4: stamped on a RUNNING receipt that has passed the planning gate, until it finishes or waits. */
+export const ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE = "ADDITIONAL_CAPTURE_RECEIPT_PLANNING";
+
 /**
- * Review round 1 (D): ONE RECEIPT PLANS PER BOOKING AT A TIME, and none while
- * the booking's invoice create runs - its link save queues receipts and its
- * gap check decides what the gap invoice pays itself from.
+ * Review round 1 (D), round 4: ONE RECEIPT PLANS PER BOOKING AT A TIME, and
+ * none while the booking's invoice create runs - its link save queues
+ * receipts and its gap check decides what the gap invoice pays itself from.
  *
- * Round 3: only LIVE rows count (`liveRunningXeroOperationFilter`, as #3880's
- * note wait reads them), so a dead RUNNING row the stale reset has not reached
- * blocks nothing. And a receipt waits only for one claimed EARLIER - by
- * `(startedAt, id)` - so of two claimed at once the earlier always proceeds
- * and the later always waits: no livelock, whatever the interleaving.
+ * THE GATE. Under the per-anchor supplementary-invoice lock on the booking
+ * (`lockSupplementaryInvoiceAnchor`, an anchor that lock already serialises;
+ * no new key), the receipt looks for another LIVE receipt on the booking that
+ * has passed the gate (`ADDITIONAL_CAPTURE_RECEIPT_PLANNING`), and either
+ * waits for it or stamps its own row with that code, guarded on its status,
+ * and goes on. Whichever takes the lock second sees the first's stamp, so
+ * exactly one passes - whatever order the outbox's claims committed in, and
+ * with no both-wait to break (round 3's `(startedAt, id)` order read the
+ * app's clock, not commit order). The lock is held for the milliseconds of
+ * that check and stamp; no provider call runs under it (`INV-LOCK-004`).
+ * The stamp ends with the row: a wait, a failure or a refusal writes its own
+ * code, a success clears it, and a dead row stops counting once it is past
+ * the staleness threshold (`liveRunningXeroOperationFilter`).
  */
-async function waitForOtherWriters(operationId: string, bookingId: string, claimedAt: Date): Promise<void> {
+async function passPlanningGate(operationId: string, bookingId: string): Promise<void> {
   const live = liveRunningXeroOperationFilter();
-  const [otherReceipt, runningCreate] = await Promise.all([
-    prisma.xeroSyncOperation.findFirst({
+  const runningCreate = await prisma.xeroSyncOperation.findFirst({
+    where: {
+      direction: "OUTBOUND",
+      entityType: "INVOICE",
+      operationType: "CREATE",
+      correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
+      ...live,
+    },
+    select: { id: true },
+  });
+  if (runningCreate) {
+    throw waitFor(`The booking's Xero invoice is still being raised (operation ${runningCreate.id}); this card payment is recorded once it is done`);
+  }
+  // Imported here: the outbox dispatches to this worker.
+  const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
+  const otherId = await prisma.$transaction(async (tx) => {
+    await lockSupplementaryInvoiceAnchor(tx, bookingId);
+    const other = await tx.xeroSyncOperation.findFirst({
       where: {
         id: { not: operationId },
         queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
         requestPayload: { path: ["bookingId"], equals: bookingId },
-        ...live,
-        AND: [
-          { OR: [{ startedAt: { lt: claimedAt } }, { startedAt: claimedAt, id: { lt: operationId } }] },
-        ],
-      },
-      select: { id: true },
-    }),
-    prisma.xeroSyncOperation.findFirst({
-      where: {
-        direction: "OUTBOUND",
-        entityType: "INVOICE",
-        operationType: "CREATE",
-        correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
+        lastErrorCode: ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE,
         ...live,
       },
       select: { id: true },
-    }),
-  ]);
-  if (otherReceipt) {
-    throw waitFor(`Another card payment receipt for this booking (operation ${otherReceipt.id}) is being recorded; this one waits for it`);
-  }
-  if (runningCreate) {
-    throw waitFor(`The booking's Xero invoice is still being raised (operation ${runningCreate.id}); this card payment is recorded once it is done`);
+    });
+    if (other) return other.id;
+    await tx.xeroSyncOperation.updateMany({
+      where: { id: operationId, status: "RUNNING" },
+      data: { lastErrorCode: ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE },
+    });
+    return null;
+  });
+  if (otherId) {
+    throw waitFor(`Another card payment receipt for this booking (operation ${otherId}) is being recorded; this one waits for it`);
   }
 }
 
@@ -335,7 +355,7 @@ export async function recordAdditionalCaptureReceipt(
   const operationId = params.syncOperationId;
   const row = await prisma.xeroSyncOperation.findUnique({
     where: { id: operationId },
-    select: { requestPayload: true, startedAt: true },
+    select: { requestPayload: true },
   });
   const queued = readAdditionalCaptureReceiptPayload(row?.requestPayload);
   if (!queued) {
@@ -360,6 +380,11 @@ export async function recordAdditionalCaptureReceipt(
   /** Finished with nothing to send: another writer records it, or it is not this app's to record. */
   const standDown = async (status: "SUCCEEDED" | "CANCELLED", skipped: string, details: Record<string, unknown> = {}) => {
     await completeXeroSyncOperation(operationId, { status, responsePayload: { skipped, ...details } });
+    // A CANCELLED completion keeps its code: the planning stamp is not an error.
+    await prisma.xeroSyncOperation.updateMany({
+      where: { id: operationId, lastErrorCode: ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE },
+      data: { lastErrorCode: null },
+    });
     return null;
   };
 
@@ -383,7 +408,7 @@ export async function recordAdditionalCaptureReceipt(
   }
 
   try {
-    await waitForOtherWriters(operationId, bookingId, row?.startedAt ?? new Date());
+    await passPlanningGate(operationId, bookingId);
     const plan = queued.plan ?? (await planReceipt());
     // No plan: the row is already finished - skipped, recorded, or refused.
     if (!plan) return null;
@@ -572,6 +597,26 @@ export async function recordAdditionalCaptureReceipt(
 
   async function sendPlannedPayment(plan: AdditionalCaptureReceiptPlan, fromStore: boolean): Promise<string | null> {
     if (fromStore) {
+      // Round 4 (1b): a stored decision is never sent past another document
+      // that has since come to record the same capture - a repair-raised
+      // invoice for the change, say. Not a silent stand-down: the first try
+      // may already have reached Xero, so an officer checks.
+      const capture = await prisma.paymentTransaction.findUnique({
+        where: { id: paymentTransactionId },
+        select: { bookingModificationId: true, payment: { select: { xeroInvoiceId: true } } },
+      });
+      const primaryInvoiceId = capture?.payment.xeroInvoiceId;
+      if (primaryInvoiceId) {
+        const recorder = await readCaptureRecorder({
+          bookingId,
+          primaryInvoiceId,
+          paymentIntentId,
+          bookingModificationId: capture.bookingModificationId,
+        });
+        if (recorder.kind !== "receipt") {
+          return refuse("recorded-elsewhere", { plan, recorder: recorder.kind });
+        }
+      }
       // A retry: an earlier run may have recorded it and lost the reply, or
       // the invoice may have changed since. Never decided again.
       const client = await providers.getAuthenticatedXeroClient();
