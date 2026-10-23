@@ -1451,16 +1451,26 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // write. Keyed on immutable cuids; no advisory lock. See
   // docs/CONCURRENCY_AND_LOCKING.md -> "Refund-note link heal (#4161)".
   "src/lib/xero-hardening-canonical-links.ts": 2,
-  // #4195: a refund request's own note link written with no Xero status (a
-  // retry's, a completion's) locks that one `XeroObjectLink` row
-  // (`SELECT 1 … FOR UPDATE`, the heal's statement) inside the link write's own
-  // transaction and re-reads it through Prisma, so an inbound void that
-  // committed meanwhile is kept. The write that follows updates the same row,
-  // so no new row joins the transaction and no order changes; the inbound void
-  // holds only that row. Keyed on the link's immutable unique key; no advisory
-  // lock. See docs/CONCURRENCY_AND_LOCKING.md -> "Refund-request note link
-  // writes (#4195)".
+  // #4195, #4223 (`keepStoredRefundNoteVoid`): every refund-note link write,
+  // either role (the payment's own notes and a refund request's), first reserves
+  // an inactive identity row with createMany(skipDuplicates), then locks
+  // its own `XeroObjectLink` row (`SELECT 1 … FOR UPDATE`, the heal's
+  // statement) inside the link write's transaction; one with no Xero status
+  // then re-reads it through Prisma, so an inbound void that committed
+  // meanwhile is kept, including a competing first insertion. Existing rows
+  // are untouched by reservation; a new identity row rolls back with the write.
+  // Order, on every write: own link row, then any sibling note the canonical
+  // rule retires. A kept void tries Payment without waiting (the xero-sync
+  // entry below); explicit inbound voids retain their existing order (#4200).
+  // Keyed on the link's immutable unique key; no advisory lock. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // "Refund-note link writes racing a void (#4195, #4223)".
   "src/lib/xero-refund-note-status.ts": 1,
+  // #4223: after keeping a stored void, pointer maintenance tries the immutable
+  // Payment row FOR NO KEY UPDATE SKIP LOCKED. A Payment-first enqueue may be
+  // waiting for this link, so a statusless writer must never wait back on it.
+  // A busy Payment defers only pointer cleanup to #4161; the mirror stays
+  // inactive with its metadata. Own-held Payment rows remain eligible.
+  "src/lib/xero-sync.ts": 1,
 };
 
 const CAPACITY_LOCK_MINT = "src/lib/lodge-capacity-lock.ts";

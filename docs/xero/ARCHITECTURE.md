@@ -1103,6 +1103,22 @@ names each payment only that lookup found. That is for the recount only, so the 
 mirror retired while its note was live, or a read of the note as live, resolves
 nothing.
 
+A link write that names no Xero status (a retry recording the note as its
+cover, the enqueue's existing-note branch, a repair) can race the void: it
+read the note as live, and the void commits before its write. Every
+refund-note link write first reserves its natural key as an inactive row
+without changing any existing row, then locks it in the same transaction and,
+when it names no status, re-reads it (`keepStoredRefundNoteVoid`). Concurrent
+first insertions wait on the unique key before this read; the reservation
+rolls back with the write. A void that committed while it waited is kept. The
+mirror stays inactive, the status and incoming metadata merge over its stored
+figures and provenance, and no sibling is retired. A pointer the retry wrote
+back at the note is released if its Payment row is available without waiting
+(`FOR NO KEY UPDATE SKIP LOCKED`). A busy Payment defers only pointer cleanup
+to the nightly #4161 heal, so a Payment-first enqueue waiting for this same
+link cannot deadlock the retry (#4223). Lock order: [Refund-note
+link writes racing a void](../CONCURRENCY_AND_LOCKING.md#refund-note-link-writes-racing-a-void-4195-4223).
+
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,
 a refund payment's note, a succeeded create or an active link. The pointer gate
@@ -1151,8 +1167,9 @@ a refund request's own note (`REFUND_REQUEST_CREDIT_NOTE`, `INV-PAY-118`). The
 inbound sync writes its voided mirror inactive; it never names the pointer, so
 nothing else moves. A request-note link write that names no Xero status (a
 retry's, or a completion's) reads the stored row under its row lock in the same
-transaction (`keepStoredRequestNoteVoid`), so a void that committed while it
-waited keeps the link inactive and its status on the row. `refundRequestOwnNotes`
+transaction (`keepStoredRefundNoteVoid`, the payment's own notes' rule too), so
+a void that committed while it waited keeps the link inactive and its status on
+the row. `refundRequestOwnNotes`
 never takes a voided note as the request's cover, even a mirror an older release
 left active: every reader judges it by its recorded status, so it needs no heal.
 When a request's note is raised again, its Xero key is
@@ -1352,11 +1369,17 @@ by hand in Xero.
 **Deploy and rollback note (#4091).** The previous release writes a voided
 canonical bank-transfer mirror active, re-adopts a voided note through its
 succeeded create, and sends the plain key, so a reissue there can get the voided
-note back from Xero. Stop the old colour's outbox and inbound workers before the
-new release queues refund notes. A retry of a row the old code first attempted,
-on a payment that already has a matching void, gets the new key and so may mint
-a fresh note beside one the lost attempt raised; the scoping above makes that
-rare. Before rolling back, and after rolling forward, list the rows at risk
+note back from Xero. Stop and drain every old-colour refund-note writer before
+the new release queues or writes refund notes: outbox, inbound and retry
+workers, plus web/direct retry paths. The old canonical writer takes sibling
+rows before its own row; #4223 takes its own row first. Both writing the same
+note with an active historical sibling can deadlock (40P01), so mirror healing
+does not make mixed execution compatible. Before rollback, stop and drain the
+new release's same writers before restarting old ones; after rolling forward,
+stop and drain the old writers again before enabling the new ones. A retry of
+a row the old code first attempted, on a payment that already has a matching
+void, gets the new key and so may mint a fresh note beside one the lost
+attempt raised; the scoping above makes that rare. Before rolling back, and after rolling forward, list the rows at risk
 (read-only):
 `SELECT "localId", "xeroObjectId", "updatedAt" FROM "XeroObjectLink" WHERE "localModel" = 'Payment' AND role = 'REFUND_CREDIT_NOTE' AND active AND upper(trim(metadata->>'status')) IN ('VOIDED', 'DELETED')`
 (voided mirrors still active), and
