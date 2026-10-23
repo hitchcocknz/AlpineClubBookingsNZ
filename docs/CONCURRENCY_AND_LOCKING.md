@@ -3953,6 +3953,12 @@ the pre-#4217 code). Now:
 - The Internet Banking settle (#4094) takes it after `lock(1)`, the lodge key
   and the member key, and re-reads the payment's figures under it; its rows are
   read under it. Its figure logic (#3979, `INV-PAY-126`) is unchanged.
+- A cancellation hand-back's completion decides whether its Xero note stands
+  on its own task (#4287, `INV-ADDPAY-043`,
+  `cancellationHandBackNotedOnItsOwnRecord`) only after its allocation has
+  taken the `Payment` row, on the same transaction, and relies on that lock:
+  a second completion on the payment reads the first's committed note row, so
+  two hand-backs never both take the canonical route. It adds no key.
 - The waiting ask's recovery row comes after the `Payment` row too (#4217
   review). A reduction that gives credit back has written the `Payment` row
   before its retire closes the recovery; the runner's claim hold

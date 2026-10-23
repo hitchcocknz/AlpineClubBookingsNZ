@@ -1655,31 +1655,33 @@ decision and would need its own owner decision.
 
 ### INV-ADDPAY-043
 
-- **A later refund on a bank transfer gets its own Xero note, keyed and sized
-  on its own record** (#4287, owner decision 22 Oct 2026). A non-Stripe
-  payment's first refund takes its one canonical note (`INV-ADDPAY-020`). A
-  completed cancellation hand-back is noted on its own task
-  (`paidAnotherWayTaskId`, as a "Paid another way" close is, `INV-PAY-122`)
-  when the payment already has that note, linked or on its way (a create row
-  PENDING, RUNNING or FAILED), or has card refund rows
-  (`cancellationHandBackNotedOnItsOwnRecord`). It is sized from its task less
-  its own notes (`readPaidAnotherWayCloseShare`), never from payment-wide cash
-  less all coverage, which floors at nothing on a mixed bank and card payment.
-  Before #4287 the single-note branch absorbed it and Xero was short a note.
-- **Its cash counts beside its note.** Once a note row names it, it is noted
-  bank cash (`readPaidAnotherWayCash`), so a card note sized against the
-  payment's cash is never squeezed by its coverage. A hand-back whose note is
-  the canonical one, or that has none, is not counted there.
-- **No new reader term.** The recount, coverage and gap readers count it
-  through its `perDelta` link; its payload names the hand-back
-  (`handBackTaskId`), so a void is matched to it (`INV-ADDPAY-042`).
-- **Read under the completion's Payment row lock** (#4217), so a second
-  completion sees the first's row. No new advisory key; the key is the task's.
-- **Never for a historical refund.** Only the completion asks, as it records
-  the refund. A refund an older release absorbed keeps the officer's hand-made
-  note and the #4230 deploy note's list.
-- **The card writers still absorb** on such a payment (a refund request's card
-  part, the webhook's card delta, a late capture's note): held for the owner.
+- **A later cancellation hand-back on a bank transfer gets its own Xero note,
+  keyed and sized on its task** (#4287, owner decision 22 Oct 2026). An
+  `INTERNET_BANKING` payment's first refund takes its one canonical note
+  (`INV-ADDPAY-020`). A completed cancellation hand-back is noted on its own
+  task (`paidAnotherWayTaskId`, as a "Paid another way" close is,
+  `INV-PAY-122`) when the payment has that note linked or on its way (a create
+  row PENDING, RUNNING, FAILED or unreadable: two equal hand-backs would
+  otherwise share one canonical key and dedupe into one row), or holds card
+  money, a card charge or refund row
+  (`cancellationHandBackNotedOnItsOwnRecord`). Sized from its task less its
+  own notes (`readPaidAnotherWayCloseShare`), never payment-wide cash less all
+  coverage, which floors at nothing once card refunds exist. Other sources are
+  unchanged.
+- **Its cash counts beside its note while its refund stands.** Once a note row
+  names it, it is noted bank cash (`readPaidAnotherWayCash`), so a card note is
+  never squeezed by its coverage, less what a `bank-refund-void:` follow-up
+  naming it took back (`INV-ADDPAY-042`): voided and undone, it counts nothing.
+- **No new term in the recount or the coverage sum; one in the cash reader.**
+  They count its `perDelta` link; its payload names the hand-back
+  (`handBackTaskId`), so a void is matched to it.
+- **Decided under the completion's Payment row lock** (#4217), after the
+  allocation. No new advisory key.
+- **Never for a historical refund.** Only the completion asks. A refund an
+  older release absorbed keeps the officer's hand-made note and the #4230
+  deploy note's list.
+- **The card writers still absorb** (a refund request's card part, the
+  webhook's card delta, a late capture's note): #4312, for the owner.
   Pinned by `xero-bt-per-refund-notes` (realdb), `bank-hand-back-refund-note`,
-  `card-refund-paid-another-way-cash`, `manual-refund-task` and
-  `xero-bt-recount-handbacks`.
+  `card-refund-paid-another-way-cash`, `manual-refund-task`,
+  `payment-lock-before-rebuild` and `xero-bt-recount-handbacks`.
