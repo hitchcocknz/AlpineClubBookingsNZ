@@ -741,6 +741,8 @@ function createDependencies(state: {
       cardNoteMayBeInXeroCents: state.paidAnotherWayCardNoteMayBeInXeroCents ?? 0,
     })),
     queueWaitingPaidAnotherWayNote: vi.fn().mockResolvedValue("op_note"),
+    // #3953: a change capture's receipt, queued once.
+    enqueueAdditionalCaptureReceiptOperation: vi.fn().mockResolvedValue({ outcome: "queued", queueOperationId: "op_receipt" }),
     // #3924 round 12: none, unless a test says so.
     readLateCaptureCardRefundsByHand: vi
       .fn()
@@ -8966,5 +8968,157 @@ describe("#3954: a reduction set against an unpaid ask", () => {
     const bookingReport = report.passes[0].bookings[0];
     expect(bookingReport.actions.map((action) => action.key)).not.toContain("queue:billed-offset-note:mod_reduction");
     expect(bookingReport.findings.map((finding) => finding.code)).not.toContain("MISSING_MODIFICATION_CREDIT_NOTE");
+  });
+});
+
+/**
+ * #3953 (`INV-PAY-139`): "card payment not recorded in Xero" - a change's card
+ * capture on a booking whose primary invoice exists, that no supplementary
+ * invoice and no receipt of its own records.
+ */
+describe("runBookingXeroRepair - a change's card capture no Xero invoice records (#3953)", () => {
+  const changeCapture = (overrides: Record<string, unknown> = {}) => ({
+    id: "txn_change",
+    paymentId: "payment_1",
+    kind: "ADDITIONAL",
+    source: "STRIPE",
+    stripePaymentIntentId: "pi_change",
+    amountCents: 8000,
+    refundedAmountCents: 0,
+    status: "SUCCEEDED",
+    paymentMethodId: "pm_123",
+    reason: null,
+    withdrawnAt: null,
+    createdAt: new Date("2026-05-03T00:00:00Z"),
+    updatedAt: new Date("2026-05-03T00:00:00Z"),
+    ...overrides,
+  });
+  const bookingWithChangeCapture = (bookingOverrides: Record<string, unknown> = {}) =>
+    makeBooking({
+      payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture()] },
+      ...bookingOverrides,
+    });
+  const figures = (captured: string[] | undefined) => ({
+    id: "op_primary_create",
+    requestPayload: {
+      primaryInvoiceBilledFee: {
+        xeroInvoiceId: "inv_primary",
+        billedChangeFeeCents: 0,
+        billedTotalCents: 18000,
+        recordedChangeFeeCentsAtLink: 0,
+        primaryInvoiceCashCents: 10000,
+        ...(captured ? { capturedPaymentIntentIdsAtBuild: captured } : {}),
+      },
+    },
+  });
+  const run = async (state: { booking?: ReturnType<typeof makeBooking>; operations?: unknown[]; links?: unknown[]; figures?: ReturnType<typeof figures> | null }, apply = false) => {
+    const deps = createDependencies({
+      bookings: [state.booking ?? bookingWithChangeCapture()],
+      operations: state.operations ?? [],
+      links: state.links ?? [],
+      primaryInvoiceFiguresOperation: state.figures === undefined ? figures(["pi_123"]) : state.figures,
+    });
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply, dependencies: deps, scope: { all: true } });
+    return { bookingReport: report.passes[0].bookings[0], deps };
+  };
+  const finding = (bookingReport: { findings: Array<{ code: string }> }) =>
+    bookingReport.findings.find((entry) => entry.code === "ADDITIONAL_CAPTURE_NOT_RECORDED_IN_XERO") as
+      | { severity: string; summary: string; safeToAutoApply: boolean; details: Record<string, unknown> }
+      | undefined;
+
+  it("names it and queues the capture's receipt, automatically where the invoice's figures say it was not counted", async () => {
+    const { bookingReport, deps } = await run({});
+
+    expect(finding(bookingReport)).toMatchObject({
+      severity: "critical",
+      safeToAutoApply: true,
+      summary: expect.stringContaining("Card payment not recorded in Xero"),
+      details: { paymentId: "payment_1", paymentIntentId: "pi_change", paymentTransactionId: "txn_change", capturedCents: 8000 },
+    });
+    expect(bookingReport.actions.find((action) => action.type === "QUEUE_ADDITIONAL_CAPTURE_RECEIPT")).toMatchObject({
+      key: "queue:additional-capture-receipt:pi_change",
+      safeToAutoApply: true,
+      payload: { paymentIntentId: "pi_change" },
+    });
+
+    await run({}, true).then(({ deps: applied }) => {
+      expect(applied.enqueueAdditionalCaptureReceiptOperation).toHaveBeenCalledWith("pi_change");
+    });
+    expect(deps.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
+  });
+
+  it("asks an officer to check Xero first where the invoice predates its counted-capture figures", async () => {
+    const { bookingReport } = await run({ figures: figures(undefined) });
+
+    expect(finding(bookingReport)).toMatchObject({
+      severity: "manual_review",
+      safeToAutoApply: false,
+      summary: expect.stringContaining("check Xero first"),
+    });
+  });
+
+  it.each([
+    ["the primary invoice's create counted it", { figures: figures(["pi_123", "pi_change"]) }],
+    [
+      "its receipt's payment is linked",
+      { links: [{ id: "link_receipt", localModel: "PaymentTransaction", localId: "txn_change", xeroObjectType: "PAYMENT", xeroObjectId: "xp_1", role: "ADDITIONAL_CAPTURE_PAYMENT", active: true, metadata: null, createdAt: new Date(), updatedAt: new Date(), xeroObjectNumber: null, xeroObjectUrl: null }] },
+    ],
+    [
+      "a supplementary invoice names the capture",
+      { operations: [makeOperation({ id: "op_supp", queueType: "SUPPLEMENTARY_INVOICE", status: "SUCCEEDED", requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", paymentIntentId: "pi_change" } })] },
+    ],
+    ["the booking is cancelled", { booking: bookingWithChangeCapture({ status: "CANCELLED" }) }],
+    ["the booking has no Xero invoice", { booking: makeBooking({ payment: { ...makeBooking().payment, xeroInvoiceId: null, xeroInvoiceNumber: null, transactions: [changeCapture()] } }) }],
+  ])("raises nothing when %s", async (_label, state) => {
+    const { bookingReport } = await run(state as never);
+    expect(finding(bookingReport)).toBeUndefined();
+    expect(bookingReport.actions.find((action) => action.type === "QUEUE_ADDITIONAL_CAPTURE_RECEIPT")).toBeUndefined();
+  });
+
+  const receiptOperation = (overrides: Record<string, unknown>) =>
+    makeOperation({
+      id: "op_receipt",
+      entityType: "PAYMENT",
+      operationType: "CREATE",
+      localModel: "PaymentTransaction",
+      localId: "txn_change",
+      queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+      xeroObjectType: null,
+      xeroObjectId: null,
+      replayable: true,
+      requestPayload: {
+        queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+        bookingId: "booking_1",
+        paymentId: "payment_1",
+        paymentTransactionId: "txn_change",
+        paymentIntentId: "pi_change",
+      },
+      ...overrides,
+    });
+
+  it("offers a retry of a receipt whose Xero write failed", async () => {
+    const { bookingReport } = await run({ operations: [receiptOperation({ status: "FAILED", lastErrorCode: "500" })] });
+
+    expect(bookingReport.findings.find((entry) => entry.code === "BLOCKED_BY_XERO_OPERATION")).toMatchObject({
+      details: expect.objectContaining({ operationId: "op_receipt", paymentIntentId: "pi_change" }),
+    });
+    expect(finding(bookingReport)).toBeUndefined();
+  });
+
+  it("hands a receipt the worker refused to an officer, never retrying it automatically", async () => {
+    const { bookingReport } = await run({
+      operations: [receiptOperation({ status: "FAILED", lastErrorCode: "ADDITIONAL_CAPTURE_RECEIPT_REFUSED", lastErrorMessage: "nothing due" })],
+    });
+
+    expect(finding(bookingReport)).toMatchObject({ severity: "manual_review", safeToAutoApply: false });
+    expect(bookingReport.actions.some((action) => action.type === "REQUEUE_XERO_OPERATION")).toBe(false);
+  });
+
+  it("raises nothing while the receipt is queued or after it finished", async () => {
+    for (const status of ["PENDING", "RUNNING", "SUCCEEDED", "CANCELLED"]) {
+      const { bookingReport } = await run({ operations: [receiptOperation({ status })] });
+      expect(finding(bookingReport)).toBeUndefined();
+      expect(bookingReport.findings.find((entry) => entry.code === "BLOCKED_BY_XERO_OPERATION")).toBeUndefined();
+    }
   });
 });

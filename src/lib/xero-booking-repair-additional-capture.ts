@@ -94,7 +94,7 @@ export async function loadAdditionalCaptureReceiptEvidence(
           queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
           OR: intentIds.map((id) => ({ requestPayload: { path: ["paymentIntentId"], equals: id } })),
         } satisfies Prisma.XeroSyncOperationWhereInput,
-        select: { requestPayload: true },
+        select: { queueType: true, requestPayload: true },
       }),
       readPrimaryInvoiceFeeAtLink(booking.id, payment.xeroInvoiceId, store),
     ]);
@@ -112,6 +112,7 @@ export async function loadAdditionalCaptureReceiptEvidence(
       recordedTransactionIds: new Set(links.map((link) => link.localId)),
       invoicedIntentIds: new Set(
         invoiced.flatMap((row) => {
+          if (row.queueType !== XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE) return [];
           const id = (row.requestPayload as Record<string, unknown> | null)?.paymentIntentId;
           return typeof id === "string" ? [id] : [];
         }),

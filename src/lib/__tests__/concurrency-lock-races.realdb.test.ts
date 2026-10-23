@@ -338,6 +338,12 @@ import "./booking-change-request-execution.realdb.test";
 // Payment row is refused whole. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
 // it owns and cleans its own `race-3980-` fixtures.
 import "./primary-invoice-edit-race.realdb.test";
+// #3953 reuses it to prove a change's card capture that no supplementary invoice
+// waited on gets one Xero receipt operation: the webhook and the confirm route
+// at once and a replay through the real late-success release, and the enqueue
+// queueing behind the change's supplementary-invoice anchor lock. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3953-` fixtures.
+import "./additional-capture-receipt.realdb.test";
 // #3854 reuses it to prove a group organiser's settlement posts its children's
 // money to the booking ledger through the real card settle, the Internet Banking
 // invoice's inbound reconcile, the organiser cancel's refund plan and #3653's
