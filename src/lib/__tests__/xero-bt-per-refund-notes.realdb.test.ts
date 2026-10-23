@@ -37,6 +37,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 import { assertSafeRaceDbUrl } from "@/lib/__tests__/support/race-db-url";
+import type { ResolvedBankRefundVoidAnswer } from "@/lib/bank-refund-void-answer";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -414,7 +415,7 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
      * note made by hand in Xero. The hand-made answer is passed already checked, as the completion
      * route passes it after `prepareBankRefundVoidAnswer` has read the note from Xero - so no Xero call.
      */
-    async function reconfirmWithFreshNote(followUpId: string, answer: import("@/lib/bank-refund-void-answer").ResolvedBankRefundVoidAnswer = { answer: "fresh-note" }) {
+    async function reconfirmWithFreshNote(followUpId: string, answer: ResolvedBankRefundVoidAnswer = { answer: "fresh-note" }) {
       const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
       await resolveManualRefundTask(
         { taskId: followUpId, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: null, recordedNightPrices: null, bankRefundVoidAnswer: answer },
