@@ -43,5 +43,8 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain("a card refund landing after the hand-back completes cannot shrink its note");
     expect(suite).toContain("a later card note is raised in full (review F1)");
     expect(suite).toContain("a later canonical note on a bank transfer is raised in full (review F1)");
+    expect(suite).toContain("a re-confirmed follow-up's fresh note counts beside its cash");
+    expect(suite).toContain("a follow-up re-confirmed with a note made by hand in Xero counts once");
+    expect(suite).toContain("that hand-made note voided in Xero and undone in turn");
   });
 });

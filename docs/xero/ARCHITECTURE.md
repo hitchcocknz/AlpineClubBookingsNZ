@@ -2002,8 +2002,11 @@ card or canonical note by it.
 treasurer re-confirms the follow-up, its refund is recorded again with its own
 note - a fresh one keyed on the follow-up, or a hand-made one linked to it
 (`recordedByHand`). That note is in the payment's coverage, so the COMPLETED
-follow-up is noted bank cash beside it, and a hand-made note covers it in its
-share. It nets the same way: a second void of its note, undone, names the
+follow-up is noted bank cash beside it once a note row names it (in any
+status) or, for a follow-up, once a hand-made note is linked to it; and a
+hand-made note covers it in its share. The cash reader thus has three terms
+beyond the hand-back rule's record: the follow-up as a record, the netting
+(`standingHandBackCents`, for both kinds), and that hand-made cover. It nets the same way: a second void of its note, undone, names the
 follow-up as `originalTaskId`, and it counts nothing. A DISMISSED follow-up
 (the transfer bounced) counts nothing. Each refund counts once: the original
 nets out what the undo took back, and the follow-up counts only its own. Every
