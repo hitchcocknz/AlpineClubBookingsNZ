@@ -259,6 +259,14 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     const refundNotesQueued = () =>
       prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } });
 
+    /** The logger's error calls, restored after each case even when one fails (no leak into the next case). */
+    const loggerSpies: Array<{ mockRestore: () => void }> = [];
+    async function spyOnLoggedErrors() {
+      const spy = vi.spyOn((await import("@/lib/logger")).default, "error");
+      loggerSpies.push(spy);
+      return spy;
+    }
+
     /** What the kept-capture alert logged, read for its reason (no email is sent in the harness). */
     function keptAlertReasons(spy: { mock: { calls: unknown[][] } }) {
       return spy.mock.calls
@@ -369,6 +377,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
     afterEach(() => {
       resetStripeRaceHooks();
+      for (const spy of loggerSpies.splice(0)) spy.mockRestore();
     });
 
     afterAll(async () => {
@@ -502,11 +511,10 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await clearRecordedSettler();
       await chargeRefundedInStripe(SETTLING);
       expect((await snapshot()).transactions.find((row) => row.stripePaymentIntentId === SETTLING)?.status).toBe("REFUNDED");
-      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const logged = await spyOnLoggedErrors();
 
       await expectAnswered(OTHER, 200);
       expect(keptAlertReasons(logged), "the alert names the payment new").toEqual([[OTHER, "new-capture"]]);
-      logged.mockRestore();
       expect(await owedMarkers(), "delivered, so no longer owed").toEqual([]);
 
       expect(asked, "nothing is refunded automatically").toEqual([]);
@@ -613,12 +621,11 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     it("#4285 review F1: a lost-response saved-card capture the webhook adopts on a $0 booking is new money: kept and the admins told, never kept silently", async () => {
       const asked = stripeMakesRefunds();
       const key = await zeroDollarBookingWithLostAttempt();
-      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const logged = await spyOnLoggedErrors();
 
       expect((await deliverWebhook(OTHER, "payment_intent.succeeded", key)).init?.status ?? 200).toBe(200);
 
       expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture"]]);
-      logged.mockRestore();
       expect(asked, "nothing is refunded automatically").toEqual([]);
       expect((await snapshot()).transactions).toEqual([
         { stripePaymentIntentId: OTHER, status: "SUCCEEDED", amountCents: PRICE_CENTS, refundedAmountCents: 0 },
@@ -647,12 +654,11 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const key = await zeroDollarBookingWithLostAttempt();
       await deliverWebhook(OTHER, "payment_intent.succeeded", key);
       await crashedBeforeTheAlert();
-      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const logged = await spyOnLoggedErrors();
 
       await expectAnswered(OTHER, 200);
 
       expect(keptAlertReasons(logged), "re-alerted while owed").toEqual([[OTHER, "new-capture"]]);
-      logged.mockRestore();
       expect(await owedMarkers(), "delivered, so no longer owed").toEqual([]);
       expect(await prisma.alertCooldown.count({ where: { key: `duplicate-capture-unrecorded-settler:${BOOKING_ID}:${OTHER}` } })).toBe(1);
 
@@ -671,10 +677,9 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T20:30:00.000Z"))).toMatchObject({ sent: 0 });
       expect(await owedMarkers()).toHaveLength(1);
 
-      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const logged = await spyOnLoggedErrors();
       expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
       expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture"]]);
-      logged.mockRestore();
       expect(await owedMarkers()).toEqual([]);
     });
 
@@ -719,11 +724,10 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(cancelled.transactions.find((row) => row.stripePaymentIntentId === OTHER)).toMatchObject({ status: "SUCCEEDED", refundedAmountCents: 0 });
       expect(await owedMarkers(), "still owed").toHaveLength(1);
 
-      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const logged = await spyOnLoggedErrors();
       const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
       expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
       expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture-closed"]]);
-      logged.mockRestore();
       expect(await owedMarkers()).toEqual([]);
     });
 
@@ -737,11 +741,10 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         data: { paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: SETTLING, amountCents: PRICE_CENTS, status: "SUCCEEDED", createdAt: MINTED_AT },
       });
 
-      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      const logged = await spyOnLoggedErrors();
       const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
       expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
       expect(keptAlertReasons(logged)).toEqual([[OTHER, "not-recorded"]]);
-      logged.mockRestore();
       expect(await owedMarkers()).toEqual([]);
     });
   },
