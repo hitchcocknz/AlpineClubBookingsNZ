@@ -17,10 +17,16 @@
  * the primary invoice (`markedModificationIdsAtBuild`): an edit marked after it
  * is one that landed while the create was in flight, which is what the
  * treasurer's task describes (review M5).
+ *
+ * #3953 (`INV-PAY-139`): and the card captures the payment's cash figure holds
+ * (`capturedPaymentIntentIdsAtBuild`) - the cash the create records against
+ * the invoice. A change's capture outside it was not counted here, so its own
+ * receipt is recorded once the invoice exists; one inside it never is.
  */
 import { prisma } from "@/lib/prisma";
 import { FEE_ON_PRIMARY_INVOICE_PATH } from "@/lib/booking-finished-stay-correction";
 import { SETTLED_AGAINST_PRIMARY_INVOICE_PATH } from "@/lib/booking-primary-invoice-claim";
+import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 
 /**
  * The edits that settled against the primary invoice: an ordinary edit's #3980
@@ -58,7 +64,22 @@ export async function readBookingForPrimaryInvoice(bookingId: string) {
       const marked = booking
         ? await tx.bookingModification.findMany({ where: markedPrimaryInvoiceEditsWhere(bookingId), select: { id: true } })
         : [];
-      return { booking, markedModificationIdsAtBuild: marked.map((row) => row.id) };
+      const captured = booking?.payment
+        ? await tx.paymentTransaction.findMany({
+            where: {
+              paymentId: booking.payment.id,
+              source: "STRIPE",
+              status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] },
+              stripePaymentIntentId: { not: null },
+            },
+            select: { stripePaymentIntentId: true },
+          })
+        : [];
+      return {
+        booking,
+        markedModificationIdsAtBuild: marked.map((row) => row.id),
+        capturedPaymentIntentIdsAtBuild: captured.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : [])),
+      };
     },
     { isolationLevel: "RepeatableRead" },
   );

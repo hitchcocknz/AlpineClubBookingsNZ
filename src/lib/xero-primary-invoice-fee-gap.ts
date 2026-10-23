@@ -36,16 +36,16 @@ import { raisePrimaryInvoiceReviewTask } from "@/lib/xero-primary-invoice-review
 import {
   primaryInvoiceGapAnchors,
   primaryInvoiceReplayCutoff,
+  readGapInvoiceOnAnchors,
+  readPrimaryInvoiceFeeAtLink,
   racingMarkedEdits,
   racingReductionSettlement,
   readMarkedPrimaryInvoiceEdits,
 } from "@/lib/xero-primary-invoice-gap-anchors";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
 import { asRecord } from "@/lib/xero-json";
 import {
-  parsePrimaryInvoiceFeeAtLink,
   PRIMARY_INVOICE_FEE_AT_LINK_KEY,
   type PrimaryInvoiceBilledFee,
   type PrimaryInvoiceFeeAtLink,
@@ -226,7 +226,12 @@ export async function persistPrimaryInvoiceLink(input: {
   xeroInvoiceNumber: string | null;
   billed: PrimaryInvoiceBilledFee;
   /** #3980: what the create's own read said the booking was worth, and the total of the lines it sent. */
-  built: { worthCents: number; lineTotalCents: number; markedModificationIdsAtBuild?: readonly string[] };
+  built: {
+    worthCents: number;
+    lineTotalCents: number;
+    markedModificationIdsAtBuild?: readonly string[];
+    capturedPaymentIntentIdsAtBuild?: readonly string[];
+  };
   /** The Stripe cash recorded against this invoice, computed once by the create. */
   primaryInvoiceCashCents: number;
   /** The Stripe payment the create itself tried to write: what a repair records (#4010). */
@@ -267,6 +272,9 @@ export async function persistPrimaryInvoiceLink(input: {
           ? { markedModificationIdsAtBuild: [...input.built.markedModificationIdsAtBuild] }
           : {}),
       },
+      ...(input.built.capturedPaymentIntentIdsAtBuild
+        ? { capturedPaymentIntentIdsAtBuild: [...input.built.capturedPaymentIntentIdsAtBuild] }
+        : {}),
     };
     const operation = await tx.xeroSyncOperation.findUnique({
       where: { id: input.operationId },
@@ -283,25 +291,6 @@ export async function persistPrimaryInvoiceLink(input: {
     });
     return atLink;
   });
-}
-
-async function readPrimaryInvoiceFeeAtLink(
-  bookingId: string,
-  xeroInvoiceId: string,
-): Promise<{ atLink: PrimaryInvoiceFeeAtLink; operationId: string } | null> {
-  const operation = await prisma.xeroSyncOperation.findFirst({
-    where: {
-      direction: "OUTBOUND",
-      entityType: "INVOICE",
-      operationType: "CREATE",
-      correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
-      requestPayload: { path: [PRIMARY_INVOICE_FEE_AT_LINK_KEY, "xeroInvoiceId"], equals: xeroInvoiceId },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, requestPayload: true },
-  });
-  const atLink = parsePrimaryInvoiceFeeAtLink(operation?.requestPayload, xeroInvoiceId);
-  return operation && atLink ? { atLink, operationId: operation.id } : null;
 }
 
 /**
@@ -555,28 +544,7 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     );
   }
 
-  const [earlierOperation, earlierLink] = await Promise.all([
-    prisma.xeroSyncOperation.findFirst({
-      where: {
-        direction: "OUTBOUND",
-        entityType: "INVOICE",
-        operationType: "CREATE",
-        queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-        localModel: "BookingModification",
-        localId: { in: anchorIds },
-      },
-      select: { id: true, requestPayload: true },
-    }),
-    prisma.xeroObjectLink.findFirst({
-      where: {
-        localModel: "BookingModification",
-        localId: { in: anchorIds },
-        xeroObjectType: "INVOICE",
-        role: "SUPPLEMENTARY_INVOICE",
-      },
-      select: { id: true },
-    }),
-  ]);
+  const { operation: earlierOperation, link: earlierLink } = await readGapInvoiceOnAnchors(anchorIds);
   if (earlierOperation || earlierLink) {
     // What the earlier run decided the gap invoice takes of the cash, as it queued it.
     const earlier = readQueuedOutboxPayload(earlierOperation?.requestPayload);

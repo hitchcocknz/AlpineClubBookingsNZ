@@ -67,6 +67,7 @@ import {
 } from "@/lib/xero-resolved-in-xero-fences";
 import { createXeroSupplementaryInvoice } from "@/lib/xero-supplementary-invoices";
 import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-invoice";
+import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
 import {
@@ -98,6 +99,7 @@ import {
   XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_TYPE,
   XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_VOID_TYPE,
   XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+  XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
   XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CONTACT_TYPE,
   XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CREDIT_NOTE_TYPE,
   XERO_OUTBOX_MODIFICATION_ACCOUNT_CREDIT_NOTE_TYPE,
@@ -3088,6 +3090,9 @@ export async function processQueuedXeroOutboxOperations(options?: {
           syncOperationId: queuedOperation.id,
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
         });
+      } else if (payload?.queueType === XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE) {
+        // #3953: a change's card capture nothing waited on, recorded against the invoice billing it.
+        await recordAdditionalCaptureReceipt({ syncOperationId: queuedOperation.id, createdByMemberId: queuedOperation.createdByMemberId ?? undefined });
       } else if (payload?.queueType === XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE) {
         await createXeroSupplementaryInvoice({
           bookingId: payload.bookingId,

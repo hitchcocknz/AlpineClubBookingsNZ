@@ -46,6 +46,13 @@ export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
    * record written before #3980, which is checked for its fee only.
    */
   readonly worth?: PrimaryInvoiceWorthAtLink;
+  /**
+   * #3953 (`INV-PAY-139`): the Stripe intents whose captures the create's
+   * snapshot held - the cash it sized its payment from. A change's capture
+   * not in it is recorded by its own receipt (`additional-capture-xero-receipt.ts`).
+   * Absent on a record written before it, which cannot tell.
+   */
+  readonly capturedPaymentIntentIdsAtBuild?: readonly string[];
 }
 
 /**
@@ -120,7 +127,14 @@ export function parsePrimaryInvoiceFeeAtLink(
       ? { primaryInvoiceAttemptedCashCents: record.primaryInvoiceAttemptedCashCents }
       : {}),
     ...parseWorth(record.worth),
+    ...parseStringList("capturedPaymentIntentIdsAtBuild", record.capturedPaymentIntentIdsAtBuild),
   };
+}
+
+function parseStringList<K extends string>(key: K, value: unknown): { [P in K]?: string[] } {
+  return Array.isArray(value) && value.every((id) => typeof id === "string")
+    ? ({ [key]: value as string[] } as { [P in K]?: string[] })
+    : {};
 }
 
 function parseWorth(value: unknown): { worth?: PrimaryInvoiceWorthAtLink } {

@@ -4,6 +4,12 @@ import {
   parseRefundMethod, readModificationNoteWording, readRefundNoteWording,
   type ModificationNoteWording, type RefundMethod, type RefundNoteWording,
 } from "@/lib/xero-refund-method";
+import {
+  readAdditionalCaptureReceiptPayload, XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
+  type QueuedAdditionalCaptureReceiptOutboxPayload,
+} from "@/lib/additional-capture-receipt-payload";
+// #3953: a change's card capture recorded against the invoice billing it.
+export { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 
 export const XERO_OUTBOX_ENTRANCE_FEE_TYPE = "ENTRANCE_FEE_INVOICE";
 export const XERO_OUTBOX_BOOKING_INVOICE_TYPE = "BOOKING_INVOICE";
@@ -70,6 +76,7 @@ export const XERO_OUTBOX_QUEUE_TYPES = [
   XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_VOID_TYPE,
   XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE,
   XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+  XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
 ] as const;
 
 interface QueuedEntranceFeeOutboxPayload {
@@ -263,10 +270,11 @@ export type QueuedOutboxPayload =
   | QueuedGroupSettlementInvoiceOutboxPayload
   | QueuedGroupSettlementInvoiceVoidOutboxPayload
   | QueuedSubscriptionInvoiceOutboxPayload
-  | QueuedKeptLateCaptureInvoiceOutboxPayload;
+  | QueuedKeptLateCaptureInvoiceOutboxPayload
+  | QueuedAdditionalCaptureReceiptOutboxPayload;
 
 export interface QueuedOutboxExpectedOperation {
-  entityType: "INVOICE" | "CREDIT_NOTE" | "ALLOCATION" | "CONTACT";
+  entityType: "INVOICE" | "CREDIT_NOTE" | "ALLOCATION" | "CONTACT" | "PAYMENT";
   operationType: "CREATE" | "UPDATE" | "ALLOCATE";
   localModels: ReadonlyArray<
     | "Member"
@@ -282,6 +290,7 @@ export interface QueuedOutboxExpectedOperation {
     // settled share it bills, so the claim guard has to accept that model or the
     // row is skipped on every pass and never sent.
     | "ManualRefundTask"
+    | "PaymentTransaction"
   >;
 }
 
@@ -525,6 +534,7 @@ export function readQueuedOutboxPayload(
   }
 
   if (queueType === XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE) return { queueType }; // #3971
+  if (queueType === XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE) return readAdditionalCaptureReceiptPayload(value);
 
   if (queueType === XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE) {
     const bookingId = readString(payload.bookingId);
@@ -608,6 +618,9 @@ export function getQueuedOutboxExpectedOperation(
     };
   }
 
+  if (queueType === XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE) {
+    return { entityType: "PAYMENT", operationType: "CREATE", localModels: ["PaymentTransaction"] };
+  }
   if (queueType === XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_VOID_TYPE) {
     return {
       entityType: "INVOICE",

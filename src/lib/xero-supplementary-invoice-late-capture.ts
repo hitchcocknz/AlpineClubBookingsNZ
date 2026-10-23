@@ -26,6 +26,7 @@ import {
   lockSupplementaryInvoiceAnchor,
   releaseWaitingSupplementaryInvoiceOperations,
 } from "@/lib/xero-operation-outbox";
+import { enqueueAdditionalCaptureReceiptOperation } from "@/lib/additional-capture-receipt-enqueue";
 
 /**
  * The code the reaper stamps on an operation it retires, and the ONLY code the
@@ -64,6 +65,14 @@ export type CapturedAdditionalPaymentXeroOutcome =
   | "already-released"
   /** No supplementary invoice was ever parked on this intent (no issued primary invoice, or Xero not in use). */
   | "none-queued"
+  /**
+   * #3953 (`INV-PAY-139`): none was parked, and the booking's primary invoice
+   * exists, so the capture's own receipt was queued by this call
+   * (`enqueueAdditionalCaptureReceiptOperation`). Counted in `released`, so
+   * every caller kicks the outbox for it; a replay finds it queued and
+   * answers `already-released`.
+   */
+  | "receipt-queued"
   /** Issuing the invoice was not safe, so an officer was told instead, by this call. */
   | "alerted"
   /** An earlier capture of this intent already told an officer; nothing new. */
@@ -370,6 +379,15 @@ export async function releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(
         { paymentIntentId },
         "Captured additional payment has no Xero supplementary invoice parked on it",
       );
+      // #3953: nothing waits on this capture, so its own receipt records it
+      // against the invoice that bills it - once, whoever calls first.
+      const receipt = await enqueueAdditionalCaptureReceiptOperation(paymentIntentId);
+      if (receipt.outcome === "queued") {
+        return { released: released + 1, queueOperationIds: [...queueOperationIds, receipt.queueOperationId], outcome: "receipt-queued" };
+      }
+      if (receipt.outcome === "already-queued") {
+        return { released, queueOperationIds, outcome: "already-released" };
+      }
     }
     outcome = alreadyReleased ? "already-released" : "none-queued";
   }
