@@ -89,6 +89,7 @@ import {
 } from "@/lib/xero-booking-repair-side-notes";
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
 import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
+import { addUnrecordedAdditionalCaptureFindings } from "./xero-booking-repair-additional-capture";
 import { addRefundRequestNoteNotQueuedFindings, paidBackRefundRequestCents } from "./xero-booking-repair-request-notes";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
@@ -2388,5 +2389,6 @@ export function classifyBookingContext(
     }
   }
 
+  if (payment) addUnrecordedAdditionalCaptureFindings({ findings, actionMap, booking, paymentId: payment.id, captures: capturedPaymentTransactions, evidence: context.additionalCaptureReceipts }); // #3953
   return buildBookingSummary(context, findings, actionMap);
 }

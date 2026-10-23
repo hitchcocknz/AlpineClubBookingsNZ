@@ -432,6 +432,13 @@ async function applyQueuedAction(
       action.resultMessage = result.message;
       return;
     }
+    case "QUEUE_ADDITIONAL_CAPTURE_RECEIPT": {
+      // #3953: under the change's anchor lock, once per capture; the worker reads Xero before recording anything.
+      const result = await deps.enqueueAdditionalCaptureReceiptOperation(String(action.payload.paymentIntentId));
+      action.status = result.outcome === "queued" ? "queued" : "skipped";
+      action.resultMessage = result.outcome === "not-eligible" ? `Not queued: ${result.reason}.` : "Card payment receipt queued for background processing.";
+      return;
+    }
     case "QUEUE_PAID_ANOTHER_WAY_REFUND_NOTE": {
       // #3924 round 8: the one note step, under the approval task's row lock;
       // it reads the receipt and the close again there and queues at most once.

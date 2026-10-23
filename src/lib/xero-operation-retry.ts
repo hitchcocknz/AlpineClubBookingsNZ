@@ -36,6 +36,7 @@ import {
   readCashRefundMethod,
 } from "@/lib/xero-payment-credit-note-payload";
 import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
+import { readAdditionalCaptureReceiptPayload } from "@/lib/additional-capture-receipt-payload";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import {
   primaryInvoiceRepairCashCents,
@@ -1049,6 +1050,12 @@ export function getXeroOperationRetryMeta(operation: RetryableOperation): XeroOp
             "Only a failed or partial kept-payment invoice with its queued amount can be retried.",
         };
   }
+  // #3953: a change's card payment receipt is retried on its own row, any stored plan kept.
+  if (readAdditionalCaptureReceiptPayload(operation.requestPayload)) {
+    return operation.status === "FAILED"
+      ? { supported: true, reason: null }
+      : { supported: false, reason: "Only a failed card payment receipt can be retried." };
+  }
   if (groupSettlementInvoiceRequeuePayload(operation)) {
     return operation.status === "FAILED"
       ? { supported: true, reason: null }
@@ -1420,6 +1427,12 @@ export async function retryXeroSyncOperation(
       "late card charge's change invoice",
     );
     return { message: "Queued the late card charge's change invoice for retry." };
+  }
+
+  const additionalCaptureReceipt = readAdditionalCaptureReceiptPayload(operation.requestPayload);
+  if (additionalCaptureReceipt) {
+    await requeueOutboxRowForRetry(operation, { ...additionalCaptureReceipt }, ["FAILED"], "card payment receipt");
+    return { message: "Queued the card payment's Xero receipt for retry." };
   }
 
   const groupSettlementPayload = groupSettlementInvoiceRequeuePayload(operation);

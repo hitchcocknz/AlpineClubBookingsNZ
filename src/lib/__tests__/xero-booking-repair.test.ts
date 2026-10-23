@@ -318,6 +318,8 @@ function createDependencies(state: {
    * may answer.
    */
   lateCaptureCardRefundsByHand?: Record<string, CardByHand>;
+  /** #3953: the primary invoice create row carrying its stored link figures. */
+  primaryInvoiceFiguresOperation?: { id: string; requestPayload: unknown } | null;
   // #3643 F2: the organisation late-cash arm's CANCELLED_BOOKING_HAND_BACK tasks.
   handBackTasks?: { bookingId: string; paymentId: string }[];
   // #4215 (`INV-PAY-118`): refund requests' completed hand-backs, the cash each paid back.
@@ -497,6 +499,8 @@ function createDependencies(state: {
       },
       xeroSyncOperation: {
         findMany: vi.fn().mockResolvedValue(operations),
+        // #3953: the primary invoice's stored figures - none unless a test says so.
+        findFirst: vi.fn().mockResolvedValue(state.primaryInvoiceFiguresOperation ?? null),
       },
       // #1491: booking-cancel card-path refund decisions (matched by exact
       // booking_cancel_refund_recovery_<id> keys in the loader).

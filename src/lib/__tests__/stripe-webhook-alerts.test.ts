@@ -378,6 +378,11 @@ vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
   releaseXeroSupplementaryInvoiceForCapturedPaymentIntent: (...args: unknown[]) =>
     mockReleaseXeroSupplementaryInvoiceForCapturedPaymentIntent(...args),
 }));
+// #3953: a change's capture recorded by its own receipt names that receipt's invoice; none here unless a case says so.
+const mockFindAdditionalCaptureReceiptInvoiceId = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<string | null> => null));
+vi.mock("@/lib/additional-capture-receipt-link", () => ({
+  findAdditionalCaptureReceiptInvoiceId: (...args: unknown[]) => mockFindAdditionalCaptureReceiptInvoiceId(...args),
+}));
 
 vi.mock("@/lib/xero-error-alert", () => ({
   notifyXeroSyncError: (...args: unknown[]) => mockNotifyXeroSyncError(...args),
@@ -1009,6 +1014,30 @@ describe("Stripe webhook Xero alerting", () => {
       "payment-3",
       3800
     );
+  });
+
+  // #3953 (`INV-PAY-139`): a change's capture its own receipt recorded against
+  // the gap invoice - its refund's note names that invoice, not the primary.
+  it("names the invoice a change capture's own receipt paid on that capture's refund note", async () => {
+    mockConstructWebhookEvent.mockReturnValue({
+      id: "evt_refund_receipt",
+      type: "charge.refunded",
+      data: { object: { id: "ch_receipt", payment_intent: "pi_change", amount_refunded: 8000 } },
+    } as any);
+    mockListRefundsForCharge.mockResolvedValue([]);
+    mockSyncRefundsFromStripeCharge.mockResolvedValue({
+      paymentId: "payment-3",
+      refundDeltaCents: 8000,
+      payment: { id: "payment-3", amountCents: 38000, refundedAmountCents: 8000 },
+    });
+    mockIsXeroConnected.mockResolvedValue(false);
+    mockFindAdditionalCaptureReceiptInvoiceId.mockResolvedValueOnce("inv_gap");
+
+    expect((await POST(makeRequest())).status).toBe(200);
+    expect(mockFindAdditionalCaptureReceiptInvoiceId).toHaveBeenCalledWith("pi_change");
+    expect(mockEnqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-3", 8000, {
+      creditsInvoiceId: "inv_gap",
+    });
   });
 
   // #3635 round-3 R1/R4: a refund of a LATE capture is noted per capture, and

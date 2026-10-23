@@ -142,8 +142,9 @@ export function racingReductionSettlement(
 export async function readPrimaryInvoiceFeeAtLink(
   bookingId: string,
   xeroInvoiceId: string,
+  store: Pick<typeof prisma, "xeroSyncOperation"> = prisma,
 ): Promise<{ atLink: PrimaryInvoiceFeeAtLink; operationId: string } | null> {
-  const operation = await prisma.xeroSyncOperation.findFirst({
+  const operation = await store.xeroSyncOperation.findFirst({
     where: {
       direction: "OUTBOUND",
       entityType: "INVOICE",

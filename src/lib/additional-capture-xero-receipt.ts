@@ -73,14 +73,12 @@ import {
   findPrimaryInvoiceGapInvoice,
   readPrimaryInvoiceFeeAtLink,
 } from "@/lib/xero-primary-invoice-gap-anchors";
+import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import {
   readAdditionalCaptureReceiptPayload,
   type AdditionalCaptureReceiptPlan,
   type AdditionalCaptureReceiptTarget,
 } from "@/lib/additional-capture-receipt-payload";
-
-/** The link the capture's Xero payment writes, on its `PaymentTransaction`. */
-export const ADDITIONAL_CAPTURE_PAYMENT_ROLE = "ADDITIONAL_CAPTURE_PAYMENT";
 
 /** Stamped on a row the worker refused: an officer checks Xero and records it by hand, or retries. */
 export const ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE = "ADDITIONAL_CAPTURE_RECEIPT_REFUSED";
@@ -546,33 +544,4 @@ export async function recordAdditionalCaptureReceipt(
       await alertOfficer(paymentIntentId, operationId, message);
     }
   }
-}
-
-/**
- * #3953: the Xero invoice a capture's receipt was recorded against, from its
- * payment link, or null. The refund paths read it, so a refund of that capture
- * names the invoice the capture paid.
- */
-export async function findAdditionalCaptureReceiptInvoiceId(
-  paymentIntentId: string,
-  store: Pick<typeof prisma, "paymentTransaction" | "xeroObjectLink"> = prisma,
-): Promise<string | null> {
-  const transaction = await store.paymentTransaction.findUnique({
-    where: { stripePaymentIntentId: paymentIntentId },
-    select: { id: true },
-  });
-  if (!transaction) return null;
-  const link = await store.xeroObjectLink.findFirst({
-    where: {
-      localModel: "PaymentTransaction",
-      localId: transaction.id,
-      xeroObjectType: "PAYMENT",
-      role: ADDITIONAL_CAPTURE_PAYMENT_ROLE,
-      active: true,
-    },
-    orderBy: { createdAt: "desc" },
-    select: { metadata: true },
-  });
-  const invoiceId = asRecord(link?.metadata)?.invoiceId;
-  return typeof invoiceId === "string" && invoiceId.length > 0 ? invoiceId : null;
 }
