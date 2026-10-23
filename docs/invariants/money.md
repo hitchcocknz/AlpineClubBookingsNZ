@@ -294,10 +294,9 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   admits a draining-colour officer-repair audit. Provenance decides what a
   night may be read as, not whether the booking ledger posts it: every priced
   night posts one `GUEST_NIGHT` line, an inexact strand's included (#3583,
-  decision A), while an edit still refuses to price an inexact night. Once wave
-  A2 of epic #4302 lands, the D1 valuation (`INV-MOD-028`) supersedes that
-  refusal and the evidence clause above: every usable row, `EVEN_SPLIT` and
-  `UNKNOWN` included, keeps its figure.
+  decision A). Since #4317 an edit prices every night by the D1 valuation
+  (`INV-MOD-028`), which supersedes the evidence clause above: every usable row,
+  `EVEN_SPLIT` and `UNKNOWN` included, keeps its figure.
 
 ## INV-MONEY-029
 
@@ -452,12 +451,11 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   source they used** (#3277, programme #3272; owner-approved D3 blueprint,
   12 September 2026). The caller names its operation because the required grain
   differs: whole-guest removal, and a strand an edit does not touch at all
-  (#3531 D-3531-1, `editStrandEvidenceGrain`), may use a reconciling guest
-  total even when its nights are `EVEN_SPLIT`; a strand an edit moves, one it
-  deliberately reprices with its locks cleared (a #2337 link, an other-lodge
-  tick), and the review re-base need exact individual-night provenance; credit
-  election verifies the booking headline; Xero verifies the booking promotion
-  aggregate.
+  (#3531 D-3531-1), may use a reconciling guest total even when its nights are
+  `EVEN_SPLIT`; since #4317 an edit values every strand it moves by
+  `INV-MOD-028`; the legacy review re-base needs exact individual-night
+  provenance; credit election verifies the booking headline; Xero verifies the
+  booking promotion aggregate.
 
   `selectBookingMoneyBuildUp` returns `STORED`,
   `DERIVED_COMPATIBILITY_FALLBACK`, or `BASE_EVIDENCE_UNKNOWN`, with its reason,
@@ -647,10 +645,10 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
 
 - **An edit posts its own lines, per guest-night, or none; a review closure
   records one parked edit's money once** (#3582). Rule and reason: design
-  `booking-ledger.md` §5.1 (edits: reversal plus re-post per night, sum or
-  nothing, only on a booking confirmed on the ledger, asked under `lock(1)`;
-  a parked edit posts nothing, `INV-MOD-040`) and §5.3 (a closure's share,
-  decided at booking grain). No review share posts a settlement line
+  `booking-ledger.md` §5.1 (edits: reversal plus re-post per night at its
+  `INV-MOD-028` value, sum or nothing, only on a booking confirmed on the
+  ledger, asked under `lock(1)`; no edit parks since #4317) and §5.3 (a legacy
+  closure's share, decided at booking grain). No review share posts a settlement line
   (`INV-MONEY-034`, `INV-MONEY-035`). Pins:
   `booking-ledger-modification-posting.test.ts`,
   `booking-ledger-modification-sync.test.ts` (two-sibling fixtures per

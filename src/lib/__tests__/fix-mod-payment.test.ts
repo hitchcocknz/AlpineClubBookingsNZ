@@ -406,7 +406,7 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
           "no nights". Empty is the honest value for this fixture: it persists no
           `BookingGuestNight` rows, so the evaluator falls back to the guest's own
           stayStart..stayEnd envelope. It is also inert for the date path, whose
-          `lockedNightPricesForGuest` reads the same field and already treated the
+          `valuedNightLocksForGuest` reads the same field and already treated the
           absent one as "this guest locked no prices".
         */
         stayStart: new Date("2026-08-01"),

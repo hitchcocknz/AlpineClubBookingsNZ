@@ -1081,12 +1081,15 @@ party. Because nobody is back-filled, a removal can leave `Booking.checkOut`
 ahead of the last night anybody holds; that is accepted rather than guarded.
 A night the edit gives back is credited at the price the member paid rather than
 at today's season rate, and the per-night rows written back are each night's real
-rate rather than the guest's average (#2744, `INV-MOD-025`). Since #3031 there is
-no fallback beneath that: a guest strand whose stored rows do not carry a
-non-negative integer price for every night they hold, and sum to their stored
-total, is not priced at all. The edit produces `financial_review_required` with a
-typed cause and NO amount, and the today's-rate valuation and the refund ceiling
-that used to stand behind it are both gone (`INV-MOD-028`).
+rate rather than the guest's average (#2744, `INV-MOD-025`). Since #4317 a guest
+strand whose stored rows do not carry a non-negative integer price for every
+night they hold, or do not sum to its stored total, is valued by
+`valueStrandNights` (`INV-MOD-028`): usable rows keep their figures and the rest
+of the stored total is split evenly, so what the edit credits and keeps always
+adds up to what the guest was charged. The planner always prices; it has no
+review branch. Its windows come from the guest's held night rows, not the stored
+stay envelope (`INV-DATE-020`). The today's-rate valuation and the refund
+ceiling that once stood behind it stay gone.
 For an ordinary stay that runs to the booking's check-out, every number is
 exactly what it was before. Bookings edited before those fixes keep the rows and
 the price they were given — history is not repriced (#2745 carries the decision
@@ -2136,9 +2139,9 @@ OPEN -> COMPLETED   (#3032: and the confirmed amount now MOVES, down whichever o
                      recovery cron rather than lost. The prefix and the recovery
                      operation are keyed to the TASK and not to the
                      `BookingModification`, because ONE BOOKING can hold two
-                     review tasks against one modification row - a consent
-                     removal exempted from the pending-review fence raises its own
-                     beside an open one. (Until #3498 one EDIT could raise
+                     review tasks against one modification row - before #4317
+                     a consent removal exempted from the pending-review fence
+                     could raise its own beside an open one. (Until #3498 one EDIT could raise
                      several, one per guest strand; since then it raises one
                      per EDIT, except where the edit moved two or more guests'
                      nights - then one per recorded strand again, because a row
@@ -2441,9 +2444,12 @@ There are FOUR creators, and only the first, second and fourth ever make an OPEN
   find-then-write rather than an atomic fenced update. On the PRIMARY path there is
   never an `OPEN` row to close — nothing raises one for a primary intent — so the
   create arm is the only one reachable there.
-- Created by a **booking edit whose exact sold price cannot be read from the
-  booking's own stored history** (#3030, epic #2797; `kind`
-  `EDIT_FINANCIAL_REVIEW`). Owner decision D1: the stay change is applied and
+- **Legacy: settles tasks raised before #4317.** Since #4317 every booking edit
+  is priced from stored data (`INV-MOD-028`) and nothing raises this kind; the
+  tasks already OPEN are worked through this lifecycle until waves B and C of
+  epic #4302 settle them and retire it. It was created by a **booking edit whose
+  exact sold price could not be read from the booking's own stored history**
+  (#3030, epic #2797; `kind` `EDIT_FINANCIAL_REVIEW`). Owner decision D1: the stay change is applied and
   only the MONEY is held, so the booking never disagrees with reality while an
   admin prices the adjustment. Raised by `raiseEditFinancialReviewTask`
   (`src/lib/edit-financial-review.ts`) INSIDE the caller's transaction, so the
@@ -2459,15 +2465,15 @@ There are FOUR creators, and only the first, second and fourth ever make an OPEN
   copied there: the admin surface links to the live one. #3032 adds the
   `bookingModificationId` the completion settles against (owner decision
   D-3032-1) to that context - a pointer to a row, deliberately NOT part of the
-  occurrence identity, so carrying it cannot re-identify a replay. NOTHING RAISES
-  THIS TASK YET, on `main` or on the epic branch: the booking-edit path has to
-  decide an edit is unpriceable first, and that decision needs the discriminated
-  planner result #3031 introduces. #3030 shipped the state and #3032 the
-  settlement and the fence; the raise caller is #3031's.
+  occurrence identity, so carrying it cannot re-identify a replay. #3030 shipped
+  the state and #3032 the settlement and the fence; #3031, #3032 and #3166 added
+  the raise callers, and #4317 removed every one of them.
 
-**#3032: while a review is OPEN, a second MONEY-AFFECTING edit to that booking is
-refused.** `assertNoPendingEditFinancialReview` (`src/lib/edit-financial-review.ts`)
-is called by the batch, date and guest-removal edit services under both locks, on
+**#3032: while a review is OPEN, a MONEY-AFFECTING edit to that booking is
+refused** (legacy: only a review raised before #4317 can be OPEN).
+`assertNoPendingEditFinancialReview` (`src/lib/edit-financial-review.ts`)
+is called by the batch, date and guest-removal edit services, the guest-add route
+and the acceptance re-price under their locks, on
 the post-lock re-read and before any write, and answers `409` with the code
 `EDIT_FINANCIAL_REVIEW_PENDING`. It is deliberately narrow. An identity-only edit,
 a credit election and the price-preserving admin date shift are not fenced,
@@ -2475,9 +2481,8 @@ because none of them reads the booking's stored money. Nor is a CONSENT-AUTHORIT
 removal (`CONSENT_DECLINE` / `CONSENT_EXPIRY`): owner decision D-14 says a member
 who never consented must always be able to come off a booking, so that removal
 proceeds rather than being held behind a pricing question nobody has answered.
-Once #3031 wires the raise, such a removal is intended to park its own money as a
-second review task - two occurrences, two keys, two amounts. Until then the
-exemption's only effect is that the fence does not refuse it.
+No removal parks its money since #4317, so the exemption's only effect is that
+the fence does not refuse it.
 
 The transition is a status-fenced conditional update, so a double click can
 never double-apply the allocation, and the row is never processed by any cron —

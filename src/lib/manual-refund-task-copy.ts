@@ -241,33 +241,19 @@ export function completionSummary(shape: CompletionSettlementShape): string {
  * DISMISSAL, which those sentences never describe. Empty when nothing was
  * recorded, which is the ordinary case.
  *
- * It says what the officer gained, not what was written: not being sent back for
- * review is the outcome they were promised when they filled the boxes in, and it
- * is the thing they would otherwise have to take on trust.
- *
- * IT CLAIMS THE STRAND AND NOT THE BOOKING. One edit raises one review task per
- * unreadable guest strand, so settling the first of two writes guest one's
- * nights and leaves guest two's blank - and "this booking will not be sent for
- * review again" would be a receipt disproved by the next edit. Overstating it
- * here is worse than overstating it anywhere else on this screen, because not
- * coming back is the entire thing #3191 promises.
- *
- * THE SECOND SENTENCE IS CONDITIONAL, and it has to be written as one (#3191 fix
- * round). "Another guest on the same booking still can" presupposes a guest who
- * does not exist on a single-guest booking, which is most of them. Whether one
- * exists is not something this message can know - the projection the screen
- * receives deliberately carries no strand id and no party - so the sentence
- * states the rule ("if there is one") rather than asserting the guest. Gating it
- * on a real count would mean a second query on the settle path to change one
- * clause, which is not a trade worth making for copy that is already true.
+ * IT CLAIMS THE GUEST AND NOT THE BOOKING: one review names one guest's nights.
+ * It used to add that those nights would no longer send the booking back for
+ * review, and that another guest's blanks still could. #4317 (epic #4302) prices
+ * every edit from stored data, so no edit sends a booking for review any more
+ * and that promise is true of every booking; it is dropped rather than kept as a
+ * gain the officer did not make. This receipt goes with the settle screen in
+ * wave C.
  */
 export function nightPricesRecordedMessage(count: number): string {
   if (count === 0) return "";
-  const tail =
-    ", so this guest's nights will not send this booking back for review again. If another guest on the same booking has unpriced nights, theirs still can.";
   return count === 1
-    ? ` One night's price was recorded${tail}`
-    : ` ${count} nights' prices were recorded${tail}`;
+    ? " One night's price was recorded for this guest."
+    : ` ${count} nights' prices were recorded for this guest.`;
 }
 
 /**

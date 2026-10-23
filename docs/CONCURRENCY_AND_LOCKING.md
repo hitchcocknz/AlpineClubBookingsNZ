@@ -3419,7 +3419,8 @@ every row it touches**, not a lock:
 The validation runs BEFORE the claim and the writes AFTER it, for the reasons
 listed above; and the blanks are re-read on the caller's transaction rather than
 trusted from the browser, so a screen minutes old cannot price a night the
-booking no longer holds. `INV-MOD-028` carries the rest of the rule.
+booking no longer holds. `INV-MOD-036` carries the rest of the rule (legacy:
+it settles tasks raised before #4317, which made every edit price itself).
 
 **#3214 ADDS A SECOND CALLER OF THAT SAME WRITER, ON THE SAME BASIS, AND STILL NO
 KEY.** An officer may now record what a guest strand's nights sold for from the
@@ -3533,7 +3534,7 @@ make that safe to add here:
   rule about provider calls inside long transactions is not engaged.
 
 The new figures are RECOMPUTED from the strands rather than derived by applying
-the settled amount, which matters here as well as in `INV-MOD-028`: the writer is
+the settled amount, which matters here as well as in `INV-MOD-055`: the writer is
 handed no settlement amount at all, so a reader does not have to check whether it
 is the right one. And where any surviving strand's nights cannot be read back as
 exact, reconciling money the re-price DECLINES - no promo recompute, no booking
@@ -3729,8 +3730,8 @@ row could see, because the racing writer is not touching this row at all.
 
 **The Stripe key and the recovery key are scoped to the TASK, not to the
 `BookingModification`.** Owner decision D-3032-1 settles a review against the
-ORIGINAL edit's modification row, and one edit can raise TWO review tasks — two
-unpriceable strands, one modification row. A modification-scoped Stripe prefix
+ORIGINAL edit's modification row, and one edit could raise TWO review tasks — two
+unpriceable strands, one modification row (no edit raises one since #4317). A modification-scoped Stripe prefix
 would give two same-amount refunds identical per-slice keys, so Stripe would
 answer the second with the FIRST refund and the caller would take the replayed id
 as success; a modification-scoped recovery key would let the two tasks upsert one

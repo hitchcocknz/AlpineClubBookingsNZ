@@ -116,7 +116,7 @@ vi.mock("@/lib/membership-type-policy", () => ({
   MembershipTypeBookingPolicyError: class extends Error {},
   getMembershipTypeBookingPolicyErrorBody: (e: Error) => ({ error: e.message }),
 }));
-// `lockedNightPricesForGuest` is left REAL — it is half of what this suite
+// The valued night locks (`editedGuestPricingLocks`) are left REAL — half of what this suite
 // asserts. Only the three collaborators that would need a database are stubbed.
 vi.mock("@/lib/booking-modify", async (importOriginal) => {
   const actual = (await importOriginal()) as typeof import("@/lib/booking-modify");

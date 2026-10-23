@@ -129,7 +129,7 @@ type TestGuest = {
   stayStart: Date;
   stayEnd: Date;
   // `priceCents` is on the real `BookingGuestNight` row and is what
-  // `lockedNightPricesForGuest` reads on the other edit paths — carried here so
+  // `valuedNightLocksForGuest` reads on the other edit paths — carried here so
   // a test can show whether this plan consults it. Optional, because most cases
   // do not care.
   nights?: Array<{

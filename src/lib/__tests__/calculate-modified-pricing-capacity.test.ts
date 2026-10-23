@@ -914,7 +914,7 @@ describe("calculateModifiedPricing in-progress per-night prices (#2744)", () => 
 
   it("persists each night's real rate, not the guest's average", async () => {
     // `applyGuestChanges`/`syncGuestNights` writes `perNightCents[k]` onto the
-    // `BookingGuestNight` row for `nightDates[k]`, and `lockedNightPricesForGuest`
+    // `BookingGuestNight` row for `nightDates[k]`, and `valuedNightLocksForGuest`
     // hands that column to the NEXT edit — so these four numbers are what the
     // system will later believe the member paid. They used to be four copies of
     // the average (7000 each); they are the real rates now.

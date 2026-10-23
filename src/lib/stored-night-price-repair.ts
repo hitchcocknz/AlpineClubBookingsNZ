@@ -39,8 +39,8 @@ import type { ClubFormat } from "@/lib/club-format";
  *  2. **The typed nights must reconcile.** A strand is exactly priced when every
  *     night it holds carries usable integer cents and those sum to
  *     `BookingGuest.priceCents` (`INV-MOD-028`). A repair that does not satisfy
- *     that leaves the strand inexact, so the booking parks again on the next
- *     edit and the officer's typing bought nothing. The settlement is what moves
+ *     that leaves the strand inexact, which before #4317 parked the booking
+ *     again on its next edit, so the officer's typing bought nothing. The settlement is what moves
  *     what the strand is worth: the officer's figures must come to the stored
  *     total plus or minus exactly the amount being settled. That is the
  *     "reconcile to the agreed total" #3191 asks for, stated as arithmetic a

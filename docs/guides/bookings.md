@@ -231,22 +231,39 @@ Things worth knowing:
   in-progress booking prices its remaining nights through a different path and
   the change would silently settle nothing. Contact the office for a stay
   already under way.
-- **Not on a change whose amount the office has to work out by hand.** Some
-  bookings hold nights whose original price the club's records cannot tell us —
-  usually older ones, or ones created by approving a public request. A change to
-  one of those is saved but its money is parked for someone to price, and while
-  those nights carry no price nothing on the booking can be re-rated. So an edit
-  carrying this tick is refused, and refused whole: the lodge is not saved
-  either, and you are told why. To clear it, open the booking, find **Admin
-  tools** and use **Record what these nights sold for** — you give a figure for
-  every night of that guest's stay, they have to come to what the stay is already
-  stored as being worth, and nothing anybody owes changes. Set the tick once that
-  is done. (If the booking is waiting on a review in **Refunds & Adjustments**,
-  settle that first: it asks for the same figures. A booking already waiting on
-  such a review refuses the tick for the same reason.) Full steps:
-  [Payments & Refunds — Recording what a guest's nights sold for](payments.md#recording-what-a-guests-nights-sold-for).
+- **Not while an older change is still under review.** A booking with a review
+  still open in **Refunds & Adjustments** refuses any price change, this tick
+  included, until that review is settled.
 - **It is an officer decision, and it is audited.** Members never see the
   control on their own booking.
+
+### How a booking change is priced
+
+Every change to a booking — new dates, a guest added or taken off, a stay
+shortened or extended, before or during the stay — is priced the moment it is
+saved. Nothing is sent to an officer to work out, and the quote on **Edit
+Booking** is exactly what saving charges or credits.
+
+- **Nights a guest keeps** keep the price they were sold for.
+- **Nights given back** are credited at what they were sold for. Where the club's
+  records do not say what each night sold for on its own — an older booking, one
+  created from a public request, or nights whose recorded prices do not add up to
+  the guest's total — the guest's total is shared across their nights: nights
+  with a recorded price keep it, and the rest of the total is split evenly over
+  the others. Either way the credits never add up to more or less than the guest
+  was charged.
+- **Taking a guest off** credits everything stored for that guest.
+- **Nights added** are charged at today's prices.
+- **The club's normal change fee** applies, as on any other change.
+
+A guest whose stored total is below zero, which the system should never hold, has
+their nights counted at $0.00 and the booking is logged for the club to correct;
+the change still saves.
+
+A booking changed before this way of pricing came in may still have a review open
+in **Refunds & Adjustments**. Until it is settled, a further price change to that
+booking is refused with a message pointing there; settle it as described in
+[Payments & Refunds](payments.md#decide-a-booking-change-the-system-would-not-price).
 
 ### Read the results table
 
