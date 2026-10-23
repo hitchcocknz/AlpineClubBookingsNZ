@@ -16,13 +16,25 @@
   guest's stored total is shared across their nights — nights with a recorded
   price keep it and the rest is split evenly — so the credits always add up to
   exactly what the guest was charged. The quote on **Edit Booking** is exactly
-  what saving charges or credits, and the booking ledger and Xero lines follow
-  the same figures.
+  what saving charges or credits. A booking whose total an older held change
+  left out of step with its guests keeps that difference: a new change moves
+  the total only by what it changes itself, never settling the held money.
+  Closing an older review now recalculates the booking's total from its guests,
+  and a correction to a finished stay is charged on the removed nights' values
+  rather than refused when a night has no recorded price.
 
-  A guest whose stored total is below zero, which the system should never hold,
-  has their nights counted at $0.00 and the booking is logged for the club to
-  correct; the change still saves. An other-club member rate can now be set on
-  any booking that could not be re-rated before.
+  The booking ledger posts an edit only where the nights' recorded lines
+  already match those values; an edit to a booking whose lines do not posts
+  nothing and is counted as a gap until a later release re-posts them. Run
+  `pnpm run booking-money:census` before deploying to see how many bookings
+  that is (`ledgerNightValues`).
+
+  A member declining an invitation on a paid booking now needs the owner or
+  the club to choose between a refund and account credit on every booking,
+  including ones whose money used to be held for review. An other-club member
+  rate can now be set on any booking that could not be re-rated before. A
+  guest whose stored total is below zero, which the system cannot store, would
+  refuse the change.
 
   Reviews already open in **Refunds & Adjustments** stay there and are settled
   as before; while one is open, its booking still refuses a further price

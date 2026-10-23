@@ -1745,7 +1745,15 @@ snapshot it reports:
 - every `EDIT_FINANCIAL_REVIEW` task by status and by the cause the raise
   recorded, overall and per task-creation month. The two summaries share one
   cause vocabulary on purpose: strands by cause is what the gate would have
-  parked; tasks by cause is what it did park before #4317.
+  parked; tasks by cause is what it did park before #4317;
+- `ledgerNightValues` (#4317 review M3): of the bookings confirmed on the
+  ledger, how many have a live single-night guest-night line whose figure is
+  not what an edit now values that night at, or a valued night with no live
+  line at all, with up to 100 of their ids. An edit to one of them posts no
+  ledger lines and leaves an `UNPOSTED_EDIT` gap that closes the booking
+  ledger's cut-over gate until wave B's re-base re-posts the lines. **Run it
+  before the auto-pricing release ships** and keep the figure with the release
+  notes, so the gaps that follow are expected rather than found.
 
 The per-month lines are the point: run it before a deploy and again after, and
 the effect of the parking gate's grain (#3531 3a) and the rate-derived backfill

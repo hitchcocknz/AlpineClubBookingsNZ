@@ -296,7 +296,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-064` | Recovery replays close debt only when the ask exists; edit-time answer |
 | `INV-PAY-072` | Repair pass dates the primary invoice from operation history; unrequested shares traced |
 | `INV-PAY-065` | Card refunds cap before claiming, task-keyed; anchor is the original edit |
-| `INV-PAY-066` | Legacy open-review fence on money doors; three DB constraints |
+| `INV-PAY-066` | Live fence on money doors for pre-#4317 reviews; three DB constraints |
 | `INV-PAY-002` | Account credit is consumed only at `PAYMENT_PENDING`; a draft election spends nothing |
 | `INV-PAY-003` | The edit path writes an election only onto DRAFT, AWAITING_REVIEW and PAYMENT_PENDING |
 | `INV-PAY-004` | Members edit own drafts; draft edits move no money or capacity |
@@ -439,7 +439,7 @@ Prefix `INV-MOD`.
 | `INV-MOD-036` | Legacy: settling an older review may fill a blank, on four conditions |
 | `INV-MOD-037` | Legacy: the optional repair, and four things it does not repair |
 | `INV-MOD-038` | Legacy: three consumers read a re-based total; none restates a bill |
-| `INV-MOD-039` | Superseded for edits; the grain test survives in legacy review re-base |
+| `INV-MOD-039` | Superseded for edits and re-bases; the grain test survives in a census |
 | `INV-MOD-040` | An edit writes valued amounts again; estimate sources still prohibited |
 | `INV-MOD-041` | Every edit door prices; the legacy open-review fence still refuses |
 | `INV-MOD-042` | No door parks or freezes money; promotion changes are applied |
@@ -455,8 +455,8 @@ Prefix `INV-MOD`.
 | `INV-MOD-052` | Where each door's automatic pricing is pinned |
 | `INV-MOD-053` | Where the removal's pricing and the legacy second act are pinned |
 | `INV-MOD-054` | Legacy: where the settle-time repair is pinned |
-| `INV-MOD-055` | Legacy: closing a parked review re-prices the booking, or declines |
-| `INV-MOD-056` | Operation-grain provenance governs legacy review re-bases, not edits |
+| `INV-MOD-055` | Legacy: closing a parked review re-bases the booking from valued strands |
+| `INV-MOD-056` | Operation-grain provenance: kept for the census; edits and re-bases value nights |
 | `INV-MOD-057` | Cancellable statuses have one home; member doors read a named subset |
 | `INV-MOD-058` | An edit stores its delta as lines; every reader reads those rows |
 | `INV-MOD-059` | A guest's dietary value is seeded once, then carried by identity |

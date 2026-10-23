@@ -3536,10 +3536,12 @@ make that safe to add here:
 The new figures are RECOMPUTED from the strands rather than derived by applying
 the settled amount, which matters here as well as in `INV-MOD-055`: the writer is
 handed no settlement amount at all, so a reader does not have to check whether it
-is the right one. And where any surviving strand's nights cannot be read back as
-exact, reconciling money the re-price DECLINES - no promo recompute, no booking
-write, no row lock taken at all - so a booking with a second unreadable strand
-leaves this transaction exactly as narrow as it was before #3219.
+is the right one. Where the re-price DECLINES - no promo recompute, no booking
+write, no row lock taken at all - the transaction is exactly as narrow as it was
+before #3219. Until #4317 it declined for any surviving strand whose nights did
+not read back as exact; since #4317 (review H1) it values those strands
+(`INV-MOD-028`) and re-bases, taking the same row lock under the same key, and
+declines only for a negative stored guest total, which the database forbids.
 
 One more write joins the same transaction: a `BookingModification` row of type
 `PRICE_REBASE`, the booking's own history record of the re-price. It is an insert

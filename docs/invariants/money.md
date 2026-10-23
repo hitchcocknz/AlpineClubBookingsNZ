@@ -452,10 +452,9 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   12 September 2026). The caller names its operation because the required grain
   differs: whole-guest removal, and a strand an edit does not touch at all
   (#3531 D-3531-1), may use a reconciling guest total even when its nights are
-  `EVEN_SPLIT`; since #4317 an edit values every strand it moves by
-  `INV-MOD-028`; the legacy review re-base needs exact individual-night
-  provenance; credit election verifies the booking headline; Xero verifies the
-  booking promotion aggregate.
+  `EVEN_SPLIT`; since #4317 an edit values every strand it moves, and the
+  legacy review re-base every strand, by `INV-MOD-028`; credit election
+  verifies the booking headline; Xero verifies the booking promotion aggregate.
 
   `selectBookingMoneyBuildUp` returns `STORED`,
   `DERIVED_COMPATIBILITY_FALLBACK`, or `BASE_EVIDENCE_UNKNOWN`, with its reason,

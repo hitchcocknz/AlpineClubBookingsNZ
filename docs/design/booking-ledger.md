@@ -244,10 +244,17 @@ night with no live line, a live line at a different price, or any other
 disagreement posts nothing and is logged for C4 (#3583) to count (its census
 names it coverage, `UNPOSTED_EDIT`). Since #4317 the before side is each night's
 `INV-MOD-028` value (`pricingSideFromStoredGuests`), the figure the edit priced
-with: a strand whose rows reconcile posts whatever their provenance, and one
-valued by a split no longer matches its live lines, so it posts nothing and is
-counted the same way. Only a
-booking already confirmed on the ledger posts (§4.1a), asked under `lock(1)`.
+with. An edit posts only where every night it reverses has exactly one live
+single-night line at that value: a strand whose rows reconcile (R1) does,
+whatever their provenance. A strand valued by a split (R2 or R3) differs from
+the lines its confirmation posted, and a night whose blank row confirmation
+skipped has no live line, so those edits post NOTHING (`LIVE_LINE_DISAGREES`,
+`NO_LIVE_LINE`) - never a wrong line. Each such edit is an `UNPOSTED_EDIT` gap,
+and **every one closes the cut-over gate**, where a park posted nothing and
+raised none. `booking-money:census` counts the bookings an edit would leave so
+(`ledgerNightValues`, #4317 review M3); wave B's re-base (D5) re-posts their
+lines. Only a booking already confirmed on the ledger posts (§4.1a), asked under
+`lock(1)`.
 The planner is `booking-ledger-modification-posting.ts`; the writer calls are in
 `booking-ledger-modification-sync.ts` (`INV-MONEY-036`).
 

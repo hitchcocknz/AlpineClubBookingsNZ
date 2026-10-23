@@ -2690,8 +2690,8 @@ _Legacy: settles tasks raised before #4317._
 
 ## INV-PAY-066
 
-- **Legacy: settles tasks raised before #4317.** **While a review is OPEN, a
-  money-affecting edit to that booking is refused** (#3032,
+- **Live gating, for reviews raised before #4317 only.** **While a review is
+  OPEN, a money-affecting edit to that booking is refused** (#3032,
   `assertNoPendingEditFinancialReview`), because pricing one
   would mean starting from the amount under review. **All FOUR money-affecting
   doors are fenced**: the batch edit, the date edit, the single-guest removal,

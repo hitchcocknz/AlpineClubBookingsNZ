@@ -77,7 +77,11 @@ date-only lodge night (no times), matching the rules in
      (last guest on the booking, quote-priced, the booking's status, or a stay
      that already started) and *what fixes it* — always the real remedy
      (cancel the booking, add another guest first, re-quote the request),
-     never a dead-end. The number is the number of stuck guest rows.
+     never a dead-end. The number is the number of stuck guest rows. A decline
+     on a paid booking whose reduction needs a refund-or-credit choice is stuck
+     too, and since every change is now priced that includes bookings whose
+     money used to be held for review: remove the guest from the booking
+     yourself and make the choice there.
 
    Clicking an active chip clears it. Everything else on a booking's consent —
    who consented, who was told — shows as badges on the guest list of the
@@ -257,9 +261,12 @@ Booking** is exactly what saving charges or credits.
 - **Nights added** are charged at today's prices.
 - **The club's normal change fee** applies, as on any other change.
 
-A guest whose stored total is below zero, which the system should never hold, has
-their nights counted at $0.00 and the booking is logged for the club to correct;
-the change still saves.
+A booking whose total an older held change left out of step with its guests
+keeps that difference through a new change: the change moves the total only by
+what it changes itself, and the difference stays for the open review to settle.
+
+A guest whose stored total is below zero, which the system cannot store, would
+refuse the change with a message to contact the club; nothing is changed.
 
 A booking changed before this way of pricing came in may still have a review open
 in **Refunds & Adjustments**. Until it is settled, a further price change to that
