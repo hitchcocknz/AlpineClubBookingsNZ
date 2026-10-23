@@ -37,7 +37,7 @@ vi.mock("@/lib/edit-financial-review-charge-raise-claim", () => ({
   releaseEditReviewChargeRaise: (...a: unknown[]) => mocks.release(...a),
 }));
 vi.mock("@/lib/edit-financial-review-charge-recovery", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/edit-financial-review-charge-recovery")>()),
+  ...((await importOriginal()) as typeof import("@/lib/edit-financial-review-charge-recovery")),
   completeEditFinancialReviewChargeRecovery: (...a: unknown[]) => mocks.complete(...a),
 }));
 vi.mock("@/lib/edit-financial-review-charge-request", () => ({
