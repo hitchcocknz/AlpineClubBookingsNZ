@@ -465,7 +465,7 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
       // The transfer bounced: the second follow-up is dismissed, and nothing counts.
       const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
       await resolveManualRefundTask(
-        { taskId: second.id, resolution: "dismissed", note: "The transfer bounced.", actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: null, recordedNightPrices: null },
+        { taskId: second.id, resolution: "dismissed", note: "The transfer bounced.", actingMemberId: OFFICER_ID, recordedNightPrices: null },
         CLUB_FORMAT_TEST,
       );
       expect(await notedBankCents()).toBe(0);
