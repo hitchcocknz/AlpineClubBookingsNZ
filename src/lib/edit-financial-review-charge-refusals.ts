@@ -38,6 +38,15 @@ export const REVIEW_CHARGE_ORGANISER_PAID_MESSAGE =
   "The group organiser paid for this booking by card, so the extra amount cannot be charged to the joiner from here. Agree it with the organiser and collect it another way, then dismiss this task with a note recording what was collected and how.";
 
 /**
+ * #3949 (`INV-PAY-137`): the same refusal on a joiner's booking the group organiser paid for by Internet Banking. The
+ * booking's payment is a slice of the organiser's one settlement and the joiner has no invoice of their own, so there
+ * is nobody to ask from here. Refused before the claim, beside the card twin's, so the officer reads whose money it
+ * is rather than the general no-instrument sentence. Building a way to collect it is an owner decision, not this.
+ */
+export const REVIEW_CHARGE_ORGANISER_PAID_BY_BANK_MESSAGE =
+  "The group organiser paid for this booking by internet banking, so the club cannot ask for the extra amount from here. Agree it with the organiser and collect it another way, then dismiss this task with a note recording what was collected and how.";
+
+/**
  * #3170: the officer said the club is owed, and there is no way to ask for it.
  *
  * The club collects a price increase in exactly two ways: an additional card

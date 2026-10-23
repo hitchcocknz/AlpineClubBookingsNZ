@@ -294,7 +294,10 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   admits a draining-colour officer-repair audit. Provenance decides what a
   night may be read as, not whether the booking ledger posts it: every priced
   night posts one `GUEST_NIGHT` line, an inexact strand's included (#3583,
-  decision A), while an edit still refuses to price an inexact night.
+  decision A), while an edit still refuses to price an inexact night. Once wave
+  A2 of epic #4302 lands, the D1 valuation (`INV-MOD-028`) supersedes that
+  refusal and the evidence clause above: every usable row, `EVEN_SPLIT` and
+  `UNKNOWN` included, keeps its figure.
 
 ## INV-MONEY-029
 
