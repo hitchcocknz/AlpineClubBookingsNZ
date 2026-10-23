@@ -439,7 +439,23 @@ const EDITED_LOCKS_CALL_SITES = [
 ] as const;
 const EDITED_LOCKS_CALL = /(?<!function\s)\beditedGuestPricingLocks\s*\(/g;
 
-/** Every door whose engine breakdown carries the unattached strand money (D11). */
+/**
+ * Every door that writes a new booking total after an edit, and the in-progress
+ * planner the quote and save share: each takes it through
+ * `editedBookingTotalCents`, so a headline a parked edit froze keeps its gap
+ * rather than being settled by the edit (#4317 review H1, `INV-SSOT-001`).
+ */
+const EDITED_TOTAL_SITES = [
+  "src/app/api/bookings/[id]/guests/route.ts",
+  "src/app/api/bookings/[id]/modify-quote/route.ts",
+  "src/lib/booking-date-modification-service.ts",
+  "src/lib/booking-edit-guest-ranges.ts",
+  "src/lib/booking-guest-removal-service.ts",
+  "src/lib/booking-modify-plan.ts",
+] as const;
+const EDITED_TOTAL_CALL = /(?<!function\s)\beditedBookingTotalCents\s*\(/g;
+
+/** Every door whose engine breakdown carries a night-less strand's money. */
 const UNATTACHED_MONEY_SITES = [
   "src/app/api/bookings/[id]/guests/route.ts",
   "src/app/api/bookings/[id]/modify-quote/route.ts",
@@ -479,7 +495,18 @@ describe("valued locked-night reader census (#4317, INV-MOD-028)", () => {
     expect(found).toEqual([...EDITED_LOCKS_CALL_SITES].sort());
   });
 
-  it("keeps every engine-priced door carrying the unattached strand money (D11)", () => {
+  it("moves every edited headline only by the edit's own change (review H1)", () => {
+    const found = strippedSources()
+      .filter((file) => [...file.code.matchAll(EDITED_TOTAL_CALL)].length > 0)
+      .map((file) => repoRelative(file.absolute))
+      .sort();
+    expect(
+      found,
+      "#4317 review H1: every edit door takes its new total through editedBookingTotalCents",
+    ).toEqual([...EDITED_TOTAL_SITES].sort());
+  });
+
+  it("keeps every engine-priced door carrying a night-less strand's money", () => {
     const found = strippedSources()
       .filter((file) => [...file.code.matchAll(UNATTACHED_MONEY_CALL)].length > 0)
       .map((file) => repoRelative(file.absolute))
