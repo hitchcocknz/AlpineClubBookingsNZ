@@ -367,6 +367,8 @@ describe("#1765 repay-after-refund: create-payment-intent", () => {
     expect(data.clientSecret).toBe("cs_fresh");
     expect(data.paymentIntentId).toBe("pi_fresh");
     expect(data.alreadyPaid).toBeUndefined();
+    // #4300: the member is told the earlier payment is going back.
+    expect(data.previousPaymentRefunding).toBe(true);
     expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
     expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
     expect(mockStripeCreatePaymentIntent).toHaveBeenCalledWith(

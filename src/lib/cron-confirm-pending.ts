@@ -1730,8 +1730,10 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           continue;
         }
 
-        // #4300 (`INV-PAY-138`): superseded, going back; stays claimed for the alerted admins.
+        // #4300 (`INV-PAY-138`): superseded, so going back; nothing paid, so the
+        // claim is released (beds and hold back to PENDING) for the next run.
         if (reconciliation.outcome === "superseded_capture") {
+          await releaseChargeClaim(resolution).catch((err) => logger.error({ err, bookingId: resolution.booking.id }, "Could not release the claim of a refused superseded charge (#4300)"));
           result.failedBookingIds.push(resolution.booking.id);
           continue;
         }

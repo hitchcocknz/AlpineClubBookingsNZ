@@ -417,7 +417,7 @@ describe("POST /api/payments/charge-saved-method", () => {
     expect(releaseCall()).toBeUndefined();
   });
 
-  it("#4300: a charge the settle refuses as superseded answers not paid, queues no invoice and keeps the claim", async () => {
+  it("#4300: a charge the settle refuses as superseded answers not paid, queues no invoice and releases the claim", async () => {
     mockChargePaymentMethod.mockResolvedValue({ id: "pi_superseded", status: "succeeded", amount: 12500 });
     mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
 
@@ -425,11 +425,13 @@ describe("POST /api/payments/charge-saved-method", () => {
     const body = await response.json();
 
     expect(response.status).toBe(409);
-    expect(body).toMatchObject({ success: false, paymentIntentId: "pi_superseded", paymentReceived: true, finalisationPending: true });
+    expect(body).toMatchObject({ success: false, paymentIntentId: "pi_superseded", code: "SUPERSEDED_CHARGE_NOT_SETTLED", chargeReturning: true });
+    // Never "money arrived, do not charge again": this money is going back.
+    expect(body).not.toHaveProperty("paymentReceived");
     expect(mockLogAudit).not.toHaveBeenCalledWith(expect.objectContaining({ action: "booking.payment.confirmed" }));
     expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
-    // A captured charge never releases the claim; an admin resolves it.
-    expect(releaseCall()).toBeUndefined();
+    // The money is going back, so the claim is released: PENDING, hold restored, for the next charge.
+    expect(releaseCall()).toBeDefined();
   });
 
   it("refuses a club currency without two decimal places with a 409 before the claim (#3567)", async () => {

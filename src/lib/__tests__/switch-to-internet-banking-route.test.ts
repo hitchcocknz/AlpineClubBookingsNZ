@@ -56,10 +56,11 @@ vi.mock("@/lib/stripe", () => ({
   cancelPaymentIntentIfCancellableWithResult:
     mocks.cancelPaymentIntentIfCancellableWithResult,
 }));
-// #4300: `isCardIntentRetired` also asks whether the superseded machinery owns a
+// #4300: `isCardIntentRetired` also asks the doors' superseded check about a
 // succeeded capture (its own suite pins that); nothing here is superseded.
-vi.mock("@/lib/superseded-capture-ownership", () => ({
-  supersededMachineryOwnsCapture: async () => false,
+vi.mock("@/lib/payment-recovery", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/payment-recovery")),
+  queueSupersededPaymentIntentRefundRecovery: async () => false,
 }));
 vi.mock("@/lib/xero-operation-outbox", () => ({
   enqueueXeroBookingInvoiceOperation: mocks.enqueueXeroBookingInvoiceOperation,

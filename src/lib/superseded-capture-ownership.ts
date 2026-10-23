@@ -10,6 +10,7 @@
 import { PaymentSource, PaymentTransactionKind, type Prisma } from "@prisma/client";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 import {
   findLiveSupersededIntentOperation,
   readSupersededCaptureHolds,
@@ -85,4 +86,22 @@ export async function supersededMachineryOwnsCapture(
   input: { paymentId: string | null; paymentIntentId: string },
 ): Promise<boolean> {
   return (await readSupersededOwnership(tx, input.paymentId)).owns(input.paymentIntentId, { anyOwedBack: true });
+}
+
+/**
+ * #4300 (`INV-PAY-138`): may a reuse arm hand this unpaid intent's secret out
+ * again? Not while a superseded-intent row not SUCCEEDED names it, even once
+ * the price is back at its amount: its cancel row will kill it, or refund what
+ * it takes. `null`: reuse as before. `"mint"`: mint a fresh one beside it.
+ * `"wait"`: it is being paid now (`processing`), so answer
+ * `SUPERSEDED_PAYMENT_PROCESSING_BODY` and mint nothing. The one predicate
+ * both reuse arms (the pay step and the `/pay` link) ask.
+ */
+export async function supersededIntentReuseRefusal(
+  tx: Pick<Prisma.TransactionClient, "paymentRecoveryOperation">,
+  intent: { id: string; status: string },
+): Promise<"mint" | "wait" | null> {
+  if (intent.status === "canceled" || intent.status === "succeeded") return null;
+  if ((await findLiveSupersededIntentOperation(tx, intent.id)) === null) return null;
+  return staleIntentAction(intent) === "in_flight" ? "wait" : "mint";
 }

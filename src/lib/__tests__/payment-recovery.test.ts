@@ -240,6 +240,7 @@ const mockHoldSupersededLateCapture = vi.hoisted(() =>
 );
 // #4300: the superseded machinery's composed reading, real in its own suite.
 const mockSupersededMachineryOwnsCapture = vi.hoisted(() => vi.fn());
+const mockFindPaymentTransactionByIntentId = vi.hoisted(() => vi.fn().mockResolvedValue(null));
 vi.mock("@/lib/superseded-capture-ownership", () => ({
   supersededMachineryOwnsCapture: (...args: unknown[]) => mockSupersededMachineryOwnsCapture(...args),
 }));
@@ -339,6 +340,8 @@ vi.mock("@/lib/payment-transactions", () => ({
     mockRefundPaymentTransactions(...args),
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
     mockUpsertPaymentIntentTransaction(...args),
+  // #4300: the one lookup naming an intent's payment, for the superseded check.
+  findPaymentTransactionByIntentId: (...args: unknown[]) => mockFindPaymentTransactionByIntentId(...args),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -5697,7 +5700,7 @@ describe("#4300 — the check answers with the shared superseded-machinery readi
 
   it("no cancel row: asks the shared reading for the intent's own payment, and writes nothing", async () => {
     mockPaymentRecoveryFindFirst.mockResolvedValue(null);
-    mockPaymentTransactionFindUnique.mockResolvedValue({ paymentId: "pay-1" });
+    mockFindPaymentTransactionByIntentId.mockResolvedValue({ paymentId: "pay-1" });
     mockSupersededMachineryOwnsCapture.mockResolvedValue(true);
 
     await expect(
@@ -5711,7 +5714,7 @@ describe("#4300 — the check answers with the shared superseded-machinery readi
 
   it("no cancel row and nothing owns it: false, so the door settles as before", async () => {
     mockPaymentRecoveryFindFirst.mockResolvedValue(null);
-    mockPaymentTransactionFindUnique.mockResolvedValue(null);
+    mockFindPaymentTransactionByIntentId.mockResolvedValue(null);
     mockSupersededMachineryOwnsCapture.mockResolvedValue(false);
 
     await expect(
@@ -5723,7 +5726,7 @@ describe("#4300 — the check answers with the shared superseded-machinery readi
   it("a hand-off that lost its claim answers what the rows still say: owned by another live row -> true", async () => {
     mockPaymentRecoveryFindFirst.mockResolvedValue(makeOperation({ status: PaymentRecoveryOperationStatus.PENDING }));
     mockPaymentRecoveryUpdateMany.mockResolvedValue({ count: 0 });
-    mockPaymentTransactionFindUnique.mockResolvedValue({ paymentId: "pay-1" });
+    mockFindPaymentTransactionByIntentId.mockResolvedValue({ paymentId: "pay-1" });
     mockSupersededMachineryOwnsCapture.mockResolvedValue(true);
 
     await expect(

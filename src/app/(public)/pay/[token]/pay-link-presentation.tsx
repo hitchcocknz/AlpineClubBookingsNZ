@@ -38,8 +38,7 @@ import {
   isPaymentReceivedStatusUnconfirmed,
   isSupersededCardPaymentRefunding,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_MESSAGE,
-  PREVIOUS_PAYMENT_REFUNDING_NOTICE,
-  SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_LINK_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 
 export interface Narrative {
@@ -279,21 +278,9 @@ export function paymentRecoveryForRefusal(data: Record<string, unknown>): Paymen
   }
   if (isPaymentProcessing(data)) return { heading: "Payment being processed", message: data.error };
   if (isSupersededCardPaymentRefunding(data)) {
-    return { heading: "Card payment being refunded", message: SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE };
+    return { heading: "Card payment being returned", message: SUPERSEDED_CARD_PAYMENT_REFUNDING_LINK_MESSAGE };
   }
   return null;
-}
-
-/**
- * #4300 (`INV-PAY-138`): above a fresh payment form when the payer's earlier
- * card payment was on an intent an edit superseded, so it is going back.
- */
-export function PreviousPaymentRefundingNotice() {
-  return (
-    <p role="status" className="rounded-md bg-muted px-3 py-2 text-sm text-foreground">
-      {PREVIOUS_PAYMENT_REFUNDING_NOTICE}
-    </p>
-  );
 }
 
 /** The bank-transfer box's heading: an alternative to the card, or the only way. */

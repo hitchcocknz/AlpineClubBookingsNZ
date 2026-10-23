@@ -1173,7 +1173,11 @@ describe("createPaymentIntentForPaymentLink", () => {
 
     try {
       if (status === "processing") {
-        await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).rejects.toMatchObject({ status: 409, code: "PAYMENT_PROCESSING" });
+        await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).rejects.toMatchObject({
+          status: 409,
+          code: "PAYMENT_PROCESSING",
+          message: expect.stringMatching(/out-of-date amount is still processing/),
+        });
         expect(mockedCreatePaymentIntent).not.toHaveBeenCalled();
       } else {
         await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).resolves.toEqual({

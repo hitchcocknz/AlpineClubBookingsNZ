@@ -3057,6 +3057,10 @@ describe("Cron: Confirm Pending Bookings", () => {
       expect(result.failedBookingIds).toEqual(["child_1"]);
       expect(mockSendConfirmedEmail).not.toHaveBeenCalled();
       expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+      // The money is going back, so the claim is released for the next run.
+      expect(
+        mockBookingUpdateMany.mock.calls.some(([call]) => call?.where?.status === "CONFIRMED" && call?.data?.status === "PENDING"),
+      ).toBe(true);
     });
 
     it("tolerates a cancel API error (best-effort): logged, charge proceeds, booking confirms", async () => {

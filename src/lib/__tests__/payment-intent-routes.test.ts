@@ -178,6 +178,7 @@ import {
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
   REFUNDED_CARD_TRANSACTION_REPAYMENT_REQUIRED_BODY,
   SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
+  SUPERSEDED_PAYMENT_PROCESSING_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 
 const mockPrisma = prisma as unknown as {
@@ -580,6 +581,8 @@ describe("payment intent routes", () => {
       const data = await res.json();
       expect(res.status).toBe(409);
       expect(data.code).toBe("PAYMENT_PROCESSING");
+      // Its own words: if it completes it goes back, it does not confirm the booking.
+      expect(data.error).toBe(SUPERSEDED_PAYMENT_PROCESSING_MESSAGE);
       expect(JSON.stringify(data)).not.toContain("cs_superseded");
       expect(mockStripeCreatePaymentIntent).not.toHaveBeenCalled();
     });
@@ -1780,6 +1783,64 @@ describe("payment intent routes", () => {
       createdByMemberId: "member-1",
     });
     expect(mocks.logAudit).toHaveBeenCalled();
+  });
+
+  it("#4300: the pay step answers the superseded body (with its credit election) when the settle refuses the capture - never alreadyPaid, no invoice", async () => {
+    mockPrisma.booking.findUnique.mockResolvedValue({
+      id: "booking-1",
+      memberId: "member-1",
+      status: "PAYMENT_PENDING",
+      finalPriceCents: 12500,
+      member: { id: "member-1", email: "member@example.com", firstName: "Test", lastName: "Member" },
+      payment: { id: "pay-1", stripePaymentIntentId: "pi_raced", status: "PROCESSING" },
+    });
+    mockGetPaymentIntent.mockResolvedValue({ id: "pi_raced", amount: 12500, payment_method: "pm_123", status: "succeeded" });
+    mocks.markBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
+
+    const res = await createPaymentIntentRoute(
+      new NextRequest("http://localhost/api/payments/create-payment-intent", {
+        method: "POST",
+        body: JSON.stringify({ bookingId: "booking-1" }),
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const data = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(data).toEqual({ ...SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, creditElection: null });
+    expect(data).not.toHaveProperty("alreadyPaid");
+    expect(mocks.queueXeroInvoiceForPaidBooking).not.toHaveBeenCalled();
+  });
+
+  it("#4300: confirm with an intent the booking no longer points at, but its own and captured and superseded, answers the refunding body", async () => {
+    mockPrisma.payment.findUnique.mockResolvedValue({
+      id: "payment-1",
+      stripePaymentIntentId: "pi_fresh",
+      status: "PENDING",
+      booking: { memberId: "member-1", finalPriceCents: 12500, status: "PAYMENT_PENDING" },
+    });
+    mockGetPaymentIntent.mockResolvedValue({ id: "pi_stale", amount: 12500, payment_method: "pm_123", status: "succeeded", metadata: { bookingId: "booking-1" } });
+    mockPrisma.paymentRecoveryOperation.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce({ id: "op-superseded-refund" });
+    const request = () =>
+      confirmPaymentRoute(
+        new NextRequest("http://localhost/api/bookings/booking-1/confirm-payment", {
+          method: "POST",
+          body: JSON.stringify({ paymentIntentId: "pi_stale" }),
+          headers: { "Content-Type": "application/json" },
+        }),
+        { params: Promise.resolve({ id: "booking-1" }) },
+      );
+
+    const res = await request();
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY);
+    expect(mocks.markBookingPaymentSucceeded).not.toHaveBeenCalled();
+
+    // Another booking's intent is never looked into: a plain 400, as before.
+    mockGetPaymentIntent.mockResolvedValue({ id: "pi_stale", amount: 12500, status: "succeeded", metadata: { bookingId: "booking-2" } });
+    mockPrisma.paymentRecoveryOperation.findFirst.mockReset().mockResolvedValue(null);
+    const other = await request();
+    expect(other.status).toBe(400);
   });
 
   it("#4300: answers the superseded body when the settle's own check (under lock(1)) refuses the capture", async () => {

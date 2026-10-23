@@ -38,7 +38,7 @@ import {
 } from "@/lib/booking-payment-cleanup";
 import { drainSupersededPrimaryIntents } from "@/lib/booking-modification-settlement";
 import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
-import { findLiveSupersededIntentOperation } from "@/lib/superseded-intent-ownership";
+import { supersededIntentReuseRefusal } from "@/lib/superseded-capture-ownership";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { hasAdminAccess } from "@/lib/access-roles";
 import {
@@ -55,6 +55,7 @@ import {
   PAYMENT_PROCESSING_BODY,
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
   SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
+  SUPERSEDED_PAYMENT_PROCESSING_BODY,
   SWITCHED_TO_INTERNET_BANKING_BODY,
 } from "@/lib/payment-recovery-contract";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -596,6 +597,9 @@ export async function POST(request: NextRequest) {
     // out to be refund history; the block then falls through to mint a fresh
     // repay intent instead of reconciling or reusing.
     let repaySupersededIntentId: string | null = null;
+    // #4300: the pointed capture is the superseded machinery's (said beside the fresh secret).
+    let supersededCapture = false;
+    let reuseRefusal: "mint" | "wait" | null = null;
     if (booking.payment?.stripePaymentIntentId) {
       const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
@@ -612,7 +616,7 @@ export async function POST(request: NextRequest) {
           paymentStatus: booking.payment.status,
         });
         // #4300 (`INV-PAY-138`): a superseded intent's capture is repaid like refund history.
-        const supersededCapture = !refundedHistory && (await queueSupersededPaymentIntentRefundRecovery(existingIntent));
+        supersededCapture = !refundedHistory && (await queueSupersededPaymentIntentRefundRecovery(existingIntent));
 
         if (!refundedHistory && !supersededCapture) {
           receivedPaymentIntentId = existingIntent.id;
@@ -708,13 +712,9 @@ export async function POST(request: NextRequest) {
             ...(intentCurrencyDiffers(existingIntent, format) ? { wrongCurrencyPaymentIntentId: existingIntent.id } : {}),
           });
         }
-      } else if (existingIntent.status !== "canceled" && (await findLiveSupersededIntentOperation(prisma, existingIntent.id))) {
-        // #4300 (`INV-PAY-138`): an intent an edit superseded is never handed out
-        // again, even once the price is back at its amount: its cancel row will
-        // kill it, or refund what it took. Being paid now -> wait; else mint fresh.
-        if (staleIntentAction(existingIntent) === "in_flight") {
-          return NextResponse.json({ ...PAYMENT_PROCESSING_BODY, creditElection }, { status: 409 });
-        }
+      } else if ((reuseRefusal = await supersededIntentReuseRefusal(prisma, existingIntent)) !== null) {
+        // #4300 (`INV-PAY-138`): never hand a superseded intent out again; mint fresh, or wait while it is paid.
+        if (reuseRefusal === "wait") return NextResponse.json({ ...SUPERSEDED_PAYMENT_PROCESSING_BODY, creditElection }, { status: 409 });
       } else if (
         existingIntent.client_secret &&
         existingIntent.status !== "canceled"
@@ -838,6 +838,8 @@ export async function POST(request: NextRequest) {
       // they saved the draft, so the pay step must be able to say what actually
       // happened to it, including a clamp forced by a changed balance or price.
       creditElection,
+      // #4300: the member's earlier capture is going back to the card.
+      ...(supersededCapture ? { previousPaymentRefunding: true } : {}),
     });
   } catch (error) {
     const hostingRetry = hostingCoverageParticipantRetryResponse(

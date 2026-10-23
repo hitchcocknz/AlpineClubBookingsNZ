@@ -754,6 +754,36 @@ describe("Stripe webhook Xero alerting", () => {
     );
   });
 
+  it("#4300: a capture the settle refuses as superseded sends no confirmation and queues no invoice", async () => {
+    mockConstructWebhookEvent.mockReturnValue({
+      id: "evt_superseded_raced",
+      type: "payment_intent.succeeded",
+      data: { object: { id: "pi_raced", amount: 15000, metadata: { bookingId: "booking-1" }, payment_method: "pm_123" } },
+    } as any);
+    mockFindPaymentTransactionByIntentId.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", bookingId: "booking-1", kind: "PRIMARY", amountCents: 15000, status: "PENDING" });
+    mockBookingFindUnique.mockResolvedValue({
+      id: "booking-1",
+      status: "PAYMENT_PENDING",
+      checkIn: new Date("2026-06-01"),
+      checkOut: new Date("2026-06-03"),
+      finalPriceCents: 15000,
+      discountCents: 0,
+      guests: [{ id: "g1" }],
+      member: { firstName: "Alice", lastName: "Example", email: "alice@example.com" },
+      payment: { status: "PENDING", stripePaymentIntentId: "pi_raced", changeFeeCents: null },
+      promoRedemption: null,
+    });
+    mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
+
+    const response = await POST(makeRequest());
+
+    // Answered 200: the refusal is final, so Stripe is not sent back to retry for days.
+    expect(response.status).toBe(200);
+    expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: "pi_raced" }));
+    expect(mockSendBookingConfirmedEmail).not.toHaveBeenCalled();
+    expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+  });
+
   it("#3955 F5: a redelivered capture the booking already settled with is not re-checked against a later fee", async () => {
     mockConstructWebhookEvent.mockReturnValue({
       id: "evt_redelivered",

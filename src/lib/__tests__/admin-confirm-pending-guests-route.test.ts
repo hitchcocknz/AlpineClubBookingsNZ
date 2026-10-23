@@ -1126,7 +1126,10 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
   });
 
   it("#4300: a charge the settle refuses as superseded is reported as not paid, with no confirmation or invoice", async () => {
-    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    // The claim's fence re-read sees it still CONFIRMED, so the release lands.
+    mocks.bookingFindUnique.mockImplementation(async (args: { select?: Record<string, unknown> }) =>
+      args?.select?.status && Object.keys(args.select).length === 1 ? { status: "CONFIRMED" } : makeBooking(),
+    );
     mocks.chargePaymentMethod.mockResolvedValue({ id: "pi_superseded", status: "succeeded", amount: 10000, payment_method: "pm_1" });
     mocks.markBookingPaymentSucceeded.mockResolvedValue({ outcome: "superseded_capture", bookingId: "b1", bumpedBookingIds: [] });
 
@@ -1134,8 +1137,11 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     const body = await res.json();
 
     expect(res.status).toBe(409);
-    expect(body).toMatchObject({ paymentReceived: true, finalisationPending: true });
+    expect(body).toMatchObject({ code: "SUPERSEDED_CHARGE_NOT_SETTLED", chargeReturning: true });
+    expect(body).not.toHaveProperty("paymentReceived");
     expect(body.error).toMatch(/not paid/);
+    // The money is going back, so the claim is released.
+    expect(releaseCall()).toBeDefined();
     expect(mocks.sendConfirmedEmail).not.toHaveBeenCalled();
     expect(mocks.enqueueXero).not.toHaveBeenCalled();
     expect(mocks.createStructuredAuditLog).toHaveBeenCalledWith(

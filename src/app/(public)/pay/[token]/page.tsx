@@ -28,12 +28,13 @@ import {
   internetBankingHeading,
   NarrativeCard,
   paymentRecoveryForRefusal,
-  PreviousPaymentRefundingNotice,
   toneForState,
   type Narrative,
   type PaymentLinkContext,
   type PaymentRecovery,
 } from "./pay-link-presentation";
+import { checkCardSuccess } from "./card-success-check";
+import { PreviousPaymentRefundingNotice } from "@/components/previous-payment-refunding-notice";
 /*
   #3194 (epic #2797): the sentences a member reads when their saved change is
   still being priced. Imported, never restated — the booking-detail banner
@@ -67,6 +68,7 @@ export default function PayByLinkPage() {
     useState<PaymentRecovery | null>(null);
   const [paymentComplete, setPaymentComplete] = useState(false);
   const [previousPaymentRefunding, setPreviousPaymentRefunding] = useState(false); // #4300
+  const [checkingPayment, setCheckingPayment] = useState(false); // #4300: never the pay buttons after a success
   const [refreshState, setRefreshState] = useState<"idle" | "sending" | "sent">(
     "idle"
   );
@@ -145,6 +147,20 @@ export default function PayByLinkPage() {
     } finally {
       setIntentLoading(false);
     }
+  }
+
+  // #4300: after a card success, ask the server what it did (`checkCardSuccess`).
+  async function afterCardSuccess(paidIntentId: string) {
+    setCheckingPayment(true);
+    const outcome = await checkCardSuccess(token, paidIntentId);
+    if (outcome.kind === "paid") {
+      if (outcome.context) setContext(outcome.context);
+      setPaymentComplete(true);
+    } else if (outcome.kind === "fresh") {
+      setPreviousPaymentRefunding(outcome.previousPaymentRefunding);
+      setClientSecret(outcome.clientSecret);
+    } else setPaymentRecovery(outcome.recovery);
+    setCheckingPayment(false);
   }
 
   async function requestFreshLink() {
@@ -398,7 +414,7 @@ export default function PayByLinkPage() {
           }
         />
 
-        {!paymentRecovery && previousPaymentRefunding ? <PreviousPaymentRefundingNotice /> : null}
+        <PreviousPaymentRefundingNotice show={!paymentRecovery && previousPaymentRefunding} />
         {paymentRecovery ? null : clientSecret ? (
           <StripeProvider key={clientSecret} clientSecret={clientSecret}>
             <PaymentForm
@@ -406,13 +422,15 @@ export default function PayByLinkPage() {
               returnUrl={typeof window !== "undefined" ? window.location.href : ""}
               // #4300: the server says what the payment did - settled, or (an
               // intent an edit superseded) going back with a fresh one to pay.
-              onSuccess={() => {
+              onSuccess={(paidIntentId) => {
                 setClientSecret(null);
-                void startCardPayment();
+                void afterCardSuccess(paidIntentId);
               }}
               onError={() => undefined}
             />
           </StripeProvider>
+        ) : checkingPayment ? (
+          <p className="text-sm text-muted-foreground">Checking your payment...</p>
         ) : (
           <div className="space-y-3">
             {payable.cardPaymentAvailable !== false ? (

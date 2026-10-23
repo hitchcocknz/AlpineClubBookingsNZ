@@ -18,7 +18,7 @@ import { formatCents } from "@/lib/utils";
 import logger from "@/lib/logger";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
 import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
-import { findLiveSupersededIntentOperation } from "@/lib/superseded-intent-ownership";
+import { supersededIntentReuseRefusal } from "@/lib/superseded-capture-ownership";
 import { attachMintedCardIntent } from "@/lib/card-intent-attach";
 import { isRefundedPaymentIntentHistory } from "@/lib/card-intent-retirement";
 import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
@@ -48,6 +48,7 @@ import { staleIntentAction } from "@/lib/stale-intent-action";
 import {
   PAYMENT_PROCESSING_CODE,
   PAYMENT_PROCESSING_MESSAGE,
+  SUPERSEDED_PAYMENT_PROCESSING_MESSAGE,
   SWITCHED_TO_INTERNET_BANKING_BODY,
 } from "@/lib/payment-recovery-contract";
 
@@ -174,6 +175,7 @@ export async function createPaymentIntentForPaymentLink(
   // Stripe idempotency key disjoint from every non-repayment generation.
   let repaySupersededIntentId: string | null = null;
   let previousPaymentRefunding = false;
+  let reuseRefusal: "mint" | "wait" | null = null;
   if (booking.payment?.stripePaymentIntentId) {
     const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
@@ -279,16 +281,9 @@ export async function createPaymentIntentForPaymentLink(
           ...(intentCurrencyDiffers(existingIntent, format) ? { wrongCurrencyPaymentIntentId: existingIntent.id } : {}),
         });
       }
-    } else if (
-      repaySupersededIntentId === null &&
-      existingIntent.status !== "canceled" &&
-      (await findLiveSupersededIntentOperation(prisma, existingIntent.id))
-    ) {
-      // #4300 (`INV-PAY-138`): an intent an edit superseded is never handed out
-      // again, even once the price is back at its amount. Being paid -> wait.
-      if (staleIntentAction(existingIntent) === "in_flight") {
-        throw new PaymentLinkError(PAYMENT_PROCESSING_MESSAGE, 409, PAYMENT_PROCESSING_CODE);
-      }
+    } else if (repaySupersededIntentId === null && (reuseRefusal = await supersededIntentReuseRefusal(prisma, existingIntent)) !== null) {
+      // #4300 (`INV-PAY-138`): never hand a superseded intent out again; mint fresh, or wait while it is paid.
+      if (reuseRefusal === "wait") throw new PaymentLinkError(SUPERSEDED_PAYMENT_PROCESSING_MESSAGE, 409, PAYMENT_PROCESSING_CODE);
     } else if (
       repaySupersededIntentId === null &&
       existingIntent.client_secret &&

@@ -844,8 +844,9 @@ export async function POST(
       );
     }
 
-    // #4300 (`INV-PAY-138`): superseded, going back; stays confirmed for the alerted admins.
+    // #4300 (`INV-PAY-138`): superseded, so going back; nothing paid, so the claim is released.
     if (reconciliation.outcome === "superseded_capture") {
+      await releaseChargeClaim().catch((err) => logger.error({ err, bookingId }, "Could not release the claim of a refused superseded charge (#4300)"));
       await audit("charged_superseded_capture", true);
       return NextResponse.json(SUPERSEDED_CHARGE_NOT_SETTLED_BODY, { status: 409 });
     }

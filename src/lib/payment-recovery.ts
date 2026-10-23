@@ -26,6 +26,7 @@ import {
 } from "@/lib/stripe";
 import { isPaymentIntentCancelConfirmed } from "@/lib/card-intent-retirement";
 import {
+  findPaymentTransactionByIntentId,
   lockPaymentForRefundedTotal,
   reconcilePaymentAggregates,
   recordStripeRefundsAgainstTransaction,
@@ -3340,10 +3341,9 @@ export async function queueSupersededPaymentIntentRefundRecovery(
     return true;
   }
 
-  const row = await prisma.paymentTransaction.findUnique({
-    where: { stripePaymentIntentId: paymentIntent.id },
-    select: { paymentId: true },
-  });
+  // The intent's own ledger row names its payment (the one lookup every reader
+  // of an intent uses, backfilling a pre-ledger payment).
+  const row = await findPaymentTransactionByIntentId({ paymentIntentId: paymentIntent.id });
   return supersededMachineryOwnsCapture(prisma, { paymentId: row?.paymentId ?? null, paymentIntentId: paymentIntent.id });
 }
 

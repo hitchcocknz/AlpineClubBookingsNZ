@@ -12,7 +12,7 @@ import {
   PAYMENT_RECEIVED_STATUS_UNCONFIRMED_BODY,
   PREVIOUS_PAYMENT_REFUNDING_NOTICE,
   SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY,
-  SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE,
+  SUPERSEDED_CARD_PAYMENT_REFUNDING_LINK_MESSAGE,
 } from "@/lib/payment-recovery-contract";
 import { expectRecoveryAlertToHoldFocus } from "@/lib/__tests__/helpers/focus";
 import {
@@ -154,12 +154,22 @@ function installFreshRepaymentFetch() {
   );
 }
 
-/** Each POST to the link's payment-intent route answers the next body, in order. */
-function installIntentSequence(answers: Array<{ status: number; body: Record<string, unknown> }>) {
+/**
+ * Each POST to the link's payment-intent route answers the next body, in order;
+ * each GET of the link's context the next context (the last one repeats).
+ */
+function installIntentSequence(
+  answers: Array<{ status: number; body: Record<string, unknown> }>,
+  contexts: Array<Record<string, unknown>> = [payableContext],
+) {
   const queue = [...answers];
+  const contextQueue = [...contexts];
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === "/api/pay/public-token" && !init?.method) return { ok: true, json: async () => payableContext } as Response;
+    if (url === "/api/pay/public-token" && !init?.method) {
+      const context = contextQueue.length > 1 ? contextQueue.shift()! : contextQueue[0]!;
+      return { ok: true, json: async () => context } as Response;
+    }
     if (url === "/api/booking-messages") return { ok: true, json: async () => ({ messages: {} }) } as Response;
     if (url === "/api/pay/public-token/payment-intent" && init?.method === "POST") {
       const next = queue.shift();
@@ -214,12 +224,75 @@ describe("#4300 (INV-PAY-138): a superseded earlier payment on the /pay link", (
     expect(await screen.findByText(/your payment is complete/i)).toBeInTheDocument();
   });
 
+  it.each([
+    ["410 - the webhook settled the booking first, so the link reads as used", 410, { error: "This payment link has already been used." }],
+    ["429 - the link's rate limit", 429, { error: "Too many requests" }],
+  ])("after a card success, a %s, ends in 'check booking status', never the pay buttons", async (_name, status, body) => {
+    installIntentSequence([
+      { status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } },
+      { status, body },
+    ]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    expect(await screen.findByText("Payment received - check booking status")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pay by card" })).toBeNull();
+    expect(document.body.textContent).not.toContain("BOOK-123");
+    expect(document.body.textContent).not.toContain("already been used");
+  });
+
+  it("after a card success the capacity-cancel 410 variant ends the same way", async () => {
+    installIntentSequence(
+      [
+        { status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } },
+        { status: 410, body: { error: "This booking is no longer payable." } },
+      ],
+      [payableContext, { ...payableContext, state: "cancelled" }],
+    );
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    expect(await screen.findByText("Payment received - check booking status")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pay by card" })).toBeNull();
+  });
+
+  it("after a card success, the link's own context saying paid is the answer, with no second intent request", async () => {
+    const paidContext = {
+      ...payableContext,
+      state: "paid",
+      narrative: { state: "paid", headline: "Payment received", message: "Thanks Riley — we've received your payment.", nextStep: "Nothing more to do." },
+    };
+    const fetchMock = installIntentSequence(
+      [{ status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } }],
+      [payableContext, paidContext],
+    );
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    fireEvent.click(await screen.findByRole("button", { name: "trigger-card-success" }));
+
+    expect(await screen.findByText("Payment received")).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/payment-intent"))).toHaveLength(1);
+  });
+
+  it("keeps the notice's live region mounted, and fills it only when the earlier payment is going back", async () => {
+    installIntentSequence([{ status: 200, body: { clientSecret: "secret_fresh", paymentIntentId: "pi_fresh" } }]);
+    render(<PayByLinkPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
+    await screen.findByText("card-entry-form");
+    const region = screen.getByTestId("previous-payment-refunding");
+    expect(region).toHaveAttribute("role", "status");
+    expect(region.textContent).toBe("");
+  });
+
   it("a capture the settle refused shows the refunding notice with a reload, and no form", async () => {
     installIntentSequence([{ status: 409, body: { ...SUPERSEDED_CARD_PAYMENT_REFUNDING_BODY, error: "raw server text" } }]);
     render(<PayByLinkPage />);
     fireEvent.click(await screen.findByRole("button", { name: "Pay by card" }));
 
-    expect(await screen.findByText(SUPERSEDED_CARD_PAYMENT_REFUNDING_MESSAGE)).toBeInTheDocument();
+    expect(await screen.findByText(SUPERSEDED_CARD_PAYMENT_REFUNDING_LINK_MESSAGE)).toBeInTheDocument();
+    expect(screen.getByText("Card payment being returned")).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("raw server text");
     expect(screen.queryByText("card-entry-form")).toBeNull();
     expect(screen.getByRole("button", { name: "Reload payment status", hidden: true })).toBeInTheDocument();

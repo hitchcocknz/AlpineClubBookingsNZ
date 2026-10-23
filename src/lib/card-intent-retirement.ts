@@ -26,12 +26,10 @@ import { PaymentStatus } from "@prisma/client";
 import type Stripe from "stripe";
 import logger from "@/lib/logger";
 import { findPaymentTransactionByIntentId } from "@/lib/payment-transactions";
-import { prisma } from "@/lib/prisma";
-import { supersededMachineryOwnsCapture } from "@/lib/superseded-capture-ownership";
 import { cancelPaymentIntentIfCancellableWithResult } from "@/lib/stripe";
 
 type CancelResult = {
-  paymentIntent: Pick<Stripe.PaymentIntent, "id" | "status">;
+  paymentIntent: Pick<Stripe.PaymentIntent, "id" | "status" | "amount" | "payment_method">;
   canceled: boolean;
 };
 
@@ -82,8 +80,10 @@ export async function isRefundedPaymentIntentHistory({
  * may exist beside it: Stripe confirmed it cancelled, or it `succeeded` and
  * the local ledger shows it refunded (#1765's repay-after-refund booking), or
  * (#4300, `INV-PAY-138`) its capture is the superseded machinery's, going
- * back to the card. Any other succeeded intent is a live capture and is NOT
- * retired, whatever the local Payment row says.
+ * back to the card. That last is the doors' own check, so a capture a dead or
+ * waiting cancel row names is handed to its refund here, never left with
+ * nothing sending it back. Any other succeeded intent is a live capture and is
+ * NOT retired, whatever the local Payment row says.
  */
 export async function isCardIntentRetired({
   result,
@@ -94,10 +94,10 @@ export async function isCardIntentRetired({
 }): Promise<boolean> {
   if (isPaymentIntentCancelConfirmed(result)) return true;
   if (result.paymentIntent.status !== "succeeded") return false;
-  const paymentIntentId = result.paymentIntent.id;
-  if (await isRefundedPaymentIntentHistory({ paymentIntentId, paymentStatus })) return true;
-  const row = await findPaymentTransactionByIntentId({ paymentIntentId });
-  return supersededMachineryOwnsCapture(prisma, { paymentId: row?.paymentId ?? null, paymentIntentId });
+  if (await isRefundedPaymentIntentHistory({ paymentIntentId: result.paymentIntent.id, paymentStatus })) return true;
+  // Dynamic: payment-recovery imports this module.
+  const { queueSupersededPaymentIntentRefundRecovery } = await import("@/lib/payment-recovery");
+  return queueSupersededPaymentIntentRefundRecovery(result.paymentIntent);
 }
 
 /**
