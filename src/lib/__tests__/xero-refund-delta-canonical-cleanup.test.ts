@@ -225,6 +225,30 @@ const fakePrisma = vi.hoisted(() => {
       },
     },
     xeroObjectLink: {
+      // The unique-key reservation inserts only a missing identity. An existing
+      // live or voided mirror must keep all its fields, just as ON CONFLICT
+      // DO NOTHING does; concurrency itself is covered by the realdb suite.
+      createMany: async (args: {
+        data: Array<Pick<FakeLinkRow, "localModel" | "localId" | "xeroObjectType" | "xeroObjectId" | "role" | "active">>;
+        skipDuplicates: boolean;
+      }) => {
+        let count = 0;
+        for (const input of args.data) {
+          const { active, ...key } = input;
+          if (state.links.some((row) => matchesLinkWhere(row, key))) {
+            if (args.skipDuplicates) continue;
+            throw new Error("Duplicate XeroObjectLink natural key");
+          }
+          state.linkIdCounter += 1;
+          state.links.push({
+            id: `link_${state.linkIdCounter}`, ...key, active,
+            xeroObjectNumber: null, xeroObjectUrl: null, metadata: null,
+            createdAt: new Date(), updatedAt: new Date(),
+          });
+          count += 1;
+        }
+        return { count };
+      },
       findMany: async (args: { where: Record<string, unknown> }) =>
         state.links.filter((row) => matchesLinkWhere(row, args.where)).map((row) => ({ ...row })),
       findUnique: async (args: {

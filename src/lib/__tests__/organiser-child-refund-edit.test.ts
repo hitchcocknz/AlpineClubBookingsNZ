@@ -74,7 +74,8 @@ const ORGANISER_OPTIONS: BookingModificationSettlementOptions = {
 
 function txWithSettlement(settlement: Record<string, unknown> | null) {
   return {
-    payment: { update: vi.fn().mockResolvedValue({}) },
+    // #3980: an edit that read no invoice link claims the payment row.
+    payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     groupBookingSettlement: { findFirst: vi.fn().mockResolvedValue(settlement) },
     // #3809: no applied credit, so a reduction gives none back.
     memberCredit: { aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: null } }) },
