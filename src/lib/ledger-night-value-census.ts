@@ -1,6 +1,7 @@
 import { liveLines } from "@/lib/booking-ledger-modification-posting";
 import { isSingleNightLine } from "@/lib/booking-ledger-charge-line";
 import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
+import { compareOrdinal } from "@/lib/ordinal-order";
 import { valueEditStrand, type StoredEditStrand } from "@/lib/edit-night-valuation";
 
 /**
@@ -76,7 +77,7 @@ export function summarizeLedgerNightValues(
   let valuedNightsWithoutLiveLine = 0;
   const differing: string[] = [];
 
-  for (const booking of [...input.bookings].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))) {
+  for (const booking of [...input.bookings].sort((a, b) => compareOrdinal(a.id, b.id))) {
     const lines = linesByBooking.get(booking.id) ?? [];
     if (!lines.some((line) => line.anchorKind === "CONFIRMATION")) continue;
     bookingsOnLedger += 1;
