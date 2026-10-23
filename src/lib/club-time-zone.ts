@@ -135,25 +135,43 @@ export function normaliseClubTimeZone(
  * years, and refusing it does not undo that; it substitutes
  * `Pacific/Auckland` and moves the club.
  *
- * Measured on Node 24.15.0: forty-one `TZ` values that work perfectly today
+ * Measured on Node 24.15.0 (tzdata up to 2026c): forty-one `TZ` values that work perfectly today
  * (`Intl` accepts them, so `APP_TIME_ZONE` formats correctly) are refused by the
  * validator — `GB`, `NZ`, `NZ-CHAT`, `EST5EDT`, `PST8PDT`, `Japan`, `Israel`,
  * `W-SU`, `Navajo` and the rest. **Thirty-six of them canonicalise to a genuine
  * location that satisfies the shape rule**: `GB` → `Europe/London`, `NZ-CHAT` →
- * `Pacific/Chatham` (+12:45), `EST5EDT` → `America/New_York`. Probing first
+ * `Pacific/Chatham` (+12:45), `Japan` → `Asia/Tokyo`. Probing first
  * preserves every one of those exactly, and still satisfies the issue's
  * requirement that only a named IANA identifier is ever stored — the STORED value
  * is a location either way.
+ *
+ * WHICH SIDE A LEGACY NAME FALLS ON IS THE RUNTIME'S CALL, NOT THIS MODULE'S.
+ * `EST5EDT`, `CST6CDT`, `MST7MDT` and `PST8PDT` were links to `America/New_York`
+ * and its siblings until tzdata 2026c, so the probe above named a place and the
+ * place was kept. tzdata 2026d (Node 24.22.1) made them POSIX rule zones of
+ * their own again — US federal rules, no place — so the runtime now names them
+ * as themselves, the shape rule refuses that, and they join the residual class
+ * below: this function returns `null` for `TZ=EST5EDT`, and the callers treat
+ * it as they treat `UTC` — the default is recorded with `defaulted` provenance,
+ * the boot log warns BY DEFAULT naming the value, and the checklist reports the
+ * step as a warning. That is the right answer on that runtime, for the same
+ * reason `Etc/GMT+5` gets it: a rule set is not a place. Nothing here pins one
+ * reading, and the suite asks the runtime which applies before asserting.
  *
  * The residual class returns `null` and MUST NOT be substituted: `UTC`, `GMT`,
  * `Zulu`, `Universal`, `UCT`, `Greenwich` and `Etc/UTC` all canonicalise to
  * `UTC`, and `Etc/GMT±N` / `SystemV/*` to themselves. No place on earth has those
  * as its civil time, so there is nothing to preserve and every candidate would be
- * a guess. The callers therefore record nothing at all and leave the setup
- * checklist blocked naming the refused value, which satisfies both requirement 2
- * (never invent a zone for a configured install) and requirement 3 (never store a
- * fixed offset), and matches `INV-CONFIG-001`'s rule that an unconfigured state
- * is visible where an operator has to act.
+ * a guess. What the callers do with that `null` is the owner's decision of
+ * 23 Aug 2026 on #2989, recorded at `decideClubTimeZoneBackfill`: a zone is
+ * ALWAYS recorded, so they write `CLUB_TIME_ZONE_FALLBACK` with `defaulted`
+ * provenance rather than leaving the row empty — and defaulting is not silence:
+ * the boot backfill warns BY DEFAULT naming the refused value, the seed prints
+ * the same, and the setup checklist reports the step as a WARNING asking for
+ * confirmation rather than a clean "complete". That keeps requirement 3 (never
+ * store a fixed offset) and `INV-CONFIG-001`'s rule that an unconfigured state
+ * is visible where an operator has to act; requirement 2 (back-fill the zone in
+ * use) cannot be met for a value that names no place, and the warning says so.
  */
 export function normaliseClubTimeZoneForPreservation(
   value: string | null | undefined,
