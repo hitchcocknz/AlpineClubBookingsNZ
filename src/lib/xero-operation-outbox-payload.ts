@@ -106,6 +106,7 @@ interface QueuedRefundCreditNoteOutboxPayload {
   paymentIntentId?: string;
   documentDate?: string;
   paidAnotherWayTaskId?: string; creditsInvoiceId?: string; handBackTaskId?: string; // #3924 r7: the close it answers, the invoice it names; #4162: the hand-back it records
+  cardRefundId?: string; // #4312: the card refund on a bank transfer it answers
 }
 
 interface QueuedAccountCreditNoteOutboxPayload {
@@ -351,6 +352,7 @@ export function readQueuedOutboxPayload(
       paidAnotherWayTaskId: readString(payload.paidAnotherWayTaskId) ?? undefined,
       creditsInvoiceId: readString(payload.creditsInvoiceId) ?? undefined,
       handBackTaskId: readString(payload.handBackTaskId) ?? undefined,
+      cardRefundId: readString(payload.cardRefundId) ?? undefined,
     };
   }
 

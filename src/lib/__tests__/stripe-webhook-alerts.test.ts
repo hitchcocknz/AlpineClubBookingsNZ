@@ -927,6 +927,7 @@ describe("Stripe webhook Xero alerting", () => {
     mockSyncRefundsFromStripeCharge.mockResolvedValue({
       paymentId: "payment-2",
       refundDeltaCents: 5000,
+      newlyCountedRefundIds: [], // #4312: what the real sync returns beside the delta
       payment: {
         id: "payment-2",
         amountCents: 5000,
@@ -988,6 +989,7 @@ describe("Stripe webhook Xero alerting", () => {
     mockSyncRefundsFromStripeCharge.mockResolvedValue({
       paymentId: "payment-3",
       refundDeltaCents: 3800,
+      newlyCountedRefundIds: [], // #4312: what the real sync returns beside the delta
       payment: {
         id: "payment-3",
         amountCents: 5000,
@@ -1025,6 +1027,7 @@ describe("Stripe webhook Xero alerting", () => {
       mockSyncRefundsFromStripeCharge.mockResolvedValue({
         paymentId: "payment-3",
         refundDeltaCents: 3800,
+        newlyCountedRefundIds: [], // #4312: what the real sync returns beside the delta
         payment: { id: "payment-3", amountCents: 24000, refundedAmountCents: 3800 },
       });
       mockIsXeroConnected.mockResolvedValue(false);
@@ -1083,6 +1086,7 @@ describe("Stripe webhook Xero alerting", () => {
       mockSyncRefundsFromStripeCharge.mockResolvedValue({
         paymentId: "payment-3",
         refundDeltaCents: 3800,
+        newlyCountedRefundIds: [], // #4312: what the real sync returns beside the delta
         payment: { id: "payment-3", amountCents: 24000, refundedAmountCents: 3800 },
       });
       mockIsXeroConnected.mockResolvedValue(false);
@@ -1483,6 +1487,7 @@ describe("Stripe webhook Xero alerting", () => {
     mockSyncRefundsFromStripeCharge.mockResolvedValue({
       paymentId: "payment-4",
       refundDeltaCents: 0,
+      newlyCountedRefundIds: [], // #4312: what the real sync returns beside the delta
       payment: {
         id: "payment-4",
         amountCents: 5000,
@@ -1537,6 +1542,7 @@ describe("Stripe webhook Xero alerting", () => {
     mockSyncRefundsFromStripeCharge.mockResolvedValue({
       paymentId: "payment-recovery",
       refundDeltaCents: 0,
+      newlyCountedRefundIds: [], // #4312: what the real sync returns beside the delta
       payment: {
         id: "payment-recovery",
         amountCents: 4000,

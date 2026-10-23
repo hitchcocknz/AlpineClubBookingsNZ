@@ -6,10 +6,8 @@ import { listRefundsForCharge, listRefundsForPaymentIntent, processRefund } from
 import { markBookingPaymentSucceeded, markBookingSetupIntentSucceeded } from "@/lib/payment-reconciliation";
 import { classifySucceededSetupIntentCard } from "@/lib/setup-intent-card";
 import { isXeroConnected } from "@/lib/xero";
-import {
-  enqueueXeroRefundCreditNoteOperation,
-  kickQueuedXeroOutboxOperationsIfConnected,
-} from "@/lib/xero-operation-outbox";
+import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
+import { queueWebhookCardRefundNotes } from "@/lib/card-refund-own-note";
 import { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } from "@/lib/xero-supplementary-invoice-late-capture";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
 import { reportWebhookError } from "@/lib/observability-bridge";
@@ -1206,13 +1204,16 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
     })) !== "none"
   ) {
     return;
-  } else if (refundSync.refundDeltaCents > 0) {
+  } else if (refundSync.refundDeltaCents > 0 || refundSync.newlyCountedRefundIds.length > 0) {
     // Queue only what this sync newly added to the refunded total (#3640); charge.amount_refunded is cumulative.
+    // #4312: on a bank transfer, a refund made outside the app is noted on its own record (`queueWebhookCardRefundNotes`).
     try {
-      const queuedCreditNote = await enqueueXeroRefundCreditNoteOperation(
-        refundSync.paymentId,
-        refundSync.refundDeltaCents
-      );
+      const queuedCreditNote = await queueWebhookCardRefundNotes({
+        payment: refundSync.payment,
+        deltaCents: refundSync.refundDeltaCents,
+        refunds,
+        newlyCountedRefundIds: refundSync.newlyCountedRefundIds,
+      });
 
       if (queuedCreditNote.queueOperationId && (await isXeroConnected())) {
         await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });

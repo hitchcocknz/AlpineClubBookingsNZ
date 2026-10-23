@@ -58,6 +58,8 @@ const NOTHING_TO_PICK_REASONS: Record<string, string> = {
   "detail-short": "The payment's records no longer hold a refund it could have recorded, so there is nothing to take back.",
   "coverage-unknown": "A credit note resolved by hand in Xero has no amount the app can read, so the app cannot tell what Xero still records.",
   "amount-unknown": "Its amount cannot be read, and no bank refund on this payment is left to pick.",
+  "card-refund":
+    "It recorded a card refund made through Stripe, which stays recorded: there is no bank refund to take back. If that refund no longer has a credit note in Xero, raise one there by hand.",
 };
 
 type Target = { row: BankRefundVoidToAnswerRow; mode: "pick" | "answer" };

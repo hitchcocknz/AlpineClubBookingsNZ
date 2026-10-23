@@ -1859,6 +1859,7 @@ export async function retryXeroSyncOperation(
           ...(retryInput.paidAnotherWayTaskId ? { paidAnotherWayTaskId: retryInput.paidAnotherWayTaskId } : {}),
           ...(retryInput.creditsInvoiceId ? { creditsInvoiceId: retryInput.creditsInvoiceId } : {}),
           ...(retryInput.handBackTaskId ? { handBackTaskId: retryInput.handBackTaskId } : {}),
+          ...(retryInput.cardRefundId ? { cardRefundId: retryInput.cardRefundId } : {}), // #4312
           ...(retryInput.refundRequestId ? { refundRequestId: retryInput.refundRequestId } : {}),
           ...(options?.requeueOperationId ? { requeueOperationId: options.requeueOperationId } : {}),
           ...(retriedReviewTaskId ? { reviewTaskId: retriedReviewTaskId } : {}),

@@ -76,6 +76,11 @@ export function buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId: 
   return `${REFUND_REQUEST_REFUND_RECOVERY_PREFIX}${refundRequestId}`;
 }
 
+/** The Stripe key prefix of an approved refund appeal's card refund: the route's, and its recovery's replay (#1039, #1507). */
+export function buildRefundRequestRefundStripeKeyPrefix(refundRequestId: string) {
+  return `refund_request_${refundRequestId}`;
+}
+
 /** #4120: is this an approved refund appeal's card refund (`buildRefundRequestRefundRecoveryIdempotencyKey`)? */
 export function isRefundRequestRefundRecoveryKey(key: string) {
   return key.startsWith(REFUND_REQUEST_REFUND_RECOVERY_PREFIX);
@@ -483,13 +488,15 @@ export function buildBookingCancellationRefundMetadata(
 // `reason: "refund_appeal_approved"`. The inline shape is UNCHANGED by this
 // convergence (only the recovery branch now matches), so every Stripe refund the
 // route has ever created already carries this exact body — there is no
-// pre-deploy sliver. Nothing downstream reads this off the Stripe refund; it is
-// dashboard-only.
+// pre-deploy sliver. Since #4312 the `charge.refunded` webhook also reads its
+// `reason` back, to leave a request's refund to the approval that notes it
+// (`cardRefundDoorOf`).
+export const REFUND_REQUEST_REFUND_METADATA_REASON = "refund_appeal_approved";
 export function buildRefundRequestRefundMetadata(
   bookingId: string,
   refundRequestId: string,
 ): Record<string, string> {
-  return { bookingId, reason: "refund_appeal_approved", refundRequestId };
+  return { bookingId, reason: REFUND_REQUEST_REFUND_METADATA_REASON, refundRequestId };
 }
 
 // #1507: the Stripe refund `metadata` for a booking-modification card refund
