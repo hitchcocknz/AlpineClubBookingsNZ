@@ -582,6 +582,10 @@ describe("calculateModifiedPricing in-progress per-night breakdown (#2736)", () 
       ...drifted,
       booking: {
         ...(drifted.booking as unknown as { guests: Array<{ priceCents: number }> }),
+        // The headline agrees with the guest's stored $10.01, as every writer
+        // stores them; a gap between the two is carried forward (review H1).
+        totalPriceCents: 1001,
+        finalPriceCents: 1001,
         guests: [
           {
             ...(drifted.booking as unknown as {

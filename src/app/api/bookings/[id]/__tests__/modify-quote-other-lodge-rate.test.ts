@@ -658,6 +658,35 @@ describe("modify-quote — other-lodge member rate", () => {
  * exactly what it quotes on the same booking with reconciling rows.
  */
 describe("modify-quote — an election on a booking whose rows do not reconcile", () => {
+  beforeEach(() => {
+    // The engine's own lock rule: a guest whose nights are locked is priced at
+    // its locks, which since #4317 are its VALUED nights - so the drifted
+    // stranger keeps its stored $50 rather than the fixed $48 the default mock
+    // returns. Without it the mock would reprice that strand as no real edit
+    // does. A guest with its locks cleared (the re-rated visitor) takes the
+    // figure the default mock gives it.
+    const unlocked = [2000, 2000, 4800];
+    h.priceGuests.mockImplementation(
+      async (
+        _db: unknown,
+        input: { guests: Array<{ lockedNightPrices?: ReadonlyArray<{ priceCents: number }> | null }> },
+      ) => {
+        const guests = input.guests.map((guest, index) => {
+          const locks = guest.lockedNightPrices ?? [];
+          const priceCents =
+            locks.length > 0
+              ? locks.reduce((sum, lock) => sum + lock.priceCents, 0)
+              : (unlocked[index] ?? 0);
+          return { priceCents, perNightCents: [priceCents / 2, priceCents / 2], nightDates: [] };
+        });
+        return {
+          totalPriceCents: guests.reduce((sum, guest) => sum + guest.priceCents, 0),
+          guests,
+        };
+      },
+    );
+  });
+
   /** The same booking, with one strand whose stored total has drifted. */
   function unreconciled() {
     const stored = booking();

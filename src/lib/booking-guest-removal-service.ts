@@ -65,7 +65,8 @@ import {
   findOpenEditFinancialReviewTask,
 } from "@/lib/edit-financial-review";
 import {
-  flagNegativeStoredTotals,
+  editedBookingTotalCents,
+  refuseNegativeStoredGuestTotals,
   valuedNightLocksForGuest,
   withUnattachedStrandMoney,
 } from "@/lib/edit-night-valuation";
@@ -556,15 +557,18 @@ export async function removeBookingGuestInTransaction({
 
   // #4317 (epic #4302, `INV-MOD-028`): EVERY REMOVAL IS PRICED.
   //
-  // The credit is the difference between the booking's stored total and a
-  // reprice of whoever is left. Every remaining night is locked at its valued
-  // figure (`valuedNightLocksForGuest`), so the reprice returns each remaining
-  // guest's stored total unchanged and the difference is the departing guest's
-  // own `BookingGuest.priceCents` (T2) — or $0 where that total is negative
-  // (D11, `withUnattachedStrandMoney`). No remaining guest's night is valued at
-  // today's rate, so a rate rise on somebody else's stay cannot move this
+  // The credit is what the removal changes on the guests: every remaining
+  // night is locked at its valued figure (`valuedNightLocksForGuest`), so the
+  // reprice returns each remaining guest's stored total unchanged and the
+  // difference is the departing guest's own `BookingGuest.priceCents` (T2). The
+  // headline moves by exactly that, so a total a parked edit froze keeps its gap
+  // (`editedBookingTotalCents`, review H1). No remaining guest's night is valued
+  // at today's rate, so a rate rise on somebody else's stay cannot move this
   // guest's credit. A consent-authority removal is priced the same way.
-  flagNegativeStoredTotals(logger, { bookingId, site: "guest-removal" }, booking.guests);
+  //
+  // D11 (review M2): a negative stored guest total, which the database forbids,
+  // refuses the removal before anything is read or written.
+  refuseNegativeStoredGuestTotals(logger, { bookingId, site: "guest-removal" }, booking.guests);
 
   // #3277: capture the build-up under the existing global -> lodge locks and
   // before the chore/guest deletes below can cascade any of its target rows.
@@ -676,9 +680,7 @@ export async function removeBookingGuestInTransaction({
   const groupDiscountSetting = await tx.groupDiscountSetting.findUnique({
     where: { id: "default" },
   });
-  // #4317 (D11): a remaining strand's unattached money stays on it, and a
-  // departing strand with a negative stored total leaves its figure on the
-  // booking, so the removal credits $0 for it rather than charging it.
+  // #4317: a remaining strand holding no night keeps its stored total on itself.
   const priceBreakdown = withUnattachedStrandMoney(
     await priceBookingGuestsWithMembershipTypePolicy(tx, {
       ownerMemberId: bookingOwner(booking).memberId,
@@ -701,7 +703,6 @@ export async function removeBookingGuestInTransaction({
       skipAuthorization: actorRole === "ADMIN",
     }),
     guestsForPricing,
-    [guestToRemove],
   );
   const repriced = priceBreakdown;
   // Each guest's own priced row, read once. The breakdown was built from
@@ -732,10 +733,11 @@ export async function removeBookingGuestInTransaction({
   // THE CREDIT IS THE DEPARTING GUEST'S OWN STORED PRICE, structurally:
   // every remaining night is locked at its valued figure, which short-circuits
   // the season lookup, so the reprice returns each remaining guest's stored
-  // total unchanged and the difference against the booking's stored total is
-  // exactly `guestToRemove.priceCents` ($0 for a negative one, D11). Proved
-  // against the REAL pricing engine in `booking-guest-removal-exact-credit.test.ts`.
-  const newTotalPriceCents = repriced.totalPriceCents;
+  // total unchanged, and the headline moves by exactly
+  // `guestToRemove.priceCents` — whatever gap a parked edit left between the
+  // headline and its guests stays where it was (review H1). Proved against the
+  // REAL pricing engine in `booking-guest-removal-exact-credit.test.ts`.
+  const newTotalPriceCents = editedBookingTotalCents(booking, repriced.totalPriceCents);
   const promoResult = await recalculateBookingPromo({
     tx,
     bookingId,

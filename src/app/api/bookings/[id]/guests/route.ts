@@ -57,7 +57,8 @@ import { logAudit } from "@/lib/audit";
 import { sendBookingModifiedEmail } from "@/lib/email";
 import { bookingHasOpenFinancialReview } from "@/lib/booking-financial-review-visibility";
 import {
-  flagNegativeStoredTotals,
+  editedBookingTotalCents,
+  refuseNegativeStoredGuestTotals,
   valuedNightLocksForGuest,
   withUnattachedStrandMoney,
 } from "@/lib/edit-night-valuation";
@@ -689,10 +690,11 @@ export async function POST(
           400
         );
       }
-      // #4317 (D11): money a strand carries beyond its night values (a negative
-      // stored total) stays on it, so the add charges only the added guests.
-      fullPriceBreakdown = withUnattachedStrandMoney(fullPriceBreakdown, allGuestsForPricing, []);
-      flagNegativeStoredTotals(logger, { bookingId, site: "guests-add" }, booking.guests);
+      // #4317 (D11, review M2): a negative stored guest total, which the
+      // database forbids, refuses the add; nothing has been written yet.
+      refuseNegativeStoredGuestTotals(logger, { bookingId, site: "guests-add" }, booking.guests);
+      // #4317: a strand holding no night keeps its stored total on itself.
+      fullPriceBreakdown = withUnattachedStrandMoney(fullPriceBreakdown, allGuestsForPricing);
 
       /**
        * The breakdown row for one position of the party pass.
@@ -828,9 +830,10 @@ export async function POST(
         ...newGuestNightRates,
       ];
 
-      // #4317: every existing night is locked at its valued figure, so the new
-      // total is the stored strands plus the added guests (`INV-MOD-028`).
-      const newTotalPriceCents = fullPriceBreakdown.totalPriceCents;
+      // #4317: every existing night is locked at its valued figure, so the
+      // headline moves by exactly the added guests (`INV-MOD-028`), carrying any
+      // gap a parked edit froze into it (review H1, `editedBookingTotalCents`).
+      const newTotalPriceCents = editedBookingTotalCents(booking, fullPriceBreakdown.totalPriceCents);
 
       // Recalculate promo discount
       let newDiscountCents = 0;

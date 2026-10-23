@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { bookingGuestDietarySeeding } from "@/lib/member-dietary-booking-writes";
 import fs from "node:fs";
 import path from "node:path";
@@ -43,6 +43,7 @@ import {
 } from "@/lib/booking-modify-plan";
 import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
 import { calculateBookingPrice, type SeasonRateData } from "@/lib/pricing";
+import { NegativeStoredGuestTotalError } from "@/lib/edit-night-valuation";
 
 /**
  * THE PREVIEW AND THE SAVE PRICE ONE EDIT IDENTICALLY (#3031; #4317, epic #4302).
@@ -136,9 +137,15 @@ const SHAPES = {
   "partly priced": { nights: sold([RATE, RATE, null]), total: 15600, values: [5000, 5000, 5600] },
   // R3: rows do not add up to $151.01, so the total is split, extra cents first.
   "rows do not add up": { nights: sold([RATE, RATE, RATE]), total: 15101, values: [5034, 5034, 5033] },
-  // D11: a negative stored total is worth $0 a night.
-  "negative total": { nights: sold([RATE, RATE, RATE]), total: -700, values: [0, 0, 0] },
 } as const;
+
+/**
+ * How far the stored headline sits from its guests' stored totals: none, as
+ * every writer stores them, and a $100 a parked edit froze into it (#4317
+ * review H1). The edit's own difference must be the same either way - the gap
+ * is carried forward for the review, never settled by the edit.
+ */
+const HEADLINE_GAPS = [0, 10_000] as const;
 
 const EDITS = {
   // Buys the 23rd and 24th for each guest at today's $50.
@@ -166,10 +173,12 @@ function expectedDiff(shape: keyof typeof SHAPES, edit: keyof typeof EDITS): num
 function planInput(
   shape: keyof typeof SHAPES,
   edit: keyof typeof EDITS,
+  headlineGapCents = 0,
 ): BuildInProgressGuestRangePlanInput {
   const { nights, total } = SHAPES[shape];
   const guests = [guest("g1", "m1", [...nights], total), COMPANION];
-  const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
+  const totalPriceCents =
+    guests.reduce((sum, g) => sum + g.priceCents, 0) + headlineGapCents;
   const change = EDITS[edit];
   return {
     booking: {
@@ -190,8 +199,12 @@ function planInput(
 }
 
 /** The same edit as the SAVE hands it to `calculateModifiedPricing`. */
-function pricingArgs(shape: keyof typeof SHAPES, edit: keyof typeof EDITS) {
-  const input = planInput(shape, edit);
+function pricingArgs(
+  shape: keyof typeof SHAPES,
+  edit: keyof typeof EDITS,
+  headlineGapCents = 0,
+) {
+  const input = planInput(shape, edit, headlineGapCents);
   return {
     booking: { ...input.booking, memberId: "m1", lodgeId: "lodge-1" } as never,
     bookingId: "bk-parity",
@@ -217,21 +230,26 @@ function pricingArgs(shape: keyof typeof SHAPES, edit: keyof typeof EDITS) {
 
 describe("#4317 quote and save price every shape of stored history identically", () => {
   const CASES = (Object.keys(SHAPES) as Array<keyof typeof SHAPES>).flatMap((shape) =>
-    (Object.keys(EDITS) as Array<keyof typeof EDITS>).map((edit) => [shape, edit] as const),
+    (Object.keys(EDITS) as Array<keyof typeof EDITS>).flatMap((edit) =>
+      HEADLINE_GAPS.map((gap) => [shape, edit, gap] as const),
+    ),
   );
 
-  it.each(CASES)("%s, %s: one amount on both paths, and it is the hand-worked one", async (shape, edit) => {
+  it.each(CASES)("%s, %s, headline gap %i: one amount on both paths, and it is the hand-worked one", async (shape, edit, gap) => {
     h.checkCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 5,
       nightDetails: [],
     });
 
-    const quote = buildInProgressGuestRangePlan(planInput(shape, edit)).plan;
-    const save = await calculateModifiedPricing(NO_DISCOUNT_TX, pricingArgs(shape, edit));
+    const input = planInput(shape, edit, gap);
+    const quote = buildInProgressGuestRangePlan(input).plan;
+    const save = await calculateModifiedPricing(NO_DISCOUNT_TX, pricingArgs(shape, edit, gap));
 
-    // The dollar answer, worked by hand.
+    // The dollar answer, worked by hand - the same with a frozen headline,
+    // whose gap the new total carries forward (review H1).
     expect(quote.priceDiffCents).toBe(expectedDiff(shape, edit));
+    expect(quote.newTotalPriceCents).toBe(input.booking.totalPriceCents + expectedDiff(shape, edit));
     // And the save agrees with the quote, cent for cent and night for night.
     expect(save.newTotalPriceCents).toBe(quote.newTotalPriceCents);
     expect(save.inProgressPlan?.priceDiffCents).toBe(quote.priceDiffCents);
@@ -287,7 +305,7 @@ function preCheckInExpectedDiff(
     case "shorten":
       return 0 - (RATE + values[2]);
     case "remove":
-      return 0 - Math.max(total, 0);
+      return 0 - total;
     case "reprice":
     case "move":
       // Fresh $150, plus what g1 carries beyond its nights, less its total.
@@ -307,10 +325,12 @@ function nightsBetween(checkIn: string, checkOut: string): Date[] {
 function preCheckInArgs(
   shape: keyof typeof SHAPES,
   edit: keyof typeof PRE_CHECK_IN_EDITS,
+  headlineGapCents = 0,
 ) {
   const { nights, total } = SHAPES[shape];
   const guests = [guest("g1", "m1", [...nights], total), COMPANION];
-  const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
+  const totalPriceCents =
+    guests.reduce((sum, g) => sum + g.priceCents, 0) + headlineGapCents;
   const change = PRE_CHECK_IN_EDITS[edit];
   const booking = {
     id: "bk-pre",
@@ -355,12 +375,12 @@ function preCheckInArgs(
 
 describe("#4317 an edit before the stay starts prices every shape of stored history", () => {
   const CASES = (Object.keys(SHAPES) as Array<keyof typeof SHAPES>).flatMap((shape) =>
-    (Object.keys(PRE_CHECK_IN_EDITS) as Array<keyof typeof PRE_CHECK_IN_EDITS>).map(
-      (edit) => [shape, edit] as const,
+    (Object.keys(PRE_CHECK_IN_EDITS) as Array<keyof typeof PRE_CHECK_IN_EDITS>).flatMap(
+      (edit) => HEADLINE_GAPS.map((gap) => [shape, edit, gap] as const),
     ),
   );
 
-  it.each(CASES)("%s, %s: the hand-worked amount, through the real engine", async (shape, edit) => {
+  it.each(CASES)("%s, %s, headline gap %i: the hand-worked amount, through the real engine", async (shape, edit, gap) => {
     h.checkCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 5,
@@ -370,7 +390,7 @@ describe("#4317 an edit before the stay starts prices every shape of stored hist
       async (_db, input) =>
         calculateBookingPrice(input.checkIn, input.checkOut, input.guests as never, input.seasons),
     );
-    const args = preCheckInArgs(shape, edit);
+    const args = preCheckInArgs(shape, edit, gap);
     const oldTotal = (args.booking as { totalPriceCents: number }).totalPriceCents;
 
     const save = await calculateModifiedPricing(NO_DISCOUNT_TX, args);
@@ -402,6 +422,150 @@ describe("#4317 an edit before the stay starts prices every shape of stored hist
     // $50 + $50 + the blank's $56 kept, then two new nights at $50.
     expect(save.priceBreakdown.guests[0]!.perNightCents).toEqual([5000, 5000, 5600, RATE, RATE]);
     expect(save.priceBreakdown.guests[0]!.priceCents).toBe(15600 + 2 * RATE);
+  });
+});
+
+/**
+ * #4317 review H1, THE PROBE THAT FOUND IT: A ($200, no night rows) and B ($200)
+ * under a headline a parked edit froze at $600. Extending both by one $50 night
+ * buys $100. Read as the bare sum of the guests, the new total was $500 and the
+ * edit REFUNDED $100 for $100 of nights bought; carried forward it is $700 and
+ * the edit charges $100. Pinned on both pricing paths, and the quote's planner
+ * agrees with the save.
+ */
+describe("#4317 review H1: a frozen headline is carried, never settled by an edit", () => {
+  const A = guest("g1", "m1", [], 20_000);
+  const B = guest("g2", "m2", sold([6667, 6667, 6666]), 20_000);
+  const FROZEN = {
+    id: "bk-frozen",
+    checkIn: D(HELD[0]),
+    checkOut: D("2026-08-23"),
+    totalPriceCents: 60_000,
+    discountCents: 0,
+    promoAdjustmentCents: 0,
+    finalPriceCents: 60_000,
+    guests: [A, B],
+  };
+
+  beforeEach(() => {
+    h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] });
+    vi.mocked(priceBookingGuestsWithMembershipTypePolicy).mockImplementation(
+      async (_db, input) =>
+        calculateBookingPrice(input.checkIn, input.checkOut, input.guests as never, input.seasons),
+    );
+  });
+
+  it("before the stay: +$100, and the $600 headline becomes $700", async () => {
+    const booking = { ...FROZEN, memberId: "m1", lodgeId: "lodge-1" };
+    const save = await calculateModifiedPricing(NO_DISCOUNT_TX, {
+      booking: booking as never,
+      bookingId: "bk-frozen",
+      isInProgressEdit: false,
+      editableFrom: null,
+      newCheckIn: D(HELD[0]),
+      newCheckOut: D("2026-08-24"),
+      normalizedAddGuests: undefined,
+      removeGuestIds: undefined,
+      guestsForPricing: booking.guests.map((g) => ({
+        bookingGuestId: g.id,
+        ageTier: "ADULT" as const,
+        isMember: true,
+        memberId: g.memberId,
+        rateMembershipTypeId: MEMBER_TYPE,
+        rateSource: "OWN_TYPE" as const,
+        stayStart: D(HELD[0]),
+        stayEnd: D("2026-08-24"),
+        nights: [...HELD, "2026-08-23"].map(D),
+        ...editedGuestPricingLocks(g, booking, false),
+      })),
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASONS as never,
+      partnerSharedGuests: [],
+    });
+
+    expect(save.priceBreakdown.guests.map((g) => g.priceCents)).toEqual([25_000, 25_000]);
+    expect(save.newTotalPriceCents).toBe(70_000);
+    expect(save.newTotalPriceCents - FROZEN.totalPriceCents).toBe(2 * RATE);
+  });
+
+  it("during the stay: the quote's planner and the save both charge +$100 and carry the gap", async () => {
+    const input: BuildInProgressGuestRangePlanInput = {
+      booking: FROZEN,
+      editableFrom: D("2026-08-21"),
+      newCheckOut: D("2026-08-24"),
+      seasons: SEASONS,
+    };
+    const quote = buildInProgressGuestRangePlan(input).plan;
+    const save = await calculateModifiedPricing(NO_DISCOUNT_TX, {
+      booking: { ...FROZEN, memberId: "m1", lodgeId: "lodge-1" } as never,
+      bookingId: "bk-frozen",
+      isInProgressEdit: true,
+      editableFrom: input.editableFrom,
+      newCheckIn: FROZEN.checkIn,
+      newCheckOut: input.newCheckOut,
+      normalizedAddGuests: undefined,
+      removeGuestIds: undefined,
+      guestsForPricing: FROZEN.guests.map((g) => ({
+        bookingGuestId: g.id,
+        ageTier: "ADULT" as const,
+        isMember: true,
+        memberId: g.memberId ?? null,
+        stayStart: FROZEN.checkIn,
+        stayEnd: input.newCheckOut,
+      })),
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASONS as never,
+      partnerSharedGuests: [],
+    });
+
+    expect(quote.priceDiffCents).toBe(2 * RATE);
+    expect(quote.newTotalPriceCents).toBe(70_000);
+    expect(save.newTotalPriceCents).toBe(quote.newTotalPriceCents);
+  });
+});
+
+/**
+ * #4317 review M2: a negative stored guest total (D11) refuses the edit on
+ * every path; the database forbids one, so this guards an unreachable shape.
+ */
+describe("#4317 review M2: a negative stored guest total refuses the edit", () => {
+  it.each([true, false])("in progress %s: the save refuses before pricing", async (inProgress) => {
+    const negative = guest("g1", "m1", sold([RATE, RATE, RATE]), -700);
+    const booking = {
+      id: "bk-negative",
+      memberId: "m1",
+      lodgeId: "lodge-1",
+      checkIn: D(HELD[0]),
+      checkOut: D("2026-08-23"),
+      totalPriceCents: COMPANION.priceCents - 700,
+      discountCents: 0,
+      promoAdjustmentCents: 0,
+      finalPriceCents: COMPANION.priceCents - 700,
+      guests: [negative, COMPANION],
+    };
+    await expect(
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
+        booking: booking as never,
+        bookingId: "bk-negative",
+        isInProgressEdit: inProgress,
+        editableFrom: inProgress ? D("2026-08-21") : null,
+        newCheckIn: booking.checkIn,
+        newCheckOut: D("2026-08-25"),
+        normalizedAddGuests: undefined,
+        removeGuestIds: undefined,
+        guestsForPricing: booking.guests.map((g) => ({
+          bookingGuestId: g.id,
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: g.memberId,
+          stayStart: booking.checkIn,
+          stayEnd: D("2026-08-25"),
+        })),
+        skipBookingLifecycleRules: false,
+        seasonRateData: SEASONS as never,
+        partnerSharedGuests: [],
+      }),
+    ).rejects.toBeInstanceOf(NegativeStoredGuestTotalError);
   });
 });
 

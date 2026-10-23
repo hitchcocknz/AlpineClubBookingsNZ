@@ -2595,10 +2595,13 @@ describe("PUT /api/bookings/[id]/modify", () => {
   });
 
   it("marks a payment-pending booking paid when a batch edit promo reduces the total to zero", async () => {
+    // The headline agrees with the one stored $50 guest, as every writer stores
+    // them (#4317 review H1 carries a gap between the two forward), so the edit
+    // takes it to $150 and the code takes all of that off.
     const booking = makeBooking({
       status: "PAYMENT_PENDING",
-      totalPriceCents: 10000,
-      finalPriceCents: 10000,
+      totalPriceCents: 5000,
+      finalPriceCents: 5000,
       payment: {
         id: "pay_1",
         bookingId: "bk1",

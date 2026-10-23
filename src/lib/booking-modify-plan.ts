@@ -132,7 +132,8 @@ import {
   type MemberGuestConsentWritePlanEntry,
 } from "@/lib/member-guest-add-policy";
 import {
-  flagNegativeStoredTotals,
+  editedBookingTotalCents,
+  refuseNegativeStoredGuestTotals,
   valuedNightLocksForGuest,
   withUnattachedStrandMoney,
   type StoredEditStrand,
@@ -1708,9 +1709,9 @@ export async function calculateModifiedPricing(
   );
 
   let inProgressPlan: BookingEditGuestRangePlan | null = null;
-  // #4317 (D11): a negative stored guest total is valued at $0 by every pricing
-  // path below; the edit says so once, for #2745, and goes ahead.
-  flagNegativeStoredTotals(logger, { bookingId, site: "calculateModifiedPricing" }, booking.guests);
+  // #4317 (D11, review M2): a negative stored guest total, which the database
+  // forbids, refuses the edit before anything is priced or written.
+  refuseNegativeStoredGuestTotals(logger, { bookingId, site: "calculateModifiedPricing" }, booking.guests);
   if (isInProgressEdit && editableFrom) {
     // #2756: the same mapping the QUOTE route already applies around its own call
     // to this planner (`modify-quote/route.ts`, "Unable to price the requested
@@ -1851,12 +1852,15 @@ export async function calculateModifiedPricing(
   let priceBreakdown: PricedModification["priceBreakdown"];
   try {
     if (inProgressPlan) {
+      const guests = [
+        ...inProgressPlan.proposedExistingGuests.map(guestNightBreakdown),
+        ...inProgressPlan.proposedAddedGuests.map(guestNightBreakdown),
+      ];
+      // The breakdown is the guests; the plan's own total carries any frozen
+      // headline gap forward (#4317 review H1), read below.
       priceBreakdown = {
-        totalPriceCents: inProgressPlan.newTotalPriceCents,
-        guests: [
-          ...inProgressPlan.proposedExistingGuests.map(guestNightBreakdown),
-          ...inProgressPlan.proposedAddedGuests.map(guestNightBreakdown),
-        ],
+        totalPriceCents: guests.reduce((sum, guest) => sum + guest.priceCents, 0),
+        guests,
       };
     } else {
       const priced = await priceBookingGuestsWithMembershipTypePolicy(tx, {
@@ -1873,16 +1877,8 @@ export async function calculateModifiedPricing(
           skipAuthorization,
           subscriptionLockoutMode,
         });
-      // #4317 (D11): the money a strand carries beyond its night values
-      // (a negative stored total, money on a strand holding no night) goes
-      // back on that strand, and a removed negative strand's figure stays on
-      // the booking — so the edit credits $0 for it rather than charging it.
-      const removeSet = new Set(removeGuestIds ?? []);
-      const withUnattached = withUnattachedStrandMoney(
-        priced,
-        guestsForPricing,
-        booking.guests.filter((guest) => removeSet.has(guest.id)),
-      );
+      // #4317: a strand holding no night keeps its stored total on itself.
+      const withUnattached = withUnattachedStrandMoney(priced, guestsForPricing);
       priceBreakdown = {
         ...withUnattached,
         guests: withUnattached.guests.map((guest, index) => ({
@@ -1900,7 +1896,12 @@ export async function calculateModifiedPricing(
     }
     throw new ApiError(NO_SEASON_RATE_MESSAGE, 400);
   }
-  const newTotalPriceCents = priceBreakdown.totalPriceCents;
+  // #4317 review H1: the headline moves only by what the edit changed on its
+  // guests, so a total a parked edit froze keeps its gap (`editedBookingTotalCents`).
+  // The in-progress planner takes the same step inside its own plan.
+  const newTotalPriceCents = inProgressPlan
+    ? inProgressPlan.newTotalPriceCents
+    : editedBookingTotalCents(booking, priceBreakdown.totalPriceCents);
   const consentStatusOf = proposedGuestConsentStatusReader(booking.guests, normalizedAddGuests);
   const guestNightRates = inProgressPlan
     ? []

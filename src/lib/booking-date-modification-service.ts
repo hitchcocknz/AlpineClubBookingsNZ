@@ -47,7 +47,8 @@ import {
   assertNoPendingEditFinancialReview,
 } from "@/lib/edit-financial-review";
 import {
-  flagNegativeStoredTotals,
+  editedBookingTotalCents,
+  refuseNegativeStoredGuestTotals,
   valuedNightLocksForGuest,
   withUnattachedStrandMoney,
 } from "@/lib/edit-night-valuation";
@@ -641,11 +642,11 @@ export async function modifyBookingDates({
         400,
       );
     }
-    // #4317 (D11): money a strand carries beyond its night values (a negative
-    // stored total) stays on it, so a date change neither charges nor credits
-    // it. A date change removes nobody.
-    priceBreakdown = withUnattachedStrandMoney(priceBreakdown, guestsForPricing, []);
-    flagNegativeStoredTotals(logger, { bookingId, site: "booking-date-modification" }, booking.guests);
+    // #4317 (D11, review M2): a negative stored guest total, which the database
+    // forbids, refuses the edit; nothing has been written yet.
+    refuseNegativeStoredGuestTotals(logger, { bookingId, site: "booking-date-modification" }, booking.guests);
+    // #4317: a strand holding no night keeps its stored total on itself.
+    priceBreakdown = withUnattachedStrandMoney(priceBreakdown, guestsForPricing);
 
     // One-live-booking-per-member-per-night guard (#1157, #1127 F1). A date
     // change resets every guest to the new envelope (see the write loop below),
@@ -701,8 +702,9 @@ export async function modifyBookingDates({
     }, format);
 
     // #4317: every night is valued from stored data or priced fresh, so the
-    // date change always prices (`INV-MOD-028`).
-    const newTotalPriceCents = priceBreakdown.totalPriceCents;
+    // date change always prices (`INV-MOD-028`), and the headline moves only by
+    // what it changed on the guests (review H1, `editedBookingTotalCents`).
+    const newTotalPriceCents = editedBookingTotalCents(booking, priceBreakdown.totalPriceCents);
     // Each guest's own priced row, read once. The breakdown was built from
     // `guestsForPricing`, so a guest with no row is a wiring defect and there
     // is no amount to promo-allocate against — refused, not guessed (#2800).

@@ -52,8 +52,9 @@ import {
   findOpenEditFinancialReviewTask,
 } from "@/lib/edit-financial-review";
 import {
-  flagNegativeStoredTotals,
-  strandRemovalCreditCents,
+  editedBookingTotalCents,
+  NegativeStoredGuestTotalError,
+  refuseNegativeStoredGuestTotals,
   withUnattachedStrandMoney,
 } from "@/lib/edit-night-valuation";
 import type { MinimumStayViolation } from "@/lib/booking-policies";
@@ -1619,9 +1620,17 @@ export async function POST(
   const inProgressPlan: BookingEditGuestRangePlan | null =
     planResult?.plan ?? null;
   const capacityPlan = inProgressPlan;
-  // #4317 (D11): the save flags a negative stored guest total it valued at $0;
-  // the preview, which prices the same way, says so too.
-  flagNegativeStoredTotals(logger, { bookingId, site: "modify-quote" }, booking.guests);
+  // #4317 (D11, review M2): the save refuses an edit to a booking holding a
+  // negative stored guest total, which the database forbids; the preview
+  // refuses it in the same words, so it never quotes what the save will not do.
+  try {
+    refuseNegativeStoredGuestTotals(logger, { bookingId, site: "modify-quote" }, booking.guests);
+  } catch (error) {
+    if (error instanceof NegativeStoredGuestTotalError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
+    throw error;
+  }
 
   // Capacity check (exclude current booking)
   // #1746: with admin-flagged partner-sharers the preview runs the same
@@ -1734,7 +1743,7 @@ export async function POST(
     if (inProgressPlan) {
       newTotalPriceCents = inProgressPlan.newTotalPriceCents;
     } else {
-      // #4317 (D11): the same unattached-money step the save takes
+      // #4317: the same unattached-money step the save takes
       // (`calculateModifiedPricing`), through the same helper, so the preview's
       // total is the save's.
       priceBreakdown = withUnattachedStrandMoney(
@@ -1749,9 +1758,9 @@ export async function POST(
           subscriptionLockoutMode,
         }),
         guestsForPricing,
-        removedGuests,
       );
-      newTotalPriceCents = priceBreakdown.totalPriceCents;
+      // #4317 review H1: the save's carry-forward, through the same helper.
+      newTotalPriceCents = editedBookingTotalCents(booking, priceBreakdown.totalPriceCents);
     }
   } catch (error) {
     if (error instanceof MembershipTypeBookingPolicyError) {
@@ -1800,9 +1809,10 @@ export async function POST(
    * prices the shared resolver gave each guest (`INV-EXCEPT-022`, `INV-SSOT`).
    * The old side is each guest's stored price, as the removed-guest line reads.
    * So the lines sum to `priceDiffCents` (and, with the change-fee line, to
-   * `netChargeCents`) only while the stored `totalPriceCents` equals the stored
-   * guest prices summed and the stored final price is that total plus the
-   * stored promo adjustment, which is how every writer stores them.
+   * `netChargeCents`) while the stored final price is the stored total plus the
+   * stored promo adjustment, which is how every writer stores them. A total a
+   * parked edit froze away from its guests no longer breaks that: the new total
+   * carries the gap forward (`editedBookingTotalCents`, #4317 review H1).
    */
   const pricedGuestAt = (index: number) => {
     const priced = priceBreakdown?.guests[index];
@@ -2024,7 +2034,7 @@ export async function POST(
       const memberLabel = guest.isMember ? "Member" : "Non-member";
       itemizedChanges.push({
         label: `Removed: ${guest.firstName} ${guest.lastName} (${tierLabel}, ${memberLabel})`,
-        amountCents: -strandRemovalCreditCents(guest.priceCents),
+        amountCents: -guest.priceCents,
       });
     }
   }

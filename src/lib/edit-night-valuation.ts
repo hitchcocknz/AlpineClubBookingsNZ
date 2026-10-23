@@ -1,5 +1,6 @@
 import type { BookingGuestNightPriceSource, MemberGuestConsentStatus } from "@prisma/client";
 
+import { ApiError } from "@/lib/api-error";
 import {
   getGuestBedNightKeys,
   type BookingStayRange,
@@ -23,7 +24,7 @@ import {
 
 /**
  * #4317 (epic #4302, owner decisions D1, D8 and D11, 23 Oct 2026): WHAT AN EDIT
- * READS A GUEST'S HELD NIGHTS AS BEING WORTH.
+ * READS A GUEST'S HELD NIGHTS AS BEING WORTH, AND WHAT IT DOES TO THE HEADLINE.
  *
  * Every edit is priced from stored data (`INV-MOD-028`). The night values come
  * from `valueStrandNights`, the one home for the rule; this module only adapts
@@ -35,19 +36,24 @@ import {
  *   is credited at it. Only a night the edit newly buys is priced at today's
  *   rates. This replaces the lenient `lockedNightPricesForGuest`, which locked
  *   only usable rows and let a blank night fall through to today's rate.
+ * - **The headline moves only by the edit's own change**
+ *   ({@link editedBookingTotalCents}). A booking whose stored total disagrees
+ *   with its guests' stored totals (a headline a parked edit froze) keeps that
+ *   gap through the edit, so the edit never settles it as if it were its own.
  * - **Money not attached to a night.** The values add up to the guest's stored
- *   total, except in two shapes: a negative stored total, whose nights are all
- *   worth $0 (D11, flagged for #2745), and a strand holding no night at all.
- *   `unattachedCents` is what such a strand carries beyond its night values, and
- *   an edit keeps it on the strand, so a guest the edit does not touch keeps its
- *   stored total exactly (T1).
- * - **Removing a whole guest** credits `BookingGuest.priceCents` (T2), or $0 for
- *   a negative stored total (D11): `removalCreditCents`.
+ *   total, except for a strand holding no night at all, which carries its total
+ *   as `unattachedCents`; an edit keeps it on the strand, so a guest the edit
+ *   does not touch keeps its stored total exactly (T1).
+ * - **A negative stored guest total refuses the edit** (D11, #4317 review M2).
+ *   The database forbids one (`BookingGuest_price_nonnegative`) and none has ever
+ *   been measured, so `valueStrandNights` still values it at $0 as a pure
+ *   function, but no door writes from it: {@link refuseNegativeStoredGuestTotals}.
  *
  * Night keys come from `getGuestBedNightKeys`, the canonical helper: a guest's
  * own rows where it has any, otherwise its stay envelope, otherwise the
  * booking's range (`INV-DATE-020`). No clock, no database, no rate table; the
- * one side effect, the D11 flag, writes to the logger its caller hands in.
+ * one side effect, the D11 refusal's log line, writes to the logger its caller
+ * hands in.
  */
 
 /** One held night with what an edit reads it as worth. */
@@ -67,22 +73,13 @@ export type ValuedEditStrand = {
   nights: ReadonlyArray<ValuedHeldNight>;
   /**
    * The stored total less what its nights are valued at. Zero except on a
-   * negative stored total (D11) or a strand holding no night with money on it.
+   * strand holding no night with money on it, or on a negative stored total
+   * (D11), which no door prices.
    */
   unattachedCents: number;
-  /** What removing the whole guest credits: the stored total, or $0 if negative. */
-  removalCreditCents: number;
   /** Set on a negative stored total, for #2745 (D11). */
   flag: "NEGATIVE_STORED_TOTAL" | null;
 };
-
-/**
- * What removing a whole guest credits (T2): `BookingGuest.priceCents`, or $0
- * where that total is negative (D11) — never a charge for leaving.
- */
-export function strandRemovalCreditCents(storedTotalCents: number): number {
-  return Math.max(storedTotalCents, 0);
-}
 
 function sourceOf(
   night: ValuedStrandNight,
@@ -113,16 +110,10 @@ export function valueHeldNights(
   storedNightDetailsByKey: ReadonlyMap<string, StoredNightPriceWithSource>,
   storedTotalCents: number,
 ): ValuedEditStrand {
-  const removalCreditCents = strandRemovalCreditCents(storedTotalCents);
   if (heldNightKeys.length === 0 && storedTotalCents >= 0) {
     // Nothing to attach the money to. It stays on the strand while the strand
     // does, and a whole removal credits it (T2).
-    return {
-      nights: [],
-      unattachedCents: storedTotalCents,
-      removalCreditCents,
-      flag: null,
-    };
+    return { nights: [], unattachedCents: storedTotalCents, flag: null };
   }
   const valuation = valueStrandNights(
     heldNightKeys.map((key) => ({
@@ -139,7 +130,6 @@ export function valueHeldNights(
       priceSource: sourceOf(night, storedNightDetailsByKey.get(night.date)),
     })),
     unattachedCents: storedTotalCents - valuation.totalCents,
-    removalCreditCents,
     flag: valuation.flag,
   };
 }
@@ -193,13 +183,12 @@ export function valuedNightLocksForGuest(
 
 /**
  * Put each strand's unattached money back into a breakdown the pricing engine
- * produced from valued locks, and keep on the booking what a removed negative
- * strand carried (D11).
+ * produced from valued locks: a strand holding no night keeps its stored total
+ * on itself rather than being priced at $0.
  *
  * `pricedGuests` is index-aligned with the breakdown: an existing guest's
- * `unattachedCents`, or nothing for a guest the edit adds. `removed` is every
- * guest the edit takes off the booking whole. With no negative or night-less
- * strand on the booking, every term is zero and the breakdown comes back
+ * `unattachedCents`, or nothing for a guest the edit adds. With no night-less
+ * strand on the booking every term is zero and the breakdown comes back
  * unchanged.
  */
 export function withUnattachedStrandMoney<
@@ -212,14 +201,9 @@ export function withUnattachedStrandMoney<
   // `& object` so a guest the edit adds, which carries no field of this shape
   // at all, is accepted rather than refused as a "weak type" mismatch.
   pricedGuests: ReadonlyArray<{ unattachedCents?: number } & object>,
-  removed: ReadonlyArray<StoredEditStrand>,
 ): Breakdown {
-  const retainedOnRemoval = removed.reduce(
-    (sum, guest) => sum + (guest.priceCents - strandRemovalCreditCents(guest.priceCents)),
-    0,
-  );
   const unattached = pricedGuests.map((guest) => guest.unattachedCents ?? 0);
-  if (unattached.every((cents) => cents === 0) && retainedOnRemoval === 0) {
+  if (unattached.every((cents) => cents === 0)) {
     // Nothing to add: the breakdown is returned as the engine produced it, so a
     // caller's own check of its shape still answers a malformed one.
     return breakdown;
@@ -232,12 +216,46 @@ export function withUnattachedStrandMoney<
   const totalUnattached = unattached.reduce((sum, cents) => sum + cents, 0);
   return {
     ...breakdown,
-    totalPriceCents: breakdown.totalPriceCents + totalUnattached + retainedOnRemoval,
+    totalPriceCents: breakdown.totalPriceCents + totalUnattached,
     guests: breakdown.guests.map((guest, index) => ({
       ...guest,
       priceCents: guest.priceCents + (unattached[index] ?? 0),
     })),
   };
+}
+
+/**
+ * THE BOOKING TOTAL AN EDIT WRITES (#4317 review H1): the stored total, moved
+ * by exactly what the edit changed on its guests.
+ *
+ * `pricedGuestsTotalCents` is what the edited party comes to, guest by guest —
+ * the engine's breakdown, or the in-progress planner's guests. `storedBooking`
+ * is the booking as loaded BEFORE the edit, every guest included, a removed one
+ * too. Every writer stores the total as the sum of its guests, so for an
+ * ordinary booking this is simply that sum. A booking whose headline a parked
+ * edit froze (`INV-MOD-055`) is not: its total still counts money the open or
+ * declined review holds. Reading the new total as the bare sum of the guests
+ * would settle that gap, unasked, on the first edit after #4317 — a $600
+ * headline over two $200 guests extended by a $50 night each would refund $100
+ * for $100 of nights bought. Carrying the gap leaves it exactly where it was for
+ * the review, or wave B's re-base (D5), to settle.
+ *
+ * The one home (`INV-SSOT-001`): every edit door, the quote and the
+ * in-progress planner take the new total through here, so quote and save
+ * cannot carry it differently.
+ */
+export function editedBookingTotalCents(
+  storedBooking: {
+    totalPriceCents: number;
+    guests: ReadonlyArray<{ priceCents: number }>;
+  },
+  pricedGuestsTotalCents: number,
+): number {
+  const storedGuestsTotalCents = storedBooking.guests.reduce(
+    (sum, guest) => sum + guest.priceCents,
+    0,
+  );
+  return storedBooking.totalPriceCents + (pricedGuestsTotalCents - storedGuestsTotalCents);
 }
 
 /**
@@ -272,13 +290,32 @@ export function valuedStrandNightPrices(
   });
 }
 
+/** What a member or officer is told when an edit meets a negative stored total. */
+export const NEGATIVE_STORED_GUEST_TOTAL_MESSAGE =
+  "This booking's stored price needs correcting by the club before it can be changed. Nothing has been changed; please contact the club.";
+
+/** The refusal {@link refuseNegativeStoredGuestTotals} throws: a 409, nothing written. */
+export class NegativeStoredGuestTotalError extends ApiError {
+  constructor() {
+    super(NEGATIVE_STORED_GUEST_TOTAL_MESSAGE, 409);
+    this.name = "NegativeStoredGuestTotalError";
+  }
+}
+
 /**
- * D11's flag: an edit that valued a negative stored guest total at $0 says so,
- * once per edit, naming the guests, so #2745 can find the booking. The edit
- * itself goes ahead. The logger is the caller's, which keeps this module pure.
+ * D11, as the doors apply it (#4317 review M2): an edit that meets a negative
+ * stored guest total is REFUSED, before anything is written, and logged at
+ * error level naming #2745.
+ *
+ * The database refuses such a row (`BookingGuest_price_nonnegative`, migration
+ * `20260819130000`), and a production audit found none, so this is a guard on
+ * an unreachable shape rather than a path anyone takes. It refuses rather than
+ * prices because pricing one would have to write the negative figure back, which
+ * the same constraint rejects (23514), or leave its shortfall on the headline.
+ * The logger is the caller's, which keeps this module free of a logger import.
  */
-export function flagNegativeStoredTotals(
-  log: { warn: (obj: Record<string, unknown>, msg: string) => void },
+export function refuseNegativeStoredGuestTotals(
+  log: { error: (obj: Record<string, unknown>, msg: string) => void },
   context: { bookingId: string; site: string },
   guests: ReadonlyArray<{ id: string; priceCents: number }>,
 ): void {
@@ -286,8 +323,9 @@ export function flagNegativeStoredTotals(
     .filter((guest) => guest.priceCents < 0)
     .map((guest) => guest.id);
   if (bookingGuestIds.length === 0) return;
-  log.warn(
+  log.error(
     { ...context, bookingGuestIds, flag: "NEGATIVE_STORED_TOTAL" },
-    "A booking edit valued a negative stored guest total at $0 (D11); flagged for #2745",
+    "A booking edit was refused: a stored guest total is negative, which BookingGuest_price_nonnegative forbids (D11); see #2745",
   );
+  throw new NegativeStoredGuestTotalError();
 }

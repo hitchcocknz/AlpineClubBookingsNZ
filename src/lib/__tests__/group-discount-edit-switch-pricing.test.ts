@@ -305,7 +305,7 @@ describe.each(SEASON_SHAPES)(
     async function extendByOneNight(state: "disabled" | "on" | "off") {
       const party = FIVE_NON_MEMBERS;
       const result = await pricedPricing(txFor(state, summerOnly), {
-        booking: bookingOf(party, D("2026-09-10"), D("2026-09-12"), 0),
+        booking: bookingOf(party, D("2026-09-10"), D("2026-09-12")),
         bookingId: "b1",
         isInProgressEdit: false,
         editableFrom: null,
@@ -391,7 +391,7 @@ describe.each(SEASON_SHAPES)(
 
       const run = (state: "disabled" | "on" | "off") =>
         pricedPricing(txFor(state, summerOnly), {
-          booking: bookingOf(party, D("2026-09-10"), D("2026-09-12"), 0),
+          booking: bookingOf(party, D("2026-09-10"), D("2026-09-12")),
           bookingId: "b1",
           isInProgressEdit: false,
           editableFrom: null,
@@ -433,7 +433,7 @@ describe.each(SEASON_SHAPES)(
       }));
       const run = (state: "disabled" | "on" | "off") =>
         pricedPricing(txFor(state, summerOnly), {
-          booking: bookingOf(party, D("2026-09-10"), D("2026-09-12"), 0),
+          booking: bookingOf(party, D("2026-09-10"), D("2026-09-12")),
           bookingId: "b1",
           isInProgressEdit: false,
           editableFrom: null,

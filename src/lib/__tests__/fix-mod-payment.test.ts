@@ -336,6 +336,7 @@ import {
   PAYMENT_PROCESSING_CODE,
 } from "@/lib/payment-recovery-contract";
 import { stripeIdempotencyKeyForAskAmount } from "@/lib/payment-recovery-keys";
+import { NEGATIVE_STORED_GUEST_TOTAL_MESSAGE } from "@/lib/edit-night-valuation";
 
 const mockedAuth = vi.mocked(auth);
 const mockedCalcDualRefund = vi.mocked(calculateDualRefundAmounts);
@@ -369,7 +370,7 @@ function makeSession() {
 const FIXED_NOW = new Date("2026-07-15T00:00:00.000Z"); // NZ 2026-07-15 12:00
 
 function makeBooking(overrides: Record<string, unknown> = {}) {
-  return {
+  const booking = {
     id: "bk1",
     memberId: "m1",
     // Booking.lodgeId is NOT NULL in the schema, so a real row always carries
@@ -393,7 +394,11 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
         ageTier: "ADULT",
         isMember: true,
         memberId: "m1",
-        priceCents: 5000,
+        // #4317 review H1: the guest's stored total IS the booking's $100
+        // headline, as every writer stores them. It used to be $50 under a $100
+        // headline, a gap the edit doors now carry forward rather than settle,
+        // which would have moved every increase below by $50.
+        priceCents: 10000,
         /*
           #2675: with an ACTIVE hosting mode on the tx double below, the
           reconciler's EVALUATOR now runs against this row rather than bailing
@@ -413,7 +418,7 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
         stayEnd: new Date("2026-08-03"),
         /*
           #3166: the two nights this guest holds, carrying what they were sold
-          for and summing to the stored 5000. The date path is now judged on
+          for and summing to the stored 10000. The date path is now judged on
           exact stored sold-price evidence, so an EMPTY list is a strand with no
           readable history at all and every date change on it PARKS for financial
           review — which is the gate working, not the settlement question this
@@ -421,8 +426,8 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
           this deliberately below.
         */
         nights: [
-          { stayDate: new Date("2026-08-01"), priceCents: 2500, priceSource: "SOLD" },
-          { stayDate: new Date("2026-08-02"), priceCents: 2500, priceSource: "SOLD" },
+          { stayDate: new Date("2026-08-01"), priceCents: 5000, priceSource: "SOLD" },
+          { stayDate: new Date("2026-08-02"), priceCents: 5000, priceSource: "SOLD" },
         ],
         // No consent was ever needed for an ordinary guest, and `null` is one of
         // the two values `isOperationallyPresentConsent` treats as present (D-12).
@@ -457,6 +462,25 @@ function makeBooking(overrides: Record<string, unknown> = {}) {
     promoRedemptions: [],
     ...overrides,
   };
+  // #4317 review H1: an overridden headline is a booking whose guest is priced
+  // to match, as every writer stores them. The edit doors now carry any gap
+  // between the two forward rather than settle it, so a fixture that moved the
+  // headline alone would be modelling a frozen headline it never meant to.
+  if (typeof overrides.totalPriceCents === "number" && !("guests" in overrides)) {
+    const total = overrides.totalPriceCents;
+    const [guest] = booking.guests;
+    booking.guests = [
+      {
+        ...guest,
+        priceCents: total,
+        nights: [
+          { stayDate: new Date("2026-08-01"), priceCents: total - Math.floor(total / 2), priceSource: "SOLD" },
+          { stayDate: new Date("2026-08-02"), priceCents: Math.floor(total / 2), priceSource: "SOLD" },
+        ],
+      },
+    ];
+  }
+  return booking;
 }
 
 function makeTx(booking: ReturnType<typeof makeBooking>) {
@@ -2976,7 +3000,7 @@ describe("#4317 modify-dates prices a blank night from the guest's stored total"
    * what a parked edit left behind before #4317. R2 values the blank at $25.
    */
   function bookingWithABlankNight() {
-    const booking = makeBooking();
+    const booking = makeBooking({ totalPriceCents: 5000, finalPriceCents: 5000 });
     (booking.guests as Array<Record<string, unknown>>)[0].nights = [
       { stayDate: new Date("2026-08-01"), priceCents: 2500, priceSource: "SOLD" },
       { stayDate: new Date("2026-08-02"), priceCents: null, priceSource: "UNKNOWN" },
@@ -3112,23 +3136,22 @@ describe("#4317 modify-dates prices a blank night from the guest's stored total"
         data: expect.objectContaining({ totalPriceCents: 15000, finalPriceCents: 15000 }),
       }),
     );
-    // The fixture's stored headline is $100, so the edit is a $50 increase.
-    expect(data.priceDiffCents).toBe(5000);
+    // From a $50 headline, a $100 increase.
+    expect(data.priceDiffCents).toBe(10000);
     expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
   });
 
-  it("D11: a negative stored total values its kept nights at $0 and keeps its -$5 on the strand", async () => {
-    // Unreachable on a live database (`BookingGuest_price_nonnegative`, which no
-    // row has ever failed), and so pinned here, at the door: the code still
-    // has to value it rather than invent money from it.
-    // The headline agrees with its one strand, so the edit is a plain increase.
-    const booking = makeBooking({ totalPriceCents: -500, finalPriceCents: -500 });
-    const g1 = (booking.guests as Array<Record<string, unknown>>)[0];
-    g1.priceCents = -500;
-    g1.nights = [
-      { stayDate: new Date("2026-08-01"), priceCents: 2500, priceSource: "SOLD" },
-      { stayDate: new Date("2026-08-02"), priceCents: 2500, priceSource: "SOLD" },
-    ];
+  it("H1: a headline a parked edit froze keeps its gap; the move charges only its own $100", async () => {
+    // The same $50 guest, under a $100 headline a parked edit left frozen
+    // (the $50 gap is money an open or declined review still holds). The move
+    // buys $150 for a guest stored at $50, so it changes the guests by +$100.
+    // Read as the bare sum of the guests, the new total would be $150 and the
+    // edit would charge $50, settling the frozen $50 as a refund nobody asked
+    // for (#4317 review H1). Carried forward, the total is $200 and the edit
+    // charges exactly its own $100.
+    const booking = bookingWithABlankNight();
+    booking.totalPriceCents = 10000;
+    booking.finalPriceCents = 10000;
     const tx = makeTx(booking);
     mockTransaction.mockImplementation((fn: any) => fn(tx));
     mockedCreatePaymentIntent.mockResolvedValue({
@@ -3136,28 +3159,37 @@ describe("#4317 modify-dates prices a blank night from the guest's stored total"
       client_secret: "pi_additional_secret_xxx", currency: "nzd",
     } as any);
 
-    // Keeps the 1st and 2nd, buys the 3rd at today's $75.
-    const res = await moveTheDates("2026-08-01", "2026-08-04");
+    const res = await moveTheDates("2026-08-05", "2026-08-07");
     const data = await res.json();
     expect(res.status).toBe(200);
-    // The edit charges the one night it buys: $75, and nothing for the kept two.
-    expect(data.priceDiffCents).toBe(7500);
 
-    expect(writtenRows(tx)).toEqual([
-      { date: "2026-08-01", priceCents: 0, priceSource: "UNKNOWN" },
-      { date: "2026-08-02", priceCents: 0, priceSource: "UNKNOWN" },
-      { date: "2026-08-03", priceCents: 7500, priceSource: "SOLD" },
-    ]);
-    // $0 + $0 + $75, plus the -$5 the strand carries beyond its nights.
     expect(tx.bookingGuest.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ priceCents: 7000 }) }),
+      expect.objectContaining({ data: expect.objectContaining({ priceCents: 15000 }) }),
     );
     expect(tx.booking.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ totalPriceCents: 7000, finalPriceCents: 7000 }),
+        data: expect.objectContaining({ totalPriceCents: 20000, finalPriceCents: 20000 }),
       }),
     );
-    expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
+    expect(data.priceDiffCents).toBe(10000);
+  });
+
+  it("D11: a negative stored guest total refuses the date change, writing nothing (#4317 review M2)", async () => {
+    // Unreachable on a live database (`BookingGuest_price_nonnegative`, which no
+    // row has ever failed). Pricing one would have to write the negative figure
+    // back, which that constraint rejects, so the door refuses before any write.
+    const booking = makeBooking({ totalPriceCents: -500, finalPriceCents: -500 });
+    const tx = makeTx(booking);
+    mockTransaction.mockImplementation((fn: any) => fn(tx));
+
+    const res = await moveTheDates("2026-08-01", "2026-08-04");
+    const data = await res.json();
+
+    expect(res.status).toBe(409);
+    expect(data.error).toBe(NEGATIVE_STORED_GUEST_TOTAL_MESSAGE);
+    expect(tx.bookingGuestNight.createMany).not.toHaveBeenCalled();
+    expect(tx.bookingGuest.update).not.toHaveBeenCalled();
+    expect(tx.booking.update).not.toHaveBeenCalled();
   });
 
   it("CONTROL: the same date change on a fully readable booking prices the same way", async () => {

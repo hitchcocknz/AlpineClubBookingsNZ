@@ -175,6 +175,7 @@ import {
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { NEGATIVE_STORED_GUEST_TOTAL_MESSAGE } from "@/lib/edit-night-valuation";
 
 const BOOKING = "bk-1";
 const OWNER = "m-owner";
@@ -922,25 +923,21 @@ describe("a removal from a booking whose rows do not reconcile is priced from st
     expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
   });
 
-  it("D11: credits $0 for a departing guest whose stored total is negative, and charges nothing", async () => {
-    // A negative stored total (#2745): -$5 against two $60 rows. D11 values it at
-    // $0, so removing the guest neither credits nor charges, and the -$5 stays
-    // on the booking total for #2745 rather than being charged to the member.
+  it("D11: a negative stored guest total refuses the removal, writing nothing (#4317 review M2)", async () => {
+    // Unreachable on a live database (`BookingGuest_price_nonnegative`). Pricing
+    // one would write the negative figure back or leave its shortfall on the
+    // headline, so the removal is refused before any write instead.
     const booking = makeBooking({ targetConsent: "DECLINED" });
     booking.guests[0].priceCents = -500;
     booking.totalPriceCents = 11500;
     booking.finalPriceCents = 11500;
     const tx = makeTx(booking);
 
-    const result = await remove(tx, {
-      guestId: TARGET_GUEST,
-      actorMemberId: OWNER,
-    });
-
-    expect(result.priceDiffCents).toBe(0);
-    expect(tx.booking.update.mock.calls[0][0].data.totalPriceCents).toBe(11500);
-    expect(companionTotalWritten(tx)).toBe(12000);
-    expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
+    await expect(
+      remove(tx, { guestId: TARGET_GUEST, actorMemberId: OWNER }),
+    ).rejects.toMatchObject({ status: 409, message: NEGATIVE_STORED_GUEST_TOTAL_MESSAGE });
+    expect(tx.bookingGuest.delete).not.toHaveBeenCalled();
+    expect(tx.booking.update).not.toHaveBeenCalled();
   });
 
   it("CONTROL: settles normally when every strand reconciles", async () => {
@@ -1241,6 +1238,35 @@ describe("#3032 pending financial review fences a removal, except a consent one"
     expect(result.priceDiffCents).toBe(-12000);
     expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
     expect(result.financialReviewPending).toBe(true);
+  });
+
+  it("H1: an expiry with the review open credits only the departing guest, and the frozen gap stays for the review", async () => {
+    // The booking's headline is $360 over two $120 guests: a parked edit froze
+    // $120 into it that the open review still holds. Expiring the target
+    // removes $120 of guests. Read as the bare sum of who is left, the new
+    // total would be $120 and the member would be credited $240 - the review's
+    // $120 among it - and credited again when the review settles (#4317 review
+    // H1). Carried forward, the credit is the departing guest's own $120 and the
+    // $120 gap is still on the headline for the review.
+    const booking = makeBooking({ targetConsent: "EXPIRED" });
+    booking.totalPriceCents = 36000;
+    booking.finalPriceCents = 36000;
+    const tx = makeTx(booking);
+    tx.manualRefundTask.findFirst.mockResolvedValue(openReview);
+
+    const result = await remove(tx, {
+      guestId: TARGET_GUEST,
+      actorMemberId: OWNER,
+      consentAuthority: authority("CONSENT_EXPIRY"),
+    });
+
+    expect(result.removedGuest.id).toBe(TARGET_GUEST);
+    expect(result.priceDiffCents).toBe(-12000);
+    const written = tx.booking.update.mock.calls[0][0].data;
+    expect(written.totalPriceCents).toBe(24000);
+    expect(written.finalPriceCents).toBe(24000);
+    expect(result.financialReviewPending).toBe(true);
+    expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
   });
 
   it("D-14: a CONSENT_DECLINE removal still comes off, with the review open", async () => {

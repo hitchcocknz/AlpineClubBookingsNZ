@@ -1,8 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  flagNegativeStoredTotals,
-  strandRemovalCreditCents,
+  editedBookingTotalCents,
+  NEGATIVE_STORED_GUEST_TOTAL_MESSAGE,
+  NegativeStoredGuestTotalError,
+  refuseNegativeStoredGuestTotals,
   valueEditStrand,
   valueHeldNights,
   valuedNightLocksForGuest,
@@ -47,7 +49,6 @@ describe("valueEditStrand: each held night's value and the row it rewrites to", 
       { date: "2026-08-02", valueCents: 5_000, priceSource: "EVEN_SPLIT" },
     ]);
     expect(valued.unattachedCents).toBe(0);
-    expect(valued.removalCreditCents).toBe(9_000);
     expect(valued.flag).toBeNull();
   });
 
@@ -107,7 +108,7 @@ describe("valueEditStrand: each held night's value and the row it rewrites to", 
     ]);
   });
 
-  it("D11: a negative stored total values every night at $0, flags it and credits $0", () => {
+  it("D11: a negative stored total values every night at $0 and flags it (pure; doors refuse it)", () => {
     const valued = valueEditStrand(
       {
         priceCents: -500,
@@ -119,40 +120,59 @@ describe("valueEditStrand: each held night's value and the row it rewrites to", 
       [0, "UNKNOWN"],
       [0, "UNKNOWN"],
     ]);
-    // The -$5 is carried on the strand, not on a night, so a guest the edit
-    // does not touch keeps its stored total exactly.
     expect(valued.unattachedCents).toBe(-500);
-    expect(valued.removalCreditCents).toBe(0);
     expect(valued.flag).toBe("NEGATIVE_STORED_TOTAL");
   });
 });
 
 describe("valueHeldNights: a strand holding no night", () => {
-  it("keeps a $70 total unattached and credits all of it on removal", () => {
+  it("keeps a $70 total unattached on the strand", () => {
     expect(valueHeldNights([], new Map(), 7_000)).toEqual({
       nights: [],
       unattachedCents: 7_000,
-      removalCreditCents: 7_000,
       flag: null,
     });
   });
 
-  it("keeps a negative total unattached, credits $0 and flags it", () => {
+  it("keeps a negative total unattached and flags it (pure; doors refuse it)", () => {
     const valued = valueHeldNights([], new Map(), -300);
     expect(valued.nights).toEqual([]);
     expect(valued.unattachedCents).toBe(-300);
-    expect(valued.removalCreditCents).toBe(0);
     expect(valued.flag).toBe("NEGATIVE_STORED_TOTAL");
   });
 });
 
-describe("strandRemovalCreditCents (T2, D11)", () => {
-  it.each([
-    [12_000, 12_000],
-    [0, 0],
-    [-1, 0],
-  ])("a stored total of %i credits %i", (stored, credit) => {
-    expect(strandRemovalCreditCents(stored)).toBe(credit);
+describe("editedBookingTotalCents: the headline moves only by the edit's own change (review H1)", () => {
+  it("is the sum of the edited guests on a booking whose headline is its guests", () => {
+    // $200 + $200 stored, both extended by a $50 night: $500.
+    expect(
+      editedBookingTotalCents(
+        { totalPriceCents: 40_000, guests: [{ priceCents: 20_000 }, { priceCents: 20_000 }] },
+        50_000,
+      ),
+    ).toBe(50_000);
+  });
+
+  it("carries a frozen headline's gap forward instead of settling it", () => {
+    // The coordinator's probe: $200 (no rows) + $200 under a frozen $600
+    // headline. Extending both by a $50 night buys $100 of nights; read as the
+    // bare sum the total would drop to $500 and refund $100. Carried, it is $700.
+    expect(
+      editedBookingTotalCents(
+        { totalPriceCents: 60_000, guests: [{ priceCents: 20_000 }, { priceCents: 20_000 }] },
+        50_000,
+      ),
+    ).toBe(70_000);
+  });
+
+  it("counts a removed guest among the stored guests, so a removal moves the headline by its stored total", () => {
+    // Removing a $120 guest from $120 + $120 under a frozen $360: $240, not $120.
+    expect(
+      editedBookingTotalCents(
+        { totalPriceCents: 36_000, guests: [{ priceCents: 12_000 }, { priceCents: 12_000 }] },
+        12_000,
+      ),
+    ).toBe(24_000);
   });
 });
 
@@ -187,49 +207,29 @@ describe("withUnattachedStrandMoney: the engine's breakdown plus each strand's u
   it("returns the engine's breakdown itself when no strand carries any", () => {
     const breakdown = { totalPriceCents: 9_000, guests: [{ priceCents: 9_000 }] };
     // Even with a misaligned input: nothing to add means nothing to check.
-    expect(withUnattachedStrandMoney(breakdown, [], [])).toBe(breakdown);
+    expect(withUnattachedStrandMoney(breakdown, [])).toBe(breakdown);
   });
 
-  it("keeps a negative strand's -$5 on it, beside a guest the edit adds at $60", () => {
+  it("keeps a night-less strand's $70 on it, beside a guest the edit adds at $60", () => {
     const result = withUnattachedStrandMoney(
       {
         totalPriceCents: 6_000,
-        guests: [{ priceCents: 0, id: "negative" }, { priceCents: 6_000, id: "added" }],
+        guests: [{ priceCents: 0, id: "nightless" }, { priceCents: 6_000, id: "added" }],
       },
-      [{ unattachedCents: -500 }, {}],
-      [],
+      [{ unattachedCents: 7_000 }, {}],
     );
-    expect(result.totalPriceCents).toBe(5_500);
+    expect(result.totalPriceCents).toBe(13_000);
     expect(result.guests).toEqual([
-      { priceCents: -500, id: "negative" },
+      { priceCents: 7_000, id: "nightless" },
       { priceCents: 6_000, id: "added" },
     ]);
-  });
-
-  it("removing a negative -$8 strand credits $0: its money stays in the total", () => {
-    const result = withUnattachedStrandMoney(
-      { totalPriceCents: 5_000, guests: [{ priceCents: 5_000 }] },
-      [{ unattachedCents: 0 }],
-      [{ priceCents: -800 }],
-    );
-    // Before: 5000 + (-800) = 4200. After: 4200. The removal moved nothing.
-    expect(result.totalPriceCents).toBe(4_200);
-    expect(result.guests).toEqual([{ priceCents: 5_000 }]);
-  });
-
-  it("a removed non-negative strand retains nothing", () => {
-    const breakdown = { totalPriceCents: 5_000, guests: [{ priceCents: 5_000 }] };
-    expect(withUnattachedStrandMoney(breakdown, [{ unattachedCents: 0 }], [{ priceCents: 12_000 }])).toBe(
-      breakdown,
-    );
   });
 
   it("refuses to add money to a breakdown it cannot align", () => {
     expect(() =>
       withUnattachedStrandMoney(
         { totalPriceCents: 0, guests: [{ priceCents: 0 }, { priceCents: 0 }] },
-        [{ unattachedCents: -500 }],
-        [],
+        [{ unattachedCents: 7_000 }],
       ),
     ).toThrow(/1 pricing inputs for 2 priced guests/);
   });
@@ -269,28 +269,39 @@ describe("valuedStrandNightPrices: an acceptance re-price reads the same values"
   });
 });
 
-describe("flagNegativeStoredTotals (D11)", () => {
-  it("warns once, naming every negative guest, and lets the edit go ahead", () => {
-    const warn = vi.fn();
-    flagNegativeStoredTotals({ warn }, { bookingId: "b1", site: "test" }, [
-      { id: "g1", priceCents: -1 },
-      { id: "g2", priceCents: 0 },
-      { id: "g3", priceCents: -900 },
-    ]);
-    expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0]?.[0]).toEqual({
+describe("refuseNegativeStoredGuestTotals (D11, review M2)", () => {
+  it("refuses with a 409, logging at error level once, naming every negative guest and #2745", () => {
+    const error = vi.fn();
+    expect(() =>
+      refuseNegativeStoredGuestTotals({ error }, { bookingId: "b1", site: "test" }, [
+        { id: "g1", priceCents: -1 },
+        { id: "g2", priceCents: 0 },
+        { id: "g3", priceCents: -900 },
+      ]),
+    ).toThrow(NegativeStoredGuestTotalError);
+    expect(error).toHaveBeenCalledTimes(1);
+    expect(error.mock.calls[0]?.[0]).toEqual({
       bookingId: "b1",
       site: "test",
       bookingGuestIds: ["g1", "g3"],
       flag: "NEGATIVE_STORED_TOTAL",
     });
+    expect(error.mock.calls[0]?.[1]).toContain("#2745");
+    try {
+      refuseNegativeStoredGuestTotals({ error }, { bookingId: "b1", site: "test" }, [
+        { id: "g1", priceCents: -1 },
+      ]);
+    } catch (thrown) {
+      expect(thrown).toMatchObject({ status: 409, message: NEGATIVE_STORED_GUEST_TOTAL_MESSAGE });
+    }
   });
 
-  it("says nothing when no stored total is negative", () => {
-    const warn = vi.fn();
-    flagNegativeStoredTotals({ warn }, { bookingId: "b1", site: "test" }, [
+  it("lets a booking whose every stored total is zero or more through, silently", () => {
+    const error = vi.fn();
+    refuseNegativeStoredGuestTotals({ error }, { bookingId: "b1", site: "test" }, [
       { id: "g1", priceCents: 0 },
+      { id: "g2", priceCents: 12_000 },
     ]);
-    expect(warn).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 });

@@ -26,7 +26,7 @@ import {
   storedNightPriceDetailsByKey,
   type StoredNightPriceWithSource,
 } from "@/lib/stored-night-price-write";
-import { valueHeldNights } from "@/lib/edit-night-valuation";
+import { editedBookingTotalCents, valueHeldNights } from "@/lib/edit-night-valuation";
 
 interface ExistingBookingEditGuest {
   id: string;
@@ -1309,9 +1309,15 @@ export function buildInProgressGuestRangePlan(
       (entry) => !entry.removedFromFuture && entry.futureNights.length > 0
     ).length + proposedAddedGuests.length;
 
-  const newTotalPriceCents =
+  // #4317 review H1: the headline moves only by what this edit changed on the
+  // guests, so a total a parked edit froze keeps its gap for the review (or
+  // wave B's re-base) to settle — the one rule every door applies
+  // (`editedBookingTotalCents`, `INV-SSOT-001`).
+  const newTotalPriceCents = editedBookingTotalCents(
+    input.booking,
     proposedExistingGuests.reduce((sum, entry) => sum + entry.priceCents, 0) +
-    proposedAddedGuests.reduce((sum, entry) => sum + entry.priceCents, 0);
+      proposedAddedGuests.reduce((sum, entry) => sum + entry.priceCents, 0),
+  );
   const newDiscountCents = input.booking.discountCents;
   const newPromoAdjustmentCents = input.booking.promoAdjustmentCents;
   const newFinalPriceCents = bookingFinalPriceCents({

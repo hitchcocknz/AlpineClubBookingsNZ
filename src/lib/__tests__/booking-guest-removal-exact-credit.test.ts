@@ -3,7 +3,6 @@ import { calculateBookingPrice, type SeasonRateData } from "@/lib/pricing";
 import { editedGuestPricingLocks } from "@/lib/booking-modify-plan";
 import { storedSoldPriceEvidenceForGuest } from "@/lib/stored-sold-price-evidence";
 import {
-  strandRemovalCreditCents,
   valuedNightLocksForGuest,
 } from "@/lib/edit-night-valuation";
 
@@ -248,7 +247,7 @@ describe("a removal's credit is the departing guest's own stored price (#3031, #
     }
   });
 
-  it("D11: a negative stored total keeps its figure on the strand and is credited $0 on removal", () => {
+  it("D11: a negative stored total is valued at $0 a night and carries its figure unattached (pure; doors refuse it)", () => {
     const guest = {
       stayStart: D(NIGHTS[0]),
       stayEnd: D("2026-08-23"),
@@ -262,7 +261,6 @@ describe("a removal's credit is the departing guest's own stored price (#3031, #
     const { lockedNightPrices, unattachedCents } = valuedNightLocksForGuest(guest, BOOKING_RANGE);
     expect(lockedNightPrices.map((lock) => lock.priceCents)).toEqual([0, 0, 0]);
     expect(unattachedCents).toBe(-500);
-    expect(strandRemovalCreditCents(guest.priceCents)).toBe(0);
   });
 
   it("asks the BOOKING's range for a strand carrying no envelope of its own", () => {
