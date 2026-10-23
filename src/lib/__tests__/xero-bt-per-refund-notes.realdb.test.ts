@@ -390,6 +390,9 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
       await reconcile(`${P}-voided-own-note`, 10_000);
       await voidAndUndo(`${P}-voided-own-note`, 10_000);
       expect((await readers()).refundedCents).toBe(0);
+      // Its refund no longer stands, so it is no noted bank cash (what the void scan and the capacity-race check read).
+      const { readPaidAnotherWayCash } = await import("@/lib/card-refund-paid-another-way-cash");
+      expect((await readPaidAnotherWayCash(prisma, PAYMENT_ID)).notedCents).toBe(0);
 
       // Later, a card refund and its note: the refund-request approval's own call (no keyed options).
       await refundCard(4_000);
