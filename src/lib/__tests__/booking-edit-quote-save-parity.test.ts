@@ -38,36 +38,24 @@ import {
   type BuildInProgressGuestRangePlanInput,
 } from "@/lib/booking-edit-guest-ranges";
 import { calculateModifiedPricing } from "@/lib/booking-modify-plan";
-import { EDIT_FINANCIAL_REVIEW_QUOTE_NOTICE } from "@/lib/booking-modify-validation";
-import {
-  parseEditFinancialReviewContext,
-  type EditFinancialReviewContext,
-} from "@/lib/edit-financial-review-context";
 import type { SeasonRateData } from "@/lib/pricing";
 
 /**
- * #3031 (epic #2797), acceptance criterion 4: THE PREVIEW AND THE SAVE CONSUME
- * ONE RESULT.
+ * THE PREVIEW AND THE SAVE PRICE ONE EDIT IDENTICALLY (#3031; #4317, epic #4302).
  *
  * The member reads a price from `POST /api/bookings/[id]/modify-quote` and then
- * saves through `PUT /api/bookings/[id]/modify`. Those are two code paths over
- * one edit, and the epic's whole point fails if they can disagree about whether
- * the edit is priceable at all: a preview that shows an amount for a booking the
- * save will refuse is exactly the "plausible number that was never sold" the
- * epic exists to stop, arriving one screen earlier.
+ * saves through `PUT /api/bookings/[id]/modify`. For a stay already under way
+ * the quote calls `buildInProgressGuestRangePlan` directly and the save calls it
+ * through `calculateModifiedPricing`. Before #4317 the two had to agree on
+ * whether an edit was priceable at all; since #4317 every edit prices
+ * (`INV-MOD-028`), so what they must agree on is the AMOUNT, cent for cent, on
+ * every shape of stored history the valuation reads — exact rows, no rows, rows
+ * without a price, partly priced rows, rows that do not add up, and a negative
+ * stored total (D11).
  *
- * They agree structurally rather than by inspection. The quote route calls
- * `buildInProgressGuestRangePlan` directly; the apply path calls it through
- * `calculateModifiedPricing`. Both receive the SAME discriminated result, and
- * neither has a numeric field to read on the review branch. This suite drives
- * both over one booking and requires the occurrences to be identical, cause for
- * cause and night for night.
- *
- * It also checks the thing #3032 will depend on: that what the planner produces
- * really is writable as `ManualRefundTask.reviewContext`. The write site
- * validates through `parseEditFinancialReviewContext` before it inserts, so a
- * context that does not parse is a task that never gets raised — a silent loss
- * of the money question, which is worse than the estimate it replaced.
+ * The matrix below runs every shape through three edits (extend, shorten,
+ * remove) on both paths and pins the dollar answer to a hand-computed table, so
+ * the two cannot drift together to a wrong figure either.
  */
 
 const D = (value: string) => new Date(`${value}T00:00:00.000Z`);
@@ -97,39 +85,88 @@ const NO_DISCOUNT_TX = {
   groupDiscountSetting: { findUnique: async () => null },
 } as never;
 
-function guest(
-  nights: Array<{
-    stayDate: Date;
-    priceCents?: number;
-    priceSource: "SOLD" | "UNKNOWN";
-  }>,
-) {
+type Night = {
+  stayDate: Date;
+  priceCents?: number | null;
+  priceSource: "SOLD" | "UNKNOWN";
+};
+
+function guest(id: string, memberId: string, nights: Night[], priceCents: number) {
   return {
-    id: "g1",
-    firstName: "Alice",
-    lastName: "Member",
+    id,
+    firstName: "Guest",
+    lastName: id,
     ageTier: "ADULT" as const,
     isMember: true,
-    memberId: "m1",
+    memberId,
     rateMembershipTypeId: MEMBER_TYPE,
     rateSource: "OWN_TYPE" as const,
     stayStart: D(HELD[0]),
     stayEnd: D("2026-08-23"),
     nights,
-    priceCents: HELD.length * RATE,
+    priceCents,
   };
+}
+
+const sold = (cents: Array<number | null>): Night[] =>
+  HELD.map((night, index) => ({
+    stayDate: D(night),
+    priceCents: cents[index],
+    priceSource: cents[index] === null ? "UNKNOWN" : "SOLD",
+  }));
+
+/** The companion every case carries, so a removal never empties the booking. */
+const COMPANION = guest("g2", "m2", sold([RATE, RATE, RATE]), 3 * RATE);
+
+/**
+ * The shapes of stored history, each with what INV-MOD-028 values its three
+ * nights at — the figure a night given back is credited at.
+ */
+const SHAPES = {
+  "exact rows": { nights: sold([RATE, RATE, RATE]), total: 15000, values: [5000, 5000, 5000] },
+  // R2 over the envelope: $120 / 3.
+  "no rows": { nights: [] as Night[], total: 12000, values: [4000, 4000, 4000] },
+  // R2: rows with no price, $90 / 3.
+  "unpriced rows": { nights: sold([null, null, null]), total: 9000, values: [3000, 3000, 3000] },
+  // R2: the blank takes what $156 leaves after two $50 rows.
+  "partly priced": { nights: sold([RATE, RATE, null]), total: 15600, values: [5000, 5000, 5600] },
+  // R3: rows do not add up to $151.01, so the total is split, extra cents first.
+  "rows do not add up": { nights: sold([RATE, RATE, RATE]), total: 15101, values: [5034, 5034, 5033] },
+  // D11: a negative stored total is worth $0 a night.
+  "negative total": { nights: sold([RATE, RATE, RATE]), total: -700, values: [0, 0, 0] },
+} as const;
+
+const EDITS = {
+  // Buys the 23rd and 24th for each guest at today's $50.
+  extend: { newCheckOut: "2026-08-25" },
+  // Each guest gives back the 22nd.
+  shorten: { newCheckOut: "2026-08-22" },
+  // g1 gives back the 21st and 22nd; the 20th is already slept.
+  remove: { newCheckOut: "2026-08-23", removeGuestIds: ["g1"] },
+} as const;
+
+/** The edit's price difference, worked by hand from the values above. */
+function expectedDiff(shape: keyof typeof SHAPES, edit: keyof typeof EDITS): number {
+  const [, v21, v22] = SHAPES[shape].values;
+  switch (edit) {
+    case "extend":
+      return 4 * RATE;
+    case "shorten":
+      return 0 - (RATE + v22);
+    case "remove":
+      return 0 - (v21 + v22);
+  }
 }
 
 /** The booking as the QUOTE route hands it to the planner. */
 function planInput(
-  nights: Array<{
-    stayDate: Date;
-    priceCents?: number;
-    priceSource: "SOLD" | "UNKNOWN";
-  }>,
+  shape: keyof typeof SHAPES,
+  edit: keyof typeof EDITS,
 ): BuildInProgressGuestRangePlanInput {
-  const guests = [guest(nights)];
+  const { nights, total } = SHAPES[shape];
+  const guests = [guest("g1", "m1", [...nights], total), COMPANION];
   const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
+  const change = EDITS[edit];
   return {
     booking: {
       id: "bk-parity",
@@ -142,239 +179,68 @@ function planInput(
       guests,
     },
     editableFrom: D("2026-08-21"),
-    newCheckOut: D("2026-08-25"),
+    newCheckOut: D(change.newCheckOut),
+    ...("removeGuestIds" in change ? { removeGuestIds: [...change.removeGuestIds] } : {}),
     seasons: SEASONS,
   };
 }
 
-/** The same edit as the APPLY path hands it to `calculateModifiedPricing`. */
-function pricingArgs(
-  nights: Array<{
-    stayDate: Date;
-    priceCents?: number;
-    priceSource: "SOLD" | "UNKNOWN";
-  }>,
-) {
-  const input = planInput(nights);
+/** The same edit as the SAVE hands it to `calculateModifiedPricing`. */
+function pricingArgs(shape: keyof typeof SHAPES, edit: keyof typeof EDITS) {
+  const input = planInput(shape, edit);
   return {
-    booking: {
-      ...input.booking,
-      memberId: "m1",
-      lodgeId: "lodge-1",
-    } as never,
+    booking: { ...input.booking, memberId: "m1", lodgeId: "lodge-1" } as never,
     bookingId: "bk-parity",
     isInProgressEdit: true,
     editableFrom: input.editableFrom,
     newCheckIn: input.booking.checkIn,
     newCheckOut: input.newCheckOut,
     normalizedAddGuests: undefined,
-    removeGuestIds: undefined,
-    guestsForPricing: [
-      {
-        bookingGuestId: "g1",
-        ageTier: "ADULT" as const,
-        isMember: true,
-        memberId: "m1",
-        stayStart: input.booking.checkIn,
-        stayEnd: input.newCheckOut,
-      },
-    ],
+    removeGuestIds: input.removeGuestIds,
+    guestsForPricing: input.booking.guests.map((g) => ({
+      bookingGuestId: g.id,
+      ageTier: "ADULT" as const,
+      isMember: true,
+      memberId: g.memberId ?? null,
+      stayStart: input.booking.checkIn,
+      stayEnd: input.newCheckOut,
+    })),
     skipBookingLifecycleRules: false,
     seasonRateData: SEASONS as never,
     partnerSharedGuests: [],
   };
 }
 
-const PRICED_NIGHTS = HELD.map((night) => ({
-  stayDate: D(night),
-  priceCents: RATE,
-  priceSource: "SOLD" as const,
-}));
-/** The same stay with no per-night record of what it cost. */
-const UNPRICED_NIGHTS = HELD.map((night) => ({
-  stayDate: D(night),
-  priceSource: "UNKNOWN" as const,
-}));
+describe("#4317 quote and save price every shape of stored history identically", () => {
+  const CASES = (Object.keys(SHAPES) as Array<keyof typeof SHAPES>).flatMap((shape) =>
+    (Object.keys(EDITS) as Array<keyof typeof EDITS>).map((edit) => [shape, edit] as const),
+  );
 
-describe("#3031 quote and apply consume one discriminated result", () => {
-  it("both price the same exact booking, and agree on the amount", async () => {
+  it.each(CASES)("%s, %s: one amount on both paths, and it is the hand-worked one", async (shape, edit) => {
     h.checkCapacityForGuestRanges.mockResolvedValue({
       available: true,
       minAvailable: 5,
       nightDetails: [],
     });
 
-    const quote = buildInProgressGuestRangePlan(planInput(PRICED_NIGHTS));
-    const apply = await calculateModifiedPricing(
-      NO_DISCOUNT_TX,
-      pricingArgs(PRICED_NIGHTS),
+    const quote = buildInProgressGuestRangePlan(planInput(shape, edit)).plan;
+    const save = await calculateModifiedPricing(NO_DISCOUNT_TX, pricingArgs(shape, edit));
+
+    // The dollar answer, worked by hand.
+    expect(quote.priceDiffCents).toBe(expectedDiff(shape, edit));
+    // And the save agrees with the quote, cent for cent and night for night.
+    expect(save.newTotalPriceCents).toBe(quote.newTotalPriceCents);
+    expect(save.inProgressPlan?.priceDiffCents).toBe(quote.priceDiffCents);
+    expect(save.priceBreakdown.guests.map((g) => g.perNightCents)).toEqual(
+      quote.proposedExistingGuests.map((g) => g.perNightCents),
     );
-
-    expect(quote.kind).toBe("priced");
-    expect(apply.kind).toBe("priced");
-    if (quote.kind !== "priced" || apply.kind !== "priced") return;
-
-    // Two nights bought by the extension, at the current rate; the three held
-    // nights keep the price on their rows and cancel across the difference.
-    expect(quote.plan.priceDiffCents).toBe(2 * RATE);
-    expect(apply.newTotalPriceCents).toBe(quote.plan.newTotalPriceCents);
-    expect(apply.inProgressPlan?.priceDiffCents).toBe(
-      quote.plan.priceDiffCents,
+    expect(save.priceBreakdown.guests.map((g) => g.priceCents)).toEqual(
+      quote.proposedExistingGuests.map((g) => g.priceCents),
     );
-    expect(apply.priceBreakdown.guests[0].perNightCents).toEqual(
-      quote.plan.proposedExistingGuests[0].perNightCents,
-    );
-  });
-
-  it("both refuse the same unpriceable booking, with identical occurrences", async () => {
-    h.checkCapacityForGuestRanges.mockResolvedValue({
-      available: true,
-      minAvailable: 5,
-      nightDetails: [],
-    });
-
-    const quote = buildInProgressGuestRangePlan(planInput(UNPRICED_NIGHTS));
-    const apply = await calculateModifiedPricing(
-      NO_DISCOUNT_TX,
-      pricingArgs(UNPRICED_NIGHTS),
-    );
-
-    expect(quote.kind).toBe("financial_review_required");
-    expect(apply.kind).toBe("financial_review_required");
-    if (
-      quote.kind !== "financial_review_required" ||
-      apply.kind !== "financial_review_required"
-    ) {
-      return;
-    }
-
-    // Not "both parked" — the same park, in full. The occurrence is what
-    // #3030 hashes into a task identity, so a preview and a save that produced
-    // different material would raise two tasks for one edit.
-    expect(apply.occurrences).toEqual(quote.occurrences);
-    // #3498: ONE work item for the whole edit, carrying its strands. This
-    // booking has one guest, so the record is byte-for-byte what it was - with
-    // `bookingId` now on the occurrence rather than repeated per strand - and
-    // one moving strand keeps the whole edit on one item.
-    expect(quote.occurrences).toHaveLength(1);
-    expect(quote.occurrences[0]).toEqual({
-      bookingId: "bk-parity",
-      bookingGuestId: "g1",
-      cause: "NO_STORED_NIGHT_PRICES",
-      // The edit gives back nothing (the check-out only moves out), so the
-      // identity is the two nights it ADDS.
-      surrenderedNightDates: [],
-      addedNightDates: ["2026-08-23", "2026-08-24"],
-      storedEvidence: {
-        guestTotalCents: 3 * RATE,
-        nightPrices: HELD.map((date) => ({ date, priceCents: null })),
-      },
-    });
-
-    // AND NEITHER BRANCH CARRIES AN AMOUNT AT ALL. `?? 0` has nothing to bite
-    // on, which is what makes the magic zero unrepresentable rather than
-    // forbidden (epic #2797).
-    //
-    // #3170 added the STRUCTURAL half — which beds, on which nights — and the
-    // property is unchanged, because beds are not money. The key lists are
-    // pinned rather than spot-checked so a future field carrying a booking total
-    // has to be argued for here, in front of this comment, instead of appearing.
-    expect(Object.keys(quote).sort()).toEqual([
-      "kind",
-      "occurrences",
-      "parkedPlan",
-    ]);
-    expect(Object.keys(apply).sort()).toEqual([
-      // Whether an admin confirmed an overbooking to fit these beds. Not an
-      // amount, and the parked plan goes through the same capacity check a
-      // priced one does.
-      "capacityOverridden",
-      "kind",
-      "occurrences",
-      // #3166: the guest ROWS the writer is handed — one entry per strand,
-      // carrying that strand's own STORED total and a per-night vector whose
-      // unknown nights are null. It is the same content `parkedPlan` already
-      // carried, hoisted so the pre-check-in park (which has no plan) and the
-      // in-progress park hand the writer one shape. It carries NO booking-level
-      // total, which is the property this block exists to defend, and the
-      // assertion below is what holds that line rather than this comment.
-      "parkedGuestRows",
-      "parkedPlan",
-    ]);
-    expect(Object.keys(apply.parkedGuestRows).sort()).toEqual(["guests"]);
-    expect(quote.parkedPlan).not.toBeNull();
-    if (quote.parkedPlan === null) throw new Error("expected a parked plan");
-    expect(Object.keys(quote.parkedPlan).sort()).toEqual([
-      "capacityGuestRanges",
-      "capacityRangeStart",
-      "proposedAddedGuests",
-      "proposedExistingGuests",
-      "remainingGuests",
-      "removedGuests",
-    ]);
-
-    // The strand's own stored total is carried back UNCHANGED, and every night
-    // this edit cannot value is `null`. Neither is an adjustment: the first is
-    // what the booking already says, and the second is the absence of a number.
-    const strand = quote.parkedPlan.proposedExistingGuests[0];
-    expect(strand.priceCents).toBe(3 * RATE);
-    expect(strand.perNightCents.every((cents) => cents === null)).toBe(true);
-    // The control, so the assertion above cannot pass on an empty list.
-    expect(strand.perNightCents.length).toBeGreaterThan(0);
-  });
-
-  it("produces an occurrence #3030 can actually store as review evidence", () => {
-    // The write site validates through this schema before inserting, and logs
-    // loudly rather than storing an unreadable blob - so a context that does not
-    // parse is a money question that silently never reaches an admin.
-    const result = buildInProgressGuestRangePlan(planInput(UNPRICED_NIGHTS));
-    expect(result.kind).toBe("financial_review_required");
-    if (result.kind !== "financial_review_required") return;
-
-    const context: EditFinancialReviewContext = {
-      version: 1,
-      occurrence: result.occurrences[0],
-      // #3032's D-3032-1 anchor: the ORIGINAL edit's BookingModification row, so
-      // a confirmed amount settles against the same record the edit already used
-      // for its credit and Stripe idempotency keys. Required, not defaulted -
-      // #3031 wrote this fixture before the field existed, and the merge is what
-      // surfaced it. It is deliberately NOT on the occurrence itself, so it
-      // cannot re-identify a replay.
-      bookingModificationId: "bm1",
-      guestMemberId: "m1",
-      bookingCheckIn: "2026-08-20" as EditFinancialReviewContext["bookingCheckIn"],
-      bookingCheckOut:
-        "2026-08-23" as EditFinancialReviewContext["bookingCheckOut"],
-    };
-
-    expect(parseEditFinancialReviewContext(context)).toEqual(context);
-  });
-
-  it("tells the member the change will be saved, and says nothing about an amount", () => {
-    // WHAT REPLACED THE REFUSAL'S WORDING CONTRACT (#3170). This used to assert
-    // that the 409's sentence said "nothing has been changed yet". That sentence
-    // is now false — the change IS saved — and the class carrying it is deleted,
-    // so pinning it would pin behaviour that was deliberately removed.
-    //
-    // The contract itself survives intact and is asserted on the sentence that
-    // took its place: the epic binds this wording, not the class it lived on.
-    expect(EDIT_FINANCIAL_REVIEW_QUOTE_NOTICE).toMatch(
-      /your change will be saved/i,
-    );
-    expect(EDIT_FINANCIAL_REVIEW_QUOTE_NOTICE).toMatch(
-      /nothing will be charged or refunded/i,
-    );
-    // No estimate, no `$0`, no "corrupt"/"invalid data", and nothing that reads
-    // as the member's fault — the stored history is the club's record, not
-    // theirs.
-    expect(EDIT_FINANCIAL_REVIEW_QUOTE_NOTICE).not.toMatch(
-      /\$|corrupt|invalid|error|your data/i,
-    );
-    // And it must NOT carry the old promise forward, which is the one way this
-    // sentence could be wrong rather than merely thin.
-    expect(EDIT_FINANCIAL_REVIEW_QUOTE_NOTICE).not.toMatch(
-      /nothing has been changed/i,
-    );
+    // A night g1 keeps is written at its valued figure, never NULL.
+    const g1 = quote.proposedExistingGuests[0]!;
+    expect(g1.perNightCents.every((cents) => Number.isInteger(cents))).toBe(true);
+    expect(g1.perNightCents[0]).toBe(SHAPES[shape].values[0]);
   });
 });
 
@@ -567,14 +433,10 @@ describe("#3031 no magic zero reaches a night row", () => {
   it("writes NULL where the breakdown SAYS the price is not known (#3170)", async () => {
     // THE OTHER HALF OF THE DISTINCTION the case above pins, and the two must be
     // read together: a vector that is SHORT is a wiring defect and throws, while
-    // an explicit `null` is a composer's deliberate statement that the night's
-    // price is not known and is stored as `NULL`.
-    //
-    // Collapsing them would be the defect in either direction. Treating a short
-    // vector as "unknown" would turn every future wiring bug into a silently
-    // unpriced night; treating an explicit null as a defect would make it
-    // impossible to commit a parked edit at all, which is what #3170 exists to
-    // allow.
+    // an explicit `null` is a statement that the night's price is not known and
+    // is stored as `NULL`. Since #4317 the only producer of one is the identity
+    // echo, writing back a NULL an older deploy stored; collapsing the two would
+    // turn every future wiring bug into a silently unpriced night.
     const { applyGuestChanges } = await import("@/lib/booking-modify-plan");
     const { tx, created } = writeDouble();
 

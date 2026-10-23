@@ -4009,8 +4009,8 @@ describe("re-basing the booking's headline totals while settling (#3219)", () =>
  *
  * The fix is a re-read, not a backfill: a task with NO payment id asks the
  * booking's own row, inside the completion transaction, through the same
- * `editReviewSettlementPayment` gate the raise sites use (they take its id-only
- * sibling `editReviewSettlementPaymentId`). Nothing is written, so there is no
+ * `editReviewSettlementPayment` gate the raise sites used before #4317 retired
+ * them. Nothing is written, so there is no
  * second write for a webhook replay to duplicate.
  *
  * Every test here has its control, because the property being protected is

@@ -1496,7 +1496,7 @@ export async function modifyBookingBatch({
     // is always the pricing pass's.
     const newTotalPriceCents = pricingResult.newTotalPriceCents;
     const newFinalPriceCents = bookingFinalPriceCents({
-      totalPriceCents: pricingResult.newTotalPriceCents,
+      totalPriceCents: newTotalPriceCents,
       promoAdjustmentCents: promo.newPromoAdjustmentCents,
     });
     const priceDiffCents = newFinalPriceCents - booking.finalPriceCents;
