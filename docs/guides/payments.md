@@ -256,7 +256,9 @@ lowers the price offers no choice of card or account credit: the refund, at the
 card refund tier, always goes back to the organiser this way, and the joiner is
 never given account credit for it (a guest whose consent lapses is removed the
 same way, and a member's single card-or-credit choice for a linked move of two
-bookings does not apply to such a booking). The money came
+bookings does not apply to such a booking: the offer says how much goes back to
+the organiser instead, and while the organiser is cancelling the group the
+offer lets the member move only their own booking). The money came
 from the organiser's one group payment, so it goes back to the **organiser**,
 not the joiner: the task's reason says "to the group organiser by bank
 transfer", the paid-back dialog says the money goes back to the group
