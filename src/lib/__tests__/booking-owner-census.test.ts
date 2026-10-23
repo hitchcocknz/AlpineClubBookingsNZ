@@ -475,8 +475,8 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/confirm-modification-payment/route.ts:70",
   "src/app/api/bookings/[id]/confirm-payment/route.ts:86",
   "src/app/api/bookings/[id]/exception-requests/route.ts:137",
-  "src/app/api/bookings/[id]/guests/route.ts:343",
-  "src/app/api/bookings/[id]/modify-quote/route.ts:366",
+  "src/app/api/bookings/[id]/guests/route.ts:344",
+  "src/app/api/bookings/[id]/modify-quote/route.ts:367",
   "src/app/api/bookings/[id]/notes/route.ts:48",
   "src/app/api/bookings/[id]/refund-request/route.ts:271",
   "src/app/api/bookings/[id]/refund-request/route.ts:49",
@@ -487,21 +487,21 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/payments/switch-to-internet-banking/route.ts:118",
   "src/lib/adult-member-hosting-review.ts:3256",
   "src/lib/booking-batch-modification-service.ts:1080",
-  "src/lib/booking-cancel.ts:2490",
-  "src/lib/booking-cancel.ts:541",
+  "src/lib/booking-cancel.ts:2510",
+  "src/lib/booking-cancel.ts:543",
   "src/lib/booking-date-modification-service.ts:406",
   "src/lib/booking-delete.ts:120",
   "src/lib/booking-delete.ts:69",
   "src/lib/booking-email-authority.ts:115",
   "src/lib/booking-guest-removal-service.ts:460",
   "src/lib/booking-guest-removal-service.ts:796",
-  "src/lib/booking-linked-date-move-service.ts:240",
+  "src/lib/booking-linked-date-move-service.ts:245",
   "src/lib/booking-member-night-conflicts.ts:369",
   "src/lib/booking-modify-validation.ts:618",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1427",
   "src/lib/group-booking.ts:274",
   "src/lib/kiosk-access.ts:230",
-  "src/lib/manual-refund-task-queue-payload.ts:324",
+  "src/lib/manual-refund-task-queue-payload.ts:342",
   "src/lib/requested-room-write.ts:62",
   "src/lib/waitlist-cross-lodge.ts:343",
   "src/lib/waitlist-cross-lodge.ts:531",
@@ -785,15 +785,15 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // as `include` to `bookingChangeRequest.findUnique`, and `organisation` sits
   // under its `booking` relation, which declares it.
   "src/lib/booking-change-request-admin-decision.ts:88",
+  // #4042, #3949: the owner-name select, moved out of the organiser hand-back to
+  // be shared with the joiner cancel's organiser name. Verified by hand: written
+  // through `Prisma.validator<Prisma.BookingSelect>()` and spread into
+  // `booking.findUniqueOrThrow`/`findMany` selects, and Booking declares
+  // `organisation`.
+  "src/lib/booking-owner-name.ts:12",
   "src/lib/cron-additional-payment-reminders.ts:440",
   "src/lib/cron-confirm-pending.ts:210",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
-  // #4042: the organiser hand-back's owner-name select, shared by its two
-  // booking reads. Verified by hand: written through
-  // `Prisma.validator<Prisma.BookingSelect>()` and spread into
-  // `booking.findUniqueOrThrow`/`findMany` selects, and Booking declares
-  // `organisation`.
-  "src/lib/group-organiser-hand-back.ts:92",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
   // `Prisma.validator<Prisma.ManualRefundTaskSelect>()`, and `organisation` sits
