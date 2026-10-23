@@ -1171,15 +1171,20 @@ describe("createPaymentIntentForPaymentLink", () => {
     mockedCreatePaymentIntent.mockResolvedValue({ id: "pi_fresh", client_secret: "secret_fresh", currency: "nzd" } as never);
     vi.mocked(prisma.payment.upsert).mockResolvedValue({ id: "pay-1" } as never);
 
-    if (status === "processing") {
-      await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).rejects.toMatchObject({ status: 409, code: "PAYMENT_PROCESSING" });
-      expect(mockedCreatePaymentIntent).not.toHaveBeenCalled();
-    } else {
-      await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).resolves.toEqual({
-        type: "clientSecret",
-        clientSecret: "secret_fresh",
-        paymentIntentId: "pi_fresh",
-      });
+    try {
+      if (status === "processing") {
+        await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).rejects.toMatchObject({ status: 409, code: "PAYMENT_PROCESSING" });
+        expect(mockedCreatePaymentIntent).not.toHaveBeenCalled();
+      } else {
+        await expect(createPaymentIntentForPaymentLink(RAW_TOKEN)).resolves.toEqual({
+          type: "clientSecret",
+          clientSecret: "secret_fresh",
+          paymentIntentId: "pi_fresh",
+        });
+      }
+    } finally {
+      // A queued once-answer a mutant never consumes must not leak into later cases.
+      vi.mocked(prisma.paymentRecoveryOperation.findFirst).mockReset().mockResolvedValue(null);
     }
   });
 

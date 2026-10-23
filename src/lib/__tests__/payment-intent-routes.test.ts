@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
 const mocks = vi.hoisted(() => ({
@@ -535,6 +535,10 @@ describe("payment intent routes", () => {
   });
 
   describe("#4300 (INV-PAY-138): an intent an edit superseded is never handed out again", () => {
+    // A queued once-answer a mutant never consumes must not leak into later cases.
+    afterEach(() => {
+      mockPrisma.paymentRecoveryOperation.findFirst.mockReset().mockResolvedValue(null);
+    });
     function primeSupersededAtMatchingAmount(status: string) {
       mockPrisma.booking.findUnique.mockResolvedValue({
         id: "booking-1",
