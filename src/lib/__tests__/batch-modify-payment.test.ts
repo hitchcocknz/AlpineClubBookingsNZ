@@ -4866,6 +4866,23 @@ describe("PUT /api/bookings/[id]/modify", () => {
       expect(guestUpdate.data.priceCents).toBe(7500);
     });
 
+    it("D8: moving a booking with no stored rows charges the normal change fee, which a parked edit never did", async () => {
+      const { calculateChangeFee } = await import("@/lib/change-fee");
+      vi.mocked(calculateChangeFee).mockReturnValue({ feeCents: 2500 } as never);
+      try {
+        const tx = makeTx(unreadableBooking());
+        const result = await runPreCheckInBatch(tx, {
+          checkIn: "2026-08-24",
+          checkOut: "2026-08-26",
+        });
+
+        expect(result.changeFeeCents).toBe(2500);
+        expect(tx.manualRefundTask.create).not.toHaveBeenCalled();
+      } finally {
+        vi.mocked(calculateChangeFee).mockReturnValue({ feeCents: 0 } as never);
+      }
+    });
+
     it("T8: keeps a readable night byte for byte and values only the unreadable one", async () => {
       // A PARTIAL strand: the 20th carries $25 and the 21st a -$1 row, which is
       // not money. R2 keeps the $25 and values the 21st at the $25 the stored
