@@ -228,30 +228,48 @@ export async function isRetryOfVoidedRefundRequestNote(
 }
 
 /**
- * #4195 race: a request-note link write that names no Xero status (a retry's,
- * or a completion's) never re-arms a mirror an inbound void wrote off. The
- * stored row is read under its row lock inside the write's transaction, so a
- * void that commits while this write waits is seen; its status is kept on the
- * row and the link stays inactive. A write that names a status is judged on it.
+ * #4195, #4223 (`INV-ADDPAY-041`): THE ONE RULE FOR A REFUND-NOTE LINK WRITE
+ * RACING AN INBOUND VOID, for both roles - the payment's own notes
+ * (`REFUND_CREDIT_NOTE`, its one canonical note among them) and a refund
+ * request's (`REFUND_REQUEST_CREDIT_NOTE`). Every such write first ensures an
+ * inactive identity row, then locks it in the write's transaction, so the link
+ * funnel takes that row before any sibling note's row or the Payment row, on
+ * every write. A write that names no Xero status (a retry's, a completion's,
+ * a repair's) then re-reads the row under that lock, so a void that committed
+ * while it waited is kept: inactive, its status on the row, where the funnel's void rules read it
+ * (no sibling retired, a pointer naming it released without waiting on a
+ * busy Payment). A write that names a status is judged on it.
  */
-export async function keepStoredRequestNoteVoid<L extends {
-  localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; metadata?: unknown; active?: boolean;
+export async function keepStoredRefundNoteVoid<L extends {
+  localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; metadata?: unknown; active?: boolean; mergeMetadata?: boolean;
 }>(client: Pick<Prisma.TransactionClient, "$executeRaw" | "xeroObjectLink">, link: L): Promise<L> {
-  if (readRefundCreditNoteLinkStatus(link.metadata) !== null) return link;
+  // INV-ADDPAY-041: a missing row cannot be locked. Reserve only its identity,
+  // inactive, in this same write transaction. The existing unique key waits for
+  // a competing first insertion to commit (or roll back); skipDuplicates leaves
+  // an existing row untouched. Never commit this reservation on its own.
+  await client.xeroObjectLink.createMany({
+    data: [{
+      localModel: link.localModel, localId: link.localId, xeroObjectType: link.xeroObjectType,
+      xeroObjectId: link.xeroObjectId, role: link.role, active: false,
+    }],
+    skipDuplicates: true,
+  });
   // Lock only (the #4161 heal's statement), then read through the model under it.
   await client.$executeRaw`
     SELECT 1 FROM "XeroObjectLink"
     WHERE "localModel" = ${link.localModel} AND "localId" = ${link.localId} AND "xeroObjectType" = ${link.xeroObjectType}
       AND "xeroObjectId" = ${link.xeroObjectId} AND "role" = ${link.role}
     FOR UPDATE`;
+  if (readRefundCreditNoteLinkStatus(link.metadata) !== null) return link;
   const stored = await client.xeroObjectLink.findUnique({
     where: { localModel_localId_xeroObjectType_xeroObjectId_role: { localModel: link.localModel, localId: link.localId, xeroObjectType: link.xeroObjectType, xeroObjectId: link.xeroObjectId, role: link.role } },
     select: { metadata: true },
   });
   const status = readRefundCreditNoteLinkStatus(stored?.metadata);
   if (status === null || isIncludedRefundCreditNoteStatus(status)) return link;
-  const metadata = asRecord(link.metadata);
-  return { ...link, active: false, ...(metadata ? { metadata: { ...metadata, status } } : {}) };
+  // Preserve the stored figures and provenance even when the retry has some
+  // metadata of its own. Its keys and the kept status merge over the locked row.
+  return { ...link, active: false, metadata: { ...asRecord(link.metadata), status }, mergeMetadata: true };
 }
 
 /** The payment's refund-request note links (`INV-PAY-118`), any request's, active or not. */
