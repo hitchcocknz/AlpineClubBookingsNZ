@@ -66,6 +66,7 @@ const mocks = vi.hoisted(() => ({
   sendAdminPaymentFailureAlert: vi.fn(),
   sendAdminDuplicateCaptureRefundAlert: vi.fn(),
   sendAdminDuplicateCaptureKeptAlert: vi.fn(),
+  sendAdminSupersededCaptureRefusedAlert: vi.fn(),
   releaseAlertCooldown: vi.fn(),
   reconcileBedAllocationsForBooking: vi.fn(),
   recordBookingEvent: vi.fn(),
@@ -166,6 +167,8 @@ vi.mock("@/lib/member-credit", () => ({
 vi.mock("@/lib/email", () => ({
   sendAdminPaymentFailureAlert: (...args: unknown[]) =>
     mocks.sendAdminPaymentFailureAlert(...args),
+  sendAdminSupersededCaptureRefusedAlert: (...args: unknown[]) =>
+    mocks.sendAdminSupersededCaptureRefusedAlert(...args),
   sendAdminDuplicateCaptureKeptAlert: (...args: unknown[]) =>
     mocks.sendAdminDuplicateCaptureKeptAlert(...args),
   sendAdminDuplicateCaptureRefundAlert: (...args: unknown[]) =>
@@ -1395,8 +1398,10 @@ describe("#1992 duplicate-capture auto-refund", () => {
       expect((await settleUnpaid("pi_superseded")).outcome).toBe("superseded_capture");
       expectNotSettled();
       expect(mocks.queueSupersededPaymentIntentRefundRecovery).toHaveBeenCalledWith({ id: "pi_superseded", amount: 10000, payment_method: "pm_1" });
-      expect(mocks.sendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
-      expect(mocks.sendAdminPaymentFailureAlert.mock.calls[0]![0]).toMatchObject({ paymentIntentId: "pi_superseded", errorMessage: expect.stringMatching(/did NOT mark the booking paid/) });
+      // Its own unmuteable alert, worded for a booking that still owes - never "Payment Failed".
+      expect(mocks.sendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+      expect(mocks.sendAdminSupersededCaptureRefusedAlert).toHaveBeenCalledTimes(1);
+      expect(mocks.sendAdminSupersededCaptureRefusedAlert.mock.calls[0]![0]).toMatchObject({ paymentIntentId: "pi_superseded", bookingId: "booking-1", bookingCancelled: false, amountCents: 10000 });
     });
 
     it("a capture open rows owe back only PART of (no live row): still refused - never settle with money partly going back", async () => {

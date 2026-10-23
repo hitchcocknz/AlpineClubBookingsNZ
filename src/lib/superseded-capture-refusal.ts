@@ -6,19 +6,21 @@
  * Post-commit and best-effort; never throws, so the settle's answer always
  * reaches its door. The hand-off is the doors' own check
  * (`queueSupersededPaymentIntentRefundRecovery`): a live cancel row is handed to
- * its refund now rather than at the cancel worker's next run. The alert says
- * the booking was not settled and still owes, once a day per (booking,
- * capture) while repeats arrive (`claimAlertCooldownFailOpen`), because a
- * refusal here means a door's own check was overtaken (an edit inside its
+ * its refund now rather than at the cancel worker's next run. The alert is its
+ * own unmuteable, delivery-locked template (`admin-superseded-capture-refused`),
+ * worded by the booking's status, once a day per (booking, capture) while
+ * repeats arrive (`claimAlertCooldownFailOpen`); the claim is given back if the
+ * send throws, so the next repeat tries again (as the kept-capture alert does).
+ * A refusal here means a door's own check was overtaken (an edit inside its
  * unlocked window), a saved-card door met a superseded capture, or the capture
  * is partly owed back: each is worth a person looking.
  */
 import { SETTLEMENT_MONEY_ALERT_REPEAT_MS, claimAlertCooldownFailOpen } from "@/lib/alert-cooldown-fail-open";
+import { releaseAlertCooldown } from "@/lib/alert-cooldown";
 import type { ClubFormat } from "@/lib/club-format";
-import { sendAdminPaymentFailureAlert } from "@/lib/email";
+import { sendAdminSupersededCaptureRefusedAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
-import { formatCents } from "@/lib/utils";
 
 export async function reportSupersededCaptureRefused({
   booking,
@@ -28,7 +30,7 @@ export async function reportSupersededCaptureRefused({
   paymentMethodId,
   format,
 }: {
-  booking: { id: string; checkIn: Date; checkOut: Date };
+  booking: { id: string; checkIn: Date; checkOut: Date; status: string };
   memberName: string;
   paymentIntentId: string;
   amountCents: number;
@@ -40,23 +42,35 @@ export async function reportSupersededCaptureRefused({
   try {
     await queueSupersededPaymentIntentRefundRecovery({ id: paymentIntentId, amount: amountCents, payment_method: paymentMethodId });
   } catch (err) {
-    logger.error({ err, ...context }, "Could not hand a refused superseded capture to its refund now; the recovery cron's cancel row still does (#4300)");
+    // Nothing reschedules it from here: a live cancel row's own retry, or the
+    // webhook's next delivery, makes the same hand-off; the alert below names
+    // the payment either way, so a person can see it through.
+    logger.error({ err, ...context }, "Could not hand a refused superseded capture to its refund now; a live cancel row's retry or the next Stripe delivery will, and the admin alert names it (#4300)");
   }
+  const key = `superseded-capture-refused:${booking.id}:${paymentIntentId}`;
+  const claimedAt = new Date();
   const send = await claimAlertCooldownFailOpen({
-    key: `superseded-capture-refused:${booking.id}:${paymentIntentId}`,
+    key,
     windowMs: SETTLEMENT_MONEY_ALERT_REPEAT_MS,
+    now: claimedAt,
     context,
     logMessage: "Could not claim the refused-superseded-capture alert's cooldown; alerting anyway (#4300)",
   });
   if (!send) return;
-  await sendAdminPaymentFailureAlert({
-    memberName,
-    checkIn: booking.checkIn,
-    checkOut: booking.checkOut,
-    amountCents,
-    errorMessage: `A card payment of ${formatCents(amountCents, format)} was taken on a payment that a later change to this booking had replaced. It did NOT mark the booking paid: the club's superseded-payment refund is returning it to the card, or holding it for a treasurer if the booking was cancelled. The booking still owes its payment. Check that the refund completes, and that the member pays the current amount.`,
-    paymentIntentId,
-  }, format).catch((err) =>
-    logger.error({ err, ...context }, "Failed to alert admins about a refused superseded capture (#4300)"),
-  );
+  try {
+    await sendAdminSupersededCaptureRefusedAlert({
+      memberName,
+      checkIn: booking.checkIn,
+      checkOut: booking.checkOut,
+      bookingId: booking.id,
+      bookingCancelled: booking.status === "CANCELLED",
+      amountCents,
+      paymentIntentId,
+    }, format);
+  } catch (err) {
+    logger.error({ err, ...context }, "Failed to alert admins about a refused superseded capture; giving the claim back so a repeat tries again (#4300)");
+    await releaseAlertCooldown({ key, claimedAt }).catch((releaseErr) =>
+      logger.error({ err: releaseErr, ...context }, "Failed to give back the refused-superseded-capture alert's claim (#4300)"),
+    );
+  }
 }
