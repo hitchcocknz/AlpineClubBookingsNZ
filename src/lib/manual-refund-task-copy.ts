@@ -30,7 +30,12 @@
 import type { ManualRefundTaskKind } from "@prisma/client";
 
 import type { ClubFormat } from "@/lib/club-format";
-import { manualRefundTaskKindAllowsSettlement } from "@/lib/manual-refund-task-settlement-rules";
+import { bankTransferRefundPayee, type BankTransferRefundPayee } from "@/lib/group-organiser-paid";
+import {
+  EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE,
+  EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE,
+  manualRefundTaskKindAllowsSettlement,
+} from "@/lib/manual-refund-task-settlement-rules";
 import { formatCents } from "@/lib/utils";
 import type { EditReviewStillOwedPreview } from "@/lib/edit-financial-review-still-owed";
 
@@ -346,4 +351,68 @@ export function stillOwedNoticeText(preview: EditReviewStillOwedPreview | null, 
   }
   const then = split ?? { "hand-back": `hand back ${owed}, not the full share`, card: `${owed} will be refunded to the card`, "account-credit": `${owed} will be credited` }[route];
   return `Only ${owed} of the ${formatCents(shareCents, format)} share is still owed after the booking's cancellation - ${then}.`;
+}
+
+/**
+ * #3827, #3949 (`INV-PAY-137`): THE REASON LINE of an edit's refund hand-back
+ * (`INV-PAY-117`) and of an approved appeal's (`INV-PAY-118`), as the finance
+ * queue shows it - naming who the bank transfer goes to. A joiner's booking the
+ * group organiser paid for by internet banking is refunded to the ORGANISER
+ * (owner decision on #3949, 21 Oct 2026), never to the joiner, so the officer
+ * paying it must be told whose account to send it to. The member wording is
+ * exactly what it was.
+ */
+export function editRefundHandBackReason({ bookingId, editLabel, payee }: { bookingId: string; editLabel: string; payee: BankTransferRefundPayee }): string {
+  return payee === "organiser"
+    ? `Booking ${bookingId} lowered by a ${editLabel}; the group organiser paid for it by internet banking, so the club refunds the difference to the group organiser by bank transfer.`
+    : `Booking ${bookingId} lowered by a ${editLabel}; paid by internet banking or by hand, so the club refunds the difference by bank transfer (#3827).`;
+}
+
+export function refundRequestHandBackReason({ bookingId, payee }: { bookingId: string; payee: BankTransferRefundPayee }): string {
+  return payee === "organiser"
+    ? `Refund appeal approved on booking ${bookingId}; the group organiser paid for it by internet banking, so the club refunds this to the group organiser by bank transfer.`
+    : `Refund appeal approved on booking ${bookingId}; not paid by card, so the club refunds this by bank transfer (#3827).`;
+}
+
+/**
+ * #3949 (`INV-PAY-137`): the two refusals `INV-PAY-117` gives an edit refund
+ * hand-back once its booking is cancelled (dismissing an open one, reopening a
+ * dismissed one), on the booking as the door read it. On a joiner's booking the
+ * group organiser paid for by internet banking they name the organiser, whose
+ * money it is (`bankTransferRefundPayee`); the rule is unchanged, because the
+ * group cancel nets an open edit refund out of the organiser's refund just as a
+ * member's cancel does. The member wording is exactly what it was.
+ */
+type PayeeBooking = Parameters<typeof bankTransferRefundPayee>[0];
+
+export function editRefundHandBackDismissAfterCancelMessage(booking: PayeeBooking): string {
+  return bankTransferRefundPayee(booking) === "organiser"
+    ? "This group booking has been cancelled since this edit refund was raised, and the cancellation's refund to the group organiser was worked out on the basis that this money goes back to the organiser. Send it to the organiser and mark it paid back. If the club has decided not to pay it, that changes the cancellation's own figures, so take it to the treasurer to correct the cancelled booking rather than dismissing the task here."
+    : EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE;
+}
+
+export function editRefundHandBackReopenAfterCancelMessage(booking: PayeeBooking): string {
+  return bankTransferRefundPayee(booking) === "organiser"
+    ? "This group booking has been cancelled since this edit refund was dismissed, and the cancellation's refund to the group organiser was worked out without it. Putting it back on the queue would promise the organiser money the cancellation already accounted for. If more is owed, raise it against the cancelled booking, for example as a refund appeal."
+    : EDIT_REFUND_HAND_BACK_REOPEN_AFTER_CANCEL_MESSAGE;
+}
+
+/**
+ * B5 (#2262), #3949 (owner decision, 22 Oct 2026): THE REASON LINE of a paid
+ * cancellation's hand-back task. A cash settlement's refund goes back to the
+ * member; a joiner's own cancel of a place the group organiser paid for by
+ * internet banking goes back to the ORGANISER by bank transfer, named when
+ * known (review round 4). Officer-facing, so it cites no issue numbers. The
+ * member wording is exactly what it was.
+ */
+export function cancellationHandBackReason({ bookingId, refundPercentage, payee, organiserName = null }: {
+  bookingId: string;
+  refundPercentage: number;
+  payee: BankTransferRefundPayee;
+  /** The organiser it is repaid to, named in the line (`bookingOwnerName` of the organiser's booking). */
+  organiserName?: string | null;
+}): string {
+  return payee === "organiser"
+    ? `Booking ${bookingId} cancelled by its joiner; the group organiser${organiserName ? ` (${organiserName})` : ""} paid for it by internet banking, so the club refunds ${refundPercentage}% (under the policy in effect at the time, on the card refund tiers) to the group organiser by bank transfer.`
+    : `Booking ${bookingId} cancelled — cash/manual settlement, refund by hand (${refundPercentage}% under the policy in effect at the time).`;
 }

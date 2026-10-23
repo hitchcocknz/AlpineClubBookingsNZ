@@ -1,5 +1,7 @@
 import type { BookingStatus, PaymentSource } from "@prisma/client";
 
+import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
+
 /**
  * The `Payment.status` values that mean MONEY WAS TAKEN — captured, and possibly
  * refunded since. `REFUNDED` belongs here: the question is whether a capture
@@ -450,14 +452,53 @@ export function stripeRefundMirrorShowsCapture(payment: {
 /**
  * #1473/#1491: THE capture evidence for a payment whose status cannot be taken
  * at its word - a captured ledger row (each caller's own read), else the STRIPE
- * mirror. One home (`INV-SSOT-001`): `booking-cancel.ts`, the flattened-status
- * backfill and Net Collected (`netCollectedPaymentTookMoney`) all ask it.
+ * mirror - or (#3949) an Internet Banking organiser child's settle mirror. One
+ * home (`INV-SSOT-001`): `booking-cancel.ts`, the flattened-status backfill and
+ * every caller of it, and Net Collected (`netCollectedPaymentTookMoney`) all ask it.
  */
 export function paymentShowsCaptureEvidence(
   payment: { source: string; status: string; refundedAmountCents: number },
   hasCapturedLedgerRow: boolean,
+  /**
+   * #3949 review (`INV-PAY-137`): the booking the payment belongs to, so an
+   * Internet Banking organiser child's settle mirror is read as the capture it
+   * is (`organiserInternetBankingMirrorCaptured`). REQUIRED: every reader of
+   * capture evidence comes through here and must say whose payment it is.
+   */
+  booking: { organiserSettled: boolean; parentBookingId: string | null },
+  /**
+   * #3949 review round 4: false for the paid-cancel gate (`paymentEligibleForPaidCancelPath`), which never trusts
+   * the pre-ledger STRIPE mirror (#1491: its refund executors allocate against ledger rows), yet asks the rest of
+   * the evidence here rather than spelling the organiser's mirror itself.
+   */
+  { preLedgerStripeMirror = true }: { preLedgerStripeMirror?: boolean } = {},
 ): boolean {
-  return hasCapturedLedgerRow || stripeRefundMirrorShowsCapture(payment);
+  return (
+    hasCapturedLedgerRow ||
+    (preLedgerStripeMirror && stripeRefundMirrorShowsCapture(payment)) ||
+    organiserInternetBankingMirrorCaptured({ ...booking, payment })
+  );
+}
+
+/**
+ * #3949 review H1 (`INV-PAY-137`): THE SETTLE'S MIRROR IS THE CAPTURE on a
+ * joiner's booking the organiser paid for by Internet Banking. No
+ * `PaymentTransaction` backs it and its source is not STRIPE, so neither half of
+ * the cancel's capture evidence (`paymentShowsCaptureEvidence`) can see it; yet
+ * its money is real - it is the joiner's share of the organiser's group payment,
+ * and a paid-back edit or appeal hand-back (or the group cancel) leaves it
+ * PARTIALLY_REFUNDED or REFUNDED, never uncaptured. A cancel that read it as
+ * never captured would flip it FAILED and erase the organiser's share. The card
+ * twin needs none of this: its STRIPE mirror already shows capture.
+ */
+export function organiserInternetBankingMirrorCaptured(booking: {
+  organiserSettled: boolean;
+  parentBookingId: string | null;
+  payment: { source: string; status: string } | null;
+}): boolean {
+  return (
+    paidByOrganiserInternetBanking(booking) && booking.payment !== null && isCapturedPaymentStatus(booking.payment.status)
+  );
 }
 
 /**

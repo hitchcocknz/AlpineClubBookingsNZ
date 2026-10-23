@@ -285,6 +285,7 @@ import {
   REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE,
   REVIEW_CHARGE_BOOKING_CANCELLED_ORGANISER_MESSAGE,
   REVIEW_CHARGE_NO_INSTRUMENT_MESSAGE,
+  REVIEW_CHARGE_ORGANISER_PAID_BY_BANK_MESSAGE,
   REVIEW_CHARGE_ORGANISER_PAID_MESSAGE,
   REVIEW_CHARGE_REQUEST_ALREADY_PAID_MESSAGE,
   REVIEW_CHARGE_REQUEST_CLOSED_MESSAGE,
@@ -932,6 +933,27 @@ describe("a completed review that asks the member for money (#3170)", () => {
       }),
     );
     await expect(charge()).resolves.toBeDefined();
+  });
+
+  it("#3949: a charge on a joiner's booking the group organiser paid for by internet banking is REFUSED before the claim, in the organiser's words", async () => {
+    // With an invoice behind the mirror or without one: the joiner never paid, so neither instrument is theirs.
+    for (const xeroInvoiceId of ["inv-1", null]) {
+      mocks.manualRefundTaskFindUnique.mockResolvedValue(
+        cardReviewTask({
+          booking: {
+            ...cardReviewTask().booking,
+            organiserSettled: true,
+            parentBookingId: "organiser-booking-1",
+            payment: { ...cardReviewTask().booking.payment, source: "INTERNET_BANKING", xeroInvoiceId },
+          },
+        }),
+      );
+
+      await expect(charge(), String(xeroInvoiceId)).rejects.toMatchObject({ status: 409, message: REVIEW_CHARGE_ORGANISER_PAID_BY_BANK_MESSAGE });
+      expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+      expect(mocks.createPaymentIntent).not.toHaveBeenCalled();
+      expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+    }
   });
 
   it("a review with no booking-change to hang the charge on is REFUSED before the claim", async () => {

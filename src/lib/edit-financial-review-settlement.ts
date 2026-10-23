@@ -56,6 +56,8 @@ import {
 import type { EditReviewSettlementTask } from "@/lib/edit-financial-review-settlement-task";
 import { cardShortfallSettlement } from "@/lib/cancel-card-refund-shortfall-settle";
 import type { CapacityRaceStripeRefunded } from "@/lib/capacity-race-refunded-total-correction";
+import { alertGroupMirrorRefundXeroByHand, chooseGroupSettlementMirrorRoute, chooseReviewGroupSettlementMirrorRoute, type GroupSettlementMirrorRoute } from "@/lib/group-settlement-mirror-hand-back";
+import { reviewRefundGoesToGroupOrganiser } from "@/lib/group-settlement-mirror-kinds";
 
 /**
  * #3032 (epic #2797): WHERE a confirmed review amount goes when the task is
@@ -238,7 +240,9 @@ export type EditReviewSettlementRoute =
    * what that refund is: the automatic refund of the same capture, under the
    * same Stripe keys.
    */
-  | LateCaptureRefundRoute;
+  | LateCaptureRefundRoute
+  /** #3949 (`INV-PAY-137`): recorded on a group child's payment mirror (`group-settlement-mirror-hand-back.ts`). */
+  | GroupSettlementMirrorRoute;
 
 /**
  * Choose the settlement route for a completion, or throw the refusal that stops
@@ -319,6 +323,9 @@ export async function chooseEditReviewSettlementRoute({
     if (task.kind === ManualRefundTaskKind.DELETED_BOOKING_LATE_CAPTURE) {
       await assertLateCaptureHandBackStillOwed({ task, amountCents, store });
     }
+    // #3949 (`INV-PAY-137`): an edit's or appeal's hand-back on a joiner the organiser paid for by bank transfer.
+    const groupMirror = await chooseGroupSettlementMirrorRoute({ task, amountCents, store });
+    if (groupMirror) return groupMirror;
     const cardShortfall = await cardShortfallSettlement(task, store, { amountCents, actingMemberId: actingMemberId ?? null, format: club.format, capacityRace }); // #4097: null unless a card refund shortfall
     return handsBackByHand(task) && task.paymentId !== null
       ? {
@@ -408,6 +415,12 @@ export async function chooseEditReviewSettlementRoute({
         })
       : Promise.resolve({ captureCents: amountCents, creditCents: 0 });
 
+  // #3949 review: on a joiner the organiser paid for by Internet Banking the share goes to the organiser, onto the
+  // child's mirror (`INV-PAY-137`); a cancelled one is refused by the netting first, as the card twin is.
+  if (settlementPayment !== null && reviewRefundGoesToGroupOrganiser(task)) {
+    const reviewMirror = await chooseReviewGroupSettlementMirrorRoute({ task, paymentId: settlementPayment.id, amountCents: (await owed()).captureCents, store });
+    if (reviewMirror) return reviewMirror;
+  }
   if (settlementPayment !== null && editReviewRefundGoesBackOnCard(settlementPayment)) {
     if (!bookingModificationId) {
       throw new ManualBookingPaymentError(
@@ -561,6 +574,9 @@ export async function executeEditReviewSettlement({
       format,
     });
   }
+
+  // #3949 review M1: no Xero note can be placed for a group child's refund to the organiser; the officers are told.
+  if (route?.kind === "group-settlement-mirror") await alertGroupMirrorRefundXeroByHand({ bookingId, taskId, refundCents: route.refundCents, format });
 
   if (route?.kind === "stripe-refund" && route.refundCents > 0) {
     // The card refund, its recovery row's close and its REFUNDED event (#3032, #4103).

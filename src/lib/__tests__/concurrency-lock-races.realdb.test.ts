@@ -345,6 +345,12 @@ import "./primary-invoice-edit-race.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-3854-` fixtures.
 import "./booking-ledger-group-settlement.realdb.test";
+// #3949 reuses it to prove an edit's and an approved appeal's hand-back on a
+// joiner the organiser paid for by internet banking completes onto the child's
+// mirror, dismisses and reopens as the rules say, and that a group cancel after
+// one (live, and re-driven after its plan froze) neither skips nor double-counts
+// it. Its describe stays skipped unless the shared race flag is set.
+import "./ib-group-child-hand-back.realdb.test";
 // #3971 reuses it to prove the membership subscription invoice retry: a row
 // stored before the fix comes back PENDING as its bare queue type, two retries
 // requeue it once, and the real active-correlation-key index refuses it while
@@ -418,6 +424,11 @@ import "./ledger-insertion-seq.realdb.test";
 // first. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4177-` fixtures.
 import "./settled-capture-order.realdb.test";
+// #4211 reuses it to prove a member paying one booking three times keeps exactly
+// one capture and has the other two refunded, in every arrival order, through
+// the real settle. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
+// cleans its own `race-4211-` fixtures.
+import "./third-duplicate-capture.realdb.test";
 // #4146 reuses it to prove a key-prefix lookup built from an id matches only
 // its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
