@@ -2094,7 +2094,7 @@ writers asking for one refund at once collide on one row.
   `queueRefundRequestCardNotes`) asks for each refund its inline attempt made
   (the plan's `madeRefundId`s). What went to the recovery queue is asked for by
   the **recovery replay** as it makes each refund
-  (`queueRefundRequestReplayCardNotes`), so a refund that did not exist at
+  (`refundRequestRecoveryNotesEachRefund`), so a refund that did not exist at
   approval still gets its note. The approval records on its recovery row that
   it left the notes to the refunds: the row's Stripe key prefix, the one the
   replay sends under anyway (`notesEachRefund`). A row an older release wrote

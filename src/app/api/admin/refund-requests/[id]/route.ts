@@ -26,7 +26,7 @@ import {
 } from "@/lib/payment-transactions";
 import { inlineRefundAfterAttempt } from "@/lib/refused-card-refund-retry";
 import { NO_CARD_REFUND_OWED, queueUnmadeRefundRequestCardRefund, refundRequestCardRefundAnswer } from "@/lib/refund-request-card-refund";
-import { buildRefundRequestRefundMetadata, buildRefundRequestRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
+import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { queueRefundRequestCardNotes } from "@/lib/card-refund-own-note";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatStayDate } from "@/lib/club-time";
@@ -395,7 +395,7 @@ export async function PUT(
           // a byte-identical body and Stripe replays the original refund instead
           // of rejecting the reused idempotency key with idempotency_error.
           metadata: buildRefundRequestRefundMetadata(booking.id, id),
-          idempotencyKeyPrefix: buildRefundRequestRefundStripeKeyPrefix(id),
+          idempotencyKeyPrefix: `refund_request_${id}`,
         });
       } catch (err) {
         // The approval stands: complete the refund through the durable payment

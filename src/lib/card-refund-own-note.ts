@@ -3,7 +3,6 @@ import { PaymentSource } from "@prisma/client";
 import { cardRefundDoorOf, cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover } from "@/lib/card-refund-own-note-share";
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
-import { buildRefundRequestRefundStripeKeyPrefix, isRefundRequestRefundRecoveryKey, REFUND_REQUEST_REFUND_RECOVERY_PREFIX } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
@@ -16,7 +15,7 @@ import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbo
  *
  * - an approved refund request's card part: the approval, for each refund its
  *   inline attempt made (`queueRefundRequestCardNotes`), and the recovery
- *   replay, for each refund it makes (`queueRefundRequestReplayCardNotes`) -
+ *   replay, for each refund it makes (`refundRequestRecoveryNotesEachRefund`) -
  *   so a refund that did not exist when the approval ran still gets its note;
  * - the `charge.refunded` webhook, for a refund it is the first to record
  *   (`queueWebhookCardRefundNotes`);
@@ -100,28 +99,6 @@ export async function queueRefundRequestCardNotes(params: {
   const made = params.plan.flatMap((slice) => (slice.madeRefundId ? [slice.madeRefundId] : []));
   const queued = await queueCardRefundOwnNotes({ paymentId: params.payment.id, stripeRefundIds: made, createdByMemberId: params.createdByMemberId });
   return { queueOperationId: queued[0] ?? null };
-}
-
-/**
- * Whether a refund request's recovery row was written by an approval that
- * left its card part's notes to the refunds themselves: its Stripe key prefix
- * is recorded (`enqueueRefundRequestRefundRecovery`'s `notesEachRefund`). A
- * row an older release wrote carries none - that approval queued the card
- * part's note itself - so its replay raises nothing more.
- */
-export function refundRequestRecoveryNotesEachRefund(operation: { idempotencyKey: string; stripeKeyPrefix: string | null }): boolean {
-  if (!isRefundRequestRefundRecoveryKey(operation.idempotencyKey)) return false;
-  const refundRequestId = operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length);
-  return operation.stripeKeyPrefix === buildRefundRequestRefundStripeKeyPrefix(refundRequestId);
-}
-
-/** The recovery replay of a refund request's card part: each refund made under the row noted on its own record, where the approval left it so. */
-export async function queueRefundRequestReplayCardNotes(
-  operation: { paymentId: string; idempotencyKey: string; stripeKeyPrefix: string | null },
-  stripeRefundIds: readonly string[],
-): Promise<string[]> {
-  if (!refundRequestRecoveryNotesEachRefund(operation)) return [];
-  return queueCardRefundOwnNotes({ paymentId: operation.paymentId, stripeRefundIds });
 }
 
 /**

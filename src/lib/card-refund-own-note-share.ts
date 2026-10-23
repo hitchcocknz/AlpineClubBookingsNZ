@@ -2,7 +2,7 @@ import { PaymentSource, type Prisma } from "@prisma/client";
 
 import logger from "@/lib/logger";
 import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
-import { REFUND_REQUEST_REFUND_METADATA_REASON } from "@/lib/payment-recovery-keys";
+import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
@@ -136,15 +136,17 @@ export async function readCardRefundNoteShare(db: ShareReader, paymentId: string
 
 /**
  * Which door made a card refund, read from the Stripe metadata every app door
- * stamps (`payment-recovery-keys.ts`): an approved refund request
- * (`REFUND_REQUEST_REFUND_METADATA_REASON`), another app door (it carries a
- * `reason`), or none - a refund made outside the app, in the Stripe dashboard.
+ * stamps (`payment-recovery-keys.ts`): an approved refund request (the
+ * `reason` its one builder stamps), another app door (it carries a `reason`),
+ * or none - a refund made outside the app, in the Stripe dashboard.
  */
 export type CardRefundDoor = "refund-request" | "app" | "outside-app";
 
+const REFUND_REQUEST_REFUND_REASON = buildRefundRequestRefundMetadata("", "").reason;
+
 export function cardRefundDoorOf(metadata: Record<string, string> | null | undefined): CardRefundDoor {
   const reason = metadata?.reason;
-  if (reason === REFUND_REQUEST_REFUND_METADATA_REASON) return "refund-request";
+  if (reason === REFUND_REQUEST_REFUND_REASON) return "refund-request";
   return typeof reason === "string" && reason.trim() !== "" ? "app" : "outside-app";
 }
 
