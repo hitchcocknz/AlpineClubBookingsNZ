@@ -9146,7 +9146,21 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
       changeFeeCents: 0,
       createdAt: new Date("2026-05-02T00:00:00Z"),
     };
-    const withChange = (receipt: boolean) =>
+    const receiptLink = {
+      id: "link_receipt",
+      localModel: "PaymentTransaction",
+      localId: "txn_change",
+      xeroObjectType: "PAYMENT",
+      xeroObjectId: "xp_1",
+      role: "ADDITIONAL_CAPTURE_PAYMENT",
+      active: true,
+      metadata: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      xeroObjectNumber: null,
+      xeroObjectUrl: null,
+    };
+    const withChange = (receipt: "linked" | "queued" | "none") =>
       run({
         booking: makeBooking({
           payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture({ bookingModificationId: "mod_change" })] },
@@ -9154,8 +9168,9 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
         }),
         operations: [
           makePrimaryInvoiceCreateOperation(),
-          ...(receipt ? [receiptOperation({ status: "SUCCEEDED" })] : []),
+          ...(receipt === "none" ? [] : [receiptOperation({ status: receipt === "linked" ? "SUCCEEDED" : "PENDING" })]),
         ],
+        links: receipt === "linked" ? [receiptLink] : [],
       });
 
     it("never reports a capture its change's own supplementary invoice records", async () => {
@@ -9182,11 +9197,30 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
     it("raises the change's missing supplementary invoice UNPAID where the capture's own receipt records it", async () => {
       const queueAction = (bookingReport: { actions: Array<{ type: string; payload: Record<string, unknown> }> }) =>
         bookingReport.actions.find((action) => action.type === "QUEUE_SUPPLEMENTARY_INVOICE");
-      const withReceipt = (await withChange(true)).bookingReport;
+      const withReceipt = (await withChange("linked")).bookingReport;
       expect(queueAction(withReceipt)?.payload).toMatchObject({ bookingModificationId: "mod_change", recordPayment: false });
       // Control: with no receipt, the enqueue's own default stands.
-      const without = (await withChange(false)).bookingReport;
+      const without = (await withChange("none")).bookingReport;
       expect(queueAction(without)?.payload).not.toHaveProperty("recordPayment");
+    });
+
+    it("MUTATION round 3 (F1): raises it unpaid only for a receipt that RECORDED the capture, never one still queued or refused", async () => {
+      const queueAction = (bookingReport: { actions: Array<{ type: string; payload: Record<string, unknown> }> }) =>
+        bookingReport.actions.find((action) => action.type === "QUEUE_SUPPLEMENTARY_INVOICE");
+      const queued = (await withChange("queued")).bookingReport;
+      expect(queueAction(queued)?.payload).not.toHaveProperty("recordPayment");
+    });
+
+    it("MUTATION round 3 (F1): still reports a capture whose change's own invoice was raised UNPAID - the receipt records against it", async () => {
+      const { bookingReport } = await run({
+        booking: bookingWithChangeCapture({
+          payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture({ bookingModificationId: "mod_change" })] },
+        }),
+        operations: [
+          makeOperation({ id: "op_change_invoice", queueType: "SUPPLEMENTARY_INVOICE", localModel: "BookingModification", localId: "mod_change", status: "SUCCEEDED", requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", paymentIntentId: null, recordPayment: false } }),
+        ],
+      });
+      expect(finding(bookingReport)).toMatchObject({ details: expect.objectContaining({ paymentIntentId: "pi_change" }) });
     });
   });
 

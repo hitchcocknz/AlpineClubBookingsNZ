@@ -188,7 +188,14 @@ function summarizeQueuedPayload(
         .add("Payment intent", readString(req.paymentIntentId));
       if (plan) {
         facts
-          .add("Recorded against", plan.target === "GAP_INVOICE" ? "Supplementary invoice for the change" : "Booking invoice")
+          .add(
+            "Recorded against",
+            plan.target === "GAP_INVOICE"
+              ? "Supplementary invoice for the change"
+              : plan.target === "CHANGE_INVOICE"
+                ? "The change's own supplementary invoice"
+                : "Booking invoice",
+          )
           .add("Xero invoice", shortId(plan.invoiceId))
           .add("Amount", formatCentsValue(plan.amountCents, format))
           .add("Captured", formatCentsValue(plan.capturedCents, format))

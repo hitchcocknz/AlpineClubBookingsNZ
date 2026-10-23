@@ -85,6 +85,7 @@ import {
   type AdditionalCaptureReceiptTarget,
 } from "@/lib/additional-capture-receipt-payload";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import { liveRunningXeroOperationFilter } from "@/lib/xero-stale-operations";
 import type { cardSettleAppliedCreditCents } from "@/lib/xero-primary-invoice-fee-gap";
 
 /** The payment figures the primary's applied-credit reservation reads. */
@@ -179,7 +180,7 @@ const REFUSAL_TEXT = {
   "xero-unreadable":
     "Xero did not return the invoice it belongs to, so how much is still due could not be read; retry this once Xero answers",
   "gap-invoice-not-in-xero":
-    "the supplementary invoice that bills this change has not reached Xero (its operation failed or was resolved by hand)",
+    "the supplementary invoice that bills this change, which this payment belongs to, has not reached Xero (its operation failed or was resolved by hand)",
   "gap-review-task":
     "the booking's Xero invoice bills less than the booking is worth and no change explains it; a Xero Operations task asks the treasurer to bill it",
   "own-payment-pending":
@@ -262,18 +263,26 @@ function ownPaymentPending(
 /**
  * Review round 1 (D): ONE RECEIPT PLANS PER BOOKING AT A TIME, and none while
  * the booking's invoice create runs - its link save queues receipts and its
- * gap check decides what the gap invoice pays itself from. The outbox claims
- * this row RUNNING before the handler starts, so of two receipts claimed at
- * once at least one sees the other; it waits, whichever it is.
+ * gap check decides what the gap invoice pays itself from.
+ *
+ * Round 3: only LIVE rows count (`liveRunningXeroOperationFilter`, as #3880's
+ * note wait reads them), so a dead RUNNING row the stale reset has not reached
+ * blocks nothing. And a receipt waits only for one claimed EARLIER - by
+ * `(startedAt, id)` - so of two claimed at once the earlier always proceeds
+ * and the later always waits: no livelock, whatever the interleaving.
  */
-async function waitForOtherWriters(operationId: string, bookingId: string): Promise<void> {
+async function waitForOtherWriters(operationId: string, bookingId: string, claimedAt: Date): Promise<void> {
+  const live = liveRunningXeroOperationFilter();
   const [otherReceipt, runningCreate] = await Promise.all([
     prisma.xeroSyncOperation.findFirst({
       where: {
         id: { not: operationId },
         queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
-        status: "RUNNING",
         requestPayload: { path: ["bookingId"], equals: bookingId },
+        ...live,
+        AND: [
+          { OR: [{ startedAt: { lt: claimedAt } }, { startedAt: claimedAt, id: { lt: operationId } }] },
+        ],
       },
       select: { id: true },
     }),
@@ -283,7 +292,7 @@ async function waitForOtherWriters(operationId: string, bookingId: string): Prom
         entityType: "INVOICE",
         operationType: "CREATE",
         correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
-        status: "RUNNING",
+        ...live,
       },
       select: { id: true },
     }),
@@ -294,6 +303,25 @@ async function waitForOtherWriters(operationId: string, bookingId: string): Prom
   if (runningCreate) {
     throw waitFor(`The booking's Xero invoice is still being raised (operation ${runningCreate.id}); this card payment is recorded once it is done`);
   }
+}
+
+/** Round 3: how long a waiting receipt is left out of the outbox scan before it is looked at again. */
+export const ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS = 60 * 1000;
+
+/**
+ * Round 3: the outbox scan's filter - leave out a receipt returned to wait
+ * until its recheck is due, so it does not take the head of every kick, as
+ * `outboxScanLeavesAwaitingOwnNote` does for a waiting note. Every other row,
+ * a null code included, is scanned as before.
+ */
+export function outboxScanSpacesWaitingReceipts(now: Date) {
+  return {
+    OR: [
+      { lastErrorCode: null },
+      { lastErrorCode: { not: ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } },
+      { updatedAt: { lte: new Date(now.getTime() - ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS) } },
+    ],
+  };
 }
 
 /**
@@ -307,7 +335,7 @@ export async function recordAdditionalCaptureReceipt(
   const operationId = params.syncOperationId;
   const row = await prisma.xeroSyncOperation.findUnique({
     where: { id: operationId },
-    select: { requestPayload: true },
+    select: { requestPayload: true, startedAt: true },
   });
   const queued = readAdditionalCaptureReceiptPayload(row?.requestPayload);
   if (!queued) {
@@ -355,7 +383,7 @@ export async function recordAdditionalCaptureReceipt(
   }
 
   try {
-    await waitForOtherWriters(operationId, bookingId);
+    await waitForOtherWriters(operationId, bookingId, row?.startedAt ?? new Date());
     const plan = queued.plan ?? (await planReceipt());
     // No plan: the row is already finished - skipped, recorded, or refused.
     if (!plan) return null;
@@ -448,21 +476,23 @@ export async function recordAdditionalCaptureReceipt(
     if (recorder.kind === "supplementary-invoice") {
       return standDown("SUCCEEDED", "recorded-by-supplementary-invoice", { operationId: recorder.operationId });
     }
-    const { figures, gap, gapBillsThisChange } = recorder;
-    // The part of this capture the primary's own payment already took.
-    const partial = figures?.atLink.partiallyRecordedCaptureAtLink;
-    const capturedCents = transaction.amountCents - (partial?.paymentIntentId === paymentIntentId ? partial.cents : 0);
+    const { gap, target: supplementary, alreadyRecordedCents } = recorder;
+    // Only the part no other writer recorded: the primary's payment, or the
+    // gap invoice's, may have taken some of it (round 3, F2).
+    const capturedCents = transaction.amountCents - alreadyRecordedCents;
 
-    let gapInvoiceId: string | null = null;
-    if (gap && gapBillsThisChange) {
-      if (gap.operation && OUTSTANDING_STATUSES.has(gap.operation.status)) {
+    let supplementaryInvoiceId: string | null = null;
+    if (supplementary) {
+      // The gap invoice for its change, or the change's own invoice raised unpaid (round 3, F1).
+      const { operation, link } = supplementary;
+      if (operation && OUTSTANDING_STATUSES.has(operation.status)) {
         throw waitFor(
-          `The supplementary invoice for this booking's change (operation ${gap.operation.id}) is still on its way to Xero; this card payment is recorded once it is there`,
+          `The supplementary invoice for this booking's change (operation ${operation.id}) is still on its way to Xero; this card payment is recorded once it is there`,
         );
       }
-      gapInvoiceId = gap.link?.active ? gap.link.xeroObjectId : null;
-      if (!gapInvoiceId) return refuse("gap-invoice-not-in-xero", { gapOperationId: gap.operation?.id ?? null });
-      if (ownPaymentPending(gap.operation)) return refuse("own-payment-pending", { gapOperationId: gap.operation?.id });
+      supplementaryInvoiceId = link?.active ? link.xeroObjectId : null;
+      if (!supplementaryInvoiceId) return refuse("gap-invoice-not-in-xero", { supplementaryOperationId: operation?.id ?? null });
+      if (ownPaymentPending(operation)) return refuse("own-payment-pending", { supplementaryOperationId: operation?.id });
     } else {
       const primaryCreate = await prisma.xeroSyncOperation.findFirst({
         where: {
@@ -478,8 +508,8 @@ export async function recordAdditionalCaptureReceipt(
       if (ownPaymentPending(primaryCreate)) return refuse("own-payment-pending");
     }
 
-    const target: AdditionalCaptureReceiptTarget = gapInvoiceId ? "GAP_INVOICE" : "PRIMARY_INVOICE";
-    const invoiceId = gapInvoiceId ?? primaryInvoiceId;
+    const target: AdditionalCaptureReceiptTarget = supplementary && supplementaryInvoiceId ? supplementary.kind : "PRIMARY_INVOICE";
+    const invoiceId = supplementaryInvoiceId ?? primaryInvoiceId;
     const client = await providers.getAuthenticatedXeroClient();
     const read = await readInvoice(providers, client, invoiceId);
     if (!read) return refuse("xero-unreadable", { invoiceId });
@@ -501,10 +531,10 @@ export async function recordAdditionalCaptureReceipt(
       return null;
     }
 
-    const roomCents = target === "GAP_INVOICE" ? amountDueOn(read) : await primaryRoom(read, payment, capturedCents);
+    const roomCents = target === "PRIMARY_INVOICE" ? await primaryRoom(read, payment, capturedCents) : amountDueOn(read);
     const chosen = chooseAdditionalCaptureReceiptTarget(capturedCents, [{ target, invoiceId, roomCents }]);
 
-    if (!gap && (!chosen || chosen.amountCents < capturedCents)) {
+    if (!gap && target === "PRIMARY_INVOICE" && (!chosen || chosen.amountCents < capturedCents)) {
       // The primary cannot take it all and no gap invoice exists: the primary
       // may bill less than the booking was worth at its link. #3980's own check
       // raises that gap, or finds it raised, and never a second. This capture
@@ -613,7 +643,7 @@ export async function recordAdditionalCaptureReceipt(
       logger.error({ operationId, bookingId, paymentIntentId, plan, unrecordedCents }, message);
       await alertOfficer(paymentIntentId, operationId, message);
     }
-    if (plan.target === "GAP_INVOICE") await flagRefundNotesNamingAnotherInvoice(plan.invoiceId);
+    if (plan.target !== "PRIMARY_INVOICE") await flagRefundNotesNamingAnotherInvoice(plan.invoiceId);
   }
 
   /**

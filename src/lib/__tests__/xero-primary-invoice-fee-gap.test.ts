@@ -29,16 +29,17 @@ vi.mock("@/lib/prisma", () => {
 vi.mock("@/lib/xero-operation-outbox", () => ({ enqueueXeroSupplementaryInvoiceOperation: mocks.enqueue }));
 // #3953: one recorder per capture. The booking's captured cash is the payment
 // fixture's, on one intent; no receipt row claims any unless a case says so.
-const recorderMocks = vi.hoisted(() => ({ claimed: new Set<string>(), queueReceipts: vi.fn() }));
+const recorderMocks = vi.hoisted(() => ({ claimed: new Set<string>(), supplementaryRecorded: new Set<string>(), queueReceipts: vi.fn() }));
 vi.mock("@/lib/additional-capture-recorder", async () => {
   const actual = (await vi.importActual("@/lib/additional-capture-recorder")) as typeof import("@/lib/additional-capture-recorder");
   return {
     attributeGapCash: actual.attributeGapCash,
     readReceiptClaimedIntents: async () => recorderMocks.claimed,
+    readSupplementaryRecordedIntents: async () => recorderMocks.supplementaryRecorded,
     readCapturedStripeCash: async () => {
       const payment = (await mocks.payment.findUnique()) as { amountCents?: number; refundedAmountCents?: number } | null;
       const net = Math.max(0, (payment?.amountCents ?? 0) - (payment?.refundedAmountCents ?? 0));
-      return net > 0 ? [{ paymentIntentId: "pi_booking", netCents: net }] : [];
+      return net > 0 ? [{ paymentIntentId: "pi_booking", netCents: net, bookingModificationId: null }] : [];
     },
   };
 });
@@ -208,17 +209,35 @@ describe("the primary invoice's change-fee gap (#3955 X4)", () => {
       expect.objectContaining({ recordPayment: true, primaryInvoiceGap: { coveredCaptures: [{ paymentIntentId: "pi_booking", cents: 4_000 }] } }),
     );
 
-    // The same cash, claimed by that capture's receipt: the gap is raised unpaid and names nothing.
-    recorderMocks.claimed = new Set(["pi_booking"]);
-    try {
-      await expect(queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: fees })).resolves.toMatchObject({ cashTakenCents: 0 });
-      expect(mocks.enqueue).toHaveBeenLastCalledWith(
-        expect.anything(),
-        expect.objectContaining({ recordPayment: false, primaryInvoiceGap: { coveredCaptures: [] } }),
-      );
-    } finally {
-      recorderMocks.claimed = new Set();
+    // The same cash, claimed by that capture's receipt - or (round 3, F3)
+    // recorded by a supplementary invoice: the gap is raised unpaid and names nothing.
+    for (const claimer of ["claimed", "supplementaryRecorded"] as const) {
+      recorderMocks[claimer] = new Set(["pi_booking"]);
+      try {
+        await expect(queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: fees })).resolves.toMatchObject({ cashTakenCents: 0 });
+        expect(mocks.enqueue).toHaveBeenLastCalledWith(
+          expect.anything(),
+          expect.objectContaining({ recordPayment: false, primaryInvoiceGap: { coveredCaptures: [] } }),
+        );
+      } finally {
+        recorderMocks[claimer] = new Set();
+      }
     }
+  });
+
+  it("#3953 round 3 (F4): reads what the primary recorded from its link's stored list, never re-walking its cash", async () => {
+    // The primary's cash figure says 225.00, but its stored list says it covered
+    // nothing of this capture: all 265.00 is spare, and the gap's 40.00 is taken.
+    const fees = { ...atLink(primaryInvoiceBilledFee("inv_1", [guestLine, feeLine(25)]), 6_500, 22_500), paymentIntentIdsRecordedAtLink: [] };
+    mocks.payment.findUnique.mockResolvedValue({ ...unpaid, status: "SUCCEEDED", amountCents: 26_500 });
+    await queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: fees });
+    expect(mocks.enqueue).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ recordPayment: true, primaryInvoiceGap: { coveredCaptures: [{ paymentIntentId: "pi_booking", cents: 4_000 }] } }),
+    );
+    // Covered wholly by the stored list: nothing spare, so the gap is raised unpaid.
+    await queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: { ...fees, paymentIntentIdsRecordedAtLink: ["pi_booking"] } });
+    expect(mocks.enqueue).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({ recordPayment: false }));
   });
 
   it("MUTATION round 4, finding 3: applied credit settles the primary first, so the card's cash pays the gap", async () => {

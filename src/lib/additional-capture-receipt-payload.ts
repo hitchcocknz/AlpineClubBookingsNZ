@@ -10,7 +10,7 @@ import { asRecord, readNumber, readString } from "@/lib/xero-json";
 export const XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE = "ADDITIONAL_CAPTURE_RECEIPT";
 
 /** Which invoice the capture is recorded against. */
-export type AdditionalCaptureReceiptTarget = "GAP_INVOICE" | "PRIMARY_INVOICE";
+export type AdditionalCaptureReceiptTarget = "GAP_INVOICE" | "CHANGE_INVOICE" | "PRIMARY_INVOICE";
 
 /**
  * The payment the worker decided to write, stored on the row BEFORE it calls
@@ -42,7 +42,10 @@ const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 function readPlan(value: unknown): AdditionalCaptureReceiptPlan | null {
   const plan = asRecord(value);
   if (!plan) return null;
-  const target = plan.target === "GAP_INVOICE" || plan.target === "PRIMARY_INVOICE" ? plan.target : null;
+  const target =
+    plan.target === "GAP_INVOICE" || plan.target === "CHANGE_INVOICE" || plan.target === "PRIMARY_INVOICE"
+      ? plan.target
+      : null;
   const invoiceId = readString(plan.invoiceId);
   const amountCents = readNumber(plan.amountCents);
   const capturedCents = readNumber(plan.capturedCents);
@@ -98,7 +101,7 @@ export function readAdditionalCaptureReceiptPayload(
  * queued payload when it sends, so the names survive the send.
  */
 export const GAP_COVERED_INTENTS_KEY = "coveredPaymentIntentIds";
-const GAP_COVERED_CENTS_KEY = "coveredCaptureCents";
+export const GAP_COVERED_CENTS_KEY = "coveredCaptureCents";
 
 export function primaryInvoiceGapPayload(
   gap: { coveredCaptures: ReadonlyArray<{ paymentIntentId: string; cents: number }> } | undefined,

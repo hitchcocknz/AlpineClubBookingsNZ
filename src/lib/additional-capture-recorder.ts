@@ -29,6 +29,7 @@ import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-stat
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import {
+  GAP_COVERED_CENTS_KEY,
   GAP_COVERED_INTENTS_KEY,
   XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
 } from "@/lib/additional-capture-receipt-payload";
@@ -39,25 +40,64 @@ import {
 } from "@/lib/xero-primary-invoice-gap-anchors";
 
 
-export type RecorderStore = GapAnchorStore;
+export type RecorderStore = GapAnchorStore & Pick<Prisma.TransactionClient, "paymentTransaction">;
+
+type SupplementaryOperation = {
+  id: string;
+  status: string;
+  requestPayload: Prisma.JsonValue | null;
+  responsePayload: Prisma.JsonValue | null;
+  manuallyResolvedAt: Date | null;
+};
+
+/**
+ * The supplementary invoice a receipt records against instead of the primary
+ * (`kind`): the #3980 gap invoice where the capture's change is one it bills
+ * for, or (review round 3, F1) the change's own invoice raised UNPAID - one
+ * that bills the change and records no payment, so the capture is its money.
+ */
+export type ReceiptTarget = {
+  kind: "GAP_INVOICE" | "CHANGE_INVOICE";
+  operation: SupplementaryOperation | null;
+  link: { id: string; xeroObjectId: string; active: boolean } | null;
+};
 
 export type CaptureRecorder =
   /** The primary invoice's create recorded it in its own payment. */
   | { kind: "primary-invoice" }
-  /** A supplementary invoice records it: the change's own, or one naming or covering the intent. */
+  /** A supplementary invoice records it: one naming the intent, covering all of it, or the change's own paid one. */
   | { kind: "supplementary-invoice"; operationId: string | null }
   /**
-   * Nothing else does, so the capture's own receipt records it - against the
-   * gap invoice only where `gapBillsThisChange`, otherwise the primary.
+   * Nothing else records all of it, so the capture's own receipt records the
+   * rest: against `target` where there is one, otherwise the primary.
    */
   | {
       kind: "receipt";
       figures: Awaited<ReturnType<typeof readPrimaryInvoiceFeeAtLink>>;
       /** The primary's gap invoice, whichever change it is anchored on, or null. */
       gap: NonNullable<Awaited<ReturnType<typeof findPrimaryInvoiceGapInvoice>>> | null;
-      /** Review round 1 (C): the capture's change is one the gap invoice bills for. */
-      gapBillsThisChange: boolean;
+      target: ReceiptTarget | null;
+      /**
+       * Cents of this capture another writer already recorded: the part the
+       * primary's payment reached (`partiallyRecordedCaptureAtLink`), and
+       * (review round 3, F2) the part the gap invoice's payment took
+       * (`coveredCaptureCents`). The receipt records only the rest.
+       */
+      alreadyRecordedCents: number;
     };
+
+const SUPPLEMENTARY_SELECT = {
+  id: true,
+  status: true,
+  requestPayload: true,
+  responsePayload: true,
+  manuallyResolvedAt: true,
+} as const;
+
+/** Whether a supplementary invoice's queued payload records a Stripe payment (the enqueue's default). */
+function recordsPayment(requestPayload: Prisma.JsonValue | null): boolean {
+  return asRecord(requestPayload)?.recordPayment !== false;
+}
 
 export async function readCaptureRecorder(
   input: {
@@ -77,21 +117,46 @@ export async function readCaptureRecorder(
         { requestPayload: { path: [GAP_COVERED_INTENTS_KEY], array_contains: [input.paymentIntentId] } },
       ],
     },
-    select: { id: true },
+    select: { id: true, requestPayload: true },
   });
-  if (naming) return { kind: "supplementary-invoice", operationId: naming.id };
+  let gapCoveredCents = 0;
+  if (naming) {
+    const payload = asRecord(naming.requestPayload);
+    if (payload?.paymentIntentId === input.paymentIntentId) return { kind: "supplementary-invoice", operationId: naming.id };
+    // F2: the gap invoice's payment took part or all of this capture's cash.
+    const covered = asRecord(payload?.[GAP_COVERED_CENTS_KEY])?.[input.paymentIntentId];
+    if (typeof covered !== "number") return { kind: "supplementary-invoice", operationId: naming.id };
+    const capture = await store.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: input.paymentIntentId },
+      select: { amountCents: true, refundedAmountCents: true },
+    });
+    const netCents = capture ? Math.max(0, capture.amountCents - capture.refundedAmountCents) : 0;
+    if (covered >= netCents) return { kind: "supplementary-invoice", operationId: naming.id };
+    gapCoveredCents = covered;
+  }
 
   const figures = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.primaryInvoiceId, store);
   if (figures?.atLink.paymentIntentIdsRecordedAtLink?.includes(input.paymentIntentId)) {
     return { kind: "primary-invoice" };
   }
+  const partial = figures?.atLink.partiallyRecordedCaptureAtLink;
+  const alreadyRecordedCents = gapCoveredCents + (partial?.paymentIntentId === input.paymentIntentId ? partial.cents : 0);
   const gap = figures ? await findPrimaryInvoiceGapInvoice(input.bookingId, figures, store) : null;
   const modificationId = input.bookingModificationId;
-  const gapOfThisChange = gap && modificationId && gap.anchorIds.includes(modificationId) ? gap : null;
-  if (modificationId && !gapOfThisChange) {
-    // A change the gap does not bill for raised its own invoice, if any: that
-    // invoice is this capture's document, whether it records the payment or
-    // is the unpaid ask the capture answers.
+  if (gap && modificationId && gap.anchorIds.includes(modificationId)) {
+    return {
+      kind: "receipt",
+      figures,
+      gap,
+      target: { kind: "GAP_INVOICE", operation: gap.operation, link: gap.link },
+      alreadyRecordedCents,
+    };
+  }
+  if (modificationId) {
+    // A change the gap does not bill for raised its own invoice, if any. One
+    // that records a payment (or a link with no row to say) is the capture's
+    // recorder; one raised UNPAID bills the change and the receipt records the
+    // capture against it (round 3, F1), never a second document.
     const [own, ownLink] = await Promise.all([
       store.xeroSyncOperation.findFirst({
         where: {
@@ -100,7 +165,8 @@ export async function readCaptureRecorder(
           localId: modificationId,
           status: { not: "CANCELLED" },
         },
-        select: { id: true },
+        orderBy: { createdAt: "desc" },
+        select: SUPPLEMENTARY_SELECT,
       }),
       store.xeroObjectLink.findFirst({
         where: {
@@ -110,12 +176,57 @@ export async function readCaptureRecorder(
           role: "SUPPLEMENTARY_INVOICE",
           active: true,
         },
-        select: { id: true },
+        select: { id: true, xeroObjectId: true, active: true },
       }),
     ]);
+    if (own && !recordsPayment(own.requestPayload)) {
+      return {
+        kind: "receipt",
+        figures,
+        gap,
+        target: { kind: "CHANGE_INVOICE", operation: own, link: ownLink },
+        alreadyRecordedCents,
+      };
+    }
     if (own || ownLink) return { kind: "supplementary-invoice", operationId: own?.id ?? null };
   }
-  return { kind: "receipt", figures, gap, gapBillsThisChange: gapOfThisChange !== null };
+  return { kind: "receipt", figures, gap, target: null, alreadyRecordedCents };
+}
+
+/**
+ * Review round 3 (F3): the captures a supplementary invoice records - one
+ * naming the intent, or the change's own invoice that records a payment - so
+ * the gap invoice never counts their cash as spare. The gap invoice itself is
+ * not one (it is being decided).
+ */
+export async function readSupplementaryRecordedIntents(
+  bookingId: string,
+  captures: ReadonlyArray<{ paymentIntentId: string; bookingModificationId: string | null }>,
+  store: Pick<Prisma.TransactionClient, "xeroSyncOperation"> = prisma,
+): Promise<Set<string>> {
+  const rows = await store.xeroSyncOperation.findMany({
+    where: {
+      queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
+      status: { not: "CANCELLED" },
+      requestPayload: { path: ["bookingId"], equals: bookingId },
+    },
+    select: { localModel: true, localId: true, requestPayload: true },
+  });
+  const named = new Set<string>();
+  const paidChanges = new Set<string>();
+  for (const row of rows) {
+    const payload = asRecord(row.requestPayload);
+    if (payload?.primaryInvoiceGap === true) continue;
+    if (typeof payload?.paymentIntentId === "string") named.add(payload.paymentIntentId);
+    if (row.localModel === "BookingModification" && row.localId && recordsPayment(row.requestPayload)) {
+      paidChanges.add(row.localId);
+    }
+  }
+  return new Set(
+    captures
+      .filter((capture) => named.has(capture.paymentIntentId) || (capture.bookingModificationId !== null && paidChanges.has(capture.bookingModificationId)))
+      .map((capture) => capture.paymentIntentId),
+  );
 }
 
 /**
@@ -146,7 +257,7 @@ export async function readReceiptClaimedIntents(
 export async function readCapturedStripeCash(
   bookingId: string,
   store: Pick<Prisma.TransactionClient, "paymentTransaction"> = prisma,
-): Promise<Array<{ paymentIntentId: string; netCents: number }>> {
+): Promise<Array<{ paymentIntentId: string; netCents: number; bookingModificationId: string | null }>> {
   const rows = await store.paymentTransaction.findMany({
     where: {
       payment: { bookingId },
@@ -155,11 +266,17 @@ export async function readCapturedStripeCash(
       stripePaymentIntentId: { not: null },
     },
     orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
-    select: { stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
+    select: { stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true, bookingModificationId: true },
   });
   return rows.flatMap((row) =>
     row.stripePaymentIntentId
-      ? [{ paymentIntentId: row.stripePaymentIntentId, netCents: Math.max(0, row.amountCents - row.refundedAmountCents) }]
+      ? [
+          {
+            paymentIntentId: row.stripePaymentIntentId,
+            netCents: Math.max(0, row.amountCents - row.refundedAmountCents),
+            bookingModificationId: row.bookingModificationId,
+          },
+        ]
       : [],
   );
 }
@@ -167,23 +284,38 @@ export async function readCapturedStripeCash(
 /**
  * WHICH CASH THE GAP INVOICE MAY PAY ITSELF FROM, AND WHOSE IT IS. Pure.
  *
- * The captures' net cash, oldest first, less what the primary recorded (taken
- * from the oldest first, as `intentsRecordedByPrimaryCash` reads it) and less
- * every capture a receipt row claimed, is the leftover. The gap takes its
- * whole figure from it, oldest first, or nothing; the captures it takes from
- * are named, with the cents, so their receipts stand down.
+ * Each capture's net cash, less what the primary recorded of it, and less
+ * every capture another writer claims (a receipt row, or a supplementary
+ * invoice that records it), is the leftover. What the primary recorded is the
+ * record its link stored (review round 3, F4: `recordedAtLink`, the captures it
+ * covered wholly and the part of one it reached); only a record from before
+ * that list is walked from `primaryCashCents`, oldest first. The gap takes its
+ * whole figure from the leftover, oldest first, or nothing; the captures it
+ * takes from are named, with the cents, so their receipts stand down or
+ * record only the rest.
  */
 export function attributeGapCash(input: {
   captures: ReadonlyArray<{ paymentIntentId: string; netCents: number }>;
   claimed: ReadonlySet<string>;
   primaryCashCents: number;
+  recordedAtLink?: { recorded: readonly string[]; partial: { paymentIntentId: string; cents: number } | null };
   gapCents: number;
 }): { leftoverCents: number; covered: Array<{ paymentIntentId: string; cents: number }> } {
   let primaryLeft = Math.max(0, input.primaryCashCents);
+  const recordedAtLink = input.recordedAtLink;
   const leftover: Array<{ paymentIntentId: string; cents: number }> = [];
   for (const capture of input.captures) {
-    const toPrimary = Math.min(primaryLeft, capture.netCents);
-    primaryLeft -= toPrimary;
+    let toPrimary: number;
+    if (recordedAtLink) {
+      toPrimary = recordedAtLink.recorded.includes(capture.paymentIntentId)
+        ? capture.netCents
+        : recordedAtLink.partial?.paymentIntentId === capture.paymentIntentId
+          ? Math.min(capture.netCents, recordedAtLink.partial.cents)
+          : 0;
+    } else {
+      toPrimary = Math.min(primaryLeft, capture.netCents);
+      primaryLeft -= toPrimary;
+    }
     const rest = capture.netCents - toPrimary;
     if (rest > 0 && !input.claimed.has(capture.paymentIntentId)) {
       leftover.push({ paymentIntentId: capture.paymentIntentId, cents: rest });

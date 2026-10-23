@@ -67,7 +67,7 @@ import {
 } from "@/lib/xero-resolved-in-xero-fences";
 import { createXeroSupplementaryInvoice } from "@/lib/xero-supplementary-invoices";
 import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-invoice";
-import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
+import { outboxScanSpacesWaitingReceipts, recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
 import { primaryInvoiceGapPayload } from "@/lib/additional-capture-receipt-payload";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
@@ -2884,7 +2884,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
       },
       // #3954 round 8: a billed-offset note waiting for its edit's own note
       // is looked at again only every few minutes, not on every kick.
-      AND: [outboxScanLeavesAwaitingOwnNote(new Date())],
+      AND: [outboxScanLeavesAwaitingOwnNote(new Date()), outboxScanSpacesWaitingReceipts(new Date())],
     },
     orderBy: {
       createdAt: "asc",

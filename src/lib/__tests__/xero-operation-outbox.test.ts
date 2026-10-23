@@ -252,10 +252,17 @@ vi.mock("@/lib/xero-kept-late-capture-invoice", () => ({
 vi.mock("@/lib/additional-capture-receipt-enqueue", () => ({
   enqueueAdditionalCaptureReceiptOperation: mocks.enqueueAdditionalCaptureReceiptOperation,
 }));
-vi.mock("@/lib/additional-capture-xero-receipt", () => ({
-  recordAdditionalCaptureReceipt: mocks.recordAdditionalCaptureReceipt,
-  additionalCaptureReceiptKey: (paymentIntentId: string) => `payment-intent:${paymentIntentId}:additional-capture-receipt:v1`,
-}));
+vi.mock("@/lib/additional-capture-xero-receipt", async () => {
+  // The scan's filter is the real one; only the worker is stood in for.
+  const { outboxScanSpacesWaitingReceipts } = (await vi.importActual("@/lib/additional-capture-xero-receipt")) as typeof import("@/lib/additional-capture-xero-receipt");
+  const actual = (await vi.importActual("@/lib/additional-capture-xero-receipt")) as typeof import("@/lib/additional-capture-xero-receipt");
+  return {
+    recordAdditionalCaptureReceipt: mocks.recordAdditionalCaptureReceipt,
+    outboxScanSpacesWaitingReceipts,
+    ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS: actual.ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS,
+    ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE: actual.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
+  };
+});
 
 vi.mock("@/lib/xero-token-store", () => ({
   isXeroConnected: mocks.isXeroConnected,
@@ -2282,7 +2289,8 @@ describe("processQueuedXeroOutboxOperations", () => {
       direction: "OUTBOUND",
       queueType: { in: [...XERO_OUTBOX_QUEUE_TYPES] },
       // #3954 round 8: a note waiting for its edit's own note is spaced out.
-      AND: [expect.objectContaining({ OR: expect.any(Array) })],
+      // #3954 round 8 and #3953 round 3: rows waiting their turn are spaced out.
+      AND: [expect.objectContaining({ OR: expect.any(Array) }), expect.objectContaining({ OR: expect.any(Array) })],
     });
     expect(args.where.queueType.in).toHaveLength(18);
     // The legacy `requestPayload->>'queueType'` OR predicate is gone.
@@ -2391,6 +2399,7 @@ describe("processQueuedXeroOutboxOperations", () => {
 
   it("MUTATION (#3954 round 8): a billed-offset note waiting for its edit's own note is requeued under its wait code, and the scan spaces it out", async () => {
     const { BILLED_OFFSET_AWAITING_OWN_NOTE_CODE, BILLED_OFFSET_OWN_NOTE_RECHECK_MS } = await import("@/lib/unpaid-ask-billed-offset-order");
+    const { ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS, ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } = await import("@/lib/additional-capture-xero-receipt");
     mocks.findManyOperations.mockResolvedValue([
       {
         id: "op_dealloc_waiting",
@@ -2419,6 +2428,14 @@ describe("processQueuedXeroOutboxOperations", () => {
           { lastErrorCode: null },
           { lastErrorCode: { not: BILLED_OFFSET_AWAITING_OWN_NOTE_CODE } },
           { updatedAt: { lte: new Date(Date.now() - BILLED_OFFSET_OWN_NOTE_RECHECK_MS) } },
+        ],
+      },
+      // #3953 round 3: a change capture's receipt waiting its turn is spaced the same way.
+      {
+        OR: [
+          { lastErrorCode: null },
+          { lastErrorCode: { not: ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } },
+          { updatedAt: { lte: new Date(Date.now() - ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS) } },
         ],
       },
     ]);

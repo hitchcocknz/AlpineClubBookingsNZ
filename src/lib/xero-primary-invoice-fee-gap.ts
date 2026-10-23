@@ -58,7 +58,12 @@ import {
 import { unallocatedAppliedCents } from "@/lib/xero-applied-credit-ledger-state";
 import { isCreditOnlyCardPayment } from "@/lib/credit-only-card-payment";
 import { enqueueXeroSupplementaryInvoiceOperation } from "@/lib/xero-operation-outbox";
-import { attributeGapCash, readCapturedStripeCash, readReceiptClaimedIntents } from "@/lib/additional-capture-recorder";
+import {
+  attributeGapCash,
+  readCapturedStripeCash,
+  readReceiptClaimedIntents,
+  readSupplementaryRecordedIntents,
+} from "@/lib/additional-capture-recorder";
 import { queueReceiptsForUnrecordedCaptures } from "@/lib/additional-capture-receipt-enqueue";
 import {
   readQueuedOutboxPayload,
@@ -596,10 +601,19 @@ export async function queuePrimaryInvoiceWorthGap(input: {
       refundedAmountCents: true,
     },
   });
+  const captures = payment ? await readCapturedStripeCash(bookingId) : [];
+  const claimed = new Set([
+    ...(await readReceiptClaimedIntents(bookingId)),
+    ...(await readSupplementaryRecordedIntents(bookingId, captures)),
+  ]);
+  const recordedIntents = atLink.paymentIntentIdsRecordedAtLink;
   const { leftoverCents: leftOverCashCents, covered } = attributeGapCash({
-    captures: payment ? await readCapturedStripeCash(bookingId) : [],
-    claimed: await readReceiptClaimedIntents(bookingId),
+    captures,
+    claimed,
     primaryCashCents: atLink.primaryInvoiceCashCents,
+    ...(recordedIntents
+      ? { recordedAtLink: { recorded: recordedIntents, partial: atLink.partiallyRecordedCaptureAtLink ?? null } }
+      : {}),
     gapCents,
   });
   const recordPayment =

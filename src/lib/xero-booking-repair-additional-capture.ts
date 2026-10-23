@@ -48,9 +48,11 @@ export type AdditionalCaptureReceiptEvidence = {
   /** Whether the primary's stored figures say which captures its cash covered. */
   primaryCoverageKnown: boolean;
   /**
-   * Changes a capture of which has a receipt row or its payment link: a
-   * supplementary invoice the repair tool queues for one is raised unpaid, so
-   * the capture is recorded once.
+   * Changes a capture of which its receipt has RECORDED in Xero (its payment
+   * linked): a supplementary invoice the repair tool queues for one is raised
+   * unpaid, so the capture is recorded once. Round 3 (F1): never for a receipt
+   * still queued or refused - that one records against the change's invoice
+   * once it exists, or the invoice records it.
    */
   receiptModificationIds: ReadonlySet<string>;
 };
@@ -121,10 +123,10 @@ export async function loadAdditionalCaptureReceiptEvidence(
       const hasReceipt =
         recordedTransactionIds.has(capture.id) ||
         (operationsByTransactionId.get(capture.id) ?? []).some((operation) => operation.status !== "CANCELLED");
-      if (hasReceipt) {
-        if (capture.bookingModificationId) receiptModificationIds.add(capture.bookingModificationId);
-        continue;
+      if (recordedTransactionIds.has(capture.id) && capture.bookingModificationId) {
+        receiptModificationIds.add(capture.bookingModificationId);
       }
+      if (hasReceipt) continue;
       const recorder = await readCaptureRecorder(
         {
           bookingId: booking.id,

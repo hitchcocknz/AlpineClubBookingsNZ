@@ -169,7 +169,8 @@ const receiptRecorder = (overrides: Record<string, unknown> = {}) => ({
   kind: "receipt",
   figures: { operationId: "op_primary", atLink: { xeroInvoiceId: PRIMARY, paymentIntentIdsRecordedAtLink: ["pi_primary"] } },
   gap: null,
-  gapBillsThisChange: false,
+  target: null,
+  alreadyRecordedCents: 0,
   ...overrides,
 });
 const gapInXero = (status = "SUCCEEDED", recordPayment = false) => ({
@@ -177,6 +178,11 @@ const gapInXero = (status = "SUCCEEDED", recordPayment = false) => ({
   link: { id: "link_gap", xeroObjectId: GAP, active: status === "SUCCEEDED" || status === "PARTIAL" },
   anchorIds: ["mod_change"],
 });
+/** The recorder's answer where the gap invoice bills the capture's change (C). */
+const gapTarget = (status = "SUCCEEDED") => {
+  const gap = gapInXero(status);
+  return receiptRecorder({ gap, target: { kind: "GAP_INVOICE", operation: gap.operation, link: gap.link } });
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -290,7 +296,7 @@ describe("recordAdditionalCaptureReceipt", () => {
 
   it("records it against the #3980 gap invoice where the capture's change is one the gap bills for", async () => {
     invoices[GAP] = { amountDue: 8000 };
-    mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ gap: gapInXero(), gapBillsThisChange: true }));
+    mocks.readCaptureRecorder.mockResolvedValue(gapTarget());
     const seam = providers();
 
     await run(seam);
@@ -302,7 +308,7 @@ describe("recordAdditionalCaptureReceipt", () => {
 
   it("records it against the primary, never the gap invoice, where the gap bills another change (C)", async () => {
     invoices[GAP] = { amountDue: 8000 };
-    mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ gap: gapInXero(), gapBillsThisChange: false }));
+    mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ gap: gapInXero(), target: null }));
     const seam = providers();
 
     await run(seam);
@@ -325,19 +331,9 @@ describe("recordAdditionalCaptureReceipt", () => {
     );
   });
 
-  it("records only the part the primary's own payment did not take", async () => {
-    mocks.readCaptureRecorder.mockResolvedValue(
-      receiptRecorder({
-        figures: {
-          operationId: "op_primary",
-          atLink: {
-            xeroInvoiceId: PRIMARY,
-            paymentIntentIdsRecordedAtLink: ["pi_primary"],
-            partiallyRecordedCaptureAtLink: { paymentIntentId: "pi_change", cents: 3000 },
-          },
-        },
-      }),
-    );
+  it("records only the part the primary's or the gap invoice's own payment did not take (F2)", async () => {
+    // The primary's payment reached 30.00 of it, or the gap invoice's took that much (F2).
+    mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ alreadyRecordedCents: 3000 }));
     const seam = providers();
 
     await run(seam);
@@ -379,6 +375,27 @@ describe("recordAdditionalCaptureReceipt", () => {
       expect(mocks.readCaptureRecorder).not.toHaveBeenCalled();
     });
 
+    it("counts only LIVE running rows, and only a receipt claimed EARLIER (round 3, C1, C2)", async () => {
+      mocks.findUniqueOperation.mockResolvedValue({ requestPayload: PAYLOAD, startedAt: new Date("2026-07-01T00:00:00.000Z") });
+      await run();
+      const [receiptWait, createWait] = mocks.findFirstOperation.mock.calls.slice(0, 2).map((call) => call[0].where);
+      expect(receiptWait).toMatchObject({
+        id: { not: "op_receipt" },
+        status: "RUNNING",
+        startedAt: { gte: expect.any(Date) },
+        AND: [
+          {
+            OR: [
+              { startedAt: { lt: new Date("2026-07-01T00:00:00.000Z") } },
+              { startedAt: new Date("2026-07-01T00:00:00.000Z"), id: { lt: "op_receipt" } },
+            ],
+          },
+        ],
+      });
+      // A create dead past the staleness threshold blocks nothing.
+      expect(createWait).toMatchObject({ status: "RUNNING", startedAt: { gte: expect.any(Date) } });
+    });
+
     it("waits while the booking's invoice create is still running (D)", async () => {
       rows.createRunning = true;
       await expectWait();
@@ -393,8 +410,29 @@ describe("recordAdditionalCaptureReceipt", () => {
     });
   });
 
+  it("records it against the change's own invoice raised UNPAID, which bills the change (round 3, F1)", async () => {
+    const CHANGE = "33333333-3333-4333-8333-333333333333";
+    invoices[CHANGE] = { amountDue: 8000 };
+    mocks.readCaptureRecorder.mockResolvedValue(
+      receiptRecorder({
+        target: {
+          kind: "CHANGE_INVOICE",
+          operation: { id: "op_change", status: "SUCCEEDED", requestPayload: { recordPayment: false }, responsePayload: {}, manuallyResolvedAt: null },
+          link: { id: "link_change", xeroObjectId: CHANGE, active: true },
+        },
+      }),
+    );
+    const seam = providers();
+
+    await run(seam);
+
+    expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: CHANGE, amountCents: 8000 }));
+    expect(storedPlan()).toEqual(expect.objectContaining({ target: "CHANGE_INVOICE" }));
+    expect(mocks.recheckPrimaryInvoiceWorthGap).not.toHaveBeenCalled();
+  });
+
   it("waits, failing nothing, while the gap invoice for its change is still on its way to Xero", async () => {
-    mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ gap: gapInXero("PENDING"), gapBillsThisChange: true }));
+    mocks.readCaptureRecorder.mockResolvedValue(gapTarget("PENDING"));
     const seam = providers();
     await expectWait(seam);
     expect(seam.getAuthenticatedXeroClient).not.toHaveBeenCalled();
@@ -461,7 +499,7 @@ describe("recordAdditionalCaptureReceipt", () => {
   });
 
   it("refuses a gap invoice for its change that never reached Xero", async () => {
-    mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ gap: gapInXero("FAILED"), gapBillsThisChange: true }));
+    mocks.readCaptureRecorder.mockResolvedValue(gapTarget("FAILED"));
     await run();
     expectRefused("gap-invoice-not-in-xero");
   });
@@ -514,7 +552,7 @@ describe("recordAdditionalCaptureReceipt", () => {
 
   it("tells an officer when a refund note queued before the receipt names the booking's invoice, not the gap invoice it paid (L)", async () => {
     invoices[GAP] = { amountDue: 8000 };
-    mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ gap: gapInXero(), gapBillsThisChange: true }));
+    mocks.readCaptureRecorder.mockResolvedValue(gapTarget());
     mocks.findFirstRefund.mockResolvedValue({ createdAt: new Date("2026-06-30T00:00:00.000Z") });
     mocks.findManyOperation.mockResolvedValue([
       { id: "op_note_primary", requestPayload: { queueType: "REFUND_CREDIT_NOTE" } },
