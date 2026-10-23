@@ -1054,22 +1054,12 @@ async function settleBookingPaymentInTransaction(
       }
     }
 
-    // #4285 (`INV-PAY-043`): a COMPLETED booking is a PAID one whose stay has
-    // ended (the post-stay cron's PAID -> COMPLETED), so a capture arriving on
-    // it is judged exactly as on a PAID booking - its settler's redelivery is
-    // `already_paid`, never the "not payable" throw Stripe retried for days.
+    // #4285: COMPLETED is PAID with the stay ended, so it is judged the same, never "not payable".
     if (isPaidLikeBookingStatus(booking.status)) {
-      // A finished stay's beds are left alone: a redelivery is not a reason to
-      // place anyone on nights already behind us.
+      // A finished stay's beds are left alone: a replay places nobody on past nights.
       if (booking.status === BookingStatus.PAID) {
-        await reconcileBedAllocationsForBookingWithLodgeLockHeld({
-          bookingId: booking.id,
-          db: tx,
-          previousRange: {
-            checkIn: booking.checkIn,
-            checkOut: booking.checkOut,
-          },
-        });
+        const previousRange = { checkIn: booking.checkIn, checkOut: booking.checkOut };
+        await reconcileBedAllocationsForBookingWithLodgeLockHeld({ bookingId: booking.id, db: tx, previousRange });
       }
 
       // #1992 / #4211 (`INV-PAY-043`): a capture arriving on a PAID or COMPLETED
