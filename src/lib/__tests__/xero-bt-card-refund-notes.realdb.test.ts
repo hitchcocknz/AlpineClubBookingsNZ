@@ -520,6 +520,22 @@ function answerRefundsAsStripeWould() {
       expect(await deployNoteLists()).toBe(true);
     });
 
+    it("with no note on the payment yet, a refund made before the cutover still takes the one note an older release gave it; asked for on its own record, it gets none", async () => {
+      await paid();
+      const older = refundInDashboard(500, CUTOVER_SECONDS - 3_600);
+      const fresh = refundInDashboard(1_500);
+      await deliverChargeRefunded();
+      const rows = await noteRows();
+      // The older refund's delta is the payment's one note, as before #4312; the newer one is noted on its own record.
+      expect(rows.map((row) => [row.cents, row.cardRefundId])).toEqual([[1_500, fresh], [500, null]]);
+      // Asked for directly on its own record, the older refund raises nothing: the share's one answer.
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      expect(await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 500, { refundMethod: "card", cardRefundId: older })).toMatchObject({ queueOperationId: null });
+      const { queueCardRefundOwnNotes } = await import("@/lib/card-refund-own-note");
+      expect(await queueCardRefundOwnNotes({ paymentId: PAYMENT_ID, stripeRefundIds: [older] })).toEqual([]);
+      expect(await noteRows()).toHaveLength(2);
+    });
+
     it("the webhook leaves a refund request's refund to the approval and another door's refund to its own note", async () => {
       await paid();
       await canonicalCardNote();
@@ -560,6 +576,19 @@ function answerRefundsAsStripeWould() {
       const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
       await creditBackLateCaptureRefunds(CARD_INTENT_ID);
       expect(await noteRows()).toHaveLength(rows.length);
+    });
+
+    it("a late capture on a payment with no note yet: its older refund takes the capture's one note, its newer one its own", async () => {
+      await paid({ bankOnly: true });
+      await lateCaptureKept();
+      await prisma.paymentRefund.create({
+        data: { paymentId: PAYMENT_ID, paymentTransactionId: CARD_TXN_ID, stripeRefundId: "re_race_4312_late_older", stripePaymentIntentId: CARD_INTENT_ID, amountCents: 800, currency: "nzd", status: "succeeded", stripeCreatedAt: new Date((CUTOVER_SECONDS - 3_600) * 1000) },
+      });
+      stripe.byKey.set("older", stripeRefund("re_race_4312_late_older", 800, {}, CUTOVER_SECONDS - 3_600));
+      const fresh = refundInDashboard(1_200);
+      await deliverChargeRefunded();
+      const rows = await noteRows();
+      expect(rows.map((row) => [row.cents, row.cardRefundId, row.paymentIntentId]).sort()).toEqual([[1_200, fresh, CARD_INTENT_ID], [800, null, CARD_INTENT_ID]].sort());
     });
 
     it("two writers asking for one card refund at once raise one row (race)", async () => {

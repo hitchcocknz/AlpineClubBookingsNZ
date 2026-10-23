@@ -61,6 +61,8 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain("the webhook leaves a refund request's refund to the approval");
     expect(suite).toContain("a late capture's refund on a bank transfer gets its own note");
     expect(suite).toContain("two writers asking for one card refund at once raise one row (race)");
+    expect(suite).toContain("a refund made before the cutover still takes the one note an older release gave it");
+    expect(suite).toContain("a late capture on a payment with no note yet");
     expect(suite).toContain("a card refund's voided note is never matched to a bank refund");
   });
 });

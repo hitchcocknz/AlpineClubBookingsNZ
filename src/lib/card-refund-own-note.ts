@@ -3,7 +3,6 @@ import { PaymentSource } from "@prisma/client";
 import { cardRefundDoorOf, cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover } from "@/lib/card-refund-own-note-share";
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
-import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 
@@ -30,10 +29,12 @@ import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbo
  */
 
 /**
- * Queue each named refund's own note, on a bank-transfer payment only: a
- * refund that is counted (`isRecordedRefundStatus`) and made since the
- * cutover. A refund of a late capture is the late-capture note's to size (per
- * capture, against that capture's receipt), so it is handed there. Returns
+ * Queue each named refund's own note, on a bank-transfer payment only. Which
+ * refunds qualify - counted, and made since the cutover - is the share's one
+ * answer (`readCardRefundNoteShare`): a refund that does not asks for nothing.
+ * A refund of a late capture is the late-capture note's to size (per capture,
+ * against that capture's receipt, `planLateCaptureCardNotes`), so it is handed
+ * there. Returns
  * the queued rows. A refund with no row on the payment is skipped. Outside
  * any transaction, as every caller's note enqueue was before.
  */
@@ -49,18 +50,16 @@ export async function queueCardRefundOwnNotes(params: {
   if (payment?.source !== PaymentSource.INTERNET_BANKING) return [];
   const refunds = await db.paymentRefund.findMany({
     where: { paymentId: params.paymentId, stripeRefundId: { in: ids } },
-    select: { stripeRefundId: true, amountCents: true, status: true, stripePaymentIntentId: true, stripeCreatedAt: true, createdAt: true },
+    select: { stripeRefundId: true, amountCents: true, stripePaymentIntentId: true },
     orderBy: [{ createdAt: "asc" }, { stripeRefundId: "asc" }],
   });
-  const cutoverSeconds = await cardRefundNoteCutoverSeconds(db);
-  const qualifying = refunds.filter((refund) => isRecordedRefundStatus(refund.status) && madeSinceCardRefundNoteCutover(refund, cutoverSeconds));
   const lateCaptures = await findLateCapturePaymentIntents(
-    qualifying.flatMap((refund) => (refund.stripePaymentIntentId ? [refund.stripePaymentIntentId] : [])),
+    refunds.flatMap((refund) => (refund.stripePaymentIntentId ? [refund.stripePaymentIntentId] : [])),
     db,
   );
   const queued: string[] = [];
   const lateCapturesAsked = new Set<string>();
-  for (const refund of qualifying) {
+  for (const refund of refunds) {
     const intent = refund.stripePaymentIntentId;
     if (intent && lateCaptures.has(intent)) {
       if (!lateCapturesAsked.has(intent)) {

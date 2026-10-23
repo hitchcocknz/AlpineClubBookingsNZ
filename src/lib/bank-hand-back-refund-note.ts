@@ -69,7 +69,7 @@ export async function cancellationHandBackNotedOnItsOwnRecord(
  * A refund-note create row that may raise the payment's canonical note: one
  * whose payload cannot be read (taken as on its way - wrongly "own" is
  * harmless), or a refund note that names no record of its own (a review, a
- * close or other per-record task, a refund request, a card refund - #4312) and is not stamped per
+ * close or other per-record task, a refund request) and is not stamped per
  * refund - and is not this hand-back's own. Only a readable account-credit note
  * is no canonical refund note.
  */
@@ -78,7 +78,7 @@ function isCanonicalRefundNoteRowOfAnother(requestPayload: unknown, handBackTask
   if (!recorded) return true;
   if (recorded.kind !== "refund") return false;
   const payload = asRecord(requestPayload);
-  if (recorded.refundRequestId || recorded.paidAnotherWayTaskId || recorded.cardRefundId || readString(payload?.reviewTaskId) || payload?.perDelta === true) {
+  if (recorded.refundRequestId || recorded.paidAnotherWayTaskId || readString(payload?.reviewTaskId) || payload?.perDelta === true) {
     return false;
   }
   return recorded.handBackTaskId !== handBackTaskId;
