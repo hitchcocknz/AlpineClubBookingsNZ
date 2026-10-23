@@ -110,14 +110,15 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   refund open rows owe back in full, #4227) is never the settlement, never
   another payment, and never refunded on top when it arrives (#4283).
 - **No record, no automatic refund.** Paid before this release or by the
-  draining old colour, if another capture holds money; or a recorded settler
+  old colour, if another capture holds money; or a recorded settler
   no longer holding money, whether or not another does: the arriving capture is
   kept (`duplicate_capture_kept`, no second confirmation or invoice) and the
-  unmuteable `admin-duplicate-capture-kept` alert asks for a check, once a day
-  per capture. An owned duplicate still re-sends its own refund.
+  unmuteable `admin-duplicate-capture-kept` alert asks for a check, daily per
+  capture. An owned duplicate still re-sends its own refund.
 - **Limit:** PAID transitions no transaction settles (zero cash, full credit,
   the $0 auto-pay, group settlement) never write it; a lone capture there
-  alerts unless the app had already recorded it, a replay (#4285).
+  alerts, owed until delivered, unless already recorded: a replay, or a
+  crashed saved-card pre-record (#4285).
 - **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
   owned and owed-back readings, the arriving capture's too (#4283).
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per

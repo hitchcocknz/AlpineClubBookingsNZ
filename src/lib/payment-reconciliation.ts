@@ -36,7 +36,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import { keepRefusedPrePersistedRefundOwed, RefusedCardRefundError, type RefundAttempt } from "@/lib/refused-card-refund-retry";
 import { closeDoorRow } from "@/lib/pre-persisted-refund-close";
-import { alertCaptureKeptWithoutRecordedSettler, judgeCaptureOnPaidBooking } from "@/lib/duplicate-capture-guard";
+import { alertCaptureKeptWithoutRecordedSettler, judgeCaptureOnPaidBooking, recordNewCaptureAlertOwed } from "@/lib/duplicate-capture-guard";
 import { CLEAR_SETTLING_TRANSACTION, findSettlingInternetBankingTransactionId, recordSettlingTransaction } from "@/lib/payment-settler";
 import { acquireLodgeCapacityLock, checkCapacityForGuestRanges } from "@/lib/capacity";
 import { findAppliedCreditDeallocationFence } from "@/lib/xero-applied-credit-operation-serialization";
@@ -118,10 +118,9 @@ export type MarkBookingPaymentSucceededResult = {
     // cancelled_* outcomes keep treating these as "settled".
     | "duplicate_capture_refunded"
     | "duplicate_capture_refund_failed"
-    // #4211 (`INV-PAY-043`): a different capture on a PAID or COMPLETED booking
-    // with no usable record of its settler, beside another payment holding money
-    // (or, #4285, alone and never recorded before) - KEPT, nothing
-    // refunded, the admins asked to check by hand. Settled like
+    // #4211 (`INV-PAY-043`): a different capture on a PAID or COMPLETED booking with no usable record of
+    // its settler, beside another payment holding money (or, #4285, alone and never recorded before) -
+    // KEPT, nothing refunded, the admins asked to check by hand. Settled like
     // the two above: no confirmation email, no invoice of its own.
     | "duplicate_capture_kept";
   bookingId: string;
@@ -191,6 +190,8 @@ type StripeSettlementSource = {
   paymentMethodId: string | null;
   /** #3864: for the applied-credit give-back, resolved before the transaction. */
   format: ClubFormat;
+  /** #4285 review: the caller wrote this capture SUCCEEDED just before (`newlyCaptured`), so it is not a replay. */
+  recordedByCaller?: boolean;
 };
 
 /**
@@ -919,7 +920,7 @@ async function settleBookingPaymentInTransaction(
     await lockPaymentForRefundedTotal(tx, payment.id);
 
     let refundedIntentHistory = false;
-    // #4285 review: the arriving capture's row was already SUCCEEDED (a replay), not new money.
+    // #4285 review: the arriving capture's row was already SUCCEEDED (a replay) and not by this caller.
     let arrivingAlreadyCaptured = false;
 
     if (settlement.kind === "stripe") {
@@ -941,7 +942,7 @@ async function settleBookingPaymentInTransaction(
         priorTransaction !== null &&
         (priorTransaction.status === PaymentStatus.REFUNDED ||
           priorTransaction.status === PaymentStatus.PARTIALLY_REFUNDED);
-      arrivingAlreadyCaptured = priorTransaction?.status === PaymentStatus.SUCCEEDED;
+      arrivingAlreadyCaptured = priorTransaction?.status === PaymentStatus.SUCCEEDED && !settlement.recordedByCaller;
 
       if (!refundedIntentHistory) {
         await upsertPaymentIntentTransaction({
@@ -1058,19 +1059,17 @@ async function settleBookingPaymentInTransaction(
       }
     }
 
-    // #4285: COMPLETED is PAID with the stay ended, so it is judged the same, never "not payable".
+    // #4285: COMPLETED is PAID with the stay ended, judged the same; a finished stay's beds are left alone.
     if (isPaidLikeBookingStatus(booking.status)) {
-      // A finished stay's beds are left alone: a replay places nobody on past nights.
       if (booking.status === BookingStatus.PAID) {
         const previousRange = { checkIn: booking.checkIn, checkOut: booking.checkOut };
         await reconcileBedAllocationsForBookingWithLodgeLockHeld({ bookingId: booking.id, db: tx, previousRange });
       }
 
-      // #1992 / #4211 (`INV-PAY-043`): a capture arriving on a PAID or COMPLETED
-      // booking is judged by `duplicate-capture-guard.ts` - the recorded settler
-      // is kept, any other capture refunded, and with no record nothing is
-      // refunded and the admins check by hand. The refund debt is enqueued here,
-      // ATOMIC with this transaction and BEFORE any Stripe call (the #1349 pattern).
+      // #1992 / #4211 (`INV-PAY-043`): a capture arriving on a PAID or COMPLETED booking is judged by
+      // `duplicate-capture-guard.ts` - the recorded settler is kept, any other capture refunded, and with no
+      // record nothing is refunded and the admins check by hand. The refund debt (and #4285 an owed alert) is
+      // written here, ATOMIC with this transaction and BEFORE any Stripe call (the #1349 pattern).
       if (!refundedIntentHistory && settlement.kind === "stripe") {
         const verdict = await judgeCaptureOnPaidBooking(tx, {
           bookingId: booking.id,
@@ -1100,6 +1099,7 @@ async function settleBookingPaymentInTransaction(
           };
         }
         if (verdict.verdict === "keep_unrecorded_settler") {
+          if (verdict.reason === "new-capture") await recordNewCaptureAlertOwed(tx, { bookingId: booking.id, paymentIntentId: settlement.paymentIntentId });
           return {
             outcome: "duplicate_capture_kept" as const,
             booking,
@@ -1150,11 +1150,8 @@ async function settleBookingPaymentInTransaction(
     // effective price under the MEMBER-CREDIT lock in prepareManualSettlement,
     // asserted the mirror there, and refused a figure that had moved since the
     // admin's dialog rendered.
-    if (
-      settlement.kind === "stripe" &&
-      settlement.amountCents !== settleWorthCents &&
-      settlement.amountCents !== settleWorthCents - (await deriveBookingAppliedCreditCents(booking.id, tx))
-    ) {
+    if (settlement.kind === "stripe" && settlement.amountCents !== settleWorthCents &&
+      settlement.amountCents !== settleWorthCents - (await deriveBookingAppliedCreditCents(booking.id, tx))) {
       throw new Error("Payment amount does not match booking total");
     }
 
@@ -1790,6 +1787,7 @@ export async function markBookingPaymentSucceeded({
   amountCents,
   paymentMethodId,
   format,
+  recordedByCaller = false,
 }: {
   bookingId: string;
   paymentIntentId: string;
@@ -1797,6 +1795,8 @@ export async function markBookingPaymentSucceeded({
   paymentMethodId: string | null;
   /** The club's format (#3565), resolved before any transaction by the caller. */
   format: ClubFormat;
+  /** #4285 review: the caller just wrote this capture SUCCEEDED itself (`SettledSavedCardChargeAttempt.newlyCaptured`). */
+  recordedByCaller?: boolean;
 }): Promise<MarkBookingPaymentSucceededResult> {
   const reconciliation = await prisma.$transaction((tx) =>
     settleBookingPaymentInTransaction(tx, bookingId, {
@@ -1805,6 +1805,7 @@ export async function markBookingPaymentSucceeded({
       amountCents,
       paymentMethodId,
       format,
+      recordedByCaller,
     })
   );
 

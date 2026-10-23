@@ -139,11 +139,13 @@ it lists was paid before this release, so the app has no record of which
 payment settled it.
 
 **Deploy query (#4285).** Completed bookings holding a card payment beside
-another payment that holds money, or holding one when no payment on the booking
-holds money (account credit, a zero total, a group organiser's settlement). A
-card payment counts unless it is fully refunded, a duplicate-capture refund is
-still sending it back, the superseded-payment refund owns it, or Stripe
-cancelled its intent:
+another payment that holds money, holding one when no payment on the booking
+holds money, or holding any card payment at all when the booking was paid
+another way: its recorded account credit covers its price (a zero total
+included) or a group organiser settled it. That last case catches a lone stray
+card payment the previous version kept without a word. A card payment counts
+unless it is fully refunded, a duplicate-capture refund is still sending it
+back, the superseded-payment refund owns it, or Stripe cancelled its intent:
 
 ```sql
 SELECT b.id AS "bookingId", b."checkOut", p.id AS "paymentId",
@@ -188,9 +190,13 @@ WHERE b.status = 'COMPLETED'
     WHERE s."paymentIntentId" = t."stripePaymentIntentId"
       AND s.type = 'REFUND_SUPERSEDED_PAYMENT'
   )
-GROUP BY b.id, b."checkOut", p.id
+GROUP BY b.id, b."checkOut", b."finalPriceCents", b."organiserSettled", p.id, p."creditAppliedCents", p."changeFeeCents"
 HAVING count(*) FILTER (WHERE t.source = 'STRIPE') >= 1
-   AND count(*) > least(count(*) FILTER (WHERE t.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')), 1)
+   AND (
+     count(*) > least(count(*) FILTER (WHERE t.status IN ('SUCCEEDED', 'PARTIALLY_REFUNDED')), 1)
+     OR p."creditAppliedCents" >= b."finalPriceCents" + p."changeFeeCents"
+     OR b."organiserSettled"
+   )
 ORDER BY b."checkOut";
 ```
 
@@ -209,15 +215,20 @@ payment:
    Most affected events will be older than that, so step 2 is the usual path.
 2. Refund it by hand in the Stripe dashboard. The app records that refund from
    Stripe's `charge.refunded` event and queues a Xero refund credit note for
-   it, so do not enter anything in Xero by hand; check Xero instead. Until
-   #4322 is fixed that queued credit note is wrong for a payment the app never
-   recorded as received: once it reaches Xero, delete it there if it is still
-   a draft, or void it.
+   it, so do not enter anything in Xero by hand; check Xero instead.
+
+For any extra payment you find this way, whether or not you resent its event,
+the queued credit note is wrong until #4322 is fixed: a kept payment is
+recorded by the app, but Xero never held that money. Once the note reaches Xero, delete it there if it is still a draft, or
+void it.
 
 **Limit.** The query cannot see whether Stripe captured a payment it shows as
 `PENDING`, `PROCESSING` or `FAILED`, so abandoned tabs are listed too, as is
-an intent Stripe cancelled without the app recording it. An audit entry older than the club's audit retention is gone,
-so an intent cancelled that long ago is listed too.
+an intent Stripe cancelled without the app recording it. An audit entry older
+than the club's audit retention is gone, so an intent cancelled that long ago
+is listed too. "Paid another way" reads the
+credit recorded on the payment (`creditAppliedCents`), so a booking whose credit
+changed after it was paid may be listed with nothing to do, or missed.
 
 ### The app records which payment settled each booking (#4211)
 

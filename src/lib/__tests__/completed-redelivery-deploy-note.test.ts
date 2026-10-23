@@ -9,6 +9,7 @@ import {
   PaymentTransactionKind,
 } from "@prisma/client";
 import { describe, expect, it } from "vitest";
+import { bookingWorthCents } from "@/lib/booking-payment-state";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
 import { buildDuplicateCaptureRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
@@ -94,6 +95,19 @@ describe("the #4285 deploy query matches the code's one definition", () => {
       ],
     }).toEqual(PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE);
     expect(Number(pending[0]![2])).toBe(MAX_PAYMENT_RECOVERY_ATTEMPTS);
+  });
+
+  it("F4: lists any card payment on a booking paid another way - its recorded credit covering its worth, or an organiser's settlement", () => {
+    // The worth is the settle's (`bookingWorthCents`: price plus a recorded change fee).
+    expect(sql).toContain(`OR p."creditAppliedCents" >= b."finalPriceCents" + p."changeFeeCents"`);
+    expect(sql).toContain(`OR b."organiserSettled"`);
+    const schema = readFileSync(resolve(REPO_ROOT, "prisma/schema.prisma"), "utf8");
+    const model = (name: string) => schema.slice(schema.indexOf(`model ${name} {`), schema.indexOf("\n}", schema.indexOf(`model ${name} {`)));
+    expect(model("Booking")).toMatch(/\n\s+organiserSettled\s+Boolean/);
+    expect(model("Booking")).toMatch(/\n\s+finalPriceCents\s+Int/);
+    expect(model("Payment")).toMatch(/\n\s+creditAppliedCents\s+Int/);
+    expect(model("Payment")).toMatch(/\n\s+changeFeeCents\s+Int/);
+    expect(bookingWorthCents({ finalPriceCents: 100, changeFeeCents: 25 })).toBe(125);
   });
 
   it("leaves out a capture the superseded-payment refund owns", () => {

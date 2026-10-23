@@ -426,7 +426,8 @@ export async function processStripeWebhookEvent(
 async function adoptUnknownIntentsAttemptRow(
   paymentIntent: Stripe.PaymentIntent,
   event: Stripe.Event,
-  bookingId: string
+  bookingId: string,
+  onAdopted?: (newlyCaptured: boolean) => void, // #4285 review: the adoption wrote the capture just now
 ) {
   const adopted = await adoptSavedCardChargeAttemptForIntent({
     paymentIntent,
@@ -434,6 +435,7 @@ async function adoptUnknownIntentsAttemptRow(
     idempotencyKey: event.request?.idempotency_key,
   });
   if (!adopted) return null;
+  onAdopted?.(adopted.newlyCaptured);
   return findPaymentTransactionByIntentId({ paymentIntentId: paymentIntent.id });
 }
 
@@ -489,10 +491,11 @@ async function handlePaymentIntentSucceeded(
     return;
   }
 
+  let recordedByCaller = false; // #4285 review: an adoption that just wrote the capture tells the settle it is new money
   const paymentTransaction =
     (await findPaymentTransactionByIntentId({
       paymentIntentId: paymentIntent.id,
-    })) ?? (await adoptUnknownIntentsAttemptRow(paymentIntent, event, bookingId));
+    })) ?? (await adoptUnknownIntentsAttemptRow(paymentIntent, event, bookingId, (adopted) => (recordedByCaller = adopted)));
 
   if (!paymentTransaction || paymentTransaction.kind !== PaymentTransactionKind.PRIMARY) {
     logger.warn(
@@ -555,12 +558,10 @@ async function handlePaymentIntentSucceeded(
   // still rejected. The ledger read is skipped for a full-price capture.
   // #3750: worth (price plus a recorded change fee), or that less applied credit.
   //
-  // #3955 review F5 / #4211 / #4285: a capture of a PAID or COMPLETED booking is not compared with what it owes NOW (a
-  // later fee or edit would refuse money already taken, retried by Stripe for days): the settle only keeps or refunds
-  // it (#1992, `INV-PAY-043`), never settles on its amount. Every other booking keeps the #1161 check, where a stale
-  // amount would settle it (#4285 review dropped the recorded-settler and intent-pointer arms: off a paid-like booking
-  // they only silenced this alert, and the settle's own #1641 check throws anyway). A reversal landing between this
-  // pre-lock read and the settle's lock costs one retry with no alert; the next delivery re-reads and self-heals.
+  // #3955 review F5 / #4211 / #4285: a capture of a PAID or COMPLETED booking is not compared with what it owes NOW (a later
+  // fee or edit would refuse money taken, retried by Stripe for days): the settle only keeps or refunds it (#1992,
+  // `INV-PAY-043`). Every other booking keeps the #1161 check (the recorded-settler and intent-pointer arms only silenced it
+  // where the settle's #1641 check throws anyway). A reversal before the settle's lock costs one retry with no alert.
   const payment = bookingRecord?.payment;
   const capturedOnSettledBooking = !!bookingRecord && isPaidLikeBookingStatus(bookingRecord.status) && !!payment && paymentTransaction.paymentId === payment.id;
   const expectedOwedCents =
@@ -607,7 +608,7 @@ async function handlePaymentIntentSucceeded(
 
   const reconciliation = await markBookingPaymentSucceeded({
     format,
-    bookingId,
+    bookingId, recordedByCaller,
     paymentIntentId: paymentIntent.id,
     amountCents: paymentIntent.amount,
     paymentMethodId:

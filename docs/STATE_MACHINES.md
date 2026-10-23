@@ -1720,8 +1720,15 @@ not reconciled. Before #4285 any success arriving on a COMPLETED booking threw
 "not payable" (or was refused as a stale amount), a 500 Stripe retried for
 three days. With no record and nothing else holding money, a lone capture keeps
 silently only as a replay of one the app had already recorded (its row was
-`SUCCEEDED` before this delivery); one never recorded before is new money, kept
-whatever its amount as `duplicate_capture_kept` with the `new-capture` alert. Every other status the
+`SUCCEEDED` before this delivery, and not written by the caller itself, as a
+saved-card pre-record or the webhook's adoption of a lost-response attempt
+is); one never recorded before is new money, kept whatever its amount as
+`duplicate_capture_kept` with the `new-capture` alert. That alert is owed from
+the settle's transaction (an `AlertCooldown` marker) until it is delivered: the
+capture's next arrival re-alerts while it stands, and the payments cron's
+`duplicate-capture-kept-alert` task sends it an hour on otherwise. A saved-card
+capture whose caller crashed between its pre-record and the settle reads as a
+replay on its next arrival (a stated limit). Every other status the
 settle cannot pay from (CANCELLED, BUMPED, WAITLISTED, WAITLIST_OFFERED,
 AWAITING_REVIEW) still throws, and the webhook's stale-amount check (#1161)
 still guards an unpaid booking; it skips a PAID or COMPLETED one, whose capture

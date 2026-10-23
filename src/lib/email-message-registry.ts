@@ -945,7 +945,7 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   },
   "admin-duplicate-capture-kept": {
     triggerSummary:
-      "A card payment arrived on a booking that was already paid and the app had no usable record of which payment settled it - while another payment on it still held money, or because the recorded payment no longer holds money - so it kept the payment and refunded nothing",
+      "A card payment arrived on a booking that was already paid and the app had no usable record of which payment settled it - while another payment on it still held money, because the recorded payment no longer holds money, or (a payment the app had never recorded) with no other payment holding money - so it kept the payment and refunded nothing",
     frequency:
       "On a payment or a repeat of it reaching such a booking - rare; at most once a day per booking and payment, by a cross-instance cooldown given back when the send throws",
   },
@@ -1582,7 +1582,7 @@ export function sampleValue(token: string): string {
   if (token === "duplicateCaptureKeptNote") {
     return duplicateCaptureKeptParagraph({ reason: "not-recorded", otherPaymentIntentId: "pi_example" });
   }
-  if (token === "duplicateCaptureKeptAction") return duplicateCaptureKeptAction({ otherHoldsMoney: true });
+  if (token === "duplicateCaptureKeptAction") return duplicateCaptureKeptAction({ otherHoldsMoney: true, reason: "not-recorded" });
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
   }

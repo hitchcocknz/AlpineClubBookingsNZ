@@ -676,9 +676,11 @@ describe("#2320 review — senders supply the composed notes their defaults rend
       CLUB_FORMAT_TEST,
     );
     const stray = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
-    expect(stray).toContain("A new card payment was recorded on this booking after it was already paid");
+    expect(stray).toContain("A new card payment was recorded on this booking after it was already paid, and no other card or bank payment on it holds money");
     expect(stray).toContain("the booking was paid some other way");
     expect(stray).not.toContain("no record of which payment settled");
+    // Only one payment: no "neither payment" Stripe check (#4285 review).
+    expect(stray).not.toContain("neither payment");
     expect(stray).not.toContain("refund the other one");
     expect(stray).toContain("refund it by hand only if the booking should not be paid by it");
   });

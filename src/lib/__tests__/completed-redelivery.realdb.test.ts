@@ -35,6 +35,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
 import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
+import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 
 /** The one shared double: the LAST file to register a factory wins, so every realdb file registers this same one. */
 vi.mock("@/lib/stripe", async (importOriginal) =>
@@ -118,14 +119,14 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     }
 
     /** Stripe's `payment_intent.succeeded` for one intent, through the real webhook processor; a fresh event id each time. */
-    async function deliverWebhook(paymentIntentId: string, type = "payment_intent.succeeded") {
+    async function deliverWebhook(paymentIntentId: string, type = "payment_intent.succeeded", idempotencyKey?: string) {
       webhookEventSequence += 1;
       const { processStripeWebhookEvent } = await import("@/lib/stripe-webhook-service");
       const event = {
         id: `evt_race_4285_${webhookEventSequence}`,
         object: "event",
         type,
-        request: null,
+        request: idempotencyKey ? { id: "req_race_4285", idempotency_key: idempotencyKey } : null,
         data: {
           object: {
             id: paymentIntentId,
@@ -252,6 +253,18 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
           select: { stripePaymentIntentId: true },
         })
       ).stripePaymentIntentId;
+    }
+
+    /** The refund credit notes queued for the payment - the refund-note queue only (#4322). */
+    const refundNotesQueued = () =>
+      prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID, queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } });
+
+    /** What the kept-capture alert logged, read for its reason (no email is sent in the harness). */
+    function keptAlertReasons(spy: { mock: { calls: unknown[][] } }) {
+      return spy.mock.calls
+        .map(([context]) => context as { reason?: string; paymentIntentId?: string })
+        .filter((context) => context && typeof context === "object" && "reason" in context && context.paymentIntentId)
+        .map((context) => [context.paymentIntentId, context.reason]);
     }
 
     /** A booking paid before #4211 (or by the draining colour): no record of its settler. */
@@ -489,8 +502,12 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await clearRecordedSettler();
       await chargeRefundedInStripe(SETTLING);
       expect((await snapshot()).transactions.find((row) => row.stripePaymentIntentId === SETTLING)?.status).toBe("REFUNDED");
+      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
 
       await expectAnswered(OTHER, 200);
+      expect(keptAlertReasons(logged), "the alert names the payment new").toEqual([[OTHER, "new-capture"]]);
+      logged.mockRestore();
+      expect(await owedMarkers(), "delivered, so no longer owed").toEqual([]);
 
       expect(asked, "nothing is refunded automatically").toEqual([]);
       const after = await snapshot();
@@ -520,26 +537,26 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await deployQueryLists(), "still listed until someone refunds it").toEqual([BOOKING_ID]);
 
       // Step 2: refunded by hand in the Stripe dashboard.
-      const notesBefore = await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } });
+      const notesBefore = await refundNotesQueued();
       await chargeRefundedInStripe(OTHER);
       const after = await snapshot();
       expect(after.transactions.find((row) => row.stripePaymentIntentId === OTHER)?.status).toBe("REFUNDED");
       expect(after.refunds.map((refund) => refund.stripeRefundId)).toEqual([`re_race_4285_dashboard_${OTHER}`]);
-      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } }), "a refund credit note is queued (#4322)").toBe(notesBefore + 1);
+      expect(await refundNotesQueued(), "a refund credit note is queued (#4322)").toBe(notesBefore + 1);
       expect(await deployQueryLists()).toEqual([]);
     });
 
     it("#4285 review F2: refunded by hand in Stripe with no resend, the app still records the refund and queues a credit note", async () => {
       await settleAndComplete();
       await clearRecordedSettler();
-      const notesBefore = await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } });
+      const notesBefore = await refundNotesQueued();
 
       await chargeRefundedInStripe(OTHER);
 
       const after = await snapshot();
       expect(after.refunds.map((refund) => refund.stripeRefundId)).toEqual([`re_race_4285_dashboard_${OTHER}`]);
       expect(after.transactions.find((row) => row.stripePaymentIntentId === OTHER)?.status).toBe("REFUNDED");
-      expect(await prisma.xeroSyncOperation.count({ where: { localId: PAYMENT_ID } })).toBe(notesBefore + 1);
+      expect(await refundNotesQueued()).toBe(notesBefore + 1);
       expect(await deployQueryLists()).toEqual([]);
     });
 
@@ -569,6 +586,96 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         `duplicate-capture-unrecorded-settler:${BOOKING_ID}:${OTHER}`,
         `duplicate-capture-unrecorded-settler:${BOOKING_ID}:${SETTLING}`,
       ]);
+    });
+
+    /** The owed new-capture alert markers on this booking (#4285 review). */
+    const owedMarkers = async () =>
+      (await prisma.alertCooldown.findMany({ where: { key: { startsWith: `duplicate-capture-new-capture-owed:${BOOKING_ID}:` } }, select: { key: true } })).map((row) => row.key);
+
+    /**
+     * A booking PAID at $0 with no recorded settler, as the cron's zero-dollar
+     * branch leaves it, holding the lost-response saved-card attempt the lens's
+     * probe used: PENDING, no intent id, the attempt's key on `reference`.
+     */
+    async function zeroDollarBookingWithLostAttempt() {
+      const ATTEMPT_ROW = "race4285attemptrow";
+      await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { status: "PAID", totalPriceCents: 0, finalPriceCents: 0 } });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { amountCents: 0, status: "SUCCEEDED", stripePaymentIntentId: null } });
+      const { savedCardChargeIdempotencyKey } = await import("@/lib/saved-card-charge-attempt");
+      const key = savedCardChargeIdempotencyKey(BOOKING_ID, ATTEMPT_ROW);
+      await prisma.paymentTransaction.create({
+        data: { id: ATTEMPT_ROW, paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", amountCents: PRICE_CENTS, status: "PENDING", reference: key, createdAt: MINTED_AT },
+      });
+      return key;
+    }
+
+    it("#4285 review F1: a lost-response saved-card capture the webhook adopts on a $0 booking is new money: kept and the admins told, never kept silently", async () => {
+      const asked = stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+
+      expect((await deliverWebhook(OTHER, "payment_intent.succeeded", key)).init?.status ?? 200).toBe(200);
+
+      expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture"]]);
+      logged.mockRestore();
+      expect(asked, "nothing is refunded automatically").toEqual([]);
+      expect((await snapshot()).transactions).toEqual([
+        { stripePaymentIntentId: OTHER, status: "SUCCEEDED", amountCents: PRICE_CENTS, refundedAmountCents: 0 },
+      ]);
+      expect(
+        (await prisma.alertCooldown.findMany({ where: { key: { contains: BOOKING_ID } }, select: { key: true } })).map((row) => row.key),
+      ).toEqual([`duplicate-capture-unrecorded-settler:${BOOKING_ID}:${OTHER}`]);
+      expect(await owedMarkers()).toEqual([]);
+
+      // F4: once the stay completes, the deploy query lists such a lone stray capture.
+      const { completeBookings } = await import("@/lib/cron-complete-bookings");
+      expect((await completeBookings()).completedBookingIds).toContain(BOOKING_ID);
+      expect(await deployQueryLists()).toEqual([BOOKING_ID]);
+    });
+
+    /** The state a crash right after the settle's commit leaves: the alert owed, never claimed or sent. */
+    async function crashedBeforeTheAlert() {
+      const { recordNewCaptureAlertOwed } = await import("@/lib/duplicate-capture-guard");
+      await prisma.alertCooldown.deleteMany({ where: { key: `duplicate-capture-unrecorded-settler:${BOOKING_ID}:${OTHER}` } });
+      await recordNewCaptureAlertOwed(prisma, { bookingId: BOOKING_ID, paymentIntentId: OTHER, now: new Date("2026-06-30T20:00:00.000Z") });
+      expect(await owedMarkers()).toEqual([`duplicate-capture-new-capture-owed:${BOOKING_ID}:${OTHER}`]);
+    }
+
+    it("#4285 review F2: an alert lost to a crash after the commit is sent by the capture's next arrival, though it reads as a replay", async () => {
+      stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+      await crashedBeforeTheAlert();
+      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+
+      await expectAnswered(OTHER, 200);
+
+      expect(keptAlertReasons(logged), "re-alerted while owed").toEqual([[OTHER, "new-capture"]]);
+      logged.mockRestore();
+      expect(await owedMarkers(), "delivered, so no longer owed").toEqual([]);
+      expect(await prisma.alertCooldown.count({ where: { key: `duplicate-capture-unrecorded-settler:${BOOKING_ID}:${OTHER}` } })).toBe(1);
+
+      // Delivered: the next arrival is a quiet replay.
+      expect((await arrive(OTHER)).outcome).toBe("already_paid");
+    });
+
+    it("#4285 review F2: with no further arrival, the payments cron's drain sends the owed alert an hour on and clears it", async () => {
+      stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+      await crashedBeforeTheAlert();
+      const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+
+      // Not yet due: the post-commit alert goes first.
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T20:30:00.000Z"))).toMatchObject({ sent: 0 });
+      expect(await owedMarkers()).toHaveLength(1);
+
+      const logged = vi.spyOn((await import("@/lib/logger")).default, "error");
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+      expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture"]]);
+      logged.mockRestore();
+      expect(await owedMarkers()).toEqual([]);
     });
   },
 );

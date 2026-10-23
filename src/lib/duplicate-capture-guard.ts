@@ -19,8 +19,10 @@
  * Xero bank receipt recorded after the card paid (#3638), and a superseded
  * capture whose refund failed later (#4227) each looked like "another capture
  * holding money", so a REPLAY of the real settlement was refunded. Nor does
- * "the arriving row was already SUCCEEDED" tell a replay apart: every
- * saved-card path writes its attempt row SUCCEEDED before it settles.
+ * "the arriving row was already SUCCEEDED" alone tell a replay apart: every
+ * saved-card path writes its attempt row SUCCEEDED before it settles, so those
+ * callers say they did (`recordedByCaller`, #4285 review), and the guard reads
+ * that answer only where no other payment holds money (rule 3).
  *
  * 1. **The recorded settler is never refunded.** Its replay is kept whatever
  *    else holds money on the booking.
@@ -43,9 +45,13 @@
  *    settler a live superseded-intent operation holds keeps silently. With no
  *    record and nothing else holding money, the arriving capture keeps silently
  *    only as a replay of a capture already recorded (the booking's only
- *    capture); one never recorded before is kept and the admins told (#4285,
- *    `new-capture`). Limit: a saved-card attempt row is written SUCCEEDED before
- *    the settle, so its first arrival reads as a replay here.
+ *    capture) whose alert is not still owed; one never recorded before is kept
+ *    and the admins told (#4285, `new-capture`). The caller records that alert
+ *    as owed in the same transaction (`recordNewCaptureAlertOwed`), so a crash
+ *    or a failed send is retried by a replay or the payments cron's drain until
+ *    an alert is delivered. Limit: a saved-card capture whose caller crashed
+ *    between its pre-record and the settle reads as a replay on its next
+ *    arrival.
  *
  * Every read runs under the lock(1) every caller of `markBookingPaymentSucceeded`
  * holds, so the check-then-enqueue cannot interleave with another settlement,
@@ -60,7 +66,7 @@ import {
 import { claimAlertCooldownFailOpen, SETTLEMENT_MONEY_ALERT_REPEAT_MS } from "@/lib/alert-cooldown-fail-open";
 import type { ClubFormat } from "@/lib/club-format";
 import { listDuplicateCaptureRefundIntentIds } from "@/lib/duplicate-capture-ownership";
-import { releaseAlertCooldown } from "@/lib/alert-cooldown";
+import { releaseAlertCooldown, settleOwedAlert } from "@/lib/alert-cooldown";
 import type { DuplicateCaptureKeptReason } from "@/lib/duplicate-capture-kept-note";
 import { sendAdminDuplicateCaptureKeptAlert } from "@/lib/email";
 import logger from "@/lib/logger";
@@ -226,7 +232,11 @@ export async function judgeCaptureOnPaidBooking(
     // holds money for (zero cash, full credit, the $0 auto-pay, a group child) -
     // kept whatever its amount, and the admins told.
     if (!input.recordedSettlerId) {
-      return input.arrivingAlreadyCaptured
+      const alertOwed = await tx.alertCooldown.findUnique({
+        where: { key: newCaptureAlertOwedKey(input.bookingId, input.paymentIntentId) },
+        select: { key: true },
+      });
+      return input.arrivingAlreadyCaptured && !alertOwed
         ? { verdict: "keep" }
         : { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "new-capture", otherHoldsMoney: false };
     }
@@ -267,6 +277,30 @@ export async function judgeCaptureOnPaidBooking(
   return refundArriving(settlement.stripePaymentIntentId);
 }
 
+/** #4285 review: the namespace of the durable "a new-capture alert is owed" markers. */
+export const NEW_CAPTURE_ALERT_OWED_PREFIX = "duplicate-capture-new-capture-owed:";
+
+/** The owed marker of one capture's new-capture alert (`AlertCooldown`, the `markAlertOwed` family). */
+export function newCaptureAlertOwedKey(bookingId: string, paymentIntentId: string): string {
+  return `${NEW_CAPTURE_ALERT_OWED_PREFIX}${bookingId}:${paymentIntentId}`;
+}
+
+/**
+ * #4285 review: record, inside the settle's transaction, that a new-capture
+ * alert is owed - so a crash before the alert, or a send that throws, still
+ * leaves a trigger: the capture's next arrival re-alerts while the marker
+ * stands (rule 3), and the payments cron drains what nothing re-delivers
+ * (`drainOwedNewCaptureAlerts`). Cleared only once an alert is delivered.
+ * Under the caller's lock(1), so a plain upsert cannot race.
+ */
+export async function recordNewCaptureAlertOwed(
+  tx: Pick<Prisma.TransactionClient, "alertCooldown">,
+  { bookingId, paymentIntentId, now = new Date() }: { bookingId: string; paymentIntentId: string; now?: Date },
+): Promise<void> {
+  const key = newCaptureAlertOwedKey(bookingId, paymentIntentId);
+  await tx.alertCooldown.upsert({ where: { key }, create: { key, lastAlertedAt: now }, update: {} });
+}
+
 /**
  * Rule 3's alert, after the commit: a card capture was kept on a PAID (or COMPLETED) booking
  * with no usable record of which payment settled it - while another payment on
@@ -278,7 +312,8 @@ export async function judgeCaptureOnPaidBooking(
  * Stripe redelivery, a reconcile or cron re-run), sent anyway if the claim
  * cannot be read (`claimAlertCooldownFailOpen`), and the claim is given back if
  * the send throws so the next repeat tries again (`releaseAlertCooldown`, as
- * `internet-banking-hold-kept.ts`).
+ * `internet-banking-hold-kept.ts`). A delivered `new-capture` alert clears its
+ * owed marker (#4285 review). Never throws; says what happened.
  */
 export async function alertCaptureKeptWithoutRecordedSettler({
   booking,
@@ -298,7 +333,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   otherHoldsMoney?: boolean;
   reason: DuplicateCaptureKeptReason;
   format: ClubFormat;
-}) {
+}): Promise<"sent" | "cooldown" | "send-threw"> {
   const context = { bookingId: booking.id, paymentIntentId, otherPaymentIntentId, reason };
   const key = `duplicate-capture-unrecorded-settler:${booking.id}:${paymentIntentId}`;
   const claimedAt = new Date();
@@ -310,7 +345,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
     logMessage: "Could not claim the kept-capture alert's cooldown; alerting anyway (#4211)",
   });
   logger.error(context, "A card capture on a paid booking with no usable settlement record was kept for an admin to check (#4211)");
-  if (!send) return;
+  if (!send) return "cooldown";
   try {
     await sendAdminDuplicateCaptureKeptAlert({
       memberName,
@@ -328,5 +363,12 @@ export async function alertCaptureKeptWithoutRecordedSettler({
     await releaseAlertCooldown({ key, claimedAt }).catch((releaseErr) =>
       logger.error({ err: releaseErr, ...context }, "Failed to give back the kept-capture alert's claim (#4211)"),
     );
+    return "send-threw";
   }
+  if (reason === "new-capture") {
+    await settleOwedAlert({ key: newCaptureAlertOwedKey(booking.id, paymentIntentId) }).catch((err) =>
+      logger.error({ err, ...context }, "Failed to clear a delivered new-capture alert's owed marker; it may be sent again (#4285)"),
+    );
+  }
+  return "sent";
 }

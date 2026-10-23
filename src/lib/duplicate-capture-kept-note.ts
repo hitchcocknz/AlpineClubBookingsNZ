@@ -54,7 +54,7 @@ export function duplicateCaptureKeptParagraph(input: {
         ? `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell whether this payment now pays for the booking or is a duplicate, and nothing was refunded automatically.`
         : `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell which of the remaining payments to keep, and nothing was refunded automatically.`;
     case "new-capture":
-      return "A new card payment was recorded on this booking after it was already paid, and no card or bank payment on it holds money: the booking was paid some other way (with account credit, at a zero total, or by a group organiser), or its earlier payment was refunded, so this payment may be extra. Nothing was refunded automatically.";
+      return "A new card payment was recorded on this booking after it was already paid, and no other card or bank payment on it holds money: the booking was paid some other way (with account credit, at a zero total, or by a group organiser), or its earlier payment was refunded, so this payment may be extra. Nothing was refunded automatically.";
   }
 }
 
@@ -62,12 +62,15 @@ export function duplicateCaptureKeptParagraph(input: {
  * What to do, shared by the hand-built HTML and the `{{duplicateCaptureKeptAction}}`
  * token (#4211 review): with another payment holding money one of the two is
  * extra; with none, this payment may be the only one left paying for the
- * booking, and refunding it would leave the booking unpaid.
+ * booking, and refunding it would leave the booking unpaid. It ends with the
+ * Stripe check the upgrade window needs - for two payments only: a `new-capture`
+ * payment stands alone, so "neither payment" would be untrue (#4285 review).
  */
-export function duplicateCaptureKeptAction(input: { otherHoldsMoney?: boolean }): string {
-  return input.otherHoldsMoney === false
+export function duplicateCaptureKeptAction(input: { otherHoldsMoney?: boolean; reason?: DuplicateCaptureKeptReason }): string {
+  const action = input.otherHoldsMoney === false
     ? "Check whether this payment should pay for the booking; refund it by hand only if the booking should not be paid by it."
     : "Check which payment settled the booking, and refund the other one by hand.";
+  return input.reason === "new-capture" ? action : `${action} ${DUPLICATE_CAPTURE_KEPT_STRIPE_CHECK}`;
 }
 
 /** Fixed wording: the check the upgrade window needs (#4211 review). */

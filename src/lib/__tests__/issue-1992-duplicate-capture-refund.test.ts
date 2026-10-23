@@ -64,6 +64,8 @@ const mocks = vi.hoisted(() => ({
   sendAdminDuplicateCaptureRefundAlert: vi.fn(),
   sendAdminDuplicateCaptureKeptAlert: vi.fn(),
   releaseAlertCooldown: vi.fn(),
+  // #4285 review: the owed new-capture alert markers (`AlertCooldown` keys), one shared store.
+  owedMarkers: new Set<string>(),
   reconcileBedAllocationsForBooking: vi.fn(),
   recordBookingEvent: vi.fn(),
   recordDuplicateCaptureRefundEvent: vi.fn(),
@@ -121,6 +123,8 @@ vi.mock("@/lib/duplicate-capture-ownership", () => ({
 // #4211: the kept-capture alert's claim, given back when the send throws.
 vi.mock("@/lib/alert-cooldown", () => ({
   releaseAlertCooldown: (...args: unknown[]) => mocks.releaseAlertCooldown(...args),
+  // #4285 review: a delivered new-capture alert clears its owed marker.
+  settleOwedAlert: async ({ key }: { key: string }) => void mocks.owedMarkers.delete(key),
 }));
 
 // #4211: the kept-capture alert's once-a-day window.
@@ -254,6 +258,11 @@ const tx = {
       mocks.paymentRecoveryOperationFindMany(...args),
     findFirst: (...args: unknown[]) =>
       mocks.paymentRecoveryOperationFindFirst(...args),
+  },
+  // #4285 review: the owed new-capture alert marker, read by the guard and written by the settle.
+  alertCooldown: {
+    findUnique: async ({ where }: { where: { key: string } }) => (mocks.owedMarkers.has(where.key) ? { key: where.key } : null),
+    upsert: async ({ where }: { where: { key: string } }) => void mocks.owedMarkers.add(where.key),
   },
 };
 
@@ -470,6 +479,7 @@ function makePaidBooking() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.owedMarkers.clear();
   reachedSibling = false;
   mocks.transaction.mockImplementation(
     async (fn: (store: typeof tx) => Promise<unknown>) => fn(tx)
@@ -1984,6 +1994,48 @@ describe("#4285 a capture arriving on a COMPLETED booking is judged as on a PAID
 
       expect((await arriveAt(10000)).outcome).toBe("already_paid");
       expect(mocks.sendAdminDuplicateCaptureKeptAlert).not.toHaveBeenCalled();
+    });
+
+    it("F1: a capture its caller wrote SUCCEEDED just before (a saved-card pre-record) is new money, not a replay", async () => {
+      primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI })]);
+
+      const result = await markBookingPaymentSucceeded({
+        format: CLUB_FORMAT_TEST, bookingId: "booking-1", paymentIntentId: OTHER_PI, amountCents: 10000, paymentMethodId: "pm_1", recordedByCaller: true,
+      });
+
+      expect(result.outcome).toBe("duplicate_capture_kept");
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(expect.objectContaining({ reason: "new-capture" }), CLUB_FORMAT_TEST);
+    });
+
+    it("F2: the alert is owed in the settle's transaction and cleared once delivered", async () => {
+      primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: PaymentStatus.PENDING })]);
+      const owedKey = `duplicate-capture-new-capture-owed:booking-1:${OTHER_PI}`;
+      const owedAtSend: boolean[] = [];
+      mocks.sendAdminDuplicateCaptureKeptAlert.mockImplementation(async () => void owedAtSend.push(mocks.owedMarkers.has(owedKey)));
+
+      expect((await arriveAt(10000)).outcome).toBe("duplicate_capture_kept");
+
+      expect(owedAtSend, "owed when the alert went out").toEqual([true]);
+      expect(mocks.owedMarkers.has(owedKey), "cleared once delivered").toBe(false);
+    });
+
+    it("F2: a send that throws leaves the alert owed, so the capture's replay alerts again; once delivered, a replay is silent", async () => {
+      const rows = primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, status: PaymentStatus.PENDING })]);
+      mocks.upsertPaymentIntentTransaction.mockImplementation(async () => {
+        rows[0]!.status = PaymentStatus.SUCCEEDED;
+      });
+      mocks.sendAdminDuplicateCaptureKeptAlert.mockRejectedValueOnce(new Error("mail down"));
+
+      expect((await arriveAt(10000)).outcome).toBe("duplicate_capture_kept");
+      expect(mocks.owedMarkers.size, "still owed after the failed send").toBe(1);
+
+      // The replay reads the row SUCCEEDED, but the alert is still owed.
+      expect((await arriveAt(10000)).outcome).toBe("duplicate_capture_kept");
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledTimes(2);
+      expect(mocks.owedMarkers.size).toBe(0);
+
+      expect((await arriveAt(10000)).outcome).toBe("already_paid");
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledTimes(2);
     });
   });
 

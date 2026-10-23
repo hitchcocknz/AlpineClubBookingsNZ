@@ -206,7 +206,7 @@ export async function sendAdminDuplicateCaptureKeptAlert(data: {
       }),
       // What to do differs too: with nothing else holding money this payment
       // may be the one paying for the booking (#4211 review).
-      duplicateCaptureKeptAction: duplicateCaptureKeptAction({ otherHoldsMoney: data.otherHoldsMoney }),
+      duplicateCaptureKeptAction: duplicateCaptureKeptAction({ otherHoldsMoney: data.otherHoldsMoney, reason: data.reason }),
     },
     requirement: { area: "finance", level: "edit" },
   });

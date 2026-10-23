@@ -15,12 +15,18 @@
   which payment settled it (a booking paid with account credit, at a zero
   total or by a group organiser, or one whose earlier payment was refunded) is
   now kept and flagged to the administrators, whatever its amount, rather than
-  kept without a word. A repeat of a payment the app had already recorded is
-  still acknowledged quietly.
+  kept without a word - including a saved-card charge the app records just
+  before settling it. A repeat of a payment the app had already recorded is
+  still acknowledged quietly. If that alert cannot be sent (or the app stops
+  before sending it), it stays owed: the payment's next arrival sends it, and a
+  new payments task, "Kept card payment alert", sends it an hour later
+  otherwise. One case stays quiet: a saved-card charge whose charging request
+  stopped between recording the payment and settling it.
 
   **After upgrading,** run the read-only query in the upgrade notes to list
   completed bookings that may hold a second card payment whose retries ran out
-  before the upgrade, and check each in Stripe with the treasurer. An extra
-  payment found there is refunded by hand in Stripe; the app records that
-  refund and queues a Xero credit note, which must be deleted or voided in
-  Xero until #4322 is fixed.
+  before the upgrade (or a lone card payment on a booking paid with credit, at
+  a zero total or by a group organiser), and check each in Stripe with the
+  treasurer. An extra payment found there is refunded by hand in Stripe; the
+  app records that refund and queues a Xero credit note, which must be deleted
+  or voided in Xero until #4322 is fixed, whether or not its event was resent.
