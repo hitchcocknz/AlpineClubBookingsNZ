@@ -18,10 +18,10 @@
  * is one that landed while the create was in flight, which is what the
  * treasurer's task describes (review M5).
  *
- * #3953 (`INV-PAY-138`): and the card captures the payment's cash figure holds
- * (`capturedPaymentIntentIdsAtBuild`) - the cash the create records against
- * the invoice. A change's capture outside it was not counted here, so its own
- * receipt is recorded once the invoice exists; one inside it never is.
+ * #3953 (`INV-PAY-139`): and the card captures the payment's cash figure holds,
+ * oldest first with their net cash (`capturesAtBuild`). The link's save keeps
+ * those the cash it recorded covers (`paymentIntentIdsRecordedAtLink`); every
+ * other change capture is recorded by its own receipt.
  */
 import { prisma } from "@/lib/prisma";
 import { FEE_ON_PRIMARY_INVOICE_PATH } from "@/lib/booking-finished-stay-correction";
@@ -74,13 +74,17 @@ export async function readBookingForPrimaryInvoice(bookingId: string) {
               stripePaymentIntentId: { not: null },
             },
             orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
-            select: { stripePaymentIntentId: true },
+            select: { stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
           })
         : [];
       return {
         booking,
         markedModificationIdsAtBuild: marked.map((row) => row.id),
-        capturedPaymentIntentIdsAtBuild: captured.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : [])),
+        capturesAtBuild: captured.flatMap((row) =>
+          row.stripePaymentIntentId
+            ? [{ paymentIntentId: row.stripePaymentIntentId, netCents: Math.max(0, row.amountCents - row.refundedAmountCents) }]
+            : [],
+        ),
       };
     },
     { isolationLevel: "RepeatableRead" },

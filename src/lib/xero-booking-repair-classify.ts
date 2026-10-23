@@ -797,6 +797,8 @@ export function classifyBookingContext(
                       paymentIntentId: editReviewPaymentPlan.paymentIntentId,
                     }
                   : {}),
+                // #3953 (`INV-PAY-139`): a capture of this change its own receipt records is never recorded again here.
+                ...(context.additionalCaptureReceipts?.receiptModificationIds.has(modification.id) ? { recordPayment: false } : {}),
               },
             });
             addFinding(findings, {

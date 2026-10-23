@@ -23,7 +23,7 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   // #3635: a late capture a treasurer kept on a cancelled booking, whose
   // booking payment Xero has no invoice for.
   "KEPT_LATE_CAPTURE_WITHOUT_XERO_INVOICE",
-  // #3953 (`INV-PAY-138`): a change's card capture no Xero invoice records.
+  // #3953 (`INV-PAY-139`): a change's card capture no Xero invoice records.
   "ADDITIONAL_CAPTURE_NOT_RECORDED_IN_XERO",
   // #3635 round-3 R5: a kept capture an officer recorded by hand in Xero was
   // refunded; the app raises no note for it, so an officer records the refund
@@ -282,6 +282,8 @@ export const bookingRepairSelect = Prisma.validator<Prisma.BookingSelect>()({
           reason: true,
           // #3528: a withdrawn charge request must not plan a new invoice.
           withdrawnAt: true,
+          // #3953: the change a captured ask pays for, which its receipt reads.
+          bookingModificationId: true,
           createdAt: true,
           insertionSeq: true,
           updatedAt: true,

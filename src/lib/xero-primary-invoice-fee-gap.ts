@@ -46,6 +46,7 @@ import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import {
+  intentsRecordedByPrimaryCash,
   PRIMARY_INVOICE_FEE_AT_LINK_KEY,
   type PrimaryInvoiceBilledFee,
   type PrimaryInvoiceFeeAtLink,
@@ -57,6 +58,8 @@ import {
 import { unallocatedAppliedCents } from "@/lib/xero-applied-credit-ledger-state";
 import { isCreditOnlyCardPayment } from "@/lib/credit-only-card-payment";
 import { enqueueXeroSupplementaryInvoiceOperation } from "@/lib/xero-operation-outbox";
+import { attributeGapCash, readCapturedStripeCash, readReceiptClaimedIntents } from "@/lib/additional-capture-recorder";
+import { queueReceiptsForUnrecordedCaptures } from "@/lib/additional-capture-receipt-enqueue";
 import {
   readQueuedOutboxPayload,
   XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
@@ -197,6 +200,15 @@ export function unrecordedPrimaryInvoiceCash(input: {
 }
 
 
+/** #3953: which captures the cash this invoice records covers, as stored with its link. */
+function capturesRecordedAtLink(
+  capturesAtBuild: ReadonlyArray<{ paymentIntentId: string; netCents: number }>,
+  primaryInvoiceCashCents: number,
+) {
+  const { recorded, partial } = intentsRecordedByPrimaryCash(capturesAtBuild, primaryInvoiceCashCents);
+  return { paymentIntentIdsRecordedAtLink: recorded, ...(partial ? { partiallyRecordedCaptureAtLink: partial } : {}) };
+}
+
 /**
  * Saves the payment's invoice link and, in the SAME transaction, records on
  * the create operation what the invoice billed, the fee the payment held at
@@ -230,7 +242,7 @@ export async function persistPrimaryInvoiceLink(input: {
     worthCents: number;
     lineTotalCents: number;
     markedModificationIdsAtBuild?: readonly string[];
-    capturedPaymentIntentIdsAtBuild?: readonly string[];
+    capturesAtBuild?: ReadonlyArray<{ paymentIntentId: string; netCents: number }>;
   };
   /** The Stripe cash recorded against this invoice, computed once by the create. */
   primaryInvoiceCashCents: number;
@@ -272,9 +284,7 @@ export async function persistPrimaryInvoiceLink(input: {
           ? { markedModificationIdsAtBuild: [...input.built.markedModificationIdsAtBuild] }
           : {}),
       },
-      ...(input.built.capturedPaymentIntentIdsAtBuild
-        ? { capturedPaymentIntentIdsAtBuild: [...input.built.capturedPaymentIntentIdsAtBuild] }
-        : {}),
+      ...(input.built.capturesAtBuild ? capturesRecordedAtLink(input.built.capturesAtBuild, input.primaryInvoiceCashCents) : {}),
     };
     const operation = await tx.xeroSyncOperation.findUnique({
       where: { id: input.operationId },
@@ -465,7 +475,7 @@ async function reviewUnstoredRelink(input: {
  *    lines are the fee recorded since the build as a change fee and the rest
  *    as price, signed as an edit's are (#1356). A card capture of the
  *    anchor's own ask is recorded against it later, by that capture's own
- *    receipt (#3953, `INV-PAY-138`, `additional-capture-xero-receipt.ts`).
+ *    receipt (#3953, `INV-PAY-139`, `additional-capture-xero-receipt.ts`).
  *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
  *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
  *    credit note is raised automatically (owner, 21 Oct 2026). An overcharge's
@@ -495,6 +505,9 @@ export async function queuePrimaryInvoiceWorthGap(input: {
         }
       : {}),
   };
+  // #3953: every captured change the primary's cash does not cover gets its
+  // own receipt row first, so the gap never pays itself from that cash.
+  await queueReceiptsForUnrecordedCaptures(bookingId, atLink);
   if (gapCents === 0) return NO_GAP;
 
   // Round 2 F1: only the marked edits that landed while the create was in
@@ -571,6 +584,9 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   // payment did not take is the gap's (finding 3). What the primary took is
   // the figure the create sized its payment at and stored with the link
   // (`primaryInvoiceCashCents`, round 5 finding 4) - never recomputed here.
+  // #3953 (`INV-PAY-139`): one recorder per capture - cash a receipt row
+  // claimed is that receipt's, never the gap's, and the captures the gap's
+  // own payment takes are named on its payload so their receipts stand down.
   const payment = await prisma.payment.findUnique({
     where: { bookingId },
     select: {
@@ -580,8 +596,12 @@ export async function queuePrimaryInvoiceWorthGap(input: {
       refundedAmountCents: true,
     },
   });
-  const netCapturedCents = Math.max(0, (payment?.amountCents ?? 0) - (payment?.refundedAmountCents ?? 0));
-  const leftOverCashCents = payment ? netCapturedCents - atLink.primaryInvoiceCashCents : 0;
+  const { leftoverCents: leftOverCashCents, covered } = attributeGapCash({
+    captures: payment ? await readCapturedStripeCash(bookingId) : [],
+    claimed: await readReceiptClaimedIntents(bookingId),
+    primaryCashCents: atLink.primaryInvoiceCashCents,
+    gapCents,
+  });
   const recordPayment =
     payment?.source === PaymentSource.STRIPE && hasCapturedPayment(payment) && leftOverCashCents >= gapCents;
 
@@ -597,7 +617,7 @@ export async function queuePrimaryInvoiceWorthGap(input: {
       changeFeeCents: feeGapCents,
       bookingModificationId: anchorIds[0],
     },
-    { createdByMemberId: input.createdByMemberId, recordPayment },
+    { createdByMemberId: input.createdByMemberId, recordPayment, primaryInvoiceGap: { coveredCaptures: recordPayment ? covered : [] } },
   );
   const outcome = {
     ...context,

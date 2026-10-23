@@ -47,12 +47,16 @@ export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
    */
   readonly worth?: PrimaryInvoiceWorthAtLink;
   /**
-   * #3953 (`INV-PAY-138`): the Stripe intents whose captures the create's
-   * snapshot held - the cash it sized its payment from. A change's capture
-   * not in it is recorded by its own receipt (`additional-capture-xero-receipt.ts`).
-   * Absent on a record written before it, which cannot tell.
+   * #3953 (`INV-PAY-139`): the Stripe intents whose captures the cash this
+   * invoice records covers (`intentsRecordedByPrimaryCash`): the snapshot's
+   * captures, oldest first, while their net cash fits in
+   * `primaryInvoiceCashCents`. Any other change capture is recorded by its own
+   * receipt (`additional-capture-xero-receipt.ts`). Absent on a record written
+   * before it, which cannot tell.
    */
-  readonly capturedPaymentIntentIdsAtBuild?: readonly string[];
+  readonly paymentIntentIdsRecordedAtLink?: readonly string[];
+  /** #3953: the capture the primary's cash reached only part of, and how much. */
+  readonly partiallyRecordedCaptureAtLink?: { readonly paymentIntentId: string; readonly cents: number };
 }
 
 /**
@@ -127,13 +131,21 @@ export function parsePrimaryInvoiceFeeAtLink(
       ? { primaryInvoiceAttemptedCashCents: record.primaryInvoiceAttemptedCashCents }
       : {}),
     ...parseWorth(record.worth),
-    ...parseStringList("capturedPaymentIntentIdsAtBuild", record.capturedPaymentIntentIdsAtBuild),
+    ...parseStringList("paymentIntentIdsRecordedAtLink", record.paymentIntentIdsRecordedAtLink),
+    ...parsePartialCapture(record.partiallyRecordedCaptureAtLink),
   };
 }
 
 function parseStringList<K extends string>(key: K, value: unknown): { [P in K]?: string[] } {
   return Array.isArray(value) && value.every((id) => typeof id === "string")
     ? ({ [key]: value as string[] } as { [P in K]?: string[] })
+    : {};
+}
+
+function parsePartialCapture(value: unknown): { partiallyRecordedCaptureAtLink?: { paymentIntentId: string; cents: number } } {
+  const partial = asRecord(value);
+  return partial && typeof partial.paymentIntentId === "string" && typeof partial.cents === "number"
+    ? { partiallyRecordedCaptureAtLink: { paymentIntentId: partial.paymentIntentId, cents: partial.cents } }
     : {};
 }
 
@@ -158,4 +170,26 @@ function parseWorth(value: unknown): { worth?: PrimaryInvoiceWorthAtLink } {
         : {}),
     },
   };
+}
+
+/**
+ * #3953 (`INV-PAY-139`): which of the snapshot's captures the primary
+ * invoice's recorded cash covers - oldest first, each wholly, and the one it
+ * reached part of (`partial`), whose rest its own receipt records. A replay
+ * whose invoice Xero recorded at an earlier, smaller figure covers fewer.
+ */
+export function intentsRecordedByPrimaryCash(
+  capturesAtBuild: ReadonlyArray<{ paymentIntentId: string; netCents: number }>,
+  primaryInvoiceCashCents: number,
+): { recorded: string[]; partial: { paymentIntentId: string; cents: number } | null } {
+  const recorded: string[] = [];
+  let remaining = Math.max(0, primaryInvoiceCashCents);
+  for (const capture of capturesAtBuild) {
+    if (capture.netCents > remaining) {
+      return { recorded, partial: remaining > 0 ? { paymentIntentId: capture.paymentIntentId, cents: remaining } : null };
+    }
+    remaining -= capture.netCents;
+    recorded.push(capture.paymentIntentId);
+  }
+  return { recorded, partial: null };
 }

@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-138`): THE REPAIR TOOL'S HALF OF A CHANGE'S CARD CAPTURE
+ * #3953 (`INV-PAY-139`): THE REPAIR TOOL'S HALF OF A CHANGE'S CARD CAPTURE
  * THAT XERO NEVER RECORDED - "card payment not recorded in Xero".
  *
  * A change's capture is recorded in Xero by the supplementary invoice that
@@ -11,17 +11,18 @@
  * and records it, or refuses and tells an officer, so applying it never
  * guesses.
  *
- * Auto-applied only where the primary invoice's stored figures say its create
- * did NOT count this capture (`capturedPaymentIntentIdsAtBuild`). Without
- * those figures (an invoice raised before them) it is offered for an officer
- * to apply: the capture may be in the invoice's own payment already.
+ * Never where another writer records the capture (`readCaptureRecorder`: the
+ * primary's own payment, or a supplementary invoice for the change or naming
+ * it). Auto-applied only where the primary invoice's stored figures say which
+ * captures its cash covered (`paymentIntentIdsRecordedAtLink`). Without them
+ * (an invoice raised before them) it is offered for an officer to apply: the
+ * capture may be in the invoice's own payment already.
  */
-import type { Prisma, PrismaClient } from "@prisma/client";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import { ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE } from "@/lib/additional-capture-xero-receipt";
 import { readPrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-gap-anchors";
-import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
 import {
   xeroOperationSelect,
   type BookingXeroRepairAction,
@@ -38,40 +39,53 @@ export type AdditionalCaptureReceiptEvidence = {
   operationsByTransactionId: Map<string, XeroOperationRecord[]>;
   /** Captures whose receipt's Xero payment is linked. */
   recordedTransactionIds: ReadonlySet<string>;
-  /** Captures a supplementary invoice names: the late-success release answers those. */
-  invoicedIntentIds: ReadonlySet<string>;
-  /** Captures the primary's create counted; null where it stored no such figure. */
-  countedIntentIds: ReadonlySet<string> | null;
+  /**
+   * Review round 1 (B): captures another writer records (`readCaptureRecorder`):
+   * the primary's own payment, or a supplementary invoice for the change or
+   * naming the capture. Read only for captures with no receipt row or link.
+   */
+  recordedElsewhereIntentIds: ReadonlySet<string>;
+  /** Whether the primary's stored figures say which captures its cash covered. */
+  primaryCoverageKnown: boolean;
+  /**
+   * Changes a capture of which has a receipt row or its payment link: a
+   * supplementary invoice the repair tool queues for one is raised unpaid, so
+   * the capture is recorded once.
+   */
+  receiptModificationIds: ReadonlySet<string>;
 };
-
-type RepairStore = Pick<PrismaClient, "xeroSyncOperation" | "xeroObjectLink">;
 
 type LoadBooking = {
   id: string;
   status: string;
   payment: {
     xeroInvoiceId: string | null;
-    transactions: Array<{ id: string; kind: string; stripePaymentIntentId: string | null }>;
+    transactions: Array<{
+      id: string | null;
+      kind: string;
+      stripePaymentIntentId: string | null;
+      bookingModificationId?: string | null;
+    }>;
   } | null;
 };
 
 /** Read-only: the evidence for every booking with a primary invoice and a change capture. */
 export async function loadAdditionalCaptureReceiptEvidence(
-  store: RepairStore,
+  store: RecorderStore,
   bookings: readonly LoadBooking[],
 ): Promise<Map<string, AdditionalCaptureReceiptEvidence>> {
   const evidence = new Map<string, AdditionalCaptureReceiptEvidence>();
   for (const booking of bookings) {
     const payment = booking.payment;
-    if (booking.status === "CANCELLED" || !payment?.xeroInvoiceId) continue;
+    const primaryInvoiceId = payment?.xeroInvoiceId;
+    if (booking.status === "CANCELLED" || !payment || !primaryInvoiceId) continue;
     const captures = payment.transactions.filter(
-      (row): row is typeof row & { stripePaymentIntentId: string } =>
-        row.kind === "ADDITIONAL" && row.stripePaymentIntentId !== null,
+      (row): row is typeof row & { id: string; stripePaymentIntentId: string } =>
+        row.kind === "ADDITIONAL" && row.stripePaymentIntentId !== null && row.id !== null,
     );
     if (captures.length === 0) continue;
     const transactionIds = captures.map((row) => row.id);
-    const intentIds = captures.map((row) => row.stripePaymentIntentId);
-    const [operations, links, invoiced, stored] = await Promise.all([
+    const [operations, links, figures] = await Promise.all([
       store.xeroSyncOperation.findMany({
         where: {
           localModel: "PaymentTransaction",
@@ -90,35 +104,44 @@ export async function loadAdditionalCaptureReceiptEvidence(
         },
         select: { localId: true },
       }),
-      store.xeroSyncOperation.findMany({
-        where: {
-          queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-          OR: intentIds.map((id) => ({ requestPayload: { path: ["paymentIntentId"], equals: id } })),
-        } satisfies Prisma.XeroSyncOperationWhereInput,
-        select: { queueType: true, requestPayload: true },
-      }),
-      readPrimaryInvoiceFeeAtLink(booking.id, payment.xeroInvoiceId, store),
+      readPrimaryInvoiceFeeAtLink(booking.id, primaryInvoiceId, store),
     ]);
     const operationsByTransactionId = new Map<string, XeroOperationRecord[]>();
     for (const operation of operations) {
-      if (!operation.localId) continue;
+      if (!operation.localId || operation.queueType !== XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE) continue;
       operationsByTransactionId.set(operation.localId, [
         ...(operationsByTransactionId.get(operation.localId) ?? []),
         operation,
       ]);
     }
-    const counted = stored?.atLink.capturedPaymentIntentIdsAtBuild;
+    const recordedTransactionIds = new Set(links.map((link) => link.localId));
+    const recordedElsewhereIntentIds = new Set<string>();
+    const receiptModificationIds = new Set<string>();
+    for (const capture of captures) {
+      const hasReceipt =
+        recordedTransactionIds.has(capture.id) ||
+        (operationsByTransactionId.get(capture.id) ?? []).some((operation) => operation.status !== "CANCELLED");
+      if (hasReceipt) {
+        if (capture.bookingModificationId) receiptModificationIds.add(capture.bookingModificationId);
+        continue;
+      }
+      const recorder = await readCaptureRecorder(
+        {
+          bookingId: booking.id,
+          primaryInvoiceId,
+          paymentIntentId: capture.stripePaymentIntentId,
+          bookingModificationId: capture.bookingModificationId ?? null,
+        },
+        store,
+      );
+      if (recorder.kind !== "receipt") recordedElsewhereIntentIds.add(capture.stripePaymentIntentId);
+    }
     evidence.set(booking.id, {
       operationsByTransactionId,
-      recordedTransactionIds: new Set(links.map((link) => link.localId)),
-      invoicedIntentIds: new Set(
-        invoiced.flatMap((row) => {
-          if (row.queueType !== XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE) return [];
-          const id = (row.requestPayload as Record<string, unknown> | null)?.paymentIntentId;
-          return typeof id === "string" ? [id] : [];
-        }),
-      ),
-      countedIntentIds: counted ? new Set(counted) : null,
+      recordedTransactionIds,
+      recordedElsewhereIntentIds,
+      primaryCoverageKnown: figures?.atLink.paymentIntentIdsRecordedAtLink !== undefined,
+      receiptModificationIds,
     });
   }
   return evidence;
@@ -152,8 +175,7 @@ export function addUnrecordedAdditionalCaptureFindings({
     const paymentIntentId = capture.stripePaymentIntentId;
     if (capture.kind !== "ADDITIONAL" || !paymentIntentId || !capture.id) continue;
     if (evidence.recordedTransactionIds.has(capture.id)) continue;
-    if (evidence.invoicedIntentIds.has(paymentIntentId)) continue;
-    if (evidence.countedIntentIds?.has(paymentIntentId)) continue;
+    if (evidence.recordedElsewhereIntentIds.has(paymentIntentId)) continue;
     const details = { paymentId, paymentIntentId, paymentTransactionId: capture.id, capturedCents: capture.amountCents };
     const operations = evidence.operationsByTransactionId.get(capture.id) ?? [];
     if (operations.length > 0) {
@@ -184,7 +206,7 @@ export function addUnrecordedAdditionalCaptureFindings({
       // Queued, running, done, withdrawn, or resolved by an officer in Xero.
       continue;
     }
-    const countedKnown = evidence.countedIntentIds !== null;
+    const countedKnown = evidence.primaryCoverageKnown;
     const action = addAction(actionMap, {
       key: `queue:additional-capture-receipt:${paymentIntentId}`,
       bookingId: booking.id,

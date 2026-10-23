@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-138`): the queued payload of the operation that records a
+ * #3953 (`INV-PAY-139`): the queued payload of the operation that records a
  * booking change's card capture against the Xero invoice that bills it, when
  * no supplementary invoice was waiting on that capture. A leaf - it imports
  * nothing of the outbox - so the outbox's payload parser and the worker
@@ -89,4 +89,24 @@ export function readAdditionalCaptureReceiptPayload(
   if (payload.plan === undefined || payload.plan === null) return base;
   const plan = readPlan(payload.plan);
   return plan ? { ...base, plan } : null;
+}
+
+/**
+ * #3953 review round 1: the #3980 gap invoice's queued payload names itself,
+ * and the captures its own Stripe payment takes (`attributeGapCash`), so each
+ * of those captures has one recorder. The supplementary handler keeps its
+ * queued payload when it sends, so the names survive the send.
+ */
+export const GAP_COVERED_INTENTS_KEY = "coveredPaymentIntentIds";
+export const GAP_COVERED_CENTS_KEY = "coveredCaptureCents";
+
+export function primaryInvoiceGapPayload(
+  gap: { coveredCaptures: ReadonlyArray<{ paymentIntentId: string; cents: number }> } | undefined,
+): Record<string, unknown> {
+  if (!gap) return {};
+  return {
+    primaryInvoiceGap: true,
+    [GAP_COVERED_INTENTS_KEY]: gap.coveredCaptures.map((capture) => capture.paymentIntentId),
+    [GAP_COVERED_CENTS_KEY]: Object.fromEntries(gap.coveredCaptures.map((capture) => [capture.paymentIntentId, capture.cents])),
+  };
 }

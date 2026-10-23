@@ -1,51 +1,58 @@
 /**
  * A BOOKING CHANGE'S CARD CAPTURE IS RECORDED AGAINST THE XERO INVOICE THAT
- * BILLS IT (#3953, `INV-PAY-138`; owner decision and plan, 21 Oct 2026: "check,
+ * BILLS IT (#3953, `INV-PAY-139`; owner decision and plan, 21 Oct 2026: "check,
  * then bill and pay").
  *
  * A change made while the booking's primary invoice did not yet exist queues no
  * supplementary invoice: the primary is built later from the post-change price
- * and bills the extra itself. When the member pays that extra by card only after
- * the primary was raised, nothing waits on the capture
- * (`releaseXeroSupplementaryInvoiceForCapturedPaymentIntent` answers
- * `none-queued`), so the capture is queued here instead
- * (`enqueueAdditionalCaptureReceiptOperation`) and this worker records it, AT
- * CAPTURE TIME, against whatever invoice still has that money due:
+ * and bills the extra itself. A capture of that change's ask that the primary's
+ * own payment did not record gets a receipt row
+ * (`additional-capture-receipt-enqueue.ts`) - from the late-success release
+ * when it lands after the invoice, or from the invoice's link save when it
+ * landed before - and this worker records it, AT CAPTURE TIME, against the
+ * invoice that bills it:
  *
- *  1. THE GAP INVOICE FIRST. When an edit raced the primary invoice's create
- *     (#3980, `INV-PAY-136`), the primary bills the booking as it was before
- *     the edit and the gap's supplementary invoice bills the edit's extra. That
- *     invoice exists for exactly this money, so it is paid first.
- *  2. THEN THE PRIMARY INVOICE, the usual case: it was built from the
- *     post-change price, so it bills the extra and holds it due. Its room is its
- *     AmountDue less the applied account credit its settle still allocates
- *     there (`primaryInvoiceStripeCashCents`), so that allocation always fits.
+ *  - THE GAP INVOICE, where the capture's change is one the #3980 gap invoice
+ *    bills for (`INV-PAY-136`): the primary bills the booking as it was before
+ *    that change, and the gap invoice bills the change's extra.
+ *  - OTHERWISE THE PRIMARY INVOICE, built from the post-change price. Its room
+ *    is its AmountDue less the applied account credit its settle still
+ *    allocates there (`primaryInvoiceStripeCashCents`), so that allocation
+ *    always fits.
  *
- * One invoice, never split: the capture's gross cents, capped at that invoice's
- * room. Cash it leaves over is told to an officer with both figures.
+ * One invoice, never split: the capture's gross cents (less any part the
+ * primary's own payment took), capped at that invoice's room. Cash it leaves
+ * over is told to an officer with both figures.
+ *
+ * ONE RECORDER PER CAPTURE (review round 1, `additional-capture-recorder.ts`).
+ * Before it decides anything the worker reads who records the capture and
+ * stands down for the primary's own payment, a supplementary invoice for the
+ * change or naming the capture, or a gap invoice whose payment took it. It
+ * plans one capture per booking at a time, and not while the booking's
+ * invoice create is running (it waits, back to PENDING). The gap invoice never
+ * pays itself from a capture with a receipt row.
  *
  * NOTHING IS GUESSED. The worker refuses - the row FAILED with
  * `ADDITIONAL_CAPTURE_RECEIPT_REFUSED`, an officer told - where Xero cannot be
- * read, nothing is due on either invoice, the booking was cancelled (its
- * invoice is cleared by the cancellation's note), the gap invoice has not
- * reached Xero, or another writer's payment against the same invoice is still
- * owed (the primary's own Stripe payment, or the gap invoice's, after a
- * PARTIAL). It WAITS (back to PENDING) while the gap invoice is still being
- * sent. Where neither invoice can take the capture and no gap invoice exists,
- * the gap is raised through #3980's own check (`recheckPrimaryInvoiceWorthGap`),
- * which never queues a second.
+ * read, the invoice that bills the capture has nothing due, the gap invoice
+ * has not reached Xero, the invoice's own payment is still owed (a PARTIAL
+ * create), or a retry's invoice no longer has the room it was sized at. It
+ * WAITS while the gap invoice is still being sent. Where the primary cannot
+ * take the capture and no gap invoice exists, #3980's own check
+ * (`recheckPrimaryInvoiceWorthGap`) raises one, never a second, and the
+ * receipt waits for it. A capture on a booking since cancelled, or paid by
+ * internet banking, is closed unsent.
  *
- * NEVER TWICE. One row per capture (its key names the intent), queued under the
- * per-anchor supplementary-invoice lock. The worker returns early on the
- * capture's own payment link; finds a payment an earlier run recorded by its
- * reference before writing another; stores the payment it decided on the row
- * BEFORE calling Xero, so a retry sends the same invoice, amount, date and Xero
- * key and never decides again; and leaves alone a capture the primary's create
- * already counted (`capturedPaymentIntentIdsAtBuild`).
+ * NEVER TWICE. One row per capture, queued under the per-anchor
+ * supplementary-invoice lock; the payment link returns early; an earlier run's
+ * payment is found by its reference; and the payment decided is stored on the
+ * row BEFORE Xero is called, so a retry sends the same invoice, amount, date
+ * and Xero key, or refuses - it never decides again.
  *
  * No provider call is made under a lock or inside a transaction (`INV-LOCK-004`).
  */
 import type { Invoice } from "xero-node";
+import { PaymentSource } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
@@ -69,19 +76,25 @@ import {
   failXeroSyncOperation,
   sanitizeForJson,
 } from "@/lib/xero-sync";
-import {
-  findPrimaryInvoiceGapInvoice,
-  readPrimaryInvoiceFeeAtLink,
-} from "@/lib/xero-primary-invoice-gap-anchors";
+import { readCaptureRecorder } from "@/lib/additional-capture-recorder";
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import {
   readAdditionalCaptureReceiptPayload,
+  XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
   type AdditionalCaptureReceiptPlan,
   type AdditionalCaptureReceiptTarget,
 } from "@/lib/additional-capture-receipt-payload";
+import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import type { cardSettleAppliedCreditCents } from "@/lib/xero-primary-invoice-fee-gap";
+
+/** The payment figures the primary's applied-credit reservation reads. */
+type CardSettlePayment = Parameters<typeof cardSettleAppliedCreditCents>[1];
 
 /** Stamped on a row the worker refused: an officer checks Xero and records it by hand, or retries. */
 export const ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE = "ADDITIONAL_CAPTURE_RECEIPT_REFUSED";
+
+/** The `lastErrorCode` a receipt carries while it waits (busy) and goes back to PENDING. */
+export const ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE = "ADDITIONAL_CAPTURE_RECEIPT_WAITING";
 
 /** The outbox row's key: one per capture. */
 export function additionalCaptureReceiptKey(paymentIntentId: string): string {
@@ -107,9 +120,11 @@ export type ReceiptCandidate = {
 };
 
 /**
- * THE ONE DECISION, pure: the first candidate with room, in the order given -
- * the gap invoice, then the primary - and the capture's gross cents capped at
- * that room. Null when none has any.
+ * THE ONE DECISION, pure: the first candidate with room, in the order given,
+ * and the capture's cents capped at that room. Null when none has any. The
+ * worker offers the gap invoice only where it bills the capture's change, so
+ * there is one candidate in practice; the order is the rule where there are
+ * more.
  */
 export function chooseAdditionalCaptureReceiptTarget(
   capturedCents: number,
@@ -125,17 +140,13 @@ export function chooseAdditionalCaptureReceiptTarget(
   };
 }
 
-/** The `lastErrorCode` a receipt carries while it waits for the gap invoice. */
-export const ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE_CODE = "ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE";
-
 /**
- * Thrown while the gap invoice is still on its way to Xero: a busy error, so
- * the outbox returns this row to PENDING, carrying the code above, rather than
- * failing it; the gap invoice's row is older, so the next scan sends it first.
- * Built at the throw, never subclassed at module load.
+ * A wait: the applied-credit busy error, so the outbox returns the row to
+ * PENDING with this code rather than failing it. Built at the throw, never
+ * subclassed at module load.
  */
-function awaitingGapInvoice(message: string): XeroAppliedCreditOperationBusyError {
-  return new XeroAppliedCreditOperationBusyError(message, null, ADDITIONAL_CAPTURE_RECEIPT_AWAITING_GAP_INVOICE_CODE);
+function waitFor(message: string): XeroAppliedCreditOperationBusyError {
+  return new XeroAppliedCreditOperationBusyError(message, null, ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE);
 }
 
 /**
@@ -164,18 +175,19 @@ const OUTSTANDING_STATUSES = new Set(["PENDING", "RUNNING", "WAITING_PAYMENT"]);
  */
 const REFUSAL_TEXT = {
   "not-captured": "no captured card payment could be found for it",
-  "booking-cancelled":
-    "the booking has since been cancelled, and its cancellation clears the booking's Xero invoice",
   "no-primary-invoice": "the booking has no Xero invoice linked",
+  "xero-unreadable":
+    "Xero did not return the invoice it belongs to, so how much is still due could not be read; retry this once Xero answers",
   "gap-invoice-not-in-xero":
     "the supplementary invoice that bills this change has not reached Xero (its operation failed or was resolved by hand)",
   "gap-review-task":
     "the booking's Xero invoice bills less than the booking is worth and no change explains it; a Xero Operations task asks the treasurer to bill it",
   "own-payment-pending":
     "the invoice's own card payment has not been recorded in Xero yet (its operation is PARTIAL); retry this once that is repaired",
-  "nothing-due": "neither the booking's Xero invoice nor a supplementary invoice for the change has any amount still due",
+  "nothing-due":
+    "the Xero invoice this payment belongs to has nothing left due once any account credit still to be allocated to it is allowed for, so recording it would overpay that invoice",
   "figures-changed":
-    "the invoice no longer has the amount due this payment was sized at when it was first tried",
+    "the invoice no longer has the amount due this payment was sized at when it was first tried, and Xero shows no payment under its reference. Record it by hand in Xero, then mark this operation resolved",
 } as const;
 export type AdditionalCaptureReceiptRefusal = keyof typeof REFUSAL_TEXT;
 
@@ -228,7 +240,7 @@ function findRecordedPayment(read: InvoiceRead | null, reference: string) {
   );
 }
 
-function roomOn(read: InvoiceRead | null): number {
+function amountDueOn(read: InvoiceRead | null): number {
   return read && read.status === "AUTHORISED" ? Math.max(0, read.amountDueCents) : 0;
 }
 
@@ -248,6 +260,43 @@ function ownPaymentPending(
 }
 
 /**
+ * Review round 1 (D): ONE RECEIPT PLANS PER BOOKING AT A TIME, and none while
+ * the booking's invoice create runs - its link save queues receipts and its
+ * gap check decides what the gap invoice pays itself from. The outbox claims
+ * this row RUNNING before the handler starts, so of two receipts claimed at
+ * once at least one sees the other; it waits, whichever it is.
+ */
+async function waitForOtherWriters(operationId: string, bookingId: string): Promise<void> {
+  const [otherReceipt, runningCreate] = await Promise.all([
+    prisma.xeroSyncOperation.findFirst({
+      where: {
+        id: { not: operationId },
+        queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
+        status: "RUNNING",
+        requestPayload: { path: ["bookingId"], equals: bookingId },
+      },
+      select: { id: true },
+    }),
+    prisma.xeroSyncOperation.findFirst({
+      where: {
+        direction: "OUTBOUND",
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
+        status: "RUNNING",
+      },
+      select: { id: true },
+    }),
+  ]);
+  if (otherReceipt) {
+    throw waitFor(`Another card payment receipt for this booking (operation ${otherReceipt.id}) is being recorded; this one waits for it`);
+  }
+  if (runningCreate) {
+    throw waitFor(`The booking's Xero invoice is still being raised (operation ${runningCreate.id}); this card payment is recorded once it is done`);
+  }
+}
+
+/**
  * THE WORKER, from the outbox. Returns the Xero payment id it recorded or
  * found, or null when it recorded nothing.
  */
@@ -264,7 +313,7 @@ export async function recordAdditionalCaptureReceipt(
   if (!queued) {
     throw new Error(`Card capture receipt operation ${operationId} has no readable queued payload`);
   }
-  const { bookingId, paymentTransactionId, paymentIntentId } = queued;
+  const { bookingId, paymentId, paymentTransactionId, paymentIntentId } = queued;
   const reference = additionalCapturePaymentReference(paymentIntentId);
 
   const refuse = async (reason: AdditionalCaptureReceiptRefusal, details: Record<string, unknown> = {}) => {
@@ -280,6 +329,11 @@ export async function recordAdditionalCaptureReceipt(
     await alertOfficer(paymentIntentId, operationId, message);
     return null;
   };
+  /** Finished with nothing to send: another writer records it, or it is not this app's to record. */
+  const standDown = async (status: "SUCCEEDED" | "CANCELLED", skipped: string, details: Record<string, unknown> = {}) => {
+    await completeXeroSyncOperation(operationId, { status, responsePayload: { skipped, ...details } });
+    return null;
+  };
 
   const existingLink = await prisma.xeroObjectLink.findFirst({
     where: {
@@ -289,7 +343,7 @@ export async function recordAdditionalCaptureReceipt(
       role: ADDITIONAL_CAPTURE_PAYMENT_ROLE,
       active: true,
     },
-    select: { xeroObjectId: true, metadata: true },
+    select: { xeroObjectId: true },
   });
   if (existingLink) {
     await completeXeroSyncOperation(operationId, {
@@ -301,6 +355,7 @@ export async function recordAdditionalCaptureReceipt(
   }
 
   try {
+    await waitForOtherWriters(operationId, bookingId);
     const plan = queued.plan ?? (await planReceipt());
     // No plan: the row is already finished - skipped, recorded, or refused.
     if (!plan) return null;
@@ -311,9 +366,26 @@ export async function recordAdditionalCaptureReceipt(
     throw error;
   }
 
+  /** The room on the primary: its AmountDue less the applied credit its settle still allocates there. */
+  async function primaryRoom(
+    read: InvoiceRead,
+    payment: CardSettlePayment,
+    capturedCents: number,
+  ): Promise<number> {
+    if (read.status !== "AUTHORISED") return 0;
+    const { cardSettleAppliedCreditCents, primaryInvoiceStripeCashCents } = await import(
+      "@/lib/xero-primary-invoice-fee-gap"
+    );
+    return primaryInvoiceStripeCashCents({
+      netCapturedCents: capturedCents,
+      amountDueCents: read.amountDueCents,
+      appliedCreditCents: await cardSettleAppliedCreditCents(bookingId, payment),
+    });
+  }
+
   /**
    * Decide the payment, store it on the row, and return it; or finish the row
-   * (skipped, recorded elsewhere, or refused) and return null.
+   * (stood down, recorded elsewhere, or refused) and return null.
    */
   async function planReceipt(): Promise<AdditionalCaptureReceiptPlan | null> {
     const transaction = await prisma.paymentTransaction.findUnique({
@@ -324,6 +396,7 @@ export async function recordAdditionalCaptureReceipt(
         status: true,
         amountCents: true,
         stripePaymentIntentId: true,
+        bookingModificationId: true,
         payment: {
           select: {
             id: true,
@@ -349,129 +422,103 @@ export async function recordAdditionalCaptureReceipt(
       return refuse("not-captured");
     }
     const payment = transaction.payment;
-    if (payment.booking.status === "CANCELLED") return refuse("booking-cancelled");
+    // Review round 1 (K, H): the cancellation answers a cancelled booking's
+    // invoice; a booking paid by internet banking is the treasurer's to settle.
+    if (payment.booking.status === "CANCELLED") return standDown("CANCELLED", "booking-cancelled");
+    if (payment.source !== PaymentSource.STRIPE) return standDown("CANCELLED", "not-a-card-booking");
     const primaryInvoiceId = payment.xeroInvoiceId;
     if (!primaryInvoiceId) return refuse("no-primary-invoice");
 
-    // Only a capture the club keeps is recorded; one refunded or awaiting a
-    // treasurer is not. Imported here: that module reaches the outbox, which
-    // dispatches to this worker.
+    // Only a capture the club keeps is recorded. Imported here: that module
+    // reaches the outbox, which dispatches to this worker.
     const { lateCaptureRefundState } = await import("@/lib/xero-supplementary-invoice-late-capture");
     const refundState = await lateCaptureRefundState({ paymentIntentId, bookingStatus: payment.booking.status });
-    if (refundState !== "kept") {
-      await completeXeroSyncOperation(operationId, {
-        status: "CANCELLED",
-        responsePayload: { skipped: "capture-not-kept", refundState },
-      });
-      return null;
-    }
+    if (refundState !== "kept") return standDown("CANCELLED", "capture-not-kept", { refundState });
 
-    const stored = await readPrimaryInvoiceFeeAtLink(bookingId, primaryInvoiceId);
-    if (stored?.atLink.capturedPaymentIntentIdsAtBuild?.includes(paymentIntentId)) {
-      // The primary's create counted this capture in the cash it recorded (or
-      // left to its gap invoice); it is that create's, never this row's.
-      await completeXeroSyncOperation(operationId, {
-        responsePayload: { skipped: "counted-by-primary-invoice", primaryInvoiceId },
-      });
-      return null;
-    }
-
-    const gap = stored ? await findPrimaryInvoiceGapInvoice(bookingId, stored) : null;
-    if (gap?.operation && OUTSTANDING_STATUSES.has(gap.operation.status)) {
-      throw awaitingGapInvoice(
-        `The supplementary invoice for this booking's change (operation ${gap.operation.id}) is still on its way to Xero; this card payment is recorded once it is there`,
-      );
-    }
-    const gapInvoiceId = gap?.link?.active ? gap.link.xeroObjectId : null;
-    if (gap && !gapInvoiceId) return refuse("gap-invoice-not-in-xero", { gapOperationId: gap.operation?.id ?? null });
-
-    const primaryCreate = await prisma.xeroSyncOperation.findFirst({
-      where: {
-        direction: "OUTBOUND",
-        entityType: "INVOICE",
-        operationType: "CREATE",
-        correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
-        xeroObjectId: primaryInvoiceId,
-      },
-      orderBy: { createdAt: "desc" },
-      select: { status: true, responsePayload: true, manuallyResolvedAt: true },
+    // Review round 1: one recorder per capture.
+    const recorder = await readCaptureRecorder({
+      bookingId,
+      primaryInvoiceId,
+      paymentIntentId,
+      bookingModificationId: transaction.bookingModificationId,
     });
-    const gapRecordsItsOwnPayment = asRecord(gap?.operation?.requestPayload)?.recordPayment === true;
-    if (ownPaymentPending(primaryCreate) || (gapRecordsItsOwnPayment && ownPaymentPending(gap?.operation ?? null))) {
-      return refuse("own-payment-pending");
+    if (recorder.kind === "primary-invoice") {
+      return standDown("SUCCEEDED", "recorded-by-primary-invoice", { primaryInvoiceId });
+    }
+    if (recorder.kind === "supplementary-invoice") {
+      return standDown("SUCCEEDED", "recorded-by-supplementary-invoice", { operationId: recorder.operationId });
+    }
+    const { figures, gap, gapBillsThisChange } = recorder;
+    // The part of this capture the primary's own payment already took.
+    const partial = figures?.atLink.partiallyRecordedCaptureAtLink;
+    const capturedCents = transaction.amountCents - (partial?.paymentIntentId === paymentIntentId ? partial.cents : 0);
+
+    let gapInvoiceId: string | null = null;
+    if (gap && gapBillsThisChange) {
+      if (gap.operation && OUTSTANDING_STATUSES.has(gap.operation.status)) {
+        throw waitFor(
+          `The supplementary invoice for this booking's change (operation ${gap.operation.id}) is still on its way to Xero; this card payment is recorded once it is there`,
+        );
+      }
+      gapInvoiceId = gap.link?.active ? gap.link.xeroObjectId : null;
+      if (!gapInvoiceId) return refuse("gap-invoice-not-in-xero", { gapOperationId: gap.operation?.id ?? null });
+      if (ownPaymentPending(gap.operation)) return refuse("own-payment-pending", { gapOperationId: gap.operation?.id });
+    } else {
+      const primaryCreate = await prisma.xeroSyncOperation.findFirst({
+        where: {
+          direction: "OUTBOUND",
+          entityType: "INVOICE",
+          operationType: "CREATE",
+          correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
+          xeroObjectId: primaryInvoiceId,
+        },
+        orderBy: { createdAt: "desc" },
+        select: { status: true, responsePayload: true, manuallyResolvedAt: true },
+      });
+      if (ownPaymentPending(primaryCreate)) return refuse("own-payment-pending");
     }
 
+    const target: AdditionalCaptureReceiptTarget = gapInvoiceId ? "GAP_INVOICE" : "PRIMARY_INVOICE";
+    const invoiceId = gapInvoiceId ?? primaryInvoiceId;
     const client = await providers.getAuthenticatedXeroClient();
-    const [gapRead, primaryRead] = await Promise.all([
-      gapInvoiceId ? readInvoice(providers, client, gapInvoiceId) : Promise.resolve(null),
-      readInvoice(providers, client, primaryInvoiceId),
-    ]);
-    if (!primaryRead || (gapInvoiceId && !gapRead)) {
-      return refuse("nothing-due", { unreadable: true, primaryInvoiceId, gapInvoiceId });
-    }
+    const read = await readInvoice(providers, client, invoiceId);
+    if (!read) return refuse("xero-unreadable", { invoiceId });
 
     // A lost response: an earlier run recorded it, and only its link is missing.
-    for (const [read, target, invoiceId] of [
-      [gapRead, "GAP_INVOICE", gapInvoiceId],
-      [primaryRead, "PRIMARY_INVOICE", primaryInvoiceId],
-    ] as const) {
-      const recorded = findRecordedPayment(read, reference);
-      if (recorded?.paymentID && invoiceId) {
-        await finishRecorded({
-          paymentId: recorded.paymentID,
-          plan: {
-            target,
-            invoiceId,
-            amountCents: providerAmountToCents(recorded.amount) ?? transaction.amountCents,
-            capturedCents: transaction.amountCents,
-            date: String(recorded.date ?? ""),
-          },
-          recoveredExisting: true,
-        });
-        return null;
-      }
+    const recorded = findRecordedPayment(read, reference);
+    if (recorded?.paymentID) {
+      await finishRecorded({
+        paymentId: recorded.paymentID,
+        plan: {
+          target,
+          invoiceId,
+          amountCents: providerAmountToCents(recorded.amount) ?? capturedCents,
+          capturedCents,
+          date: String(recorded.date ?? ""),
+        },
+        recoveredExisting: true,
+      });
+      return null;
     }
 
-    const { cardSettleAppliedCreditCents, primaryInvoiceStripeCashCents } = await import(
-      "@/lib/xero-primary-invoice-fee-gap"
-    );
-    const capturedCents = transaction.amountCents;
-    const candidates: ReceiptCandidate[] = [
-      ...(gapInvoiceId ? [{ target: "GAP_INVOICE" as const, invoiceId: gapInvoiceId, roomCents: roomOn(gapRead) }] : []),
-      {
-        target: "PRIMARY_INVOICE",
-        invoiceId: primaryInvoiceId,
-        roomCents:
-          primaryRead.status === "AUTHORISED"
-            ? primaryInvoiceStripeCashCents({
-                netCapturedCents: capturedCents,
-                amountDueCents: primaryRead.amountDueCents,
-                appliedCreditCents: await cardSettleAppliedCreditCents(bookingId, payment),
-              })
-            : 0,
-      },
-    ];
-    const chosen = chooseAdditionalCaptureReceiptTarget(capturedCents, candidates);
+    const roomCents = target === "GAP_INVOICE" ? amountDueOn(read) : await primaryRoom(read, payment, capturedCents);
+    const chosen = chooseAdditionalCaptureReceiptTarget(capturedCents, [{ target, invoiceId, roomCents }]);
 
     if (!gap && (!chosen || chosen.amountCents < capturedCents)) {
-      // Neither invoice takes all of it and no gap invoice exists: the primary
+      // The primary cannot take it all and no gap invoice exists: the primary
       // may bill less than the booking was worth at its link. #3980's own check
-      // raises that gap, or finds it raised, and never queues a second.
+      // raises that gap, or finds it raised, and never a second. This capture
+      // has a receipt row, so the gap never pays itself from it (G): the
+      // receipt waits for the gap invoice and records against it, or the
+      // primary, next time.
       const { recheckPrimaryInvoiceWorthGap } = await import("@/lib/xero-primary-invoice-fee-gap");
       const recheck = await recheckPrimaryInvoiceWorthGap({
         bookingId,
         xeroInvoiceId: primaryInvoiceId,
         createdByMemberId: params.createdByMemberId,
       });
-      if (recheck.queueOperationId && !recheck.alreadyQueued && recheck.cashTakenCents > 0) {
-        // Raised now, paid from the cash the primary left - this capture's.
-        await completeXeroSyncOperation(operationId, {
-          responsePayload: { recordedByGapInvoice: recheck.queueOperationId, gapCents: recheck.gapCents },
-        });
-        return null;
-      }
       if (recheck.queueOperationId) {
-        throw awaitingGapInvoice(
+        throw waitFor(
           `The supplementary invoice for this booking's gap (operation ${recheck.queueOperationId}) was queued; this card payment is recorded once it is in Xero`,
         );
       }
@@ -479,7 +526,7 @@ export async function recordAdditionalCaptureReceipt(
         return refuse("gap-review-task", { reviewOperationId: recheck.reviewOperationId });
       }
     }
-    if (!chosen) return refuse("nothing-due", { primaryInvoiceId, gapInvoiceId, capturedCents });
+    if (!chosen) return refuse("nothing-due", { invoiceId, target, capturedCents, amountDueCents: read.amountDueCents });
 
     const zone = await readClubTimeZoneOutsideRequest();
     const date =
@@ -499,16 +546,29 @@ export async function recordAdditionalCaptureReceipt(
       // the invoice may have changed since. Never decided again.
       const client = await providers.getAuthenticatedXeroClient();
       const read = await readInvoice(providers, client, plan.invoiceId);
+      if (!read) return refuse("xero-unreadable", { plan });
       const recorded = findRecordedPayment(read, reference);
       if (recorded?.paymentID) {
         await finishRecorded({ paymentId: recorded.paymentID, plan, recoveredExisting: true });
         return recorded.paymentID;
       }
-      if (roomOn(read) < plan.amountCents) {
-        return refuse("figures-changed", { plan, amountDueCents: read?.amountDueCents ?? null });
+      // Review round 1 (I): the primary's room still leaves its applied credit room.
+      const roomCents =
+        plan.target === "PRIMARY_INVOICE"
+          ? await primaryRoom(
+              read,
+              await prisma.payment.findUniqueOrThrow({
+                where: { id: paymentId },
+                select: { source: true, status: true, amountCents: true, refundedAmountCents: true, creditAppliedCents: true },
+              }),
+              plan.amountCents,
+            )
+          : amountDueOn(read);
+      if (roomCents < plan.amountCents) {
+        return refuse("figures-changed", { plan, amountDueCents: read.amountDueCents, roomCents });
       }
     }
-    const paymentId = await providers.createXeroPaymentForInvoice({
+    const paymentId_ = await providers.createXeroPaymentForInvoice({
       localModel: "PaymentTransaction",
       localId: paymentTransactionId,
       invoiceId: plan.invoiceId,
@@ -520,8 +580,8 @@ export async function recordAdditionalCaptureReceipt(
       metadata: { invoiceId: plan.invoiceId, target: plan.target, amountCents: plan.amountCents, paymentIntentId },
       date: plan.date,
     });
-    await finishRecorded({ paymentId, plan, recoveredExisting: false });
-    return paymentId;
+    await finishRecorded({ paymentId: paymentId_, plan, recoveredExisting: false });
+    return paymentId_;
   }
 
   async function finishRecorded(input: {
@@ -553,5 +613,39 @@ export async function recordAdditionalCaptureReceipt(
       logger.error({ operationId, bookingId, paymentIntentId, plan, unrecordedCents }, message);
       await alertOfficer(paymentIntentId, operationId, message);
     }
+    if (plan.target === "GAP_INVOICE") await flagRefundNotesNamingAnotherInvoice(plan.invoiceId);
+  }
+
+  /**
+   * Review round 1 (L): a Stripe refund of this capture taken before its
+   * receipt reached Xero queued a refund note naming the booking's own invoice
+   * (`findAdditionalCaptureReceiptInvoiceId` had nothing to name yet). The
+   * note is unallocated, so the books balance either way, but it names the
+   * wrong document; an officer is told, once, as this row completes.
+   */
+  async function flagRefundNotesNamingAnotherInvoice(receiptInvoiceId: string): Promise<void> {
+    const firstRefund = await prisma.paymentRefund.findFirst({
+      where: { stripePaymentIntentId: paymentIntentId },
+      orderBy: { createdAt: "asc" },
+      select: { createdAt: true },
+    });
+    if (!firstRefund) return;
+    const notes = await prisma.xeroSyncOperation.findMany({
+      where: {
+        queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
+        localModel: "Payment",
+        localId: paymentId,
+        status: { not: "CANCELLED" },
+        createdAt: { gte: firstRefund.createdAt },
+      },
+      select: { id: true, requestPayload: true },
+    });
+    const naming = notes.filter((note) => asRecord(note.requestPayload)?.creditsInvoiceId !== receiptInvoiceId);
+    if (naming.length === 0) return;
+    await alertOfficer(
+      paymentIntentId,
+      operationId,
+      `This card payment was refunded before its Xero receipt was recorded against supplementary invoice ${receiptInvoiceId}, and its refund credit note (outbox operation ${naming.map((note) => note.id).join(", ")}) names the booking's own invoice instead. The amounts balance; check the note's reference in Xero.`,
+    );
   }
 }

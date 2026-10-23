@@ -1,36 +1,54 @@
 /**
- * #3953 (`INV-PAY-138`): QUEUE THE RECEIPT of a booking change's card capture
- * that no supplementary invoice was waiting on, once per capture. Called by
- * the late-success release (`releaseXeroSupplementaryInvoiceForCapturedPaymentIntent`)
- * when it answers `none-queued`, from each caller that has seen the capture -
- * the Stripe webhook, the confirm route, a treasurer's keep - and by the
+ * #3953 (`INV-PAY-139`): QUEUE THE RECEIPT of a booking change's card capture
+ * that nothing else records, once per capture. Called by the late-success
+ * release (`releaseXeroSupplementaryInvoiceForCapturedPaymentIntent`) when it
+ * answers `none-queued` - from the Stripe webhook, the confirm route and a
+ * treasurer's keep - by the primary invoice's link save for every capture its
+ * cash does not cover ({@link queueReceiptsForUnrecordedCaptures}), and by the
  * booking-vs-Xero repair tool for a capture already missed.
  *
- * EXACTLY ONCE. The find-and-create runs under the per-anchor
- * supplementary-invoice lock (`lockSupplementaryInvoiceAnchor`) - keyed on the
- * change the capture pays for (`PaymentTransaction.bookingModificationId`), or
- * the booking where the ledger row names none: the anchors that lock already
- * serialises, so no new key. Under it a row for this capture in any status but
- * CANCELLED is found and returned, never a second queued beside it; the
- * webhook racing the confirm route, or a replay, serialise and the later
- * caller finds the first's row.
+ * EXACTLY ONCE, AND ONLY WHERE NOTHING ELSE RECORDS IT. The find-and-create
+ * runs under the per-anchor supplementary-invoice lock
+ * (`lockSupplementaryInvoiceAnchor`) on the change the capture pays for
+ * (`PaymentTransaction.bookingModificationId`), or the booking where the
+ * ledger row names none - anchors that lock already serialises, so no new
+ * key, and the lock the change's own supplementary invoice is queued under.
+ * Under it the capture's recorder is read (`readCaptureRecorder`, review round
+ * 1: one recorder per capture): the primary's own payment, a supplementary
+ * invoice for the change or naming the capture, or the gap invoice's payment
+ * that took it, and the receipt stands down for each. Otherwise a row for
+ * this capture in any status but CANCELLED is found and returned, never a
+ * second queued beside it.
  *
- * What it records, and when it refuses, is the worker's
- * (`additional-capture-xero-receipt.ts`): this only checks the capture is a
- * captured card payment for a change on a booking whose primary invoice is
- * linked.
+ * Not for a cancelled booking (its cancellation clears the invoice; a kept
+ * capture there is a separate issue) or a booking paid by internet banking
+ * (that settlement is the treasurer's, never a Stripe receipt).
  */
+import { PaymentSource } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
+import { CAPTURED_TRANSACTION_STATUS_LIST, isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { startXeroSyncOperation } from "@/lib/xero-sync";
 import { lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-receipt";
+import { readCaptureRecorder } from "@/lib/additional-capture-recorder";
+import type { PrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-fee-at-link";
 
 export type AdditionalCaptureReceiptEnqueueResult =
   | { outcome: "queued"; queueOperationId: string }
   | { outcome: "already-queued"; queueOperationId: string }
-  | { outcome: "not-eligible"; reason: "no-capture" | "not-a-change-card-capture" | "no-primary-invoice" };
+  | {
+      outcome: "not-eligible";
+      reason:
+        | "no-capture"
+        | "not-a-change-card-capture"
+        | "no-primary-invoice"
+        | "booking-cancelled"
+        | "not-a-card-booking"
+        | "recorded-by-primary-invoice"
+        | "recorded-by-supplementary-invoice";
+    };
 
 /** The outbox row shape, shared with the repair tool's read of it. */
 export const ADDITIONAL_CAPTURE_RECEIPT_OPERATION = {
@@ -53,7 +71,9 @@ export async function enqueueAdditionalCaptureReceiptOperation(
       source: true,
       status: true,
       bookingModificationId: true,
-      payment: { select: { id: true, bookingId: true, xeroInvoiceId: true } },
+      payment: {
+        select: { id: true, bookingId: true, xeroInvoiceId: true, source: true, booking: { select: { status: true } } },
+      },
     },
   });
   if (!transaction) return { outcome: "not-eligible", reason: "no-capture" };
@@ -64,9 +84,12 @@ export async function enqueueAdditionalCaptureReceiptOperation(
   ) {
     return { outcome: "not-eligible", reason: "not-a-change-card-capture" };
   }
-  if (!transaction.payment.xeroInvoiceId) return { outcome: "not-eligible", reason: "no-primary-invoice" };
-
   const { payment } = transaction;
+  const primaryInvoiceId = payment.xeroInvoiceId;
+  if (!primaryInvoiceId) return { outcome: "not-eligible", reason: "no-primary-invoice" };
+  if (payment.booking.status === "CANCELLED") return { outcome: "not-eligible", reason: "booking-cancelled" };
+  if (payment.source !== PaymentSource.STRIPE) return { outcome: "not-eligible", reason: "not-a-card-booking" };
+
   const key = additionalCaptureReceiptKey(paymentIntentId);
   return prisma.$transaction(async (tx) => {
     await lockSupplementaryInvoiceAnchor(tx, transaction.bookingModificationId ?? payment.bookingId);
@@ -76,6 +99,21 @@ export async function enqueueAdditionalCaptureReceiptOperation(
       select: { id: true },
     });
     if (existing) return { outcome: "already-queued" as const, queueOperationId: existing.id };
+    const recorder = await readCaptureRecorder(
+      {
+        bookingId: payment.bookingId,
+        primaryInvoiceId,
+        paymentIntentId,
+        bookingModificationId: transaction.bookingModificationId,
+      },
+      tx,
+    );
+    if (recorder.kind === "primary-invoice") {
+      return { outcome: "not-eligible" as const, reason: "recorded-by-primary-invoice" as const };
+    }
+    if (recorder.kind === "supplementary-invoice") {
+      return { outcome: "not-eligible" as const, reason: "recorded-by-supplementary-invoice" as const };
+    }
     const operation = await startXeroSyncOperation({
       ...ADDITIONAL_CAPTURE_RECEIPT_OPERATION,
       localId: transaction.id,
@@ -94,4 +132,40 @@ export async function enqueueAdditionalCaptureReceiptOperation(
     });
     return { outcome: "queued" as const, queueOperationId: operation.id };
   });
+}
+
+/**
+ * #3953 review round 1 (E): once the primary invoice's link is saved, every
+ * captured change on the booking that the invoice's recorded cash does not
+ * cover gets its receipt row - a capture that landed between the create's read
+ * and its link included, whose release ran before there was an invoice. Run
+ * by the link's gap check before it measures anything, so the gap invoice never
+ * pays itself from those captures. Idempotent: each enqueue finds its row. A
+ * record from before the counted list existed queues nothing; the release and
+ * the repair tool answer those.
+ */
+export async function queueReceiptsForUnrecordedCaptures(
+  bookingId: string,
+  atLink: Pick<PrimaryInvoiceFeeAtLink, "paymentIntentIdsRecordedAtLink">,
+): Promise<string[]> {
+  if (!atLink.paymentIntentIdsRecordedAtLink) return [];
+  const recorded = new Set(atLink.paymentIntentIdsRecordedAtLink);
+  const captures = await prisma.paymentTransaction.findMany({
+    where: {
+      payment: { bookingId },
+      kind: "ADDITIONAL",
+      source: "STRIPE",
+      status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] },
+      stripePaymentIntentId: { not: null },
+    },
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+    select: { stripePaymentIntentId: true },
+  });
+  const queued: string[] = [];
+  for (const { stripePaymentIntentId } of captures) {
+    if (!stripePaymentIntentId || recorded.has(stripePaymentIntentId)) continue;
+    const result = await enqueueAdditionalCaptureReceiptOperation(stripePaymentIntentId);
+    if (result.outcome === "queued") queued.push(result.queueOperationId);
+  }
+  return queued;
 }

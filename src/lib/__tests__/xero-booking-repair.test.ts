@@ -489,6 +489,9 @@ function createDependencies(state: {
       booking: {
         findMany: vi.fn().mockResolvedValue(state.bookings),
       },
+      // #3953: the edits marked as settled against the primary invoice, which
+      // its gap invoice's anchors are read from - none unless a test says so.
+      bookingModification: { findMany: vi.fn().mockResolvedValue([]) },
       xeroObjectLink: {
         // A read naming one role gets that role's links only, as the real query does - here the
         // loader's refund-note read (`refundNoteSetsForPayments`, #4231) and the refund-payment
@@ -496,11 +499,31 @@ function createDependencies(state: {
         findMany: vi.fn().mockImplementation(async ({ where }: any = {}) =>
           typeof where?.role === "string" ? links.filter((link: any) => link.role === where.role) : links,
         ),
+        // #3953: the change's own supplementary invoice link (`readCaptureRecorder`).
+        findFirst: vi.fn().mockImplementation(async ({ where }: any = {}) =>
+          links.find((link: any) =>
+            link.role === where?.role && link.localModel === where?.localModel && link.localId === where?.localId && link.active,
+          ) ?? null,
+        ),
       },
       xeroSyncOperation: {
         findMany: vi.fn().mockResolvedValue(operations),
-        // #3953: the primary invoice's stored figures - none unless a test says so.
-        findFirst: vi.fn().mockResolvedValue(state.primaryInvoiceFiguresOperation ?? null),
+        // #3953: the primary invoice's stored figures (none unless a test says
+        // so), and `readCaptureRecorder`'s supplementary-invoice reads, matched
+        // as the real queries match them.
+        findFirst: vi.fn().mockImplementation(async ({ where }: any = {}) => {
+          if (where?.correlationKey) return state.primaryInvoiceFiguresOperation ?? null;
+          const live = operations.filter((op: any) => op.queueType === where?.queueType && op.status !== "CANCELLED");
+          if (where?.localId) return live.find((op: any) => op.localModel === where.localModel && op.localId === where.localId) ?? null;
+          const intents = (where?.OR ?? []).map((arm: any) => arm.requestPayload?.equals ?? arm.requestPayload?.array_contains?.[0]);
+          return (
+            live.find((op: any) =>
+              intents.some((intent: string) =>
+                op.requestPayload?.paymentIntentId === intent || (op.requestPayload?.coveredPaymentIntentIds ?? []).includes(intent),
+              ),
+            ) ?? null
+          );
+        }),
       },
       // #1491: booking-cancel card-path refund decisions (matched by exact
       // booking_cancel_refund_recovery_<id> keys in the loader).
@@ -8972,7 +8995,7 @@ describe("#3954: a reduction set against an unpaid ask", () => {
 });
 
 /**
- * #3953 (`INV-PAY-138`): "card payment not recorded in Xero" - a change's card
+ * #3953 (`INV-PAY-139`): "card payment not recorded in Xero" - a change's card
  * capture on a booking whose primary invoice exists, that no supplementary
  * invoice and no receipt of its own records.
  */
@@ -9007,7 +9030,7 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
         billedTotalCents: 18000,
         recordedChangeFeeCentsAtLink: 0,
         primaryInvoiceCashCents: 10000,
-        ...(captured ? { capturedPaymentIntentIdsAtBuild: captured } : {}),
+        ...(captured ? { paymentIntentIdsRecordedAtLink: captured } : {}),
       },
     },
   });
@@ -9112,6 +9135,59 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
 
     expect(finding(bookingReport)).toMatchObject({ severity: "manual_review", safeToAutoApply: false });
     expect(bookingReport.actions.some((action) => action.type === "REQUEUE_XERO_OPERATION")).toBe(false);
+  });
+
+  describe("one recorder per capture (review round 1, B)", () => {
+    const changeOnPrimary = {
+      id: "mod_change",
+      bookingId: "booking_1",
+      modificationType: "GUEST_ADD",
+      priceDiffCents: 8000,
+      changeFeeCents: 0,
+      createdAt: new Date("2026-05-02T00:00:00Z"),
+    };
+    const withChange = (receipt: boolean) =>
+      run({
+        booking: makeBooking({
+          payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture({ bookingModificationId: "mod_change" })] },
+          modifications: [changeOnPrimary],
+        }),
+        operations: [
+          makePrimaryInvoiceCreateOperation(),
+          ...(receipt ? [receiptOperation({ status: "SUCCEEDED" })] : []),
+        ],
+      });
+
+    it("never reports a capture its change's own supplementary invoice records", async () => {
+      const { bookingReport } = await run({
+        booking: bookingWithChangeCapture({
+          payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture({ bookingModificationId: "mod_change" })] },
+        }),
+        operations: [
+          makeOperation({ id: "op_change_invoice", queueType: "SUPPLEMENTARY_INVOICE", localModel: "BookingModification", localId: "mod_change", status: "SUCCEEDED", requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", paymentIntentId: null } }),
+        ],
+      });
+      expect(finding(bookingReport)).toBeUndefined();
+    });
+
+    it("never reports a capture a gap invoice's own payment took", async () => {
+      const { bookingReport } = await run({
+        operations: [
+          makeOperation({ id: "op_gap", queueType: "SUPPLEMENTARY_INVOICE", localId: "mod_racing", status: "SUCCEEDED", requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", primaryInvoiceGap: true, coveredPaymentIntentIds: ["pi_change"] } }),
+        ],
+      });
+      expect(finding(bookingReport)).toBeUndefined();
+    });
+
+    it("raises the change's missing supplementary invoice UNPAID where the capture's own receipt records it", async () => {
+      const queueAction = (bookingReport: { actions: Array<{ type: string; payload: Record<string, unknown> }> }) =>
+        bookingReport.actions.find((action) => action.type === "QUEUE_SUPPLEMENTARY_INVOICE");
+      const withReceipt = (await withChange(true)).bookingReport;
+      expect(queueAction(withReceipt)?.payload).toMatchObject({ bookingModificationId: "mod_change", recordPayment: false });
+      // Control: with no receipt, the enqueue's own default stands.
+      const without = (await withChange(false)).bookingReport;
+      expect(queueAction(without)?.payload).not.toHaveProperty("recordPayment");
+    });
   });
 
   it("raises nothing while the receipt is queued or after it finished", async () => {

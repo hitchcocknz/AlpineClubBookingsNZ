@@ -3674,7 +3674,7 @@ primary booking invoice create saves its link -> worth gap check (#3980,
     refused) -> treasurer acts in Xero, then Resolve (fixed in Xero); one per
     booking, invoice and direction
 change's card capture kept, nothing parked on its intent, primary invoice
-  linked (#3953, INV-PAY-138) -> late-success release answers receipt-queued:
+  linked (#3953, INV-PAY-139) -> late-success release answers receipt-queued:
   ADDITIONAL_CAPTURE_RECEIPT PENDING, one per capture (key: the intent), found
   or created under the change's supplementary-invoice anchor lock; a replay,
   or the webhook and the confirm route at once, find it (already-released)

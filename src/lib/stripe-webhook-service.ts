@@ -1210,7 +1210,7 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
   } else if (refundSync.refundDeltaCents > 0) {
     // Queue only what this sync newly added to the refunded total (#3640); charge.amount_refunded is cumulative.
     try {
-      // #3953 (`INV-PAY-138`): a change's capture its own receipt recorded names the invoice it paid.
+      // #3953 (`INV-PAY-139`): a change's capture its own receipt recorded names the invoice it paid.
       const creditsInvoiceId = await findAdditionalCaptureReceiptInvoiceId(paymentIntentId);
       const queuedCreditNote = await enqueueXeroRefundCreditNoteOperation(
         refundSync.paymentId,

@@ -68,6 +68,7 @@ import {
 import { createXeroSupplementaryInvoice } from "@/lib/xero-supplementary-invoices";
 import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-invoice";
 import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
+import { primaryInvoiceGapPayload } from "@/lib/additional-capture-receipt-payload";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
 import {
@@ -1457,6 +1458,8 @@ interface XeroSupplementaryInvoiceEnqueueOptions {
   paymentIntentId?: string | null;
   waitForConfirmedAdditionalPayment?: boolean;
   recordPayment?: boolean;
+  /** #3953 (`INV-PAY-139`): a #3980 gap invoice, and the captures its own payment takes (none when unpaid). */
+  primaryInvoiceGap?: { coveredCaptures: ReadonlyArray<{ paymentIntentId: string; cents: number }> };
 }
 
 /**
@@ -1503,6 +1506,7 @@ export async function enqueueXeroSupplementaryInvoiceOperation(
     paymentIntentId: options?.paymentIntentId,
     waitForConfirmedAdditionalPayment: options?.waitForConfirmedAdditionalPayment,
     recordPayment: options?.recordPayment,
+    primaryInvoiceGap: options?.primaryInvoiceGap,
   });
 }
 
@@ -1723,6 +1727,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
         // #3193: the handler reads this to anchor the link, scope the Xero
         // idempotency key and tell the member why they are being asked twice.
         shortfallReviewTaskId,
+        ...primaryInvoiceGapPayload(options?.primaryInvoiceGap),
       },
       createdByMemberId: options?.createdByMemberId ?? null,
       store: tx,
