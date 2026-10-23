@@ -7,7 +7,7 @@ itself, the post-commit hand-off and alert, and the `/pay` page's refusal table
 live in their own modules; each file below gains only its call and its answer.
 
 file: src/lib/payment-recovery.ts
-lines: 3364
+lines: 3360
 reason: the doors' check needs the module's private hand-off
   (`handoffSucceededSupersededIntentToRefund`), so it cannot move out without
   exporting that writer; the growth is its docblock, the claim result and the
