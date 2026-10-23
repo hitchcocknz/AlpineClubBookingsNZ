@@ -172,10 +172,10 @@ export type EditFinancialReviewStrandRecord = {
  * that happens.
  *
  * And a work item has to LEAD with something. An officer opens one card and the
- * first thing on it should be the strand the money hangs on —
- * `parkedEditWorkItems` in `parked-edit-occurrence.ts` owns that choice and
- * states the ranking, along with how many items the edit raises at all. Every
- * other strand is supporting detail, which is D1's own word for it.
+ * first thing on it should be the strand the money hangs on. Until #4317 the
+ * edit raise chose it (`parkedEditWorkItems`); no edit raises one now, and the
+ * items already on file keep the lead they were written with. Every other
+ * strand is supporting detail, which is D1's own word for it.
  *
  * Nothing may read `otherStrands` directly to enumerate the edit's strands: call
  * `editFinancialReviewStrandRecords`, which is the one place that list is
@@ -184,8 +184,8 @@ export type EditFinancialReviewStrandRecord = {
 export type EditFinancialReviewOccurrence = EditFinancialReviewStrandRecord & {
   bookingId: string;
   /**
-   * Every OTHER strand this parked edit recorded, in the canonical order
-   * `parkedEditWorkItems` sorts them into.
+   * Every OTHER strand this parked edit recorded, in the order it was raised
+   * with.
    *
    * ABSENT — not empty — on a row written before #3498, and on an edit whose
    * only recorded strand is the lead. Optional because the parser is a
@@ -228,24 +228,20 @@ export function editFinancialReviewStrandRecords(
  * Three separate money rules turn on this one question and each of them was
  * asking it in its own words before this existed:
  *
- *  - which strand LEADS a parked edit's work item (`parkedEditOccurrence`);
- *  - HOW MANY work items the edit raises at all (`parkedEditWorkItems`, the
- *    owner's 17 September 2026 decision: one item per edit while at most one
- *    strand moves, one item per strand once two or more do);
+ *  - which strand LEADS a parked edit's work item, and HOW MANY work items
+ *    an edit raised (the owner's 17 September 2026 decision) — both decided
+ *    by the raise #4317 removed, and still true of every item on file;
  *  - whether the amount being settled moves THIS strand's stored worth
  *    (`RepairableStrand.absorbsSettlement`).
  *
- * The third is money in the plainest sense — get it wrong and a settlement is
- * absorbed into a stranger's stay — so the three cannot be allowed to answer
+ * The last is money in the plainest sense — get it wrong and a settlement is
+ * absorbed into a stranger's stay — so they cannot be allowed to answer
  * differently, and they can only be kept from it by there being one answer.
  *
  * A REMOVED strand answers true through its surrendered nights, not through a
- * flag: `preCheckInEditStrands` gives a strand being deleted an empty proposed
- * night set, so every night it held is surrendered. `rowsDestroyed` exists
- * upstream for the separate question of whether an EXACT strand is recorded at
- * all, and it is deliberately not part of the strand record — the record is
- * hashed into the occurrence key, so a field added to it re-identifies every
- * future occurrence.
+ * flag: the raise gave a strand being deleted an empty proposed night set, so
+ * every night it held is surrendered. The strand record is hashed into the
+ * occurrence key, so a field added to it would re-identify every occurrence.
  */
 export function editFinancialReviewStrandMovesNights(
   strand: Pick<
@@ -257,39 +253,6 @@ export function editFinancialReviewStrandMovesNights(
     strand.surrenderedNightDates.length > 0 || strand.addedNightDates.length > 0
   );
 }
-
-/**
- * THE ONE "we cannot price this" OUTCOME (`INV-SSOT`, #3031, epic #2797).
- *
- * Both the in-progress planner (`InProgressGuestRangePlanResult`) and the
- * modification pricer (`PricingResult`) answer with either a priced result or
- * this — one idea, so one type rather than two parallel unions that happened to
- * be spelled identically. There is deliberately NO numeric field on it: the epic
- * prohibits a magic zero and an estimate alike, and a shape carrying neither is
- * cheaper than a rule saying not to read one (INV-MOD-028).
- */
-export type FinancialReviewRequired = {
-  kind: "financial_review_required";
-  /**
-   * THE WORK ITEMS this parked edit raises, lead item first and NEVER EMPTY
-   * (#3498, owner decision D1 as amended 17 September 2026).
-   *
-   * One of them on an edit that moved at most one strand's nights, which is the
-   * shape every case the issue measured has; one per recorded strand once two
-   * or more moved, because an item holds one `amountCents` and two moving
-   * strands need two. `parkedEditWorkItems` is the ONE place that count is
-   * decided and the only place the reasoning is written.
-   *
-   * A NON-EMPTY TUPLE rather than an array a caller is asked to keep populated:
-   * `INV-SSOT`'s "prefer unrepresentable over policed". A parked edit that
-   * raises nothing is a parked edit nobody is asked to price, and the type is
-   * what makes that unwritable rather than a rule enforced at four call sites.
-   */
-  occurrences: readonly [
-    EditFinancialReviewOccurrence,
-    ...EditFinancialReviewOccurrence[],
-  ];
-};
 
 /**
  * What is written to `ManualRefundTask.reviewContext`: the identity above, plus

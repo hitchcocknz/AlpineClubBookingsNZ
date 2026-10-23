@@ -307,18 +307,9 @@ export const NIGHT_PRICE_REPAIR_NOTHING_TO_FILL_MESSAGE =
 /**
  * WHAT THE CONTROL IS CALLED, in one place (#3214, `INV-SSOT`).
  *
- * Two production strings say this name and they have to agree: the button
- * itself, on the booking's Admin tools card, and
- * `OTHER_LODGE_RATE_AMOUNT_UNDER_REVIEW_MESSAGE` in
- * `booking-other-lodge-rate.ts`, whose refusal sends the officer to find the
- * control BY NAME. A rename that
- * moved only one of them would send them hunting for a control that does not
- * exist - which is the exact failure that message was rewritten to fix, so it
- * is not a hypothetical drift. Interpolated into the message rather than typed
- * into it, so the two cannot disagree.
- *
- * This module is the client-safe home both sites already import, which is why
- * the name lives here rather than beside either of them.
+ * The button on the booking's Admin tools card reads it from here. Until #4317
+ * an other-lodge refusal named the control too; that refusal is gone, and the
+ * control itself is retired by wave C (D6).
  */
 export const STORED_NIGHT_PRICE_RECORD_CONTROL_LABEL =
   "Record what these nights sold for";
