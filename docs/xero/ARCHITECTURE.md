@@ -1975,14 +1975,14 @@ The answer is yes when:
   route under the same key (`payment:<id>:refund-credit-note:<amount>:v1`),
   and the second's enqueue would dedupe into the first's row: one note for
   two refunds;
-- **or the payment holds card money**: a STRIPE charge row, or a card refund
-  row. Once a card refund is recorded, the payment's refund-note cash is read
+- **or the payment has any STRIPE transaction row, in any status (a wrong
+  "own" is harmless), or a card refund row.** Once a card refund is recorded, the payment's refund-note cash is read
   from the card refunds (`resolveStripeCashRefundEvidence`, provider ledger),
   which leave the hand-back's bank cash out, so a canonical note sized against
   that cash when it runs would floor at nothing - the "payment-wide figure
-  floors at 0" the blueprint names. The charge is asked, not the refund, so a
-  card refund landing between the completion and its note's run cannot shrink
-  the note.
+  floors at 0" the blueprint names. The charge row is asked, not the refund,
+  so a card refund landing between the completion and its note's run cannot
+  shrink the note.
 
 **Its cash counts beside its note.** A hand-back noted this way is noted bank
 cash in `readPaidAnotherWayCash`, as a close is. Without that, on a payment
@@ -1996,9 +1996,22 @@ COMPLETED but its undo's follow-up names it (`originalTaskId`), and the
 hand-back counts, and sizes its own note, at its amount less every such
 follow-up's - nothing, for a whole undo (`standingHandBackCents`). Counted
 forever, it would read as noted cash no note answers and shrink every later
-card or canonical note by it. A follow-up's own cash is never added to the
-original's, so counting follow-ups as records too (#4315) cannot count the
-refund twice.
+card or canonical note by it.
+
+**A re-confirmed refund counts too (#4315 item 2, handled here).** When the
+treasurer re-confirms the follow-up, its refund is recorded again with its own
+note - a fresh one keyed on the follow-up, or a hand-made one linked to it
+(`recordedByHand`). That note is in the payment's coverage, so the COMPLETED
+follow-up is noted bank cash beside it, and a hand-made note covers it in its
+share. It nets the same way: a second void of its note, undone, names the
+follow-up as `originalTaskId`, and it counts nothing. A DISMISSED follow-up
+(the transfer bounced) counts nothing. Each refund counts once: the original
+nets out what the undo took back, and the follow-up counts only its own. Every
+reader of this cash moves with it - the refund-note cash
+(`resolveStripeCashRefundEvidence`), each record's share and the payment's
+uncovered closes (`readPaidAnotherWayUncoveredCents`), the void scan's card
+cash, the capacity-race check (`noteMayCover`), and through the cash the link
+repair and the hardening report.
 
 **Locks.** The decision is read inside the completion, after
 `applyLocalRefundAllocation` has taken the Payment row lock (#4217), so a

@@ -8,7 +8,9 @@
   also partly paid by card, where the first note's amount could otherwise come
   out wrong. If Xero later voids such a note and the nightly check takes the
   refund back off the booking, that refund stops counting towards any later
-  credit note on the payment.
+  credit note on the payment. When the treasurer then re-confirms that refund
+  with a new credit note, it counts again, once, so a later card refund's credit
+  note is no longer raised short (#4315).
 
   Nothing is raised for refunds handed back before this release: the
   read-only query in the deploy notes still lists those payments so their

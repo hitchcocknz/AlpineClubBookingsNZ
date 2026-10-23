@@ -1662,16 +1662,17 @@ decision and would need its own owner decision.
   task (`paidAnotherWayTaskId`, as a "Paid another way" close is,
   `INV-PAY-122`) when the payment has that note linked or on its way (a create
   row PENDING, RUNNING, FAILED or unreadable: two equal hand-backs would
-  otherwise share one canonical key and dedupe into one row), or holds card
-  money, a card charge or refund row
-  (`cancellationHandBackNotedOnItsOwnRecord`). Sized from its task less its
+  otherwise share one canonical key and dedupe into one row), or has any
+  STRIPE transaction row, in any status, or card refund row (a wrong "own" is
+  harmless; `cancellationHandBackNotedOnItsOwnRecord`). Sized from its task less its
   own notes (`readPaidAnotherWayCloseShare`), never payment-wide cash less all
   coverage, which floors at nothing once card refunds exist. Other sources are
   unchanged.
-- **Its cash counts beside its note while its refund stands.** Once a note row
-  names it, it is noted bank cash (`readPaidAnotherWayCash`), so a card note is
-  never squeezed by its coverage, less what a `bank-refund-void:` follow-up
-  naming it took back (`INV-ADDPAY-042`): voided and undone, it counts nothing.
+- **Its cash counts beside its note while its refund stands.** Once its own
+  note exists, it - or a re-confirmed `bank-refund-void:` follow-up (#4315
+  item 2) - is noted bank cash (`readPaidAnotherWayCash`), so a card note is
+  never squeezed by that note, less what a follow-up naming it took back
+  (`INV-ADDPAY-042`): voided and undone, it counts nothing; dismissed, nothing.
 - **No new term in the recount or the coverage sum; one in the cash reader.**
   They count its `perDelta` link; its payload names the hand-back
   (`handBackTaskId`), so a void is matched to it.

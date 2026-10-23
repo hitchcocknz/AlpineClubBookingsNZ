@@ -28,7 +28,8 @@ import { findCanonicalPaymentRefundCreditNote } from "@/lib/xero-sync";
  *   refunds. The completion holds the Payment row lock
  *   (`applyLocalRefundAllocation`, #4217) before this read, so a second
  *   completion reads after the first commits its row;
- * - or the payment holds card money: a STRIPE charge row, or a card refund row.
+ * - or the payment has any STRIPE transaction row, in any status, or a card
+ *   refund row.
  *   A canonical note is sized when it runs, against the payment's refund-note
  *   cash (`resolveStripeCashRefundEvidence`); once a card refund is recorded
  *   that cash is the card refunds alone, which leave the hand-back out. Asked
