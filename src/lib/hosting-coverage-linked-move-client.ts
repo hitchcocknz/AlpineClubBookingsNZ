@@ -230,7 +230,11 @@ export function formatLinkedMoveMoneySentence(
         `${all}, and each booking is paid on its own booking page.`,
     );
   } else {
-    parts.push("There is nothing more to pay and nothing to come back.");
+    parts.push(
+      facts.combinedOrganiserRefundCents > 0
+        ? "There is nothing more to pay and nothing to come back to you."
+        : "There is nothing more to pay and nothing to come back.",
+    );
   }
   // WHAT THE POLICY KEPT, beside the figure it made smaller. A booking whose price
   // falls by $500 under a 50% tier returns $250, and without this sentence the
