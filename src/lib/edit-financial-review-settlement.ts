@@ -558,8 +558,7 @@ export async function executeEditReviewSettlement({
 } & EditReviewHandBackXeroFacts): Promise<{
   stripeRefundId: string | null;
   additionalPaymentIntentId: string | null;
-  /** #4272: the booking was cancelled before the charge was asked; nothing was.
-   * `recorded` is whether that run wrote the uncollected-share record. */
+  /** #4272: cancelled before the ask; `recorded` = this run wrote the record. */
   chargeBookingCancelled?: { recorded: boolean };
 }> {
   let stripeRefundId: string | null = null;
@@ -624,22 +623,13 @@ export async function executeEditReviewSettlement({
     });
     additionalPaymentIntentId = charged.paymentIntentId;
     chargeTotalCents = charged.totalCents;
-    // #4272: cancelled after the commit, so nothing was asked and the share is
-    // on record. No Xero leg either: its supplementary invoice would wait on a
-    // card request that will never exist, for a booking the club no longer counts.
+    // #4272: a booking cancelled after the commit gets no Xero leg, whatever the
+    // sync answered: its invoice would wait on a request never raised. The
+    // share is recorded by the sync or the recovery row's cancelled path.
     if (charged.outcome === "booking-cancelled") {
-      return {
-        stripeRefundId,
-        additionalPaymentIntentId,
-        chargeBookingCancelled: { recorded: charged.recordedUncollected === true },
-      };
+      return { stripeRefundId, additionalPaymentIntentId, chargeBookingCancelled: { recorded: charged.recordedUncollected === true } };
     }
-    // #4272 review: nor on any other answer (a throw, `deferred`, `not-raised`)
-    // once the booking is cancelled. The recovery row's cancelled path records
-    // the share; an invoice queued here would wait on a request never raised.
-    if (route.collectVia === "stripe" && (await isBookingCancelledNow(bookingId))) {
-      return { stripeRefundId, additionalPaymentIntentId };
-    }
+    if (route.collectVia === "stripe" && (await isBookingCancelledNow(bookingId))) return { stripeRefundId, additionalPaymentIntentId };
   }
 
   // #3791: an account-credit share's event and Xero leg - given back, minted,
@@ -703,8 +693,8 @@ export async function executeEditReviewSettlement({
   return { stripeRefundId, additionalPaymentIntentId };
 }
 
-/** #4272 review: the booking's status as it stands now, after the commit. */
+/** #4272: the booking's status as it stands now, after the commit. */
 async function isBookingCancelledNow(bookingId: string): Promise<boolean> {
-  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } });
-  return booking !== null && refusesReviewChargeForCancellation(booking);
+  const b = await prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } });
+  return b !== null && refusesReviewChargeForCancellation(b);
 }
