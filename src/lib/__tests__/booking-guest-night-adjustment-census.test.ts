@@ -119,16 +119,18 @@ const PROMO_WRITERS: Record<string, (code: string) => void> = {
     // #3827: every code re-priced through the shared re-price, then recorded.
     expect(everyWriteIsFollowedBy(code, /\bawait repriceBookingPromotions\(/, RECORD)).toBe(true);
     // The nested night write precedes the record; the targets come off the
-    // re-price; a PARKED add records nothing.
+    // re-price; and since #4317 every add records (none parks).
     expect(precedes(code, /nights:\s*\{\s*create:/, RECORD)).toBe(true);
     expect(code).toMatch(/adjustmentTargets = repriced\.adjustmentTargets/);
-    expect(code).toMatch(/if \(!parked\) \{\s*await recordBookingNightAdjustments\(/);
+    expect(code).toMatch(/await recordBookingNightAdjustments\(tx, \{[\s\S]{0,200}writer: "the add-guest route"/);
+    expect(code).not.toMatch(/if \(!parked\)/);
   },
   "src/lib/booking-date-modification-service.ts": (code) => {
     expect(everyWriteIsFollowedBy(code, /\bawait repriceBookingPromotions\(/, RECORD)).toBe(true);
     expect(precedes(code, /bookingGuestNight\.createMany\(/, RECORD)).toBe(true);
     expect(code).toMatch(/adjustmentTargets = repriced\.adjustmentTargets/);
-    expect(code).toMatch(/if \(!parked\) \{\s*await recordBookingNightAdjustments\(/);
+    expect(code).toMatch(/await recordBookingNightAdjustments\(tx, \{[\s\S]{0,200}writer: "the booking date modification"/);
+    expect(code).not.toMatch(/if \(!parked\)/);
     // The admin shift snapshots before translating the rows and restores after,
     // shifted by the same delta.
     expect(precedes(code, SNAPSHOT, /for \(const entry of translatedGuests\)/)).toBe(true);

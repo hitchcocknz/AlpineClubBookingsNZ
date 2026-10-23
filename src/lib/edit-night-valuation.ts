@@ -5,8 +5,11 @@ import {
   type BookingStayRange,
 } from "@/lib/booking-guest-stay-ranges";
 import type { StrandNightPrices } from "@/lib/booking-strand-night-prices";
-import { requireCalendarDate, type CalendarDate } from "@/lib/club-time";
-import { parseDateOnly } from "@/lib/date-only";
+import {
+  dateOnlyInstantOf,
+  requireCalendarDate,
+  type CalendarDate,
+} from "@/lib/club-time";
 import {
   storedNightPriceDetailsByKey,
   type StoredNightPriceInput,
@@ -179,7 +182,7 @@ export function valuedNightLocksForGuest(
   const valued = valueEditStrand(guest, booking);
   return {
     lockedNightPrices: valued.nights.map((night) => ({
-      stayDate: parseDateOnly(night.date),
+      stayDate: dateOnlyInstantOf(night.date),
       priceCents: night.valueCents,
       priceSource: night.priceSource,
     })),
@@ -263,7 +266,7 @@ export function valuedStrandNightPrices(
       isMember: guest.isMember,
       consentStatus: guest.consentStatus,
       perNightRates: nights.map((night) => night.valueCents),
-      nightDates: nights.map((night) => parseDateOnly(night.date)),
+      nightDates: nights.map((night) => dateOnlyInstantOf(night.date)),
     };
   });
 }

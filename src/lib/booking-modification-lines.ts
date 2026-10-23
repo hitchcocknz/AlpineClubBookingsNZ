@@ -51,13 +51,12 @@
  */
 
 import type { AgeTier, BookingGuestNightPriceSource } from "@prisma/client";
-import { formatStayDateOrNull } from "@/lib/club-time";
+import { dateOnlyInstantOf, formatStayDateOrNull } from "@/lib/club-time";
 import { formatDateOnly } from "@/lib/date-only";
 import { splitNightsIntoPriceRuns } from "@/lib/night-price-runs";
 import { modificationPromoDeltas } from "@/lib/booking-modification-promo-delta";
 import type { PromoCodeAdjustment } from "@/lib/booking-promo-redemptions";
 import { valueEditStrand } from "@/lib/edit-night-valuation";
-import { parseDateOnly } from "@/lib/date-only";
 import {
   describeGuestRateMembershipLabel,
   loadRateMembershipLabelResolver,
@@ -505,7 +504,7 @@ export function pricingSideFromStoredGuests(
         checkIn: guest.stayStart,
         checkOut: guest.stayEnd,
       }).nights.map((night) => ({
-        stayDate: parseDateOnly(night.date),
+        stayDate: dateOnlyInstantOf(night.date),
         priceCents: night.valueCents,
         priceSource: night.priceSource,
       })),
