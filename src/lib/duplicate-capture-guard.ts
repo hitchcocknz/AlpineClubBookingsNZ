@@ -7,7 +7,7 @@
  * the intent that settled the booking: webhook redelivery, the confirm-payment
  * route racing the webhook, payment-link reconcile, charge-saved-method and
  * cron-confirm-pending reruns replaying the attempt row's OWN intent (#3267),
- * confirm-pending-guests retries. A DIFFERENT capture on a PAID booking is
+ * confirm-pending-guests retries. A DIFFERENT capture on a PAID (or COMPLETED) booking is
  * double money - the residual #1967 split-child window, where the /pay link
  * intent and the settlement cron's saved-card charge both capture, or a member
  * paying from three stale tabs (#4211) - and is refunded automatically.
@@ -40,7 +40,10 @@
  *    Nothing is refunded automatically, because nothing says which side is
  *    the settlement. A capture a duplicate-capture refund already owns still
  *    re-sends its own refund, which an earlier delivery decided; a released
- *    settler a live superseded-intent operation holds keeps silently.
+ *    settler a live superseded-intent operation holds keeps silently. With no
+ *    record and nothing else holding money, the arriving capture keeps silently
+ *    only at an amount the booking owes (a replay of its only capture); at any
+ *    other it is kept and the admins told (#4285, `amount-not-owed`).
  *
  * Every read runs under the lock(1) every caller of `markBookingPaymentSucceeded`
  * holds, so the check-then-enqueue cannot interleave with another settlement,
@@ -139,6 +142,8 @@ export async function judgeCaptureOnPaidBooking(
     recordedSettlerId: string | null;
     paymentIntentId: string;
     amountCents: number;
+    /** #4285: whether this amount is what the booking owes by card - its worth less applied credit. */
+    isOwedAmount: (amountCents: number) => Promise<boolean>;
   },
 ): Promise<ArrivingCaptureVerdict> {
   const arriving = await findPaymentTransactionByIntentId({
@@ -210,8 +215,14 @@ export async function judgeCaptureOnPaidBooking(
 
   if (!settlement) {
     // No record and nothing else holding money: a replay of the booking's only
-    // capture, or a stray capture the stated limit covers - a silent keep.
-    if (!input.recordedSettlerId) return { verdict: "keep" };
+    // capture at what the booking owes is a silent keep. #4285 review: at any
+    // other amount it may be a stray on a booking no capture paid for (zero cash,
+    // full credit, the $0 auto-pay, a group child) - kept, and the admins told.
+    if (!input.recordedSettlerId) {
+      return (await input.isOwedAmount(input.amountCents))
+        ? { verdict: "keep" }
+        : { verdict: "keep_unrecorded_settler", otherPaymentIntentId: null, reason: "amount-not-owed", otherHoldsMoney: false };
+    }
     // #4211 review: a RECORDED settler that no longer qualifies and nothing else
     // holding money. Its own intent first: a duplicate-capture refund that owns
     // the arriving capture re-sends its own refund, as under rule 3; and a
@@ -250,9 +261,10 @@ export async function judgeCaptureOnPaidBooking(
 }
 
 /**
- * Rule 3's alert, after the commit: a card capture was kept on a PAID booking
+ * Rule 3's alert, after the commit: a card capture was kept on a PAID (or COMPLETED) booking
  * with no usable record of which payment settled it - while another payment on
- * it still holds money, or beside a released settler and nothing else. Its own unmuteable, delivery-locked template
+ * it still holds money, beside a released settler and nothing else, or (#4285) alone
+ * at an amount the booking does not owe. Its own unmuteable, delivery-locked template
  * (`admin-duplicate-capture-kept`): the duplicate-capture refund's alert says a
  * refund was made or queued, and the generic payment alert says "Payment Failed"
  * and can be muted. Once a day per (booking, capture) while repeats arrive (a

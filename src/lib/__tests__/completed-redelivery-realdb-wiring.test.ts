@@ -27,5 +27,6 @@ describe("the COMPLETED-redelivery real-database proof stays wired into CI (#428
     expect(suite).toContain("the recorded settler's redelivery on a COMPLETED booking answers already paid and changes nothing");
     expect(suite).toContain('await import("@/lib/cron-complete-bookings")');
     expect(suite).toContain("processStripeWebhookEvent(event)");
+    expect(suite).toContain("completedRedeliveryDeployQuery()");
   });
 });

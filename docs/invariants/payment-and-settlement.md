@@ -105,7 +105,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - **Every other card capture arriving on a PAID or COMPLETED booking is
   refunded** while the settler still holds net cash nothing else owns: a third
   capture, or a stray on a cash- or Xero-settled booking (#2262). The alert
-  names the settlement, as does an inline refund's history entry.
+  names the settlement; so does an inline refund's history.
 - **What the superseded machinery holds** (a live operation, or a failed-later
   refund open rows owe back in full, #4227) is never the settlement, never
   another payment, and never refunded on top when it arrives (#4283).
@@ -116,8 +116,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   unmuteable `admin-duplicate-capture-kept` alert asks for a check, once a day
   per capture. An owned duplicate still re-sends its own refund.
 - **Limit:** PAID transitions no transaction settles (zero cash, full credit,
-  the $0 auto-pay after an edit, group settlement) never write it: a lone
-  stray capture there is kept without an alert.
+  the $0 auto-pay, group settlement) never write it; a lone stray capture there
+  alerts unless it is what the booking owes by card (#4285).
 - **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
   owned and owed-back readings, the arriving capture's too (#4283).
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per

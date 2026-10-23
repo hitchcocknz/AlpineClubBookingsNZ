@@ -15,8 +15,12 @@
  * `completeBookings` cron, and the redelivery is another
  * `payment_intent.succeeded` through `processStripeWebhookEvent`. The only
  * fixture writes are the booking itself, the intents' PENDING rows each tab
- * minted, and, for a booking paid before #4211, clearing the record the
- * draining colour never wrote.
+ * minted, a change fee recorded on the payment after the stay (as a later
+ * correction would), the second tab's capture set SUCCEEDED by hand for a
+ * booking paid before #4211, for such a booking clearing the record the
+ * draining colour never wrote, and the second tab's row set FAILED (its
+ * refund operation removed) by hand to show the deploy query
+ * (`docs/UPGRADING.md`, #4285) leaves a dead intent out.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -382,6 +386,49 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         [OTHER, "REFUNDED"],
         [SETTLING, "SUCCEEDED"],
       ]);
+    });
+
+    /** The UPGRADING deploy query, as an operator runs it: the booking ids it lists. */
+    async function deployQueryLists() {
+      const { completedRedeliveryDeployQuery } = await import("./support/completed-redelivery-deploy-query");
+      const rows = await prisma.$queryRawUnsafe<Array<{ bookingId: string }>>(completedRedeliveryDeployQuery());
+      return rows.map((row) => row.bookingId).filter((id) => id === BOOKING_ID);
+    }
+
+    it("the deploy query lists a finished stay whose second card payment may have captured, until the app refunds it; a failed second intent is never listed", async () => {
+      const asked = stripeMakesRefunds();
+      await settleAndComplete();
+      // The second tab's success, refused before #4285, never wrote its row: still PENDING.
+      expect(await deployQueryLists()).toEqual([BOOKING_ID]);
+
+      await expectAnswered(OTHER, 200);
+      expect(asked).toEqual([OTHER]);
+      expect(await deployQueryLists(), "a refunded, duplicate-owned capture is not listed").toEqual([]);
+
+      await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: BOOKING_ID } });
+      await prisma.paymentTransaction.updateMany({
+        where: { paymentId: PAYMENT_ID, stripePaymentIntentId: OTHER },
+        data: { status: "FAILED", refundedAmountCents: 0 },
+      });
+      expect(await deployQueryLists(), "a cancelled or declined intent is not listed").toEqual([]);
+    });
+
+    it("#4285 review: a booking paid before the record existed, its only capture replayed after a fee raised what it owes: kept, nothing refunded, and the admins alerted", async () => {
+      const asked = stripeMakesRefunds();
+      await settleAndComplete();
+      await clearRecordedSettler();
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { changeFeeCents: 2_500 } });
+      const before = await snapshot();
+
+      await expectAnswered(SETTLING, 200);
+      expect((await arrive(SETTLING)).outcome).toBe("duplicate_capture_kept");
+
+      expect(asked, "nothing is refunded automatically").toEqual([]);
+      expect(await snapshot()).toEqual(before);
+      expect(
+        (await prisma.alertCooldown.findMany({ where: { key: { contains: BOOKING_ID } }, select: { key: true } })).map((row) => row.key),
+        "the kept-capture alert's once-a-day claim",
+      ).toEqual([`duplicate-capture-unrecorded-settler:${BOOKING_ID}:${SETTLING}`]);
     });
 
     it("a booking paid before the record existed, another capture holding money: the arriving capture is kept, nothing refunded, and the admins alerted", async () => {

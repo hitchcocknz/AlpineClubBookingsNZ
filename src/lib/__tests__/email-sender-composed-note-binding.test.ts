@@ -668,6 +668,18 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     // #4211 review: never "refund the other one" when there is no other one.
     expect(alone).not.toContain("refund the other one");
     expect(alone).toContain("refund it by hand only if the booking should not be paid by it");
+
+    // #4285 review: a lone capture at an amount the booking does not owe.
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminDuplicateCaptureKeptAlert(
+      { ...alert, reason: "amount-not-owed", otherPaymentIntentId: null, otherHoldsMoney: false },
+      CLUB_FORMAT_TEST,
+    );
+    const stray = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(stray).toContain("no other payment on it still holds money");
+    expect(stray).toContain("this payment's amount is not what the booking owes");
+    expect(stray).not.toContain("refund the other one");
+    expect(stray).toContain("refund it by hand only if the booking should not be paid by it");
   });
 
   it("split-guest-portion-cancelled: {{ownBookingNote}} is supplied and renders its reassurance sentence", async () => {

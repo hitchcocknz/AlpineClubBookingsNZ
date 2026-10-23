@@ -111,16 +111,17 @@ export type MarkBookingPaymentSucceededResult = {
     | "cancelled_refunded"
     | "cancelled_refund_failed"
     // #1992 — a SECOND, distinct Stripe capture arrived on an already-PAID
-    // booking (the residual #1967 split-child window). The duplicate capture
+    // (or, #4285, COMPLETED) booking (the residual #1967 split-child window). The duplicate capture
     // was auto-refunded (or a durable refund operation is pending for the
     // recovery cron when the inline attempt failed). The booking itself stays
     // settled by the other capture, so callers that only branch on the
     // cancelled_* outcomes keep treating these as "settled".
     | "duplicate_capture_refunded"
     | "duplicate_capture_refund_failed"
-    // #4211 (`INV-PAY-043`): a different capture on a PAID booking with no
-    // usable record of its settler, beside another payment holding money -
-    // KEPT, nothing refunded, the admins asked to check by hand. Settled like
+    // #4211 (`INV-PAY-043`): a different capture on a PAID or COMPLETED booking
+    // with no usable record of its settler, beside another payment holding money
+    // (or, #4285, alone at an amount the booking does not owe) - KEPT, nothing
+    // refunded, the admins asked to check by hand. Settled like
     // the two above: no confirmation email, no invoice of its own.
     | "duplicate_capture_kept";
   bookingId: string;
@@ -1054,6 +1055,10 @@ async function settleBookingPaymentInTransaction(
       }
     }
 
+    // What the booking owes by card (`bookingAmountOwedCents`): its worth less applied credit.
+    const owedCents = async () =>
+      bookingAmountOwedCents({ finalPriceCents: booking.finalPriceCents, changeFeeCents: booking.payment?.changeFeeCents ?? null, appliedCreditCents: await deriveBookingAppliedCreditCents(booking.id, tx) });
+
     // #4285: COMPLETED is PAID with the stay ended, so it is judged the same, never "not payable".
     if (isPaidLikeBookingStatus(booking.status)) {
       // A finished stay's beds are left alone: a replay places nobody on past nights.
@@ -1074,6 +1079,7 @@ async function settleBookingPaymentInTransaction(
           recordedSettlerId: payment.settledByTransactionId,
           paymentIntentId: settlement.paymentIntentId,
           amountCents: settlement.amountCents,
+          isOwedAmount: async (cents) => cents === (await owedCents()),
         });
         if (verdict.verdict === "refund") {
           await enqueueDuplicateCaptureRefundRecovery({
@@ -1145,17 +1151,8 @@ async function settleBookingPaymentInTransaction(
     // effective price under the MEMBER-CREDIT lock in prepareManualSettlement,
     // asserted the mirror there, and refused a figure that had moved since the
     // admin's dialog rendered.
-    if (
-      settlement.kind === "stripe" &&
-      settlement.amountCents !== settleWorthCents
-    ) {
-      const appliedCreditCents = await deriveBookingAppliedCreditCents(
-        booking.id,
-        tx
-      );
-      if (settlement.amountCents !== settleWorthCents - appliedCreditCents) {
-        throw new Error("Payment amount does not match booking total");
-      }
+    if (settlement.kind === "stripe" && settlement.amountCents !== settleWorthCents && settlement.amountCents !== (await owedCents())) {
+      throw new Error("Payment amount does not match booking total");
     }
 
     const capacity = await checkCapacityForGuestRanges(

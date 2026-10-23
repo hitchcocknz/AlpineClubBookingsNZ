@@ -556,12 +556,12 @@ async function handlePaymentIntentSucceeded(
   // #3750: worth (price plus a recorded change fee), or that less applied credit.
   //
   // #3955 review F5 / #4211: not compared with what the booking owes NOW (a later fee or edit would refuse money
-  // already taken, retried by Stripe for days): a replay of the recorded settler (any status, this payment's row),
-  // else of a SUCCEEDED row the intent pointer (the latest row) names; and any capture of a PAID or (#4285)
-  // COMPLETED booking (`isPaidLikeBookingStatus`), which the settle only keeps or refunds (#1992,
-  // `INV-PAY-043`), never settles on its amount. An unpaid booking keeps the #1161 check, where a stale amount
-  // would settle it. A reversal landing between this pre-lock read and the settle's lock costs one retry with
-  // no alert (the settle's own amount check throws); the next delivery re-reads and self-heals.
+  // already taken, retried by Stripe for days): a replay of the recorded settler (any status, this payment's row;
+  // alone deciding only off PAID/COMPLETED, and outranking the pointer), else of a SUCCEEDED row the intent pointer
+  // names; and any capture of a PAID or (#4285) COMPLETED booking, which the settle only keeps or refunds (#1992,
+  // `INV-PAY-043`). An unpaid booking keeps the #1161 check, where a stale amount would settle it. A reversal
+  // landing between this pre-lock read and the settle's lock costs one retry with no alert (the settle's own
+  // amount check throws); the next delivery re-reads and self-heals.
   const payment = bookingRecord?.payment, settler = payment?.settledByTransactionId;
   const alreadySettledWithThisIntent = (settler ? settler === paymentTransaction.id && paymentTransaction.paymentId === payment?.id : paymentTransaction.status === PaymentStatus.SUCCEEDED && payment?.stripePaymentIntentId === paymentIntent.id) || (!!bookingRecord && isPaidLikeBookingStatus(bookingRecord.status) && !!payment && paymentTransaction.paymentId === payment.id);
   const expectedOwedCents =
