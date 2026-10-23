@@ -653,6 +653,8 @@ describe("Stripe webhook Xero alerting", () => {
       paymentIntentId: "pi_primary",
       amountCents: 5000,
       paymentMethodId: "pm_123",
+      // #4285 review: found by its intent, not adopted - nothing this delivery wrote.
+      recordedByCaller: false,
     });
     expect(mockNotifyXeroSyncError).toHaveBeenCalledWith({
       errorType: "INVOICE_CREATION",
@@ -1378,6 +1380,8 @@ describe("Stripe webhook Xero alerting", () => {
         paymentIntentId: "pi_lost",
         amountCents: 5000,
         paymentMethodId: "pm_123",
+        // #4285 review: the adoption wrote the capture just now - new money, not a replay.
+        recordedByCaller: true,
       });
     });
 

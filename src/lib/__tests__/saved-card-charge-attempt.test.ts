@@ -830,7 +830,7 @@ describe("chargeSavedCardAttempt", () => {
 
     const settled = await settle(attempt.attemptRowId, capturedOld);
 
-    expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: true });
+    expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: true, newlyCaptured: true });
     expect(row(old.id)).toMatchObject({ status: PaymentStatus.SUCCEEDED, stripePaymentIntentId: "pi_old" });
     expect(ledger.rows.find((r) => r.id === attempt.attemptRowId)).toBeUndefined();
     expect(mocks.reconcilePaymentAggregates).toHaveBeenCalledWith({ paymentId: PAYMENT, store: ledger });
@@ -881,7 +881,7 @@ describe("chargeSavedCardAttempt", () => {
 
       const settled = await settle(attempt.attemptRowId, intent);
 
-      expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.PROCESSING, keptExistingRow: true, moved: true });
+      expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.PROCESSING, keptExistingRow: true, moved: true, newlyCaptured: false });
       expect(ledger.rows.map((r) => r.id)).toEqual([old.id]);
       expect(row(old.id).status).toBe(PaymentStatus.PROCESSING);
 
@@ -1167,7 +1167,7 @@ describe("settleSavedCardChargeAttempt", () => {
       payment_method: { id: "pm_expanded" } as unknown as Stripe.PaymentMethod,
     });
 
-    expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true });
+    expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true, newlyCaptured: true });
     expect(row(attempt.attemptRowId)).toMatchObject({
       stripePaymentIntentId: "pi_x",
       status: PaymentStatus.SUCCEEDED,
@@ -1215,7 +1215,7 @@ describe("settleSavedCardChargeAttempt", () => {
 
       const settled = await settle(attempt.attemptRowId, { id: "pi_x", status: "processing", amount: 10000, payment_method: "pm_1" });
 
-      expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: false });
+      expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: false, newlyCaptured: false });
       expect(row(attempt.attemptRowId).status).toBe(PaymentStatus.SUCCEEDED);
       expect(mocks.reconcilePaymentAggregates).not.toHaveBeenCalled();
     });
@@ -1252,7 +1252,7 @@ describe("settleSavedCardChargeAttempt", () => {
 
     const settled = await settle(attempt.attemptRowId, { id: "pi_hook", status: "processing", amount: 10000, payment_method: null });
 
-    expect(settled).toEqual({ transactionId: webhookRow.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: false });
+    expect(settled).toEqual({ transactionId: webhookRow.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: false, newlyCaptured: false });
     expect(row(webhookRow.id).status).toBe(PaymentStatus.SUCCEEDED);
     expect(ledger.rows.find((r) => r.id === attempt.attemptRowId)).toBeUndefined();
     expect(mocks.reconcilePaymentAggregates).toHaveBeenCalledWith({ paymentId: PAYMENT, store: ledger });
@@ -1287,6 +1287,8 @@ describe("settleSavedCardChargeAttempt", () => {
     const winner = { id: "txn_hook", paymentId: PAYMENT } as unknown as LedgerRow;
     ledger.paymentTransaction.findUnique
       .mockResolvedValueOnce(null)
+      // #4285 review: the attempt row's status before the write (`newlyCaptured`).
+      .mockResolvedValueOnce({ status: PaymentStatus.PENDING } as unknown as LedgerRow)
       .mockResolvedValueOnce(winner);
     ledger.paymentTransaction.updateMany.mockRejectedValueOnce(uniqueViolation());
 
@@ -1351,7 +1353,7 @@ describe("adoptSavedCardChargeAttemptForIntent (a webhook for an intent the ledg
       idempotencyKey: attempt.idempotencyKey,
     });
 
-    expect(adopted).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true });
+    expect(adopted).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true, newlyCaptured: true });
     expect(row(attempt.attemptRowId)).toMatchObject({ stripePaymentIntentId: "pi_lost", status: PaymentStatus.SUCCEEDED });
     expect(mocks.reconcilePaymentAggregates).toHaveBeenCalledWith({ paymentId: PAYMENT, store: ledger });
     // And the next attempt refuses: the money is on the ledger now.
