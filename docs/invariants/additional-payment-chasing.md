@@ -1710,5 +1710,5 @@ decision and would need its own owner decision.
   invoice; a review charge takes its cancelled path (`INV-PAY-112`).
 - **No new advisory key.** A failed retirement is logged with the intent, and
   still offers no secret.
-  Pinned by `ended-booking-ask-mint-guard` and `ended-booking-ask-mint-race`
-  (realdb).
+  Home: `ended-booking-ask-guard.ts`. Pinned by `ended-booking-ask-mint-guard`
+  and `ended-booking-ask-mint-race` (realdb).
