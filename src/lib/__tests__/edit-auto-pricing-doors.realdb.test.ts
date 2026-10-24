@@ -49,6 +49,7 @@ const BOOKING_ID = "race-4317-booking";
 const GUEST_A = "race-4317-guest-a";
 const GUEST_B = "race-4317-guest-b";
 const PROMO_CODE_ID = "race-4317-promo";
+const SECOND_CODE_ID = "race-4317-promo-2";
 
 /** Today's season rate for a non-member adult. */
 const RATE = 5_000;
@@ -135,7 +136,7 @@ async function clean(): Promise<void> {
   await prisma.bookingGuestNight.deleteMany({ where: { bookingGuest: { bookingId: BOOKING_ID } } });
   await prisma.bookingGuest.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.booking.deleteMany({ where: { id: BOOKING_ID } });
-  await prisma.promoCode.deleteMany({ where: { id: PROMO_CODE_ID } });
+  await prisma.promoCode.deleteMany({ where: { id: { in: [PROMO_CODE_ID, SECOND_CODE_ID] } } });
   if (errors.length > 0) {
     throw new AggregateError(errors, "#4317: a fixture's Xero enqueue failed; all work drained and owned fixtures cleaned");
   }
@@ -256,21 +257,47 @@ async function batch(input: Record<string, unknown>) {
  * still valid, the per-night (or per-guest) rows, and the confirmation's
  * PROMOTION line beside its night lines.
  */
+type SeedCode =
+  | { type: "FIXED_AMOUNT"; valueCents: number }
+  | { type: "PERCENTAGE"; percentOff: number }
+  | { type: "FREE_NIGHTS"; freeNightsPerIndividual: number };
+
 async function seedPromotion(
-  code: { type: "FIXED_AMOUNT"; valueCents: number } | { type: "PERCENTAGE"; percentOff: number },
+  code: SeedCode,
   options: { validUntil?: string; pricedOn: string },
 ): Promise<number> {
-  await prisma.promoCode.create({
-    data: {
-      id: PROMO_CODE_ID,
-      code: "RACE4317",
-      ...code,
-      ...(options.validUntil ? { validUntil: D(options.validUntil) } : {}),
-    },
-  });
-  await prisma.promoRedemption.create({
-    data: { promoCodeId: PROMO_CODE_ID, bookingId: BOOKING_ID, memberId: OWNER_ID, discountCents: 0 },
-  });
+  return seedPromotions([{ id: PROMO_CODE_ID, code, validUntil: options.validUntil }], options.pricedOn);
+}
+
+/** Several codes, in their application order, each optionally on its own guests. */
+async function seedPromotions(
+  codes: Array<{ id: string; code: SeedCode; validUntil?: string; guestIds?: string[] }>,
+  pricedOn: string,
+): Promise<number> {
+  for (const [order, entry] of codes.entries()) {
+    await prisma.promoCode.create({
+      data: {
+        id: entry.id,
+        code: `RACE4317-${order}`,
+        ...entry.code,
+        ...(entry.validUntil ? { validUntil: D(entry.validUntil) } : {}),
+      },
+    });
+    const redemption = await prisma.promoRedemption.create({
+      data: {
+        promoCodeId: entry.id,
+        bookingId: BOOKING_ID,
+        memberId: OWNER_ID,
+        discountCents: 0,
+        applicationOrder: order,
+      },
+    });
+    for (const bookingGuestId of entry.guestIds ?? []) {
+      await prisma.promoRedemptionGuestTarget.create({
+        data: { promoRedemptionId: redemption.id, bookingId: BOOKING_ID, bookingGuestId },
+      });
+    }
+  }
   const promoAdjustmentCents = await prisma.$transaction(async (tx) => {
     const stored = await tx.booking.findUniqueOrThrow({
       where: { id: BOOKING_ID },
@@ -303,7 +330,7 @@ async function seedPromotion(
         firstNight: guest.nights[0]!.stayDate,
         consentStatus: null,
       })),
-      todayAtClub: clubTimeKernel.requireCalendarDate(options.pricedOn),
+      todayAtClub: clubTimeKernel.requireCalendarDate(pricedOn),
     });
     await tx.booking.update({
       where: { id: BOOKING_ID },
@@ -821,6 +848,129 @@ async function removeGuest(guestId: string) {
           after.finalPriceCents,
         );
         expect(before.finalPriceCents + result.priceDiffCents).toBe(after.finalPriceCents);
+        await noReviewRaised();
+      });
+    });
+
+    describe("batch in progress, two codes stacked on one booking, capped (#4317 review round 6)", () => {
+      // Two guests from 1 July, eight $50 nights each: $800. The frozen day is
+      // 1 July, so the stay is cut to the night already slept: $100 is left.
+      const EIGHT = ["07-01", "07-02", "07-03", "07-04", "07-05", "07-06", "07-07", "07-08"].map((day) => ({
+        day: `2026-${day}`,
+        cents: RATE,
+      }));
+
+      const STACKED = [
+        {
+          name: "two free-nights codes, one per guest: each keeps its row on the night left, and the booking reconciles",
+          // Each code frees its guest's first two nights: -$100 + -$100.
+          second: { type: "FREE_NIGHTS" as const, freeNightsPerIndividual: 2 },
+          // Capped at -$100, shared in proportion: -$50 each, which the row
+          // each code holds on 1 July already carries.
+          figures: [-5_000, -5_000],
+          rows: [
+            [GUEST_A, "2026-07-01", -5_000],
+            [GUEST_B, "2026-07-01", -5_000],
+          ] as Array<[string, string, number]>,
+          reconciliation: { state: "RECONCILED", reasons: [] },
+        },
+        {
+          name: "a free-nights code beside a 50% code: the first is scaled on its own night, the second cannot be and writes none",
+          // -$100 for guest A's first two nights; 50% of guest B's eight: -$200.
+          second: { type: "PERCENTAGE" as const, percentOff: 50 },
+          // Capped at -$100: -$33.33 and -$66.66, the leftover cent on the first code.
+          figures: [-3_334, -6_666],
+          // A's -$50 row scales to -$33.34. B's -$25 row would have to take
+          // -$66.66 off a $50 night, so B writes no row (its build-up is not
+          // known) while A's stands, with its own Xero line (INV-MONEY-040).
+          rows: [[GUEST_A, "2026-07-01", -3_334]] as Array<[string, string, number]>,
+          reconciliation: { state: "UNRECONCILED", reasons: ["PROMO_BUILD_UP_NOT_KNOWN"] },
+        },
+      ];
+
+      it.each(STACKED)("$name", async (scenario) => {
+        await seed({
+          checkIn: "2026-07-01",
+          checkOut: "2026-07-09",
+          status: "PAID",
+          guests: [
+            { id: GUEST_A, total: 8 * RATE, nights: EIGHT },
+            { id: GUEST_B, total: 8 * RATE, nights: EIGHT },
+          ],
+        });
+        const storedPromo = await seedPromotions(
+          [
+            { id: PROMO_CODE_ID, code: { type: "FREE_NIGHTS", freeNightsPerIndividual: 2 }, guestIds: [GUEST_A] },
+            { id: SECOND_CODE_ID, code: scenario.second, guestIds: [GUEST_B] },
+          ],
+          "2026-06-15",
+        );
+        await confirmGuest(GUEST_A, EIGHT);
+        await confirmGuest(GUEST_B, EIGHT);
+        expect(await reconciliationStore.readBookingMoneyReconciliation(prisma, BOOKING_ID)).toEqual({
+          state: "RECONCILED",
+          reasons: [],
+        });
+        const before = await booking();
+
+        const quoted = await quote({ checkOut: "2026-07-02" });
+        const result = await batch({ checkOut: "2026-07-02", settlementMethod: "card" });
+        const after = await booking();
+
+        // Quote = save: the carried codes capped at the $100 left.
+        expect(quoted.newTotalPriceCents).toBe(after.totalPriceCents);
+        expect(quoted.newPromoAdjustmentCents).toBe(after.promoAdjustmentCents);
+        expect(quoted.newFinalPriceCents).toBe(after.finalPriceCents);
+        expect(quoted.priceDiffCents).toBe(result.priceDiffCents);
+        expect([after.totalPriceCents, after.promoAdjustmentCents, after.finalPriceCents]).toEqual([2 * RATE, -2 * RATE, 0]);
+        expect(result.priceDiffCents).toBe(-before.finalPriceCents);
+
+        // Both redemptions stay, scaled in proportion, in application order.
+        const redemptions = await prisma.promoRedemption.findMany({
+          where: { bookingId: BOOKING_ID },
+          orderBy: { applicationOrder: "asc" },
+          include: { allocations: true },
+        });
+        expect(redemptions.map((redemption) => redemption.priceAdjustmentCents)).toEqual(scenario.figures);
+        expect(redemptions.map((redemption) => redemption.allocations.map((allocation) => allocation.priceAdjustmentCents))).toEqual(
+          scenario.figures.map((figure) => [figure]),
+        );
+
+        const rows = await prisma.bookingGuestNightAdjustment.findMany({
+          where: { bookingId: BOOKING_ID },
+          include: { bookingGuestNight: { select: { stayDate: true, bookingGuestId: true } } },
+        });
+        expect(
+          rows
+            .map((row): [string, string, number] => [
+              row.bookingGuestNight!.bookingGuestId,
+              row.bookingGuestNight!.stayDate.toISOString().slice(0, 10),
+              row.amountCents ?? Number.NaN,
+            ])
+            .sort(([a], [b]) => a.localeCompare(b)),
+        ).toEqual(scenario.rows);
+        // The first code's rows reconcile to its own records either way.
+        const first = redemptions[0]!;
+        expect(
+          nightAdjustments.deriveNightAdjustmentState({
+            rows: rows.filter((row) => row.promoRedemptionId === first.id),
+            redemption: { priceAdjustmentCents: first.priceAdjustmentCents, allocations: first.allocations.flatMap((allocation) => (allocation.memberId ? [{ memberId: allocation.memberId, priceAdjustmentCents: allocation.priceAdjustmentCents }] : [])) },
+          }),
+        ).toBe("KNOWN");
+        expect(await reconciliationStore.readBookingMoneyReconciliation(prisma, BOOKING_ID)).toEqual(
+          scenario.reconciliation,
+        );
+
+        // The ledger reverses the stored promotion and posts the capped one.
+        const modification = await prisma.bookingModification.findFirstOrThrow({ where: { bookingId: BOOKING_ID } });
+        const promotionLines = (
+          await prisma.bookingLedgerLine.findMany({
+            where: { bookingId: BOOKING_ID, anchorKind: "MODIFICATION", anchorId: modification.id, kind: "PROMOTION" },
+          })
+        )
+          .map((line) => line.sign * line.unitCents * line.quantity)
+          .sort((a, b) => a - b);
+        expect(promotionLines).toEqual([-2 * RATE, -storedPromo].sort((a, b) => a - b));
         await noReviewRaised();
       });
     });
