@@ -1770,7 +1770,7 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
 | spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
-| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), it recorded a card refund itself (#4312, `card-refund`: a note keyed on its `PaymentRefund`, by its payload or its key), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; nor does a card refund's own note (`isCardMoneyVoidReason`), which takes a recorded answer once Xero is checked: nothing re-raises it on its own, so a person raises it by hand where Xero should still show it - except that a late capture's refund is noted again by the next event that asks for that capture (`noteLateCaptureRefunds`: another of its refunds recorded, its receipt recorded, a lost record written), which a person who raised it by hand then voids; any other row with nothing to pick says why and takes a recorded answer. |
+| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), it recorded a card refund itself (#4312, `card-refund`: a note keyed on its `PaymentRefund`, by its payload or its key), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; nor does a card refund's own note (`isCardMoneyVoidReason`), which takes a recorded answer once Xero is checked: nothing re-raises it, so a person raises it by hand where Xero should still show it. A late capture's refund is no exception: its voided note keeps its credit note's id, so the capture's sizing (`noteLateCaptureRefunds`, `classifyLateCaptureCardNote`) still counts it and a later refund of the capture asks only for itself; any other row with nothing to pick says why and takes a recorded answer. |
 
 A note is matched to the hand-back it recorded by the task it names - a
 cancellation's note carries `handBackTaskId` in its payload since #4162 (never
@@ -2163,8 +2163,9 @@ older release folds again; notes already raised per refund stay valid and are
 still counted through their links, and its rewrite of the row's payload drops
 `cardRefundId` but not the key, so the row is still found as the refund's own
 (`cardRefundNoteRowsWhere`, `cardRefundIdOfNoteRow`). UPGRADING carries the
-read-only query that lists the late-capture notes this release raised for
-refunds made while the previous version served.
+read-only query that lists the late-captured payments' refunds made while the
+previous version served, from the `PaymentRefund` rows, each with the note of
+its own this release raised or may still raise, or with none yet.
 
 Stated limits:
 
@@ -2172,9 +2173,12 @@ Stated limits:
   the previous release recorded after the marker finished, and folded, can be
   asked for again by that capture's note under this release (a credit-back, or a
   later refund of the same capture) and given a note of its own, beside any
-  note an officer raised by hand. The UPGRADING query lists those notes, run
-  with the time this release last began serving alone; the officer voids a
-  hand-raised duplicate.
+  note an officer raised by hand: nothing here records a hand-raised note, so
+  it does not stop this release's. The UPGRADING query lists those refunds, run
+  with the time this release last began serving alone - with no row yet until
+  the next event asks for the capture, and leaving out a failed row a retry
+  already raised - and the officer voids a hand-raised duplicate once the app's
+  note is in Xero.
 - **A refund appeal's card part waiting in the recovery queue when the previous
   release takes over** - after a rollback, or while it still runs the recovery
   job during the switch - gets no note: this release's approval left the note to

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { PaymentSource, Prisma } from "@prisma/client";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
@@ -8,6 +9,8 @@ import { cardRefundNoteKeyTag, cardRefundNoteRowsWhere } from "@/lib/card-refund
 import { CARD_REFUND_NOTE_CUTOVER_MIGRATION } from "@/lib/card-refund-own-note-share";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
+import { EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-status";
+import { buildRefundDocumentReference } from "@/lib/xero-refund-method";
 
 /**
  * #4312 review (`INV-ADDPAY-044`, `INV-SSOT`): the UPGRADING switch-window
@@ -20,17 +23,24 @@ import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note
  */
 const REPO_ROOT = resolve(__dirname, "../../..");
 
-function cardRefundWindowQuerySql(): string {
+/** The UPGRADING entry's switch-window section, from its heading to the next one. */
+function cardRefundWindowSection(): string {
   const doc = readFileSync(resolve(REPO_ROOT, "docs/UPGRADING.md"), "utf8");
   const start = doc.indexOf("**Card refunds made in the switch window (#4312).**");
   expect(start).toBeGreaterThanOrEqual(0);
-  const sql = /```sql\n([\s\S]*?)\n```/.exec(doc.slice(start))?.[1];
+  const end = doc.indexOf("**During the switch, and if you roll back.**", start);
+  expect(end).toBeGreaterThan(start);
+  return doc.slice(start, end);
+}
+
+function cardRefundWindowQuerySql(): string {
+  const sql = /```sql\n([\s\S]*?)\n```/.exec(cardRefundWindowSection())?.[1];
   expect(sql).toBeDefined();
   return sql!;
 }
 
-/** The timestamp an operator replaces with the moment this version served alone. */
-const CARD_REFUND_WINDOW_QUERY_PLACEHOLDER = "TIMESTAMPTZ '2026-01-01 00:00:00+00'";
+/** The timestamp an operator replaces with the moment this version served alone: one PostgreSQL refuses to parse, so the query never runs unset. */
+const CARD_REFUND_WINDOW_QUERY_PLACEHOLDER = "TIMESTAMPTZ 'SET-ME'";
 
 describe("the #4312 switch-window query matches the code's one definition", () => {
   const sql = cardRefundWindowQuerySql();
@@ -59,9 +69,20 @@ describe("the #4312 switch-window query matches the code's one definition", () =
     expect(sql).toContain(`LIKE '%${tag[0]}' || r."stripeRefundId" || '${tag[1]}%'`);
   });
 
-  it("keeps to late-captured payments' refunds, by the field a note row names the capture under", () => {
-    const named = /o\."requestPayload"->>'(\w+)' IS NOT NULL/.exec(sql)?.[1];
+  it("keeps to late-captured payments' counted refunds on a bank transfer: the capture a treasurer held, or one a note row names", () => {
+    expect(sql).toContain(`p.source = '${PaymentSource.INTERNET_BANKING}'`);
+    expect(sql).toContain(`r.status NOT IN (${EXCLUDED_LEDGER_REFUND_STATUSES.map((status) => `'${status}'`).join(", ")})`);
+    expect(sql).toContain(`t."${Prisma.ManualRefundTaskScalarFieldEnum.lateCaptureApprovalIntentId}" = r."stripePaymentIntentId"`);
+    const where = cardRefundNoteRowsWhere("PAYMENT", "re_X");
+    expect(sql).toContain(`c."localModel" = '${where.localModel}' AND c."entityType" = '${where.entityType}' AND c."operationType" = '${where.operationType}'`);
+    const named = /c\."requestPayload"->>'(\w+)' = r\."stripePaymentIntentId"/.exec(sql)?.[1];
     expect(named).toBeDefined();
     expect(parsePaymentCreditNoteRetryInput({ requestPayload: { queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE, refundAmountCents: 100, [named!]: "pi_X" } })?.paymentIntentId).toBe("pi_X");
+  });
+
+  it("names the reference the app's card refund note carries, for a failed row's look in Xero", () => {
+    const head = buildRefundDocumentReference({ method: "card", bookingId: "" });
+    expect(cardRefundWindowSection().replace(/\s+/g, " ")).toContain(`\`${head}<first eight characters of bookingId>\``);
+    expect(buildRefundDocumentReference({ method: "card", bookingId: "ABCDEFGHIJKL" })).toBe(`${head}ABCDEFGH`);
   });
 });

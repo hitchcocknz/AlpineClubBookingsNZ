@@ -270,49 +270,90 @@ it serves after a rollback - it handles a refund of a card payment captured
 after the booking was cancelled as it always did: it counts the refund under the
 payment's first refund note. This version can later give that refund a note of
 its own (when Stripe next reports a refund of that captured payment, say), and
-an officer may already have raised one by hand for it. Run this read-only query
-once this version serves alone, with the timestamp set to that moment - the
-switch, or, after a rollback, the roll forward - written with its UTC offset
-(`+00` for UTC, `+13` for New Zealand daylight time). Run it again after every
-roll forward. It lists each note this version raised, or may still raise, for such a
-refund made in the window. The refund's time is stored in UTC with no zone, so
-the query reads the marker's finish and your timestamp in UTC too, in whole
-seconds as the app does, whatever time zone your database session uses; a
-refund recorded without Stripe's time is dated by when the app recorded it:
+an officer may already have raised one by hand for it. Nothing in the app
+records a credit note raised by hand in Xero, so a hand-raised note does not
+stop the app raising its own.
+
+Run this read-only query once this version serves alone. First replace
+`'SET-ME'` with that moment - the switch, or, after a rollback, the roll
+forward - written with its UTC offset, such as
+`TIMESTAMPTZ '2026-11-23 09:30:00+13'` (`+00` for UTC, `+13` for New Zealand
+daylight time); left as it is, the query refuses to run. Run it again after
+every roll forward. It lists each such refund made in the window - on a
+bank-transfer payment, of a card payment captured after its booking was
+cancelled that a treasurer held for a decision or that the app has noted
+against that captured payment - once for each note of its own this version
+raised or may still raise, or once with no `operationId` when it has none yet.
+The refund's time is stored in UTC with no zone, so the query reads the
+marker's finish and your timestamp in UTC too, in whole seconds as the app
+does, whatever time zone your database session uses; a refund recorded without
+Stripe's time is dated by when the app recorded it:
 
 ```sql
-SELECT o."localId" AS "paymentId", p."bookingId", r."stripeRefundId", r."amountCents",
+WITH own AS (
+  SELECT r.id AS "refundRowId", o.id, o.status, o."xeroObjectId", o."xeroObjectNumber", o."manuallyResolvedAt"
+  FROM "PaymentRefund" r
+  JOIN "XeroSyncOperation" o ON o."localId" = r."paymentId"
+    AND o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE'
+    AND (o."requestPayload"->>'cardRefundId' = r."stripeRefundId" OR o."correlationKey" LIKE '%:card-refund:' || r."stripeRefundId" || ':%')
+)
+SELECT r."paymentId", p."bookingId", r."stripeRefundId", r."amountCents",
   COALESCE(r."stripeCreatedAt", r."createdAt") AS "refundMadeAtUtc",
-  o.status, o."xeroObjectId" AS "creditNoteId", o."xeroObjectNumber" AS "creditNoteNumber"
-FROM "XeroSyncOperation" o
-JOIN "Payment" p ON p.id = o."localId"
-JOIN "PaymentRefund" r ON r."paymentId" = o."localId"
-  AND (r."stripeRefundId" = o."requestPayload"->>'cardRefundId' OR o."correlationKey" LIKE '%:card-refund:' || r."stripeRefundId" || ':%')
-WHERE o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE'
-  AND o."requestPayload"->>'paymentIntentId' IS NOT NULL
-  AND (o."xeroObjectId" IS NOT NULL OR (o.status NOT IN ('SUCCEEDED', 'CANCELLED') AND o."manuallyResolvedAt" IS NULL))
+  n.id AS "operationId", n.status, n."xeroObjectId" AS "creditNoteId", n."xeroObjectNumber" AS "creditNoteNumber"
+FROM "PaymentRefund" r
+JOIN "Payment" p ON p.id = r."paymentId" AND p.source = 'INTERNET_BANKING'
+LEFT JOIN own n ON n."refundRowId" = r.id
+  AND (n."xeroObjectId" IS NOT NULL OR (n.status NOT IN ('SUCCEEDED', 'CANCELLED') AND n."manuallyResolvedAt" IS NULL))
+  AND NOT (n."xeroObjectId" IS NULL AND n.status IN ('FAILED', 'PARTIAL')
+    AND EXISTS (SELECT 1 FROM own raised WHERE raised."refundRowId" = r.id AND raised."xeroObjectId" IS NOT NULL))
+WHERE r.status NOT IN ('failed', 'canceled')
+  AND (EXISTS (SELECT 1 FROM "ManualRefundTask" t WHERE t."lateCaptureApprovalIntentId" = r."stripePaymentIntentId")
+    OR EXISTS (SELECT 1 FROM "XeroSyncOperation" c WHERE c."localId" = r."paymentId"
+      AND c."localModel" = 'Payment' AND c."entityType" = 'CREDIT_NOTE' AND c."operationType" = 'CREATE'
+      AND c."requestPayload"->>'paymentIntentId' = r."stripePaymentIntentId"))
+  AND NOT EXISTS (SELECT 1 FROM own resolved WHERE resolved."refundRowId" = r.id AND resolved."manuallyResolvedAt" IS NOT NULL AND resolved.status <> 'CANCELLED')
   AND date_trunc('second', COALESCE(r."stripeCreatedAt", r."createdAt")) >= (SELECT date_trunc('second', min(m."finished_at") AT TIME ZONE 'UTC')
     FROM "_prisma_migrations" m WHERE m."migration_name" = '20261122010000_bt_card_refund_notes_cutover' AND m."rolled_back_at" IS NULL)
-  AND date_trunc('second', COALESCE(r."stripeCreatedAt", r."createdAt")) <= (TIMESTAMPTZ '2026-01-01 00:00:00+00' AT TIME ZONE 'UTC')
-ORDER BY p."bookingId", "refundMadeAtUtc";
+  AND date_trunc('second', COALESCE(r."stripeCreatedAt", r."createdAt")) <= (TIMESTAMPTZ 'SET-ME' AT TIME ZONE 'UTC')
+ORDER BY p."bookingId", "refundMadeAtUtc", n.id;
 ```
 
-For each row, look at the booking's invoice in Xero, and if an officer also
-raised a credit note by hand for the same refund:
+For each row, look at the booking's invoice in Xero for a credit note an
+officer raised by hand for the same refund. Where there is one:
 
 - **A row with a `creditNoteId`**: the app's note is in Xero. Void the
   hand-raised one and keep the app's.
-- **A row with no `creditNoteId`, status `PENDING`, `RUNNING` or
-  `WAITING_PAYMENT`**: the next Xero run raises its note. Void the hand-raised
-  note straight after that run.
+- **A row with no `creditNoteId`, status `PENDING` or `RUNNING`**: the next
+  Xero run raises the app's note. Keep the hand-raised note until then, and run
+  this query again: once the row shows a `creditNoteId`, void the hand-raised
+  one.
 - **A row with no `creditNoteId`, status `FAILED` or `PARTIAL`**: it raises
   nothing until someone presses **Retry in background** on it in Xero
-  Operations. Don't retry it: press **Resolve (fixed in Xero)** on it, and keep
-  the hand-raised note.
+  Operations. Don't retry it. The error may have come after Xero raised the
+  app's note, so look in Xero first for a credit note with the reference
+  `Refund against original credit card - Booking <first eight characters of bookingId>`,
+  dated the day of the refund, for the refund's amount or less, that no officer
+  raised. If there is one, it is the app's: void the hand-raised note and keep
+  the app's. Either way, press **Resolve (fixed in Xero)** on the row.
+- **A row with no `operationId`**: the app has no note of this refund's own
+  yet. If the previous version counted the refund under the payment's first
+  refund note, this version raises one the next time it notes that captured
+  payment: when Stripe reports another refund of it, a refund appeal on it is
+  approved, or its invoice for the kept payment reaches Xero. If the previous
+  version instead raised a note for the whole captured payment, which covers
+  the refund, it never does. Keep the hand-raised note, and run this query
+  again after any of those events on the booking: once the refund shows a
+  `creditNoteId`, void the hand-raised one. With no hand-raised note, leave it
+  for the app; if Xero should show the refund before then, you may raise one by
+  hand on the same terms.
 
-The query leaves out a row that will never raise a note: one cancelled, one
-resolved by hand, and one that finished without raising one (its refund
-failed in Stripe, or other notes already covered it).
+The query leaves out a refund that Stripe failed or cancelled, and one whose
+own note row was resolved by hand: the app counts that note as in Xero and asks
+for nothing more. Of a refund's note rows it leaves out one that will never
+raise a note - cancelled, or finished without raising one because other notes
+already covered it - and a failed one a later retry has already raised: the
+retry's row, with its `creditNoteId`, stands for it. Never resolve such a
+failed row: the app would then count the refund twice.
 
 **During the switch, and if you roll back.** The previous version's Xero worker
 treats a card refund's new credit-note row as the one note it would have used,

@@ -265,11 +265,43 @@ function answerRefundsAsStripeWould() {
 
     /** The outbox worker for one queued note, against a fake Xero. Returns what Xero was asked to raise, and the invoice it credits. */
     async function raiseQueuedNote(operationId: string, noteId: string) {
+      const sent = await withFakeXero(noteId, async () => {
+        // Oldest first is the worker's order: this row goes first, alone.
+        await prisma.$executeRaw`UPDATE "XeroSyncOperation" SET "createdAt" = ${new Date("2000-01-01T00:00:00.000Z")} WHERE "id" = ${operationId}`;
+        const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
+        await processQueuedXeroOutboxOperations({ limit: 1 });
+      });
+      const row = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { status: true, requestPayload: true } });
+      expect(row.status).toBe("SUCCEEDED");
+      return sent;
+    }
+
+    /** The outbox worker for one queued note, against a Xero that times out after the call went: the row fails with its outcome unknown. */
+    async function failQueuedNote(operationId: string) {
+      await withFakeXero(null, async () => {
+        await prisma.$executeRaw`UPDATE "XeroSyncOperation" SET "createdAt" = ${new Date("2000-01-01T00:00:00.000Z")} WHERE "id" = ${operationId}`;
+        const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
+        await processQueuedXeroOutboxOperations({ limit: 1 });
+      });
+      expect((await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { status: true } })).status).toBe("FAILED");
+    }
+
+    /** An officer's Retry on a failed note (`retryXeroSyncOperation`), against a fake Xero: what Xero was asked to raise. */
+    async function retryNote(operationId: string, noteId: string) {
+      return withFakeXero(noteId, async () => {
+        const { retryXeroSyncOperation } = await import("@/lib/xero-operation-retry");
+        await retryXeroSyncOperation(operationId, CLUB_FORMAT_TEST, { createdByMemberId: OFFICER_ID });
+      });
+    }
+
+    /** Runs `run` against a fake Xero that raises `noteId` for each credit note asked for, or (null) times out on it. */
+    async function withFakeXero(noteId: string | null, run: () => Promise<void>): Promise<number[]> {
       const sent: number[] = [];
       const xero = {
         accountingApi: {
           createCreditNotes: async (_t: string, body: { creditNotes: Array<{ lineItems: Array<{ unitAmount: number }> }> }) => {
             const total = body.creditNotes[0]!.lineItems[0]!.unitAmount;
+            if (noteId === null) throw Object.assign(new Error("Xero timed out (race-4312)"), { response: { statusCode: 504 } });
             sent.push(Math.round(total * 100));
             return { body: { creditNotes: [{ creditNoteID: noteId, creditNoteNumber: `CN-${noteId}`, total, remainingCredit: total, status: "AUTHORISED", payments: [] }] } };
           },
@@ -289,15 +321,10 @@ function answerRefundsAsStripeWould() {
         vi.spyOn(invoicePayments, "resolveRefundSettlement").mockResolvedValue({ kind: "unsettled", reason: P }),
       ];
       try {
-        // Oldest first is the worker's order: this row goes first, alone.
-        await prisma.$executeRaw`UPDATE "XeroSyncOperation" SET "createdAt" = ${new Date("2000-01-01T00:00:00.000Z")} WHERE "id" = ${operationId}`;
-        const { processQueuedXeroOutboxOperations } = await import("@/lib/xero-operation-outbox");
-        await processQueuedXeroOutboxOperations({ limit: 1 });
+        await run();
       } finally {
         for (const spy of spies) spy.mockRestore();
       }
-      const row = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId }, select: { status: true, requestPayload: true } });
-      expect(row.status).toBe("SUCCEEDED");
       return sent;
     }
 
@@ -341,7 +368,7 @@ function answerRefundsAsStripeWould() {
      * when this version began serving alone (written in UTC, `+00`) and in a session of that time zone
      * (the shipped compose file sets the club's on PostgreSQL): the note rows it lists, refund and note id.
      */
-    async function switchWindowListed(servingAloneAt: Date, timeZone = "UTC"): Promise<Array<{ stripeRefundId: string; creditNoteId: string | null }>> {
+    async function switchWindowListed(servingAloneAt: Date, timeZone = "UTC"): Promise<Array<{ stripeRefundId: string; operationId: string | null; creditNoteId: string | null }>> {
       const { readFileSync } = await import("node:fs");
       const { resolve } = await import("node:path");
       const doc = readFileSync(resolve(__dirname, "../../../docs/UPGRADING.md"), "utf8");
@@ -350,9 +377,11 @@ function answerRefundsAsStripeWould() {
       const at = servingAloneAt.toISOString().replace("T", " ").replace("Z", "+00");
       const rows = await prisma.$transaction(async (tx) => {
         await tx.$executeRawUnsafe(`SET LOCAL TIME ZONE '${timeZone}'`);
-        return tx.$queryRawUnsafe<Array<{ paymentId: string; stripeRefundId: string; creditNoteId: string | null }>>(sql!.replace(/TIMESTAMPTZ '[^']*'/, `TIMESTAMPTZ '${at}'`));
+        return tx.$queryRawUnsafe<Array<{ paymentId: string; stripeRefundId: string; operationId: string | null; creditNoteId: string | null }>>(
+          sql!.replace(/TIMESTAMPTZ '[^']*'/, `TIMESTAMPTZ '${at}'`),
+        );
       });
-      return rows.filter((row) => row.paymentId === PAYMENT_ID).map(({ stripeRefundId, creditNoteId }) => ({ stripeRefundId, creditNoteId }));
+      return rows.filter((row) => row.paymentId === PAYMENT_ID).map(({ stripeRefundId, operationId, creditNoteId }) => ({ stripeRefundId, operationId, creditNoteId }));
     }
 
     /** What the coverage, gap and hand-back cash readers report, and the payment's refunded total against its charge rows. */
@@ -639,10 +668,10 @@ function answerRefundsAsStripeWould() {
       // The older refund's ask is the capture's one note, which the canonical note absorbs, as before #4312: no row.
       expect(rows.map((row) => row.cardRefundId)).toEqual([null, fresh]);
       // The switch-window query lists it while the previous version is taken to have served past it, and not once this version served alone before it.
-      expect(await switchWindowListed(new Date((CUTOVER_SECONDS + 86_400) * 1000))).toEqual([{ stripeRefundId: fresh, creditNoteId: null }]);
+      expect(await switchWindowListed(new Date((CUTOVER_SECONDS + 86_400) * 1000))).toEqual([{ stripeRefundId: fresh, operationId: own!.id, creditNoteId: null }]);
       expect(await switchWindowListed(new Date(CUTOVER_SECONDS * 1000))).toEqual([]);
       expect(await raiseQueuedNote(own!.id, `${P}-late-note`)).toEqual([1_200]);
-      expect(await switchWindowListed(new Date((CUTOVER_SECONDS + 86_400) * 1000))).toEqual([{ stripeRefundId: fresh, creditNoteId: `${P}-late-note` }]);
+      expect(await switchWindowListed(new Date((CUTOVER_SECONDS + 86_400) * 1000))).toEqual([{ stripeRefundId: fresh, operationId: own!.id, creditNoteId: `${P}-late-note` }]);
       const executed = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: own!.id }, select: { requestPayload: true } });
       expect((executed.requestPayload as { allocation: { invoiceId: string } }).allocation.invoiceId).toBe(`${P}-kept-invoice`);
       expect(await canonicalPointer()).toBe(`${P}-hand-back-note`);
@@ -666,23 +695,108 @@ function answerRefundsAsStripeWould() {
         // An hour's window - shorter than New Zealand's offset, so a comparison through the session's zone drops it.
         const end = new Date((CUTOVER_SECONDS + 3_600) * 1000);
         for (const timeZone of ["UTC", "Pacific/Auckland"]) {
-          expect(await switchWindowListed(end, timeZone), timeZone).toEqual([{ stripeRefundId: atMarker, creditNoteId: null }]);
+          expect(await switchWindowListed(end, timeZone), timeZone).toEqual([{ stripeRefundId: atMarker, operationId: own!.id, creditNoteId: null }]);
         }
         // Recorded without Stripe's time, the refund is dated by its record, as the app dates it.
         await prisma.paymentRefund.updateMany({ where: { paymentId: PAYMENT_ID, stripeRefundId: atMarker }, data: { stripeCreatedAt: null, createdAt: new Date(CUTOVER_SECONDS * 1000 + 30_000) } });
-        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([{ stripeRefundId: atMarker, creditNoteId: null }]);
+        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([{ stripeRefundId: atMarker, operationId: own!.id, creditNoteId: null }]);
         // The operator's moment is read in UTC too: a window that ended before the refund lists nothing.
         expect(await switchWindowListed(new Date(CUTOVER_SECONDS * 1000 + 10_000), "Pacific/Auckland")).toEqual([]);
-        // A row that can never raise a note is left out: cancelled, or resolved by hand.
+        // A refund whose note row was resolved by hand is left out: the app counts that note as in Xero.
         await prisma.xeroSyncOperation.update({ where: { id: own!.id }, data: { status: "FAILED", manuallyResolvedAt: new Date() } });
         expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([]);
         await prisma.xeroSyncOperation.update({ where: { id: own!.id }, data: { status: "FAILED", manuallyResolvedAt: null } });
-        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([{ stripeRefundId: atMarker, creditNoteId: null }]);
+        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([{ stripeRefundId: atMarker, operationId: own!.id, creditNoteId: null }]);
+        // A cancelled row never raises a note, but the refund stays listed with none: a later event may ask for it again.
         await prisma.xeroSyncOperation.update({ where: { id: own!.id }, data: { status: "CANCELLED" } });
-        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([]);
+        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([{ stripeRefundId: atMarker, operationId: null, creditNoteId: null }]);
+        // As shipped, its timestamp is a placeholder PostgreSQL refuses, so it never runs with a moment nobody set.
+        const { readFileSync } = await import("node:fs");
+        const { resolve } = await import("node:path");
+        const doc = readFileSync(resolve(__dirname, "../../../docs/UPGRADING.md"), "utf8");
+        const shipped = /```sql\n([\s\S]*?)\n```/.exec(doc.slice(doc.indexOf("**Card refunds made in the switch window (#4312).**")))![1]!;
+        await expect(prisma.$queryRawUnsafe(shipped)).rejects.toThrow(/invalid input syntax for type timestamp with time zone/);
       } finally {
         await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "finished_at" = ${new Date(CUTOVER_SECONDS * 1000)} WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
       }
+    });
+
+    it("MUTATION: the switch-window query lists a window refund the previous version folded, with no row, until this version notes it on the next event", async () => {
+      await paid({ bankOnly: true });
+      await firstHandBackNoted();
+      await lateCaptureKept();
+      // While the previous version serves, it handles the refund as this one does a refund made before the cutover:
+      // the marker is taken to finish after it, so the capture's ask folds into the payment's first note.
+      await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "finished_at" = ${new Date((CUTOVER_SECONDS + 7_200) * 1000)} WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
+      let windowRefund: string;
+      try {
+        windowRefund = refundInDashboard(1_200);
+        await deliverChargeRefunded();
+      } finally {
+        await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "finished_at" = ${new Date(CUTOVER_SECONDS * 1000)} WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
+      }
+      expect((await noteRows()).filter((row) => row.cardRefundId !== null)).toEqual([]);
+      // Made after the marker and before this version served alone: listed, with no note row of its own yet.
+      const servedAlone = new Date((CUTOVER_SECONDS + 86_400) * 1000);
+      expect(await switchWindowListed(servedAlone)).toEqual([{ stripeRefundId: windowRefund, operationId: null, creditNoteId: null }]);
+
+      // A later refund of the same capture: this version now notes the window refund on its own record too.
+      const later = refundInDashboard(700);
+      await deliverChargeRefunded();
+      const rows = await noteRows();
+      const windowRow = rows.find((row) => row.cardRefundId === windowRefund);
+      const laterRow = rows.find((row) => row.cardRefundId === later);
+      expect(windowRow).toMatchObject({ cents: 1_200, paymentIntentId: CARD_INTENT_ID });
+      expect(laterRow).toMatchObject({ cents: 700, paymentIntentId: CARD_INTENT_ID });
+      expect(await switchWindowListed(servedAlone)).toEqual(
+        expect.arrayContaining([
+          { stripeRefundId: windowRefund, operationId: windowRow!.id, creditNoteId: null },
+          { stripeRefundId: later, operationId: laterRow!.id, creditNoteId: null },
+        ]),
+      );
+    });
+
+    it("MUTATION: the switch-window query leaves out a failed note row a retry already raised, so nobody resolves it", async () => {
+      await paid({ bankOnly: true });
+      await lateCaptureKept();
+      const fresh = refundInDashboard(1_200);
+      await deliverChargeRefunded();
+      const own = (await noteRows()).find((row) => row.cardRefundId === fresh)!;
+      const servedAlone = new Date((CUTOVER_SECONDS + 86_400) * 1000);
+      // Xero timed out on it: failed, its outcome unknown. Listed, for the officer to look in Xero and resolve.
+      await failQueuedNote(own.id);
+      expect(await switchWindowListed(servedAlone)).toEqual([{ stripeRefundId: fresh, operationId: own.id, creditNoteId: null }]);
+      // An officer's retry raises the note on a row of its own, found as this refund's.
+      expect(await retryNote(own.id, `${P}-retried`)).toEqual([1_200]);
+      const retried = (await noteRows()).filter((row) => row.cardRefundId === fresh && row.id !== own.id);
+      expect(retried).toHaveLength(1);
+      // Only the retry's row is listed: the failed one it superseded would, resolved, count the refund twice.
+      expect(await switchWindowListed(servedAlone)).toEqual([{ stripeRefundId: fresh, operationId: retried[0]!.id, creditNoteId: `${P}-retried` }]);
+    });
+
+    it("a late capture's refund whose own note Xero voided is not noted again when a later refund of the same capture arrives", async () => {
+      await paid({ bankOnly: true });
+      await firstHandBackNoted();
+      await lateCaptureKept();
+      const first = refundInDashboard(1_200);
+      await deliverChargeRefunded();
+      const own = (await noteRows()).find((row) => row.cardRefundId === first)!;
+      expect(await raiseQueuedNote(own.id, `${P}-late-voided`)).toEqual([1_200]);
+      await reconcile(`${P}-late-voided`, 1_200);
+      // Xero voids it, and the nightly follow-up sends it to a person.
+      await reconcile(`${P}-late-voided`, 1_200, "VOIDED");
+      const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-late-voided` }, select: { id: true } });
+      const { followUpVoidedBankRefundNote } = await import("@/lib/bank-refund-void-follow-up");
+      expect(await followUpVoidedBankRefundNote(link.id)).toMatchObject({ outcome: "unmatched" });
+
+      // A second refund of the same capture: only it is asked for, never the voided refund again.
+      const second = refundInDashboard(700);
+      await deliverChargeRefunded();
+      const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
+      await creditBackLateCaptureRefunds(CARD_INTENT_ID);
+      const rows = await noteRows();
+      expect(rows.filter((row) => row.cardRefundId === first).map((row) => row.id)).toEqual([own.id]);
+      expect(rows.filter((row) => row.cardRefundId === second).map((row) => row.cents)).toEqual([700]);
     });
 
     it("a late capture on a payment with no note yet: its older refund takes the capture's one note, its newer one its own", async () => {
