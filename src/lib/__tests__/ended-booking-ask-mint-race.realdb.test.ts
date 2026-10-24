@@ -20,6 +20,10 @@
  *  - the row write holds it first and the cancel queues behind it: the cancel
  *    reads the new intent on the mirror and retires it itself.
  *
+ *  - the recovery runner's replay of a failed mint, the same two ways: on a
+ *    booking bumped before it runs (nothing minted), and with a cancel landing
+ *    between its provider call and its row write (it retires its own ask).
+ *
  * In every case no ask intent is left live at Stripe and its row is FAILED.
  *
  * Envelope: identical to `concurrency-lock-races.realdb.test.ts`, which imports
@@ -190,6 +194,30 @@ let observerClient: PrismaClient;
           priceLines: null,
         },
       });
+    }
+
+    /**
+     * The edit's mint failed and left its debt on a recovery row, as the door
+     * writes it; the runner's replay is then run now, as the cron would run it.
+     */
+    async function replayTheFailedMint() {
+      const [{ enqueueAdditionalPaymentIntentRecovery, runPaymentRecoveryOperationNow }, keys, request] = await Promise.all([
+        import("@/lib/payment-recovery"),
+        import("@/lib/payment-recovery-keys"),
+        import("@/lib/ordinary-ask-request"),
+      ]);
+      const operation = await enqueueAdditionalPaymentIntentRecovery({
+        bookingId: BOOKING_ID,
+        paymentId: PAYMENT_ID,
+        idempotencyKey: keys.buildAdditionalIntentRecoveryIdempotencyKey(MODIFICATION_ID),
+        amountCents: ASK_CENTS,
+        stripeIdempotencyKey: request.ordinaryAskDoorRequest("guestAdd", BOOKING_ID, MODIFICATION_ID).idempotencyKey,
+        hadIssuedXeroInvoice: false,
+        nextRetryAt: new Date(0),
+      });
+      const outcome = await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST);
+      const after = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: operation.id }, select: { status: true } });
+      return { outcome, status: after.status };
     }
 
     async function cancelTheBooking() {
@@ -408,6 +436,34 @@ let observerClient: PrismaClient;
       // Whether the minter's re-read saw the commit is timing; either way the
       // ask is dead, retired by whichever writer ran second.
       await expectNoLiveAsk();
+    });
+
+    it("the recovery runner's replay on a booking bumped before it runs: nothing is minted and the debt closes", async () => {
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { status: "BUMPED" } });
+
+      const replayed = await replayTheFailedMint();
+
+      expect(replayed).toEqual({ outcome: "succeeded", status: "SUCCEEDED" });
+      expect(stripe.created).toEqual([]);
+      expect((await readTheAsk()).row).toBeNull();
+    });
+
+    it("the recovery runner's replay with a cancel committed between its provider call and its row write: it retires the ask it wrote and closes the debt", async () => {
+      const realCreate = stripeRaceHooks.create!;
+      let cancelStatus = 0;
+      stripeRaceHooks.create = async (args) => {
+        const intent = await realCreate(args);
+        cancelStatus = (await cancelTheBooking()).status;
+        return intent;
+      };
+
+      const replayed = await replayTheFailedMint();
+
+      expect(cancelStatus).toBe(200);
+      expect(replayed).toEqual({ outcome: "succeeded", status: "SUCCEEDED" });
+      await expectNoLiveAsk();
+      // Nothing is owed on a cancelled booking: no supplementary invoice waits on the dead intent.
+      expect(await prisma.xeroSyncOperation.count({ where: { localId: MODIFICATION_ID } })).toBe(0);
     });
   },
 );
