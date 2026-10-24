@@ -478,6 +478,9 @@ function getAttemptWhere(
   return { OR: or };
 }
 
+/** Inserts `startXeroSyncOperation` makes at most when each lost race finds the winner FAILED (#4338). */
+const START_OPERATION_INSERT_ATTEMPTS = 3;
+
 export async function startXeroSyncOperation(
   input: XeroSyncOperationInput & { store?: Prisma.TransactionClient }
 ) {
@@ -533,19 +536,26 @@ export async function startXeroSyncOperation(
       // #1354: the partial unique index (one ACTIVE operation per correlation key)
       // turns a lost concurrent-enqueue race into a unique violation here. Resolve
       // it as the findFirst fast-path dedup would: return the winner's active row.
-      if (!isPrismaUniqueConstraintError(error) || !input.correlationKey) throw error;
+      // Not on a caller's transaction (the root client is none): the violation has
+      // aborted it, so no read can follow (#4338).
+      if (!isPrismaUniqueConstraintError(error) || !input.correlationKey || db !== prisma) throw error;
+      const { correlationKey } = input;
       const existing = await db.xeroSyncOperation.findFirst({
-        where: {
-          correlationKey: input.correlationKey,
-          status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] },
-        },
+        where: { correlationKey, status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] } },
         orderBy: { createdAt: "desc" },
       });
       if (existing) return existing;
-      // #4338: none left means the winner already finished, so insert again as a
-      // later start would (at most three times; never on a caller's transaction,
-      // which the violation has aborted).
-      if (input.store || insert >= 3) throw error;
+      // #4338: the winner finished in between. Only a FAILED/PARTIAL one leaves
+      // work to do, so only then insert again, as a retry a moment later would
+      // (even when a converge has already closed it). A SUCCEEDED or CANCELLED
+      // winner keeps the error: the caller's own pre-checks never saw it.
+      const newest = await db.xeroSyncOperation.findFirst({
+        where: { correlationKey },
+        orderBy: { createdAt: "desc" },
+        select: { status: true },
+      });
+      const winnerFailed = newest?.status === "FAILED" || newest?.status === "PARTIAL";
+      if (!winnerFailed || insert >= START_OPERATION_INSERT_ATTEMPTS) throw error;
     }
   }
 }
