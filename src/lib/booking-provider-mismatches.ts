@@ -136,6 +136,21 @@ function resolvedInXeroRow(document: string, paymentId: string): BookingProvider
 }
 
 /**
+ * #4278: the stored reason in plain English (`explainXeroFailure`, the same
+ * function the Xero screens use), not Xero's raw response. The raw text stays on
+ * the Xero activity page this warning links to.
+ */
+function explainedReason(fault: BookingInvoiceSyncFault): string | null {
+  if (!fault.reason) return null;
+  const { headline, whatItMeans } = explainXeroFailure({
+    code: fault.reasonCode,
+    message: fault.reason,
+    entityType: "INVOICE",
+  });
+  return `${headline} ${whatItMeans}`;
+}
+
+/**
  * #3001: what the officer looking at this booking is told about its Xero
  * invoice, and what they should do next.
  *
@@ -160,21 +175,6 @@ function resolvedInXeroRow(document: string, paymentId: string): BookingProvider
  * and the Xero operations screen can never tell an officer different things
  * about one row.
  */
-/**
- * #4278: the stored reason in plain English (`explainXeroFailure`, the same
- * function the Xero screens use), not Xero's raw response. The raw text stays on
- * the Xero activity page this warning links to.
- */
-function explainedReason(fault: BookingInvoiceSyncFault): string | null {
-  if (!fault.reason) return null;
-  const { headline, whatItMeans } = explainXeroFailure({
-    code: fault.reasonCode,
-    message: fault.reason,
-    entityType: "INVOICE",
-  });
-  return `${headline} ${whatItMeans}`;
-}
-
 function describeBookingInvoiceSyncFault(
   fault: BookingInvoiceSyncFault,
   bookingId: string,

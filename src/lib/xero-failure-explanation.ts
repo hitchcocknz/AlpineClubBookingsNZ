@@ -355,8 +355,8 @@ export function explainXeroFailure(input: XeroFailureInput): XeroFailureExplanat
     return done(
       known(
         "UNKNOWN",
-        `Xero reported a problem with this ${noun}.`,
-        sentence ? `Xero said: “${sentence}”` : "The app could not read a reason from what Xero sent.",
+        `Syncing this ${noun} to Xero failed.`,
+        sentence ? `The recorded reason is: “${sentence}”` : "The app could not read a reason from what was recorded.",
         "Open the technical details. If you cannot tell what is wrong, check the record in Xero or ask a developer.",
       ),
     );
@@ -364,7 +364,7 @@ export function explainXeroFailure(input: XeroFailureInput): XeroFailureExplanat
     return done(
       known(
         "UNKNOWN",
-        `Xero reported a problem with this ${noun}.`,
+        `Syncing this ${noun} to Xero failed.`,
         "The app could not read a reason from what Xero sent.",
         "Open the technical details. If you cannot tell what is wrong, check the record in Xero or ask a developer.",
       ),
