@@ -12,6 +12,7 @@ import {
 import { bookingHasOpenFinancialReview } from "@/lib/booking-financial-review-visibility";
 import { findResolvedBookingInvoiceCreate } from "@/lib/xero-resolved-in-xero-fences";
 import { readRefundCreditNoteGap } from "@/lib/xero-admin-health";
+import { explainXeroFailure } from "@/lib/xero-failure-explanation";
 
 /**
  * Issue #1089: per-booking provider-mismatch surfacing. The aggregate views
@@ -159,6 +160,21 @@ function resolvedInXeroRow(document: string, paymentId: string): BookingProvider
  * and the Xero operations screen can never tell an officer different things
  * about one row.
  */
+/**
+ * #4278: the stored reason in plain English (`explainXeroFailure`, the same
+ * function the Xero screens use), not Xero's raw response. The raw text stays on
+ * the Xero activity page this warning links to.
+ */
+function explainedReason(fault: BookingInvoiceSyncFault): string | null {
+  if (!fault.reason) return null;
+  const { headline, whatItMeans } = explainXeroFailure({
+    code: fault.reasonCode,
+    message: fault.reason,
+    entityType: "INVOICE",
+  });
+  return `${headline} ${whatItMeans}`;
+}
+
 function describeBookingInvoiceSyncFault(
   fault: BookingInvoiceSyncFault,
   bookingId: string,
@@ -189,7 +205,7 @@ function describeBookingInvoiceSyncFault(
   return {
     id: "xero-invoice-sync-failed",
     label,
-    description: [state, fault.reason, next].filter(Boolean).join(" "),
+    description: [state, explainedReason(fault), next].filter(Boolean).join(" "),
     href: buildXeroRecordActivityUrl("Booking", bookingId),
     linkLabel:
       fault.action.type === "RETRY"
