@@ -31,6 +31,7 @@
 import type { Prisma } from "@prisma/client";
 
 import { bookingDiscountCents } from "@/lib/booking-final-price";
+import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import logger from "@/lib/logger";
 import { apportionCents } from "@/lib/night-price-runs";
 import { compareOrdinal } from "@/lib/ordinal-order";
@@ -231,9 +232,10 @@ function earliestNightFirst(a: CarriedRowHeld, b: CarriedRowHeld): number {
  * meaningful); a scale that would take more off a night than it is priced at,
  * or off a guest-scope row than its guest's held total, or raise a night
  * further than it was raised; and a result that does not reconcile. Then,
- * ACROSS CODES, no guest may end with more taken off than the guest's held total
- * (#4317 review round 7: two codes each in bounds can together exceed it);
- * where one would, every code with a row on that guest writes none. A row
+ * ACROSS CODES, no guest may end with more taken off than the guest's held
+ * total, nor any night more than its held price (#4317 review rounds 7 and 8:
+ * codes each in bounds can together exceed either); where one would, every code
+ * with a row on that guest or night writes none, until none is over. A row
  * naming no redemption the booking carries is not written. Pure: the writer is
  * handed it by the batch save for a capped plan and writes what it returns.
  */
@@ -250,14 +252,12 @@ export const scaleCappedCarriedRows: CappedCarryScaler = (rows, redemptions) => 
       amounts[index] = scaled === null ? null : scaled[at]!;
     });
   }
-  // Across codes, guest by guest. Clearing a code can only remove a discount,
-  // or a raise that was offsetting one, so repeat until no guest is over.
-  for (let over = guestOverItsTotal(rows, amounts); over !== null; over = guestOverItsTotal(rows, amounts)) {
-    const involved = new Set(
-      rows.flatMap((row, index) =>
-        row.bookingGuestId === over && amounts[index] !== null ? [row.promoRedemptionId] : [],
-      ),
-    );
+  // Across codes: every guest and every night against what it is held at.
+  // Each pass clears EVERY code on ANY over guest or night, so the answer does
+  // not depend on row order; clearing a code can only remove a discount, or a
+  // raise that was offsetting one, so repeat. Each pass clears at least one code
+  // or stops, so it ends.
+  for (let involved = codesOverAHeldPrice(rows, amounts); involved.size > 0; involved = codesOverAHeldPrice(rows, amounts)) {
     rows.forEach((row, index) => {
       if (involved.has(row.promoRedemptionId)) amounts[index] = null;
     });
@@ -265,19 +265,36 @@ export const scaleCappedCarriedRows: CappedCarryScaler = (rows, redemptions) => 
   return amounts;
 };
 
-/** The first guest whose rows, across every code, take off more than the guest's held total. */
-function guestOverItsTotal(rows: CarriedRowHeld[], amounts: Array<number | null>): string | null {
-  const taken = new Map<string, number>();
+/**
+ * Every code with a row on a guest, or on one of a guest's nights, whose rows
+ * across every code take off more than it is held at: the guest's held total,
+ * the night's held price (#4317 review rounds 7 and 8). Only rows still written
+ * count, so a guest or night with none left is never over.
+ */
+function codesOverAHeldPrice(rows: CarriedRowHeld[], amounts: Array<number | null>): Set<string> {
+  const held = new Map<string, { takenCents: number; heldCents: number | null; codes: Set<string> }>();
+  const add = (key: string, heldCents: number | null, cents: number, code: string) => {
+    const entry = held.get(key) ?? { takenCents: 0, heldCents, codes: new Set<string>() };
+    entry.takenCents += cents;
+    entry.codes.add(code);
+    held.set(key, entry);
+  };
   rows.forEach((row, index) => {
     const cents = amounts[index];
-    if (cents !== null && cents !== undefined) {
-      taken.set(row.bookingGuestId, (taken.get(row.bookingGuestId) ?? 0) + cents);
+    if (cents === null || cents === undefined) return;
+    add(`guest|${row.bookingGuestId}`, row.guestHeldCents, cents, row.promoRedemptionId);
+    if (row.stayDate) {
+      const night = calendarDateOfDateOnlyInstant(row.stayDate);
+      add(`night|${row.bookingGuestId}|${night}`, row.heldPriceCents, cents, row.promoRedemptionId);
     }
   });
-  for (const row of rows) {
-    if (-(taken.get(row.bookingGuestId) ?? 0) > row.guestHeldCents) return row.bookingGuestId;
+  const involved = new Set<string>();
+  for (const entry of held.values()) {
+    if (entry.heldCents !== null && -entry.takenCents > entry.heldCents) {
+      for (const code of entry.codes) involved.add(code);
+    }
   }
-  return null;
+  return involved;
 }
 
 /** One redemption's rows (`mine`, indexes into `rows`) scaled to its records, or `null`. */

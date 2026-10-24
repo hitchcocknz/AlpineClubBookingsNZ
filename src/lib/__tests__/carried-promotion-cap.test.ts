@@ -311,6 +311,80 @@ describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner deci
       });
     });
 
+    describe("ACROSS CODES, per night, in any order, and always ending (round 8)", () => {
+      const at = (night: Date, cents: number, code: string, extra: Partial<{ heldPriceCents: number; guestHeldCents: number; bookingGuestId: string }> = {}) =>
+        row(night, cents, { promoRedemptionId: code, ...extra });
+
+      it("LENS F1: two codes on one $100 night take -$133.34 while the guest stays at its $200, so both write none", () => {
+        // B (50%, first) on N1 and N2, A (a free night, on the remainder) on N1;
+        // the cap left B -$133.33 and A -$66.67. Each row is within its night,
+        // and the guest's -$200 is exactly its held total - but N1 would go
+        // -$33.34 below nothing.
+        const rows = [
+          at(N1, -5_000, "b", { heldPriceCents: 10_000, guestHeldCents: 20_000 }),
+          at(N2, -5_000, "b", { heldPriceCents: 10_000, guestHeldCents: 20_000 }),
+          at(N1, -5_000, "a", { heldPriceCents: 10_000, guestHeldCents: 20_000 }),
+        ];
+        const codes = [recorded(-13_333, [["booker", -13_333]], "b"), recorded(-6_667, [["booker", -6_667]], "a")];
+        expect(scaleCappedCarriedRows(rows, codes)).toEqual([null, null, null]);
+      });
+
+      it("CONTROL F1: at $150 a night the same rows stand", () => {
+        const rows = [
+          at(N1, -5_000, "b", { heldPriceCents: 15_000, guestHeldCents: 30_000 }),
+          at(N2, -5_000, "b", { heldPriceCents: 15_000, guestHeldCents: 30_000 }),
+          at(N1, -5_000, "a", { heldPriceCents: 15_000, guestHeldCents: 30_000 }),
+        ];
+        const codes = [recorded(-13_333, [["booker", -13_333]], "b"), recorded(-6_667, [["booker", -6_667]], "a")];
+        expect(scaleCappedCarriedRows(rows, codes)).toEqual([-6_667, -6_666, -6_667]);
+      });
+
+      it("F4: a guest taking exactly its held total, and a night exactly its price, stand", () => {
+        const rows = [
+          at(N1, -10_000, "a", { heldPriceCents: 10_000, guestHeldCents: 20_000 }),
+          at(N2, -10_000, "b", { heldPriceCents: 10_000, guestHeldCents: 20_000 }),
+        ];
+        const codes = [recorded(-10_000, [["booker", -10_000]], "a"), recorded(-10_000, [["booker", -10_000]], "b")];
+        expect(scaleCappedCarriedRows(rows, codes)).toEqual([-10_000, -10_000]);
+      });
+
+      it("F2: two guests over at once clear every code on either, whatever order the rows come in", () => {
+        // G1: X's guest row -$150 and Y's night -$80 = -$230 against $200.
+        // G2: Y's night -$30 and Z's guest row -$190 = -$220 against $200.
+        // Clearing G1 first would have spared Z; clearing G2 first, X.
+        const rows = [
+          row(null, -15_000, { promoRedemptionId: "x", bookingGuestId: "g1", guestHeldCents: 20_000, heldPriceCents: 20_000 }),
+          at(N1, -8_000, "y", { bookingGuestId: "g1", guestHeldCents: 20_000 }),
+          at(N1, -3_000, "y", { bookingGuestId: "g2", guestHeldCents: 20_000 }),
+          row(null, -19_000, { promoRedemptionId: "z", bookingGuestId: "g2", guestHeldCents: 20_000, heldPriceCents: 20_000 }),
+        ];
+        const codes = [
+          recorded(-15_000, [["booker", -15_000]], "x"),
+          recorded(-11_000, [["booker", -11_000]], "y"),
+          recorded(-19_000, [["booker", -19_000]], "z"),
+        ];
+        for (const order of [[0, 1, 2, 3], [3, 2, 1, 0], [1, 3, 0, 2], [2, 0, 3, 1]]) {
+          expect(scaleCappedCarriedRows(order.map((index) => rows[index]!), codes)).toEqual([null, null, null, null]);
+        }
+      });
+
+      it("F3: a guest held below zero ends the pass instead of looping, and leaves other codes standing", () => {
+        const rows = [
+          // A NOT KNOWN amount: this code writes none, so G1 has no row left.
+          row(N1, null, { promoRedemptionId: "x", bookingGuestId: "g1", guestHeldCents: -100 }),
+          // G3, also held below zero, with a row: that code goes.
+          at(N1, -1_000, "y", { bookingGuestId: "g3", guestHeldCents: -100 }),
+          at(N1, -1_000, "z", { bookingGuestId: "g2", guestHeldCents: 20_000 }),
+        ];
+        const codes = [
+          recorded(-1_000, [["booker", -1_000]], "x"),
+          recorded(-1_000, [["booker", -1_000]], "y"),
+          recorded(-1_000, [["booker", -1_000]], "z"),
+        ];
+        expect(scaleCappedCarriedRows(rows, codes)).toEqual([null, null, -1_000]);
+      });
+    });
+
     it("a row naming no code the booking carries is not written", () => {
       expect(scaleCappedCarriedRows([row(N1, -5_000, { promoRedemptionId: "gone" })], [])).toEqual([null]);
     });
