@@ -801,6 +801,61 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         .filter((context) => context && typeof context === "object" && "reason" in context && context.paymentIntentId);
     }
 
+    it("#4285 review 8 F1: the cancel's card refund Stripe failed later is owed again, and the drain says it was not sent", async () => {
+      // Stripe makes the refund, keeping what it answered so it can fail it later.
+      const made: import("stripe").Stripe.Refund[] = [];
+      stripeRaceHooks.refund = async (args) => {
+        const refund = {
+          id: `re_race_4285_failing_${made.length + 1}`,
+          object: "refund",
+          amount: args.amountCents,
+          currency: "nzd",
+          status: "succeeded",
+          reason: "requested_by_customer",
+          created: Math.floor(Date.UTC(2026, 6, 1) / 1000),
+          charge: `ch_race_4285_${args.paymentIntentId}`,
+          payment_intent: args.paymentIntentId,
+          metadata: args.metadata ?? {},
+        } as unknown as import("stripe").Stripe.Refund;
+        made.push(refund);
+        return refund;
+      };
+      const key = await zeroDollarBookingWithLostAttempt();
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { totalPriceCents: PRICE_CENTS, finalPriceCents: PRICE_CENTS } });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { creditAppliedCents: PRICE_CENTS } });
+      await moveStayToFuture(PRICE_CENTS / 2);
+      await prisma.cancellationPolicy.create({ data: { lodgeId: LODGE_ID, daysBeforeStay: 0, refundPercentage: 50, fixedFeeCents: 0 } });
+      try {
+        await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+        await crashedBeforeTheAlert();
+        const { cancelBooking } = await import("@/lib/booking-cancel");
+        const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
+        await cancelBooking(BOOKING_ID, OFFICER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+        expect(made, "the cancel's card refund was made").toHaveLength(1);
+        expect(await prisma.paymentRecoveryOperation.findUnique({ where: { idempotencyKey: `booking_cancel_refund_recovery_${BOOKING_ID}` }, select: { status: true } })).toEqual({ status: "SUCCEEDED" });
+
+        // Stripe fails it later, through the real refund-failed writer: a row of its own owes it again.
+        const { recordRefusedCardRefund } = await import("@/lib/card-refund-status-sync");
+        expect(await recordRefusedCardRefund({ ...made[0]!, status: "failed" } as import("stripe").Stripe.Refund)).toBe("recorded");
+        expect(await prisma.paymentRecoveryOperation.count({ where: { bookingId: BOOKING_ID, idempotencyKey: `card_refund_failed_later_${made[0]!.id}` } })).toBe(1);
+
+        const logged = await spyOnLoggedErrors();
+        const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+        expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+        expect(keptAlertContexts(logged)).toEqual([
+          expect.objectContaining({
+            paymentIntentId: OTHER,
+            reason: "new-capture-closed",
+            // The failed refund went back on the card: the capture holds all of it again.
+            amountCents: PRICE_CENTS,
+            cancellationRefund: { method: "card", card: { amount: expect.stringContaining("100"), standing: "not-sent" }, byBank: null, toCheck: null },
+          }),
+        ]);
+      } finally {
+        await prisma.cancellationPolicy.deleteMany({ where: { lodgeId: LODGE_ID } });
+      }
+    });
+
     /** A second card payment captured on the payment since the stray one, beside it. */
     const secondCapture = () =>
       prisma.paymentTransaction.create({
