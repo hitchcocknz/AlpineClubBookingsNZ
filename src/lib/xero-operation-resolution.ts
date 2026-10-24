@@ -83,3 +83,18 @@ export function failureStateAfterStatusChange({
   if (nextStatus !== "FAILED" && nextStatus !== "all") return "all";
   return failureState;
 }
+
+/**
+ * #4338: a row the converge closed itself (no officer, the #4219 reason), as
+ * opposed to an officer's "resolved in Xero" mark. Only such a close leaves the
+ * work to a fresh attempt; an officer's mark is done (`INV-INT-025`).
+ */
+export function isClosedByCreditSpentOutsideApp(operation: {
+  manuallyResolvedById: string | null;
+  manuallyResolvedReason: string | null;
+}): boolean {
+  return (
+    operation.manuallyResolvedById === null &&
+    Boolean(operation.manuallyResolvedReason?.startsWith(CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX))
+  );
+}
