@@ -269,12 +269,12 @@ still serves - between this migration and the switch, and again for as long as
 it serves after a rollback - it handles a refund of a card payment captured
 after the booking was cancelled as it always did: it counts the refund under the
 payment's first refund note. This version can later give that refund a note of
-its own (when it next looks at that captured payment), and an officer may
-already have raised one by hand for it. Run this read-only query once this
-version serves alone, with the timestamp set to that moment - the switch, or,
-after a rollback, the roll forward - written with its UTC offset (`+00` for
-UTC, `+13` for New Zealand daylight time). Run it again after every roll
-forward. It lists each note this version raised, or may still raise, for such a
+its own (when Stripe next reports a refund of that captured payment, say), and
+an officer may already have raised one by hand for it. Run this read-only query
+once this version serves alone, with the timestamp set to that moment - the
+switch, or, after a rollback, the roll forward - written with its UTC offset
+(`+00` for UTC, `+13` for New Zealand daylight time). Run it again after every
+roll forward. It lists each note this version raised, or may still raise, for such a
 refund made in the window. The refund's time is stored in UTC with no zone, so
 the query reads the marker's finish and your timestamp in UTC too, in whole
 seconds as the app does, whatever time zone your database session uses; a
@@ -313,69 +313,6 @@ raised a credit note by hand for the same refund:
 The query leaves out a row that will never raise a note: one cancelled, one
 resolved by hand, and one that finished without raising one (its refund
 failed in Stripe, or other notes already covered it).
-
-**During the switch, and if you roll back.** While the previous version still
-runs - the blue/green switch window, or after a rollback - its Xero worker
-cannot raise a hand-back's own credit note: the row fails with "is not on this
-payment" and nothing reaches Xero. Once this version serves alone again, open
-the Xero failed-operations panel and press **Retry in background** on those
-rows. In the same window a card refund's credit note on a bank-transfer
-payment that also had a hand-back noted this way can come out short; check
-those payments in Xero. Details:
-[A later bank-transfer hand-back gets its own note](xero/ARCHITECTURE.md#a-later-bank-transfer-hand-back-gets-its-own-note-4287).
-
-### A card refund on a bank-transfer payment gets its own Xero credit note (#4312)
-
-`20261122010000_bt_card_refund_notes_cutover` is a **marker, not a schema
-change**: a `SELECT 1` whose finish time on your database is the cutover. It
-touches no table and is safe with the previous app colour still serving.
-
-**What changes.** On a bank-transfer payment, a card refund now gets a credit
-note of its own in Xero, for exactly that refund, instead of being counted
-under the payment's first refund note: the card part of an approved refund
-appeal (including one the payment recovery job finishes later), a refund made
-in the Stripe dashboard, and a refund of a card payment captured after the
-booking was cancelled. Only refunds Stripe makes after the marker migration has
-run qualify.
-
-**After upgrading.** Nothing to do for card refunds made from now on. A card
-refund made before the upgrade is never given a note of its own: keep using the
-read-only query in
-[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
-to find those payments, and raise their notes by hand as that entry says.
-
-**Card refunds made in the switch window (#4312).** While the previous version
-still serves - between this migration and the switch, and again for as long as
-it serves after a rollback - it handles a refund of a card payment captured
-after the booking was cancelled as it always did: it counts the refund under the
-payment's first refund note. This version can later give that refund a note of
-its own (when it next looks at that captured payment), and an officer may
-already have raised one by hand for it. Run this read-only query once this
-version serves alone, with the timestamp set to that moment in UTC - the switch,
-or, after a rollback, the roll forward. Run it again after every roll forward.
-It lists each note this version raised (or will raise) for such a refund made in
-the window:
-
-```sql
-SELECT o."localId" AS "paymentId", p."bookingId", r."stripeRefundId", r."amountCents", r."stripeCreatedAt",
-  o.status, o."xeroObjectId" AS "creditNoteId", o."xeroObjectNumber" AS "creditNoteNumber"
-FROM "XeroSyncOperation" o
-JOIN "Payment" p ON p.id = o."localId"
-JOIN "PaymentRefund" r ON r."paymentId" = o."localId"
-  AND (r."stripeRefundId" = o."requestPayload"->>'cardRefundId' OR o."correlationKey" LIKE '%:card-refund:' || r."stripeRefundId" || ':%')
-WHERE o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE'
-  AND o."requestPayload"->>'paymentIntentId' IS NOT NULL
-  AND r."stripeCreatedAt" >= (SELECT min(m."finished_at") FROM "_prisma_migrations" m
-    WHERE m."migration_name" = '20261122010000_bt_card_refund_notes_cutover' AND m."rolled_back_at" IS NULL)
-  AND r."stripeCreatedAt" < TIMESTAMP '2026-01-01 00:00:00'
-ORDER BY p."bookingId", r."stripeCreatedAt";
-```
-
-For each row, look at the booking's invoice in Xero. If an officer also raised a
-credit note by hand for the same refund, void the hand-raised one and keep the
-app's (`creditNoteId`); a row with no `creditNoteId` yet will raise its note on
-the next Xero run, so void the hand-raised note before that run or straight
-after it.
 
 **During the switch, and if you roll back.** The previous version's Xero worker
 treats a card refund's new credit-note row as the one note it would have used,

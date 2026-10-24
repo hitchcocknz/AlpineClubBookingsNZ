@@ -315,10 +315,13 @@ paid back another way** keeps that refund recorded: raise its credit note again
 from the Xero repair tool, then press **Record the answer** and say what you did
 (this moves nothing). A note that recorded a **card refund made through Stripe**
 (#4312) keeps that refund recorded too and has no bank refund to take back.
-Check the payment in Xero before raising anything by hand: for a card payment
-captured after the booking was cancelled, the app raises a new credit note
-itself the next time it looks at that payment. Then press **Record the answer**
-and say what you found. Any other row with nothing to pick says why in one line -
+The app does not raise its credit note again by itself: if Xero should still
+show that refund, raise a credit note for it by hand in Xero, then press
+**Record the answer** and say what you did. One case comes back: for a card
+payment captured after the booking was cancelled, a later refund of that same
+payment makes the app note this refund again too. If you raised its note by
+hand, check Xero after any later refund of that payment and void the app's new
+note for this refund. Any other row with nothing to pick says why in one line -
 no bank refund left that the note could have recorded, the payment's records no
 longer holding it, or a credit note resolved by hand in Xero with no amount the
 app can read. Check the payment in Xero, then press **Record the answer** and
