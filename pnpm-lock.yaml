@@ -18,7 +18,6 @@ overrides:
   postcss: ^8.5.26
   next-auth>nodemailer: ^10.1.4
   '@auth/core>nodemailer': ^10.1.4
-  deepmerge-ts: ^8.0.1
   browserslist: ^4.28.7
   mysql2: ^3.22.0
   ajv>fast-uri: ^3.1.9

@@ -17,10 +17,9 @@ catalog:
   sharp: ^0.35.5
 
 # The former npm `overrides` block, translated one entry for one entry, less
-# `sharp`, retired in #3673 (see the last point below). The
-# reasons behind each pin are recorded in docs/MAINTENANCE.md, except
-# `deepmerge-ts`, whose reason and removal condition live with its contract
-# test, src/lib/__tests__/deepmerge-override-contract.test.ts.
+# `sharp`, retired in #3673 (see the last point below), and `deepmerge-ts`,
+# retired once `@prisma/config` 7.10.1 itself asked for the fixed 8.x. The
+# reasons behind each pin are recorded in docs/MAINTENANCE.md.
 #
 # - `catalog:` pins a transitive copy to this repository's own direct
 #   dependency range, which is what npm's `$nodemailer` did. (pnpm
@@ -44,7 +43,6 @@ overrides:
   postcss: ^8.5.26
   next-auth>nodemailer: "catalog:"
   "@auth/core>nodemailer": "catalog:"
-  deepmerge-ts: ^8.0.1
   browserslist: ^4.28.7
   mysql2: ^3.22.0
   ajv>fast-uri: ^3.1.9
