@@ -224,6 +224,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-041` | Invoice minting is fenced at enqueue, at settle, and in the handler |
 | `INV-PAY-042` | Inbound Xero PAID on a manually settled booking is raised, never ignored |
 | `INV-PAY-043` | The recorded settler is kept; every other capture is refunded |
+| `INV-PAY-138` | A superseded card capture never settles its booking |
 | `INV-PAY-102` | Card then bank: every card door fenced; inbound raises the conflict |
 | `INV-PAY-044` | Manually settled cancellation yields a durable `ManualRefundTask`, never a card refund |
 | `INV-PAY-045` | Reversal is permitted only while nothing has happened it could not undo |
@@ -726,6 +727,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-040` | An unpaid review-raised request can be withdrawn; withdrawal retires every instrument, durably |
 | `INV-ADDPAY-041` | A voided refund note is never re-adopted or replayed by Xero |
 | `INV-ADDPAY-042` | A voided bank-transfer refund note is undone once, then asked once |
+| `INV-ADDPAY-043` | A later bank-transfer hand-back gets its own note, sized on its task |
 
 ## Analytics And Privacy
 
