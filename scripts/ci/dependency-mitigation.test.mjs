@@ -253,7 +253,7 @@ describe("outcomes other than a vulnerability are never touched", () => {
   // #3851: the retired state. The directory holds only its README, and
   // `patches/` only its .gitkeep: a clean audit is CLEAN with no mention of a
   // mitigation, and a vulnerability is still VULNERABILITY FOUND, unrefused.
-  it("reports CLEAN through main when the directory holds only its README (#3851)", async () => {
+  it("treats a directory holding only its README as no records: CLEAN passes, a high advisory still fails (#3851)", async () => {
     const root = scratchRoot();
     rmSync(recordPath(root));
     rmSync(path.join(root, PATCH));
