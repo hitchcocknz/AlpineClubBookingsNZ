@@ -863,6 +863,28 @@ let observerClient: import("@prisma/client").PrismaClient;
         expect(fakeXero.state.reads.slice().sort()).toEqual([NOTE_ID, SECOND_NOTE_ID].sort());
       });
 
+      it("a note whose mirror fails is logged and keeps its place; the rest of the run carries on", async () => {
+        const { runCreditNoteMirrorSweep } = await import("@/lib/xero-credit-note-mirror-sweep");
+        await seed();
+        await addSecondNote();
+        fakeXero.state.on = true;
+        for (const [noteId, total] of [[NOTE_ID, LOT_CENTS], [SECOND_NOTE_ID, 1_000]] as const) {
+          fakeXero.state.notes.set(noteId, { totalCents: total, allocations: [{ invoiceID: OUTSIDE_INVOICE_ID, amountCents: total }], payments: [], updatedAt: SETTLED_AT });
+        }
+        const logger = (await import("@/lib/logger")).default;
+        const error = spy(vi.spyOn(logger, "error").mockImplementation(() => undefined));
+
+        const result = await runCreditNoteMirrorSweep({
+          now: NOW,
+          mirror: (e) => (e.creditNoteId === NOTE_ID ? Promise.reject(new Error("lock wait timed out")) : mirrorModule.mirrorCreditNoteOutsideSpend(e, { now: NOW })),
+        });
+
+        expect(result).toMatchObject({ read: 2, writtenDown: 1, mirrorFailures: 1, completePass: false });
+        expect(error).toHaveBeenCalledWith(expect.objectContaining({ creditNoteId: NOTE_ID }), expect.stringContaining("could not mirror"));
+        // The note that did not fail was written down; the other waits for the next run.
+        expect(await netWrittenDown()).toBe(1_000);
+      });
+
       it("stops after three failed reads in a row and does not call the pass complete", async () => {
         const { runCreditNoteMirrorSweep } = await import("@/lib/xero-credit-note-mirror-sweep");
         await seed();

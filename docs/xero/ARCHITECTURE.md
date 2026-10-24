@@ -3441,7 +3441,7 @@ Oct 2026).
   since" cursor: notes funding a lot with credit not yet drawn or written down, or
   with a net write-down that could be restored. It reads at most 100 notes a run from
   a stored cursor (`SWEEP` row), stops after three failed reads in a row, and once a
-  complete pass has run it does not start another for four hours (deferred rechecks
+  complete pass has run it does not start another for twelve hours (deferred rechecks
   are never throttled). Every read passes `armTransientBreaker: false` and respects a
   breaker armed elsewhere.
 - **Kill switch.** A `XeroSyncCursor` row, `resourceType` `CREDIT_NOTE_OUTSIDE_SPEND_MIRROR`,

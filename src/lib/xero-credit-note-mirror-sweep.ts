@@ -36,8 +36,11 @@ import {
 } from "./xero-credit-note-mirror";
 import { NOT_A_CONVERGENCE_ROW, writtenDownCentsByCreditNote } from "./xero-credit-note-write-down";
 
-/** A complete pass throttles the next full one; deferred rechecks are not throttled. */
-const DEFAULT_MIN_PASS_INTERVAL_MS = 4 * 60 * 60 * 1000;
+/**
+ * A complete pass throttles the next full one; deferred rechecks are not throttled. The
+ * webhook is the fast path, so this backstop reads each note at most twice a day.
+ */
+const DEFAULT_MIN_PASS_INTERVAL_MS = 12 * 60 * 60 * 1000;
 /** Notes read per run, rechecks included. */
 const DEFAULT_NOTE_LIMIT = 100;
 const MAX_CONSECUTIVE_READ_FAILURES = 3;
@@ -53,6 +56,8 @@ export interface CreditNoteMirrorSweepResult {
   /** Notes left alone, by the mirror's reason. */
   refused: Record<string, number>;
   readFailures: number;
+  /** Notes whose mirror transaction failed (logged); they keep their place for the next run. */
+  mirrorFailures: number;
   /** The full pass reached the end of the population with no failed read. */
   completePass: boolean;
 }
@@ -132,13 +137,14 @@ export async function runCreditNoteMirrorSweep(deps: CreditNoteMirrorSweepDeps =
     restored: 0,
     refused: {},
     readFailures: 0,
+    mirrorFailures: 0,
     completePass: false,
   };
   let consecutiveFailures = 0;
   let stopped = false;
 
-  /** "retry" when the note could not be read or is still too fresh; "done" otherwise. */
-  const visit = async (creditNoteId: string): Promise<"retry" | "done"> => {
+  /** "failed" when the note could not be read or mirrored, "retry" when it is still too fresh, "done" otherwise. */
+  const visit = async (creditNoteId: string): Promise<"failed" | "retry" | "done"> => {
     let evidence: CreditNoteMirrorEvidence | null;
     try {
       evidence = await read(creditNoteId);
@@ -147,7 +153,7 @@ export async function runCreditNoteMirrorSweep(deps: CreditNoteMirrorSweepDeps =
       consecutiveFailures += 1;
       logger.warn({ err, creditNoteId }, "Credit-note mirror sweep could not read a credit note from Xero");
       if (consecutiveFailures >= MAX_CONSECUTIVE_READ_FAILURES) stopped = true;
-      return "retry";
+      return "failed";
     }
     consecutiveFailures = 0;
     result.read += 1;
@@ -155,7 +161,16 @@ export async function runCreditNoteMirrorSweep(deps: CreditNoteMirrorSweepDeps =
       result.refused["not-found"] = (result.refused["not-found"] ?? 0) + 1;
       return "done";
     }
-    const outcome = await mirror(evidence);
+    let outcome: CreditNoteMirrorResult;
+    try {
+      outcome = await mirror(evidence);
+    } catch (err) {
+      // One note's failed transaction (a lock wait that timed out, say) must not end the run
+      // for the rest; it keeps its place for the next one.
+      result.mirrorFailures += 1;
+      logger.error({ err, creditNoteId }, "Credit-note mirror sweep could not mirror a credit note");
+      return "failed";
+    }
     if (outcome.acted) {
       if (outcome.action === "written-down") result.writtenDown += 1;
       else result.restored += 1;
@@ -214,11 +229,11 @@ export async function runCreditNoteMirrorSweep(deps: CreditNoteMirrorSweepDeps =
     let lastVisited: string | null = null;
     for (const creditNoteId of batch) {
       if (stopped) break;
-      // A note that could not be read does not move the cursor past itself.
-      if ((await visit(creditNoteId)) === "done" || result.readFailures === 0) lastVisited = creditNoteId;
+      // A note that could not be read or mirrored does not move the cursor past itself.
+      if ((await visit(creditNoteId)) !== "failed") lastVisited = creditNoteId;
     }
     const reachedEnd = !stopped && batch.length === remaining.length;
-    result.completePass = reachedEnd && result.readFailures === 0;
+    result.completePass = reachedEnd && result.readFailures === 0 && result.mirrorFailures === 0;
     // Failed reads leave the cursor where it was for the next run to start from; a finished
     // walk clears it so the next full pass starts at the beginning.
     const nextCursor = reachedEnd ? null : lastVisited;
