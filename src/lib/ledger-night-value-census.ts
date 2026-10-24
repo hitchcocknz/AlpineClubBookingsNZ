@@ -1,4 +1,5 @@
 import { liveLines } from "@/lib/booking-ledger-modification-posting";
+import { canModifyBookingStatusForRole } from "@/lib/booking-edit-policy";
 import { isSingleNightLine } from "@/lib/booking-ledger-charge-line";
 import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import { compareOrdinal } from "@/lib/ordinal-order";
@@ -24,7 +25,11 @@ import { valueEditStrand, type StoredEditStrand } from "@/lib/edit-night-valuati
  */
 
 export type LedgerNightValueCensus = {
-  /** Bookings with any line anchored on their CONFIRMATION: confirmed on the ledger. */
+  /**
+   * Bookings an edit can still reach (not deleted, in a status an officer may
+   * edit) with any line anchored on their CONFIRMATION: confirmed on the ledger.
+   * A cancelled or deleted booking takes no edit, so it is never counted.
+   */
   bookingsOnLedger: number;
   /** Of those, the bookings an edit could leave unposted. */
   bookingsWhoseLinesDifferFromValues: number;
@@ -39,7 +44,13 @@ export type LedgerNightValueCensus = {
 const SAMPLE_LIMIT = 100;
 
 export type LedgerNightValueCensusInput = {
-  bookings: ReadonlyArray<{ id: string; checkIn: Date; checkOut: Date }>;
+  bookings: ReadonlyArray<{
+    id: string;
+    checkIn: Date;
+    checkOut: Date;
+    status: string;
+    deletedAt: Date | null;
+  }>;
   guests: ReadonlyArray<StoredEditStrand & { id: string; bookingId: string }>;
   lines: ReadonlyArray<{
     id: string;
@@ -78,6 +89,11 @@ export function summarizeLedgerNightValues(
   const differing: string[] = [];
 
   for (const booking of [...input.bookings].sort((a, b) => compareOrdinal(a.id, b.id))) {
+    // #4317 review round 2: only a booking an edit can still reach. The widest
+    // door's statuses are the officer's (`canModifyBookingStatusForRole`).
+    if (booking.deletedAt !== null || !canModifyBookingStatusForRole(booking.status, "ADMIN")) {
+      continue;
+    }
     const lines = linesByBooking.get(booking.id) ?? [];
     if (!lines.some((line) => line.anchorKind === "CONFIRMATION")) continue;
     bookingsOnLedger += 1;

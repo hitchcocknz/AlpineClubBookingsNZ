@@ -114,7 +114,9 @@ export async function censusBookingMoneyReconciliation(
     async (tx) => {
       const bookings = await tx.booking.findMany({
         orderBy: { id: "asc" },
-        select: { ...BOOKING_MONEY_RECONCILIATION_SELECT, createdAt: true },
+        // #4317 review round 2: status and deletedAt, so `ledgerNightValues`
+        // counts only bookings an edit can still reach.
+        select: { ...BOOKING_MONEY_RECONCILIATION_SELECT, createdAt: true, status: true, deletedAt: true },
       });
       const reviews = await tx.manualRefundTask.findMany({
         where: { kind: "EDIT_FINANCIAL_REVIEW" },

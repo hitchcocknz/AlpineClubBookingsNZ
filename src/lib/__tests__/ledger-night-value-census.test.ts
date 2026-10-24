@@ -9,7 +9,13 @@ import { summarizeLedgerNightValues } from "@/lib/ledger-night-value-census";
  */
 
 const D = (value: string) => new Date(`${value}T00:00:00.000Z`);
-const BOOKING = { id: "b1", checkIn: D("2026-08-01"), checkOut: D("2026-08-03") };
+const BOOKING = {
+  id: "b1",
+  checkIn: D("2026-08-01"),
+  checkOut: D("2026-08-03"),
+  status: "CONFIRMED",
+  deletedAt: null as Date | null,
+};
 
 function line(id: string, guestId: string, night: string, unitCents: number, over: Record<string, unknown> = {}) {
   const start = D(night);
@@ -88,6 +94,27 @@ describe("summarizeLedgerNightValues", () => {
       ],
     });
     expect(result.bookingsWhoseLinesDifferFromValues).toBe(0);
+  });
+
+  it.each([
+    ["a cancelled booking", { status: "CANCELLED" }],
+    ["a deleted booking", { deletedAt: D("2026-07-15") }],
+  ])("does not count %s, which no edit can reach (review round 2)", (_name, over) => {
+    // The same disagreeing R3 lines as above, on a booking that takes no edit.
+    const result = summarizeLedgerNightValues({
+      bookings: [{ ...BOOKING, ...over }],
+      guests: [
+        { id: "g1", bookingId: "b1", priceCents: 12_000, nights: [sold("2026-08-01", 5_000), sold("2026-08-02", 5_000)] },
+      ],
+      lines: [line("l1", "g1", "2026-08-01", 5_000), line("l2", "g1", "2026-08-02", 5_000)],
+    });
+    expect(result).toEqual({
+      bookingsOnLedger: 0,
+      bookingsWhoseLinesDifferFromValues: 0,
+      linesDifferingFromValues: 0,
+      valuedNightsWithoutLiveLine: 0,
+      sampleBookingIds: [],
+    });
   });
 
   it("ignores a booking not confirmed on the ledger", () => {

@@ -152,7 +152,7 @@ describe("booking money reconciliation store", () => {
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         orderBy: { id: "asc" },
-        select: expect.objectContaining({ createdAt: true }),
+        select: expect.objectContaining({ createdAt: true, status: true, deletedAt: true }),
       }),
     );
     // #3531 3c: the two provenance summaries come from the SAME snapshot.
