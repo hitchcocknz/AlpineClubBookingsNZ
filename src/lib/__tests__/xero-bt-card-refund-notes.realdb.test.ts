@@ -45,14 +45,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 import { assertSafeRaceDbUrl } from "@/lib/__tests__/support/race-db-url";
-import { authRaceSession } from "./support/auth-race-double";
+import { raceSession } from "@/lib/__tests__/support/race-session-double";
 import { resetStripeRaceHooks, stripeRaceHooks } from "./support/stripe-race-double";
 
 /** The shared doubles: the LAST file to register a factory wins, so every realdb file registers these same ones. */
 vi.mock("@/lib/stripe", async (importOriginal) =>
   (await import("./support/stripe-race-double")).stripeRaceDouble(await importOriginal()),
 );
-vi.mock("@/lib/auth", async () => (await import("./support/auth-race-double")).authRaceDouble());
+vi.mock("@/lib/auth", async () => (await import("./support/race-session-double")).raceAuthDouble());
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -65,10 +65,12 @@ const BOOKING_ID = `${P}-booking`;
 const PAYMENT_ID = `${P}-payment`;
 const BANK_TXN_ID = `${P}-bank-txn`;
 const CARD_TXN_ID = `${P}-card-txn`;
+const CARD2_TXN_ID = `${P}-card2-txn`;
 const CARD_INTENT_ID = "pi_race_4312";
 const CHARGE_ID = "ch_race_4312";
 const INVOICE_ID = `${P}-invoice`;
-const CUTOVER_MIGRATION = "20261122010000_bt_card_refund_notes_cutover";
+/** The marker migration's name, read from the code in `beforeAll` (`CARD_REFUND_NOTE_CUTOVER_MIGRATION`). */
+let CUTOVER_MIGRATION = "";
 const LEDGER_START_MIGRATION = "20260509090000_enrich_payment_refund_ledger";
 /** A day after this install's refund ledger started, so every refund here is one the ledger counts (#3640): set in `beforeAll`. */
 let CUTOVER_SECONDS = 0;
@@ -78,10 +80,10 @@ let markerFinishedAt: Date | null = null;
 let eventSequence = 0;
 
 /** Stripe's refunds as it holds them: one per idempotency key, listed per charge. Each made since the cutover unless dated. */
-const stripe = { createdSeconds: 0, byKey: new Map<string, Stripe.Refund>(), failNext: 0 };
-function stripeRefund(id: string, amount: number, metadata: Record<string, string>, created: number): Stripe.Refund {
+const stripe = { createdSeconds: 0, byKey: new Map<string, Stripe.Refund>(), failNext: 0, refuseOn: null as string | null };
+function stripeRefund(id: string, amount: number, metadata: Record<string, string>, created: number, status = "succeeded"): Stripe.Refund {
   return {
-    id, object: "refund", amount, currency: "nzd", status: "succeeded", reason: "requested_by_customer", created,
+    id, object: "refund", amount, currency: "nzd", status, reason: "requested_by_customer", created,
     charge: CHARGE_ID, payment_intent: CARD_INTENT_ID, metadata,
   } as unknown as Stripe.Refund;
 }
@@ -94,7 +96,9 @@ function answerRefundsAsStripeWould() {
     const key = args.idempotencyKey ?? `${P}-${stripe.byKey.size}`;
     if (!stripe.byKey.has(key)) {
       stripe.createdSeconds += 60;
-      stripe.byKey.set(key, stripeRefund(`re_race_4312_${stripe.byKey.size}`, args.amountCents, args.metadata ?? {}, stripe.createdSeconds));
+      // A slice on the charge `refuseOn` names is answered refused (`failed`), as Stripe refuses one.
+      const status = stripe.refuseOn !== null && key.includes(stripe.refuseOn) ? "failed" : "succeeded";
+      stripe.byKey.set(key, stripeRefund(`re_race_4312_${stripe.byKey.size}`, args.amountCents, args.metadata ?? {}, stripe.createdSeconds, status));
     }
     return stripe.byKey.get(key)!;
   };
@@ -122,6 +126,7 @@ function answerRefundsAsStripeWould() {
       await prisma.auditLog.deleteMany({ where: { OR: [{ memberId: OFFICER_ID }, { targetId: BOOKING_ID }, { entityId: { startsWith: P } }] } });
       stripe.byKey.clear();
       stripe.failNext = 0;
+      stripe.refuseOn = null;
       stripe.createdSeconds = CUTOVER_SECONDS;
     }
 
@@ -136,6 +141,7 @@ function answerRefundsAsStripeWould() {
       assertSafeRaceDbUrl(RACE_DB_URL, "Bank-transfer card refund notes (#4312)");
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
+      ({ CARD_REFUND_NOTE_CUTOVER_MIGRATION: CUTOVER_MIGRATION } = await import("@/lib/card-refund-own-note-share"));
       await deleteFixtures();
       const [marker] = await prisma.$queryRaw<Array<{ finished_at: Date | null }>>`SELECT "finished_at" FROM "_prisma_migrations" WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
       const [ledgerStart] = await prisma.$queryRaw<Array<{ finished_at: Date }>>`SELECT "finished_at" FROM "_prisma_migrations" WHERE "migration_name" = ${LEDGER_START_MIGRATION}`;
@@ -330,6 +336,21 @@ function answerRefundsAsStripeWould() {
       return rows.some((row) => row.id === PAYMENT_ID);
     }
 
+    /**
+     * The UPGRADING switch-window query (#4312), run as an operator would, with its timestamp set to
+     * when this version began serving alone: the note rows it lists, refund and note id.
+     */
+    async function switchWindowListed(servingAloneAt: Date): Promise<Array<{ stripeRefundId: string; creditNoteId: string | null }>> {
+      const { readFileSync } = await import("node:fs");
+      const { resolve } = await import("node:path");
+      const doc = readFileSync(resolve(__dirname, "../../../docs/UPGRADING.md"), "utf8");
+      const sql = /```sql\n([\s\S]*?)\n```/.exec(doc.slice(doc.indexOf("**Card refunds made in the switch window (#4312).**")))?.[1];
+      expect(sql).toBeDefined();
+      const at = servingAloneAt.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+      const rows = await prisma.$queryRawUnsafe<Array<{ paymentId: string; stripeRefundId: string; creditNoteId: string | null }>>(sql!.replace("TIMESTAMP '2026-01-01 00:00:00'", `TIMESTAMP '${at}'`));
+      return rows.filter((row) => row.paymentId === PAYMENT_ID).map(({ stripeRefundId, creditNoteId }) => ({ stripeRefundId, creditNoteId }));
+    }
+
     /** What the coverage, gap and hand-back cash readers report, and the payment's refunded total against its charge rows. */
     async function readers() {
       const { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } = await import("@/lib/xero-resolved-in-xero-fences");
@@ -381,11 +402,11 @@ function answerRefundsAsStripeWould() {
       return id;
     }
 
-    /** The officer approves it: the real route and its real admin guard, under the officer's session (the harness's `@/lib/auth` double). */
+    /** The officer approves it: the real route and its real admin guard, under the officer's session (the harness's one `@/lib/auth` double, `race-session-double.ts`). */
     async function approve(requestId: string, cents: number) {
       const email = await import("@/lib/email");
       const spies = [vi.spyOn(email, "sendEmail").mockResolvedValue(undefined as never)];
-      authRaceSession.current = { user: { id: OFFICER_ID, role: "ADMIN" } };
+      raceSession.current = { user: { id: OFFICER_ID, role: "ADMIN" } };
       try {
         const { PUT } = await import("@/app/api/admin/refund-requests/[id]/route");
         const response = await PUT(
@@ -398,7 +419,7 @@ function answerRefundsAsStripeWould() {
         );
         expect({ status: response.status, body: response.status === 200 ? null : await response.json() }).toEqual({ status: 200, body: null });
       } finally {
-        authRaceSession.current = null;
+        raceSession.current = null;
         for (const spy of spies) spy.mockRestore();
       }
     }
@@ -420,6 +441,17 @@ function answerRefundsAsStripeWould() {
       const refund = stripeRefund(`re_race_4312_dashboard_${stripe.byKey.size}`, cents, {}, created);
       stripe.byKey.set(`dashboard-${stripe.byKey.size}`, refund);
       return refund.id;
+    }
+
+    /**
+     * A refund of the late capture made before the cutover, as an older release's `charge.refunded`
+     * left it: recorded by the ledger's one sync (`syncRefundsFromStripeCharge`), with no note of its own.
+     */
+    async function olderReleaseRecordedLateRefund() {
+      const older = stripeRefund("re_race_4312_late_older", 800, {}, CUTOVER_SECONDS - 3_600);
+      stripe.byKey.set("older", older);
+      const { syncRefundsFromStripeCharge } = await import("@/lib/payment-transactions");
+      await syncRefundsFromStripeCharge({ paymentIntentId: CARD_INTENT_ID, stripeChargeId: CHARGE_ID, refundedAmountCents: 800, refunds: [older] });
     }
 
     async function cardRefundIds() {
@@ -483,6 +515,44 @@ function answerRefundsAsStripeWould() {
       expect(await deployNoteLists()).toBe(false);
     });
 
+    it("a replay whose second slice Stripe refuses still notes the slice it made, on that very attempt", async () => {
+      await paid();
+      // A second $40 card capture on the payment (a later edit's), so the request's card refund plans two slices.
+      await prisma.paymentTransaction.create({
+        data: { id: CARD2_TXN_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: "pi_race_4312_second", amountCents: 4_000, status: "SUCCEEDED", createdAt: new Date("2026-06-02T00:00:00.000Z") },
+      });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { amountCents: 29_000 } });
+      const request = await requestRefund(`${P}-two-slices`, 6_000);
+      stripe.failNext = 1;
+      await approve(request, 6_000);
+      const operation = await prisma.paymentRecoveryOperation.findFirstOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
+      expect(await noteRows()).toEqual([]);
+
+      // The replay: the newer capture's $40 slice is made; Stripe refuses the older capture's $20 slice.
+      stripe.refuseOn = CARD_TXN_ID;
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("failed");
+      const made = (await prisma.paymentRefund.findMany({ where: { paymentId: PAYMENT_ID, status: "succeeded" }, select: { stripeRefundId: true, amountCents: true } }));
+      expect(made.map((refund) => refund.amountCents)).toEqual([4_000]);
+      expect((await noteRows()).map((row) => [row.cents, row.cardRefundId])).toEqual([[4_000, made[0]!.stripeRefundId]]);
+    });
+
+    it("while the cutover marker has not finished, an approval takes the one note for its card part, as before, and marks no recovery row", async () => {
+      await paid();
+      await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "rolled_back_at" = ${new Date()} WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
+      try {
+        const request = await requestRefund(`${P}-no-marker`, 3_000);
+        stripe.failNext = 1;
+        await approve(request, 3_000);
+        // The card part went to the recovery queue: its one note was queued at approval, for all of it, and the row is unmarked.
+        expect((await noteRows()).map((row) => [row.cents, row.cardRefundId])).toEqual([[3_000, null]]);
+        const operation = await prisma.paymentRecoveryOperation.findFirstOrThrow({ where: { bookingId: BOOKING_ID }, select: { stripeKeyPrefix: true } });
+        expect(operation.stripeKeyPrefix).toBeNull();
+      } finally {
+        await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "rolled_back_at" = NULL WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
+      }
+    });
+
     it("a recovery row an older approval wrote (no marker: that approval noted the card part itself) raises no note of its own on replay", async () => {
       await paid();
       await canonicalCardNote();
@@ -537,15 +607,15 @@ function answerRefundsAsStripeWould() {
     });
 
     it("the webhook leaves a refund request's refund to the approval and another door's refund to its own note", async () => {
+      // No note on the payment yet, so the delta it queues is the payment's one note, at exactly the cash it carries.
       await paid();
-      await canonicalCardNote();
       const { buildRefundRequestRefundMetadata, buildBookingModificationRefundMetadata } = await import("@/lib/payment-recovery-keys");
       stripe.byKey.set("request", stripeRefund("re_race_4312_request_first", 2_000, buildRefundRequestRefundMetadata(BOOKING_ID, `${P}-r`), (stripe.createdSeconds += 60)));
       stripe.byKey.set("edit", stripeRefund("re_race_4312_edit_first", 700, buildBookingModificationRefundMetadata(BOOKING_ID, "edit_financial_review"), (stripe.createdSeconds += 60)));
       await deliverChargeRefunded();
-      // The request's refund: no note here. The edit's: in the delta, which converges on the payment's note as before.
-      expect((await noteRows()).map((row) => row.cardRefundId)).toEqual([null]);
-      expect(await prisma.paymentRefund.count({ where: { paymentId: PAYMENT_ID } })).toBe(3);
+      // The request's refund: no note here. The edit's: in the delta - the payment's one note, as before - and nothing else.
+      expect((await noteRows()).map((row) => [row.cents, row.cardRefundId])).toEqual([[700, null]]);
+      expect(await prisma.paymentRefund.count({ where: { paymentId: PAYMENT_ID } })).toBe(2);
     });
 
     it("a late capture's refund on a bank transfer gets its own note against the capture's receipt; an older refund of it keeps the capture's one note", async () => {
@@ -555,10 +625,7 @@ function answerRefundsAsStripeWould() {
       expect(await canonicalPointer()).toBe(`${P}-hand-back-note`);
       await lateCaptureKept();
       // An older refund of it, recorded by an older release's sync, with no note of its own.
-      await prisma.paymentRefund.create({
-        data: { paymentId: PAYMENT_ID, paymentTransactionId: CARD_TXN_ID, stripeRefundId: "re_race_4312_late_older", stripePaymentIntentId: CARD_INTENT_ID, amountCents: 800, currency: "nzd", status: "succeeded", stripeCreatedAt: new Date((CUTOVER_SECONDS - 3_600) * 1000) },
-      });
-      stripe.byKey.set("older", stripeRefund("re_race_4312_late_older", 800, {}, CUTOVER_SECONDS - 3_600));
+      await olderReleaseRecordedLateRefund();
       const fresh = refundInDashboard(1_200);
       await deliverChargeRefunded();
 
@@ -567,7 +634,11 @@ function answerRefundsAsStripeWould() {
       expect(own).toMatchObject({ cents: 1_200, paymentIntentId: CARD_INTENT_ID });
       // The older refund's ask is the capture's one note, which the canonical note absorbs, as before #4312: no row.
       expect(rows.map((row) => row.cardRefundId)).toEqual([null, fresh]);
+      // The switch-window query lists it while the previous version is taken to have served past it, and not once this version served alone before it.
+      expect(await switchWindowListed(new Date((CUTOVER_SECONDS + 86_400) * 1000))).toEqual([{ stripeRefundId: fresh, creditNoteId: null }]);
+      expect(await switchWindowListed(new Date(CUTOVER_SECONDS * 1000))).toEqual([]);
       expect(await raiseQueuedNote(own!.id, `${P}-late-note`)).toEqual([1_200]);
+      expect(await switchWindowListed(new Date((CUTOVER_SECONDS + 86_400) * 1000))).toEqual([{ stripeRefundId: fresh, creditNoteId: `${P}-late-note` }]);
       const executed = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: own!.id }, select: { requestPayload: true } });
       expect((executed.requestPayload as { allocation: { invoiceId: string } }).allocation.invoiceId).toBe(`${P}-kept-invoice`);
       expect(await canonicalPointer()).toBe(`${P}-hand-back-note`);
@@ -581,10 +652,7 @@ function answerRefundsAsStripeWould() {
     it("a late capture on a payment with no note yet: its older refund takes the capture's one note, its newer one its own", async () => {
       await paid({ bankOnly: true });
       await lateCaptureKept();
-      await prisma.paymentRefund.create({
-        data: { paymentId: PAYMENT_ID, paymentTransactionId: CARD_TXN_ID, stripeRefundId: "re_race_4312_late_older", stripePaymentIntentId: CARD_INTENT_ID, amountCents: 800, currency: "nzd", status: "succeeded", stripeCreatedAt: new Date((CUTOVER_SECONDS - 3_600) * 1000) },
-      });
-      stripe.byKey.set("older", stripeRefund("re_race_4312_late_older", 800, {}, CUTOVER_SECONDS - 3_600));
+      await olderReleaseRecordedLateRefund();
       const fresh = refundInDashboard(1_200);
       await deliverChargeRefunded();
       const rows = await noteRows();
@@ -624,6 +692,28 @@ function answerRefundsAsStripeWould() {
       // The bank hand-back stands: no follow-up undid it, and the payment still records both refunds.
       expect(await prisma.manualRefundTask.count({ where: { bookingId: BOOKING_ID, occurrenceKey: { startsWith: "bank-refund-void:" } } })).toBe(0);
       expect(await readers()).toMatchObject({ refundedCents: 10_000, rowsCents: 10_000 });
+
+      // On Stuck States it offers nothing to pick, though a $50 bank refund sits beside it, and a person answers it.
+      const { listBankRefundVoidsForAPerson } = await import("@/lib/bank-refund-void-scan");
+      expect((await listBankRefundVoidsForAPerson(prisma)).filter((item) => item.linkId === link.id)).toEqual([expect.objectContaining({ reason: "card-refund", pickableLines: [] })]);
+      const { markUnmatchedBankRefundVoidAnswered } = await import("@/lib/bank-refund-void-follow-up");
+      await withVoidWrites(() => markUnmatchedBankRefundVoidAnswered({ linkId: link.id, note: "Raised the card refund's note again in Xero by hand.", actingMemberId: OFFICER_ID }));
+      const answered = await prisma.xeroObjectLink.findUniqueOrThrow({ where: { id: link.id }, select: { metadata: true } });
+      expect(answered.metadata).toMatchObject({ bankRefundVoid: { outcome: "answered", memberId: OFFICER_ID } });
+      expect((await classifyVoidedBankRefundNote(prisma, link.id))?.classification).toMatchObject({ kind: "handled", by: "answered" });
+      expect(await readers()).toMatchObject({ refundedCents: 10_000, rowsCents: 10_000 });
     });
+
+    /** The #4162 writes switch, on for one call and put back as it was. */
+    async function withVoidWrites<T>(run: () => Promise<T>): Promise<T> {
+      const before = process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES;
+      process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = "true";
+      try {
+        return await run();
+      } finally {
+        if (before === undefined) delete process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES;
+        else process.env.XERO_ENABLE_BANK_REFUND_VOID_WRITES = before;
+      }
+    }
   },
 );

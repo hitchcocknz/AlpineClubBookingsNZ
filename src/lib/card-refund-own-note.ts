@@ -3,6 +3,9 @@ import { PaymentSource } from "@prisma/client";
 import { cardRefundDoorOf, cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover } from "@/lib/card-refund-own-note-share";
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
+import logger from "@/lib/logger";
+import { PartialRefundError } from "@/lib/payment-transactions";
+import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 
@@ -79,10 +82,21 @@ export async function queueCardRefundOwnNotes(params: {
 }
 
 /**
+ * #4312 review: whether this payment's card refunds are noted each on its own
+ * record from now on - a bank transfer, with the cutover marker finished. The
+ * approval reads it before it raises its recovery row, so a row marked
+ * `notesEachRefund` is never left with no note while the marker is missing.
+ */
+export async function notesEachCardRefund(payment: { source: PaymentSource }): Promise<boolean> {
+  return payment.source === PaymentSource.INTERNET_BANKING && (await cardRefundNoteCutoverSeconds(prisma)) !== Number.POSITIVE_INFINITY;
+}
+
+/**
  * The approval's note for its card part. On a bank-transfer payment, each
  * refund its inline attempt made gets its own note (a slice the plan marks
  * made, `madeRefundId`); what went to the recovery queue is noted by the
- * replay as it makes it. On any other payment the one note for the card part,
+ * replay as it makes it. On any other payment - or while the cutover marker
+ * has not finished, when no refund qualifies - the one note for the card part,
  * exactly as before (`INV-ADDPAY-020`).
  */
 export async function queueRefundRequestCardNotes(params: {
@@ -91,13 +105,49 @@ export async function queueRefundRequestCardNotes(params: {
   plan: ReadonlyArray<{ madeRefundId?: string }>;
   createdByMemberId: string;
 }): Promise<{ queueOperationId: string | null }> {
-  if (params.payment.source !== PaymentSource.INTERNET_BANKING) {
+  if (!(await notesEachCardRefund(params.payment))) {
     if (params.cardNoteCents <= 0) return { queueOperationId: null };
     return enqueueXeroRefundCreditNoteOperation(params.payment.id, params.cardNoteCents, { createdByMemberId: params.createdByMemberId });
   }
   const made = params.plan.flatMap((slice) => (slice.madeRefundId ? [slice.madeRefundId] : []));
   const queued = await queueCardRefundOwnNotes({ paymentId: params.payment.id, stripeRefundIds: made, createdByMemberId: params.createdByMemberId });
   return { queueOperationId: queued[0] ?? null };
+}
+
+/**
+ * #4312 review: THE RECOVERY REPLAY OF A REFUND REQUEST'S CARD PART, NOTING
+ * EVERY REFUND IT MADE - whatever the replay's own outcome. `run` sends the
+ * slices still to send and hands back each answer through `made`; the refunds
+ * marked made on the row's plan count too. When the approval left the notes
+ * to the refunds (`notesEachRefund`), each made refund is asked for once the
+ * replay ends - succeeded, a slice refused (the replay then throws to retry it
+ * on its next key), or a slice that threw after earlier ones were made
+ * (`PartialRefundError`, whose made refunds are read off it). So a refund made
+ * on an attempt that fails is noted on that attempt, never left waiting on a
+ * retry that may never come. The money has moved, so a note that cannot be
+ * queued is logged, never a reason to fail the row; `run`'s error is rethrown.
+ */
+export async function replayNotingEachRefund<T>(
+  input: { paymentId: string; operationId: string; notesEachRefund: boolean; plan: ReadonlyArray<{ madeRefundId?: string }> },
+  run: (made: (refunds: ReadonlyArray<{ refundId: string; status?: string | null }>) => void) => Promise<T>,
+  queue: typeof queueCardRefundOwnNotes = queueCardRefundOwnNotes,
+): Promise<T> {
+  const ids = input.plan.flatMap((slice) => (slice.madeRefundId ? [slice.madeRefundId] : []));
+  const made = (refunds: ReadonlyArray<{ refundId: string; status?: string | null }>) => {
+    ids.push(...refunds.filter((refund) => !isRefusedRefundStatus(refund.status)).map((refund) => refund.refundId));
+  };
+  try {
+    return await run(made);
+  } catch (err) {
+    if (err instanceof PartialRefundError) made(err.refunds);
+    throw err;
+  } finally {
+    if (input.notesEachRefund && ids.length > 0) {
+      await queue({ paymentId: input.paymentId, stripeRefundIds: ids }).catch((err: unknown) =>
+        logger.error({ err, operationId: input.operationId, paymentId: input.paymentId }, "Could not queue the Xero notes of a refund request's replayed card refunds (#4312)"),
+      );
+    }
+  }
 }
 
 /**

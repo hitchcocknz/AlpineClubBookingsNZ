@@ -65,8 +65,8 @@ import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_CLAIMABLE_LATER_WHERE }
 import { stripeReferenceId } from "@/lib/stripe-references";
 import { claimAlertCooldown } from "@/lib/alert-cooldown";
 import { formatCents } from "@/lib/utils";
-import { isCapturedTransactionStatus, isRefusedRefundStatus } from "@/lib/payment-transaction-status";
-import { queueCardRefundOwnNotes } from "@/lib/card-refund-own-note";
+import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
+import { replayNotingEachRefund } from "@/lib/card-refund-own-note";
 import { finishApprovedLateCaptureRefundAfterReplay } from "@/lib/late-capture-refund-credit-note";
 import { holdSupersededLateCaptureIfRequired } from "@/lib/late-capture-refund-hold";
 import { compareLedgerRowsNewestFirst, LEDGER_ROWS_NEWEST_FIRST, LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
@@ -561,19 +561,16 @@ export async function enqueueRefundRequestRefundRecovery({
     paymentId,
     amountCents,
     idempotencyKey: buildRefundRequestRefundRecoveryIdempotencyKey(refundRequestId),
-    ...(notesEachRefund ? { stripeKeyPrefix: refundRequestStripeKeyPrefix(refundRequestId) } : {}),
+    ...(notesEachRefund ? { stripeKeyPrefix: buildRefundRequestRefundStripeKeyPrefix(refundRequestId) } : {}),
     allocationPlan,
     store,
   });
 }
 
-/** An approved refund request's Stripe key prefix: the route's (`refund_request_<id>`, #1039), and its replay's (#1507). */
-const refundRequestStripeKeyPrefix = (refundRequestId: string) => `refund_request_${refundRequestId}`;
-
 /** #4312: whether a refund request's recovery row was written by an approval that left its card part's notes to each refund (`notesEachRefund`). */
 export function refundRequestRecoveryNotesEachRefund(operation: { idempotencyKey: string; stripeKeyPrefix: string | null }): boolean {
   if (!isRefundRequestRefundRecoveryKey(operation.idempotencyKey)) return false;
-  return operation.stripeKeyPrefix === refundRequestStripeKeyPrefix(operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length));
+  return operation.stripeKeyPrefix === buildRefundRequestRefundStripeKeyPrefix(operation.idempotencyKey.slice(REFUND_REQUEST_REFUND_RECOVERY_PREFIX.length));
 }
 
 import {
@@ -598,6 +595,7 @@ import {
   buildPaymentIntentCancelRecoveryIdempotencyKey,
   buildRefundRequestRefundMetadata,
   buildRefundRequestRefundRecoveryIdempotencyKey,
+  buildRefundRequestRefundStripeKeyPrefix,
   cardRefundOperationRefundMetadata,
   buildSupersededPaymentRefundRecoveryIdempotencyKey,
   buildLegacyModificationRefundStripeKeyPrefix,
@@ -2105,7 +2103,7 @@ async function processBookingModificationRefundOperation(
     // bookingId + refundRequestId, so pre-fix rows replay through this same path
     // (the inline body — reason:"refund_appeal_approved" — is unchanged, so no
     // pre-deploy sliver).
-    idempotencyKeyPrefix = refundRequestStripeKeyPrefix(refundRequestId);
+    idempotencyKeyPrefix = buildRefundRequestRefundStripeKeyPrefix(refundRequestId);
   } else if (isBookingCancellationRecovery) {
     // #1494: replay the inline cancel body VERBATIM - the same
     // buildBookingCancellationRefundMetadata helper builds both, from the
@@ -2130,9 +2128,9 @@ async function processBookingModificationRefundOperation(
   }
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
-  // #4312: the refunds made under the row - marked on its plan, or made now - for a refund request's own notes.
-  const madeRefundIds = plan.flatMap((slice) => (slice.madeRefundId ? [slice.madeRefundId] : []));
-  const refundId = await refundPlanOrRetryRefusals({ operation, plan, format, refund: async (allocation) => {
+  // #4312 (`INV-ADDPAY-044`): a bank transfer's approval left each refund's note to it - every refund made, on any outcome.
+  const notes = { paymentId: operation.paymentId, operationId: operation.id, notesEachRefund: refundRequestRecoveryNotesEachRefund(operation), plan };
+  const refundId = await replayNotingEachRefund(notes, (made) => refundPlanOrRetryRefusals({ operation, plan, format, refund: async (allocation) => {
     const result = await refundPaymentTransactions({
       format,
       paymentId: operation.paymentId,
@@ -2141,15 +2139,9 @@ async function processBookingModificationRefundOperation(
       metadata,
       idempotencyKeyPrefix,
     });
-    madeRefundIds.push(...result.refunds.filter((made) => !isRefusedRefundStatus(made.status)).map((made) => made.refundId));
+    made(result.refunds);
     return result;
-  } });
-  // #4312 (`INV-ADDPAY-044`): a bank transfer's approval left each refund's note to it. The money has moved, so a note that cannot be queued is logged, never retried by failing the row.
-  if (refundRequestRecoveryNotesEachRefund(operation)) {
-    await queueCardRefundOwnNotes({ paymentId: operation.paymentId, stripeRefundIds: madeRefundIds }).catch((err) =>
-      logger.error({ err, operationId: operation.id, paymentId: operation.paymentId }, "Could not queue the Xero notes of a refund request's replayed card refunds (#4312)"),
-    );
-  }
+  } }));
 
   // #2008 — the #1992 duplicate-capture auto-refund replays through this generic
   // modification-refund executor (its durable operation is a

@@ -1065,6 +1065,21 @@ describe("Stripe webhook Xero alerting", () => {
         documentDate: "2026-06-12",
       });
     });
+
+    it("#4312 review: a refund this sync recorded first is the capture's to note even when the refunded total did not move", async () => {
+      refundEvent();
+      mockSyncRefundsFromStripeCharge.mockResolvedValue({
+        paymentId: "payment-3",
+        refundDeltaCents: 0,
+        newlyCountedRefundIds: ["re_late_new"],
+        payment: { id: "payment-3", amountCents: 24000, refundedAmountCents: 3800 },
+      });
+      mockHasReleasedXeroSupplementaryInvoiceOperationsForPaymentIntent.mockResolvedValue(true);
+
+      expect((await POST(makeRequest())).status).toBe(200);
+
+      expect(mockEnqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-3", 3800, expect.objectContaining({ paymentIntentId: "pi_late" }));
+    });
   });
 
   // #4170: charge.refunded can land before the late capture's record (a
@@ -1124,6 +1139,21 @@ describe("Stripe webhook Xero alerting", () => {
         expect.anything(),
       );
       expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it("#4312 review: still names a late capture refunded outside the app when the sync recorded it first but the total did not move", async () => {
+      refundEvent([{ id: "re_dashboard", amount: 3800, status: "succeeded", metadata: {} }], "cancelled_booking_late_capture");
+      mockSyncRefundsFromStripeCharge.mockResolvedValue({
+        paymentId: "payment-3",
+        refundDeltaCents: 0,
+        newlyCountedRefundIds: ["re_dashboard"],
+        payment: { id: "payment-3", amountCents: 24000, refundedAmountCents: 3800 },
+      });
+
+      expect((await POST(makeRequest())).status).toBe(200);
+
+      expect(mockEnqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+      expect(mockLogAudit).toHaveBeenCalledWith(expect.objectContaining({ action: "booking.payment.late_capture_refunded_outside_app" }));
     });
 
     it("counts a cancel claim on the intent as landed after the cancel: a dashboard refund before the late success notice", async () => {

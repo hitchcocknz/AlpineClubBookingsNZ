@@ -10,8 +10,11 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 
+import { cardRefundNoteKeyTag, cardRefundNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
 import {
   cardRefundDoorOf,
+  cardRefundIdOfNoteRow,
+  cardRefundNoteKey,
   cardRefundNoteCutoverSeconds,
   madeSinceCardRefundNoteCutover,
   planLateCaptureCardNotes,
@@ -130,5 +133,25 @@ describe("planLateCaptureCardNotes (#4312)", () => {
     const askCents = 4_000 + 3_000 + 2_000 - 1_000 - 2_500;
     expect(plan.legacyAskCents + plan.own.reduce((sum, ask) => sum + ask.askCents, 0)).toBeLessThanOrEqual(askCents);
     expect(plan).toEqual({ own: [{ stripeRefundId: "re_x", askCents: 2_500 }], legacyAskCents: 3_000 });
+  });
+});
+
+describe("a card refund's own note row is found by its payload or by its key (#4312 review)", () => {
+  const noLinks = { xeroObjectLink: { findMany: async () => [] }, xeroSyncOperation: { findMany: async () => [] } } as never;
+
+  it("the key names the refund in the part the row finder and the reader match", async () => {
+    const key = await cardRefundNoteKey("payment-1", "re_1AbC", 0, noLinks);
+    expect(key).toContain(cardRefundNoteKeyTag("re_1AbC"));
+    expect(cardRefundNoteRowsWhere("payment-1", "re_1AbC").OR).toContainEqual({ correlationKey: { contains: cardRefundNoteKeyTag("re_1AbC") } });
+    // A previous release's worker rewrites the payload without the field: the key still answers.
+    expect(cardRefundIdOfNoteRow({ requestPayload: { creditNotes: [], allocation: { amount: 12 } }, correlationKey: key })).toBe("re_1AbC");
+  });
+
+  it("the payload answers first, read the one way a note row's fields are", () => {
+    expect(cardRefundIdOfNoteRow({ requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 100, cardRefundId: "re_payload" }, correlationKey: null })).toBe("re_payload");
+  });
+
+  it("a row naming no card refund answers null", () => {
+    expect(cardRefundIdOfNoteRow({ requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 100 }, correlationKey: "payment:p:refund-credit-note:100:v1" })).toBeNull();
   });
 });

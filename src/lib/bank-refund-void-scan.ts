@@ -69,6 +69,7 @@ import {
   bankRefundVoidPickKeyPrefix,
 } from "@/lib/bank-refund-void-follow-up-key";
 import { readPaidAnotherWayCash } from "@/lib/card-refund-paid-another-way-cash";
+import { cardRefundIdOfNoteRow } from "@/lib/card-refund-own-note-share";
 import { unwindableHandBackCents } from "@/lib/refund-allocation-unwind";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
@@ -289,9 +290,10 @@ export function isCardMoneyVoidReason(reason: BankRefundVoidUnmatchedReason | "d
   return reason === "paid-another-way" || reason === "card-refund";
 }
 
-/** #4312: whether the note's raising row recorded a card refund of its own (`cardRefundId`). */
+/** #4312: whether the note's raising row recorded a card refund of its own (`cardRefundIdOfNoteRow`). */
 async function noteRecordsCardRefund(db: Reader, paymentId: string, link: VoidedLink): Promise<boolean> {
-  return readString(asRecord((await readRefundNoteRaisingRow(paymentId, link.xeroObjectId, db))?.requestPayload)?.cardRefundId) !== null;
+  const row = await readRefundNoteRaisingRow(paymentId, link.xeroObjectId, db);
+  return row !== null && cardRefundIdOfNoteRow(row) !== null;
 }
 
 /** The task a note names as the hand-back it records, or null (a note from before #4162). */

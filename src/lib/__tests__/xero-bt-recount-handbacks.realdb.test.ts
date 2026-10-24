@@ -330,7 +330,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     it("a refund request's card part on a bank transfer is queued its own note, keyed on its card refund - never absorbed into the canonical note (#4312)", async () => {
       await seedRefundedUnderCanonicalNote({ amountCents: 25_000 });
       // The #4312 cutover marker's finish: the card refund below is made after it, so it gets a note of its own.
-      const [marker] = await prisma.$queryRaw<Array<{ finished_at: Date }>>`SELECT "finished_at" FROM "_prisma_migrations" WHERE "migration_name" = '20261122010000_bt_card_refund_notes_cutover'`;
+      const { CARD_REFUND_NOTE_CUTOVER_MIGRATION } = await import("@/lib/card-refund-own-note-share");
+      const [marker] = await prisma.$queryRaw<Array<{ finished_at: Date }>>`SELECT "finished_at" FROM "_prisma_migrations" WHERE "migration_name" = ${CARD_REFUND_NOTE_CUTOVER_MIGRATION}`;
       // An edit's card capture on the bank-transfer payment, $40 of it refunded by the approved request.
       await prisma.paymentTransaction.create({
         data: {

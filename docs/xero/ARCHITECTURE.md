@@ -1770,7 +1770,7 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
 | spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
-| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; any other row with nothing to pick says why and takes a recorded answer. |
+| unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), it recorded a card refund itself (#4312, `card-refund`: a note keyed on its `PaymentRefund`, by its payload or its key), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; nor does a card refund's own note (`isCardMoneyVoidReason`), which takes a recorded answer once Xero is checked (a late capture's refund is re-noted by the app on its next ask); any other row with nothing to pick says why and takes a recorded answer. |
 
 A note is matched to the hand-back it recorded by the task it names - a
 cancellation's note carries `handBackTaskId` in its payload since #4162 (never
@@ -1836,10 +1836,13 @@ less than the rows, and the floor (`INV-ADDPAY-021`) keeps the rows and alerts.
 payment has its canonical note, it gets a note of its own, keyed and sized on
 its task
 ([A later bank-transfer hand-back gets its own note](#a-later-bank-transfer-hand-back-gets-its-own-note-4287)).
-**Since #4312 the card writers no longer fold either.** A refund request's card
+**Since #4312 three card writers no longer fold either.** A refund request's card
 part, a refund made in the Stripe dashboard and a late capture's refund each get
 a note of their own, keyed and sized on the card refund
 ([A card refund on a bank transfer gets its own note](#a-card-refund-on-a-bank-transfer-gets-its-own-note-4312)).
+A cancellation's card refund (`booking-cancel.ts`) and a group cancel's still
+queue the payment's one note, so where that note already exists they fold into
+it as before.
 Refunds folded before either release stay folded: nothing raises their notes,
 and the deploy note below is how they are found.
 
@@ -2097,8 +2100,9 @@ writers asking for one refund at once collide on one row.
 - **A refund request's approval** (`refund-requests/[id]`,
   `queueRefundRequestCardNotes`) asks for each refund its inline attempt made
   (the plan's `madeRefundId`s). What went to the recovery queue is asked for by
-  the **recovery replay** as it makes each refund
-  (`refundRequestRecoveryNotesEachRefund`), so a refund that did not exist at
+  the **recovery replay** as it makes each refund - on any outcome of that
+  attempt, a refused or failing later slice included
+  (`replayNotingEachRefund`), so a refund that did not exist at
   approval still gets its note. The approval records on its recovery row that
   it left the notes to the refunds: the row's Stripe key prefix, the one the
   replay sends under anyway (`notesEachRefund`). A row an older release wrote
@@ -2106,7 +2110,8 @@ writers asking for one refund at once collide on one row.
   replay asks for nothing (`refundRequestRecoveryNotesEachRefund`). On a card
   payment the approval's one per-delta note is unchanged.
 - **`charge.refunded`** (`queueWebhookCardRefundNotes`) asks only for a refund
-  its own sync is the first to record (`newlyCountedRefundIds`), sorted by the
+  its own sync is the first to record (`newlyCountedRefundIds`; such a refund
+  also runs the late-capture checks when the refunded total did not move), sorted by the
   Stripe metadata every app door stamps (`cardRefundDoorOf`): a refund with
   none - made in the Stripe dashboard - gets its own note here; a refund
   request's is left to its approval; any other door's stays in the delta,
@@ -2122,9 +2127,14 @@ writers asking for one refund at once collide on one row.
 marker migration finished on the install
 (`20261122010000_bt_card_refund_notes_cutover`, a `SELECT 1`;
 `madeSinceCardRefundNoteCutover`) qualifies, read again when the note runs; if
-the marker never finished, none does. A refund made before it keeps what an
-older release gave it - the canonical note, a fold, or the officer's hand-made
-note - and stays on the #4230 deploy note's list.
+the marker never finished, none does, and the approval takes the payment's one
+note for its card part and marks no recovery row (`notesEachCardRefund`), as
+before. A refund made before it keeps what an older release gave it - the
+canonical note, a fold, or the officer's hand-made note - and stays on the #4230
+deploy note's list. The marker's own finish is the cutover
+(`readMigrationFinishedAt`): rolled back and applied again, it moves to the new
+finish; dropped by a squash, every refund reads as made before it
+([marker migrations](../BLUE_GREEN_MIGRATION_POLICY.md#marker-migrations-are-never-squashed)).
 
 **Readers.** No new term anywhere. The coverage sum, the gap reader and the
 inbound recount count the note through its link, so a payment whose refunds all
@@ -2147,21 +2157,31 @@ release's worker - in the switch window, or after a rollback - runs it as the
 one note it would have folded into: closed as covered when the payment has its
 canonical note, else raised for the refund's amount as that note. Either way the
 older release folds again; notes already raised per refund stay valid and are
-still counted through their links.
+still counted through their links, and its rewrite of the row's payload drops
+`cardRefundId` but not the key, so the row is still found as the refund's own
+(`cardRefundNoteRowsWhere`, `cardRefundIdOfNoteRow`). UPGRADING carries the
+read-only query that lists the late-capture notes this release raised for
+refunds made while the previous version served.
 
 Stated limits:
 
-- **The switch window.** A late-capture refund the previous release recorded
-  after the marker finished and before cutover, and folded, can be asked for
-  again by that capture's note under this release (a credit-back, or a later
-  refund of the same capture) and given a note of its own. Check late-capture
-  refunds made in that window in Xero before raising any note for them by hand.
+- **The switch window, and any period after a rollback.** A late-capture refund
+  the previous release recorded after the marker finished, and folded, can be
+  asked for again by that capture's note under this release (a credit-back, or a
+  later refund of the same capture) and given a note of its own, beside any
+  note an officer raised by hand. The UPGRADING query lists those notes, run
+  with the time this release last began serving alone; the officer voids a
+  hand-raised duplicate.
+- **A refund appeal's card part waiting in the recovery queue when the previous
+  release takes over** - after a rollback, or while it still runs the recovery
+  job during the switch - gets no note: this release's approval left the note to
+  the refund, and the previous release's replay raises none. The #4230 deploy
+  note's query lists the payment for a note by hand.
 - **A refund request's card refund Stripe fails later** is asked for again by
   its failed-later row (#4104), whose refund carries that row's own metadata,
   not the request's: its note goes in the delta, as before.
 - **A crash after Stripe answered and before the note was queued** loses the
   note, as it always did; the #4162 floor's alert and the deploy note find it.
-  So does a recovery row that exhausts its attempts after making a refund.
 
 ### Stripe refund notes cover cash evidence, never the mirror (#2902)
 

@@ -313,7 +313,12 @@ note's amount, its number and the day the app found it voided.
 Some rows have nothing to pick. A note that recorded a **card refund the club
 paid back another way** keeps that refund recorded: raise its credit note again
 from the Xero repair tool, then press **Record the answer** and say what you did
-(this moves nothing). Any other row with nothing to pick says why in one line -
+(this moves nothing). A note that recorded a **card refund made through Stripe**
+(#4312) keeps that refund recorded too and has no bank refund to take back.
+Check the payment in Xero before raising anything by hand: for a card payment
+captured after the booking was cancelled, the app raises a new credit note
+itself the next time it looks at that payment. Then press **Record the answer**
+and say what you found. Any other row with nothing to pick says why in one line -
 no bank refund left that the note could have recorded, the payment's records no
 longer holding it, or a credit note resolved by hand in Xero with no amount the
 app can read. Check the payment in Xero, then press **Record the answer** and

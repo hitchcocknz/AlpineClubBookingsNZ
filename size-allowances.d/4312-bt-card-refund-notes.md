@@ -7,15 +7,16 @@ entry below is the seam into an existing flow, which belongs where that flow is.
 Two files at their budget were kept at it rather than allowed.
 
 file: src/lib/payment-recovery.ts
-lines: 3378
+lines: 3370
 reason: the refund request recovery row's marker (`notesEachRefund`, written as
   the row's Stripe key prefix by the one enqueue that writes these rows), the
-  check the replay reads it back with, and the replay noting each refund it
-  makes. The replay's refunds are only known inside its own refund callback,
-  and the marker belongs beside the enqueue that writes it.
+  check the replay reads it back with, and the replay handing each refund it
+  makes to `replayNotingEachRefund`. The replay's refunds are only known inside
+  its own refund callback, and the marker belongs beside the enqueue that
+  writes it.
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3363
+lines: 3364
 reason: the `cardRefundId` option of `enqueueXeroRefundCreditNoteOperation` -
   its sizing branch, key, dedupe rows, payload and the worker passing it on -
   beside the `paidAnotherWayTaskId` route it mirrors, in the one enqueue every
@@ -34,9 +35,10 @@ reason: the one card refund ledger writer reports which refunds it newly
   first to record. The count is made in that loop and nowhere else.
 
 file: src/lib/stripe-webhook-service.ts
-lines: 1774
+lines: 1776
 reason: `charge.refunded` hands its delta and its newly counted refunds to
-  `queueWebhookCardRefundNotes` instead of the one enqueue call.
+  `queueWebhookCardRefundNotes` instead of the one enqueue call, and runs its
+  late-capture checks for a refund newly recorded when the total did not move.
 
 file: src/lib/xero-operation-retry.ts
 lines: 2064

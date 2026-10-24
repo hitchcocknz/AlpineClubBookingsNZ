@@ -6,6 +6,8 @@ import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
+import { cardRefundNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
+import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
 
 /**
@@ -68,18 +70,6 @@ export function madeSinceCardRefundNoteCutover(
   return Math.floor(madeAt.getTime() / 1000) >= cutoverSeconds;
 }
 
-/** THE way a card refund's own note rows are found: every refund-note create naming it, in any status. */
-export function cardRefundNoteRowsWhere(paymentId: string, stripeRefundId: string) {
-  return {
-    direction: "OUTBOUND",
-    entityType: "CREDIT_NOTE",
-    operationType: "CREATE",
-    localModel: "Payment",
-    localId: paymentId,
-    requestPayload: { path: ["cardRefundId"], equals: stripeRefundId },
-  } satisfies Prisma.XeroSyncOperationWhereInput;
-}
-
 /**
  * THE key of a card refund's own note - its outbox row's correlation key and
  * the note's Xero idempotency key alike: the refund and what its own notes
@@ -96,6 +86,16 @@ export async function cardRefundNoteKey(
 ): Promise<string> {
   const afterVoid = await refundNoteKeyAfterVoidParts(paymentId, { closeRowsWhere: cardRefundNoteRowsWhere(paymentId, stripeRefundId) }, db);
   return buildXeroIdempotencyKey("payment", paymentId, "refund-credit-note", "card-refund", stripeRefundId, ownCoveredCents, "v3", ...afterVoid);
+}
+
+/**
+ * The card refund a refund-note row answers, or null: its payload's
+ * `cardRefundId`, read the one way a note row's fields are
+ * (`parsePaymentCreditNoteRetryInput`), else its key (`cardRefundNoteKeyTag`),
+ * which a previous release's worker keeps when it rewrites the payload.
+ */
+export function cardRefundIdOfNoteRow(row: { requestPayload: unknown; correlationKey?: string | null }): string | null {
+  return parsePaymentCreditNoteRetryInput(row)?.cardRefundId ?? /:card-refund:([^:]+):/.exec(row.correlationKey ?? "")?.[1] ?? null;
 }
 
 export interface CardRefundNoteShare {

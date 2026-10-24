@@ -26,7 +26,7 @@ import type { ClubTimeZone } from "@/lib/club-time";
 import { findLateCaptureRefundPaidAnotherWay } from "@/lib/late-capture-paid-another-way";
 import { paidAnotherWayCloseXeroNote } from "@/lib/manual-refund-task-settlement-rules";
 import { paidAnotherWayCloseNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
-import { cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover, planLateCaptureCardNotes } from "@/lib/card-refund-own-note-share";
+import { cardRefundIdOfNoteRow, cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover, planLateCaptureCardNotes } from "@/lib/card-refund-own-note-share";
 
 /**
  * #1350 / #3639 / #3635: the Xero correction that follows a refund of a late
@@ -137,7 +137,7 @@ async function planLateCaptureAsk(paymentId: string, paymentIntentId: string, co
     if (note.status === "SUCCEEDED" && classifyLateCaptureCardNote(note) !== "in-xero") continue;
     const recorded = parsePaymentCreditNoteRetryInput(note);
     const cents = recorded?.amountCents ?? 0;
-    const refundId = recorded?.cardRefundId;
+    const refundId = cardRefundIdOfNoteRow(note);
     if (refundId && own.some((refund) => refund.stripeRefundId === refundId)) askedByRefund.set(refundId, (askedByRefund.get(refundId) ?? 0) + cents);
     else legacyNotedCents += cents;
   }
@@ -282,7 +282,7 @@ async function readLateCaptureCardNotes(
       status: { not: "CANCELLED" },
       requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
     },
-    select: { status: true, lastErrorCode: true, xeroObjectId: true, requestPayload: true, manuallyResolvedAt: true },
+    select: { status: true, lastErrorCode: true, xeroObjectId: true, requestPayload: true, manuallyResolvedAt: true, correlationKey: true },
   });
   return (notes ?? []).filter((note) => !parsePaymentCreditNoteRetryInput(note)?.paidAnotherWayTaskId);
 }

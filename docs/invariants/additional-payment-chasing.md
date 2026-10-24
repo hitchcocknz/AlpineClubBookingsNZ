@@ -1697,14 +1697,15 @@ decision and would need its own owner decision.
   on one row; a `perDelta` link.
 - **Three writers ask, each where it first knows the refund.** A refund
   request's approval, for each refund its attempt made, and its recovery
-  replay for those it makes (`INV-PAY-118`; a row an older approval wrote, no
-  `stripeKeyPrefix`, raises none). `charge.refunded`, for a refund it first
+  replay for those it makes, whatever its outcome (`replayNotingEachRefund`,
+  `INV-PAY-118`; a row an older approval wrote, no `stripeKeyPrefix`, raises
+  none). `charge.refunded`, for a refund it first
   records that no app door made (`cardRefundDoorOf`). A late capture's note
   splits its ask (`planLateCaptureCardNotes`).
 - **Never for a historical refund.** Only a refund Stripe made since the
   marker migration finished qualifies (`madeSinceCardRefundNoteCutover`);
-  none if the marker never finished. An older one keeps its fold and the #4230
-  deploy note's list.
+  none if the marker never finished, when the approval takes the one note. An
+  older one keeps its fold and the #4230 deploy note's list.
 - **No new term in a reader.** Coverage, gap and recount count its link, and
   the hand-back cash reader (`INV-ADDPAY-043`) never does. A voided one is
   never undone as a bank refund (`card-refund`, `INV-ADDPAY-042`).

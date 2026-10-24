@@ -99,7 +99,7 @@ describe("how the writers the deploy note names enqueue a bank-transfer refund n
   it("a refund request's card part: on a bank transfer each refund is noted on its own record, never absorbed (#4312)", () => {
     const route = read("src/app/api/admin/refund-requests/[id]/route.ts");
     expect(route).toContain("await queueRefundRequestCardNotes({ payment, cardNoteCents, plan: madeSlices, createdByMemberId: session.user.id });");
-    expect(route).toContain("notesEachRefund: payment.source === PaymentSource.INTERNET_BANKING,");
+    expect(route).toContain("notesEachRefund: await notesEachCardRefund(payment),");
     expect(route).not.toContain("enqueueXeroRefundCreditNoteOperation(");
     const writers = read("src/lib/card-refund-own-note.ts");
     expect(writers).toContain('cardRefundId: refund.stripeRefundId,');

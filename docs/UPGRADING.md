@@ -262,16 +262,65 @@ run qualify.
 refund made before the upgrade is never given a note of its own: keep using the
 read-only query in
 [the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
-to find those payments, and raise their notes by hand as that entry says. A
-late-capture card refund made in the few minutes between the migration and the
-switch to this version can still get a note of its own later, so check those in
-Xero before raising one by hand.
+to find those payments, and raise their notes by hand as that entry says.
+
+**Card refunds made in the switch window (#4312).** While the previous version
+still serves - between this migration and the switch, and again for as long as
+it serves after a rollback - it handles a refund of a card payment captured
+after the booking was cancelled as it always did: it counts the refund under the
+payment's first refund note. This version can later give that refund a note of
+its own (when it next looks at that captured payment), and an officer may
+already have raised one by hand for it. Run this read-only query once this
+version serves alone, with the timestamp set to that moment in UTC - the switch,
+or, after a rollback, the roll forward. Run it again after every roll forward.
+It lists each note this version raised (or will raise) for such a refund made in
+the window:
+
+```sql
+SELECT o."localId" AS "paymentId", p."bookingId", r."stripeRefundId", r."amountCents", r."stripeCreatedAt",
+  o.status, o."xeroObjectId" AS "creditNoteId", o."xeroObjectNumber" AS "creditNoteNumber"
+FROM "XeroSyncOperation" o
+JOIN "Payment" p ON p.id = o."localId"
+JOIN "PaymentRefund" r ON r."paymentId" = o."localId"
+  AND (r."stripeRefundId" = o."requestPayload"->>'cardRefundId' OR o."correlationKey" LIKE '%:card-refund:' || r."stripeRefundId" || ':%')
+WHERE o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE'
+  AND o."requestPayload"->>'paymentIntentId' IS NOT NULL
+  AND r."stripeCreatedAt" >= (SELECT min(m."finished_at") FROM "_prisma_migrations" m
+    WHERE m."migration_name" = '20261122010000_bt_card_refund_notes_cutover' AND m."rolled_back_at" IS NULL)
+  AND r."stripeCreatedAt" < TIMESTAMP '2026-01-01 00:00:00'
+ORDER BY p."bookingId", r."stripeCreatedAt";
+```
+
+For each row, look at the booking's invoice in Xero. If an officer also raised a
+credit note by hand for the same refund, void the hand-raised one and keep the
+app's (`creditNoteId`); a row with no `creditNoteId` yet will raise its note on
+the next Xero run, so void the hand-raised note before that run or straight
+after it.
 
 **During the switch, and if you roll back.** The previous version's Xero worker
 treats a card refund's new credit-note row as the one note it would have used,
 so it either closes it as covered by the payment's first note or raises it as
 that first note - exactly what the previous version did with such refunds.
-Notes already raised per refund stay valid. Details:
+Notes already raised per refund stay valid. Two gaps, both listed by the
+[#4230 deploy note's query](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230):
+
+- **An approved refund appeal whose card refund was still waiting in the
+  payment recovery queue** when the previous version took over (after a
+  rollback, or while that version still ran the recovery job during the switch)
+  gets no credit note at all: this version's approval left the note to the
+  refund, and the previous version's recovery job does not raise one. Check the
+  payments that query lists and raise their notes by hand as it says.
+- **A card refund the previous version made during the window** stays counted
+  under the first note, as before - except a late-captured payment's refund,
+  which this version can later note on its own (the query above lists those).
+
+**If the marker migration is rolled back and applied again,** the cutover moves
+to the second run's finish: refunds made in between are treated as made before
+it and keep the previous behaviour. While it is rolled back (not applied), no
+card refund gets a note of its own and every approval takes the single note, as
+before.
+
+Details:
 [A card refund on a bank transfer gets its own note](xero/ARCHITECTURE.md#a-card-refund-on-a-bank-transfer-gets-its-own-note-4312).
 
 ### One-off correction of the starter privacy policy's audit-log retention (#4031)

@@ -1188,13 +1188,15 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
   // #3635: a refund of a LATE capture is noted per capture, and only once the
   // app has recorded that capture's receipt in Xero; one taken earlier is
   // credited back when the receipt is recorded (`creditBackLateCaptureRefunds`).
-  if (refundSync.refundDeltaCents > 0 && (await isLateCaptureRefund(paymentIntentId))) {
+  // #4312 review: a refund this sync recorded first counts even when the total did not move.
+  const recordedNew = refundSync.refundDeltaCents > 0 || refundSync.newlyCountedRefundIds.length > 0;
+  if (recordedNew && (await isLateCaptureRefund(paymentIntentId))) {
     await queueLateCaptureRefundCreditNote({
       paymentId: refundSync.paymentId,
       paymentIntentId: paymentIntentId!,
     });
   } else if (
-    refundSync.refundDeltaCents > 0 &&
+    recordedNew &&
     // #4170: a late capture whose record is not written yet never gets the generic note.
     (await readUnrecordedLateCaptureRefund({
       paymentId: refundSync.paymentId,
@@ -1204,7 +1206,7 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
     })) !== "none"
   ) {
     return;
-  } else if (refundSync.refundDeltaCents > 0 || refundSync.newlyCountedRefundIds.length > 0) {
+  } else if (recordedNew) {
     // Queue only what this sync newly added to the refunded total (#3640); charge.amount_refunded is cumulative.
     // #4312: on a bank transfer, a refund made outside the app is noted on its own record (`queueWebhookCardRefundNotes`).
     try {

@@ -26,8 +26,8 @@ import {
 } from "@/lib/payment-transactions";
 import { inlineRefundAfterAttempt } from "@/lib/refused-card-refund-retry";
 import { NO_CARD_REFUND_OWED, queueUnmadeRefundRequestCardRefund, refundRequestCardRefundAnswer } from "@/lib/refund-request-card-refund";
-import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
-import { queueRefundRequestCardNotes } from "@/lib/card-refund-own-note";
+import { buildRefundRequestRefundMetadata, buildRefundRequestRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
+import { notesEachCardRefund, queueRefundRequestCardNotes } from "@/lib/card-refund-own-note";
 import { CLUB_BOOKINGS_NAME } from "@/config/club-identity";
 import { formatStayDate } from "@/lib/club-time";
 import { clubFormat } from "@/lib/club-format-server";
@@ -395,7 +395,7 @@ export async function PUT(
           // a byte-identical body and Stripe replays the original refund instead
           // of rejecting the reused idempotency key with idempotency_error.
           metadata: buildRefundRequestRefundMetadata(booking.id, id),
-          idempotencyKeyPrefix: `refund_request_${id}`,
+          idempotencyKeyPrefix: buildRefundRequestRefundStripeKeyPrefix(id),
         });
       } catch (err) {
         // The approval stands: complete the refund through the durable payment
@@ -424,7 +424,7 @@ export async function PUT(
         refundRequestId: id,
         read,
         paymentIntentIdFallback: payment.stripePaymentIntentId ?? "",
-        notesEachRefund: payment.source === PaymentSource.INTERNET_BANKING, // #4312: the replay notes each refund it makes
+        notesEachRefund: await notesEachCardRefund(payment), // #4312: the replay notes each refund it makes
         format: money.format,
       });
       cardRefund = refundRequestCardRefundAnswer(read, outcome, attemptedAt);

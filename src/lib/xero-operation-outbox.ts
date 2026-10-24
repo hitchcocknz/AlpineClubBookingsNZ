@@ -7,11 +7,12 @@ import {
 import { prisma } from "@/lib/prisma";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import {
+  cardRefundNoteRowsWhere,
   paidAnotherWayCloseNoteRowsWhere,
   readPaidAnotherWayCloseShare,
 } from "@/lib/card-refund-paid-another-way-cash";
 import { claimXeroSyncOperationToRunning } from "@/lib/xero-operation-claim";
-import { cardRefundNoteKey, cardRefundNoteRowsWhere, readCardRefundNoteShare } from "@/lib/card-refund-own-note-share";
+import { cardRefundNoteKey, readCardRefundNoteShare } from "@/lib/card-refund-own-note-share";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { clubSeasonYear } from "@/lib/financial-year";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
