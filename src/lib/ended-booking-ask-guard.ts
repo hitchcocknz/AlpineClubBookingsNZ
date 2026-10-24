@@ -4,7 +4,9 @@
  *
  * The edit doors decide to ask the card under `lock(1)`, but
  * `createModificationAdditionalPaymentIntent` creates the Stripe intent after
- * their commit, so a cancel can land in between. The paid cancel's claim
+ * their commit, so a cancel can land in between - and so can it before the
+ * recovery runner's replay of a failed mint
+ * (`processCreateAdditionalPaymentIntentOperation`), which runs both guards too. The paid cancel's claim
  * retires only the intent it reads on the `Payment` mirror. The minter
  * therefore re-reads the booking twice, against the statuses that retire every
  * ask on it (`ADDITIONAL_ASK_RETIRED_BOOKING_STATUSES`, `INV-ADDPAY-023`):
@@ -36,7 +38,7 @@ async function bookingHasEnded(bookingId: string): Promise<boolean> {
  */
 export async function bookingEndedBeforeAskMint(
   bookingId: string,
-  bookingModificationId: string,
+  bookingModificationId: string | null,
 ): Promise<boolean> {
   const ended = await bookingHasEnded(bookingId).catch((err: unknown) => {
     logger.error({ err, bookingId }, "Could not re-read the booking before minting its additional ask (#4316)");

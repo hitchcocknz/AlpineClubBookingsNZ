@@ -1,5 +1,4 @@
 import {
-  BookingStatus,
   PaymentSource,
   PaymentRecoveryOperationStatus,
   PaymentRecoveryOperationType,
@@ -2729,22 +2728,16 @@ async function processCreateAdditionalPaymentIntentOperation(
     return;
   }
 
-  // A booking cancelled after the modification has no increase left to
-  // collect (#1358): the cancel flow already tore down its additional
-  // intents, so minting a live intent here would resurrect a collectable the
-  // cancel retired and re-arm the WAITING_PAYMENT supplementary Xero
-  // operation for money that must never be captured. Complete without
-  // creating anything — the parked Xero op is retired by the
-  // stale-WAITING_PAYMENT reaper.
-  if (payment.booking.status === BookingStatus.CANCELLED) {
-    logger.info(
-      { operationId: operation.id, bookingId: operation.bookingId },
-      "Skipping additional intent recovery for cancelled booking",
-    );
+  // A booking that ended after the modification (#1358; #4316, `INV-ADDPAY-044`:
+  // CANCELLED or BUMPED, re-read by the door's own guard) has nothing left to
+  // collect: the cancel tore its asks down, and a mint here would resurrect one and
+  // re-arm its WAITING_PAYMENT supplementary invoice (the stale reaper retires it).
+  // Dynamic import: the guard reaches booking-payment-cleanup, which imports this.
+  const { bookingEndedBeforeAskMint, retireAskOnEndedBooking } = await import("@/lib/ended-booking-ask-guard");
+  if (await bookingEndedBeforeAskMint(operation.bookingId, bookingModificationId)) {
     await completePaymentRecoveryOperation(operation.id);
     return;
   }
-
 
   // #3954 round 7: one resolution, shared with the door's re-issue mint, so
   // the two minters of one key send one request (`resolveAskCustomerId`).
@@ -2911,6 +2904,13 @@ async function processCreateAdditionalPaymentIntentOperation(
     paymentId: operation.paymentId,
     queued: held.value,
   });
+
+  // #4316: a cancel committed since that check could not see this intent; it is
+  // retired as the cancel retires one, and the debt closes - no invoice is owed.
+  if (await retireAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId, paymentIntentId: pi.id })) {
+    await completePaymentRecoveryOperation(operation.id);
+    return;
+  }
 
   // #3954 round 6: the Stripe cancels above can take a while. A price
   // reduction may have netted this ask off since (a claim older than

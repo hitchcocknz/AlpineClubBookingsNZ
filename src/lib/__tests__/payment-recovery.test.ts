@@ -160,9 +160,11 @@ vi.mock("@/lib/prisma", () => {
       update: (...args: unknown[]) => mockPaymentTransactionUpdate(...args),
       findUnique: (...args: unknown[]) => mockPaymentTransactionFindUnique(...args),
       findMany: (...args: unknown[]) => mockPaymentTransactionFindMany(...args),
+      findFirst: (...args: unknown[]) => mock4316.transactionFindFirst(...args),
     },
     payment: {
       findUnique: (...args: unknown[]) => mockPaymentFindUnique(...args),
+      update: (...args: unknown[]) => mock4316.paymentUpdate(...args),
     },
     booking: {
       findUnique: (...args: unknown[]) => mockBookingFindUnique(...args),
@@ -332,6 +334,7 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/payment-transactions", () => ({
   // #4217: the runner's claim hold locks the Payment row before the recovery row.
   lockPaymentForRefundedTotal: (...args: unknown[]) => mockLockPaymentForRefundedTotal(...args),
+  markPaymentIntentTransactionFailed: (...args: unknown[]) => mock4316.markFailed(...args),
   reconcilePaymentAggregates: (...args: unknown[]) =>
     mockReconcilePaymentAggregates(...args),
   recordStripeRefundsAgainstTransaction: (...args: unknown[]) =>
@@ -378,6 +381,8 @@ vi.mock("@/lib/logger", () => ({
 // the format it always did.
 const clubFormatMock = vi.hoisted(() => vi.fn());
 const mockLockPaymentForRefundedTotal = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<undefined>>(async () => undefined));
+// #4316: what the shared retirement routine writes when a replay's booking ended mid-mint.
+const mock4316 = vi.hoisted(() => ({ paymentUpdate: vi.fn(), transactionFindFirst: vi.fn(), markFailed: vi.fn() }));
 // #3567: when the club format last changed, for the stale-queue alert.
 const mockLoadPersistedClubFormat = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/club-format-settings", async (importOriginal) => ({
@@ -3475,6 +3480,8 @@ describe("payment recovery worker", () => {
     // waiting supplementary Xero operation.
     it("completes without creating anything when the booking is CANCELLED (#1358)", async () => {
       primeQueue(additionalIntentOperation());
+      // #4316: the runner asks the door's own guard, which re-reads the booking.
+      mockBookingFindUnique.mockResolvedValueOnce({ status: "CANCELLED" });
       mockPaymentFindUnique.mockResolvedValue({
         id: "payment-1",
         stripeCustomerId: "cus_123",
@@ -3510,6 +3517,60 @@ describe("payment recovery worker", () => {
       expect(mockUpsertPaymentIntentTransaction).not.toHaveBeenCalled();
       expect(mockPaymentTransactionFindMany).not.toHaveBeenCalled();
       expect(mockAttachIntentToWaitingOps).not.toHaveBeenCalled();
+    });
+
+    // #4316 (`INV-ADDPAY-044`): the door's own guard - BUMPED retires every ask too.
+    it("completes without creating anything when the booking is BUMPED (#4316)", async () => {
+      primeQueue(additionalIntentOperation());
+      mockBookingFindUnique.mockResolvedValueOnce({ status: "BUMPED" });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+      expect(mockUpsertPaymentIntentTransaction).not.toHaveBeenCalled();
+    });
+
+    // #4316: a cancel committing between the replay's check and its row write
+    // read a mirror with no such intent; the replay retires the intent it wrote
+    // through the cancel's own routine, closes its debt and raises no invoice.
+    it("retires the intent it wrote when the booking is cancelled after its row write, and closes the debt with no invoice (#4316)", async () => {
+      primeQueue(additionalIntentOperation());
+      mockBookingFindUnique.mockResolvedValueOnce({ status: "PAID" }).mockResolvedValueOnce({ status: "CANCELLED" });
+      const house = mockPaymentFindUnique.getMockImplementation()!;
+      // The mirror the row write's reconcile derived: the recovered ask, outstanding.
+      mockPaymentFindUnique.mockImplementation((args?: { select?: Record<string, unknown> }) =>
+        args?.select?.additionalPaymentIntentId
+          ? Promise.resolve({ id: "payment-1", additionalPaymentIntentId: "pi_recovered", additionalPaymentStatus: "PENDING" })
+          : house(args),
+      );
+      mock4316.transactionFindFirst.mockResolvedValueOnce({ id: "txn-recovered", amountCents: 3000 });
+      mockPaymentRecoveryUpsert.mockResolvedValueOnce({ id: "op-cancel-recovered" });
+      const operation = additionalIntentOperation();
+      mockPaymentRecoveryFindUnique.mockImplementation((args?: { where?: { id?: string } }) =>
+        Promise.resolve(
+          args?.where?.id === "op-cancel-recovered"
+            ? makeOperation({ id: "op-cancel-recovered", paymentIntentId: "pi_recovered", paymentTransactionId: "txn-recovered" })
+            : operation,
+        ),
+      );
+      mockCancelPaymentIntentIfCancellableWithResult.mockResolvedValue({ paymentIntent: { id: "pi_recovered", status: "canceled" }, canceled: true });
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result.succeeded).toBe(1);
+      expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: "pi_recovered" }));
+      // The cancel claim's own writes: the mirror and the row FAILED, a durable cancellation.
+      expect(mock4316.paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment-1" }, data: { additionalPaymentStatus: "FAILED" } });
+      expect(mock4316.markFailed).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: "pi_recovered" }));
+      expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ type: "CANCEL_PAYMENT_INTENT", paymentIntentId: "pi_recovered" }) }),
+      );
+      // ...run now, and the intent is dead at Stripe.
+      expect(mockCancelPaymentIntentIfCancellableWithResult).toHaveBeenCalledWith("pi_recovered");
+      // Nothing is owed on an ended booking: no invoice waits on the dead intent.
+      expect(mockAttachRecoveredIntent).not.toHaveBeenCalled();
+      expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
     });
 
     /**
@@ -3658,6 +3719,7 @@ describe("payment recovery worker", () => {
        */
       it("raises nothing when the booking was cancelled", async () => {
         primeQueue(additionalIntentOperation());
+        mockBookingFindUnique.mockResolvedValueOnce({ status: "CANCELLED" }); // #4316: the guard's own read
         mockPaymentFindUnique.mockResolvedValue(
           paymentWithIssuedInvoice({
             booking: {
