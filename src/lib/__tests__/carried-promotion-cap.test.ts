@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { scaleCarriedRedemptions, type CarriedRedemption } from "@/lib/carried-promotion-cap";
+import {
+  carriedCapRowScaler,
+  scaleCappedCarriedRows,
+  scaleCarriedRedemptions,
+  type CarriedRedemption,
+} from "@/lib/carried-promotion-cap";
 import { apportionCents } from "@/lib/night-price-runs";
 
 /**
@@ -112,13 +117,163 @@ describe("scaleCarriedRedemptions", () => {
     expect(scaled?.[0]?.redemption.freeNightsUsed).toBe(3);
   });
 
-  it("leaves a booker slot that names no member to the writer, as every re-price does", () => {
-    const scaled = scaleCarriedRedemptions([redemption("r1", -1_000, [[null, -1_000]])], -1_000, -400);
-    expect(figures(scaled)).toEqual([{ id: "r1", priceAdjustmentCents: -400, discountCents: 400, allocations: [] }]);
+  it("leaves the records as they were where an allocation names no member: the writer would delete that row (round 6)", () => {
+    // A school's booker slot. The shared writer does not rewrite it, so scaling
+    // would drop the row and lower the code's currentRedemptions.
+    expect(scaleCarriedRedemptions([redemption("r1", -1_000, [["owner", -600], [null, -400]])], -1_000, -400)).toBeNull();
+  });
+
+  it("leaves the records as they were where the cap would scale an allocation to nothing (round 6)", () => {
+    // -$0.01 of a -$10.00 code, scaled to -$0.05: the small share truncates to
+    // $0, the writer would drop that allocation, and its counter would fall.
+    expect(
+      scaleCarriedRedemptions([redemption("r1", -1_000, [["owner", -999], ["partner", -1]])], -1_000, -5),
+    ).toBeNull();
+    // CONTROL: a free-nights share at $0 still records the nights it used, so it stays.
+    expect(
+      scaleCarriedRedemptions([redemption("r1", -1_000, [["owner", -999], ["partner", -1, 1]])], -1_000, -5),
+    ).not.toBeNull();
   });
 
   it("scales nothing where the records do not add up to the stored figure, or there are none", () => {
     expect(scaleCarriedRedemptions([redemption("r1", -3_000, [["owner", -3_000]])], -5_000, -1_000)).toBeNull();
     expect(scaleCarriedRedemptions([], -5_000, -1_000)).toBeNull();
+  });
+});
+
+describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner decision 24 Oct 2026 on #4302)", () => {
+  const N1 = new Date("2026-08-01T00:00:00.000Z");
+  const N2 = new Date("2026-08-02T00:00:00.000Z");
+  const N3 = new Date("2026-08-03T00:00:00.000Z");
+  const row = (
+    stayDate: Date | null,
+    amountCents: number | null,
+    extra: Partial<{ bookingGuestId: string; beneficiaryMemberId: string; promoRedemptionId: string; heldPriceCents: number | null }> = {},
+  ) => ({
+    kind: "PROMO" as const,
+    amountCents,
+    promoRedemptionId: "redemption-1",
+    promoCodeId: "promo-1",
+    beneficiaryMemberId: "booker",
+    bookingGuestId: "guest-a",
+    stayDate,
+    heldPriceCents: 10_000,
+    ...extra,
+  });
+  const recorded = (priceAdjustmentCents: number, allocations: Array<[string | null, number]>, id = "redemption-1") => ({
+    id,
+    priceAdjustmentCents,
+    allocations: allocations.map(([memberId, cents]) => ({ memberId, priceAdjustmentCents: cents })),
+  });
+
+  it("scales a fixed code's guest row to its capped figure: -$350 becomes -$300", () => {
+    expect(
+      scaleCappedCarriedRows([row(null, -35_000, { heldPriceCents: 30_000 })], [recorded(-30_000, [["booker", -30_000]])]),
+    ).toEqual([-30_000]);
+  });
+
+  it("keeps rows that already add up byte for byte: a 100% code cut to the nights left", () => {
+    expect(
+      scaleCappedCarriedRows([row(N1, -5_000), row(N2, -5_000)], [recorded(-10_000, [["booker", -10_000]])]),
+    ).toEqual([-5_000, -5_000]);
+  });
+
+  it("scales in proportion to the stored rows, leftover cents on the earliest night", () => {
+    // -$25.00 / -$25.00 / -$50.00 scaled to -$100.01: -25.0025, -25.0025, -50.005.
+    expect(
+      scaleCappedCarriedRows(
+        [row(N3, -5_000), row(N2, -2_500), row(N1, -2_500)],
+        [recorded(-10_001, [["booker", -10_001]])],
+      ),
+    ).toEqual([-5_000, -2_500, -2_501]);
+  });
+
+  it("puts a night before a guest-scope row when the leftover cent goes", () => {
+    expect(
+      scaleCappedCarriedRows([row(null, -1_000), row(N2, -1_000)], [recorded(-1_001, [["booker", -1_001]])]),
+    ).toEqual([-500, -501]);
+  });
+
+  it("scales each beneficiary to their own allocation, and each code on its own", () => {
+    const scaled = scaleCappedCarriedRows(
+      [
+        row(N1, -4_000),
+        row(N2, -4_000, { beneficiaryMemberId: "partner", bookingGuestId: "guest-b" }),
+        row(N1, -2_000, { promoRedemptionId: "redemption-2", bookingGuestId: "guest-b" }),
+      ],
+      [
+        recorded(-5_000, [["booker", -2_000], ["partner", -3_000]]),
+        recorded(-1_000, [["booker", -1_000]], "redemption-2"),
+      ],
+    );
+    expect(scaled).toEqual([-2_000, -3_000, -1_000]);
+  });
+
+  it("scales a beneficiary the cap left with nothing to zero", () => {
+    expect(
+      scaleCappedCarriedRows(
+        [row(N1, -4_000), row(N2, -1_000, { beneficiaryMemberId: "partner" })],
+        [recorded(-2_000, [["booker", -2_000]])],
+      ),
+    ).toEqual([-2_000, 0]);
+  });
+
+  describe("writes no row for a code it cannot scale honestly (round 6), and leaves the other codes", () => {
+    it("LENS 1, a 50% code across two members: scaling the booker up would take $150 off a $100 night", () => {
+      // The booker kept one $100 night (-$50 stored), the partner two; the cap
+      // left each member -$150. The partner's rows could carry theirs; the
+      // booker's one night cannot carry -$150, so the code writes none.
+      const scaled = scaleCappedCarriedRows(
+        [
+          row(N1, -5_000),
+          row(N1, -5_000, { beneficiaryMemberId: "partner", bookingGuestId: "guest-b" }),
+          row(N2, -5_000, { beneficiaryMemberId: "partner", bookingGuestId: "guest-b" }),
+        ],
+        [recorded(-30_000, [["booker", -15_000], ["partner", -15_000]])],
+      );
+      expect(scaled).toEqual([null, null, null]);
+    });
+
+    it("LENS 2, an assigned fixed code: a guest row may not take more than the guest's own total", () => {
+      // The engine's rule is min(value, guest total): guest A, now $100, cannot
+      // carry the -$200 the cap left the booker once guest B's row went.
+      expect(
+        scaleCappedCarriedRows(
+          [row(null, -30_000, { heldPriceCents: 10_000 })],
+          [recorded(-20_000, [["booker", -20_000]])],
+        ),
+      ).toEqual([null]);
+    });
+
+    it("LENS 3, a SET_PRICE code that raised one night and discounted another: no proportion is meaningful", () => {
+      expect(
+        scaleCappedCarriedRows([row(N1, 2_000), row(N2, -5_000)], [recorded(-2_100, [["booker", -2_100]])]),
+      ).toEqual([null, null]);
+    });
+
+    it("a raise is never scaled further up", () => {
+      expect(scaleCappedCarriedRows([row(N1, 2_000)], [recorded(3_000, [["booker", 3_000]])])).toEqual([null]);
+    });
+
+    it("a NOT KNOWN amount, or an allocation with no row left, writes none for that code only", () => {
+      const rows = [row(N1, null), row(N1, -2_000, { promoRedemptionId: "redemption-2", bookingGuestId: "guest-b" })];
+      const codes = [recorded(-3_000, [["booker", -3_000]]), recorded(-1_000, [["booker", -1_000]], "redemption-2")];
+      // The second code keeps KNOWN rows, and with them its own Xero line (INV-MONEY-040).
+      expect(scaleCappedCarriedRows(rows, codes)).toEqual([null, -1_000]);
+      expect(scaleCappedCarriedRows([], [recorded(-3_000, [["booker", -3_000]])])).toEqual([]);
+    });
+
+    it("a row naming no code the booking carries is not written", () => {
+      expect(scaleCappedCarriedRows([row(N1, -5_000, { promoRedemptionId: "gone" })], [])).toEqual([null]);
+    });
+  });
+});
+
+describe("carriedCapRowScaler: the scaler the save hands the writer (round 6)", () => {
+  it("none where the plan capped nothing, the scale where the records were scaled, and a clear where not", () => {
+    expect(carriedCapRowScaler(undefined)).toBeUndefined();
+    expect(carriedCapRowScaler(true)).toBe(scaleCappedCarriedRows);
+    const clear = carriedCapRowScaler(false)!;
+    expect(clear([{ kind: "PROMO", amountCents: -5_000, promoRedemptionId: "r", promoCodeId: "c", beneficiaryMemberId: "m", bookingGuestId: "g", stayDate: null, heldPriceCents: 9_000 }], [])).toEqual([null]);
   });
 });

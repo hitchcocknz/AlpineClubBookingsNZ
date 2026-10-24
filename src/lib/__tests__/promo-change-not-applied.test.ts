@@ -676,6 +676,8 @@ describe("applyPromoCodeChanges reports whether the promotion engine ran (#3179)
     expect(result.promoEngineRan).toBe(false);
     expect(result.newPromoAdjustmentCents).toBe(-1_500);
     expect(result.promoRemoved).toBe(false);
+    // The save's row scaler is picked from this (round 6): the records were scaled.
+    expect(result.carriedCapScaled).toBe(true);
     expect(promoMocks.validateAndCalculatePromoDiscount).not.toHaveBeenCalled();
     expect(promoMocks.lockPromoCodeRowsForUpdate).toHaveBeenCalledWith(capTx, ["code-1"]);
     expect(promoMocks.replacePromoRedemptionAllocations).toHaveBeenCalledWith(

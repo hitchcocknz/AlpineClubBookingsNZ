@@ -14,14 +14,19 @@
  *  - each redemption's adjustment is scaled to its share of the cap, in
  *    proportion to its stored adjustment, and each member's allocation to its
  *    share of that (`apportionCents`, leftover cents on the earliest entry);
- *  - the redemption rows stay in place, guest targets and counters included —
- *    only `replacePromoRedemptionAllocations`, the writer every re-price uses,
- *    touches them, under the promo row locks (INV-MONEY-023);
+ *  - the redemption rows stay in place, guest targets included, and so does
+ *    every allocation row, so no code's `currentRedemptions` moves: a scale
+ *    that would delete one — an allocation naming no member (a school's booker
+ *    slot, which the shared writer does not rewrite), or one the cap would
+ *    leave with no benefit (INV-MONEY-005) — is not made, and the records stay
+ *    as they were. Only `replacePromoRedemptionAllocations`, the writer every
+ *    re-price uses, touches them, under the promo row locks (INV-MONEY-023);
  *  - no night-adjustment row is written here. After the night rewrite the save
- *    hands `scaleCappedCarriedRows` (below) to the writer,
- *    `restoreBookingNightAdjustments`, which scales the stored rows on the nights
- *    that remain to these figures — the one rule-derived amount INV-MONEY-029
- *    allows (owner decision 24 Oct 2026 on #4302).
+ *    hands the writer, `restoreBookingNightAdjustments`, the row scaler
+ *    `carriedCapRowScaler` picks: `scaleCappedCarriedRows` (below) where the
+ *    records were scaled — the one rule-derived amount INV-MONEY-029 allows
+ *    (owner decision 24 Oct 2026 on #4302) — and one clearing every row where
+ *    they were not, so the build-up reads not known rather than disagreeing.
  */
 import type { Prisma } from "@prisma/client";
 
@@ -29,11 +34,12 @@ import { bookingDiscountCents } from "@/lib/booking-final-price";
 import logger from "@/lib/logger";
 import { apportionCents } from "@/lib/night-price-runs";
 import { compareOrdinal } from "@/lib/ordinal-order";
+import { isBeneficialPromoAllocation } from "@/lib/promo-usage-counts";
 import {
   deriveNightAdjustmentState,
   memberBenefitAllocations,
   type CappedCarryScaler,
-  type CarriedNightAdjustments,
+  type CarriedRowHeld,
 } from "@/lib/night-adjustment-write";
 import {
   lockPromoCodeRowsForUpdate,
@@ -69,10 +75,10 @@ export type ScaledRedemption = {
 
 /**
  * Scale stored redemptions, in their application order, so their adjustments
- * add up to `cappedPromoAdjustmentCents`. Pure. `null` when the records cannot
- * be scaled honestly: they did not add up to the booking's stored figure to
- * begin with, so there is no proportion to keep (the booking-level figure is
- * still capped; the records are left as they were).
+ * add up to `cappedPromoAdjustmentCents`. Pure. `null` when the records are left
+ * as they were (the booking-level figure is still capped): they did not add up
+ * to the booking's stored figure, so there is no proportion to keep; or the
+ * scale would delete an allocation row (see the module comment).
  */
 export function scaleCarriedRedemptions(
   redemptions: readonly CarriedRedemption[],
@@ -81,11 +87,15 @@ export function scaleCarriedRedemptions(
 ): ScaledRedemption[] | null {
   const storedSum = redemptions.reduce((sum, redemption) => sum + redemption.priceAdjustmentCents, 0);
   if (redemptions.length === 0 || storedSum === 0 || storedSum !== storedPromoAdjustmentCents) return null;
+  const memberless = redemptions.some((redemption) =>
+    redemption.allocations.some((allocation) => allocation.memberId === null),
+  );
+  if (memberless) return null;
   const figures = apportionCents(
     cappedPromoAdjustmentCents,
     redemptions.map((redemption) => redemption.priceAdjustmentCents),
   );
-  return redemptions.map((redemption, index) => {
+  const scaled = redemptions.map((redemption, index) => {
     const priceAdjustmentCents = figures[index]!;
     // The allocations a member's benefit decomposes, read the one way the
     // INV-MONEY-029 identity reads them.
@@ -107,13 +117,22 @@ export function scaleCarriedRedemptions(
       })),
     };
   });
+  // Every allocation row the redemptions carry must survive the writer.
+  const allSurvive = scaled.every(
+    (entry, index) =>
+      entry.allocations.length === redemptions[index]!.allocations.length &&
+      entry.allocations.every(isBeneficialPromoAllocation),
+  );
+  return allSurvive ? scaled : null;
 }
 
 /**
  * Write the scaled figures for a booking whose in-progress edit capped its
  * carried promotion. Runs inside the edit's transaction, which already holds
  * `lock(1)` and the per-lodge capacity key, so the order stays lodge -> promo
- * rows (INV-MONEY-023); every read precedes the first write.
+ * rows (INV-MONEY-023); every read precedes the first write. Returns whether
+ * the records were scaled, which picks the save's row scaler
+ * (`carriedCapRowScaler`).
  */
 export async function capCarriedPromotionRecords(
   tx: Prisma.TransactionClient,
@@ -122,10 +141,10 @@ export async function capCarriedPromotionRecords(
     storedPromoAdjustmentCents: number;
     cappedPromoAdjustmentCents: number;
   },
-): Promise<void> {
+): Promise<boolean> {
   const { bookingId } = params;
   const codes = await tx.promoRedemption.findMany({ where: { bookingId }, select: { promoCodeId: true } });
-  if (codes.length === 0) return;
+  if (codes.length === 0) return false;
   await lockPromoCodeRowsForUpdate(tx, codes.map((code) => code.promoCodeId));
   const redemptions = await tx.promoRedemption.findMany({
     where: { bookingId },
@@ -153,9 +172,9 @@ export async function capCarriedPromotionRecords(
   if (scaled === null) {
     logger.warn(
       { bookingId, storedPromoAdjustmentCents: params.storedPromoAdjustmentCents },
-      "#4317: an in-progress edit capped the booking's promotion, but its redemptions did not add up to the stored figure, so they were left as they were; the build-up derives as not known",
+      "#4317: an in-progress edit capped the booking's promotion, but its redemptions could not be scaled to it (they did not add up to the stored figure, or an allocation row would go), so they were left as they were and its night rows cleared; the build-up derives as not known",
     );
-    return;
+    return false;
   }
   for (const entry of scaled) {
     await replacePromoRedemptionAllocations(
@@ -168,13 +187,23 @@ export async function capCarriedPromotionRecords(
       entry.allocations,
     );
   }
+  return true;
+}
+
+/**
+ * The row scaler the save hands `restoreBookingNightAdjustments` for a carried
+ * promotion: none where the plan capped nothing (`undefined`), the scale where
+ * the records were scaled, and one writing no row where they were left as they
+ * were — rows scaled to figures the booking no longer carries would disagree
+ * with it, where no rows read honestly as not known.
+ */
+export function carriedCapRowScaler(recordsScaled: boolean | undefined): CappedCarryScaler | undefined {
+  if (recordsScaled === undefined) return undefined;
+  return recordsScaled ? scaleCappedCarriedRows : (rows) => rows.map(() => null);
 }
 
 /** A night row before a guest-scope one; nights by date; then by guest. */
-function earliestNightFirst(
-  a: CarriedNightAdjustments["rows"][number],
-  b: CarriedNightAdjustments["rows"][number],
-): number {
+function earliestNightFirst(a: CarriedRowHeld, b: CarriedRowHeld): number {
   if (a.stayDate && b.stayDate) {
     const byNight = a.stayDate.getTime() - b.stayDate.getTime();
     if (byNight !== 0) return byNight;
@@ -186,60 +215,84 @@ function earliestNightFirst(
 
 /**
  * THE ONE RULE-DERIVED AMOUNT (INV-MONEY-029's exception; owner decision
- * 24 Oct 2026 on #4302, #4317 review round 4). An in-progress edit capped its
- * carried promotion and `capCarriedPromotionRecords` scaled each redemption and
- * member allocation to the cap; here the stored rows left on the stay are
- * scaled to match, per redemption and beneficiary, in proportion to their
- * stored amounts, leftover cents on the earliest night (`apportionCents`). A
- * beneficiary whose rows already sum to its allocation keeps them byte for
- * byte. Returns the new amount of each row, in `rows` order, or `null` — write
- * none, the build-up is not known — where there is nothing to scale from: a
- * NOT KNOWN amount, a row naming no redemption the booking carries, an
- * allocation with no row left behind it, or a result that does not reconcile.
- * Pure: the writer, `restoreBookingNightAdjustments`, is handed it by the batch
- * save for a capped plan and writes what it returns.
+ * 24 Oct 2026 on #4302, #4317 review rounds 4 and 6). An in-progress edit
+ * capped its carried promotion and `capCarriedPromotionRecords` scaled each
+ * redemption and member allocation to the cap; here the stored rows left on the
+ * stay are scaled to match, per redemption and beneficiary, in proportion to
+ * their stored amounts, leftover cents on the earliest night (`apportionCents`).
+ * A beneficiary whose rows already sum to its allocation keeps them byte for
+ * byte. Returns each row's new amount, in `rows` order.
+ *
+ * EACH CODE ON ITS OWN: a redemption whose rows cannot be scaled honestly gets
+ * none (`null` for each), so its build-up reads not known while another code's
+ * rows, and its own Xero line (INV-MONEY-040), stand. That is a redemption with
+ * a NOT KNOWN amount among its rows; a beneficiary with an allocation and no
+ * row left to scale from; a beneficiary whose rows mix signs (a `SET_PRICE`
+ * code's raises beside its discounts: no proportion is meaningful); a scale
+ * that would take more off a night than it is priced at, or off a guest's row
+ * than the guest's total (the engine's own `min(value, total)`), or raise a
+ * night further than it was raised; and a result that does not reconcile. A row
+ * naming no redemption the booking carries is not written. Pure: the writer is
+ * handed it by the batch save for a capped plan and writes what it returns.
  */
 export const scaleCappedCarriedRows: CappedCarryScaler = (rows, redemptions) => {
+  const amounts: Array<number | null> = rows.map((row) => row.amountCents);
   const known = new Set(redemptions.map((redemption) => redemption.id));
-  const amounts: number[] = [];
-  for (const row of rows) {
-    if (row.amountCents === null || !known.has(row.promoRedemptionId)) return null;
-    amounts.push(row.amountCents);
-  }
+  rows.forEach((row, index) => {
+    if (!known.has(row.promoRedemptionId)) amounts[index] = null;
+  });
   for (const redemption of redemptions) {
-    const allocated = new Map(
-      memberBenefitAllocations(redemption.allocations).map((allocation) => [
-        allocation.memberId,
-        allocation.priceAdjustmentCents,
-      ]),
-    );
     const mine = rows.flatMap((row, index) => (row.promoRedemptionId === redemption.id ? [index] : []));
-    const members = new Set([...allocated.keys(), ...mine.map((index) => rows[index]!.beneficiaryMemberId)]);
-    for (const memberId of members) {
-      const group = mine
-        .filter((index) => rows[index]!.beneficiaryMemberId === memberId)
-        .sort((a, b) => earliestNightFirst(rows[a]!, rows[b]!));
-      const target = allocated.get(memberId) ?? 0;
-      const weights = group.map((index) => amounts[index]!);
-      const stored = weights.reduce((sum, cents) => sum + cents, 0);
-      if (stored === target) continue;
-      if (stored === 0) return null;
-      apportionCents(target, weights).forEach((cents, at) => {
-        amounts[group[at]!] = cents;
-      });
-    }
-    // The result must reconcile, read the one way every reader reads it.
-    const state = deriveNightAdjustmentState({
-      rows: mine.map((index) => ({
-        beneficiaryMemberId: rows[index]!.beneficiaryMemberId,
-        amountCents: amounts[index]!,
-      })),
-      redemption: {
-        priceAdjustmentCents: redemption.priceAdjustmentCents,
-        allocations: memberBenefitAllocations(redemption.allocations),
-      },
+    const scaled = scaleOneRedemption(rows, mine, redemption);
+    mine.forEach((index, at) => {
+      amounts[index] = scaled === null ? null : scaled[at]!;
     });
-    if (state !== "KNOWN") return null;
   }
   return amounts;
 };
+
+/** One redemption's rows (`mine`, indexes into `rows`) scaled to its records, or `null`. */
+function scaleOneRedemption(
+  rows: CarriedRowHeld[],
+  mine: number[],
+  redemption: Parameters<CappedCarryScaler>[1][number],
+): number[] | null {
+  if (mine.some((index) => rows[index]!.amountCents === null)) return null;
+  const amounts = new Map(mine.map((index) => [index, rows[index]!.amountCents!]));
+  const allocated = new Map(
+    memberBenefitAllocations(redemption.allocations).map((allocation) => [
+      allocation.memberId,
+      allocation.priceAdjustmentCents,
+    ]),
+  );
+  const members = new Set([...allocated.keys(), ...mine.map((index) => rows[index]!.beneficiaryMemberId)]);
+  for (const memberId of members) {
+    const group = mine
+      .filter((index) => rows[index]!.beneficiaryMemberId === memberId)
+      .sort((a, b) => earliestNightFirst(rows[a]!, rows[b]!));
+    const target = allocated.get(memberId) ?? 0;
+    const weights = group.map((index) => amounts.get(index)!);
+    const stored = weights.reduce((sum, cents) => sum + cents, 0);
+    if (stored === target) continue;
+    if (stored === 0) return null;
+    if (weights.some((cents) => cents > 0) && weights.some((cents) => cents < 0)) return null;
+    const shares = apportionCents(target, weights);
+    const outOfBounds = shares.some((cents, at) => {
+      const row = rows[group[at]!]!;
+      if (cents > 0) return cents > row.amountCents!;
+      return row.heldPriceCents === null || -cents > row.heldPriceCents;
+    });
+    if (outOfBounds) return null;
+    shares.forEach((cents, at) => amounts.set(group[at]!, cents));
+  }
+  const result = mine.map((index) => amounts.get(index)!);
+  // The result must reconcile, read the one way every reader reads it.
+  const state = deriveNightAdjustmentState({
+    rows: mine.map((index, at) => ({ beneficiaryMemberId: rows[index]!.beneficiaryMemberId, amountCents: result[at]! })),
+    redemption: {
+      priceAdjustmentCents: redemption.priceAdjustmentCents,
+      allocations: memberBenefitAllocations(redemption.allocations),
+    },
+  });
+  return state === "KNOWN" ? result : null;
+}

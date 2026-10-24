@@ -97,7 +97,7 @@ import {
   restoreBookingNightAdjustments,
   snapshotBookingNightAdjustments,
 } from "@/lib/night-adjustment-write";
-import { scaleCappedCarriedRows } from "@/lib/carried-promotion-cap";
+import { carriedCapRowScaler } from "@/lib/carried-promotion-cap";
 import {
   describePromoChangeNotApplied,
   type PromoChangeNotAppliedNotice,
@@ -1677,11 +1677,10 @@ export async function modifyBookingBatch({
       await restoreBookingNightAdjustments(tx, {
         snapshot: carriedAdjustments,
         writer: "the booking modification",
-        // #4317 review round 4: a capped promotion's rows left on the stay are
-        // scaled to its scaled records (INV-MONEY-029's one exception).
-        scaleSurvivors: pricingResult.inProgressPlan?.promotionCappedAtNewTotal
-          ? scaleCappedCarriedRows
-          : undefined,
+        // #4317 review rounds 4 and 6: a capped promotion's rows left on the
+        // stay are scaled to its scaled records (INV-MONEY-029's one
+        // exception), or cleared where the records could not be scaled.
+        scaleSurvivors: carriedCapRowScaler(promo.carriedCapScaled),
       });
     }
 

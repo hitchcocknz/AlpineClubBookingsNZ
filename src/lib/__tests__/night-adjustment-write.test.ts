@@ -12,7 +12,7 @@ import {
   snapshotBookingNightAdjustments,
   type PromoAdjustmentTarget,
 } from "@/lib/night-adjustment-write";
-import { scaleCappedCarriedRows } from "@/lib/carried-promotion-cap";
+import { carriedCapRowScaler, scaleCappedCarriedRows } from "@/lib/carried-promotion-cap";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const loggerMocks = vi.hoisted(() => ({ warn: vi.fn(), error: vi.fn() }));
@@ -53,9 +53,10 @@ function fakeTx(options: {
     id: string;
     bookingGuestId: string;
     stayDate: Date;
+    priceCents?: number | null;
     adjustments?: Array<Record<string, unknown>>;
   }>;
-  guests?: Array<{ id: string }>;
+  guests?: Array<{ id: string; priceCents?: number }>;
   adjustments?: Array<Record<string, unknown>>;
 }): { tx: Prisma.TransactionClient; recorded: Recorded } {
   const order: string[] = [];
@@ -504,7 +505,7 @@ describe("snapshot and restore across a mechanical rewrite", () => {
     nothingWritten(after.recorded);
   });
 
-  describe("#4317 review round 4: a capped in-progress promotion keeps only the rows that still reconcile", () => {
+  describe("#4317 review rounds 4 and 6: a capped in-progress promotion scales the rows left on the stay", () => {
     /** A 100% code on guest A's two nights: -$50 each; the edit gives back N2. */
     const FULL = (amountCents: number) => ({ ...NIGHT_ROW, amountCents });
     const twoNights = () =>
@@ -523,8 +524,8 @@ describe("snapshot and restore across a mechanical rewrite", () => {
     it("drops the row on a night given back and keeps the rest, byte for byte, where they reconcile", async () => {
       const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
       const after = fakeTx({
-        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1 }],
-        guests: [{ id: "guest-a" }],
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1, priceCents: 5000 }],
+        guests: [{ id: "guest-a", priceCents: 5000 }],
         // The cap scaled the redemption to the -$50 left.
         redemption: capped(-5000),
       });
@@ -537,8 +538,8 @@ describe("snapshot and restore across a mechanical rewrite", () => {
     it("scales the rows left to the scaled figure where they no longer add up to it (INV-MONEY-029's exception)", async () => {
       const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
       const after = fakeTx({
-        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1 }],
-        guests: [{ id: "guest-a" }],
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1, priceCents: 5000 }],
+        guests: [{ id: "guest-a", priceCents: 5000 }],
         // The cap scaled the redemption to -$30: the -$50 row left is scaled to it.
         redemption: capped(-3000),
       });
@@ -552,22 +553,36 @@ describe("snapshot and restore across a mechanical rewrite", () => {
       const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
       const after = fakeTx({
         // Both nights given back; the cap left -$30 with nothing to carry it.
-        nights: [{ id: "new-b1", bookingGuestId: "guest-b", stayDate: N1 }],
-        guests: [{ id: "guest-a" }, { id: "guest-b" }],
+        nights: [{ id: "new-b1", bookingGuestId: "guest-b", stayDate: N1, priceCents: 5000 }],
+        guests: [{ id: "guest-a", priceCents: 0 }, { id: "guest-b", priceCents: 5000 }],
         redemption: capped(-3000),
       });
+      await restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", scaleSurvivors: scaleCappedCarriedRows });
+      expect(after.recorded.adjustmentDeleteMany).toHaveBeenCalledWith({ where: { bookingId: "booking-1" } });
+      expect(after.recorded.adjustmentCreateMany).toHaveBeenCalledWith({ data: [] });
+    });
+
+    it("writes none, and clears the rows, where the records could not be scaled (round 6, item 3)", async () => {
+      const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
+      const after = fakeTx({
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1, priceCents: 5000 }],
+        guests: [{ id: "guest-a", priceCents: 5000 }],
+        // The redemption still carries its uncapped -$100: rows scaled to it
+        // would disagree with the capped booking, so none is written.
+        redemption: capped(-10000),
+      });
       await expect(
-        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", scaleSurvivors: scaleCappedCarriedRows }),
+        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", scaleSurvivors: carriedCapRowScaler(false) }),
       ).resolves.toEqual({ carried: false });
       expect(after.recorded.adjustmentDeleteMany).toHaveBeenCalledWith({ where: { bookingId: "booking-1" } });
-      expect(after.recorded.adjustmentCreateMany).not.toHaveBeenCalled();
+      expect(after.recorded.adjustmentCreateMany).toHaveBeenCalledWith({ data: [] });
     });
 
     it("CONTROL: without a scaler the same night given back abandons the carry, as every other rewrite does", async () => {
       const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
       const after = fakeTx({
-        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1 }],
-        guests: [{ id: "guest-a" }],
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1, priceCents: 5000 }],
+        guests: [{ id: "guest-a", priceCents: 5000 }],
         redemption: capped(-5000),
       });
       await expect(
@@ -586,84 +601,5 @@ describe("snapshot and restore across a mechanical rewrite", () => {
     ).resolves.toEqual({ carried: true });
     expect(after.recorded.nightFindMany).not.toHaveBeenCalled();
     nothingWritten(after.recorded);
-  });
-});
-
-describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner decision 24 Oct 2026 on #4302)", () => {
-  const row = (
-    stayDate: Date | null,
-    amountCents: number | null,
-    extra: Partial<{ bookingGuestId: string; beneficiaryMemberId: string; promoRedemptionId: string }> = {},
-  ) => ({
-    kind: "PROMO" as const,
-    amountCents,
-    promoRedemptionId: "redemption-1",
-    promoCodeId: "promo-1",
-    beneficiaryMemberId: "booker",
-    bookingGuestId: "guest-a",
-    stayDate,
-    ...extra,
-  });
-  const redemption = (priceAdjustmentCents: number, allocations: Array<[string | null, number]>, id = "redemption-1") => ({
-    id,
-    priceAdjustmentCents,
-    allocations: allocations.map(([memberId, cents]) => ({ memberId, priceAdjustmentCents: cents })),
-  });
-  const N3 = new Date("2026-08-03T00:00:00.000Z");
-
-  it("scales a fixed code's guest row to its capped figure: -$350 becomes -$300", () => {
-    expect(scaleCappedCarriedRows([row(null, -35_000)], [redemption(-30_000, [["booker", -30_000]])])).toEqual([-30_000]);
-  });
-
-  it("keeps rows that already add up byte for byte: a 100% code cut to the nights left", () => {
-    expect(
-      scaleCappedCarriedRows([row(N1, -5_000), row(N2, -5_000)], [redemption(-10_000, [["booker", -10_000]])]),
-    ).toEqual([-5_000, -5_000]);
-  });
-
-  it("scales in proportion to the stored rows, leftover cents on the earliest night", () => {
-    // -$25.00 / -$25.00 / -$50.00 scaled to -$100.01: -25.0025, -25.0025, -50.005.
-    expect(
-      scaleCappedCarriedRows(
-        [row(N3, -5_000), row(N2, -2_500), row(N1, -2_500)],
-        [redemption(-10_001, [["booker", -10_001]])],
-      ),
-    ).toEqual([-5_000, -2_500, -2_501]);
-  });
-
-  it("puts a night before a guest-scope row when the leftover cent goes", () => {
-    expect(
-      scaleCappedCarriedRows([row(null, -1_000), row(N2, -1_000)], [redemption(-1_001, [["booker", -1_001]])]),
-    ).toEqual([-500, -501]);
-  });
-
-  it("scales each beneficiary to their own allocation, and each code on its own", () => {
-    const scaled = scaleCappedCarriedRows(
-      [
-        row(N1, -4_000),
-        row(N2, -4_000, { beneficiaryMemberId: "partner", bookingGuestId: "guest-b" }),
-        row(N1, -2_000, { promoRedemptionId: "redemption-2", bookingGuestId: "guest-b" }),
-      ],
-      [
-        redemption(-5_000, [["booker", -2_000], ["partner", -3_000]]),
-        redemption(-1_000, [["booker", -1_000]], "redemption-2"),
-      ],
-    );
-    expect(scaled).toEqual([-2_000, -3_000, -1_000]);
-  });
-
-  it("writes none where an allocation has no row left behind it, or an amount is NOT KNOWN", () => {
-    expect(scaleCappedCarriedRows([], [redemption(-3_000, [["booker", -3_000]])])).toBeNull();
-    expect(scaleCappedCarriedRows([row(N1, null)], [redemption(-3_000, [["booker", -3_000]])])).toBeNull();
-    expect(scaleCappedCarriedRows([row(N1, -5_000)], [])).toBeNull();
-  });
-
-  it("scales a beneficiary the cap left with nothing to zero", () => {
-    expect(
-      scaleCappedCarriedRows(
-        [row(N1, -4_000), row(N2, -1_000, { beneficiaryMemberId: "partner" })],
-        [redemption(-2_000, [["booker", -2_000]])],
-      ),
-    ).toEqual([-2_000, 0]);
   });
 });

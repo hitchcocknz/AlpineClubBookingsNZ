@@ -10,9 +10,9 @@ import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 
 /**
- * #3276 (stage 2 of programme #3272): THE ONE WRITER OF AN AMOUNT into
- * `BookingGuestNightAdjustment` — a member merge (`member-merge.ts`) moves or
- * deletes rows and never invents one — and the one home of the rule a reader
+ * #3276 (stage 2 of programme #3272): THE ONE WRITER of `BookingGuestNightAdjustment`
+ * rows — the engine's amounts, plus the one rule-derived exception below; a member
+ * merge (`member-merge.ts`) moves or deletes rows — and the one home of the rule a reader
  * uses to decide whether a booking's recorded build-up can be trusted
  * (`deriveNightAdjustmentState`). `booking-guest-night-adjustment-census.test.ts`
  * holds both.
@@ -41,9 +41,10 @@ import type { ClubFormat } from "@/lib/club-format";
  * name-only correction, an in-progress extension, an admin date shift —
  * `snapshotBookingNightAdjustments` before the rewrite and
  * `restoreBookingNightAdjustments` after it carry the rows across by (guest,
- * stay date), byte for byte. Preservation, not derivation: no amount is
- * computed. Where a row's night no longer exists the carry is abandoned and
- * the booking's rows are left absent, which a reader derives as not known.
+ * stay date), byte for byte, computing no amount. Where a row's night no longer
+ * exists the carry is abandoned and the rows left absent (derived not known) —
+ * bar INV-MONEY-029's one owner-decided exception (24 Oct 2026, #4302): a capped
+ * in-progress promotion's surviving rows are scaled (`scaleSurvivors`).
  *
  * ## Ordering
  *
@@ -566,12 +567,10 @@ export async function restoreBookingNightAdjustments(
     writer: string;
     /**
      * #4317 review round 4: an in-progress edit that CAPPED its carried
-     * promotion, whose redemptions `capCarriedPromotionRecords` has just scaled.
-     * A row whose night or guest the edit gave back is dropped rather than
-     * abandoning the carry, and the rows left are scaled to every redemption as
-     * now recorded by this function, `scaleCappedCarriedRows` — the one
-     * rule-derived amount INV-MONEY-029 allows (owner decision 24 Oct 2026 on
-     * #4302). Where it returns `null`, none is written: the build-up is not known.
+     * promotion (`carriedCapRowScaler`). A row whose night or guest the edit gave
+     * back is dropped rather than abandoning the carry, and the rows left take
+     * the amounts this returns — INV-MONEY-029's one rule-derived amount (owner
+     * decision 24 Oct 2026 on #4302); a `null` is a row not written.
      */
     scaleSurvivors?: CappedCarryScaler;
   },
@@ -588,20 +587,18 @@ export async function restoreBookingNightAdjustments(
   const [nights, guests] = await Promise.all([
     tx.bookingGuestNight.findMany({
       where: { bookingGuest: { bookingId: snapshot.bookingId } },
-      select: { id: true, bookingGuestId: true, stayDate: true },
+      select: { id: true, bookingGuestId: true, stayDate: true, priceCents: true },
     }),
     tx.bookingGuest.findMany({
       where: { bookingId: snapshot.bookingId },
-      select: { id: true },
+      select: { id: true, priceCents: true },
     }),
   ]);
-  const nightIdByKey = new Map(
-    nights.map((night) => [nightKey(night.bookingGuestId, night.stayDate), night.id]),
-  );
-  const guestIds = new Set(guests.map((guest) => guest.id));
+  const nightByKey = new Map(nights.map((night) => [nightKey(night.bookingGuestId, night.stayDate), night]));
+  const guestPriceById = new Map(guests.map((guest) => [guest.id, guest.priceCents]));
 
   const rows: Prisma.BookingGuestNightAdjustmentCreateManyInput[] = [];
-  const kept: CarriedNightAdjustments["rows"] = [];
+  const kept: CarriedRowHeld[] = [];
   for (const row of snapshot.rows) {
     const base = {
       kind: row.kind,
@@ -612,16 +609,17 @@ export async function restoreBookingNightAdjustments(
       beneficiaryMemberId: row.beneficiaryMemberId,
     };
     if (row.stayDate === null) {
-      if (!guestIds.has(row.bookingGuestId)) {
+      if (!guestPriceById.has(row.bookingGuestId)) {
         if (params.scaleSurvivors) continue;
         return abandonCarry(writer, snapshot.bookingId, `guest ${row.bookingGuestId} is gone`);
       }
       rows.push({ ...base, bookingGuestNightId: null, bookingGuestId: row.bookingGuestId });
-      kept.push(row);
+      kept.push({ ...row, heldPriceCents: guestPriceById.get(row.bookingGuestId)! });
       continue;
     }
     const target = shifted(row.stayDate);
-    const bookingGuestNightId = nightIdByKey.get(nightKey(row.bookingGuestId, target));
+    const night = nightByKey.get(nightKey(row.bookingGuestId, target));
+    const bookingGuestNightId = night?.id;
     if (!bookingGuestNightId) {
       if (params.scaleSurvivors) continue;
       return abandonCarry(
@@ -631,21 +629,16 @@ export async function restoreBookingNightAdjustments(
       );
     }
     rows.push({ ...base, bookingGuestNightId, bookingGuestId: null });
-    kept.push(row);
+    kept.push({ ...row, heldPriceCents: night!.priceCents });
   }
+  const carried = rows.length;
   if (params.scaleSurvivors) {
     const scaled = params.scaleSurvivors(kept, await recordedPromoTotals(tx, snapshot.bookingId));
-    if (scaled === null) {
-      await tx.bookingGuestNightAdjustment.deleteMany({ where: { bookingId: snapshot.bookingId } });
-      return abandonCarry(
-        writer,
-        snapshot.bookingId,
-        "the capped promotion has no recorded row left on the stay to scale",
-      );
+    for (let at = rows.length - 1; at >= 0; at -= 1) {
+      if (scaled[at] === null) rows.splice(at, 1);
+      else rows[at]!.amountCents = scaled[at];
     }
-    scaled.forEach((amountCents, index) => {
-      rows[index]!.amountCents = amountCents;
-    });
+    if (rows.length < carried) abandonCarry(writer, snapshot.bookingId, "a capped code's rows could not be scaled");
   }
 
   // The rewrite cascaded most of these away already; a guest whose night rows
@@ -654,7 +647,7 @@ export async function restoreBookingNightAdjustments(
     where: { bookingId: snapshot.bookingId },
   });
   await tx.bookingGuestNightAdjustment.createMany({ data: rows });
-  return { carried: true };
+  return { carried: rows.length === carried };
 }
 
 async function recordedPromoTotals(tx: Tx, bookingId: string): Promise<RecordedPromoTotals> {
@@ -675,14 +668,14 @@ export type RecordedPromoTotals = ReadonlyArray<{
   allocations: ReadonlyArray<{ memberId: string | null; priceAdjustmentCents: number }>;
 }>;
 
+/** A surviving row, with the price of the night (or guest) it is left on. */
+export type CarriedRowHeld = CarriedNightAdjustments["rows"][number] & { heldPriceCents: number | null };
+
 /**
- * The new amount of each surviving row, in order, or `null` to write none. Its
- * one implementation is `scaleCappedCarriedRows` (`carried-promotion-cap.ts`).
+ * The new amount of each surviving row, in order; `null` writes that row not.
+ * Implemented only in `carried-promotion-cap.ts` (`carriedCapRowScaler`).
  */
-export type CappedCarryScaler = (
-  rows: CarriedNightAdjustments["rows"],
-  redemptions: RecordedPromoTotals,
-) => number[] | null;
+export type CappedCarryScaler = (rows: CarriedRowHeld[], redemptions: RecordedPromoTotals) => Array<number | null>;
 
 function abandonCarry(writer: string, bookingId: string, reason: string): { carried: false } {
   logger.warn(

@@ -349,8 +349,12 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   carried promotion at the new total scales the stored rows left on the stay,
   per redemption and beneficiary, in proportion to their stored amounts,
   leftover cents on the earliest night, to the capped allocations
-  (`scaleCappedCarriedRows`, written by `restoreBookingNightAdjustments`); with
-  no row left to scale from it writes none, and the build-up is not known. A member merge that drops a
+  (`scaleCappedCarriedRows`, written by `restoreBookingNightAdjustments`). It
+  writes no row for a code, whose build-up then reads not known while another
+  code's stands, where an amount is NOT KNOWN, an allocation has no row left,
+  a beneficiary's rows mix signs, or a scaled row would take more than its
+  night's price or its guest's total, or raise a night further; and none at all
+  where the redemptions could not be scaled (`capCarriedPromotionRecords`). A member merge that drops a
   duplicate's colliding allocation deletes that duplicate's rows on the same
   redemption in the same step, so each surviving allocation still matches its
   rows per beneficiary — but the redemption total still carries the dropped

@@ -185,7 +185,7 @@ const PROMO_WRITERS: Record<string, (code: string) => void> = {
     // #4317 review round 4: a capped in-progress promotion's rows left on the
     // stay are scaled to its scaled records (INV-MONEY-029's one exception).
     expect(code).toMatch(
-      /restoreBookingNightAdjustments\(tx, \{[\s\S]{0,300}scaleSurvivors: pricingResult\.inProgressPlan\?\.promotionCappedAtNewTotal\s*\?\s*scaleCappedCarriedRows\s*:\s*undefined,/,
+      /restoreBookingNightAdjustments\(tx, \{[\s\S]{0,400}scaleSurvivors: carriedCapRowScaler\(promo\.carriedCapScaled\),/,
     );
   },
   "src/lib/carried-promotion-cap.ts": (code) => {
@@ -299,10 +299,12 @@ describe("INV-MONEY-029 night adjustment build-up census", () => {
   it("keeps the one rule-derived amount to the capped in-progress carry (#4317, owner decision 24 Oct 2026 on #4302)", () => {
     // INV-MONEY-029's exception: a capped carried promotion's surviving rows are
     // scaled to the cap. One function computes it (`scaleCappedCarriedRows`),
-    // the batch save alone hands it to the writer, and only for a capped plan;
-    // the writer applies whatever scaler it is handed, on its one branch.
+    // picked by `carriedCapRowScaler` only for records the cap scaled (a
+    // clearing scaler otherwise); the batch save alone hands it to the writer,
+    // which applies whatever scaler it is handed, on its one branch.
     const CAP = "src/lib/carried-promotion-cap.ts";
     expect(read(CAP)).toMatch(/export const scaleCappedCarriedRows: CappedCarryScaler = /);
+    expect(read(CAP)).toMatch(/return recordsScaled \? scaleCappedCarriedRows : \(rows\) => rows\.map\(\(\) => null\);/);
     const writer = read(MODULE);
     expect(writer.match(/\bparams\.scaleSurvivors\(/g)).toHaveLength(1);
     expect(writer).toMatch(/if \(params\.scaleSurvivors\) \{\s*const scaled = params\.scaleSurvivors\(/);
@@ -311,9 +313,7 @@ describe("INV-MONEY-029 night adjustment build-up census", () => {
       const relative = relativeSource(file);
       const code = stripComments(readFileSync(file, "utf8"));
       if (/\bscaleSurvivors:/.test(code)) handedOver.push(relative);
-      if (relative !== CAP && relative !== "src/lib/booking-batch-modification-service.ts") {
-        expect(code, relative).not.toMatch(/\bscaleCappedCarriedRows\b/);
-      }
+      if (relative !== CAP) expect(code, relative).not.toMatch(/\bscaleCappedCarriedRows\b/);
     }
     expect(handedOver).toEqual(["src/lib/booking-batch-modification-service.ts"]);
   });

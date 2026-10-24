@@ -1994,11 +1994,18 @@ export type PromoChangeResult = {
        * order in which they can be attached.
        */
       adjustmentTargets: PromoAdjustmentTarget[];
+      carriedCapScaled?: undefined;
     }
   | {
       promoEngineRan: false;
       /** The engine did not run, so there is no build-up to record: the caller carries the stored rows across. */
       adjustmentTargets?: undefined;
+      /**
+       * #4317 review round 6: set only where an in-progress plan capped its
+       * carried promotion — whether the stored records were scaled to the cap
+       * (`capCarriedPromotionRecords`), which picks the save's row scaler.
+       */
+      carriedCapScaled?: boolean;
     }
 );
 
@@ -2118,14 +2125,15 @@ export async function applyPromoCodeChanges(
   // re-decided. Where the plan capped it at the new total, the stored records
   // are scaled to the cap (#4317 review round 4, `capCarriedPromotionRecords`).
   if (inProgressPlan) {
-    if (inProgressPlan.promotionCappedAtNewTotal) {
-      await capCarriedPromotionRecords(tx, {
-        bookingId,
-        storedPromoAdjustmentCents: booking.promoAdjustmentCents,
-        cappedPromoAdjustmentCents: inProgressPlan.newPromoAdjustmentCents,
-      });
-    }
+    const carriedCapScaled = inProgressPlan.promotionCappedAtNewTotal
+      ? await capCarriedPromotionRecords(tx, {
+          bookingId,
+          storedPromoAdjustmentCents: booking.promoAdjustmentCents,
+          cappedPromoAdjustmentCents: inProgressPlan.newPromoAdjustmentCents,
+        })
+      : undefined;
     return {
+      ...(carriedCapScaled === undefined ? {} : { carriedCapScaled }),
       newDiscountCents: inProgressPlan.newDiscountCents,
       newPromoAdjustmentCents: inProgressPlan.newPromoAdjustmentCents,
       promoRemoved: false,
