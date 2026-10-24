@@ -97,6 +97,7 @@ import {
   restoreBookingNightAdjustments,
   snapshotBookingNightAdjustments,
 } from "@/lib/night-adjustment-write";
+import { scaleCappedCarriedRows } from "@/lib/carried-promotion-cap";
 import {
   describePromoChangeNotApplied,
   type PromoChangeNotAppliedNotice,
@@ -1678,7 +1679,9 @@ export async function modifyBookingBatch({
         writer: "the booking modification",
         // #4317 review round 4: a capped promotion's rows left on the stay are
         // scaled to its scaled records (INV-MONEY-029's one exception).
-        survivorsOnly: pricingResult.inProgressPlan?.promotionCappedAtNewTotal === true,
+        scaleSurvivors: pricingResult.inProgressPlan?.promotionCappedAtNewTotal
+          ? scaleCappedCarriedRows
+          : undefined,
       });
     }
 

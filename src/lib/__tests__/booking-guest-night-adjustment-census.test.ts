@@ -185,19 +185,18 @@ const PROMO_WRITERS: Record<string, (code: string) => void> = {
     // #4317 review round 4: a capped in-progress promotion's rows left on the
     // stay are scaled to its scaled records (INV-MONEY-029's one exception).
     expect(code).toMatch(
-      /restoreBookingNightAdjustments\(tx, \{[\s\S]{0,300}survivorsOnly: pricingResult\.inProgressPlan\?\.promotionCappedAtNewTotal === true/,
+      /restoreBookingNightAdjustments\(tx, \{[\s\S]{0,300}scaleSurvivors: pricingResult\.inProgressPlan\?\.promotionCappedAtNewTotal\s*\?\s*scaleCappedCarriedRows\s*:\s*undefined,/,
     );
   },
   "src/lib/carried-promotion-cap.ts": (code) => {
     // (The rows are scaled to these figures in the writer module itself; see
     // "keeps the one rule-derived amount ..." below.)
     // #4317 review round 4: scales a capped in-progress promotion's stored
-    // redemptions and allocations. It computes no row amount and records none;
-    // its one caller's save scales the rows left on the stay to these figures,
-    // after the night rewrite (above).
+    // redemptions and allocations, and computes - never writes - the scaled
+    // rows the save hands to the writer after the night rewrite (above).
     expect(code).toMatch(/await replacePromoRedemptionAllocations\(/);
     expect(code).not.toMatch(RECORD);
-    expect(code).not.toMatch(/amountCents/);
+    expect(code).not.toMatch(RESTORE);
   },
   "src/lib/booking-promotions.ts": (code) => {
     // #3827: the shared re-price writes every code's redemption and hands the
@@ -299,18 +298,24 @@ describe("INV-MONEY-029 night adjustment build-up census", () => {
 
   it("keeps the one rule-derived amount to the capped in-progress carry (#4317, owner decision 24 Oct 2026 on #4302)", () => {
     // INV-MONEY-029's exception: a capped carried promotion's surviving rows are
-    // scaled to the cap. One function computes it, the restore calls it once,
-    // and only on the survivorsOnly branch the batch save sets for a capped plan.
+    // scaled to the cap. One function computes it (`scaleCappedCarriedRows`),
+    // the batch save alone hands it to the writer, and only for a capped plan;
+    // the writer applies whatever scaler it is handed, on its one branch.
+    const CAP = "src/lib/carried-promotion-cap.ts";
+    expect(read(CAP)).toMatch(/export const scaleCappedCarriedRows: CappedCarryScaler = /);
     const writer = read(MODULE);
-    expect(writer).toMatch(/export function scaleCappedCarriedRows\(/);
-    expect(writer.match(/\bscaleCappedCarriedRows\(/g)).toHaveLength(2);
-    expect(writer).toMatch(/if \(params\.survivorsOnly\) \{\s*const scaled = scaleCappedCarriedRows\(/);
-    expect(writer.match(/\bapportionCents\(/g)).toHaveLength(1);
+    expect(writer.match(/\bparams\.scaleSurvivors\(/g)).toHaveLength(1);
+    expect(writer).toMatch(/if \(params\.scaleSurvivors\) \{\s*const scaled = params\.scaleSurvivors\(/);
+    const handedOver: string[] = [];
     for (const file of SOURCE) {
       const relative = relativeSource(file);
-      if (relative === MODULE) continue;
-      expect(stripComments(readFileSync(file, "utf8")), relative).not.toMatch(/\bscaleCappedCarriedRows\(/);
+      const code = stripComments(readFileSync(file, "utf8"));
+      if (/\bscaleSurvivors:/.test(code)) handedOver.push(relative);
+      if (relative !== CAP && relative !== "src/lib/booking-batch-modification-service.ts") {
+        expect(code, relative).not.toMatch(/\bscaleCappedCarriedRows\b/);
+      }
     }
+    expect(handedOver).toEqual(["src/lib/booking-batch-modification-service.ts"]);
   });
 
   it("pairs every promotion writer with the recorder, in the order the night rows allow", () => {

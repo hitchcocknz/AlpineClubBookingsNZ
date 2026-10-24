@@ -9,10 +9,10 @@ import {
   reconcilePromoAdjustmentTargets,
   recordBookingNightAdjustments,
   restoreBookingNightAdjustments,
-  scaleCappedCarriedRows,
   snapshotBookingNightAdjustments,
   type PromoAdjustmentTarget,
 } from "@/lib/night-adjustment-write";
+import { scaleCappedCarriedRows } from "@/lib/carried-promotion-cap";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const loggerMocks = vi.hoisted(() => ({ warn: vi.fn(), error: vi.fn() }));
@@ -529,7 +529,7 @@ describe("snapshot and restore across a mechanical rewrite", () => {
         redemption: capped(-5000),
       });
       await expect(
-        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", survivorsOnly: true }),
+        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", scaleSurvivors: scaleCappedCarriedRows }),
       ).resolves.toEqual({ carried: true });
       expect(after.recorded.adjustmentCreateMany.mock.calls[0][0]).toEqual({ data: [ROW("new-a1", null, -5000)] });
     });
@@ -543,7 +543,7 @@ describe("snapshot and restore across a mechanical rewrite", () => {
         redemption: capped(-3000),
       });
       await expect(
-        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", survivorsOnly: true }),
+        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", scaleSurvivors: scaleCappedCarriedRows }),
       ).resolves.toEqual({ carried: true });
       expect(after.recorded.adjustmentCreateMany.mock.calls[0][0]).toEqual({ data: [ROW("new-a1", null, -3000)] });
     });
@@ -557,13 +557,13 @@ describe("snapshot and restore across a mechanical rewrite", () => {
         redemption: capped(-3000),
       });
       await expect(
-        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", survivorsOnly: true }),
+        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", scaleSurvivors: scaleCappedCarriedRows }),
       ).resolves.toEqual({ carried: false });
       expect(after.recorded.adjustmentDeleteMany).toHaveBeenCalledWith({ where: { bookingId: "booking-1" } });
       expect(after.recorded.adjustmentCreateMany).not.toHaveBeenCalled();
     });
 
-    it("CONTROL: without survivorsOnly the same night given back abandons the carry, as every other rewrite does", async () => {
+    it("CONTROL: without a scaler the same night given back abandons the carry, as every other rewrite does", async () => {
       const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
       const after = fakeTx({
         nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1 }],

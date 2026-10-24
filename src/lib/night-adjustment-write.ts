@@ -6,8 +6,6 @@ import {
   dateOnlyInstantOf,
 } from "@/lib/club-time";
 import logger from "@/lib/logger";
-import { apportionCents } from "@/lib/night-price-runs";
-import { compareOrdinal } from "@/lib/ordinal-order";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 
@@ -553,7 +551,7 @@ export async function snapshotBookingNightAdjustments(
  * Re-attach a snapshot to the rewritten night rows by (guest, stay date),
  * shifted by `shiftDays` where the rewrite moved every night by the same delta
  * (the admin date shift). Amounts are copied byte for byte; nothing is
- * computed — bar the one exception `survivorsOnly` names.
+ * computed — bar the one exception `scaleSurvivors` names.
  *
  * If a recorded row's night no longer exists after the rewrite, the build-up
  * can no longer be stated coherently: NO rows are restored (a reader then
@@ -571,11 +569,11 @@ export async function restoreBookingNightAdjustments(
      * promotion, whose redemptions `capCarriedPromotionRecords` has just scaled.
      * A row whose night or guest the edit gave back is dropped rather than
      * abandoning the carry, and the rows left are scaled to every redemption as
-     * now recorded (`scaleCappedCarriedRows`) — the one rule-derived amount
-     * INV-MONEY-029 allows (owner decision 24 Oct 2026 on #4302). Where nothing
-     * is left to scale from, none is written and the build-up is not known.
+     * now recorded by this function, `scaleCappedCarriedRows` — the one
+     * rule-derived amount INV-MONEY-029 allows (owner decision 24 Oct 2026 on
+     * #4302). Where it returns `null`, none is written: the build-up is not known.
      */
-    survivorsOnly?: boolean;
+    scaleSurvivors?: CappedCarryScaler;
   },
 ): Promise<{ carried: boolean }> {
   const { snapshot, writer } = params;
@@ -615,7 +613,7 @@ export async function restoreBookingNightAdjustments(
     };
     if (row.stayDate === null) {
       if (!guestIds.has(row.bookingGuestId)) {
-        if (params.survivorsOnly) continue;
+        if (params.scaleSurvivors) continue;
         return abandonCarry(writer, snapshot.bookingId, `guest ${row.bookingGuestId} is gone`);
       }
       rows.push({ ...base, bookingGuestNightId: null, bookingGuestId: row.bookingGuestId });
@@ -625,7 +623,7 @@ export async function restoreBookingNightAdjustments(
     const target = shifted(row.stayDate);
     const bookingGuestNightId = nightIdByKey.get(nightKey(row.bookingGuestId, target));
     if (!bookingGuestNightId) {
-      if (params.survivorsOnly) continue;
+      if (params.scaleSurvivors) continue;
       return abandonCarry(
         writer,
         snapshot.bookingId,
@@ -635,8 +633,8 @@ export async function restoreBookingNightAdjustments(
     rows.push({ ...base, bookingGuestNightId, bookingGuestId: null });
     kept.push(row);
   }
-  if (params.survivorsOnly) {
-    const scaled = scaleCappedCarriedRows(kept, await recordedPromoTotals(tx, snapshot.bookingId));
+  if (params.scaleSurvivors) {
+    const scaled = params.scaleSurvivors(kept, await recordedPromoTotals(tx, snapshot.bookingId));
     if (scaled === null) {
       await tx.bookingGuestNightAdjustment.deleteMany({ where: { bookingId: snapshot.bookingId } });
       return abandonCarry(
@@ -659,7 +657,6 @@ export async function restoreBookingNightAdjustments(
   return { carried: true };
 }
 
-/** Every redemption a booking carries, with the totals its rows reconcile to. */
 async function recordedPromoTotals(tx: Tx, bookingId: string): Promise<RecordedPromoTotals> {
   return tx.promoRedemption.findMany({
     where: { bookingId },
@@ -671,81 +668,21 @@ async function recordedPromoTotals(tx: Tx, bookingId: string): Promise<RecordedP
   });
 }
 
-type RecordedPromoTotals = ReadonlyArray<{
+/** Every redemption a booking carries, with the totals its rows reconcile to. */
+export type RecordedPromoTotals = ReadonlyArray<{
   id: string;
   priceAdjustmentCents: number;
   allocations: ReadonlyArray<{ memberId: string | null; priceAdjustmentCents: number }>;
 }>;
 
-/** A night row before a guest-scope one; nights by date; then by guest. */
-function earliestNightFirst(
-  a: CarriedNightAdjustments["rows"][number],
-  b: CarriedNightAdjustments["rows"][number],
-): number {
-  if (a.stayDate && b.stayDate) {
-    const byNight = a.stayDate.getTime() - b.stayDate.getTime();
-    if (byNight !== 0) return byNight;
-  } else if (a.stayDate || b.stayDate) {
-    return a.stayDate ? -1 : 1;
-  }
-  return compareOrdinal(a.bookingGuestId, b.bookingGuestId);
-}
-
 /**
- * THE ONE RULE-DERIVED AMOUNT (INV-MONEY-029's exception; owner decision
- * 24 Oct 2026 on #4302, #4317 review round 4). An in-progress edit capped its
- * carried promotion and `capCarriedPromotionRecords` scaled each redemption and
- * member allocation to the cap; here the stored rows left on the stay are
- * scaled to match, per redemption and beneficiary, in proportion to their
- * stored amounts, leftover cents on the earliest night (`apportionCents`). A
- * beneficiary whose rows already sum to its allocation keeps them byte for
- * byte. Returns the new amount of each row, in `rows` order, or `null` — write
- * none, the build-up is not known — where there is nothing to scale from: a
- * NOT KNOWN amount, a row naming no redemption the booking carries, an
- * allocation with no row left behind it, or a result that does not reconcile.
- * Pure.
+ * The new amount of each surviving row, in order, or `null` to write none. Its
+ * one implementation is `scaleCappedCarriedRows` (`carried-promotion-cap.ts`).
  */
-export function scaleCappedCarriedRows(
+export type CappedCarryScaler = (
   rows: CarriedNightAdjustments["rows"],
   redemptions: RecordedPromoTotals,
-): number[] | null {
-  const known = new Set(redemptions.map((redemption) => redemption.id));
-  const amounts: number[] = [];
-  for (const row of rows) {
-    if (row.amountCents === null || !known.has(row.promoRedemptionId)) return null;
-    amounts.push(row.amountCents);
-  }
-  for (const redemption of redemptions) {
-    const allocated = new Map(
-      memberBenefitAllocations(redemption.allocations).map((allocation) => [
-        allocation.memberId,
-        allocation.priceAdjustmentCents,
-      ]),
-    );
-    const mine = rows.flatMap((row, index) => (row.promoRedemptionId === redemption.id ? [index] : []));
-    const members = new Set([...allocated.keys(), ...mine.map((index) => rows[index]!.beneficiaryMemberId)]);
-    for (const memberId of members) {
-      const group = mine
-        .filter((index) => rows[index]!.beneficiaryMemberId === memberId)
-        .sort((a, b) => earliestNightFirst(rows[a]!, rows[b]!));
-      const target = allocated.get(memberId) ?? 0;
-      const weights = group.map((index) => amounts[index]!);
-      const stored = weights.reduce((sum, cents) => sum + cents, 0);
-      if (stored === target) continue;
-      if (stored === 0) return null;
-      apportionCents(target, weights).forEach((cents, at) => {
-        amounts[group[at]!] = cents;
-      });
-    }
-    const mismatch = findReconciliationMismatch({
-      targets: mine.map((index) => ({ beneficiaryMemberId: rows[index]!.beneficiaryMemberId, amountCents: amounts[index]! })),
-      allocations: memberBenefitAllocations(redemption.allocations),
-      priceAdjustmentCents: redemption.priceAdjustmentCents,
-    });
-    if (mismatch) return null;
-  }
-  return amounts;
-}
+) => number[] | null;
 
 function abandonCarry(writer: string, bookingId: string, reason: string): { carried: false } {
   logger.warn(
