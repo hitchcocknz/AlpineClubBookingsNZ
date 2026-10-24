@@ -302,6 +302,32 @@ export function judgeRefundNoteWrite(incoming: unknown, stored: unknown): Refund
 }
 
 /**
+ * #4288: a Xero reading of a refund note as its link write JUDGED it, read from
+ * the row that write returned. The link funnel either applies the reading (its
+ * status and `UpdatedDateUTC` are then the row's) or, when `judgeRefundNoteWrite`
+ * keeps the stored snapshot, leaves the row as it was - and it keeps one only
+ * when the row's status or timestamp differs from the reading's. So `stale` is
+ * exactly "the reading was not applied", and `snapshot` is the note as the row
+ * now holds it: what every later step of the same writer acts on (the inbound
+ * recount, its refund-payment links), never the raw reading. `reading` is the
+ * builder's shape (`xeroCreditNoteSnapshotMetadata`), which always carries the
+ * timestamp's key, so an applied reading always overwrites the row's.
+ */
+export function judgedRefundNoteReading(reading: unknown, written: { metadata: unknown }) {
+  const row = asRecord(written.metadata);
+  const stale =
+    readRefundCreditNoteLinkStatus(row) !== readRefundCreditNoteLinkStatus(reading) ||
+    readRefundNoteSnapshotAt(row)?.getTime() !== readRefundNoteSnapshotAt(reading)?.getTime();
+  const snapshot = {
+    status: row?.status ?? null,
+    total: readNumber(row?.total),
+    appliedAmount: readNumber(row?.appliedAmount),
+    remainingCredit: readNumber(row?.remainingCredit),
+  };
+  return { stale, snapshot };
+}
+
+/**
  * #4195, #4223, #4288 (`INV-ADDPAY-041`): THE ONE RULE FOR A REFUND-NOTE LINK
  * WRITE RACING ANOTHER, for both roles - the payment's own notes
  * (`REFUND_CREDIT_NOTE`, its one canonical note among them) and a refund

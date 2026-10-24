@@ -57,10 +57,10 @@ const PAYMENT: Record<Case, string> = {
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
 /** A Xero reading of `NOTE`, as the SDK returns it. */
-function reading(status: string, updatedAt: string) {
+function reading(status: string, updatedAt: string, payments: Array<Record<string, unknown>> = []) {
   return {
     creditNoteID: NOTE, creditNoteNumber: "CN-4288", status, total: 100, appliedAmount: 0,
-    remainingCredit: status === "VOIDED" ? 0 : 100, updatedDateUTC: new Date(updatedAt), allocations: [], payments: [],
+    remainingCredit: status === "VOIDED" ? 0 : 100, updatedDateUTC: new Date(updatedAt), allocations: [], payments,
   };
 }
 
@@ -180,24 +180,45 @@ function reading(status: string, updatedAt: string) {
      * its link reads), or the link write a reconcile sends for a per-refund or
      * request note.
      */
+    /** The real inbound reconcile of `live`, paused at `gate` after its link reads and before its writes. */
+    async function staleReconcile(live: ReturnType<typeof reading>, gate: Promise<void>, reached: () => void) {
+      const objectLinks = await import("@/lib/xero-inbound/object-links");
+      const original = objectLinks.findActiveXeroObjectLinks;
+      const spy = vi.spyOn(objectLinks, "findActiveXeroObjectLinks").mockImplementationOnce(async (...args: Parameters<typeof original>) => {
+        const rows = await original(...args);
+        reached();
+        await gate;
+        return rows;
+      });
+      const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+      try {
+        return await withFakeXero(async () => ({ body: { creditNotes: [live] } }), () => reconcileXeroCreditNote(NOTE));
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    /** Schedule A: `stale` reads the note as live and pauses; the void commits; then `stale` writes. */
+    async function voidWhileStale(kase: Case, stale: (gate: Promise<void>, reached: () => void) => Promise<unknown>) {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const atGate = new Promise<void>((resolve) => (reached = resolve));
+      const running = stale(gate, reached);
+      void running.catch(() => undefined);
+      try {
+        await Promise.race([atGate, running.then(() => { throw new Error("The stale writer finished before its gate"); })]);
+        // B: the void's own write commits while A holds its live reading.
+        await writeReading(kase, "VOIDED", LATE);
+      } finally {
+        release();
+      }
+      await running;
+    }
+
     async function staleLiveWriter(kase: Case, gate: Promise<void>, reached: () => void): Promise<unknown> {
       const authorised = reading("AUTHORISED", EARLY);
-      if (kase === "bank-transfer canonical") {
-        const objectLinks = await import("@/lib/xero-inbound/object-links");
-        const original = objectLinks.findActiveXeroObjectLinks;
-        const spy = vi.spyOn(objectLinks, "findActiveXeroObjectLinks").mockImplementationOnce(async (...args: Parameters<typeof original>) => {
-          const rows = await original(...args);
-          reached();
-          await gate;
-          return rows;
-        });
-        const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
-        try {
-          return await withFakeXero(async () => ({ body: { creditNotes: [authorised] } }), () => reconcileXeroCreditNote(NOTE));
-        } finally {
-          spy.mockRestore();
-        }
-      }
+      if (kase === "bank-transfer canonical") return staleReconcile(authorised, gate, reached);
       if (kase === "Stripe per-delta") {
         const { recordStripeRefundNoteLinkStatuses } = await import("@/lib/xero-refund-note-status-recorder");
         return withFakeXero(
@@ -281,23 +302,54 @@ function reading(status: string, updatedAt: string) {
 
     it.each(CASES)("%s: a live reading taken before the void and written after it keeps the void (schedule A)", async (kase) => {
       await seed(kase);
-      let release!: () => void;
-      const gate = new Promise<void>((resolve) => (release = resolve));
-      let reached!: () => void;
-      const atGate = new Promise<void>((resolve) => (reached = resolve));
-      const stale = staleLiveWriter(kase, gate, reached);
-      void stale.catch(() => undefined);
-      try {
-        await Promise.race([atGate, stale.then(() => { throw new Error("The stale writer finished before its gate"); })]);
-        // B: the void's own write commits while A holds its live reading.
-        await writeReading(kase, "VOIDED", LATE);
-      } finally {
-        release();
-      }
-      await stale;
+      await voidWhileStale(kase, (gate, reached) => staleLiveWriter(kase, gate, reached));
 
       // Before #4288: active, AUTHORISED, and on the canonical path the pointer back on the note.
       expect(await state(kase)).toEqual(kept(kase));
+    });
+
+    async function refunded(paymentId: string) {
+      return prisma.payment.findUniqueOrThrow({ where: { id: paymentId }, select: { refundedAmountCents: true, status: true } });
+    }
+
+    it("MUTATION (recount): a bank transfer's stale reconcile recounts the kept void, so the void's lowered total is not raised back", async () => {
+      const kase: Case = "bank-transfer canonical";
+      await seed(kase);
+      // The void's own recount already took the note out: only the $50 replacement counts.
+      await prisma.payment.update({ where: { id: BT }, data: { refundedAmountCents: 5_000 } });
+      await voidWhileStale(kase, (gate, reached) => staleReconcile(reading("AUTHORISED", EARLY), gate, reached));
+      expect(await state(kase)).toEqual(kept(kase));
+      // Before the recount read the judged snapshot, the stale reading's $100
+      // was counted again and the total went back to $150: money moved.
+      expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("a card payment's stale reconcile moves no money either way: the Stripe ledger is never lowered or raised past Stripe's own refunds", async () => {
+      const kase: Case = "Stripe per-delta";
+      await seed(kase);
+      await voidWhileStale(kase, (gate, reached) => staleReconcile(reading("AUTHORISED", EARLY), gate, reached));
+      expect(await state(kase)).toEqual(kept(kase));
+      // Stripe-truth (`INV-ADDPAY-021`): $150 was refunded through Stripe, and stays recorded.
+      expect(await refunded(CARD)).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("MUTATION (refund payments): a stale reconcile writes no refund-payment link from its older reading's payments", async () => {
+      const kase: Case = "bank-transfer canonical";
+      await seed(kase);
+      const payments = [{ paymentID: `xero-pay-${P}-stale`, amount: 100, date: "2026-06-30", paymentType: "ARCREDITPAYMENT", status: "AUTHORISED" }];
+      await voidWhileStale(kase, (gate, reached) => staleReconcile(reading("AUTHORISED", EARLY, payments), gate, reached));
+      expect(await state(kase)).toEqual(kept(kase));
+      expect(await prisma.xeroObjectLink.count({ where: { localId: BT, role: "REFUND_PAYMENT" } })).toBe(0);
+    });
+
+    it("an applied reading still records its refund payments", async () => {
+      const kase: Case = "bank-transfer canonical";
+      await seed(kase, { storedAt: EARLY });
+      const payments = [{ paymentID: `xero-pay-${P}-live`, amount: 100, date: "2026-06-30", paymentType: "ARCREDITPAYMENT", status: "AUTHORISED" }];
+      const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+      await withFakeXero(async () => ({ body: { creditNotes: [reading("PAID", LATE, payments)] } }), () => reconcileXeroCreditNote(NOTE));
+      expect(await prisma.xeroObjectLink.findMany({ where: { localId: BT, role: "REFUND_PAYMENT" }, select: { xeroObjectId: true, active: true } }))
+        .toEqual([{ xeroObjectId: `xero-pay-${P}-live`, active: true }]);
     });
 
     it("bank-transfer canonical: a live reconcile queued on the void's row lock keeps the void (lock-queued)", async () => {

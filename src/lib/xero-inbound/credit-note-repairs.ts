@@ -5,7 +5,7 @@ import { bookingOwner } from "@/lib/booking-owner";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
-import { type AccountCreditAllocationRepairResult, type AccountCreditAllocationTarget, type RefundedPaymentBusinessStateRepairResult } from "./types";
+import { type AccountCreditAllocationRepairResult, type AccountCreditAllocationTarget, type CreditNoteAmounts, type RefundedPaymentBusinessStateRepairResult } from "./types";
 import { buildBookingAppliedCreditDescription, getAmountCentsFromAllocationMetadata, getCreditNoteAmountCents, getCreditNoteIdFromAllocationMetadata, getJsonRecord, getNextRefundedPaymentStatus, getRefundContributionCentsFromCreditNoteMetadata } from "./amounts";
 import { isIncludedRefundCreditNoteStatus } from "@/lib/xero-refund-note-status";
 import { findActiveXeroObjectLinks } from "./object-links";
@@ -124,6 +124,8 @@ async function includeDeletedAppliedCreditAllocationTargets(
 export async function repairRefundedPaymentBusinessState(input: {
   creditNoteId: string;
   creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit" | "creditNoteNumber">;
+  /** #4288: per payment, the note as its own refund-note link write judged it (`judgedRefundNoteReading`); absent, `creditNote`. */
+  judgedCreditNoteByPaymentId?: ReadonlyMap<string, CreditNoteAmounts & { status: unknown }>;
   directPaymentIds: string[];
   modificationRefundAmountsByPaymentId: Map<string, number>;
   /**
@@ -352,18 +354,15 @@ export async function repairRefundedPaymentBusinessState(input: {
     modificationRefundCentsByPaymentId.set(link.paymentId, paymentRefunds);
   }
 
-  const includesCurrentCreditNoteContribution = isIncludedRefundCreditNoteStatus(
-    input.creditNote.status
-  );
-  const currentCreditNoteAmountCents = includesCurrentCreditNoteContribution
-    ? getCreditNoteAmountCents(input.creditNote)
-    : null;
-  const currentDirectRefundPaymentId =
-    currentCreditNoteAmountCents !== null && directPaymentIds.length === 1
-      ? directPaymentIds[0]
-      : null;
+  // #4288: the current note counts as each payment's own link holds it - a void
+  // or newer snapshot kept over a stale reading - never as the raw reading.
+  const currentNoteOf = (paymentId: string) => input.judgedCreditNoteByPaymentId?.get(paymentId) ?? input.creditNote;
+  const includesCurrentCreditNoteContribution = (paymentId: string) => isIncludedRefundCreditNoteStatus(currentNoteOf(paymentId).status);
+  const currentCreditNoteAmountCents = (paymentId: string) =>
+    includesCurrentCreditNoteContribution(paymentId) ? getCreditNoteAmountCents(currentNoteOf(paymentId)) : null;
+  const currentDirectRefundPaymentId = directPaymentIds.length === 1 ? directPaymentIds[0] : null;
 
-  if (currentCreditNoteAmountCents !== null && directPaymentIds.length > 1) {
+  if (directPaymentIds.length > 1 && directPaymentIds.some((paymentId) => currentCreditNoteAmountCents(paymentId) !== null)) {
     logger.warn(
       {
         creditNoteId: input.creditNoteId,
@@ -388,12 +387,9 @@ export async function repairRefundedPaymentBusinessState(input: {
     ).reduce((sum, amountCents) => sum + amountCents, 0);
 
     const currentDirectRefundContributionCents =
-      currentCreditNoteAmountCents !== null &&
-      currentDirectRefundPaymentId === payment.id
-        ? currentCreditNoteAmountCents
-        : 0;
+      currentDirectRefundPaymentId === payment.id ? currentCreditNoteAmountCents(payment.id) ?? 0 : 0;
     const currentModificationRefundContributionCents =
-      includesCurrentCreditNoteContribution
+      includesCurrentCreditNoteContribution(payment.id)
         ? input.modificationRefundAmountsByPaymentId.get(payment.id) ?? 0
         : 0;
 

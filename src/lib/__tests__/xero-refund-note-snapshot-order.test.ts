@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  judgedRefundNoteReading,
   judgeRefundNoteWrite,
   readRefundNoteSnapshotAt,
   REFUND_NOTE_SNAPSHOT_AT_KEY,
@@ -77,5 +78,35 @@ describe("xeroCreditNoteSnapshotMetadata (#4288)", () => {
     expect(xeroCreditNoteSnapshotMetadata({ status: "AUTHORISED" }).providerUpdatedAt).toBeNull();
     expect(xeroCreditNoteSnapshotMetadata({ status: "AUTHORISED", updatedDateUTC: new Date(Number.NaN) }).providerUpdatedAt).toBeNull();
     expect(readRefundNoteSnapshotAt({ status: "AUTHORISED", providerUpdatedAt: null })).toBeNull();
+  });
+});
+
+describe("judgedRefundNoteReading (#4288)", () => {
+  /** What the link funnel leaves on the row: the reading merged over it, or the row as it was. */
+  const funnelWrite = (stored: Record<string, unknown>, reading: Record<string, unknown>) =>
+    judgeRefundNoteWrite(reading, stored) === "apply" ? { ...stored, ...reading } : stored;
+  const SNAPSHOTS = [
+    at("AUTHORISED", EARLY), at("AUTHORISED", LATE), at("PAID", EARLY), at("PAID", LATE), at("AUTHORISED"), at("PAID"),
+    at("VOIDED", EARLY), at("VOIDED", LATE), at("VOIDED"), at("DELETED", LATE),
+  ];
+
+  it("MUTATION: is stale exactly when the funnel kept the stored snapshot over the reading, for every pair", () => {
+    for (const stored of SNAPSHOTS) {
+      // A reading always carries the stamp's key, null when Xero sent none (the builder's shape).
+      for (const reading of SNAPSHOTS.map((snapshot) => ({ [REFUND_NOTE_SNAPSHOT_AT_KEY]: null, ...snapshot }))) {
+        const written = { metadata: funnelWrite(stored, reading) };
+        const verdict = judgeRefundNoteWrite(reading, stored);
+        expect(judgedRefundNoteReading(reading, written).stale, `${JSON.stringify(reading)} over ${JSON.stringify(stored)}`).toBe(verdict === "keep-stored-snapshot");
+      }
+    }
+  });
+
+  it("hands on the note as the row holds it: the kept void, or the newer live figures", () => {
+    const keptVoid = judgedRefundNoteReading(at("AUTHORISED", EARLY), { metadata: { ...at("VOIDED", LATE), total: 100, appliedAmount: 0, remainingCredit: 0 } });
+    expect(keptVoid).toEqual({ stale: true, snapshot: { status: "VOIDED", total: 100, appliedAmount: 0, remainingCredit: 0 } });
+    const newer = judgedRefundNoteReading({ ...at("AUTHORISED", EARLY), total: 90 }, { metadata: { ...at("PAID", LATE), total: 100 } });
+    expect(newer).toEqual({ stale: true, snapshot: { status: "PAID", total: 100, appliedAmount: null, remainingCredit: null } });
+    const applied = judgedRefundNoteReading(at("PAID", LATE), { metadata: { amountCents: 100, ...at("PAID", LATE) } });
+    expect(applied.stale).toBe(false);
   });
 });
