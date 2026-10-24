@@ -39,6 +39,7 @@
  * KILL SWITCH: `creditNoteMirrorWritesDisabled`. While it is on the mirror computes
  * and logs what it would have done and writes nothing.
  */
+import { CreditType } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
 import { createAuditLog } from "./audit";
@@ -61,7 +62,6 @@ import { planOutsideSpendMirror } from "./xero-credit-note-mirror-plan";
 import {
   CREDIT_NOTE_MIRROR_RESTORE_DESCRIPTION,
   CREDIT_NOTE_MIRROR_WRITE_DOWN_DESCRIPTION,
-  CREDIT_NOTE_WRITE_DOWN_TYPE,
   NOT_A_CONVERGENCE_ROW,
   writtenDownCentsByCreditNote,
 } from "./xero-credit-note-write-down";
@@ -315,7 +315,7 @@ export async function mirrorCreditNoteOutsideSpend(
         data: {
           memberId,
           amountCents: -plan.cents,
-          type: CREDIT_NOTE_WRITE_DOWN_TYPE,
+          type: CreditType.ADMIN_ADJUSTMENT,
           description: CREDIT_NOTE_MIRROR_WRITE_DOWN_DESCRIPTION,
           xeroCreditNoteId: creditNoteId,
           outsideSpendConvergedAt: at,
@@ -355,7 +355,7 @@ export async function mirrorCreditNoteOutsideSpend(
       data: {
         memberId,
         amountCents: plan.cents,
-        type: CREDIT_NOTE_WRITE_DOWN_TYPE,
+        type: CreditType.ADMIN_ADJUSTMENT,
         description: CREDIT_NOTE_MIRROR_RESTORE_DESCRIPTION,
         xeroCreditNoteId: creditNoteId,
         outsideSpendConvergedAt: at,
