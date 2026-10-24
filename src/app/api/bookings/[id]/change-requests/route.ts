@@ -34,7 +34,11 @@ import {
   storedGuestNightsAsDays,
   CHANGE_REQUEST_DEPENDANT_TYPED_MESSAGE,
 } from "@/lib/booking-change-request-guests";
-import { changeRequestDeltaSchema, validateChangeRequestDatesAndNights } from "@/lib/booking-change-request-input";
+import {
+  changeRequestDeltaSchema,
+  unknownChangeRequestGuestRefusal,
+  validateChangeRequestDatesAndNights,
+} from "@/lib/booking-change-request-input";
 import {
   checkOwnDependantIdentityForParty,
   claimedMemberPathIds,
@@ -317,14 +321,9 @@ export async function POST(
   }
 
   const removeSet = new Set(removeGuestIds ?? []);
-  const invalidRemoveGuestIds = [...removeSet].filter(
-    (guestId) => !booking.guests.some((guest) => guest.id === guestId)
-  );
-  if (invalidRemoveGuestIds.length > 0) {
-    return NextResponse.json(
-      { error: "One or more guests were not found on this booking" },
-      { status: 400 }
-    );
+  const unknownRemoved = unknownChangeRequestGuestRefusal(booking.guests, { removeGuestIds });
+  if (unknownRemoved) {
+    return NextResponse.json({ error: unknownRemoved }, { status: 400 });
   }
 
   const lodgeCapacity = await getLodgeCapacity(
@@ -339,14 +338,9 @@ export async function POST(
     );
   }
 
-  const invalidRangeGuestIds = (sentGuestStayRanges ?? [])
-    .map((range) => range.guestId)
-    .filter((guestId) => !booking.guests.some((guest) => guest.id === guestId));
-  if (invalidRangeGuestIds.length > 0) {
-    return NextResponse.json(
-      { error: "One or more guest stay ranges referenced a guest not found on this booking" },
-      { status: 400 }
-    );
+  const unknownRanged = unknownChangeRequestGuestRefusal(booking.guests, { guestStayRanges: sentGuestStayRanges });
+  if (unknownRanged) {
+    return NextResponse.json({ error: unknownRanged }, { status: 400 });
   }
 
   const removedGuests = booking.guests

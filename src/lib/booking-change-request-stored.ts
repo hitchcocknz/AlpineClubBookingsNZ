@@ -10,6 +10,7 @@ import {
   isEffectiveStayRangeChange,
   nightsKeptByRepeatedRange,
   storedGuestNightsAsDays,
+  type ChangeRequestAddGuest,
   type GuestNightsAsDays,
 } from "@/lib/booking-change-request-guests";
 import { guestName } from "@/lib/bed-allocation-display-names";
@@ -336,6 +337,52 @@ export function lockedPeriodRequestToBatchInput(
     ...(removeGuestIds.length > 0 ? { removeGuestIds } : {}),
     ...(guestStayRanges.length > 0 ? { guestStayRanges } : {}),
   };
+}
+
+/**
+ * #4203: the batch input a proposal not yet stored asks for — the merged
+ * editor-and-card delta submission is about to write (`INV-REQ-011`) — read
+ * through the one mapping approval applies to the stored row, so a
+ * pre-approval surface (the card's estimate) sees the same removals, applied
+ * ranges and kept nights (`INV-REQ-012`) approval will. `null` when it names
+ * no change. The caller has already refused guest ids not on the booking.
+ */
+export function changeRequestProposalBatchInput(
+  booking: { checkIn: Date; checkOut: Date; guests: ReadonlyArray<LiveRequestGuestRow> },
+  proposal: {
+    checkIn?: string;
+    checkOut?: string;
+    addGuests?: ReadonlyArray<ChangeRequestAddGuest>;
+    removeGuestIds?: ReadonlyArray<string>;
+    guestStayRanges?: ReadonlyArray<{
+      guestId: string;
+      stayStart?: string | null;
+      stayEnd?: string | null;
+      nights?: ReadonlyArray<string> | null;
+    }>;
+  },
+): ReturnType<typeof lockedPeriodRequestToBatchInput> {
+  const stored: StoredLockedPeriodRequest = {
+    original: {
+      checkIn: calendarDateOfDateOnlyInstant(booking.checkIn),
+      checkOut: calendarDateOfDateOnlyInstant(booking.checkOut),
+      guests: booking.guests.map((guest) => ({ id: guest.id, ...storedGuestNightsAsDays(guest) })),
+    },
+    requested: {
+      checkIn: proposal.checkIn ?? null,
+      checkOut: proposal.checkOut ?? null,
+      addGuests: (proposal.addGuests ?? []).map((guest) => ({
+        ...guest,
+        nights: guest.nights ? [...guest.nights] : guest.nights,
+      })),
+      removeGuests: (proposal.removeGuestIds ?? []).map((id) => ({ id })),
+      guestStayRanges: (proposal.guestStayRanges ?? []).map((range) => ({
+        ...range,
+        nights: range.nights ? [...range.nights] : range.nights,
+      })),
+    },
+  };
+  return lockedPeriodRequestToBatchInput(stored, booking);
 }
 
 /**
