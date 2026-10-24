@@ -225,6 +225,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-042` | Inbound Xero PAID on a manually settled booking is raised, never ignored |
 | `INV-PAY-043` | The recorded settler is kept; every other capture is refunded |
 | `INV-PAY-138` | A superseded card capture never settles its booking |
+| `INV-PAY-139` | An unminted approved whole-lodge booking reprices as unpaid |
 | `INV-PAY-102` | Card then bank: every card door fenced; inbound raises the conflict |
 | `INV-PAY-044` | Manually settled cancellation yields a durable `ManualRefundTask`, never a card refund |
 | `INV-PAY-045` | Reversal is permitted only while nothing has happened it could not undo |
@@ -344,7 +345,6 @@ Prefix `INV-PAY`.
 | `INV-PAY-135` | A capacity race's unrefunded rest is a hand-back task to check |
 | `INV-PAY-136` | An edit racing the primary invoice create is refused or measured |
 | `INV-PAY-137` | An IB organiser-paid joiner's refund goes to the organiser, on its mirror |
-| `INV-PAY-138` | An unminted approved whole-lodge booking reprices as unpaid |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |

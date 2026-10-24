@@ -1046,10 +1046,10 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   module's one `applyCreditToBooking` call sits inside the member-choice branch,
   before the legacy mint. The member-choice branch (#4019) mints no receivable
   at approval; the switch route mints it later at the effective price
-  ([`INV-PAY-138`](#inv-pay-138)).
+  ([`INV-PAY-139`](#inv-pay-139)).
 
 
-## INV-PAY-138
+## INV-PAY-139
 
 **Related: `INV-PAY-059`, `INV-MOD-012`, `INV-LOCK-002`.**
 
