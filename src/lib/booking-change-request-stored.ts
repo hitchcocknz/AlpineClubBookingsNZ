@@ -351,7 +351,9 @@ export function lockedPeriodRequestToBatchInput(
  */
 export function changeRequestStoredProposal<
   G extends LiveRequestGuestRow,
-  D extends object = Record<never, never>,
+  // The builder's own keys stay the builder's: a `describe` that returned one
+  // would silently overwrite it in the stored row (#4203 review).
+  D extends object & Partial<Record<"id" | "stayStart" | "stayEnd" | "nights", never>> = Record<never, never>,
 >(
   booking: { checkIn: Date; checkOut: Date; guests: ReadonlyArray<G> },
   delta: Pick<ChangeRequestDelta, "checkIn" | "checkOut" | "addGuests" | "removeGuestIds" | "guestStayRanges">,
