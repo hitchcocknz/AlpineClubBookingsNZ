@@ -1762,6 +1762,56 @@ The PAID claim records which row settled the booking
 (`Payment.settledByTransactionId`, #4211): the card capture, or the cash or
 bank receipt's PRIMARY row. The manual mark-paid reversal clears it.
 
+A COMPLETED booking is judged exactly as a PAID one (#4285): the post-stay
+cron's `PAID -> COMPLETED` ends the stay, not the settlement, so every row
+below holds on it, the booking stays COMPLETED, and a finished stay's beds are
+not reconciled. Before #4285 any success arriving on a COMPLETED booking threw
+"not payable" (or was refused as a stale amount), a 500 Stripe retried for
+three days. With no record and nothing else holding money, a lone capture keeps
+silently only as a replay of one the app had already recorded (its row was
+`SUCCEEDED` before this delivery, and not written by the caller itself, as a
+saved-card pre-record or the webhook's adoption of a lost-response attempt
+is); one never recorded before is new money, kept whatever its amount as
+`duplicate_capture_kept` with the `new-capture` alert. That alert is owed from
+the settle's transaction (an `AlertCooldown` marker) until it is delivered: the
+capture's next arrival re-alerts while it stands, and the payments cron's
+`duplicate-capture-kept-alert` task sends it an hour on otherwise, re-judged
+first in one read-only `RepeatableRead` snapshot. It waits while a card refund
+operation that may take from this capture is in flight (its own row or intent,
+a plan with a slice of it, or no plan yet); any other operation, such as an
+additional-payment charge, never holds it back. It is moot, and clears
+silently, for a capture whose card no longer holds money, a booking gone, or a
+capture the superseded or duplicate-capture machinery owns. Who else holds money is read the way an
+admin is told (`readOtherSettledCaptureWhere`'s `readTellingWhere`, the Xero
+conflict's reading), by the settle's alert and the drain alike, so a capture
+behind a dead cancel, or one whose duplicate-capture refund Stripe failed later
+and open rows owe back less than all it holds, is named. That reading counts PRIMARY rows by
+ledger status, so "no other payment" is worded as none the app counts as
+settling the booking. A booking cancelled since is told as
+`new-capture-closed`, naming the cancellation's recorded refund, its card
+refund read in that snapshot as the booking page reads it
+(`readCancelledCardRefund`): refunded only once its row SUCCEEDED and no
+refund it made that Stripe failed later is owed again; planned but not sent
+while it or such a refund is on its way or dead; closed as paid another way,
+with what the close left unpaid; and, where only a refund that failed later
+was closed that way, that part by its amount (#4285 review).
+An organiser-card child's is its debt to the group organiser's card
+(`readOrganiserChildCancelledCardRefund`; a refund failed later reopens it),
+and is said so. A card refund shortfall's bank and check parts are said as
+their hand-back tasks stand: owed, paid, or closed. Another payment holding money is told
+as `new-capture-later-payment`. Every alert shows what the card still holds: its
+amount less the card refunds recorded against it (`sumRecordedRefundsForCapture`),
+since a refund as account credit is placed on the capture's ledger row while
+the money stays on the card. Any delivered alert for the capture clears the marker. A
+send whose daily cooldown was claimed before a crash waits out that day, so the
+worst case is about 24 hours. A saved-card capture whose caller crashed or
+threw between its pre-record and the settle reads as a replay on its next
+arrival (a stated limit). Every other status the
+settle cannot pay from (CANCELLED, BUMPED, WAITLISTED, WAITLIST_OFFERED,
+AWAITING_REVIEW) still throws, and the webhook's stale-amount check (#1161)
+still guards an unpaid booking; it skips a PAID or COMPLETED one, whose capture
+the settle only keeps or refunds.
+
 ```text
 recorded settler arrives again             -> already_paid, never refunded
 other capture arrives, settler holds cash  -> duplicate refund (below)
@@ -1782,7 +1832,7 @@ net cash is double money (the residual #1967 split-child link-vs-auto-charge
 window, or a third capture from stale tabs) and is auto-refunded: the
 duplicate's transaction goes `SUCCEEDED -> REFUNDED` via a durable
 `duplicate_capture_<bookingId>_<pi>` recovery operation, the settlement
-transaction and the booking's PAID status are untouched, and
+transaction and the booking's PAID (or COMPLETED) status are untouched, and
 `markBookingPaymentSucceeded` reports `duplicate_capture_refunded` /
 `duplicate_capture_refund_failed`. A fully `REFUNDED` prior capture is history
 (#1765), never a settlement a repay generation could "duplicate". All of it is
