@@ -238,6 +238,13 @@ vi.mock("@/lib/late-capture-refund-credit-note", () => ({
 const mockHoldSupersededLateCapture = vi.hoisted(() =>
   vi.fn().mockResolvedValue(false),
 );
+// #4300: the superseded machinery's composed reading, real in its own suite.
+const mockSupersededMachineryOwnsCapture = vi.hoisted(() => vi.fn());
+const mockFindPaymentTransactionByIntentId = vi.hoisted(() => vi.fn().mockResolvedValue(null));
+vi.mock("@/lib/superseded-capture-ownership", () => ({
+  supersededMachineryOwnsCapture: (...args: unknown[]) => mockSupersededMachineryOwnsCapture(...args),
+}));
+
 vi.mock("@/lib/late-capture-refund-hold", () => ({
   holdSupersededLateCaptureIfRequired: (...args: unknown[]) =>
     mockHoldSupersededLateCapture(...args),
@@ -333,6 +340,8 @@ vi.mock("@/lib/payment-transactions", () => ({
     mockRefundPaymentTransactions(...args),
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
     mockUpsertPaymentIntentTransaction(...args),
+  // #4300: the one lookup naming an intent's payment, for the superseded check.
+  findPaymentTransactionByIntentId: (...args: unknown[]) => mockFindPaymentTransactionByIntentId(...args),
 }));
 
 vi.mock("@/lib/email", () => ({
@@ -4228,13 +4237,10 @@ describe("#2262 — deleted-operation coherence (H1/H2)", () => {
     // finder (status != SUCCEEDED) finds nothing and the webhook handler falls
     // through to the ordinary settlement path.
     mockPaymentRecoveryFindFirst.mockResolvedValue(null);
+    mockSupersededMachineryOwnsCapture.mockResolvedValue(false);
 
     await expect(
-      queueSupersededPaymentIntentRefundRecovery({
-        paymentIntentId: "pi_stale_pay_tab",
-        amountCents: 10000,
-        paymentMethodId: "pm_1",
-      }),
+      queueSupersededPaymentIntentRefundRecovery({ id: "pi_stale_pay_tab", amount: 10000, payment_method: "pm_1" }),
     ).resolves.toBe(false);
 
     // No transaction flip, no refund enqueued — the capture is the caller's to
@@ -4257,13 +4263,12 @@ describe("#2262 — deleted-operation coherence (H1/H2)", () => {
       },
     );
 
+    // #4300 (F4): an abandoned hand-off moved nothing, so the rows are asked
+    // again rather than answered `true` - the row is gone, nothing owns it.
+    mockSupersededMachineryOwnsCapture.mockResolvedValue(false);
     await expect(
-      queueSupersededPaymentIntentRefundRecovery({
-        paymentIntentId: "pi_superseded",
-        amountCents: 6000,
-        paymentMethodId: "pm_1",
-      }),
-    ).resolves.toBe(true);
+      queueSupersededPaymentIntentRefundRecovery({ id: "pi_superseded", amount: 6000, payment_method: "pm_1" }),
+    ).resolves.toBe(false);
 
     // Abandoned loudly: no SUCCEEDED flip on the transaction, no fresh
     // REFUND_SUPERSEDED_PAYMENT the reversal's disarm never covered.
@@ -4282,7 +4287,7 @@ describe("#2262 — deleted-operation coherence (H1/H2)", () => {
         .map(([args]) => args as { data: Record<string, unknown> })
         .filter((args) => args.data.status === PaymentRecoveryOperationStatus.PROCESSING && "processingStartedAt" in args.data && !("lastError" in args.data));
 
-    await queueSupersededPaymentIntentRefundRecovery({ paymentIntentId: "pi_superseded", amountCents: 6000, paymentMethodId: "pm_1" });
+    await queueSupersededPaymentIntentRefundRecovery({ id: "pi_superseded", amount: 6000, payment_method: "pm_1" });
     expect(handOffClaims()).toEqual([expect.objectContaining({ data: expect.objectContaining({ attempts: { increment: 1 } }) })]);
 
     vi.clearAllMocks();
@@ -4307,11 +4312,7 @@ describe("#2262 — deleted-operation coherence (H1/H2)", () => {
     mockHoldSupersededLateCapture.mockResolvedValueOnce(true);
 
     await expect(
-      queueSupersededPaymentIntentRefundRecovery({
-        paymentIntentId: op.paymentIntentId,
-        amountCents: 6000,
-        paymentMethodId: "pm_1",
-      }),
+      queueSupersededPaymentIntentRefundRecovery({ id: op.paymentIntentId, amount: 6000, payment_method: "pm_1" }),
     ).resolves.toBe(true);
 
     expect(mockHoldSupersededLateCapture).toHaveBeenCalledWith(
@@ -4338,11 +4339,7 @@ describe("#2262 — deleted-operation coherence (H1/H2)", () => {
     mockPaymentRecoveryFindFirst.mockResolvedValue(op);
     mockHoldSupersededLateCapture.mockResolvedValueOnce(false);
 
-    await queueSupersededPaymentIntentRefundRecovery({
-      paymentIntentId: op.paymentIntentId,
-      amountCents: 6000,
-      paymentMethodId: "pm_1",
-    });
+    await queueSupersededPaymentIntentRefundRecovery({ id: op.paymentIntentId, amount: 6000, payment_method: "pm_1" });
 
     expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -5684,5 +5681,69 @@ describe("#3220 - the stale-worker reaper cannot kill a re-claimed attempt", () 
     };
     expect(sweep?.take, "the stale sweep is unbounded again").toBeGreaterThan(0);
     expect(sweep?.orderBy).toEqual({ processingStartedAt: "asc" });
+  });
+});
+
+/**
+ * #4300 (`INV-PAY-138`): the superseded-intent check every door asks before it
+ * settles a booking with a succeeded intent. With no cancel row to hand off, it
+ * answers with the shared reading (`supersededMachineryOwnsCapture`) for the
+ * intent's own payment; a hand-off that lost its claim asks that reading too.
+ */
+describe("#4300 — the check answers with the shared superseded-machinery reading", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPaymentRecoveryUpsert.mockResolvedValue({});
+    mockPaymentTransactionUpdate.mockResolvedValue({});
+    mockReconcilePaymentAggregates.mockResolvedValue(undefined);
+  });
+
+  it("no cancel row: asks the shared reading for the intent's own payment, and writes nothing", async () => {
+    mockPaymentRecoveryFindFirst.mockResolvedValue(null);
+    mockFindPaymentTransactionByIntentId.mockResolvedValue({ paymentId: "pay-1" });
+    mockSupersededMachineryOwnsCapture.mockResolvedValue(true);
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({ id: "pi_handed_off", amount: 6000, payment_method: "pm_1" }),
+    ).resolves.toBe(true);
+    expect(mockSupersededMachineryOwnsCapture).toHaveBeenCalledWith(expect.anything(), { paymentId: "pay-1", paymentIntentId: "pi_handed_off" });
+    expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalled();
+    expect(mockPaymentTransactionUpdate).not.toHaveBeenCalled();
+    expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
+  });
+
+  it("no cancel row and nothing owns it: false, so the door settles as before", async () => {
+    mockPaymentRecoveryFindFirst.mockResolvedValue(null);
+    mockFindPaymentTransactionByIntentId.mockResolvedValue(null);
+    mockSupersededMachineryOwnsCapture.mockResolvedValue(false);
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({ id: "pi_ordinary", amount: 6000, payment_method: "pm_1" }),
+    ).resolves.toBe(false);
+    expect(mockSupersededMachineryOwnsCapture).toHaveBeenCalledWith(expect.anything(), { paymentId: null, paymentIntentId: "pi_ordinary" });
+  });
+
+  it("a hand-off that lost its claim answers what the rows still say: owned by another live row -> true", async () => {
+    mockPaymentRecoveryFindFirst.mockResolvedValue(makeOperation({ status: PaymentRecoveryOperationStatus.PENDING }));
+    mockPaymentRecoveryUpdateMany.mockResolvedValue({ count: 0 });
+    mockFindPaymentTransactionByIntentId.mockResolvedValue({ paymentId: "pay-1" });
+    mockSupersededMachineryOwnsCapture.mockResolvedValue(true);
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({ id: "pi_superseded", amount: 6000, payment_method: "pm_1" }),
+    ).resolves.toBe(true);
+    expect(mockSupersededMachineryOwnsCapture).toHaveBeenCalledTimes(1);
+    expect(mockPaymentRecoveryUpsert).not.toHaveBeenCalled();
+  });
+
+  it("a hand-off that claimed its row answers true without asking again", async () => {
+    mockPaymentRecoveryFindFirst.mockResolvedValue(makeOperation({ status: PaymentRecoveryOperationStatus.PENDING }));
+    mockPaymentRecoveryUpdateMany.mockResolvedValue({ count: 1 });
+    mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn_1", status: "PENDING", amountCents: 6000, refundedAmountCents: 0 });
+
+    await expect(
+      queueSupersededPaymentIntentRefundRecovery({ id: "pi_superseded", amount: 6000, payment_method: "pm_1" }),
+    ).resolves.toBe(true);
+    expect(mockSupersededMachineryOwnsCapture).not.toHaveBeenCalled();
   });
 });
