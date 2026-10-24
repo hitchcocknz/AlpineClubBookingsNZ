@@ -1550,7 +1550,7 @@ refunded total it corrects).
   the primary left, else unpaid. Otherwise, or for an overcharge, one Xero
   Operations task; never an automatic credit note.
 - **Limits.** A card capture of the anchor's own ask is recorded against the
-  gap invoice by its own receipt (`INV-PAY-139`). The other link writers store no figures: an edit
+  gap invoice by its own receipt (`INV-PAY-138`). The other link writers store no figures: an edit
   just before them is unmeasured, and a create finding one's link hands any
   gap to the treasurer. The credit election changes no price. No payment row,
   no claim.
@@ -1559,7 +1559,7 @@ refunded total it corrects).
   `xero-primary-invoice-fee-gap.test.ts` and
   `booking-primary-invoice-claim.test.ts`.
 
-## INV-PAY-139
+## INV-PAY-138
 
 **Related: `INV-PAY-136`** (the gap invoice) and **`INV-PAY-104`** (the
 late-success release).

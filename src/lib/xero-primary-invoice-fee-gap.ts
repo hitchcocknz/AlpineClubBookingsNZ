@@ -480,7 +480,7 @@ async function reviewUnstoredRelink(input: {
  *    lines are the fee recorded since the build as a change fee and the rest
  *    as price, signed as an edit's are (#1356). A card capture of the
  *    anchor's own ask is recorded against it later, by that capture's own
- *    receipt (#3953, `INV-PAY-139`, `additional-capture-xero-receipt.ts`).
+ *    receipt (#3953, `INV-PAY-138`, `additional-capture-xero-receipt.ts`).
  *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
  *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
  *    credit note is raised automatically (owner, 21 Oct 2026). An overcharge's
@@ -589,7 +589,7 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   // payment did not take is the gap's (finding 3). What the primary took is
   // the figure the create sized its payment at and stored with the link
   // (`primaryInvoiceCashCents`, round 5 finding 4) - never recomputed here.
-  // #3953 (`INV-PAY-139`): one recorder per capture - cash a receipt row
+  // #3953 (`INV-PAY-138`): one recorder per capture - cash a receipt row
   // claimed is that receipt's, never the gap's, and the captures the gap's
   // own payment takes are named on its payload so their receipts stand down.
   const payment = await prisma.payment.findUnique({

@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-139`): WHEN A CHANGE CAPTURE'S RECEIPT MAY PLAN - its waits
+ * #3953 (`INV-PAY-138`): WHEN A CHANGE CAPTURE'S RECEIPT MAY PLAN - its waits
  * and the planning gate (review rounds 1, 3 and 4), split from the worker
  * (`additional-capture-xero-receipt.ts`) so the outbox's scan reads the wait
  * spacing without the worker's import graph.

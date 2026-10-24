@@ -66,7 +66,7 @@ export type CapturedAdditionalPaymentXeroOutcome =
   /** No supplementary invoice was ever parked on this intent (no issued primary invoice, or Xero not in use). */
   | "none-queued"
   /**
-   * #3953 (`INV-PAY-139`): none was parked, and the booking's primary invoice
+   * #3953 (`INV-PAY-138`): none was parked, and the booking's primary invoice
    * exists, so the capture's own receipt was queued by this call
    * (`enqueueAdditionalCaptureReceiptOperation`). Counted in `released`, so
    * every caller kicks the outbox for it; a replay finds it queued and

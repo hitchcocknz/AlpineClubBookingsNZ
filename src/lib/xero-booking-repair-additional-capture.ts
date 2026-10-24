@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-139`): THE REPAIR TOOL'S HALF OF A CHANGE'S CARD CAPTURE
+ * #3953 (`INV-PAY-138`): THE REPAIR TOOL'S HALF OF A CHANGE'S CARD CAPTURE
  * THAT XERO NEVER RECORDED - "card payment not recorded in Xero".
  *
  * A change's capture is recorded in Xero by the supplementary invoice that

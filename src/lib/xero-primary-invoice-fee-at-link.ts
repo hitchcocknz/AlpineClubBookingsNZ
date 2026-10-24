@@ -47,7 +47,7 @@ export interface PrimaryInvoiceFeeAtLink extends PrimaryInvoiceBilledFee {
    */
   readonly worth?: PrimaryInvoiceWorthAtLink;
   /**
-   * #3953 (`INV-PAY-139`): the Stripe intents whose captures the cash this
+   * #3953 (`INV-PAY-138`): the Stripe intents whose captures the cash this
    * invoice records covers (`intentsRecordedByPrimaryCash`): the snapshot's
    * captures, oldest first, while their net cash fits in
    * `primaryInvoiceCashCents`. Any other change capture is recorded by its own
@@ -173,7 +173,7 @@ function parseWorth(value: unknown): { worth?: PrimaryInvoiceWorthAtLink } {
 }
 
 /**
- * #3953 (`INV-PAY-139`): which of the snapshot's captures the primary
+ * #3953 (`INV-PAY-138`): which of the snapshot's captures the primary
  * invoice's recorded cash covers - oldest first, each wholly, and the one it
  * reached part of (`partial`), whose rest its own receipt records. A replay
  * whose invoice Xero recorded at an earlier, smaller figure covers fewer.

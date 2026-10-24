@@ -211,7 +211,7 @@ export async function readGapInvoiceOnAnchors(
 }
 
 /**
- * #3953 (`INV-PAY-139`): the primary invoice's gap invoice, read from the
+ * #3953 (`INV-PAY-138`): the primary invoice's gap invoice, read from the
  * figures stored with its link exactly as the gap check reads them - the
  * racing edits, then the anchors - with the anchors it may bill for, or null
  * when no figures were stored or no anchor carries one.
