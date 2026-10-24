@@ -1073,7 +1073,7 @@ function answerRefundsAsStripeWould() {
       });
 
       /** A $20 refund request's refund, noted on its own record, that Stripe then fails: a row of its own owes it. */
-      async function failedRequestRefundOwedByItsOwnRow(id: string) {
+      async function failedRequestRefundOwedByItsOwnRow(id: string, { withDashboard = true } = {}) {
         await paid();
         const request = await requestRefund(id, 2_000);
         stripe.answer = "pending";
@@ -1084,9 +1084,10 @@ function answerRefundsAsStripeWould() {
         expect(await reconcile(`${P}-failed-later-note`, 2_000)).toEqual([]);
         await stripeFailsLater(failedId);
         const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: `card_refund_failed_later_${failedId}` }, select: { id: true } });
+        stripe.answer = "succeeded";
+        if (!withDashboard) return { failedId, failedNoteId: failedNote!.id, dashboardNote: null, rowId: row.id };
         // Before the runner gets to it, the treasurer refunds the $20 in the Stripe dashboard: no recovery row made that
         // refund, so it is noted in full.
-        stripe.answer = "succeeded";
         const dashboard = refundInDashboard(2_000);
         await deliverChargeRefunded();
         const dashboardNote = (await noteRows()).find((note) => note.cardRefundId === dashboard)!;
@@ -1095,7 +1096,8 @@ function answerRefundsAsStripeWould() {
       }
 
       it("MUTATION (e, finding 1): a dashboard refund before the replay, whose re-send charge.refunded records first - $40 in Xero for $40 refunded", async () => {
-        const { failedId, failedNoteId, dashboardNote, rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-e`);
+        const { failedId, failedNoteId, dashboardNote: note, rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-e`);
+        const dashboardNote = note!;
         // The runner sends the slice all the same (#4359); its answer is lost, so `charge.refunded` records it first. It is
         // a failed-later row's refund the replay has not marked yet: left to the replay, never the canonical delta.
         stripe.lostAnswers = 1;
@@ -1112,7 +1114,8 @@ function answerRefundsAsStripeWould() {
       });
 
       it("MUTATION (f, finding 1): the same, with the replay recording its re-send first - one answer whichever writer records it", async () => {
-        const { failedId, failedNoteId, dashboardNote, rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-f`);
+        const { failedId, failedNoteId, dashboardNote: note, rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-f`);
+        const dashboardNote = note!;
         const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
         expect(await runPaymentRecoveryOperationNow(rowId, CLUB_FORMAT_TEST)).toBe("succeeded");
         await resentAnsweredByTheFailure(rowId, failedId, [failedNoteId, dashboardNote.id]);
@@ -1120,6 +1123,119 @@ function answerRefundsAsStripeWould() {
         expect((await noteRows()).map((note) => note.id)).toEqual([failedNoteId, dashboardNote.id]);
         expect(await raiseQueuedNote(dashboardNote.id, `${P}-dashboard-note`)).toEqual([2_000]);
         expect(await readers()).toMatchObject({ refundedCents: 4_000, rowsCents: 4_000, coveredCents: 4_000, uncoveredCents: 0 });
+      });
+
+      /** The runner's first four tries fail before Stripe makes anything, so its next claim is its last (`MAX_PAYMENT_RECOVERY_ATTEMPTS`). */
+      async function toFinalAttempt(rowId: string) {
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        const { MAX_PAYMENT_RECOVERY_ATTEMPTS } = await import("@/lib/payment-recovery-constants");
+        for (let attempt = 1; attempt < MAX_PAYMENT_RECOVERY_ATTEMPTS; attempt += 1) {
+          stripe.failNext = 1;
+          expect(await runPaymentRecoveryOperationNow(rowId, CLUB_FORMAT_TEST)).toBe("failed");
+          await due(rowId);
+        }
+      }
+
+      /** The row is dead: FAILED, retries spent, never claimed again. */
+      async function expectDead(rowId: string) {
+        const { MAX_PAYMENT_RECOVERY_ATTEMPTS } = await import("@/lib/payment-recovery-constants");
+        expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: rowId }, select: { status: true, attempts: true, nextRetryAt: true } }))
+          .toEqual({ status: "FAILED", attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, nextRetryAt: null });
+      }
+
+      it("MUTATION (g, round 8 F2): the reaper moves a stalled final attempt to FAILED; the late attempt's mark still lands, so its re-send is answered", async () => {
+        const { failedId, failedNoteId, rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-g`, { withDashboard: false });
+        await toFinalAttempt(rowId);
+        // The final attempt stalls past the reaper's limit after Stripe made the re-send: the payments cron reaps it, dead.
+        const answer = stripeRaceHooks.refund!;
+        stripeRaceHooks.refund = async (args) => {
+          const made = await answer(args);
+          vi.setSystemTime(Date.now() + 31 * 60_000);
+          const { processPaymentRecoveryOperations } = await import("@/lib/payment-recovery");
+          await processPaymentRecoveryOperations({ limit: 1 });
+          await expectDead(rowId);
+          return made;
+        };
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        expect(await runPaymentRecoveryOperationNow(rowId, CLUB_FORMAT_TEST)).toBe("succeeded");
+        // Stripe's answer is a fact whoever holds the row: the slice is marked with it, and the failed refund's note answers it.
+        await resentAnsweredByTheFailure(rowId, failedId, [failedNoteId]);
+        await deliverChargeRefunded();
+        expect((await noteRows()).map((note) => note.id)).toEqual([failedNoteId]);
+        expect(await readers()).toMatchObject({ refundedCents: 2_000, rowsCents: 2_000, coveredCents: 2_000, uncoveredCents: 0 });
+      });
+
+      it("MUTATION (h, round 8 F2): the final attempt's answer is lost and the row dies; charge.refunded marks the dead row's re-send and the rule answers it", async () => {
+        const { failedId, failedNoteId, rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-h`, { withDashboard: false });
+        await toFinalAttempt(rowId);
+        stripe.lostAnswers = 1;
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        expect(await runPaymentRecoveryOperationNow(rowId, CLUB_FORMAT_TEST)).toBe("failed");
+        await expectDead(rowId);
+        // Nobody replays a dead row: Stripe's `charge.refunded` is the writer that sees the re-send, and marks the one slice it answers.
+        await deliverChargeRefunded();
+        await resentAnsweredByTheFailure(rowId, failedId, [failedNoteId]);
+        expect(await readers()).toMatchObject({ refundedCents: 2_000, rowsCents: 2_000, coveredCents: 2_000, uncoveredCents: 0 });
+      });
+
+      it("STATED LIMIT (round 8): charge.refunded that arrives during the final attempt leaves the re-send to it; its answer lost, nobody marks it", async () => {
+        const { rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-limit`, { withDashboard: false });
+        await toFinalAttempt(rowId);
+        const answer = stripeRaceHooks.refund!;
+        stripeRaceHooks.refund = async (args) => {
+          await answer(args).catch(() => undefined); // Stripe makes it; the answer is still on its way
+          await deliverChargeRefunded();
+          throw new Error("Stripe timed out after making the refund (race-4312)");
+        };
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        expect(await runPaymentRecoveryOperationNow(rowId, CLUB_FORMAT_TEST)).toBe("failed");
+        await expectDead(rowId);
+        const { parseRefundAllocationPlan } = await import("@/lib/open-card-refund-owed");
+        const plan = parseRefundAllocationPlan((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: rowId } })).allocationPlan);
+        expect(plan?.[0]?.madeRefundId).toBeUndefined();
+      });
+
+      it("MUTATION (i, round 8 F1): a re-planned slice's re-send on another door's row, recorded first by charge.refunded, never enters the canonical delta", async () => {
+        await paid();
+        await prisma.paymentTransaction.create({
+          data: { id: CARD2_TXN_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: "pi_race_4312_second", amountCents: 4_000, status: "SUCCEEDED", createdAt: new Date("2026-06-02T00:00:00.000Z") },
+        });
+        await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { amountCents: 29_000 } });
+        // An edit review's card refund (its runner's own reason, not a refund request's): $40 off the first capture - the
+        // charge this suite's `charge.refunded` lists - and $20 off the newer one.
+        const { enqueueEditFinancialReviewRefundRecovery } = await import("@/lib/payment-recovery");
+        await enqueueEditFinancialReviewRefundRecovery({
+          bookingId: BOOKING_ID, paymentId: PAYMENT_ID, taskId: `${P}-review-i`, amountCents: 6_000,
+          allocationPlan: [{ paymentTransactionId: CARD_TXN_ID, amountCents: 4_000 }, { paymentTransactionId: CARD2_TXN_ID, amountCents: 2_000 }],
+        });
+        const operation = await prisma.paymentRecoveryOperation.findFirstOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        // Stripe makes the $40 `pending` and refuses the $20, so the row stays open; then fails the $40 later: its slice is re-planned.
+        stripe.answer = "pending";
+        stripe.refuseOn = CARD2_TXN_ID;
+        expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("failed");
+        const [failed] = await cardRefundIds();
+        await stripeFailsLater(failed!.stripeRefundId);
+        const notesBefore = (await noteRows()).map((note) => note.id);
+
+        // The replay sends the re-planned slice again; its answer is lost, so `charge.refunded` records the re-send first.
+        stripe.answer = "succeeded";
+        stripe.refuseOn = null;
+        stripe.lostAnswers = 1;
+        await due(operation.id);
+        expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("failed");
+        await deliverChargeRefunded();
+        // Left to the replay: no canonical delta, whose payment-wide gap would hand it another refund's share.
+        expect((await noteRows()).map((note) => note.id)).toEqual(notesBefore);
+        // The retry reads Stripe's answer back under the same key and marks the slice with it.
+        await due(operation.id);
+        expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+        const { parseRefundAllocationPlan } = await import("@/lib/open-card-refund-owed");
+        const resent = parseRefundAllocationPlan((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: operation.id } })).allocationPlan)
+          ?.find((slice) => slice.paymentTransactionId === CARD_TXN_ID);
+        expect(resent?.failedRefundIds).toEqual([failed!.stripeRefundId]);
+        expect(resent?.madeRefundId).toBeTruthy();
+        expect((await noteRows()).map((note) => note.id)).toEqual(notesBefore);
       });
 
       /** The row's slice is marked with its re-send, which answers the failure exactly and raises no note: `noteIds` stay the payment's only rows. */

@@ -226,7 +226,7 @@ describe("a re-send charge.refunded records before its slice is marked (#4312 ro
   const DUPLICATE_PREFIX = "duplicate_capture_refund_booking-1_pi_dup";
   const runnerMetadata = { bookingId: "booking-1", reason: "duplicate_capture" };
   /** A duplicate capture's row whose $40 slice was re-planned for `re_failed`; `dead` when its retries are spent. */
-  const resendRow = (id: string, { dead = false, slice = {} as Record<string, unknown>, status = dead ? "FAILED" : "PENDING" } = {}): ResendRow => ({
+  const resendRow = (id: string, { dead = false, slice = {} as Record<string, unknown>, status = dead ? "FAILED" : "PENDING" }: { dead?: boolean; slice?: Record<string, unknown>; status?: string } = {}): ResendRow => ({
     id, type: "REFUND_BOOKING_MODIFICATION", status, attempts: dead ? 5 : 1, idempotencyKey: `payment_recovery_modification_refund_${id}`,
     stripeKeyPrefix: DUPLICATE_PREFIX, bookingId: "booking-1", createdAt: RAISED, succeededAt: null,
     allocationPlan: [{ paymentTransactionId: TXN, amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_failed"], ...slice }],
