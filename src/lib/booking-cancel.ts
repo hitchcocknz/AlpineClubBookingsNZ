@@ -181,6 +181,15 @@ type CancelBookingResponse =
   | { status: 200; data: CancelBookingResult };
 
 /**
+ * #4316 review round 4: the 409 a cancel answers when a payment was recorded on
+ * the booking while it was being cancelled (a capture racing the never-captured
+ * claim). Nobody else is cancelling it: the retry takes the paid path, which
+ * refunds that payment under the cancellation policy.
+ */
+export const CANCEL_PAYMENT_JUST_RECORDED_MESSAGE =
+  "A payment has just been recorded on this booking. Reload the booking and try cancelling again.";
+
+/**
  * Shared cancellation service used by both cancel routes.
  *
  * Split bookings (#738): cancelling the member (parent) booking also cancels
@@ -231,15 +240,6 @@ type CancelBookingResponse =
  * credit settlement, audit, booking events, and waitlist processing are
  * unaffected, and the Xero invoice/credit-note side stays untouched.
  */
-/**
- * #4316 review round 4: the 409 a cancel answers when a payment was recorded on
- * the booking while it was being cancelled (a capture racing the never-captured
- * claim). Nobody else is cancelling it: the retry takes the paid path, which
- * refunds that payment under the cancellation policy.
- */
-export const CANCEL_PAYMENT_JUST_RECORDED_MESSAGE =
-  "A payment has just been recorded on this booking. Reload the booking and try cancelling again.";
-
 export async function cancelBooking(
   bookingId: string,
   sessionUserId: string,
