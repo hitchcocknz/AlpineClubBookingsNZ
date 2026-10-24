@@ -8,6 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
+import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 
 /** The link the capture's Xero payment writes, on its `PaymentTransaction`. */
@@ -76,6 +77,7 @@ export async function anchorCaptureHasReceipt(
   if (arms.length === 0) return false;
   const captures = await store.paymentTransaction.findMany({
     where: { kind: "ADDITIONAL", OR: arms },
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: { id: true },
   });
   const ids = captures.map((capture) => capture.id);
