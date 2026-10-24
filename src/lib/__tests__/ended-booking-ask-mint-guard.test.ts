@@ -41,6 +41,7 @@ const mocks = vi.hoisted(() => ({
   paymentUpdate: vi.fn(),
   transactionFindFirst: vi.fn(),
   transaction: vi.fn(),
+  askRowStatus: { value: "PENDING" },
 }));
 
 vi.mock("@/lib/stripe", () => ({
@@ -65,8 +66,9 @@ vi.mock("@/lib/prisma", () => {
       findMany: mocks.supersedeRead,
       findFirst: mocks.transactionFindFirst,
       // #3954 round 7: the door re-reads its new intent's row before queueing
-      // on it (`isMintedAskStillLive`); here it is still the live ask.
-      findUnique: async () => ({ status: "PENDING", withdrawnAt: null }),
+      // on it (`isMintedAskStillLive`); here it is still the live ask. #4316:
+      // the retirement reads it too, to queue its cancellation durably first.
+      findUnique: async () => ({ id: "txn_new", paymentId: "payment_1", amountCents: 8000, status: mocks.askRowStatus.value, withdrawnAt: null }),
     },
     $transaction: mocks.transaction,
   };
@@ -126,7 +128,8 @@ let order: string[] = [];
 
 beforeEach(() => {
   order = [];
-  for (const mock of Object.values(mocks)) mock.mockReset();
+  for (const mock of Object.values(mocks)) if (typeof mock === "function") mock.mockReset();
+  mocks.askRowStatus.value = "PENDING";
   mocks.bookingRead.mockImplementation(async () => {
     order.push("bookingRead");
     return { status: "PAID" };
@@ -212,7 +215,10 @@ describe("a booking that ended AFTER the provider call is caught after the row w
       "createPaymentIntent",
       "upsertPaymentIntentTransaction",
       // The re-read comes AFTER the row write: that write took the Payment row
-      // lock the cancel's claim takes before it reads the mirror.
+      // lock the cancel's claim takes before it reads the mirror. Review round
+      // 2: the intent's cancellation is queued on its own FIRST, so a failed
+      // retirement transaction still leaves it durable.
+      "enqueueCancel",
       "transaction",
       "lockPayment",
       "paymentRead",
@@ -227,6 +233,13 @@ describe("a booking that ended AFTER the provider call is caught after the row w
       data: { additionalPaymentStatus: "FAILED" },
     });
     expect(mocks.markFailed).toHaveBeenCalledWith({ paymentIntentId: "pi_new", store: prisma });
+    expect(mocks.enqueueCancel.mock.calls[0]![0]).toEqual({
+      bookingId: "booking_1",
+      paymentId: "payment_1",
+      paymentTransactionId: "txn_new",
+      paymentIntentId: "pi_new",
+      amountCents: 8000,
+    });
     expect(mocks.enqueueCancel).toHaveBeenCalledWith({
       bookingId: "booking_1",
       paymentId: "payment_1",
@@ -251,6 +264,7 @@ describe("a booking that ended AFTER the provider call is caught after the row w
     bookingStatuses("PAID", "CANCELLED");
     // The cancel took the Payment row after the row write, read this intent on
     // the mirror and failed it itself.
+    mocks.askRowStatus.value = "FAILED";
     mocks.paymentRead.mockResolvedValue({
       id: "payment_1",
       additionalPaymentIntentId: "pi_new",
@@ -267,11 +281,17 @@ describe("a booking that ended AFTER the provider call is caught after the row w
     expect(result.additionalAskRetired).toBe(true);
   });
 
-  it("a failed retirement is logged and still offers no secret", async () => {
+  it("a failed retirement is logged and still offers no secret - and its cancellation was already queued durably", async () => {
     bookingStatuses("PAID", "BUMPED");
     mocks.transaction.mockRejectedValue(new Error("deadlock detected"));
 
     const result = await mint();
+
+    // Review round 2: queued on its own before the transaction that failed, so
+    // the recovery cron cancels the intent at Stripe and marks its row FAILED.
+    expect(mocks.enqueueCancel).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueCancel.mock.calls[0]![0]).toMatchObject({ paymentIntentId: "pi_new", paymentTransactionId: "txn_new" });
+    expect(mocks.enqueueCancel.mock.calls[0]![0]).not.toHaveProperty("store");
 
     expect(result).toEqual({
       additionalPaymentClientSecret: undefined,

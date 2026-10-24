@@ -3581,6 +3581,76 @@ describe("payment recovery worker", () => {
       expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
     });
 
+    // #4316 review round 2: a retirement that fails is not logged and forgotten -
+    // the runner throws, so its own row backs off and retries.
+    it("throws, leaving its row to retry, when the ask it wrote on an ended booking cannot be retired (#4316)", async () => {
+      primeQueue(additionalIntentOperation());
+      mockBookingFindUnique.mockResolvedValueOnce({ status: "PAID" }).mockResolvedValueOnce({ status: "CANCELLED" });
+      const house = mockPaymentFindUnique.getMockImplementation()!;
+      mockPaymentFindUnique.mockImplementation((args?: { select?: Record<string, unknown> }) =>
+        args?.select?.additionalPaymentIntentId
+          ? Promise.resolve({ id: "payment-1", additionalPaymentIntentId: "pi_recovered", additionalPaymentStatus: "PENDING" })
+          : house(args),
+      );
+      mock4316.paymentUpdate.mockRejectedValueOnce(new Error("deadlock detected"));
+
+      let result: Awaited<ReturnType<typeof processPaymentRecoveryOperations>>;
+      try {
+        result = await processPaymentRecoveryOperations({ limit: 1 });
+      } finally {
+        mockBookingFindUnique.mockReset();
+      }
+
+      expect(result.succeeded).toBe(0);
+      expect(result.retried + result.failed).toBe(1);
+      expect(mockAttachRecoveredIntent).not.toHaveBeenCalled();
+      expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
+    });
+
+    // #4316 review round 2: the retry then finds the booking ended BEFORE its
+    // mint, and retires the ask the failed attempt left outstanding on the
+    // mirror before it closes - minting nothing.
+    it("on a retry, retires the ask its earlier attempt left outstanding on an ended booking, then closes (#4316)", async () => {
+      primeQueue(additionalIntentOperation());
+      mockBookingFindUnique.mockResolvedValueOnce({ status: "CANCELLED" });
+      const house = mockPaymentFindUnique.getMockImplementation()!;
+      mockPaymentFindUnique.mockImplementation((args?: { select?: Record<string, unknown> }) =>
+        args?.select?.additionalPaymentIntentId
+          ? Promise.resolve({ id: "payment-1", additionalPaymentIntentId: "pi_recovered", additionalPaymentStatus: "PENDING" })
+          : house(args),
+      );
+      mock4316.transactionFindFirst.mockResolvedValueOnce({ id: "txn-recovered", amountCents: 3000 });
+      mockPaymentRecoveryUpsert.mockResolvedValueOnce({ id: "op-cancel-recovered" });
+      const operation = additionalIntentOperation();
+      // The queued cancellation is its own row; the immediate run reads that one.
+      mockPaymentRecoveryFindUnique.mockImplementation((args?: { where?: { id?: string } }) =>
+        Promise.resolve(
+          args?.where?.id === "op-cancel-recovered"
+            ? makeOperation({ id: "op-cancel-recovered", paymentIntentId: "pi_recovered", paymentTransactionId: "txn-recovered" })
+            : operation,
+        ),
+      );
+      mockCancelPaymentIntentIfCancellableWithResult.mockResolvedValue({ paymentIntent: { id: "pi_recovered", status: "canceled" }, canceled: true });
+
+      let result: Awaited<ReturnType<typeof processPaymentRecoveryOperations>>;
+      try {
+        result = await processPaymentRecoveryOperations({ limit: 1 });
+      } finally {
+        mockBookingFindUnique.mockReset();
+        mockPaymentRecoveryFindUnique.mockReset();
+      }
+
+      expect(result.succeeded).toBe(1);
+      expect(mockCancelPaymentIntentIfCancellableWithResult).toHaveBeenCalledWith("pi_recovered");
+      mockCancelPaymentIntentIfCancellableWithResult.mockReset();
+      expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+      expect(mock4316.paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment-1" }, data: { additionalPaymentStatus: "FAILED" } });
+      expect(mock4316.markFailed).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: "pi_recovered" }));
+      expect(mockPaymentRecoveryUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ create: expect.objectContaining({ type: "CANCEL_PAYMENT_INTENT", paymentIntentId: "pi_recovered" }) }),
+      );
+    });
+
     /**
      * #3181: THE INVOICE THE INLINE PATH DEFERRED IS RAISED HERE, OR NOWHERE.
      *

@@ -2729,12 +2729,12 @@ async function processCreateAdditionalPaymentIntentOperation(
   }
 
   // A booking that ended after the modification (#1358; #4316, `INV-ADDPAY-044`:
-  // CANCELLED or BUMPED, re-read by the door's own guard) has nothing left to
-  // collect: the cancel tore its asks down, and a mint here would resurrect one and
-  // re-arm its WAITING_PAYMENT supplementary invoice (the stale reaper retires it).
-  // Dynamic import: the guard reaches booking-payment-cleanup, which imports this.
-  const { bookingEndedBeforeAskMint, retireAskOnEndedBooking } = await import("@/lib/ended-booking-ask-guard");
-  if (await bookingEndedBeforeAskMint(operation.bookingId, bookingModificationId)) {
+  // CANCELLED or BUMPED, re-read by the door's own guard) has nothing to collect: a
+  // mint would resurrect an ask the cancel tore down. A retry after a failed
+  // retirement retires its own ask first (throws to retry). Dynamic import: a cycle.
+  const guard = await import("@/lib/ended-booking-ask-guard");
+  if (await guard.bookingEndedBeforeAskMint(operation.bookingId, bookingModificationId)) {
+    await guard.retireOutstandingAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId });
     await completePaymentRecoveryOperation(operation.id);
     return;
   }
@@ -2905,9 +2905,9 @@ async function processCreateAdditionalPaymentIntentOperation(
     queued: held.value,
   });
 
-  // #4316: a cancel committed since that check could not see this intent; it is
-  // retired as the cancel retires one, and the debt closes - no invoice is owed.
-  if (await retireAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId, paymentIntentId: pi.id })) {
+  // #4316: a cancel committed since that check could not see this intent; retired as the
+  // cancel retires one (a failure throws, to retry), the debt closes - no invoice is owed.
+  if (await guard.replayRetiresAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId, paymentIntentId: pi.id })) {
     await completePaymentRecoveryOperation(operation.id);
     return;
   }
