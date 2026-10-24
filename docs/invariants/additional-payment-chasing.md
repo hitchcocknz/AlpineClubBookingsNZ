@@ -1735,6 +1735,8 @@ _Legacy: settles tasks raised before #4317._
   (`INV-PAY-098`). Nothing owed closes the row with an audit.
 - **No second invoice.** The amount already stands on the booking's invoice, so
   the row is written `hadIssuedXeroInvoice: false`.
+- **It waits behind an unpaid edit request** (its supplementary invoice could not
+  be paid by this one; release 2 merges them) and retries.
 - **It closes, never guesses.** Cancelled, bumped, uncaptured and
   organiser-settled bookings close without an ask; an invoice not yet open in
   Xero throws and retries. A booking that ended is asked nothing
@@ -1742,8 +1744,7 @@ _Legacy: settles tasks raised before #4317._
 - **Its own words.** The first email goes out at the next reminder pass instead
   of after the usual wait (`INV-ADDPAY-024`), worded as credit used elsewhere,
   never as a change to the stay. A reduction never nets against this request.
-  The wording follows the newest request, so a chain mixing an edit and a release
-  is worded by the newer one until the shared wording lands (#4253, release 2).
+  A chain mixing an edit and a release is worded by its newest request (release 2).
 - **Blue/green.** Enqueueing is off until an operator sets the
   `CREDIT_RELEASE_ASK`/`WRITER` `XeroSyncCursor` row's `enabled` to `true`, after
   the previous colour has drained; the runner, recorder and closer are always on.
