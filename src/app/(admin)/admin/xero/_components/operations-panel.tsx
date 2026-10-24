@@ -31,6 +31,7 @@ import {
   ToneChip,
   type ToggleSection,
 } from "./shared"
+import { FAILURE_FILTER_LABELS, FailedViewNotice } from "./failed-view-notice"
 import { xeroSectionId } from "./types"
 import type { XeroOperation } from "./types"
 import { useClubFormat } from "@/components/club-format-provider"
@@ -46,33 +47,6 @@ export function resolveDialogDescription(entityType: string): string {
   return entityType === "CREDIT_NOTE"
     ? `${base} If you later void a card refund's credit note in Xero, don't make a replacement by hand: the app raises a fresh one overnight.`
     : base
-}
-
-/** #4220: the Failure selector's option names; "all" keeps FilterSelect's own "All failures". */
-const FAILURE_FILTER_LABELS: Record<NonNullable<XeroOperation["failureState"]>, string> = {
-  ACTIVE: "Active only",
-  REPAIRED: "Repaired",
-  SUPERSEDED: "Superseded",
-}
-
-/**
- * #4220: the line under the filters while Failure = Active only is hiding rows.
- * The hidden rows are the audit trail, so they stay one click away.
- */
-export function HiddenFailuresNotice({ count, onShow }: { count: number; onShow: () => void }) {
-  if (count <= 0) return null
-  return (
-    <p className="text-sm text-muted-foreground">
-      {count} hidden (repaired, superseded or resolved).{" "}
-      <button
-        type="button"
-        onClick={onShow}
-        className="rounded-sm font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-      >
-        Show them
-      </button>
-    </p>
-  )
 }
 
 export function OperationsPanel({
@@ -140,10 +114,8 @@ export function OperationsPanel({
     return Number.isInteger(requested) && requested > 0 ? requested : 1
   })
   const [total, setTotal] = useState(0)
-  // #4220: FAILED rows the Failure filter is hiding, for the "N hidden" line.
   const [hiddenFailedCount, setHiddenFailedCount] = useState(0)
-  // #4220: set when "Show them" is used, so the region says what changed and
-  // keyboard focus has somewhere to land when the button goes away.
+  // #4220: set by "Show them"; see FailedViewNotice.
   const [revealedHiddenCount, setRevealedHiddenCount] = useState<number | null>(null)
   const noticeRegionRef = useRef<HTMLDivElement>(null)
   const pageSize = 25
@@ -508,24 +480,19 @@ export function OperationsPanel({
             <Input id="xero-op-created-to" type="date" value={createdTo} onChange={(event) => { setCreatedTo(event.target.value); resetPage() }} />
           </div>
         </div>
-        <div role="status" ref={noticeRegionRef} tabIndex={-1} className="focus-visible:outline-none">
-          {revealedHiddenCount !== null && failureStateFilter === "all" ? (
-            <p className="text-sm text-muted-foreground">
-              Showing all failures, including {revealedHiddenCount} repaired, superseded or resolved.
-            </p>
-          ) : !loading && failureStateFilter === "ACTIVE" ? (
-            <HiddenFailuresNotice
-              count={hiddenFailedCount}
-              onShow={() => {
-                const hidden = hiddenFailedCount
-                setFailureStateFilter("all")
-                resetPage()
-                setRevealedHiddenCount(hidden)
-                noticeRegionRef.current?.focus()
-              }}
-            />
-          ) : null}
-        </div>
+        <FailedViewNotice
+          failureStateFilter={failureStateFilter}
+          loading={loading}
+          hiddenCount={hiddenFailedCount}
+          revealedCount={revealedHiddenCount}
+          regionRef={noticeRegionRef}
+          onShow={() => {
+            setFailureStateFilter("all")
+            resetPage()
+            setRevealedHiddenCount(hiddenFailedCount)
+            noticeRegionRef.current?.focus()
+          }}
+        />
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading recent operations...</p>
         ) : operations.length === 0 ? (
