@@ -15,7 +15,8 @@
  * It re-judges what it says before sending, in ONE read-only `RepeatableRead`
  * snapshot, so the booking, the capture, the refunds in flight and who else
  * holds money are read as of one moment (no lock: it writes nothing there). A
- * capture that no longer holds money (refunded since), a booking gone, or a
+ * capture whose card no longer holds money (refunded to the card since), a
+ * booking gone, or a
  * capture the superseded-payment or duplicate-capture machinery owns leaves
  * nothing to tell: its marker is cleared without an email. While a card refund
  * operation that may take money from this capture is in flight it waits (a
@@ -25,9 +26,10 @@
  * conflict's reading), so a capture behind a dead cancel is named. A booking
  * cancelled or closed since is told as `new-capture-closed`, naming the
  * cancellation's recorded refund; a payment that holds money now beside it as
- * `new-capture-later-payment`. Every alert shows what the capture still holds
- * after card refunds taken from it. Any delivered alert for the capture clears
- * the marker. Never throws for one marker.
+ * `new-capture-later-payment`. Every alert shows what the card still holds:
+ * its amount less the card refunds recorded against it, never the ledger's
+ * refunded figure, which a refund as account credit also fills. Any delivered
+ * alert for the capture clears the marker. Never throws for one marker.
  */
 import type { Prisma } from "@prisma/client";
 import { listOwedAlertKeys, noteOwedAlertAttempt, settleOwedAlert } from "@/lib/alert-cooldown";
@@ -47,14 +49,12 @@ import { isManualSettlementMarkerEvent } from "@/lib/manual-settlement-reversal-
 import { CARD_REFUND_OPERATION_WHERE, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
-import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { EXCLUDED_LEDGER_REFUND_STATUSES, isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { formatCents } from "@/lib/utils";
 
 /** How long a marker waits before the drain tries it: the post-commit alert goes first. */
 export const NEW_CAPTURE_ALERT_DRAIN_AFTER_MS = 60 * 60 * 1000;
-
-const CAPTURED = new Set<string>(CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST);
 
 /**
  * A card refund operation in flight on the payment that may take money from
@@ -105,9 +105,18 @@ async function judgeOwedAlert(bookingId: string, paymentIntentId: string, format
       });
       const capture = await tx.paymentTransaction.findUnique({
         where: { stripePaymentIntentId: paymentIntentId },
-        select: { id: true, paymentId: true, status: true, amountCents: true, refundedAmountCents: true },
+        select: { id: true, paymentId: true, status: true, amountCents: true },
       });
-      if (!booking || !capture || !CAPTURED.has(capture.status)) return { action: "clear" };
+      if (!booking || !capture || !isCapturedTransactionStatus(capture.status)) return { action: "clear" };
+      // What the CARD still holds: its amount less the card refunds recorded against it. Not
+      // `refundedAmountCents`, which a refund as account credit (`applyLocalRefundAllocation`)
+      // also fills while the money stays on the card.
+      const cardRefunded = await tx.paymentRefund.aggregate({
+        where: { OR: [{ paymentTransactionId: capture.id }, { stripePaymentIntentId: paymentIntentId }], status: { notIn: EXCLUDED_LEDGER_REFUND_STATUSES } },
+        _sum: { amountCents: true },
+      });
+      const heldCents = capture.amountCents - (cardRefunded._sum.amountCents ?? 0);
+      if (heldCents <= 0) return { action: "clear" };
       const refunds = await tx.paymentRecoveryOperation.findMany({
         where: cardRefundInFlightWhere(capture.paymentId),
         select: { paymentTransactionId: true, paymentIntentId: true, allocationPlan: true },
@@ -133,8 +142,8 @@ async function judgeOwedAlert(bookingId: string, paymentIntentId: string, format
           booking,
           memberName: `${owner.firstName} ${owner.lastName}`,
           paymentIntentId,
-          // What the capture still holds after card refunds taken from it, for every reason.
-          amountCents: capture.amountCents - capture.refundedAmountCents,
+          // What the card still holds, for every reason.
+          amountCents: heldCents,
           otherPaymentIntentId: other?.stripePaymentIntentId ?? null,
           otherHoldsMoney: !!other,
           reason: closed ? "new-capture-closed" : other ? "new-capture-later-payment" : "new-capture",

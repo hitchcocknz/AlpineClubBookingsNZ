@@ -20,6 +20,9 @@ const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   bookingEvents: [] as Array<{ type: string; snapshot: unknown }>,
   operations: [] as Operation[],
+  /** The card refunds recorded against the capture (`PaymentRefund`), summed. */
+  cardRefundedCents: 0,
+  cardRefundWhere: vi.fn(),
   alert: vi.fn(),
   clubFormatValues: vi.fn(),
   liveSuperseded: vi.fn(),
@@ -59,6 +62,12 @@ vi.mock("@/lib/prisma", () => {
     $executeRaw: vi.fn(),
     booking: { findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args) },
     bookingEvent: { findMany: async () => mocks.bookingEvents },
+    paymentRefund: {
+      aggregate: async ({ where }: { where: unknown }) => {
+        mocks.cardRefundWhere(where);
+        return { _sum: { amountCents: mocks.cardRefundedCents || null } };
+      },
+    },
     paymentTransaction: {
       findUnique: (...args: unknown[]) => mocks.transactionFindUnique(...args),
       findMany: async () => [],
@@ -113,7 +122,9 @@ function prime({
   status = "COMPLETED",
   captureStatus = "SUCCEEDED",
   refundedAmountCents = 0,
-}: { status?: string; captureStatus?: string; refundedAmountCents?: number } = {}) {
+  cardRefundedCents = refundedAmountCents,
+}: { status?: string; captureStatus?: string; refundedAmountCents?: number; cardRefundedCents?: number } = {}) {
+  mocks.cardRefundedCents = cardRefundedCents;
   mocks.listOwedAlertKeys.mockResolvedValue([KEY]);
   mocks.bookingFindUnique.mockResolvedValue({
     id: "booking-1",
@@ -170,16 +181,32 @@ describe("the owed new-capture alert's drain (#4285 review)", () => {
     expect(mocks.transaction).toHaveBeenCalledWith({ isolationLevel: "RepeatableRead" });
   });
 
-  it("F7: shows what the capture still holds after card refunds taken from it, whatever the reason", async () => {
+  it("F7: shows what the card still holds after card refunds recorded against it, whatever the reason", async () => {
     prime({ captureStatus: "PARTIALLY_REFUNDED", refundedAmountCents: 4000 });
 
     await drainOwedNewCaptureAlerts(NOW);
 
     expect(mocks.alert).toHaveBeenCalledWith(expect.objectContaining({ reason: "new-capture", amountCents: 16000 }));
+    // The capture's own card refunds, by row or intent, that Stripe has not refused.
+    expect(mocks.cardRefundWhere).toHaveBeenCalledWith({
+      OR: [{ paymentTransactionId: "txn-new" }, { stripePaymentIntentId: "pi_new" }],
+      status: { notIn: ["failed", "canceled"] },
+    });
   });
 
   it.each([
-    ["refunded since", { captureStatus: "REFUNDED" }],
+    ["in full", { captureStatus: "REFUNDED", refundedAmountCents: 20000, cardRefundedCents: 0 }, 20000],
+    ["in part", { captureStatus: "PARTIALLY_REFUNDED", refundedAmountCents: 10000, cardRefundedCents: 0 }, 20000],
+  ])("F2: a refund as account credit marks the capture refunded (%s) but leaves the money on the card: still told, with what the card holds", async (_label, state, held) => {
+    prime({ status: "CANCELLED", ...state });
+
+    expect(await drainOwedNewCaptureAlerts(NOW)).toEqual({ checked: 1, sent: 1 });
+    expect(mocks.alert).toHaveBeenCalledWith(expect.objectContaining({ reason: "new-capture-closed", amountCents: held }));
+    expect(mocks.settleOwedAlert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["refunded to the card since", { captureStatus: "REFUNDED", refundedAmountCents: 20000 }],
     ["never captured", { captureStatus: "PENDING" }],
   ])("clears a marker with nothing to tell (%s) without an email", async (_label, state) => {
     prime(state);

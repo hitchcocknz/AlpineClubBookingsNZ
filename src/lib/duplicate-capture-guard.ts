@@ -358,7 +358,8 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   cancellationRefund?: CancellationRefundNote | null;
   format: ClubFormat;
 }): Promise<"sent" | "cooldown" | "send-threw"> {
-  const context = { bookingId: booking.id, paymentIntentId, otherPaymentIntentId, reason };
+  // What the capture still holds and (closed) the cancellation's recorded refund travel in the log too.
+  const context = { bookingId: booking.id, paymentIntentId, otherPaymentIntentId, reason, amountCents, ...(cancellationRefund ? { cancellationRefund } : {}) };
   const key = `duplicate-capture-unrecorded-settler:${booking.id}:${paymentIntentId}`;
   const claimedAt = new Date();
   const send = await claimAlertCooldownFailOpen({

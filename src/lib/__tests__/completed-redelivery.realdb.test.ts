@@ -81,6 +81,8 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.bedAllocation.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
+      // A cancel refunded as account credit (#4285 review 6) leaves the member a credit.
+      await prisma.memberCredit.deleteMany({ where: { memberId: MEMBER_ID } });
       await prisma.paymentRecoveryOperation.deleteMany({ where: { bookingId: BOOKING_ID } });
       await prisma.paymentRefund.deleteMany({ where: { paymentId: PAYMENT_ID } });
       await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
@@ -783,6 +785,106 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
         expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture-closed"]]);
         expect(await owedMarkers()).toEqual([]);
+      } finally {
+        await prisma.cancellationPolicy.deleteMany({ where: { lodgeId: LODGE_ID } });
+      }
+    });
+
+    /** The kept-capture alert's logged context (#4285 review 6: it carries what the capture still holds). */
+    function keptAlertContexts(spy: { mock: { calls: unknown[][] } }) {
+      return spy.mock.calls
+        .map(([context]) => context as Record<string, unknown>)
+        .filter((context) => context && typeof context === "object" && "reason" in context && context.paymentIntentId);
+    }
+
+    /** A second card payment captured on the payment since the stray one, beside it. */
+    const secondCapture = () =>
+      prisma.paymentTransaction.create({
+        data: { paymentId: PAYMENT_ID, kind: "PRIMARY", source: "STRIPE", stripePaymentIntentId: SETTLING, amountCents: PRICE_CENTS, status: "SUCCEEDED", createdAt: MINTED_AT },
+      });
+
+    it("#4285 review 6 F1: a capture behind a cancel the recovery runner gave up on still holds money: the drain names it, never 'nothing else holds money'", async () => {
+      stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+      await crashedBeforeTheAlert();
+      await secondCapture();
+      // Its cancel is dead (attempts spent, no retry): it hands the money to nobody.
+      await prisma.paymentRecoveryOperation.create({
+        data: { type: "CANCEL_PAYMENT_INTENT", status: "FAILED", attempts: 5, nextRetryAt: null, bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: SETTLING, amountCents: PRICE_CENTS, idempotencyKey: `race-4285-dead-cancel-${SETTLING}` },
+      });
+      // The refund-safety reading still sets it aside; the telling reading does not.
+      const { readOtherSettledCaptureWhere } = await import("@/lib/duplicate-capture-guard");
+      const reading = await readOtherSettledCaptureWhere(prisma, { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: OTHER });
+      expect(reading.supersededOwned).toContain(SETTLING);
+      expect(await prisma.paymentTransaction.count({ where: reading.where })).toBe(0);
+      expect(await prisma.paymentTransaction.count({ where: reading.tellingWhere })).toBe(1);
+
+      const logged = await spyOnLoggedErrors();
+      const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+      expect(keptAlertContexts(logged)).toEqual([
+        expect.objectContaining({ paymentIntentId: OTHER, reason: "new-capture-later-payment", otherPaymentIntentId: SETTLING, amountCents: PRICE_CENTS }),
+      ]);
+      expect(await owedMarkers()).toEqual([]);
+    });
+
+    it("#4285 review 6 F4: an in-flight operation that refunds nothing (an additional-payment charge) never holds the owed alert back", async () => {
+      stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+      await crashedBeforeTheAlert();
+      await prisma.paymentRecoveryOperation.create({
+        data: { type: "CREATE_ADDITIONAL_PAYMENT_INTENT", status: "PENDING", attempts: 0, bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: "pi_race_4285_review_charge", amountCents: 1_000, idempotencyKey: "race-4285-review-charge" },
+      });
+
+      const logged = await spyOnLoggedErrors();
+      const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+      expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture"]]);
+
+      // A card refund not yet planned does hold it back: it may take from this capture.
+      await crashedBeforeTheAlert();
+      await prisma.paymentRecoveryOperation.create({
+        data: { type: "REFUND_BOOKING_MODIFICATION", status: "PENDING", attempts: 0, bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: OTHER, amountCents: 1_000, idempotencyKey: "race-4285-unplanned-refund" },
+      });
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 0 });
+      expect(await owedMarkers()).toHaveLength(1);
+    });
+
+    it("#4285 review 6 F2: a credit-paid booking worth $200 cancelled at a 50% tier with a credit refund: the card still holds all of the stray capture, though the ledger marks part refunded, and the alert names the credit refund", async () => {
+      const asked = stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { totalPriceCents: PRICE_CENTS, finalPriceCents: PRICE_CENTS } });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { creditAppliedCents: PRICE_CENTS } });
+      await moveStayToFuture(PRICE_CENTS / 2);
+      await prisma.cancellationPolicy.create({ data: { lodgeId: LODGE_ID, daysBeforeStay: 0, refundPercentage: 50, fixedFeeCents: 0 } });
+      try {
+        await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+        await crashedBeforeTheAlert();
+
+        const { cancelBooking } = await import("@/lib/booking-cancel");
+        const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
+        await cancelBooking(BOOKING_ID, OFFICER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "credit");
+        const cancelled = await snapshot();
+        expect(cancelled.booking.status).toBe("CANCELLED");
+        expect(asked, "a credit refund never touches the card").toEqual([]);
+        expect(cancelled.refunds, "no card refund recorded").toEqual([]);
+        // The ledger places the credit refund on the capture (`applyLocalRefundAllocation`), though the card still holds it all.
+        const stray = cancelled.transactions.find((row) => row.stripePaymentIntentId === OTHER)!;
+        expect(stray.refundedAmountCents).toBeGreaterThan(0);
+
+        const logged = await spyOnLoggedErrors();
+        const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+        expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+        expect(keptAlertContexts(logged)).toEqual([
+          expect.objectContaining({
+            paymentIntentId: OTHER,
+            reason: "new-capture-closed",
+            amountCents: PRICE_CENTS,
+            cancellationRefund: { method: "credit", amount: expect.stringContaining("100") },
+          }),
+        ]);
       } finally {
         await prisma.cancellationPolicy.deleteMany({ where: { lodgeId: LODGE_ID } });
       }
