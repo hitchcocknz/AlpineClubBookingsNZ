@@ -4,7 +4,7 @@ import { cardRefundDoorOf, cardRefundNoteCutoverSeconds, madeSinceCardRefundNote
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
-import { PartialRefundError } from "@/lib/payment-transactions";
+import { answersBeforeFailure } from "@/lib/refused-card-refund-retry";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
@@ -122,7 +122,8 @@ export async function queueRefundRequestCardNotes(params: {
  * to the refunds (`notesEachRefund`), each made refund is asked for once the
  * replay ends - succeeded, a slice refused (the replay then throws to retry it
  * on its next key), or a slice that threw after earlier ones were made
- * (`PartialRefundError`, whose made refunds are read off it). So a refund made
+ * (`PartialRefundError`, whose made refunds are read off it the way the
+ * replay reads them, `answersBeforeFailure`). So a refund made
  * on an attempt that fails is noted on that attempt, never left waiting on a
  * retry that may never come. The money has moved, so a note that cannot be
  * queued is logged, never a reason to fail the row; `run`'s error is rethrown.
@@ -139,7 +140,7 @@ export async function replayNotingEachRefund<T>(
   try {
     return await run(made);
   } catch (err) {
-    if (err instanceof PartialRefundError) made(err.refunds);
+    made(answersBeforeFailure(err)); // the slices answered before a later one threw (`PartialRefundError`), as the replay reads them
     throw err;
   } finally {
     if (input.notesEachRefund && ids.length > 0) {

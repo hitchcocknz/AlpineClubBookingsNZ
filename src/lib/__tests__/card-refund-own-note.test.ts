@@ -52,8 +52,8 @@ describe("replayNotingEachRefund (#4312 review)", () => {
     const partial = new PartialRefundError({
       completedRefundCents: 2_000,
       refunds: [
-        { paymentIntentId: "pi_1", refundId: "re_before", amountCents: 2_000, status: "succeeded" },
-        { paymentIntentId: "pi_1", refundId: "re_cancelled", amountCents: 500, status: "canceled" },
+        { paymentIntentId: "pi_1", refundId: "re_before", amountCents: 2_000, status: "succeeded", slice: { paymentTransactionId: "txn_1", amountCents: 2_000 } },
+        { paymentIntentId: "pi_1", refundId: "re_cancelled", amountCents: 500, status: "canceled", slice: { paymentTransactionId: "txn_2", amountCents: 500 } },
       ],
       cause: new Error("network"),
       format: CLUB_FORMAT_TEST,
