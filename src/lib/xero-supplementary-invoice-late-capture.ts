@@ -27,6 +27,8 @@ import {
   releaseWaitingSupplementaryInvoiceOperations,
 } from "@/lib/xero-operation-outbox";
 import { enqueueAdditionalCaptureReceiptOperation } from "@/lib/additional-capture-receipt-enqueue";
+import { anchorCaptureHasReceipt } from "@/lib/additional-capture-receipt-link";
+import { asRecord } from "@/lib/xero-json";
 
 /**
  * The code the reaper stamps on an operation it retires, and the ONLY code the
@@ -250,7 +252,7 @@ export async function releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(
     select: {
       status: true,
       amountCents: true,
-      payment: { select: { booking: { select: { status: true } } } },
+      payment: { select: { bookingId: true, booking: { select: { status: true } } } },
     },
   });
   const transaction: CapturedTransaction = captured
@@ -336,6 +338,7 @@ export async function releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(
         .map((row) => row.id),
       paymentIntentId,
       transaction,
+      bookingId: captured?.payment?.bookingId ?? null,
     });
     if (verdict.outcome === "requeued") {
       requeuedIds.push(newest.id);
@@ -453,6 +456,7 @@ async function requeueRetiredSupplementaryInvoiceOperation({
   supersededIds,
   paymentIntentId,
   transaction,
+  bookingId,
 }: {
   operation: {
     id: string;
@@ -464,6 +468,8 @@ async function requeueRetiredSupplementaryInvoiceOperation({
   supersededIds: string[];
   paymentIntentId: string;
   transaction: CapturedTransaction;
+  /** The capture's booking, for its receipt check (#3953); null with no capture. */
+  bookingId: string | null;
 }): Promise<
   | { outcome: "requeued" }
   | { outcome: "already" }
@@ -564,6 +570,19 @@ async function requeueRetiredSupplementaryInvoiceOperation({
         : { outcome: "already" as const };
     }
 
+    // #3953 round 8 (`INV-PAY-138`): the capture's own receipt may already
+    // record it - linked, RUNNING or with a decision stored, which it stores
+    // under this same anchor lock - so the invoice is revived unpaid there:
+    // it still bills the change, and the capture has one recorder.
+    const payload = asRecord(operation.requestPayload) ?? {};
+    const unpaid =
+      bookingId !== null &&
+      payload.recordPayment !== false &&
+      (await anchorCaptureHasReceipt(tx, {
+        bookingId,
+        bookingModificationId: operation.localModel === "BookingModification" ? anchorId : null,
+        paymentIntentId,
+      }));
     const revived = await tx.xeroSyncOperation.updateMany({
       where: {
         id: operation.id,
@@ -571,6 +590,7 @@ async function requeueRetiredSupplementaryInvoiceOperation({
         lastErrorCode: STALE_WAITING_PAYMENT_ERROR_CODE,
       },
       data: {
+        ...(unpaid ? { requestPayload: { ...payload, recordPayment: false } as Prisma.InputJsonObject } : {}),
         status: "PENDING",
         startedAt: null,
         completedAt: null,

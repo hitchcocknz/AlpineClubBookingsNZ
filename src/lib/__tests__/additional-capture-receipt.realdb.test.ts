@@ -23,6 +23,9 @@
  *     by another session; a
  *     create dead past the staleness threshold blocks neither, a live one
  *     blocks both.
+ *  6. Review round 8: a retired invoice the release revives for the capture,
+ *     while its receipt stores a decision under the change's anchor lock,
+ *     queues behind that lock and is revived unpaid - one recording.
  *  3. The enqueue runs under the existing per-anchor supplementary-invoice lock
  *     (`lockSupplementaryInvoiceAnchor`) on the change the capture pays for: a
  *     session holding that lock makes the enqueue queue behind it, and the
@@ -354,6 +357,94 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     });
     expect(invoices).toHaveLength(1);
     expect(invoices[0]!.requestPayload).toMatchObject({ recordPayment: false, paymentIntentId: CHANGE_INTENT });
+  });
+
+  it("a retired invoice revived for the capture while its receipt stores a decision is revived unpaid (round 8)", async () => {
+    await prisma.xeroSyncOperation.create({
+      data: {
+        direction: "OUTBOUND",
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "BookingModification",
+        localId: MODIFICATION_ID,
+        status: "CANCELLED",
+        lastErrorCode: "STALE_WAITING_PAYMENT",
+        queueType: "SUPPLEMENTARY_INVOICE",
+        correlationKey: `race-3953:${MODIFICATION_ID}:retired`,
+        idempotencyKey: `race-3953:${MODIFICATION_ID}:retired`,
+        requestPayload: {
+          queueType: "SUPPLEMENTARY_INVOICE",
+          bookingId: BOOKING_ID,
+          bookingModificationId: MODIFICATION_ID,
+          priceDiffCents: 8_000,
+          changeFeeCents: 0,
+          recordPayment: true,
+          paymentIntentId: CHANGE_INTENT,
+          waitForConfirmedAdditionalPayment: true,
+        },
+      },
+    });
+    const key = `payment-intent:${CHANGE_INTENT}:additional-capture-receipt:v1`;
+    let holderPid = 0;
+    let releaseHolder!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseHolder = resolve;
+    });
+    let locked!: () => void;
+    const lockTaken = new Promise<void>((resolve) => {
+      locked = resolve;
+    });
+    // The receipt's plan store: under the change's anchor lock, it stores its decision.
+    const holder = prisma.$transaction(
+      async (tx) => {
+        const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+        holderPid = rows[0]?.pid ?? 0;
+        await outbox.lockSupplementaryInvoiceAnchor(tx, MODIFICATION_ID);
+        locked();
+        await held;
+        await tx.xeroSyncOperation.create({
+          data: {
+            direction: "OUTBOUND",
+            entityType: "PAYMENT",
+            operationType: "CREATE",
+            localModel: "PaymentTransaction",
+            localId: CHANGE_TX_ID,
+            status: "RUNNING",
+            queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+            correlationKey: key,
+            idempotencyKey: key,
+            requestPayload: {
+              queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+              bookingId: BOOKING_ID,
+              paymentId: PAYMENT_ID,
+              paymentTransactionId: CHANGE_TX_ID,
+              paymentIntentId: CHANGE_INTENT,
+              plan: { target: "PRIMARY_INVOICE", invoiceId: INVOICE_ID, amountCents: 8_000, capturedCents: 8_000, date: "2026-06-30" },
+            },
+          },
+        });
+      },
+      { timeout: 20_000 },
+    );
+    await lockTaken;
+
+    // The webhook's late-success release finds the retired invoice and revives it.
+    const reviving = release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT);
+    reviving.catch(() => undefined);
+    expect(await untilQueuedBehind(holderPid)).toBe(1);
+    releaseHolder();
+    await holder;
+    expect((await reviving).outcome).toBe("requeued");
+
+    const invoices = await prisma.xeroSyncOperation.findMany({
+      where: { localModel: "BookingModification", localId: MODIFICATION_ID, queueType: "SUPPLEMENTARY_INVOICE" },
+      select: { status: true, requestPayload: true },
+    });
+    // One recording: the receipt's; the revived invoice bills the change and records nothing.
+    expect(invoices).toEqual([
+      { status: "PENDING", requestPayload: expect.objectContaining({ recordPayment: false, paymentIntentId: CHANGE_INTENT }) },
+    ]);
+    expect(await receiptRows()).toHaveLength(1);
   });
 
   describe("a capture landing between the primary create's read and its gap check (review round 1)", () => {

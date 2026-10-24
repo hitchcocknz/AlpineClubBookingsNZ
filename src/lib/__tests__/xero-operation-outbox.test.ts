@@ -4490,6 +4490,43 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
     });
   });
 
+  it("MUTATION #3953 round 8: revives the invoice UNPAID, deciding under the anchor lock, where the capture's own receipt records it", async () => {
+    retired = [retiredOperation()];
+    mocks.findFirstPaymentTransaction.mockResolvedValue({
+      status: "SUCCEEDED",
+      amountCents: 12000,
+      payment: { bookingId: "booking_1", booking: { status: "CONFIRMED" } },
+    });
+    mocks.anchorCaptureHasReceipt.mockResolvedValueOnce(true);
+
+    const result = await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+
+    expect(mocks.anchorCaptureHasReceipt).toHaveBeenCalledWith(expect.anything(), {
+      bookingId: "booking_1",
+      bookingModificationId: "mod_1",
+      paymentIntentId: "pi_late",
+    });
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.anchorCaptureHasReceipt.mock.invocationCallOrder[0]!);
+    expect(reviveCalls()).toEqual([
+      {
+        where: { id: "op_retired", status: "CANCELLED", lastErrorCode: "STALE_WAITING_PAYMENT" },
+        data: expect.objectContaining({
+          status: "PENDING",
+          requestPayload: { ...payload(12000), recordPayment: false },
+        }),
+      },
+    ]);
+    expect(result.outcome).toBe("requeued");
+
+    // Control: with no receipt recording it, the payload is left as it was.
+    vi.clearAllMocks();
+    mocks.updateManyOperation.mockResolvedValue({ count: 1 });
+    mocks.anchorCaptureHasReceipt.mockResolvedValueOnce(false);
+    await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+    expect(reviveCalls()).toHaveLength(1);
+    expect(reviveCalls()[0]!.data).not.toHaveProperty("requestPayload");
+  });
+
   it("revives only the row billing the most of a raised ask ($100 then $130), and stamps the other covered", async () => {
     retired = [
       retiredOperation({

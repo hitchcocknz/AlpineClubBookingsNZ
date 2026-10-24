@@ -31,6 +31,7 @@ describe("the change capture receipt proof stays wired into CI (#3953)", () => {
     expect(suite).toContain("both gates queue on the booking's anchor lock held elsewhere; released, only one passes");
     expect(suite).toContain("an invoice for the change queued after its capture's receipt stored a decision is raised unpaid");
     expect(suite).toContain("a create dead past the staleness threshold blocks neither; a live one blocks both");
+    expect(suite).toContain("a retired invoice revived for the capture while its receipt stores a decision is revived unpaid");
     // Round 7: a capture whose ledger row carries no change stamp.
     expect(harness).toContain('import "./additional-capture-receipt-unattributed.realdb.test";');
     const unattributed = readFileSync(
