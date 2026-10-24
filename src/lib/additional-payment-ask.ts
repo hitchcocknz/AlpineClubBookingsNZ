@@ -461,7 +461,7 @@ export function reissueUnpaidAdditionalAsk({
 
 /**
  * THE ASK FOR CREDIT RELEASED WHEN A CREDIT NOTE WAS SPENT IN XERO OUTSIDE THE APP
- * (#4253, `INV-ADDPAY-044`).
+ * (#4253, `INV-ADDPAY-045`).
  *
  * Its own money is the smaller of what the release gave back and what the booking
  * ledger says is owed and nobody is asking for (`unaskedCents`, the identity's

@@ -2388,7 +2388,7 @@ async function processCreateAdditionalPaymentIntentOperation(
    * #4253: a credit-release request has no `BookingModification`, so it never
    * reaches the replay below - that replay would read the unknown key as "a newer
    * ask settled this" and close the debt, or mint beside a live edit's ask without
-   * carrying it. Its own module owns the whole branch (`INV-ADDPAY-044`).
+   * carrying it. Its own module owns the whole branch (`INV-ADDPAY-045`).
    */
   if (isCreditReleaseAskRecoveryKey(operation.idempotencyKey)) {
     const { processCreditReleaseAskOperation } = await import("@/lib/credit-release-ask");

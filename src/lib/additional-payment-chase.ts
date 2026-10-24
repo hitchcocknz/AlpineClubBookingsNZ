@@ -33,7 +33,7 @@ export const ADDITIONAL_PAYMENT_REMINDER_DAYS = 3;
 /**
  * Days after the request was raised before the first reminder, by what the request
  * is for. A request for credit used elsewhere in the club's accounts (#4253,
- * `INV-ADDPAY-044`) is not noticed by the member the way a change they made
+ * `INV-ADDPAY-045`) is not noticed by the member the way a change they made
  * themselves is: nothing they did caused it, so the first email goes out at once
  * and is the only way they hear of it. Every other request keeps the usual wait.
  */

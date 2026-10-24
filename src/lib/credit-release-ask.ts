@@ -1,5 +1,5 @@
 /**
- * #4253 (`INV-ADDPAY-044`): THE CARD PAYMENT REQUEST FOR CREDIT RELEASED WHEN A
+ * #4253 (`INV-ADDPAY-045`): THE CARD PAYMENT REQUEST FOR CREDIT RELEASED WHEN A
  * CREDIT NOTE WAS SPENT IN XERO OUTSIDE THE APP.
  *
  * After `convergeCreditNoteSpentOutsideApp` (#4251) the booking's applied credit
@@ -143,6 +143,10 @@ export async function processCreditReleaseAskOperation(
   // Cancelled and bumped bookings keep their ask columns by design (INV-ADDPAY-023) and
   // are owed nothing here: the cancel settles the credit. A deleted booking has no owner to ask.
   if (booking.deletedAt !== null || booking.status === BookingStatus.CANCELLED || booking.status === BookingStatus.BUMPED) {
+    // A retry after a failed retirement finds the request it wrote still outstanding: retire it
+    // as the cancel does before closing (#4316; throws to retry). Cycle: dynamic.
+    const guard = await import("@/lib/ended-booking-ask-guard");
+    await guard.retireOutstandingAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId });
     await closeWithoutAsk(operation, "booking-not-owed", deps, { bookingStatus: booking.status });
     return;
   }
@@ -293,6 +297,15 @@ export async function processCreditReleaseAskOperation(
     bookingId: operation.bookingId,
     paymentId: operation.paymentId,
     queued: held.value,
+  });
+  // #4316: a cancel committed since the check above could not see this intent. It is retired as
+  // the cancel retires one (a failure throws, to retry); the debt closes, nothing is owed.
+  const guard = await import("@/lib/ended-booking-ask-guard");
+  await guard.replayRetiresAskOnEndedBooking({
+    format,
+    bookingId: operation.bookingId,
+    paymentId: operation.paymentId,
+    paymentIntentId: intent.id,
   });
   await deps.complete(operation.id);
 }

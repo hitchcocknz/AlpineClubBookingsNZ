@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   queueSuperseded: vi.fn(),
   cancelSuperseded: vi.fn(),
   alertOfficers: vi.fn(),
+  retireOutstanding: vi.fn(),
+  retireAfterWrite: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prisma }));
@@ -31,6 +33,10 @@ vi.mock("@/lib/booking-payment-cleanup", () => ({
   queueSupersededAdditionalIntentCancellationRows: mocks.queueSuperseded,
   cancelSupersededAdditionalIntentsNow: mocks.cancelSuperseded,
 }));
+vi.mock("@/lib/ended-booking-ask-guard", () => ({
+  retireOutstandingAskOnEndedBooking: mocks.retireOutstanding,
+  replayRetiresAskOnEndedBooking: mocks.retireAfterWrite,
+}));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers: mocks.alertOfficers }));
 
 import { processCreditReleaseAskOperation } from "@/lib/credit-release-ask";
@@ -41,7 +47,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 
 /*
-  #4253 (`INV-ADDPAY-044`): the recovery runner's branch for the released-credit request.
+  #4253 (`INV-ADDPAY-045`): the recovery runner's branch for the released-credit request.
   Synthetic amounts. The booking below is $400.00 paid with $40.00 of account credit that
   was released, so the ledger says $40.00 is owed and unasked.
 */
@@ -105,6 +111,7 @@ beforeEach(() => {
   mocks.prisma.payment.findUnique.mockResolvedValue(payment());
   mocks.createIntent.mockResolvedValue({ id: "pi_new" });
   mocks.queueSuperseded.mockResolvedValue([]);
+  mocks.retireAfterWrite.mockResolvedValue(false);
 });
 
 async function run(over: { deps?: ReturnType<typeof runnerDeps>; balance?: unknown } = {}) {
@@ -229,6 +236,19 @@ describe("processCreditReleaseAskOperation", () => {
       ).rejects.toThrow("timeout");
       expect(deps.complete).not.toHaveBeenCalled();
     });
+  });
+
+  it("retires the request it wrote when the booking is cancelled before the row lands, and the debt still closes", async () => {
+    mocks.retireAfterWrite.mockResolvedValue(true);
+    const { deps } = await run();
+    expect(mocks.retireAfterWrite).toHaveBeenCalledWith(expect.objectContaining({ bookingId: "bk-1", paymentId: "pay-1", paymentIntentId: "pi_new" }));
+    expect(deps.complete).toHaveBeenCalledWith("op-1");
+  });
+
+  it("a retry on a booking that has ended retires the request its failed attempt left outstanding", async () => {
+    mocks.prisma.payment.findUnique.mockResolvedValue(payment({}, { status: BookingStatus.CANCELLED }));
+    await run();
+    expect(mocks.retireOutstanding).toHaveBeenCalledWith(expect.objectContaining({ bookingId: "bk-1", paymentId: "pay-1" }));
   });
 
   it("writes nothing and leaves the row open when it loses its claim", async () => {

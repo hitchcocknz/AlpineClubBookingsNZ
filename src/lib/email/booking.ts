@@ -1337,7 +1337,7 @@ export async function sendAdditionalPaymentReminderEmail(params: {
   /**
    * #4253: the unpaid request's cause (its ledger `reason`). A request for credit
    * that was used elsewhere in the club's accounts is worded as that, never as
-   * "a change to your booking increased the total" (`INV-ADDPAY-044`).
+   * "a change to your booking increased the total" (`INV-ADDPAY-045`).
    */
   askReason?: string | null;
 },

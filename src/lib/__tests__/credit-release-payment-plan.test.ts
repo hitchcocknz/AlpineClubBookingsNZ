@@ -5,7 +5,7 @@ import { planCreditReleasePayments, type AskLedgerRow } from "@/lib/credit-relea
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
 
 /*
-  #4253 (`INV-ADDPAY-044`): which card captures paid for credit-release money, and
+  #4253 (`INV-ADDPAY-045`): which card captures paid for credit-release money, and
   how much of each. Synthetic amounts only; every assertion is over integer cents.
 */
 

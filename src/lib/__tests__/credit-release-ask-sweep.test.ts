@@ -30,7 +30,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 
 /*
-  #4253 (`INV-ADDPAY-044`): the sweep's switch, its enqueue and its error isolation.
+  #4253 (`INV-ADDPAY-045`): the sweep's switch, its enqueue and its error isolation.
   Time is the frozen test clock (2026-07-01); the settle window is measured from it.
 */
 const NOW = new Date("2026-07-01T00:00:00.000Z");

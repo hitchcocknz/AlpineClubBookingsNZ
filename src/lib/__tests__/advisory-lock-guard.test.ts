@@ -164,6 +164,13 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-002",
   },
   {
+    site: "closeCreditReleaseAsksPaidInXero#1",
+    tier: "GLOBAL",
+    reason:
+      "Closing a released-credit card request because Xero shows its invoice paid (#4253) retires the unpaid request row and writes the bank-cash row that stands in for it, so it joins the cancel/capture/refund cohort on the global key, then the Payment row lock: a concurrent cancel, capture or reduction must not read the request as unpaid after it is fenced, or as paid before the cash row exists. The Stripe cancel runs before the transaction and a succeeded or processing intent is left alone.",
+    invariant: "INV-LOCK-001",
+  },
+  {
     site: "POST /api/admin/hut-leaders#1",
     tier: "GLOBAL",
     reason:

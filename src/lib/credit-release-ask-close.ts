@@ -14,7 +14,7 @@ import { isSettledInXero, readXeroInvoiceBalance, type XeroInvoiceBalanceReader 
 
 /**
  * CLOSE A CREDIT-RELEASE REQUEST WHEN XERO SHOWS THE INVOICE PAID (#4253,
- * `INV-ADDPAY-044`, owner decision D6: the member may pay by card OR bank transfer).
+ * `INV-ADDPAY-045`, owner decision D6: the member may pay by card OR bank transfer).
  *
  * The released amount stands on the booking's own invoice, so a member who pays
  * that invoice by bank transfer, or a treasurer who settles it in Xero, has paid

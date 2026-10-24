@@ -4,7 +4,7 @@ import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
 
 /**
  * WHICH CARD CAPTURES PAID FOR CREDIT-RELEASE MONEY, AND HOW MUCH OF EACH
- * (#4253, `INV-ADDPAY-044`). Pure: no client, no clock.
+ * (#4253, `INV-ADDPAY-045`). Pure: no client, no clock.
  *
  * A payment carries ONE live ask. A request for released credit can therefore be
  * superseded by a later one - an edit's, or another release's - which absorbs its

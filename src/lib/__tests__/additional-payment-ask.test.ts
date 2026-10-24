@@ -715,7 +715,7 @@ describe("#3954 round 6: the offset's Xero split and what a reduction leaves, sa
 });
 
 /*
-  #4253 (`INV-ADDPAY-044`) - the request for credit released after a Xero offset.
+  #4253 (`INV-ADDPAY-045`) - the request for credit released after a Xero offset.
 */
 describe("sizeCreditReleaseAsk", () => {
   const none = { additionalAmountCents: 0, additionalPaymentStatus: null };

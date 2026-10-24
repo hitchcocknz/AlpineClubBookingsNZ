@@ -1450,7 +1450,8 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // 377 -> 379 unpinned (#4162): a voided bank-transfer refund note undone and
     // one answered by a person, unpinned `payment` (507 sites minus 128 pinned).
     // 379 -> 380 unpinned (#4219): the credit-note convergence's `xero` row, unpinned.
-    ).toEqual({ pinned: 128, unpinned: 380 });
+    // 380 -> 384 unpinned (#4253): the released-credit request's four rows, all unpinned.
+    ).toEqual({ pinned: 128, unpinned: 384 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

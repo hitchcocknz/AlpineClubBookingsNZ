@@ -36,7 +36,7 @@ import {
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
 
 /*
-  #4253 (`INV-ADDPAY-044`): the card payment for released credit is recorded against the
+  #4253 (`INV-ADDPAY-045`): the card payment for released credit is recorded against the
   booking's own invoice, fails closed, and retries a bounded number of times.
 */
 const NOW = new Date("2026-07-01T00:00:00.000Z");

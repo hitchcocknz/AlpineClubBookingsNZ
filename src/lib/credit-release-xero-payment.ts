@@ -25,7 +25,7 @@ import {
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
 
 /**
- * THE CARD PAYMENT FOR RELEASED CREDIT, RECORDED IN XERO (#4253, `INV-ADDPAY-044`).
+ * THE CARD PAYMENT FOR RELEASED CREDIT, RECORDED IN XERO (#4253, `INV-ADDPAY-045`).
  *
  * Owner decision (D1): the money the member pays by card for credit released after
  * a Xero offset is recorded as a payment on the booking's EXISTING invoice, from

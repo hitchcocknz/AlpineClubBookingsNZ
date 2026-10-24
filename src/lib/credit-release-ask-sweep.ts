@@ -13,7 +13,7 @@ import {
 import { prisma } from "@/lib/prisma";
 
 /**
- * THE CREDIT-RELEASE SWEEP (#4253, `INV-ADDPAY-044`): one pass of the payments
+ * THE CREDIT-RELEASE SWEEP (#4253, `INV-ADDPAY-045`): one pass of the payments
  * cron's fifth task, three steps in the order a request lives.
  *
  * 1. ENQUEUE. Every release row `convergeCreditNoteSpentOutsideApp` wrote

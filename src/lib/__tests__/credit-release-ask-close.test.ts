@@ -36,7 +36,7 @@ import { closeCreditReleaseAsksPaidInXero, CREDIT_RELEASE_PAID_IN_XERO_REASON } 
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
 
 /*
-  #4253 (`INV-ADDPAY-044`, owner decision D6): a request is closed when Xero shows its
+  #4253 (`INV-ADDPAY-045`, owner decision D6): a request is closed when Xero shows its
   invoice paid, the card payment cancelled first, and the money written as bank cash.
 */
 const NOW = new Date("2026-07-01T00:00:00.000Z");

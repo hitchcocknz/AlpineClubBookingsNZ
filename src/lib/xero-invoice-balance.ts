@@ -4,7 +4,7 @@ import { getAuthenticatedXeroClient, callXeroApi } from "@/lib/xero-api-client";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 
 /**
- * WHAT XERO SAYS A BOOKING'S INVOICE STILL OWES (#4253, `INV-ADDPAY-044`).
+ * WHAT XERO SAYS A BOOKING'S INVOICE STILL OWES (#4253, `INV-ADDPAY-045`).
  *
  * One live read of one invoice, for the credit-release request's three decisions:
  * whether to ask at all (an invoice Xero already shows settled is not asked for
