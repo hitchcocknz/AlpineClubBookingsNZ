@@ -506,6 +506,12 @@ import "./xero-voided-note-recount.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4300-` fixtures.
 import "./superseded-intent-card-doors.realdb.test";
+// #4316 reuses it to prove an edit's after-commit mint never leaves a live ask
+// on a booking cancelled in the gap: the REAL cancelBooking before the mint,
+// between the provider call and the row write, and queued on the Payment row
+// in both orders against the row write. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4316-` fixtures.
+import "./ended-booking-ask-mint-race.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
