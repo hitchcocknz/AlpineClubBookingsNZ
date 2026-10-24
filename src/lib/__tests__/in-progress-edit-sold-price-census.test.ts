@@ -455,6 +455,17 @@ const EDITED_TOTAL_SITES = [
 ] as const;
 const EDITED_TOTAL_CALL = /(?<!function\s)\beditedBookingTotalCents\s*\(/g;
 
+/**
+ * #4317 review round 3: the save and the quote re-decide a capped in-progress
+ * promotion over ONE list of the plan's nights, so they cannot read different
+ * ones (`inProgressPlanGuestNightRates`, `INV-SSOT-001`).
+ */
+const CAPPED_PROMOTION_RATES_SITES = [
+  "src/app/api/bookings/[id]/modify-quote/route.ts",
+  "src/lib/booking-modify-plan.ts",
+] as const;
+const CAPPED_PROMOTION_RATES_CALL = /(?<!function\s)\binProgressPlanGuestNightRates\s*\(/g;
+
 /** Every door whose engine breakdown carries a night-less strand's money. */
 const UNATTACHED_MONEY_SITES = [
   "src/app/api/bookings/[id]/guests/route.ts",
@@ -504,6 +515,17 @@ describe("valued locked-night reader census (#4317, INV-MOD-028)", () => {
       found,
       "#4317 review H1: every edit door takes its new total through editedBookingTotalCents",
     ).toEqual([...EDITED_TOTAL_SITES].sort());
+  });
+
+  it("re-decides a capped in-progress promotion over one list of the plan's nights, quote and save (round 3)", () => {
+    const found = strippedSources()
+      .filter((file) => [...file.code.matchAll(CAPPED_PROMOTION_RATES_CALL)].length > 0)
+      .map((file) => repoRelative(file.absolute))
+      .sort();
+    expect(
+      found,
+      "#4317 review round 3: the quote and the save both build a capped plan's promotion rates through inProgressPlanGuestNightRates",
+    ).toEqual([...CAPPED_PROMOTION_RATES_SITES].sort());
   });
 
   it("keeps every engine-priced door carrying a night-less strand's money", () => {
