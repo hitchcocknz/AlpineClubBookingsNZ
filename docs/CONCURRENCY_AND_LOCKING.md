@@ -5724,16 +5724,33 @@ live write K finish while a Payment-first enqueue F holds the Payment: K never
 waits on the Payment row F holds. The inbound recount reads the note's row after
 the payment rows instead of remembering its link write's verdict. The suite
 pins the schedule A's link write, then B's void and B's recount, then A's
-recount: A counts the void and leaves the total B lowered. A void can also
-commit between A's row read and its claim, after B's recount found nothing to
-change; the void moves no Payment row, so A's claim succeeds. A then re-reads
-the row it counted and, if it no longer counts, undoes its own write (guarded on
-the row still holding exactly it) and recounts the payment. That re-read adds no
-lock. The inbound void runs its own recount, which reads the payment after A's
-claim, so a void committing after the re-read is covered. The Stripe status
-recorder runs no recount, and a card ledger is raise-only, which is why A undoes
-its own write instead of leaving the recount to lower it. The suite pins that
-schedule on a bank transfer and on a card payment. A stale reading's
+recount: A counts the void and leaves the total B lowered.
+
+The void moves no Payment row, so A's claim alone cannot see a void that
+commits between A's reads and its claim. For a payment holding the note's own
+refund-note row, A decides in one short transaction: the Payment row
+(`lockPaymentForRefundedTotal`, `FOR NO KEY UPDATE`), then a plain re-read of
+that link row, then the as-read claim, or nothing when the row no longer counts
+(one retry at most; a second is left to the next sync). An unchanged verdict
+also checks the payment as read under the lock. No provider call runs in it, and
+it takes no other lock.
+
+Lock order. The recount ran outside any transaction before #4288 and takes only
+this row. The link writer holds the link row and tries the Payment pointer with
+`SKIP LOCKED`, or waits for it on an explicit void (#4200). The hand-made answer
+takes its Payment row, then the link. This transaction takes the Payment row and
+only reads the link, never waiting on a link row lock, so it closes no cycle
+(`INV-LOCK-001`, `INV-LOCK-002`). It takes no advisory key, so `INV-LOCK-003`'s
+registry gains no entry.
+
+Every outcome is some serial order of A and the void. A void committing after
+A's locked re-read is "A, then the void, then B". B's recount queues on A's lock
+and sees A's write. On a bank transfer B lowers the total back. On a card the
+ledger is raise-only (`INV-ADDPAY-021`, #1353): A's raise stands, and B raises the
+refund-ledger-divergence alert. The inbound void runs its own recount; the
+Stripe status recorder runs none. The suite pins the void before A's locked
+re-read (A writes nothing, bank and card), a row deactivated there, and the void
+after it (bank and card). A stale reading's
 allocations and refund payments are skipped only where the row, in either
 refund-note role, is VOIDED/DELETED when they are written.
 

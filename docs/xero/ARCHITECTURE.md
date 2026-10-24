@@ -1155,15 +1155,22 @@ nothing, a live one counts its own figures. So a total that a void lowered is
 not raised back by a reconcile still holding an older live reading, even one
 whose link write landed before the void's. Before #4288 it was, on a bank
 transfer and on a card payment alike: `INV-ADDPAY-021` lets an inbound recount
-raise a card ledger, never lower it. A void that commits between the recount's
-row read and its claim moves no Payment row, so the claim cannot see it. After a
-successful claim the recount re-reads the row it counted, by the same rule it
-counted it. If the row no longer counts (voided or deactivated since), the
-recount first undoes its own write: refunded total and status go back to what it
-read, guarded on the row still holding exactly what it wrote, so a later
-Stripe-side raise or any other writer's change is never lowered. Then it recounts
-the payment. On a card payment the undo is what restores the total, because the
-card recount can only raise it.
+raise a card ledger, never lower it. A void moves no Payment row, so the
+recount's claim alone cannot see one. For a payment holding the note's own
+refund-note row, the recount therefore decides in one short transaction. It takes
+the Payment row lock (`lockPaymentForRefundedTotal`), then re-reads that row by
+the same rule it counted it. If the row no longer counts (voided or deactivated
+since), it writes nothing and recounts once more; otherwise it takes the
+as-read claim there. An unchanged verdict also checks the payment as read, so a
+recount that waited on the lock sees the write it waited for.
+
+Every outcome is then some serial order of the recount and the void. Stated
+limit: a void that commits after the locked re-read is the order "the recount,
+then the void, then the void's own recount". On a bank transfer that last recount
+lowers the total back. On a card the ledger is raise-only (`INV-ADDPAY-021`,
+#1353), so the recount's raise stands and the existing refund-ledger-divergence
+alert fires for a person to check. A recount that would need a second retry is
+left to the next sync.
 
 A live reading's allocations and refund payments are skipped only for a payment
 whose row, in either refund-note role, is VOIDED/DELETED when they are written
