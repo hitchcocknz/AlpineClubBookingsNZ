@@ -51,9 +51,9 @@
  *    or a failed send is retried by a replay or the payments cron's drain until
  *    an alert is delivered. Every such alert names the other payment by the
  *    telling reading (`readTellingWhere`, #4285 review) and shows what the
- *    kept capture's card still holds; the verdict never reads either. Limit: a saved-card capture whose caller crashed
- *    or threw between its pre-record and the settle reads as a replay on its
- *    next arrival.
+ *    kept capture's card still holds; the verdict never reads either. Limit:
+ *    a saved-card capture whose caller crashed or threw between its
+ *    pre-record and the settle reads as a replay on its next arrival.
  *
  * Every read runs under the lock(1) every caller of `markBookingPaymentSucceeded`
  * holds, so the check-then-enqueue cannot interleave with another settlement,
