@@ -91,6 +91,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
     async function deleteFixtures() {
       await deleteBookingRows();
+      await prisma.cancellationPolicy.deleteMany({ where: { lodgeId: LODGE_ID } });
       await prisma.lodgeBed.deleteMany({ where: { roomId: ROOM_ID } });
       await prisma.lodgeRoom.deleteMany({ where: { id: ROOM_ID } });
       await prisma.lodge.deleteMany({ where: { id: LODGE_ID } });
@@ -684,7 +685,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
     });
 
     /** Move the stay to after the frozen today, so the booking can still be cancelled. */
-    async function moveStayToFuture() {
+    async function moveStayToFuture(guestPriceCents = 0) {
       const N1 = new Date("2027-08-01T00:00:00.000Z"), N2 = new Date("2027-08-02T00:00:00.000Z"), OUT = new Date("2027-08-03T00:00:00.000Z");
       // The database holds a booking's range around its guests' ranges, so the guests go first.
       await prisma.bookingGuestNight.deleteMany({ where: { bookingGuest: { bookingId: BOOKING_ID } } });
@@ -701,8 +702,13 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
             isMember: true,
             stayStart: N1,
             stayEnd: OUT,
-            priceCents: 0,
-            nights: { create: [{ stayDate: N1, priceCents: 0, priceSource: "SOLD" }, { stayDate: N2, priceCents: 0, priceSource: "SOLD" }] },
+            priceCents: guestPriceCents,
+            nights: {
+              create: [
+                { stayDate: N1, priceCents: guestPriceCents / 2, priceSource: "SOLD" },
+                { stayDate: N2, priceCents: guestPriceCents / 2, priceSource: "SOLD" },
+              ],
+            },
           },
         });
       }
@@ -731,7 +737,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       expect(await owedMarkers()).toEqual([]);
     });
 
-    it("#4285 review F4: once another payment holds money, the drain tells the owed alert as the no-record case, never 'nothing else holds money'", async () => {
+    it("#4285 review F4: once another payment holds money, the drain tells the owed alert as a later payment, never 'nothing else holds money'", async () => {
       stripeMakesRefunds();
       const key = await zeroDollarBookingWithLostAttempt();
       await deliverWebhook(OTHER, "payment_intent.succeeded", key);
@@ -744,8 +750,42 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const logged = await spyOnLoggedErrors();
       const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
       expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
-      expect(keptAlertReasons(logged)).toEqual([[OTHER, "not-recorded"]]);
+      expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture-later-payment"]]);
       expect(await owedMarkers()).toEqual([]);
+    });
+
+    it("#4285 review F2: a credit-paid booking worth $200 cancelled at a 50% tier: the cancel's newest-first card refund takes part of the stray capture, and the drain tells what it still holds", async () => {
+      const asked = stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      // Paid in full with account credit: worth $200, no cash.
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { totalPriceCents: PRICE_CENTS, finalPriceCents: PRICE_CENTS } });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { creditAppliedCents: PRICE_CENTS } });
+      await moveStayToFuture(PRICE_CENTS / 2);
+      await prisma.cancellationPolicy.create({ data: { lodgeId: LODGE_ID, daysBeforeStay: 0, refundPercentage: 50, fixedFeeCents: 0 } });
+      try {
+        await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+        await crashedBeforeTheAlert();
+
+        const { cancelBooking } = await import("@/lib/booking-cancel");
+        const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
+        await cancelBooking(BOOKING_ID, OFFICER_ID, "ADMIN", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+        const cancelled = await snapshot();
+        expect(cancelled.booking.status).toBe("CANCELLED");
+        const stray = cancelled.transactions.find((row) => row.stripePaymentIntentId === OTHER)!;
+        expect(asked, "the cancel's card refund went to the stray capture, the only card payment").toEqual([OTHER]);
+        expect(stray.refundedAmountCents).toBeGreaterThan(0);
+        expect(stray.refundedAmountCents).toBeLessThan(PRICE_CENTS);
+        expect(stray.status).toBe("PARTIALLY_REFUNDED");
+
+        // The amount the alert shows (what the capture still holds) is pinned by the drain's unit test.
+        const logged = await spyOnLoggedErrors();
+        const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+        expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+        expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture-closed"]]);
+        expect(await owedMarkers()).toEqual([]);
+      } finally {
+        await prisma.cancellationPolicy.deleteMany({ where: { lodgeId: LODGE_ID } });
+      }
     });
   },
 );

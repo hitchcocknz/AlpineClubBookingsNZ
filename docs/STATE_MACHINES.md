@@ -1727,9 +1727,14 @@ is); one never recorded before is new money, kept whatever its amount as
 the settle's transaction (an `AlertCooldown` marker) until it is delivered: the
 capture's next arrival re-alerts while it stands, and the payments cron's
 `duplicate-capture-kept-alert` task sends it an hour on otherwise, re-judged
-first: a booking cancelled since is told as `new-capture-closed` (a cancel
-refunds at most the booking's worth), another payment holding money now as
-`not-recorded`, and any delivered alert for the capture clears the marker. A
+first through the guard's own reading of who holds money
+(`readOtherSettledCaptureWhere`): it waits while any refund operation on the
+payment is in flight, clears silently a capture the superseded or
+duplicate-capture machinery owns, tells a booking cancelled since as
+`new-capture-closed` with what the capture still holds after the cancel's
+newest-first card refund, and another payment holding money now as
+`new-capture-later-payment`. Any delivered alert for the capture clears the
+marker. A
 send whose daily cooldown was claimed before a crash waits out that day, so the
 worst case is about 24 hours. A saved-card capture whose caller crashed or
 threw between its pre-record and the settle reads as a replay on its next

@@ -120,11 +120,11 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   alerts until delivered, unless already recorded: a replay, or a
   saved-card pre-record whose settle crashed or threw (#4285).
 - **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
-  owned and owed-back readings, the arriving capture's (#4283).
+  owned and owed-back readings, arriving capture included (#4283).
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per
   (booking, intent).
-- Proven by `issue-1992-duplicate-capture-refund.test.ts` and the
-  `third-duplicate-capture` and `completed-redelivery` realdb suites.
+- Proven by `issue-1992-duplicate-capture-refund.test.ts`; on PostgreSQL by
+  `third-duplicate-capture` and `completed-redelivery`.
 
 ## INV-PAY-102
 

@@ -694,6 +694,23 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(closed).toContain("refund by hand what the booking no longer needs");
     expect(closed).not.toContain("should pay for the booking");
     expect(closed).not.toContain("neither payment");
+    // #4285 review F2: the cancel's newest-first card refund may have refunded part of it.
+    expect(closed).toContain("the amount shown is what it still holds after any refund the cancellation made");
+    expect(closed).not.toContain("in full");
+    expect(closed).not.toContain("Nothing was refunded");
+
+    // #4285 review F3: the same owed alert once a later payment holds money too.
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminDuplicateCaptureKeptAlert(
+      { ...alert, reason: "new-capture-later-payment", otherPaymentIntentId: "pi_later", otherHoldsMoney: true },
+      CLUB_FORMAT_TEST,
+    );
+    const later = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(later).toContain("after it was already paid some other way");
+    expect(later).toContain("card payment pi_later recorded on it since also holds money");
+    expect(later).toContain("Check which of the two payments should pay for the booking, if either, and refund the other by hand.");
+    expect(later).not.toContain("no record of which payment settled");
+    expect(later).not.toContain("previous app version");
     expect(stray).not.toContain("refund the other one");
     expect(stray).toContain("refund it by hand only if the booking should not be paid by it");
   });

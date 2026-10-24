@@ -44,7 +44,7 @@ export function adminDuplicateCaptureKeptTemplate(data: {
   return layout(`
     ${heading("Booking May Have Been Paid Twice — Check By Hand")}
     ${alertBox(
-      "A card payment was kept on a booking that was already paid. Nothing was refunded automatically — please check.",
+      "A card payment was kept on a booking that was already paid — please check it by hand.",
       "warning"
     )}
     ${

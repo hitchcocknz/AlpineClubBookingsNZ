@@ -26,10 +26,19 @@
  *   Always `otherHoldsMoney: false`.
  * - `new-capture-closed` (#4285 review): that alert, still owed when the
  *   payments cron's drain sends it, on a booking cancelled or closed since. A
- *   cancellation refunds at most what the booking was worth, so a payment the
- *   booking never needed may still be held. Always `otherHoldsMoney: false`.
+ *   cancellation refunds at most what the booking was worth, so part or all of
+ *   a payment the booking never needed may still be held; the alert's amount is
+ *   what it still holds.
+ * - `new-capture-later-payment` (#4285 review): that alert, still owed when the
+ *   drain sends it, after another payment holding money was recorded on the
+ *   booking since. Two payments now hold money on a booking paid another way.
  */
-export type DuplicateCaptureKeptReason = "not-recorded" | "settler-released" | "new-capture" | "new-capture-closed";
+export type DuplicateCaptureKeptReason =
+  | "not-recorded"
+  | "settler-released"
+  | "new-capture"
+  | "new-capture-closed"
+  | "new-capture-later-payment";
 
 /** The other payment, as the alert names it. */
 function otherPaymentLabel(otherPaymentIntentId: string | null): string {
@@ -58,7 +67,9 @@ export function duplicateCaptureKeptParagraph(input: {
         ? `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell whether this payment now pays for the booking or is a duplicate, and nothing was refunded automatically.`
         : `${lead} The payment the app recorded as settling this booking no longer holds money (it was refunded or reversed, or is being refunded), so the app cannot tell which of the remaining payments to keep, and nothing was refunded automatically.`;
     case "new-capture-closed":
-      return "A new card payment was recorded on this booking after it was already paid, while no other card or bank payment on it held money, and the booking has since been cancelled or closed. A cancellation refunds at most what the booking was worth, so this payment may still be held in full. Nothing was refunded automatically for it.";
+      return "A new card payment was recorded on this booking after it was already paid, while no other card or bank payment on it held money, and the booking has since been cancelled or closed. A cancellation refunds at most what the booking was worth, so part or all of this payment may still be held: the amount shown is what it still holds after any refund the cancellation made.";
+    case "new-capture-later-payment":
+      return `A new card payment was recorded on this booking after it was already paid some other way (with account credit, at a zero total, or by a group organiser), and ${otherPaymentLabel(input.otherPaymentIntentId)} recorded on it since also holds money, so one of them is probably extra. Nothing was refunded automatically.`;
     case "new-capture":
       return "A new card payment was recorded on this booking after it was already paid, and no other card or bank payment on it holds money: the booking was paid some other way (with account credit, at a zero total, or by a group organiser), or its earlier payment was refunded, so this payment may be extra. Nothing was refunded automatically.";
   }
@@ -78,6 +89,9 @@ export function duplicateCaptureKeptAction(input: { otherHoldsMoney?: boolean; r
     : "Check which payment settled the booking, and refund the other one by hand.";
   if (input.reason === "new-capture-closed") {
     return "Check in Stripe how much of this payment is still held, and refund by hand what the booking no longer needs.";
+  }
+  if (input.reason === "new-capture-later-payment") {
+    return "Check which of the two payments should pay for the booking, if either, and refund the other by hand.";
   }
   return input.reason === "new-capture" ? action : `${action} ${DUPLICATE_CAPTURE_KEPT_STRIPE_CHECK}`;
 }
