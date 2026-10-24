@@ -559,7 +559,20 @@ export async function snapshotBookingNightAdjustments(
  */
 export async function restoreBookingNightAdjustments(
   tx: Tx,
-  params: { snapshot: CarriedNightAdjustments; shiftDays?: number; writer: string },
+  params: {
+    snapshot: CarriedNightAdjustments;
+    shiftDays?: number;
+    writer: string;
+    /**
+     * #4317 review round 4: an in-progress edit that CAPPED its carried
+     * promotion, whose redemptions `capCarriedPromotionRecords` has just scaled.
+     * A row whose night or guest the edit gave back is dropped rather than
+     * abandoning the carry, and the rows left are re-attached, byte for byte,
+     * only if they still reconcile to every redemption as now recorded; if not,
+     * none are, and the build-up derives as not known. No amount is computed.
+     */
+    survivorsOnly?: boolean;
+  },
 ): Promise<{ carried: boolean }> {
   const { snapshot, writer } = params;
   const shiftDays = params.shiftDays ?? 0;
@@ -586,6 +599,7 @@ export async function restoreBookingNightAdjustments(
   const guestIds = new Set(guests.map((guest) => guest.id));
 
   const rows: Prisma.BookingGuestNightAdjustmentCreateManyInput[] = [];
+  const kept: CarriedNightAdjustments["rows"] = [];
   for (const row of snapshot.rows) {
     const base = {
       kind: row.kind,
@@ -597,14 +611,17 @@ export async function restoreBookingNightAdjustments(
     };
     if (row.stayDate === null) {
       if (!guestIds.has(row.bookingGuestId)) {
+        if (params.survivorsOnly) continue;
         return abandonCarry(writer, snapshot.bookingId, `guest ${row.bookingGuestId} is gone`);
       }
       rows.push({ ...base, bookingGuestNightId: null, bookingGuestId: row.bookingGuestId });
+      kept.push(row);
       continue;
     }
     const target = shifted(row.stayDate);
     const bookingGuestNightId = nightIdByKey.get(nightKey(row.bookingGuestId, target));
     if (!bookingGuestNightId) {
+      if (params.survivorsOnly) continue;
       return abandonCarry(
         writer,
         snapshot.bookingId,
@@ -612,6 +629,15 @@ export async function restoreBookingNightAdjustments(
       );
     }
     rows.push({ ...base, bookingGuestNightId, bookingGuestId: null });
+    kept.push(row);
+  }
+  if (params.survivorsOnly && !(await keptRowsReconcile(tx, snapshot.bookingId, kept))) {
+    await tx.bookingGuestNightAdjustment.deleteMany({ where: { bookingId: snapshot.bookingId } });
+    return abandonCarry(
+      writer,
+      snapshot.bookingId,
+      "the rows on the nights that remain do not reconcile to the capped promotion",
+    );
   }
 
   // The rewrite cascaded most of these away already; a guest whose night rows
@@ -621,6 +647,34 @@ export async function restoreBookingNightAdjustments(
   });
   await tx.bookingGuestNightAdjustment.createMany({ data: rows });
   return { carried: true };
+}
+
+/** Whether `kept` reconciles, per redemption, to the booking's recorded promo totals (INV-MONEY-029). */
+async function keptRowsReconcile(
+  tx: Tx,
+  bookingId: string,
+  kept: CarriedNightAdjustments["rows"],
+): Promise<boolean> {
+  const redemptions = await tx.promoRedemption.findMany({
+    where: { bookingId },
+    select: {
+      id: true,
+      priceAdjustmentCents: true,
+      allocations: { select: { memberId: true, priceAdjustmentCents: true } },
+    },
+  });
+  const known = new Set(redemptions.map((redemption) => redemption.id));
+  return (
+    kept.every((row) => row.amountCents !== null && known.has(row.promoRedemptionId)) &&
+    redemptions.every(
+      (redemption) =>
+        findReconciliationMismatch({
+          targets: kept.filter((row) => row.promoRedemptionId === redemption.id),
+          allocations: memberBenefitAllocations(redemption.allocations),
+          priceAdjustmentCents: redemption.priceAdjustmentCents,
+        }) === null,
+    )
+  );
 }
 
 function abandonCarry(writer: string, bookingId: string, reason: string): { carried: false } {

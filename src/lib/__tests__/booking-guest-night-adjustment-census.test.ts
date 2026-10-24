@@ -182,6 +182,20 @@ const PROMO_WRITERS: Record<string, (code: string) => void> = {
     expect(precedes(code, SNAPSHOT, /\bawait applyGuestChanges\(/)).toBe(true);
     expect(precedes(code, /\bawait applyGuestChanges\(/, RESTORE)).toBe(true);
     expect(code).toMatch(/promoEngineRan: false as const,\s*\}\s*:\s*await applyPromoCodeChanges\(/);
+    // #4317 review round 4: a capped in-progress promotion keeps only the stored
+    // rows that still reconcile to its scaled records.
+    expect(code).toMatch(
+      /restoreBookingNightAdjustments\(tx, \{[\s\S]{0,300}survivorsOnly: pricingResult\.inProgressPlan\?\.promotionCappedAtNewTotal === true/,
+    );
+  },
+  "src/lib/carried-promotion-cap.ts": (code) => {
+    // #4317 review round 4: scales a capped in-progress promotion's stored
+    // redemptions and allocations. It computes no row amount and records none
+    // (INV-MONEY-029); its one caller's save carries the stored rows that still
+    // reconcile to the scaled figures, after the night rewrite (above).
+    expect(code).toMatch(/await replacePromoRedemptionAllocations\(/);
+    expect(code).not.toMatch(RECORD);
+    expect(code).not.toMatch(/amountCents/);
   },
   "src/lib/booking-promotions.ts": (code) => {
     // #3827: the shared re-price writes every code's redemption and hands the

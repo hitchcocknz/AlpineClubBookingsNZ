@@ -503,6 +503,66 @@ describe("snapshot and restore across a mechanical rewrite", () => {
     nothingWritten(after.recorded);
   });
 
+  describe("#4317 review round 4: a capped in-progress promotion keeps only the rows that still reconcile", () => {
+    /** A 100% code on guest A's two nights: -$50 each; the edit gives back N2. */
+    const FULL = (amountCents: number) => ({ ...NIGHT_ROW, amountCents });
+    const twoNights = () =>
+      fakeTx({
+        nights: [
+          { id: "old-a1", bookingGuestId: "guest-a", stayDate: N1, adjustments: [FULL(-5000)] },
+          { id: "old-a2", bookingGuestId: "guest-a", stayDate: N2, adjustments: [FULL(-5000)] },
+        ],
+      });
+    const capped = (priceAdjustmentCents: number) => ({
+      ...REDEMPTION,
+      priceAdjustmentCents,
+      allocations: [{ memberId: "booker", priceAdjustmentCents }],
+    });
+
+    it("drops the row on a night given back and keeps the rest, byte for byte, where they reconcile", async () => {
+      const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
+      const after = fakeTx({
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1 }],
+        guests: [{ id: "guest-a" }],
+        // The cap scaled the redemption to the -$50 left.
+        redemption: capped(-5000),
+      });
+      await expect(
+        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", survivorsOnly: true }),
+      ).resolves.toEqual({ carried: true });
+      expect(after.recorded.adjustmentCreateMany.mock.calls[0][0]).toEqual({ data: [ROW("new-a1", null, -5000)] });
+    });
+
+    it("writes none, and clears the booking's rows, where the rows left do not reconcile to the scaled figure", async () => {
+      const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
+      const after = fakeTx({
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1 }],
+        guests: [{ id: "guest-a" }],
+        // A fixed code scaled to -$30: the -$50 row left is the engine's old
+        // figure, and no rule may rewrite it (INV-MONEY-029).
+        redemption: capped(-3000),
+      });
+      await expect(
+        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", survivorsOnly: true }),
+      ).resolves.toEqual({ carried: false });
+      expect(after.recorded.adjustmentDeleteMany).toHaveBeenCalledWith({ where: { bookingId: "booking-1" } });
+      expect(after.recorded.adjustmentCreateMany).not.toHaveBeenCalled();
+    });
+
+    it("CONTROL: without survivorsOnly the same night given back abandons the carry, as every other rewrite does", async () => {
+      const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
+      const after = fakeTx({
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1 }],
+        guests: [{ id: "guest-a" }],
+        redemption: capped(-5000),
+      });
+      await expect(
+        restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test edit" }),
+      ).resolves.toEqual({ carried: false });
+      nothingWritten(after.recorded);
+    });
+  });
+
   it("is a no-op for a booking that recorded nothing", async () => {
     const before = fakeTx({ adjustments: [], nights: [] });
     const snapshot = await snapshotBookingNightAdjustments(before.tx, "booking-1");

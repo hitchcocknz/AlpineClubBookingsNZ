@@ -179,9 +179,9 @@ export interface BookingEditGuestRangePlan {
   newDiscountCents: number;
   newPromoAdjustmentCents: number;
   /**
-   * #4317 review round 3: the stored promotion was larger than the new total and
-   * was capped at it. The figures above are the cap; the save and the quote
-   * re-decide the promotion through the engine so its records agree.
+   * #4317 review rounds 3 and 4: the stored promotion was larger than the new
+   * total and was capped at it. The figures above are the cap; the save scales
+   * the stored redemptions to it (`capCarriedPromotionRecords`).
    */
   promotionCappedAtNewTotal: boolean;
   newFinalPriceCents: number;
@@ -1324,13 +1324,13 @@ export function buildInProgressGuestRangePlan(
     proposedExistingGuests.reduce((sum, entry) => sum + entry.priceCents, 0) +
       proposedAddedGuests.reduce((sum, entry) => sum + entry.priceCents, 0),
   );
-  // #4317 review round 3: this plan keeps the stored promotion rather than
-  // re-deciding it, but never lets it exceed what is left to discount - the cap
-  // the promotion engine puts on every door that re-decides one. A $350 code on
-  // a stay cut to $100 takes $100. When the cap bites, the promotion's records
-  // no longer add up to the stored figure, so the save and the quote re-decide
-  // it through the engine over this plan's nights (`promotionCappedAtNewTotal`,
-  // `inProgressPlanGuestNightRates`), the re-deciding doors' own pattern.
+  // #4317 review rounds 3 and 4: this plan keeps the stored promotion - never
+  // re-validated, never re-decided, so a code that has since expired still
+  // applies - but never lets it exceed what is left to discount, the cap the
+  // engine puts on every door that re-decides one. A $350 code on a stay cut to
+  // $100 takes $100. This is the one figure the quote shows and the save
+  // writes; where the cap bites, the save scales the stored records to it
+  // (`promotionCappedAtNewTotal`, `capCarriedPromotionRecords`).
   const newPromoAdjustmentCents = Math.max(
     input.booking.promoAdjustmentCents,
     -newTotalPriceCents,

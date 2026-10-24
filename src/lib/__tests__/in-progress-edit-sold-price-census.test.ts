@@ -456,15 +456,14 @@ const EDITED_TOTAL_SITES = [
 const EDITED_TOTAL_CALL = /(?<!function\s)\beditedBookingTotalCents\s*\(/g;
 
 /**
- * #4317 review round 3: the save and the quote re-decide a capped in-progress
- * promotion over ONE list of the plan's nights, so they cannot read different
- * ones (`inProgressPlanGuestNightRates`, `INV-SSOT-001`).
+ * #4317 review round 4: an in-progress edit never re-decides its promotion. It
+ * carries the plan's capped figure, and the save scales the stored records to
+ * it in ONE place, the in-progress arm of `applyPromoCodeChanges`; the round-3
+ * engine re-decision (`inProgressPlanGuestNightRates`) stays deleted.
  */
-const CAPPED_PROMOTION_RATES_SITES = [
-  "src/app/api/bookings/[id]/modify-quote/route.ts",
-  "src/lib/booking-modify-plan.ts",
-] as const;
-const CAPPED_PROMOTION_RATES_CALL = /(?<!function\s)\binProgressPlanGuestNightRates\s*\(/g;
+const CARRIED_CAP_SITES = ["src/lib/booking-modify-plan.ts"] as const;
+const CARRIED_CAP_CALL = /(?<!function\s)\bcapCarriedPromotionRecords\s*\(/g;
+const RE_DECIDED_PLAN_RATES = /\binProgressPlanGuestNightRates\b/;
 
 /** Every door whose engine breakdown carries a night-less strand's money. */
 const UNATTACHED_MONEY_SITES = [
@@ -517,15 +516,22 @@ describe("valued locked-night reader census (#4317, INV-MOD-028)", () => {
     ).toEqual([...EDITED_TOTAL_SITES].sort());
   });
 
-  it("re-decides a capped in-progress promotion over one list of the plan's nights, quote and save (round 3)", () => {
-    const found = strippedSources()
-      .filter((file) => [...file.code.matchAll(CAPPED_PROMOTION_RATES_CALL)].length > 0)
+  it("carries and caps an in-progress promotion in one place, and never re-decides it (round 4)", () => {
+    const sources = strippedSources();
+    const found = sources
+      .filter((file) => [...file.code.matchAll(CARRIED_CAP_CALL)].length > 0)
       .map((file) => repoRelative(file.absolute))
       .sort();
     expect(
       found,
-      "#4317 review round 3: the quote and the save both build a capped plan's promotion rates through inProgressPlanGuestNightRates",
-    ).toEqual([...CAPPED_PROMOTION_RATES_SITES].sort());
+      "#4317 review round 4: only applyPromoCodeChanges' in-progress arm scales a capped promotion's records",
+    ).toEqual([...CARRIED_CAP_SITES]);
+    const plan = sources.find((file) => repoRelative(file.absolute) === CARRIED_CAP_SITES[0])!;
+    expect([...plan.code.matchAll(CARRIED_CAP_CALL)]).toHaveLength(1);
+    expect(
+      sources.filter((file) => RE_DECIDED_PLAN_RATES.test(file.code)).map((file) => repoRelative(file.absolute)),
+      "#4317 review round 4: an in-progress plan hands the promotion engine no nights",
+    ).toEqual([]);
   });
 
   it("keeps every engine-priced door carrying a night-less strand's money", () => {

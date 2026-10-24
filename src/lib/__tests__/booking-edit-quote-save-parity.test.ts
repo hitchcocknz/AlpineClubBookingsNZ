@@ -625,7 +625,7 @@ describe("#4317 review round 2: an edit that would carry a headline below zero i
  * flags it so the save and the quote re-decide the promotion's records over the
  * plan's own nights. A legitimate discounted reduction is priced, never refused.
  */
-describe("#4317 review round 3: an in-progress plan caps the promotion it carries", () => {
+describe("#4317 review rounds 3 and 4: an in-progress plan carries its promotion and caps it", () => {
   const night = (date: string, cents: number) => ({ stayDate: D(date), priceCents: cents, priceSource: "SOLD" as const });
   const SHORTEN_A = guest("g1", "m1", [night(HELD[0], 5000), night(HELD[1], 0), night(HELD[2], 5000)], 10_000);
   const SHORTEN_B = guest("g2", "m2", [night(HELD[0], 2500), night(HELD[1], 2500), night(HELD[2], 25_000)], 30_000);
@@ -684,14 +684,39 @@ describe("#4317 review round 3: an in-progress plan caps the promotion it carrie
       seasonRateData: SEASONS as never,
       partnerSharedGuests: [],
     });
-    // The save prices the same total and hands the promotion engine the plan's
-    // own nights to re-decide the capped code over - the list the quote reads.
+    // The save prices the same plan and hands the promotion engine nothing: the
+    // capped code is carried, never re-decided (round 4), so an expired code
+    // still applies and the figure is the quote's.
     expect(save.newTotalPriceCents).toBe(quote.newTotalPriceCents);
     expect(save.inProgressPlan?.promotionCappedAtNewTotal).toBe(true);
-    expect(save.guestNightRates.map((rates) => [rates.bookingGuestId, rates.perNightRates])).toEqual([
-      ["g1", [5000, 0]],
-      ["g2", [2500, 2500]],
-    ]);
+    expect(save.inProgressPlan?.newPromoAdjustmentCents).toBe(quote.newPromoAdjustmentCents);
+    expect(save.inProgressPlan?.priceDiffCents).toBe(quote.priceDiffCents);
+    expect(save.guestNightRates).toEqual([]);
+  });
+
+  it("a deeper cut never refunds less: a 50% code's refund only grows as nights come off (round 4)", () => {
+    // $50 a night from the 20th to the 29th, half off: $500, -$250, paid $250.
+    const days = Array.from({ length: 10 }, (_, index) => `2026-08-${String(20 + index).padStart(2, "0")}`);
+    const ten = {
+      ...guest("g1", "m1", days.map((day) => night(day, RATE)), 10 * RATE),
+      stayEnd: D("2026-08-30"),
+    };
+    const refundKeeping = (nights: number) =>
+      -buildInProgressGuestRangePlan({
+        booking: { ...promotedBooking([ten], -25_000), checkOut: D("2026-08-30") },
+        editableFrom: D("2026-08-21"),
+        newCheckOut: D(days[nights]!),
+        seasons: SEASONS,
+      }).plan.priceDiffCents;
+
+    // Keeping 2..9 nights: the code is carried whole while the stay is worth
+    // more than it, then capped, so the stay costs nothing - never a jump back
+    // up where a re-decided 50% would take only half of what is left.
+    const refunds = [9, 8, 7, 6, 5, 4, 3, 2].map(refundKeeping);
+    expect(refunds).toEqual([5_000, 10_000, 15_000, 20_000, 25_000, 25_000, 25_000, 25_000]);
+    for (let deeper = 1; deeper < refunds.length; deeper += 1) {
+      expect(refunds[deeper]!).toBeGreaterThanOrEqual(refunds[deeper - 1]!);
+    }
   });
 
   it("a 100% code, a guest removed mid-stay: priced at $0, the code capped at the $200 left", () => {

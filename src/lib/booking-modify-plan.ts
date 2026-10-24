@@ -6,6 +6,7 @@
 
 import { bookingPromoCodeLabel, bookingPromoRedemptions } from "@/lib/booking-promo-redemptions";
 import { applyBookingPromotions, repriceBookingPromotions } from "@/lib/booking-promotions";
+import { capCarriedPromotionRecords } from "@/lib/carried-promotion-cap";
 import { multiPromoCodesEnabled } from "@/lib/promo-redemption-slot";
 import {
   keptStoredPromoRedemption,
@@ -201,65 +202,6 @@ function proposedGuestConsentStatusReader(
       ? consentStatusByGuestId.get(guest.bookingGuestId) ?? null
       : addedConsentByMemberId.get(guest.memberId ?? "") ?? null;
 }
-
-/**
- * #4317 review round 3: each guest's nights after an in-progress plan, as the
- * promotion engine re-decides a code over them.
- *
- * An in-progress plan carries the stored promotion, capped at its new total.
- * When the cap bites (`promotionCappedAtNewTotal`), the promotion's records no
- * longer add up to the stored figure, so the save (`applyPromoCodeChanges`) and
- * the quote re-decide it through the engine, as every pre-check-in door does —
- * over THIS list, built once here so the two cannot read different nights.
- * Existing guests first, then added ones, in the plan's order: the order the
- * in-progress writer creates the added rows in, which the night-adjustment
- * recorder maps an added guest's position onto.
- */
-export function inProgressPlanGuestNightRates(
-  plan: BookingEditGuestRangePlan,
-  consentStatusOf: (guest: {
-    bookingGuestId?: string | null;
-    memberId?: string | null;
-  }) => MemberGuestConsentStatus | null,
-): GuestNightRateForPromotion[] {
-  return [
-    ...plan.proposedExistingGuests.map((entry) => ({
-      bookingGuestId: entry.guest.id,
-      memberId: entry.guest.memberId ?? null,
-      isMember: entry.guest.isMember,
-      perNightRates: entry.perNightCents,
-      nightDates: entry.nights,
-      firstNight: entry.stayStart,
-      consentStatus: consentStatusOf({
-        bookingGuestId: entry.guest.id,
-        memberId: entry.guest.memberId ?? null,
-      }),
-    })),
-    ...plan.proposedAddedGuests.map((entry) => ({
-      bookingGuestId: null,
-      memberId: entry.guest.memberId ?? null,
-      isMember: entry.guest.isMember,
-      perNightRates: entry.perNightCents,
-      nightDates: entry.nights,
-      firstNight: entry.stayStart,
-      consentStatus: consentStatusOf({
-        bookingGuestId: null,
-        memberId: entry.guest.memberId ?? null,
-      }),
-    })),
-  ];
-}
-
-/** One guest's nights as the promotion engine re-decides a code over them. */
-export type GuestNightRateForPromotion = {
-  bookingGuestId: string | null;
-  memberId: string | null;
-  isMember: boolean;
-  perNightRates: number[];
-  nightDates: Date[];
-  firstNight: Date;
-  consentStatus: MemberGuestConsentStatus | null;
-};
 
 type ProposedGuestPricingInput = {
   bookingGuestId?: string | null;
@@ -1962,13 +1904,10 @@ export async function calculateModifiedPricing(
     ? inProgressPlan.newTotalPriceCents
     : editedBookingTotalCents(booking, priceBreakdown.totalPriceCents);
   const consentStatusOf = proposedGuestConsentStatusReader(booking.guests, normalizedAddGuests);
-  // #4317 review round 3: an in-progress plan re-decides no promotion, so it
-  // hands none of these over - unless it capped the stored promotion at its new
-  // total, when the save re-decides it over the plan's own nights.
+  // An in-progress plan re-decides no promotion (#4317 review round 4: not even
+  // one it capped), so it hands none of these over.
   const guestNightRates = inProgressPlan
-    ? inProgressPlan.promotionCappedAtNewTotal
-      ? inProgressPlanGuestNightRates(inProgressPlan, consentStatusOf)
-      : []
+    ? []
     : guestsForPricing.map((guest, index) => ({
         memberId: guest.memberId ?? null,
         bookingGuestId: guest.bookingGuestId ?? null,
@@ -2175,11 +2114,17 @@ export async function applyPromoCodeChanges(
     todayAtClub: CalendarDate;
   },
 ): Promise<PromoChangeResult> {
-  // #4317 review round 3: a plan that capped the stored promotion at its new
-  // total re-decides it here, over the plan's nights (`guestNightRates`), so the
-  // promotion's records agree with the capped figure; every other in-progress
-  // plan keeps the stored promotion, stubbed below.
-  if (inProgressPlan && !inProgressPlan.promotionCappedAtNewTotal) {
+  // An in-progress plan keeps the stored promotion: never re-validated, never
+  // re-decided. Where the plan capped it at the new total, the stored records
+  // are scaled to the cap (#4317 review round 4, `capCarriedPromotionRecords`).
+  if (inProgressPlan) {
+    if (inProgressPlan.promotionCappedAtNewTotal) {
+      await capCarriedPromotionRecords(tx, {
+        bookingId,
+        storedPromoAdjustmentCents: booking.promoAdjustmentCents,
+        cappedPromoAdjustmentCents: inProgressPlan.newPromoAdjustmentCents,
+      });
+    }
     return {
       newDiscountCents: inProgressPlan.newDiscountCents,
       newPromoAdjustmentCents: inProgressPlan.newPromoAdjustmentCents,

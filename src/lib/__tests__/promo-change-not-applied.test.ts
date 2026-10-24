@@ -644,12 +644,27 @@ describe("applyPromoCodeChanges reports whether the promotion engine ran (#3179)
     expect(result.promoRemoved).toBe(false);
   });
 
-  it("re-decides an in-progress plan that capped its promotion at the new total (#4317 round 3)", async () => {
-    // The capped figure is not what the promotion's records say, so the save
-    // re-runs the engine over the plan's nights, as every re-deciding door does.
+  it("carries a capped in-progress promotion and scales its records, never re-deciding it (#4317 round 4)", async () => {
+    // The capped figure is the plan's; the stored redemption is kept, never
+    // re-validated, and scaled to the cap, so the engine does not run.
+    const redemption = {
+      id: "r1",
+      promoCodeId: "code-1",
+      bookingId: "b1",
+      memberId: "m1",
+      discountCents: 3_000,
+      priceAdjustmentCents: -3_000,
+      freeNightsUsed: null,
+      eligibleGuestCount: 1,
+      allocations: [{ memberId: "m1", discountCents: 3_000, priceAdjustmentCents: -3_000, freeNightsUsed: 0 }],
+    };
+    const capTx = { ...tx, promoRedemption: { findMany: vi.fn().mockResolvedValue([redemption]) } };
+    promoMocks.replacePromoRedemptionAllocations.mockClear();
+    promoMocks.validateAndCalculatePromoDiscount.mockClear();
     const result = await applyPromoCodeChanges(
-      tx as never,
+      capTx as never,
       baseArgs({
+        booking: { memberId: "m1", lodgeId: "lodge-1", discountCents: 3_000, promoAdjustmentCents: -3_000 },
         inProgressPlan: {
           newDiscountCents: 1_500,
           newPromoAdjustmentCents: -1_500,
@@ -658,7 +673,20 @@ describe("applyPromoCodeChanges reports whether the promotion engine ran (#3179)
       }) as never,
     );
 
-    expect(result.promoEngineRan).toBe(true);
+    expect(result.promoEngineRan).toBe(false);
+    expect(result.newPromoAdjustmentCents).toBe(-1_500);
+    expect(result.promoRemoved).toBe(false);
+    expect(promoMocks.validateAndCalculatePromoDiscount).not.toHaveBeenCalled();
+    expect(promoMocks.lockPromoCodeRowsForUpdate).toHaveBeenCalledWith(capTx, ["code-1"]);
+    expect(promoMocks.replacePromoRedemptionAllocations).toHaveBeenCalledWith(
+      capTx,
+      redemption,
+      1_500,
+      -1_500,
+      undefined,
+      1,
+      [{ memberId: "m1", discountCents: 1_500, priceAdjustmentCents: -1_500, freeNightsUsed: 0 }],
+    );
   });
 
   it("reports that it DID run on an ordinary edit — the CONTROL", async () => {
