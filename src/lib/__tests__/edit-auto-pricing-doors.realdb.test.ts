@@ -14,7 +14,14 @@
  *  - the batch edit (`modifyBookingBatch`): a guest added beside an existing
  *    guest with no usable rows (T1/T8), an extension of that guest (T4), and an
  *    in-progress shortening of a strand whose rows reach past its stored
- *    `stayEnd` (T6) beside one whose rows do not add up (T9).
+ *    `stayEnd` (T6) beside one whose rows do not add up (T9);
+ *  - the in-progress batch edit that leaves less to pay than the booking's
+ *    promotion takes off (#4317 review rounds 3 and 4): the code is carried,
+ *    never re-validated, and capped at what is left. Driven through the quote
+ *    route and the save, it pins quote = save, the scaled redemption and
+ *    allocation, which night rows survive, the money reconciliation and the
+ *    ledger's promotion lines - for an expired fixed code (guest-scope row) and
+ *    a 100% code (night-scope rows).
  *
  * Every case also asserts that no `ManualRefundTask` was written.
  *
@@ -41,6 +48,7 @@ const SEASON_ID = "race-4317-season";
 const BOOKING_ID = "race-4317-booking";
 const GUEST_A = "race-4317-guest-a";
 const GUEST_B = "race-4317-guest-b";
+const PROMO_CODE_ID = "race-4317-promo";
 
 /** Today's season rate for a non-member adult. */
 const RATE = 5_000;
@@ -68,6 +76,11 @@ let batchService: typeof import("@/lib/booking-batch-modification-service");
 let dateService: typeof import("@/lib/booking-date-modification-service");
 let removalService: typeof import("@/lib/booking-guest-removal-service");
 let clubTimeServer: typeof import("@/lib/club-time/server");
+let clubTimeKernel: typeof import("@/lib/club-time");
+let nightAdjustments: typeof import("@/lib/night-adjustment-write");
+let reconciliationStore: typeof import("@/lib/booking-money-reconciliation-store");
+let authModule: typeof import("@/lib/auth");
+let quoteRoute: typeof import("@/app/api/bookings/[id]/modify-quote/route");
 const pendingXeroWork: Promise<unknown>[] = [];
 let restoreXeroQueue: (() => void) | undefined;
 
@@ -116,9 +129,13 @@ async function clean(): Promise<void> {
   await prisma.bedAllocation.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.payment.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.bookingGuestNightAdjustment.deleteMany({ where: { bookingId: BOOKING_ID } });
+  await prisma.promoRedemptionGuestTarget.deleteMany({ where: { bookingId: BOOKING_ID } });
+  await prisma.promoRedemptionAllocation.deleteMany({ where: { bookingId: BOOKING_ID } });
+  await prisma.promoRedemption.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.bookingGuestNight.deleteMany({ where: { bookingGuest: { bookingId: BOOKING_ID } } });
   await prisma.bookingGuest.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.booking.deleteMany({ where: { id: BOOKING_ID } });
+  await prisma.promoCode.deleteMany({ where: { id: PROMO_CODE_ID } });
   if (errors.length > 0) {
     throw new AggregateError(errors, "#4317: a fixture's Xero enqueue failed; all work drained and owned fixtures cleaned");
   }
@@ -233,6 +250,126 @@ async function batch(input: Record<string, unknown>) {
   });
 }
 
+/**
+ * The booking's promotion as a live booking holds it: the code, its redemption,
+ * the engine's own figures written by the shared re-price on the day it was
+ * still valid, the per-night (or per-guest) rows, and the confirmation's
+ * PROMOTION line beside its night lines.
+ */
+async function seedPromotion(
+  code: { type: "FIXED_AMOUNT"; valueCents: number } | { type: "PERCENTAGE"; percentOff: number },
+  options: { validUntil?: string; pricedOn: string },
+): Promise<number> {
+  await prisma.promoCode.create({
+    data: {
+      id: PROMO_CODE_ID,
+      code: "RACE4317",
+      ...code,
+      ...(options.validUntil ? { validUntil: D(options.validUntil) } : {}),
+    },
+  });
+  await prisma.promoRedemption.create({
+    data: { promoCodeId: PROMO_CODE_ID, bookingId: BOOKING_ID, memberId: OWNER_ID, discountCents: 0 },
+  });
+  const promoAdjustmentCents = await prisma.$transaction(async (tx) => {
+    const stored = await tx.booking.findUniqueOrThrow({
+      where: { id: BOOKING_ID },
+      include: {
+        guests: { include: { nights: { orderBy: { stayDate: "asc" } } }, orderBy: { id: "asc" } },
+        promoRedemptions: {
+          include: {
+            guestTargets: { select: { bookingGuestId: true } },
+            promoCode: {
+              include: {
+                assignments: { select: { memberId: true } },
+                lodges: { select: { lodgeId: true } },
+              },
+            },
+          },
+        },
+      },
+    });
+    const repriced = await removalService.recalculateBookingPromo({
+      tx,
+      bookingId: BOOKING_ID,
+      booking: stored,
+      newTotalPriceCents: stored.totalPriceCents,
+      guestNightRates: stored.guests.map((guest) => ({
+        bookingGuestId: guest.id,
+        memberId: null,
+        isMember: false,
+        perNightRates: guest.nights.map((night) => night.priceCents ?? 0),
+        nightDates: guest.nights.map((night) => night.stayDate),
+        firstNight: guest.nights[0]!.stayDate,
+        consentStatus: null,
+      })),
+      todayAtClub: clubTimeKernel.requireCalendarDate(options.pricedOn),
+    });
+    await tx.booking.update({
+      where: { id: BOOKING_ID },
+      data: {
+        promoAdjustmentCents: repriced.newPromoAdjustmentCents,
+        discountCents: repriced.newDiscountCents,
+        finalPriceCents: stored.totalPriceCents + repriced.newPromoAdjustmentCents,
+      },
+    });
+    await nightAdjustments.recordBookingNightAdjustments(tx, {
+      bookingId: BOOKING_ID,
+      guestIds: stored.guests.map((guest) => guest.id),
+      targets: repriced.adjustmentTargets,
+      writer: "race 4317 seed",
+      format: CLUB_FORMAT_TEST,
+    });
+    return repriced.newPromoAdjustmentCents;
+  });
+  await prisma.bookingLedgerLine.create({
+    data: {
+      bookingId: BOOKING_ID,
+      side: "CHARGE",
+      kind: "PROMOTION",
+      sign: -1,
+      quantity: 1,
+      unitCents: -promoAdjustmentCents,
+      amountCents: promoAdjustmentCents,
+      anchorKind: "CONFIRMATION",
+      anchorId: BOOKING_ID,
+      narration: "race 4317 promotion",
+      lodgeId: LODGE_ID,
+      postingKey: "race-4317-confirm-promotion",
+    },
+  });
+  return promoAdjustmentCents;
+}
+
+/** What `POST /api/bookings/[id]/modify-quote` answers the officer, through the real route. */
+async function quote(body: Record<string, unknown>) {
+  const { NextRequest } = await import("next/server");
+  const session = { user: { id: OFFICER_ID, role: "ADMIN", accessRoles: ["ADMIN"], canLogin: true } };
+  const signedIn = vi.spyOn(authModule, "auth").mockResolvedValue(session as never);
+  try {
+    const response = await quoteRoute.POST(
+      new NextRequest(`http://localhost/api/bookings/${BOOKING_ID}/modify-quote`, {
+        method: "POST",
+        body: JSON.stringify(body),
+        headers: { "content-type": "application/json" },
+      }),
+      { params: Promise.resolve({ id: BOOKING_ID }) },
+    );
+    const json = await response.json();
+    expect(response.status, JSON.stringify(json)).toBe(200);
+    return json as {
+      newTotalPriceCents: number;
+      newDiscountCents: number;
+      newPromoAdjustmentCents: number;
+      newFinalPriceCents: number;
+      priceDiffCents: number;
+      changeFeeCents: number;
+    };
+  } finally {
+    signedIn.mockRestore();
+  }
+}
+
 async function removeGuest(guestId: string) {
   return prisma.$transaction(
     (tx) =>
@@ -261,6 +398,11 @@ async function removeGuest(guestId: string) {
       dateService = await import("@/lib/booking-date-modification-service");
       removalService = await import("@/lib/booking-guest-removal-service");
       clubTimeServer = await import("@/lib/club-time/server");
+      clubTimeKernel = await import("@/lib/club-time");
+      nightAdjustments = await import("@/lib/night-adjustment-write");
+      reconciliationStore = await import("@/lib/booking-money-reconciliation-store");
+      authModule = await import("@/lib/auth");
+      quoteRoute = await import("@/app/api/bookings/[id]/modify-quote/route");
       const xeroQueue = await import("@/lib/xero-booking-edit-settlement");
       const queue = xeroQueue.queueXeroBookingEditSettlement;
       const spy = vi.spyOn(xeroQueue, "queueXeroBookingEditSettlement").mockImplementation((input) => {
@@ -535,6 +677,141 @@ async function removeGuest(guestId: string) {
       expect((await guestRow(GUEST_B)).priceCents).toBe(20_101 - 5_025);
       expect((await rowsOf(GUEST_B)).map((row) => row[1])).toEqual([5_026, 5_025, 5_025]);
       await noReviewRaised();
+    });
+
+    describe("batch in progress, a promotion larger than what is left (#4317 review rounds 3 and 4)", () => {
+      // Under way since the 30th, eight $50 nights: $400. The frozen day is 1 July.
+      const EIGHT = ["06-30", "07-01", "07-02", "07-03", "07-04", "07-05", "07-06", "07-07"].map((day) => ({
+        day: `2026-${day}`,
+        cents: RATE,
+      }));
+
+      const CASES = [
+        {
+          name: "an EXPIRED fixed $350 code, two nights cut: refunded, never charged; its guest-scope row cannot be carried",
+          code: { type: "FIXED_AMOUNT" as const, valueCents: 35_000 },
+          // Valid when it was redeemed, expired the day before the edit.
+          validUntil: "2026-06-30",
+          newCheckOut: "2026-07-06",
+          // $300 left: the $350 code is capped at $300, so the stay costs $0
+          // and the $50 paid comes back.
+          expected: { total: 30_000, promo: -30_000, final: 0, priceDiff: -5_000 },
+          // The stored row is the engine's -$350 for the guest; no rule may
+          // rewrite it to -$300 (INV-MONEY-029), so none is carried.
+          rows: [] as Array<[string | null, number]>,
+          reconciliation: { state: "UNRECONCILED", reasons: ["PROMO_BUILD_UP_NOT_KNOWN"] },
+        },
+        {
+          name: "a 100% code, cut to the two nights already slept: the rows on the nights that remain reconcile, so they are carried",
+          code: { type: "PERCENTAGE" as const, percentOff: 100 },
+          validUntil: undefined,
+          newCheckOut: "2026-07-02",
+          expected: { total: 10_000, promo: -10_000, final: 0, priceDiff: 0 },
+          rows: [
+            ["2026-06-30", -RATE],
+            ["2026-07-01", -RATE],
+          ] as Array<[string | null, number]>,
+          reconciliation: { state: "RECONCILED", reasons: [] },
+        },
+      ];
+
+      it.each(CASES)("$name", async (scenario) => {
+        await seed({
+          checkIn: "2026-06-30",
+          checkOut: "2026-07-08",
+          status: "PAID",
+          guests: [{ id: GUEST_A, total: 8 * RATE, nights: EIGHT }],
+        });
+        const storedPromo = await seedPromotion(scenario.code, { validUntil: scenario.validUntil, pricedOn: "2026-06-15" });
+        await confirmGuest(GUEST_A, EIGHT);
+        const before = await booking();
+        // The seed is a coherent booking: every identity holds before the edit.
+        expect(await reconciliationStore.readBookingMoneyReconciliation(prisma, BOOKING_ID)).toEqual({
+          state: "RECONCILED",
+          reasons: [],
+        });
+        const counterBefore = (await prisma.promoCode.findUniqueOrThrow({ where: { id: PROMO_CODE_ID } }))
+          .currentRedemptions;
+
+        const quoted = await quote({ checkOut: scenario.newCheckOut });
+        const result = await batch({ checkOut: scenario.newCheckOut, settlementMethod: "card" });
+        const after = await booking();
+
+        // Quote = save, and both are the carried code capped at what is left.
+        expect(quoted.newTotalPriceCents).toBe(after.totalPriceCents);
+        expect(quoted.newPromoAdjustmentCents).toBe(after.promoAdjustmentCents);
+        expect(quoted.newDiscountCents).toBe(after.discountCents);
+        expect(quoted.newFinalPriceCents).toBe(after.finalPriceCents);
+        expect(quoted.priceDiffCents).toBe(result.priceDiffCents);
+        expect(quoted.changeFeeCents).toBe(result.changeFeeCents);
+        expect({
+          total: after.totalPriceCents,
+          promo: after.promoAdjustmentCents,
+          final: after.finalPriceCents,
+          priceDiff: result.priceDiffCents,
+        }).toEqual(scenario.expected);
+        expect(after.discountCents).toBe(-scenario.expected.promo);
+        expect(result.promoRemoved).toBe(false);
+
+        // The redemption stays, scaled to the cap with its holder's allocation;
+        // the code was never re-validated, so its count is untouched.
+        const redemptions = await prisma.promoRedemption.findMany({
+          where: { bookingId: BOOKING_ID },
+          include: { allocations: true },
+        });
+        expect(redemptions).toHaveLength(1);
+        expect(redemptions[0]).toMatchObject({
+          promoCodeId: PROMO_CODE_ID,
+          priceAdjustmentCents: scenario.expected.promo,
+          discountCents: -scenario.expected.promo,
+        });
+        expect(redemptions[0]!.allocations.map((allocation) => [allocation.memberId, allocation.priceAdjustmentCents])).toEqual([
+          [OWNER_ID, scenario.expected.promo],
+        ]);
+        expect(
+          (await prisma.promoCode.findUniqueOrThrow({ where: { id: PROMO_CODE_ID } })).currentRedemptions,
+        ).toBe(counterBefore);
+
+        // The night rows: carried byte for byte where they still reconcile.
+        const rows = await prisma.bookingGuestNightAdjustment.findMany({
+          where: { bookingId: BOOKING_ID },
+          include: { bookingGuestNight: { select: { stayDate: true } } },
+        });
+        expect(
+          rows
+            .map((row): [string | null, number] => [
+              row.bookingGuestNight?.stayDate.toISOString().slice(0, 10) ?? null,
+              row.amountCents ?? Number.NaN,
+            ])
+            .sort(([a], [b]) => String(a).localeCompare(String(b))),
+        ).toEqual(scenario.rows);
+        expect(await reconciliationStore.readBookingMoneyReconciliation(prisma, BOOKING_ID)).toEqual(
+          scenario.reconciliation,
+        );
+
+        // The ledger posts the edit: the nights given back, the old promotion
+        // reversed and the capped one posted, adding up to the movement.
+        const modification = await prisma.bookingModification.findFirstOrThrow({ where: { bookingId: BOOKING_ID } });
+        const posted = await prisma.bookingLedgerLine.findMany({
+          where: { bookingId: BOOKING_ID, anchorKind: "MODIFICATION", anchorId: modification.id },
+        });
+        const promotionLines = posted
+          .filter((line) => line.kind === "PROMOTION")
+          .map((line) => line.sign * line.unitCents * line.quantity)
+          .sort((a, b) => a - b);
+        expect(promotionLines).toEqual([scenario.expected.promo, -storedPromo].sort((a, b) => a - b));
+        expect(posted.reduce((sum, line) => sum + line.sign * line.unitCents * line.quantity, 0)).toBe(
+          result.priceDiffCents + result.changeFeeCents,
+        );
+        const charged = await prisma.bookingLedgerLine.findMany({
+          where: { bookingId: BOOKING_ID, kind: { in: ["GUEST_NIGHT", "PROMOTION"] } },
+        });
+        expect(charged.reduce((sum, line) => sum + line.sign * line.unitCents * line.quantity, 0)).toBe(
+          after.finalPriceCents,
+        );
+        expect(before.finalPriceCents + result.priceDiffCents).toBe(after.finalPriceCents);
+        await noReviewRaised();
+      });
     });
   },
 );
