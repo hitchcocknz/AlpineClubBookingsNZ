@@ -1506,8 +1506,8 @@ peculiar to each:
   not the stored stay envelope (`INV-DATE-020`), and its result is priced-only.
   It carries the stored promotion, never re-validated, capped at the new total;
   the save scales the stored redemptions to the cap in proportion
-  (`capCarriedPromotionRecords`) and keeps a night row only where the rows left
-  still reconcile (`INV-MONEY-029`);
+  (`capCarriedPromotionRecords`), then the night rows left on the stay
+  (`INV-MONEY-029`'s one exception);
 - the single-guest removal, `removeBookingGuestInTransaction`
   (`src/lib/booking-guest-removal-service.ts`), from the guest DELETE route
   (#3032). It credits the guest's stored `priceCents` and keeps every remaining

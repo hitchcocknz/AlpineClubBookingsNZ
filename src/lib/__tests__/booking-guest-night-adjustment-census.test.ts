@@ -182,17 +182,19 @@ const PROMO_WRITERS: Record<string, (code: string) => void> = {
     expect(precedes(code, SNAPSHOT, /\bawait applyGuestChanges\(/)).toBe(true);
     expect(precedes(code, /\bawait applyGuestChanges\(/, RESTORE)).toBe(true);
     expect(code).toMatch(/promoEngineRan: false as const,\s*\}\s*:\s*await applyPromoCodeChanges\(/);
-    // #4317 review round 4: a capped in-progress promotion keeps only the stored
-    // rows that still reconcile to its scaled records.
+    // #4317 review round 4: a capped in-progress promotion's rows left on the
+    // stay are scaled to its scaled records (INV-MONEY-029's one exception).
     expect(code).toMatch(
       /restoreBookingNightAdjustments\(tx, \{[\s\S]{0,300}survivorsOnly: pricingResult\.inProgressPlan\?\.promotionCappedAtNewTotal === true/,
     );
   },
   "src/lib/carried-promotion-cap.ts": (code) => {
+    // (The rows are scaled to these figures in the writer module itself; see
+    // "keeps the one rule-derived amount ..." below.)
     // #4317 review round 4: scales a capped in-progress promotion's stored
-    // redemptions and allocations. It computes no row amount and records none
-    // (INV-MONEY-029); its one caller's save carries the stored rows that still
-    // reconcile to the scaled figures, after the night rewrite (above).
+    // redemptions and allocations. It computes no row amount and records none;
+    // its one caller's save scales the rows left on the stay to these figures,
+    // after the night rewrite (above).
     expect(code).toMatch(/await replacePromoRedemptionAllocations\(/);
     expect(code).not.toMatch(RECORD);
     expect(code).not.toMatch(/amountCents/);
@@ -293,6 +295,22 @@ describe("INV-MONEY-029 night adjustment build-up census", () => {
     const writerModule = read(MODULE);
     expect(writerModule).toMatch(/export function deriveNightAdjustmentState\(/);
     expect(writerModule).not.toMatch(/adjustmentsState/);
+  });
+
+  it("keeps the one rule-derived amount to the capped in-progress carry (#4317, owner decision 24 Oct 2026 on #4302)", () => {
+    // INV-MONEY-029's exception: a capped carried promotion's surviving rows are
+    // scaled to the cap. One function computes it, the restore calls it once,
+    // and only on the survivorsOnly branch the batch save sets for a capped plan.
+    const writer = read(MODULE);
+    expect(writer).toMatch(/export function scaleCappedCarriedRows\(/);
+    expect(writer.match(/\bscaleCappedCarriedRows\(/g)).toHaveLength(2);
+    expect(writer).toMatch(/if \(params\.survivorsOnly\) \{\s*const scaled = scaleCappedCarriedRows\(/);
+    expect(writer.match(/\bapportionCents\(/g)).toHaveLength(1);
+    for (const file of SOURCE) {
+      const relative = relativeSource(file);
+      if (relative === MODULE) continue;
+      expect(stripComments(readFileSync(file, "utf8")), relative).not.toMatch(/\bscaleCappedCarriedRows\(/);
+    }
   });
 
   it("pairs every promotion writer with the recorder, in the order the night rows allow", () => {

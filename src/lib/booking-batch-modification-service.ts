@@ -1676,8 +1676,8 @@ export async function modifyBookingBatch({
       await restoreBookingNightAdjustments(tx, {
         snapshot: carriedAdjustments,
         writer: "the booking modification",
-        // #4317 review round 4: the capped promotion's scaled records keep only
-        // the rows that still reconcile to them.
+        // #4317 review round 4: a capped promotion's rows left on the stay are
+        // scaled to its scaled records (INV-MONEY-029's one exception).
         survivorsOnly: pricingResult.inProgressPlan?.promotionCappedAtNewTotal === true,
       });
     }

@@ -17,46 +17,22 @@
  *  - the redemption rows stay in place, guest targets and counters included —
  *    only `replacePromoRedemptionAllocations`, the writer every re-price uses,
  *    touches them, under the promo row locks (INV-MONEY-023);
- *  - no night-adjustment amount is computed here. The save carries the stored
- *    rows on the nights that remain, byte for byte, only where they still
- *    reconcile to the scaled figures (`restoreBookingNightAdjustments`,
- *    `survivorsOnly`); otherwise the build-up derives as not known
- *    (INV-MONEY-029: an amount is the engine's own figure, never a rule's).
+ *  - no night-adjustment row is written here. After the night rewrite the save
+ *    scales the stored rows on the nights that remain to these figures
+ *    (`restoreBookingNightAdjustments`, `survivorsOnly`) — the one rule-derived
+ *    amount INV-MONEY-029 allows (owner decision 24 Oct 2026 on #4302).
  */
 import type { Prisma } from "@prisma/client";
 
 import { bookingDiscountCents } from "@/lib/booking-final-price";
 import logger from "@/lib/logger";
+import { apportionCents } from "@/lib/night-price-runs";
 import { memberBenefitAllocations } from "@/lib/night-adjustment-write";
 import {
   lockPromoCodeRowsForUpdate,
   replacePromoRedemptionAllocations,
   type PromoBeneficiaryAllocation,
 } from "@/lib/promo";
-
-/**
- * Split `totalCents` across entries in proportion to their `weights`, in whole
- * cents that add up to it exactly. Each share is truncated toward zero; the
- * cents truncation leaves go one each to the earliest entries with a weight,
- * the way an even split puts its leftover cents on the earliest nights
- * (`evenlySplitCents`). The weights must not sum to zero.
- */
-export function apportionCents(totalCents: number, weights: readonly number[]): number[] {
-  const weightSum = weights.reduce((sum, weight) => sum + weight, 0);
-  if (weightSum === 0) {
-    throw new Error("apportionCents: the weights sum to zero, so there is no proportion to keep");
-  }
-  const shares = weights.map((weight) => Math.trunc((totalCents * weight) / weightSum));
-  let leftover = totalCents - shares.reduce((sum, share) => sum + share, 0);
-  const step = Math.sign(leftover);
-  const weighted = weights.flatMap((weight, index) => (weight === 0 ? [] : [index]));
-  for (let turn = 0; leftover !== 0; turn += 1) {
-    const at = weighted[turn % weighted.length]!;
-    shares[at] = shares[at]! + step;
-    leftover -= step;
-  }
-  return shares;
-}
 
 /** A stored redemption, as the cap reads it. */
 export type CarriedRedemption = {

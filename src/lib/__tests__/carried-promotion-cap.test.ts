@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { apportionCents, scaleCarriedRedemptions, type CarriedRedemption } from "@/lib/carried-promotion-cap";
+import { scaleCarriedRedemptions, type CarriedRedemption } from "@/lib/carried-promotion-cap";
+import { apportionCents } from "@/lib/night-price-runs";
 
 /**
  * #4317 review round 4 (epic #4302): AN IN-PROGRESS EDIT CARRIES ITS PROMOTION

@@ -64,7 +64,11 @@ so `main` grew it where no register was watching, and the merge took that side
 cleanly without a conflict. The number is therefore re-measured rather than
 enforced downward, for the same reason nothing was reworded to fit above. What
 the shrink-only rule protects is this branch's own edits, and it still does:
-every row an epic child touches may only go down. When the last row goes,
+every row an epic child touches may only go down — with one owner-decided
+exception: `INV-MONEY-029` went 655 to 732 on #4317, because the owner amended
+the rule itself (24 Oct 2026, on #4302: a capped carried promotion's night rows
+are scaled, the one rule-derived amount it allows), and an amendment the owner
+decides is new rule text, not drift to be compacted. When the last row goes,
 delete this section — and when the exceptions table is also empty, delete this
 file; the checker treats an absent register as "no exceptions, no debt".
 
@@ -105,7 +109,7 @@ file; the checker treats an absent register as "no exceptions, no debt".
 | `INV-HOST-049` | 715 |
 | `INV-HOST-029` | 707 |
 | `INV-MOD-021` | 672 |
-| `INV-MONEY-029` | 655 |
+| `INV-MONEY-029` | 732 |
 | `INV-LIFE-062` | 639 |
 | `INV-ADDPAY-017` | 637 |
 | `INV-PRIV-013` | 627 |

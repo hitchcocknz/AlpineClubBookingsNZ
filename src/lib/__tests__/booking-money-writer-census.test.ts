@@ -74,7 +74,7 @@ const REVIEWED_WRITERS = [
   "src/lib/group-cancel.ts|booking|opaquePayload||1",
   "src/lib/internet-banking-payment-cron.ts|booking|opaquePayload||1",
   "src/lib/member-guest-consent-service.ts|bookingGuest|opaquePayload||1",
-  // #4317 review round 4: +1, the capped in-progress carry clears the rows when the ones left do not reconcile (no amount written).
+  // #4317 review round 4: +1, the capped in-progress carry clears the rows when none is left to scale; its createMany writes the rows it scaled to the cap (scaleCappedCarriedRows, INV-MONEY-029's one rule-derived amount, owner decision 24 Oct 2026 on #4302).
   "src/lib/night-adjustment-write.ts|bookingGuestNightAdjustment|createMany,deleteMany,opaquePayload|amountCents|5",
   "src/lib/payment-reconciliation.ts|booking|opaquePayload||1",
   "src/lib/promo.ts|promoRedemption|create,delete,update|discountCents,priceAdjustmentCents|3",

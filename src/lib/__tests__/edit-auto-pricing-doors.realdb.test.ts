@@ -19,7 +19,7 @@
  *    promotion takes off (#4317 review rounds 3 and 4): the code is carried,
  *    never re-validated, and capped at what is left. Driven through the quote
  *    route and the save, it pins quote = save, the scaled redemption and
- *    allocation, which night rows survive, the money reconciliation and the
+ *    allocation, the night rows left on the stay, the money reconciliation and the
  *    ledger's promotion lines - for an expired fixed code (guest-scope row) and
  *    a 100% code (night-scope rows).
  *
@@ -697,7 +697,7 @@ async function removeGuest(guestId: string) {
 
       const CASES = [
         {
-          name: "an EXPIRED fixed $350 code, two nights cut: refunded, never charged; its guest-scope row cannot be carried",
+          name: "an EXPIRED fixed $350 code, two nights cut: refunded, never charged; its guest-scope row is scaled to the cap",
           code: { type: "FIXED_AMOUNT" as const, valueCents: 35_000 },
           // Valid when it was redeemed, expired the day before the edit.
           validUntil: "2026-06-30",
@@ -705,10 +705,11 @@ async function removeGuest(guestId: string) {
           // $300 left: the $350 code is capped at $300, so the stay costs $0
           // and the $50 paid comes back.
           expected: { total: 30_000, promo: -30_000, final: 0, priceDiff: -5_000 },
-          // The stored row is the engine's -$350 for the guest; no rule may
-          // rewrite it to -$300 (INV-MONEY-029), so none is carried.
-          rows: [] as Array<[string | null, number]>,
-          reconciliation: { state: "UNRECONCILED", reasons: ["PROMO_BUILD_UP_NOT_KNOWN"] },
+          // The stored row is the engine's -$350 for the guest; it is scaled
+          // to the capped -$300 (INV-MONEY-029's one exception, owner decision
+          // 24 Oct 2026 on #4302), so the booking reconciles fully.
+          rows: [[null, -30_000]] as Array<[string | null, number]>,
+          reconciliation: { state: "RECONCILED", reasons: [] },
         },
         {
           name: "a 100% code, cut to the two nights already slept: the rows on the nights that remain reconcile, so they are carried",
@@ -781,7 +782,8 @@ async function removeGuest(guestId: string) {
           (await prisma.promoCode.findUniqueOrThrow({ where: { id: PROMO_CODE_ID } })).currentRedemptions,
         ).toBe(counterBefore);
 
-        // The night rows: carried byte for byte where they still reconcile.
+        // The night rows left on the stay, scaled to the cap where they no
+        // longer add up to it, byte for byte where they do.
         const rows = await prisma.bookingGuestNightAdjustment.findMany({
           where: { bookingId: BOOKING_ID },
           include: { bookingGuestNight: { select: { stayDate: true } } },

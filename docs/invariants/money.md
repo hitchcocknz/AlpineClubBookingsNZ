@@ -310,8 +310,8 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   whose arithmetic is per night; the GUEST for a fixed-amount promotion, which
   is `min(value, guest total)` with no per-night rule. The amount is the
   engine's own figure — the very term its totals were summed from — never
-  translated to a finer grain by a rule. It is a signed delta in integer cents
-  like `priceAdjustmentCents`: negative for a discount, positive where a
+  translated to a finer grain by a rule, bar the one exception below. It is a
+  signed delta in integer cents like `priceAdjustmentCents`: negative for a discount, positive where a
   `SET_PRICE` code raised a night, and `0` where it set a night to exactly its
   rate, a real value. A row's beneficiary is decided in the same
   function and branch that decides the allocation it decomposes
@@ -320,7 +320,7 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   that member's `PromoRedemptionAllocation.priceAdjustmentCents` (an absent
   allocation row means the member received nothing, per `INV-MONEY-005`) and,
   overall, to `PromoRedemption.priceAdjustmentCents`. The one writer of an
-  AMOUNT, `recordBookingNightAdjustments` in `night-adjustment-write.ts`
+  engine AMOUNT, `recordBookingNightAdjustments` in `night-adjustment-write.ts`
   (a member merge only moves or deletes rows and never invents one), enforces
   it at write time and REFUSES BEFORE IT MUTATES — every read and check
   precedes its first write, so a refusal rolls the edit back; the waitlist
@@ -344,7 +344,13 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   mechanical rewrite that moves no money (a name-only correction, an
   in-progress extension, an admin date shift) carries the recorded rows across
   by guest and stay date byte for byte, and where it cannot, leaves the
-  booking's rows absent rather than guess. A member merge that drops a
+  booking's rows absent rather than guess. **The one exception** (owner
+  decision 24 Oct 2026 on #4302; #4317): an in-progress edit that caps its
+  carried promotion at the new total scales the stored rows left on the stay,
+  per redemption and beneficiary, in proportion to their stored amounts,
+  leftover cents on the earliest night, to the capped allocations
+  (`scaleCappedCarriedRows`, written by `restoreBookingNightAdjustments`); with
+  no row left to scale from it writes none, and the build-up is not known. A member merge that drops a
   duplicate's colliding allocation deletes that duplicate's rows on the same
   redemption in the same step, so each surviving allocation still matches its
   rows per beneficiary — but the redemption total still carries the dropped
