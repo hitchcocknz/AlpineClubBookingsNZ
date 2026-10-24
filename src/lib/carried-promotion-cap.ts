@@ -223,13 +223,17 @@ function earliestNightFirst(a: CarriedRowHeld, b: CarriedRowHeld): number {
  *
  * EACH CODE ON ITS OWN: a redemption whose rows cannot be scaled honestly gets
  * none (`null` for each), so its build-up reads not known while another code's
- * rows, and its own Xero line (INV-MONEY-040), stand. That is a redemption with
- * a NOT KNOWN amount among its rows; a beneficiary with an allocation and no
- * row left to scale from; a beneficiary whose rows mix signs (a `SET_PRICE`
- * code's raises beside its discounts: no proportion is meaningful); a scale
- * that would take more off a night than it is priced at, or off a guest's row
- * than the guest's total (the engine's own `min(value, total)`), or raise a
- * night further than it was raised; and a result that does not reconcile. A row
+ * rows stand. (While any code reads not known, the booking's build-up and its
+ * Xero promotion lines fall back to the one aggregate, `planPromoAdjustmentLines`.)
+ * That is a redemption with a NOT KNOWN amount among its rows; a beneficiary
+ * with an allocation and no row left to scale from; a beneficiary whose rows mix
+ * signs (a `SET_PRICE` code's raises beside its discounts: no proportion is
+ * meaningful); a scale that would take more off a night than it is priced at,
+ * or off a guest-scope row than its guest's held total, or raise a night
+ * further than it was raised; and a result that does not reconcile. Then,
+ * ACROSS CODES, no guest may end with more taken off than the guest's held total
+ * (#4317 review round 7: two codes each in bounds can together exceed it);
+ * where one would, every code with a row on that guest writes none. A row
  * naming no redemption the booking carries is not written. Pure: the writer is
  * handed it by the batch save for a capped plan and writes what it returns.
  */
@@ -246,8 +250,35 @@ export const scaleCappedCarriedRows: CappedCarryScaler = (rows, redemptions) => 
       amounts[index] = scaled === null ? null : scaled[at]!;
     });
   }
+  // Across codes, guest by guest. Clearing a code can only remove a discount,
+  // or a raise that was offsetting one, so repeat until no guest is over.
+  for (let over = guestOverItsTotal(rows, amounts); over !== null; over = guestOverItsTotal(rows, amounts)) {
+    const involved = new Set(
+      rows.flatMap((row, index) =>
+        row.bookingGuestId === over && amounts[index] !== null ? [row.promoRedemptionId] : [],
+      ),
+    );
+    rows.forEach((row, index) => {
+      if (involved.has(row.promoRedemptionId)) amounts[index] = null;
+    });
+  }
   return amounts;
 };
+
+/** The first guest whose rows, across every code, take off more than the guest's held total. */
+function guestOverItsTotal(rows: CarriedRowHeld[], amounts: Array<number | null>): string | null {
+  const taken = new Map<string, number>();
+  rows.forEach((row, index) => {
+    const cents = amounts[index];
+    if (cents !== null && cents !== undefined) {
+      taken.set(row.bookingGuestId, (taken.get(row.bookingGuestId) ?? 0) + cents);
+    }
+  });
+  for (const row of rows) {
+    if (-(taken.get(row.bookingGuestId) ?? 0) > row.guestHeldCents) return row.bookingGuestId;
+  }
+  return null;
+}
 
 /** One redemption's rows (`mine`, indexes into `rows`) scaled to its records, or `null`. */
 function scaleOneRedemption(

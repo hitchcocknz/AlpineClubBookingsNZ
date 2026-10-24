@@ -614,7 +614,8 @@ export async function restoreBookingNightAdjustments(
         return abandonCarry(writer, snapshot.bookingId, `guest ${row.bookingGuestId} is gone`);
       }
       rows.push({ ...base, bookingGuestNightId: null, bookingGuestId: row.bookingGuestId });
-      kept.push({ ...row, heldPriceCents: guestPriceById.get(row.bookingGuestId)! });
+      const guestHeldCents = guestPriceById.get(row.bookingGuestId)!;
+      kept.push({ ...row, heldPriceCents: guestHeldCents, guestHeldCents });
       continue;
     }
     const target = shifted(row.stayDate);
@@ -629,7 +630,7 @@ export async function restoreBookingNightAdjustments(
       );
     }
     rows.push({ ...base, bookingGuestNightId, bookingGuestId: null });
-    kept.push({ ...row, heldPriceCents: night!.priceCents });
+    kept.push({ ...row, heldPriceCents: night!.priceCents, guestHeldCents: guestPriceById.get(row.bookingGuestId) ?? 0 });
   }
   const carried = rows.length;
   if (params.scaleSurvivors) {
@@ -668,8 +669,11 @@ export type RecordedPromoTotals = ReadonlyArray<{
   allocations: ReadonlyArray<{ memberId: string | null; priceAdjustmentCents: number }>;
 }>;
 
-/** A surviving row, with the price of the night (or guest) it is left on. */
-export type CarriedRowHeld = CarriedNightAdjustments["rows"][number] & { heldPriceCents: number | null };
+/** A surviving row, with the price of the night (or guest) it is left on, and its guest's held total. */
+export type CarriedRowHeld = CarriedNightAdjustments["rows"][number] & {
+  heldPriceCents: number | null;
+  guestHeldCents: number;
+};
 
 /**
  * The new amount of each surviving row, in order; `null` writes that row not.

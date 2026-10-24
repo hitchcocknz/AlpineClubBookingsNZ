@@ -148,7 +148,13 @@ describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner deci
   const row = (
     stayDate: Date | null,
     amountCents: number | null,
-    extra: Partial<{ bookingGuestId: string; beneficiaryMemberId: string; promoRedemptionId: string; heldPriceCents: number | null }> = {},
+    extra: Partial<{
+      bookingGuestId: string;
+      beneficiaryMemberId: string;
+      promoRedemptionId: string;
+      heldPriceCents: number | null;
+      guestHeldCents: number;
+    }> = {},
   ) => ({
     kind: "PROMO" as const,
     amountCents,
@@ -158,6 +164,7 @@ describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner deci
     bookingGuestId: "guest-a",
     stayDate,
     heldPriceCents: 10_000,
+    guestHeldCents: 100_000,
     ...extra,
   });
   const recorded = (priceAdjustmentCents: number, allocations: Array<[string | null, number]>, id = "redemption-1") => ({
@@ -263,6 +270,46 @@ describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner deci
       expect(scaleCappedCarriedRows([], [recorded(-3_000, [["booker", -3_000]])])).toEqual([]);
     });
 
+    describe("ACROSS CODES, no guest may end with more off than the guest's held total (round 7)", () => {
+      // Three guests at $200 each ($100 a night). A fixed code's guest rows on
+      // G1 and G2, and a 50% code's night rows on G1 and G3, each scaled within
+      // its own bounds - but G1 ends -$128.57 + -$85.72 = -$214.29 against $200.
+      const G = (id: string) => ({ bookingGuestId: id, guestHeldCents: 20_000 });
+      const lensRows = (g1HeldCents: number) => [
+        row(null, -15_000, { ...G("g1"), guestHeldCents: g1HeldCents, heldPriceCents: g1HeldCents }),
+        row(null, -15_000, { ...G("g2"), heldPriceCents: 20_000 }),
+        row(N1, -5_000, { ...G("g1"), guestHeldCents: g1HeldCents, promoRedemptionId: "redemption-2" }),
+        row(N2, -5_000, { ...G("g1"), guestHeldCents: g1HeldCents, promoRedemptionId: "redemption-2" }),
+        row(N1, -5_000, { ...G("g3"), promoRedemptionId: "redemption-2" }),
+        row(N2, -5_000, { ...G("g3"), promoRedemptionId: "redemption-2" }),
+      ];
+      const lensCodes = [
+        recorded(-25_714, [["booker", -25_714]]),
+        recorded(-17_143, [["booker", -17_143]], "redemption-2"),
+      ];
+
+      it("LENS: G1 would end at -$214.29 against $200, so both codes on G1 write none", () => {
+        expect(scaleCappedCarriedRows(lensRows(20_000), lensCodes)).toEqual([null, null, null, null, null, null]);
+      });
+
+      it("CONTROL: with G1 held at $250, every code stands, scaled", () => {
+        expect(scaleCappedCarriedRows(lensRows(25_000), lensCodes)).toEqual([
+          -12_857, -12_857, -4_286, -4_286, -4_286, -4_285,
+        ]);
+      });
+
+      it("a code on no over-total guest is left standing", () => {
+        // G3's own code is the 50% code, which also sits on G1: it goes. A third
+        // code only on G2 stays.
+        const rows = [
+          ...lensRows(20_000),
+          row(N1, -1_000, { ...G("g2"), promoRedemptionId: "redemption-3" }),
+        ];
+        const codes = [...lensCodes, recorded(-1_000, [["booker", -1_000]], "redemption-3")];
+        expect(scaleCappedCarriedRows(rows, codes)).toEqual([null, null, null, null, null, null, -1_000]);
+      });
+    });
+
     it("a row naming no code the booking carries is not written", () => {
       expect(scaleCappedCarriedRows([row(N1, -5_000, { promoRedemptionId: "gone" })], [])).toEqual([null]);
     });
@@ -276,7 +323,7 @@ describe("carriedCapRowScaler: the scaler the save hands the writer (round 6)", 
     // Records left unscaled: rows that already reconcile to them are still
     // cleared, because the booking's own figure was capped beneath them.
     const clear = carriedCapRowScaler(false)!;
-    const row = { kind: "PROMO" as const, amountCents: -5_000, promoRedemptionId: "r", promoCodeId: "c", beneficiaryMemberId: "m", bookingGuestId: "g", stayDate: null, heldPriceCents: 9_000 };
+    const row = { kind: "PROMO" as const, amountCents: -5_000, promoRedemptionId: "r", promoCodeId: "c", beneficiaryMemberId: "m", bookingGuestId: "g", stayDate: null, heldPriceCents: 9_000, guestHeldCents: 9_000 };
     const recorded = [{ id: "r", priceAdjustmentCents: -5_000, allocations: [{ memberId: "m", priceAdjustmentCents: -5_000 }] }];
     expect(clear([row], recorded)).toEqual([null]);
     expect(carriedCapRowScaler(true)!([row], recorded)).toEqual([-5_000]);
