@@ -224,6 +224,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-041` | Invoice minting is fenced at enqueue, at settle, and in the handler |
 | `INV-PAY-042` | Inbound Xero PAID on a manually settled booking is raised, never ignored |
 | `INV-PAY-043` | The recorded settler is kept; every other capture is refunded |
+| `INV-PAY-138` | A superseded card capture never settles its booking |
 | `INV-PAY-102` | Card then bank: every card door fenced; inbound raises the conflict |
 | `INV-PAY-044` | Manually settled cancellation yields a durable `ManualRefundTask`, never a card refund |
 | `INV-PAY-045` | Reversal is permitted only while nothing has happened it could not undo |
