@@ -407,7 +407,7 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
      * recount reads the note as live and owes $150; B's finds $50 right and
      * writes nothing.
      */
-    async function voidBetweenReadAndClaim(kase: Case, paymentId: string) {
+    async function voidBetweenReadAndClaim(kase: Case, paymentId: string, inWindow?: () => Promise<void>) {
       await seed(kase);
       await prisma.payment.update({ where: { id: paymentId }, data: { refundedAmountCents: 5_000 } });
       let current = reading("AUTHORISED", EARLY);
@@ -430,14 +430,18 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
           void a.catch(() => undefined);
           try {
             await Promise.race([atClaim, a.then(() => { throw new Error("A finished before its claim"); })]);
-            current = reading("VOIDED", LATE);
-            await reconcileXeroCreditNote(NOTE);
+            if (inWindow) {
+              await inWindow();
+            } else {
+              current = reading("VOIDED", LATE);
+              await reconcileXeroCreditNote(NOTE);
+            }
             expect(await refunded(paymentId)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
           } finally {
             release();
           }
           const result = await a;
-          expect(await state(kase)).toMatchObject({ active: false, status: "VOIDED" });
+          expect(await state(kase)).toMatchObject(inWindow ? { active: false } : { active: false, status: "VOIDED" });
           // F3: A wrote, so its audit says so, though the recount put the figure back.
           expect(result.updatedRefundedPayments).toBe(1);
           return result;
@@ -451,6 +455,14 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       await voidBetweenReadAndClaim("bank-transfer per-refund", BT);
       // A's claim saw no Payment change (the void moves none). Before the
       // re-read after its claim, it left $150 against a VOIDED note.
+      expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("MUTATION (round 5, F4): a live row deactivated between A's read and its claim recounts too - judged by the rule that counted it", async () => {
+      await voidBetweenReadAndClaim("bank-transfer per-refund", BT, async () => {
+        // Retired, still AUTHORISED: no longer counted, though not voided.
+        await prisma.xeroObjectLink.updateMany({ where: { localId: BT, xeroObjectId: NOTE }, data: { active: false } });
+      });
       expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
     });
 
