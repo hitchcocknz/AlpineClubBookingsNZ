@@ -377,14 +377,15 @@ describe("Xero operation admin retry routes", () => {
     );
 
     const response = await listOperations(
-      new NextRequest("http://localhost/api/admin/xero/operations?status=FAILED&failureState=ACTIVE")
+      new NextRequest("http://localhost/api/admin/xero/operations?status=FAILED&failureState=ACTIVE&entityType=CONTACT")
     );
 
     const body = await response.json();
     expect(body.total).toBe(1);
     expect(body.hiddenFailedCount).toBe(2 + 4);
+    // The resolved rows are counted under the same filters as the list itself.
     expect(mocks.xeroOperationCount).toHaveBeenCalledWith({
-      where: { status: "FAILED", manuallyResolvedAt: { not: null } },
+      where: { entityType: "CONTACT", status: "FAILED", manuallyResolvedAt: { not: null } },
     });
   });
 

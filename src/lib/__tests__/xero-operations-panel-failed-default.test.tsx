@@ -138,6 +138,16 @@ describe("Xero operations panel: the Failed view means active failures", () => {
     await waitFor(() => expect(select("Failure").value).toBe("REPAIRED"))
   })
 
+  it("never leaves a Failure filter under another status", async () => {
+    mocks.search.current = "section=operations&opFailureState=REPAIRED"
+    renderPanel()
+    await waitFor(() => expect(select("Failure").value).toBe("REPAIRED"))
+
+    fireEvent.change(select("Status"), { target: { value: "PENDING" } })
+
+    await waitFor(() => expect(select("Failure").value).toBe("all"))
+  })
+
   it("drops the Active default again when Status moves off Failed", async () => {
     renderPanel()
     await waitFor(() => expect(mocks.fetchJson).toHaveBeenCalled())
@@ -163,6 +173,20 @@ describe("Xero operations panel: the Failed view means active failures", () => {
     await waitFor(() => expect(select("Failure").value).toBe("all"))
     await waitFor(() => expect(lastRequest().get("failureState")).toBe("all"))
     expect(lastRequest().get("status")).toBe("FAILED")
+    // The button is gone, so the region says what changed and holds focus.
+    const region = screen.getByText(/Showing all failures, including 11/).closest('[role="status"]')
+    expect(region).not.toBeNull()
+    expect(document.activeElement).toBe(region)
+  })
+
+  it("shows no hidden line while the Failure filter is not Active only", async () => {
+    mocks.search.current = "section=operations&opStatus=FAILED&opFailureState=REPAIRED"
+    mocks.fetchJson.mockResolvedValue({ data: [], total: 0, hiddenFailedCount: 3 })
+    renderPanel()
+    await waitFor(() => expect(mocks.fetchJson).toHaveBeenCalled())
+    await waitFor(() => expect(select("Failure").value).toBe("REPAIRED"))
+    expect(screen.queryByRole("button", { name: "Show them" })).toBeNull()
+    expect(screen.queryByText(/hidden/)).toBeNull()
   })
 
   it("shows no hidden line when nothing is hidden or the filter is off", async () => {

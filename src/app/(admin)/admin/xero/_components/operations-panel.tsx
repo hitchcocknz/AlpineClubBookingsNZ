@@ -49,7 +49,7 @@ export function resolveDialogDescription(entityType: string): string {
 }
 
 /** #4220: the Failure selector's option names; "all" keeps FilterSelect's own "All failures". */
-const FAILURE_FILTER_LABELS: Record<string, string> = {
+const FAILURE_FILTER_LABELS: Record<NonNullable<XeroOperation["failureState"]>, string> = {
   ACTIVE: "Active only",
   REPAIRED: "Repaired",
   SUPERSEDED: "Superseded",
@@ -142,6 +142,10 @@ export function OperationsPanel({
   const [total, setTotal] = useState(0)
   // #4220: FAILED rows the Failure filter is hiding, for the "N hidden" line.
   const [hiddenFailedCount, setHiddenFailedCount] = useState(0)
+  // #4220: set when "Show them" is used, so the region says what changed and
+  // keyboard focus has somewhere to land when the button goes away.
+  const [revealedHiddenCount, setRevealedHiddenCount] = useState<number | null>(null)
+  const noticeRegionRef = useRef<HTMLDivElement>(null)
   const pageSize = 25
   const [urlSyncEnabled, setUrlSyncEnabled] = useState(hasOperationsUrlState)
   const [retryingOperationId, setRetryingOperationId] = useState<string | null>(null)
@@ -203,6 +207,7 @@ export function OperationsPanel({
   const resetPage = () => {
     setUrlSyncEnabled(true)
     setPage(1)
+    setRevealedHiddenCount(null)
   }
 
   const isDatasetDefault =
@@ -259,6 +264,7 @@ export function OperationsPanel({
       setHiddenFailedCount(data.hiddenFailedCount ?? 0)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load Xero operation history")
+      setHiddenFailedCount(0)
     } finally {
       setLoading(false)
     }
@@ -468,7 +474,7 @@ export function OperationsPanel({
             <li><span className="font-medium">WAITING_PAYMENT</span> — paused until the related payment settles. No action needed.</li>
             <li><span className="font-medium">SUCCEEDED</span> — completed in Xero. No action needed.</li>
             <li><span className="font-medium">PARTIAL</span> — some steps succeeded; retry to finish the rest.</li>
-            <li><span className="font-medium">FAILED</span> — could not complete. Open the row for the error, fix the cause if needed, then Retry. Use &ldquo;Retry Active Failed&rdquo; to requeue all replayable failures. Choosing Failed also picks &ldquo;Active only&rdquo; under Failure, so rows already repaired or marked resolved stay out of the way; &ldquo;Show them&rdquo; brings them back.</li>
+            <li><span className="font-medium">FAILED</span> — could not complete. Open the row for the error, fix the cause if needed, then Retry. Use &ldquo;Retry Active Failed&rdquo; to requeue all replayable failures. Choosing Failed also picks &ldquo;Active only&rdquo; under Failure, so rows already repaired, superseded or marked resolved stay out of the way; &ldquo;Show them&rdquo; brings them back.</li>
           </ul>
         </details>
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
@@ -501,9 +507,22 @@ export function OperationsPanel({
             <Input id="xero-op-created-to" type="date" value={createdTo} onChange={(event) => { setCreatedTo(event.target.value); resetPage() }} />
           </div>
         </div>
-        <div role="status">
-          {!loading && failureStateFilter === "ACTIVE" ? (
-            <HiddenFailuresNotice count={hiddenFailedCount} onShow={() => { setFailureStateFilter("all"); resetPage() }} />
+        <div role="status" ref={noticeRegionRef} tabIndex={-1} className="focus-visible:outline-none">
+          {revealedHiddenCount !== null && failureStateFilter === "all" ? (
+            <p className="text-sm text-muted-foreground">
+              Showing all failures, including {revealedHiddenCount} repaired, superseded or resolved.
+            </p>
+          ) : !loading && failureStateFilter === "ACTIVE" ? (
+            <HiddenFailuresNotice
+              count={hiddenFailedCount}
+              onShow={() => {
+                const hidden = hiddenFailedCount
+                setFailureStateFilter("all")
+                resetPage()
+                setRevealedHiddenCount(hidden)
+                noticeRegionRef.current?.focus()
+              }}
+            />
           ) : null}
         </div>
         {loading ? (

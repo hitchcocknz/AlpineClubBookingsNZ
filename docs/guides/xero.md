@@ -93,11 +93,12 @@ idempotent — retrying the same work never double-charges.
    one you resolved, don't replace it by hand: the app raises a fresh one
    overnight (#4250).
    Choosing **Failed** under **Status** also picks **Active only** under
-   **Failure**, so a row that was repaired later or marked resolved stops
-   crowding out the ones that still need you. A line above the list says how
-   many are hidden; **Show them** brings them back (they stay as the audit
-   trail), and the **Failure** selector offers every state. A saved link that
-   carries only the Failed status still shows every failed row (#4220).
+   **Failure**, so a row that was repaired later, superseded or marked resolved
+   stops crowding out the ones that still need you. A line above the list says
+   how many are hidden; **Show them** (or **All failures** in the **Failure**
+   selector) brings them back, and they stay as the audit trail. Only the view
+   changes, never a row's status. A saved link that carries just the Failed
+   status still shows every failed row (#4220).
    A failed operation (and the booking page's invoice warning) says **why** in
    plain English: what happened, what it means for the club, and **What to do**,
    including whether the app tries again by itself. Xero's own wording and the

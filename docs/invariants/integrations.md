@@ -504,9 +504,6 @@ re-run, never offered for retry, never re-minted beside (owner decision,
   `buildRetryAction` takes only `retryable`. Where no document is recorded, the
   repair tool reports `RESOLVED_IN_XERO_BY_OFFICER` (info, no action), and the
   booking page says the same.
-- **A view default, not a status change.** The panel's Failed choice also picks
-  Failure = Active only, with an "N hidden, show them" line (#4220); the row's
-  `status` and the API default (`all`) are untouched.
 
 Pinned by `xero-operation-retry.test.ts`, `xero-operation-queue.test.ts`,
 `xero-operation-routes.test.ts`, `xero-operations-panel-failed-default.test.tsx`,

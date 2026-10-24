@@ -20,7 +20,7 @@ describe("failureStateAfterStatusChange (#4220)", () => {
     }
   })
 
-  it("drops Active when Status leaves Failed, so no failed rows sit under another status", () => {
+  it("drops the Active default when Status leaves Failed", () => {
     expect(
       failureStateAfterStatusChange({ previousStatus: "FAILED", nextStatus: "PENDING", failureState: "ACTIVE" }),
     ).toBe("all")
@@ -29,10 +29,20 @@ describe("failureStateAfterStatusChange (#4220)", () => {
     ).toBe("all")
   })
 
-  it("leaves other Failure choices alone when Status leaves Failed", () => {
+  it("keeps another Failure choice when Status moves from Failed to All", () => {
     expect(
       failureStateAfterStatusChange({ previousStatus: "FAILED", nextStatus: "all", failureState: "REPAIRED" }),
     ).toBe("REPAIRED")
+  })
+
+  it("never leaves a failure-state filter under a status other than Failed or All", () => {
+    for (const failureState of ["ACTIVE", "REPAIRED", "SUPERSEDED"]) {
+      for (const previousStatus of ["all", "FAILED"]) {
+        expect(
+          failureStateAfterStatusChange({ previousStatus, nextStatus: "PENDING", failureState }),
+        ).toBe("all")
+      }
+    }
   })
 
   it("changes nothing when Status stays put or neither side is Failed", () => {

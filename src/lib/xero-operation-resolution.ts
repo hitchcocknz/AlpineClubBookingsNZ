@@ -57,10 +57,13 @@ export function resolutionLabel(reason: string | null | undefined): string {
  * choice is visible in the Failure selector and the URL, and the API default
  * stays "all", so a saved `opStatus=FAILED` link keeps its literal meaning.
  *
- * Returns the Failure selection to use after the Status selector changes: only
- * an untouched "all" is upgraded to "ACTIVE" on the way into Failed, and only
- * that default is undone on the way out (an "ACTIVE" filter under any other
- * status would show failed rows beneath the wrong status).
+ * Returns the Failure selection to use after the Status selector changes:
+ * - an untouched "all" becomes "ACTIVE" on the way into Failed (a choice the
+ *   officer already made is kept);
+ * - the "ACTIVE" default is undone on the way out of Failed;
+ * - a failure-state filter never stays under a status other than Failed or
+ *   "all", where the route (which lists FAILED rows for any failure-state
+ *   filter) would show failed rows beneath the wrong status.
  */
 export function failureStateAfterStatusChange({
   previousStatus,
@@ -77,5 +80,6 @@ export function failureStateAfterStatusChange({
   if (previousStatus === "FAILED" && nextStatus !== "FAILED" && failureState === "ACTIVE") {
     return "all";
   }
+  if (nextStatus !== "FAILED" && nextStatus !== "all") return "all";
   return failureState;
 }
