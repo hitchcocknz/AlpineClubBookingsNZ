@@ -1799,7 +1799,12 @@ mispricing a booking.
   first cap read, then each counter re-read under it; the batch path locks its
   outgoing, kept and incoming codes in one sorted call. A guest's acceptance
   (`booking-guest-acceptance-reprice.ts`) re-prices the same way inside the
-  consent transaction, after its `pg_advisory_xact_lock(1)` and lodge lock. The reprice wrapper also **re-reads
+  consent transaction, after its `pg_advisory_xact_lock(1)` and lodge lock. The
+  in-progress arm of `applyPromoCodeChanges` re-prices no code (#4317 review
+  round 4): where its plan capped a carried promotion it scales the stored
+  redemptions (`capCarriedPromotionRecords`, `src/lib/carried-promotion-cap.ts`),
+  locking every code row in one sorted call first, under the same `lock(1)` and
+  lodge key, because the shared writer may lower a counter; it reads no cap. The reprice wrapper also **re-reads
   `currentRedemptions` under the lock**, because a reprice carries a
   `PromoCode` snapshot loaded with the booking before the locks were taken;
   locking and then deciding against a number read outside the lock would leave
