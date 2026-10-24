@@ -1593,20 +1593,21 @@ decision and would need its own owner decision.
   refund note; a reissue's key names every note whose key it could collide
   with; and on a bank transfer a void undoes the refund** (#4091, owner
   decisions). Its mirror goes inactive on any payment (`INV-ADDPAY-020`),
-  status-less racing writes too, including missing mirrors (#4223);
+  status-less racing writes too, including missing mirrors (#4223),
+  nor revived by an older live read (#4288);
   `findCanonicalPaymentRefundCreditNote`, `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill
   and conflict check leave out a note a link records VOIDED or DELETED
-  (`refundNoteIdSets`), so nothing writes one back into
-  `Payment.xeroRefundCreditNoteId`. The nightly link cleanup heals a pre-#4091
-  active mirror (#4161). A later inbound event for the voided note still
-  recounts that payment (#4291).
+  (`refundNoteIdSets`), so nothing writes one into
+  `Payment.xeroRefundCreditNoteId`. The nightly cleanup heals a pre-#4091
+  active mirror (#4161). A later event for it still recounts the payment
+  (#4291).
 - **A refund request's own note** (`INV-PAY-118`, #4195) too: its voided
   mirror goes inactive and never covers the request. Only an officer
   re-raises one (#4214), never a retry; the Xero key and any unqueued row
   name the voided notes. Its void moves no refunded
   total; the booking repair still counts the request.
 - **The reissue's key** (`refundNoteKeyAfterVoidParts`, row and Xero alike).
-  Once a refund note is voided it appends `after-void:<sorted ids>`: every
+  Once a note is voided it appends `after-void:<sorted ids>`: every
   refund note, live or voided, recorded at the key's watermark (v2) or amount
   (v1), or every note a "Paid another way" close's own rows raised once one is
   voided (v3). A figure the link lacks comes from its create row, or counts
@@ -1614,12 +1615,12 @@ decision and would need its own owner decision.
   refuses, recording nothing, a VOIDED/DELETED note or one another row raised.
 - **Bank transfers.** The inbound sync never undoes the refund
   (`INV-ADDPAY-021`'s floor). One writer, the nightly follow-up
-  (`INV-ADDPAY-042`), moves the detail, the `BANK_REFUND` line and the total
+  (`INV-ADDPAY-042`), moves the detail, `BANK_REFUND` line and total
   together and raises the follow-up; nothing is re-raised automatically.
   Pinned by `xero-refund-note-{void-pointer,crash-window,after-void-key}`,
   `xero-voided-note-recount`, `bank-refund-void-follow-up`,
   `xero-refund-request-note-void`, `xero-canonical-refund-note-void-race`,
-  `xero-voided-request-note-retry-routes`,
+  `xero-refund-note-stale-live-status`, `xero-voided-request-note-retry-routes`,
   `xero-sync`, `xero-booking-repair`, `xero-operation-retry`,
   `xero-operation-outbox` and `xero-hardening`.
 

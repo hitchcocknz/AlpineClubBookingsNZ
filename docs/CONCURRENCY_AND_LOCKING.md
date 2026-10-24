@@ -5577,7 +5577,9 @@ Counterparts:
   that transaction opens, so no provider call runs under either lock. After
   the commit, and outside any lock, the hand-made note is read again
   (`reconcileHandMadeNoteAfterCompletion`, through the inbound
-  `reconcileXeroCreditNote`), so a void in between is caught.
+  `reconcileXeroCreditNote`), so a later void is caught. A void that commits
+  before the completion's link write is kept under the link's row lock and the
+  answer is refused with a 409, rolling the completion back (#4288).
 
 **A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
 runs the very same undo (`undoUnderLocks`) for an unmatched note: the same
@@ -5629,13 +5631,19 @@ unique key serialises concurrent first insertions: if the mirror was missing,
 a competing inbound insert must commit or roll back before the status read.
 An existing row is untouched by the reservation. The reservation, lock, read
 and final link write share the caller's transaction; failure rolls them all
-back, so no identity-only placeholder commits alone. A write that names no
-Xero status then re-reads the row through Prisma and keeps a stored
-VOIDED/DELETED: the link stays inactive, the status and incoming metadata
-merge over the stored figures and provenance, and no sibling is retired for
-it. A pointer naming it is released if its Payment row is available without
-waiting; otherwise the inactive mirror commits and the #4161 heal can release
-the pointer later. A write that names a status is judged on it.
+back, so no identity-only placeholder commits alone. Every write then re-reads
+the row through Prisma under that lock and applies `judgeRefundNoteWrite`. A
+write that names no Xero status keeps a stored VOIDED/DELETED: the link stays
+inactive, the status and incoming metadata merge over the stored figures and
+provenance, and no sibling is retired for it. A pointer naming it is released
+if its Payment row is available without waiting; otherwise the inactive mirror
+commits and the #4161 heal can release the pointer later. A write that names a
+live status it read from Xero before the void committed (#4288: the inbound
+reconcile, the Stripe status recorder, a hand-made note answer) keeps the whole
+stored snapshot the same way. Between two live readings, the one whose Xero
+`UpdatedDateUTC` is older than the stored one's keeps the stored snapshot. A
+write that names VOIDED/DELETED is applied. The ordering reads only the row
+this lock already holds, so it adds no lock.
 
 It writes no money column, no booking status and calls no provider; under
 `INV-LOCK-001` it joins no advisory cohort and takes no advisory key, so
@@ -5645,8 +5653,8 @@ key (an enqueue inside a group cancel), the row lock comes after it, as the
 protocol requires.
 
 **Lock order.** Inside the link write, always: the link's own row, then any
-active sibling note the single-canonical rule retires. A statusless write
-keeping a stored void then tries its Payment row with
+active sibling note the single-canonical rule retires. A write keeping a stored
+void (status-less, or an older live reading, #4288) then tries its Payment row with
 `FOR NO KEY UPDATE SKIP LOCKED` before conditionally releasing the pointer;
 it never waits on Payment. A Payment row the caller already holds is returned
 and its pointer can be released in that transaction. Explicit-status inbound
@@ -5696,6 +5704,15 @@ null. This schedule does not force which waiter acquires the link first after
 the inbound commit. A separate busy-Payment case forces the nonblocking branch
 and proves fresh metadata commits while the pointer stays put; the existing
 nightly heal then selects that inactive shape and releases it.
+`xero-refund-note-stale-live-status.realdb.test.ts` (#4288) holds a live
+reading at a gate while the void commits, then releases it: for the
+bank-transfer canonical note through the real inbound reconcile, a Stripe
+per-delta note through the real status recorder, a per-refund note and a
+refund request's note. Each ends inactive and VOIDED, the pointer null, and the
+replacement sibling alone covering. It also queues a live reconcile on the
+void's row lock, orders two live readings by `UpdatedDateUTC`, and has a stale
+live write finish while a Payment-first enqueue holds the Payment, which then
+completes with no cycle.
 
 **Mixed releases.** The own-row-first order is consistent within this release;
 the old canonical writer takes siblings before its own row. Running both on

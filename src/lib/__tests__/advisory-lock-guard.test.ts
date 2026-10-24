@@ -1465,9 +1465,11 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // either role (the payment's own notes and a refund request's), first reserves
   // an inactive identity row with createMany(skipDuplicates), then locks
   // its own `XeroObjectLink` row (`SELECT 1 … FOR UPDATE`, the heal's
-  // statement) inside the link write's transaction; one with no Xero status
-  // then re-reads it through Prisma, so an inbound void that committed
-  // meanwhile is kept, including a competing first insertion. Existing rows
+  // statement) inside the link write's transaction, then re-reads it through
+  // Prisma, so an inbound void that committed meanwhile is kept under a write
+  // naming no status or (#4288) an older live one, including a competing first
+  // insertion; two live readings are ordered by Xero's UpdatedDateUTC on the
+  // row already locked, so #4288 adds no lock. Existing rows
   // are untouched by reservation; a new identity row rolls back with the write.
   // Order, on every write: own link row, then any sibling note the canonical
   // rule retires. A kept void tries Payment without waiting (the xero-sync
@@ -1475,9 +1477,10 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // Keyed on the link's immutable unique key; no advisory lock. See docs/CONCURRENCY_AND_LOCKING.md ->
   // "Refund-note link writes racing a void (#4195, #4223)".
   "src/lib/xero-refund-note-status.ts": 1,
-  // #4223: after keeping a stored void, pointer maintenance tries the immutable
-  // Payment row FOR NO KEY UPDATE SKIP LOCKED. A Payment-first enqueue may be
-  // waiting for this link, so a statusless writer must never wait back on it.
+  // #4223, #4288: after keeping a stored void, pointer maintenance tries the
+  // immutable Payment row FOR NO KEY UPDATE SKIP LOCKED. A Payment-first enqueue
+  // may be waiting for this link, so a writer whose void was kept (status-less
+  // or an older live reading) must never wait back on it.
   // A busy Payment defers only pointer cleanup to #4161; the mirror stays
   // inactive with its metadata. Own-held Payment rows remain eligible.
   "src/lib/xero-sync.ts": 1,
