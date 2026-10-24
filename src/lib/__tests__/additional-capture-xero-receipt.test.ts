@@ -906,29 +906,41 @@ describe("recordAdditionalCaptureReceipt", () => {
   });
 });
 
-describe("supplementaryReplayMayRecordPayment (round 9, item 3)", () => {
+describe("supplementaryReplayMayRecordPayment (rounds 9 and 11)", () => {
   const ask = () => supplementaryReplayMayRecordPayment({ operationId: "op_change_invoice", bookingId: "booking_1", bookingModificationId: "mod_change" });
+  const writes = () => mocks.updateManyOperation.mock.calls.filter(([args]) => (args as { where: { id: string } }).where.id === "op_change_invoice");
 
-  it("MUTATION: asks under the change's anchor lock, and says no where the row is now unpaid or a capture's receipt records it", async () => {
-    mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { recordPayment: false } });
-    await expect(ask()).resolves.toBe(false);
+  it("asks under the change's anchor lock, and says no, writing nothing, where the row is already unpaid", async () => {
+    mocks.findUniqueOperation.mockResolvedValue({ status: "FAILED", requestPayload: { recordPayment: false } });
+    await expect(ask()).resolves.toEqual({ recordPayment: false, raisedUnpaid: false });
     expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(expect.anything(), "mod_change");
     expect(mocks.lockSupplementaryInvoiceAnchor.mock.invocationCallOrder[0]).toBeLessThan(mocks.findUniqueOperation.mock.invocationCallOrder[0]!);
+    expect(writes()).toEqual([]);
+  });
 
-    mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { paymentIntentId: "pi_change" } });
+  it("MUTATION round 11: where a capture's receipt records it, sets the row itself unpaid there, guarded on its status, and says so", async () => {
+    mocks.findUniqueOperation.mockResolvedValue({ status: "FAILED", requestPayload: { paymentIntentId: "pi_change" } });
     mocks.findManyTransaction.mockResolvedValue([{ id: "ptx_1" }]);
     mocks.txFindFirstLink.mockResolvedValue({ id: "receipt_link" });
-    await expect(ask()).resolves.toBe(false);
+    await expect(ask()).resolves.toEqual({ recordPayment: false, raisedUnpaid: true });
+    expect(writes()).toEqual([
+      [{ where: { id: "op_change_invoice", status: "FAILED" }, data: { requestPayload: { paymentIntentId: "pi_change", recordPayment: false } } }],
+    ]);
+  });
 
+  it("records, writing nothing, where no receipt records it", async () => {
+    mocks.findUniqueOperation.mockResolvedValue({ status: "FAILED", requestPayload: { paymentIntentId: "pi_change" } });
     mocks.findManyTransaction.mockResolvedValue([]);
-    await expect(ask()).resolves.toBe(true);
+    await expect(ask()).resolves.toEqual({ recordPayment: true, raisedUnpaid: false });
+    expect(writes()).toEqual([]);
   });
 
   it("leaves a #3980 gap invoice as it was asked: it decides its own cash", async () => {
-    mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { primaryInvoiceGap: true } });
+    mocks.findUniqueOperation.mockResolvedValue({ status: "FAILED", requestPayload: { primaryInvoiceGap: true } });
     mocks.findManyTransaction.mockResolvedValue([{ id: "ptx_1" }]);
     mocks.txFindFirstLink.mockResolvedValue({ id: "receipt_link" });
-    await expect(ask()).resolves.toBe(true);
+    await expect(ask()).resolves.toEqual({ recordPayment: true, raisedUnpaid: false });
+    expect(writes()).toEqual([]);
   });
 });
 

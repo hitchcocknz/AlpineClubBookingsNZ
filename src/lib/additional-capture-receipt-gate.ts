@@ -175,29 +175,41 @@ export async function switchUnsentRecorderUnpaid(
 
 /**
  * #3953 review round 9 (item 3): an officer's Retry of a change's
- * supplementary invoice replays it inline from a payload read before. Asked
- * again under the change's anchor lock just before that replay: whether the
- * row now says unpaid (a receipt's switch) or a capture it would record has a
- * receipt (`anchorCaptureHasReceipt`, the enqueue's own question). A #3980
- * gap invoice decides its own cash and is left as asked.
+ * supplementary invoice replays it from a payload read before. Asked again
+ * under the change's anchor lock just before that replay: whether the row now
+ * says unpaid (a receipt's switch) or a capture it would record has a receipt
+ * (`anchorCaptureHasReceipt`, the enqueue's own question). Round 11: where a
+ * receipt does, the row itself is set unpaid there, guarded on the status read
+ * (the switch's write), so the receipt reads it as the invoice it records
+ * against rather than a second recorder. A #3980 gap invoice decides its own
+ * cash and is left as asked. `raisedUnpaid` says this call turned it unpaid.
  */
 export async function supplementaryReplayMayRecordPayment(input: {
   operationId: string;
   bookingId: string;
   bookingModificationId: string;
-}): Promise<boolean> {
+}): Promise<{ recordPayment: boolean; raisedUnpaid: boolean }> {
   const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
   const { anchorCaptureHasReceipt } = await import("@/lib/additional-capture-receipt-link");
   return prisma.$transaction(async (tx) => {
     await lockSupplementaryInvoiceAnchor(tx, input.bookingModificationId);
-    const row = await tx.xeroSyncOperation.findUnique({ where: { id: input.operationId }, select: { requestPayload: true } });
+    const row = await tx.xeroSyncOperation.findUnique({
+      where: { id: input.operationId },
+      select: { status: true, requestPayload: true },
+    });
     const payload = asRecord(row?.requestPayload);
-    if (payload?.recordPayment === false) return false;
-    if (payload?.primaryInvoiceGap === true) return true;
-    return !(await anchorCaptureHasReceipt(tx, {
+    if (!row || payload?.recordPayment === false) return { recordPayment: false, raisedUnpaid: false };
+    if (payload?.primaryInvoiceGap === true) return { recordPayment: true, raisedUnpaid: false };
+    const recorded = await anchorCaptureHasReceipt(tx, {
       bookingId: input.bookingId,
       bookingModificationId: input.bookingModificationId,
       paymentIntentId: typeof payload?.paymentIntentId === "string" ? payload.paymentIntentId : null,
-    }));
+    });
+    if (!recorded) return { recordPayment: true, raisedUnpaid: false };
+    await tx.xeroSyncOperation.updateMany({
+      where: { id: input.operationId, status: row.status },
+      data: { requestPayload: sanitizeForJson({ ...(payload ?? {}), recordPayment: false }) },
+    });
+    return { recordPayment: false, raisedUnpaid: true };
   });
 }

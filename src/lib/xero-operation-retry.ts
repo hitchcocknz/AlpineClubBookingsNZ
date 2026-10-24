@@ -297,7 +297,8 @@ async function refuseSubscriptionInvoiceRetryWithNothingToDo(chargeId: string): 
  */
 async function requeueOutboxRowForRetry(
   operation: Pick<XeroSyncOperation, "id" | "correlationKey" | "entityType" | "operationType" | "createdAt">,
-  requestPayload: Record<string, unknown>,
+  /** Null keeps the row's stored payload as it stands at the claim (#3953 round 11). */
+  requestPayload: Record<string, unknown> | null,
   fromStatuses: Array<"FAILED" | "PARTIAL">,
   label: string,
   advice = "That document stands for this one: mark this operation resolved too.",
@@ -319,7 +320,7 @@ async function requeueOutboxRowForRetry(
       },
       data: {
         status: "PENDING",
-        requestPayload: requestPayload as Prisma.InputJsonValue,
+        ...(requestPayload ? { requestPayload: requestPayload as Prisma.InputJsonValue } : {}),
         startedAt: null,
         completedAt: null,
         lastErrorCode: null,
@@ -1421,12 +1422,9 @@ export async function retryXeroSyncOperation(
     // Round 10: one already in Xero is marked resolved, never sent again.
     const refusal = await linkedChangeInvoiceRetryRefusal(operation, releasedChangeInvoicePayload, format);
     if (refusal) throw new XeroOperationRetryError(refusal, 409);
-    await requeueOutboxRowForRetry(
-      operation,
-      releasedChangeInvoicePayload,
-      ["FAILED"],
-      "late card charge's change invoice",
-    );
+    // #3953 round 11: decided again under the change's anchor lock (a receipt recording its capture sets it unpaid there), and the stored payload kept - never written back from this earlier read.
+    if (typeof releasedChangeInvoicePayload.bookingId === "string") await supplementaryReplayMayRecordPayment({ operationId: operation.id, bookingId: releasedChangeInvoicePayload.bookingId, bookingModificationId: operation.localId! });
+    await requeueOutboxRowForRetry(operation, null, ["FAILED"], "late card charge's change invoice");
     return { message: "Queued the late card charge's change invoice for retry." };
   }
 
@@ -1759,17 +1757,18 @@ export async function retryXeroSyncOperation(
             })
           );
       // #3953 round 9 (`INV-PAY-139`): asked again under the change's anchor lock - a capture's receipt may record it, or have set this row unpaid.
-      const recordPaymentStands = recordPayment && (await supplementaryReplayMayRecordPayment({ operationId: operation.id, bookingId: modification.bookingId, bookingModificationId: operation.localId! }));
+      const replay = recordPayment ? await supplementaryReplayMayRecordPayment({ operationId: operation.id, bookingId: modification.bookingId, bookingModificationId: operation.localId! }) : null;
       await xero.createXeroSupplementaryInvoice({
         bookingId: modification.bookingId,
         priceDiffCents: amounts.priceDiffCents,
         changeFeeCents: amounts.changeFeeCents,
         bookingModificationId: operation.localId!,
         createdByMemberId,
-        recordPayment: recordPaymentStands,
+        recordPayment: replay?.recordPayment ?? false,
         repairExistingLink: true,
         format,
       });
+      if (replay?.raisedUnpaid) return { message: "Retried Xero supplementary invoice creation, raised unpaid: the card payment it would record is recorded by its own receipt." };
       return { message: "Retried Xero supplementary invoice creation." };
     }
 

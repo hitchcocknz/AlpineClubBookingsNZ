@@ -48,7 +48,7 @@ reason: the outbox dispatch chain routes every queue type to its worker, and
   decides under - one read and one lock call.
 
 file: src/lib/xero-operation-retry.ts
-lines: 2079
+lines: 2078
 reason: the retry module decides, per queue type, whether a row may be
   retried and sends outbox-run rows back on their own row; the receipt joins
   that same-row requeue (its stored payment kept) in the two places every
@@ -56,3 +56,6 @@ reason: the retry module decides, per queue type, whether a row may be
   supplementary invoice is the one place an officer's Retry decides whether
   it records a payment, so it asks once more, under the change's anchor lock,
   whether a capture's receipt now records it - one import and one call.
+  Round 11: the late card charge's change invoice requeue asks the same
+  question before it requeues, and keeps the stored payload rather than
+  writing back the one it read.
