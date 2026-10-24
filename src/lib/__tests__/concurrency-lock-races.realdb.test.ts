@@ -399,6 +399,13 @@ import "./xero-refund-request-note-void.realdb.test";
 // the void's row and re-reads it. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
 // it owns and cleans its own `race-4223-` fixtures.
 import "./xero-canonical-refund-note-void-race.realdb.test";
+// #4288 reuses it to prove an older live Xero reading of a refund note - the
+// inbound reconcile's, the Stripe status recorder's, or a reconcile's write for
+// a per-refund or request note - never revives a mirror a later write recorded
+// VOIDED, and that between two live readings the older keeps the newer.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4288-` fixtures.
+import "./xero-refund-note-stale-live-status.realdb.test";
 // #4215 reuses it to prove the inbound repair of a bank-transfer payment's
 // canonical refund note keeps the cash a refund request paid back through the
 // real completion - queued, raised or voided, and with the canonical note
@@ -462,6 +469,12 @@ import "./settled-capture-order.realdb.test";
 // the real settle. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
 // cleans its own `race-4211-` fixtures.
 import "./third-duplicate-capture.realdb.test";
+// #4285 reuses it to prove a card capture's success arriving on a COMPLETED
+// booking is judged as on a PAID one: settled by card through the webhook,
+// completed by the real cron, the settler's redelivery answers 200 and changes
+// nothing, and another capture is refunded as a duplicate. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4285-` fixtures.
+import "./completed-redelivery.realdb.test";
 // #4146 reuses it to prove a key-prefix lookup built from an id matches only
 // its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans

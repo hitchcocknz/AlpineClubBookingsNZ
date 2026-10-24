@@ -95,6 +95,8 @@ import {
 } from "@/lib/xero-sync";
 // The real builder — the mock above only replaces `buildXeroObjectUrl`.
 import { buildXeroContactUrl } from "@/lib/xero-links";
+import { prisma } from "@/lib/prisma";
+import { CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX } from "@/lib/xero-operation-resolution";
 
 describe("sumCoveredRefundCreditNoteCents (#1162)", () => {
   beforeEach(() => {
@@ -597,12 +599,133 @@ describe("upsertXeroObjectLink", () => {
       expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txLinkFindUnique.mock.invocationCallOrder[0]!);
     });
 
-    it("a write naming a status is judged on it, without reading the stored row", async () => {
+    it("#4288: a write naming a status re-reads the stored row under its own row lock too", async () => {
       await writeRequestNote("AUTHORISED");
-      // #4223: it still takes its own row first, as every refund-note link write does.
+      // #4223: it takes its own row first, as every refund-note link write does.
       expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(1);
-      // One read only: the metadata merge's. The stored row is not judged.
-      expect(mocks.txLinkFindUnique).toHaveBeenCalledTimes(1);
+      // #4288: the stored row is judged (then read again by the metadata merge),
+      // and only after the lock.
+      expect(mocks.txLinkFindUnique).toHaveBeenCalledTimes(2);
+      expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txLinkFindUnique.mock.invocationCallOrder[0]!);
+    });
+  });
+
+  describe("#4288: an older live reading never revives a stored void (INV-ADDPAY-041)", () => {
+    const STORED_VOID = {
+      amountCents: 20000, watermarkCents: 20000, status: "VOIDED", total: 200, appliedAmount: 0, remainingCredit: 0,
+      providerUpdatedAt: "2026-06-30T12:00:00.000Z",
+    };
+    /** What the inbound reconcile, the status recorder or a hand-made answer read from Xero before the void. */
+    const OLDER_LIVE = { status: "AUTHORISED", total: 200, appliedAmount: 0, remainingCredit: 200, providerUpdatedAt: "2026-06-30T11:00:00.000Z" };
+    const SKIP_LOCKED_SQL = 'SELECT 1 FROM "Payment" WHERE "id" = ? FOR NO KEY UPDATE SKIP LOCKED';
+    const sqlOf = (call: unknown[]) => (call[0] as TemplateStringsArray).join("?").replace(/\s+/g, " ").trim();
+    const write = (role: string, extra: Record<string, unknown> = {}) =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role,
+        metadata: OLDER_LIVE, mergeMetadata: true, ...extra,
+      });
+
+    it("MUTATION (bank-transfer canonical): kept inactive with the whole stored snapshot, no sibling retired, the pointer released without waiting", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_voided" });
+
+      await write("REFUND_CREDIT_NOTE");
+
+      const [call] = mocks.txLinkUpsert.mock.calls[0] as [{ create: { active: boolean }; update: { active: boolean; metadata: Record<string, unknown> } }];
+      // Before #4288 the live status was written over the void, active, and its siblings retired.
+      expect(call.update.active).toBe(false);
+      expect(call.create.active).toBe(false);
+      expect(call.update.metadata).toEqual(STORED_VOID);
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      // MUTATION (pointer): the kept void never waits on a Payment a Payment-first writer may hold.
+      expect(sqlOf(mocks.txExecuteRaw.mock.calls[1]!)).toBe(SKIP_LOCKED_SQL);
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_voided" },
+        data: { xeroRefundCreditNoteId: null },
+      });
+    });
+
+    it("MUTATION (pointer): a kept void leaves the pointer to the heal when its Payment is busy", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_voided" });
+      mocks.txExecuteRaw.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+      await write("REFUND_CREDIT_NOTE");
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }));
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a caller that itself names VOIDED keeps its waiting order (#4200): no SKIP LOCKED", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: { status: "AUTHORISED" }, active: true });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_voided" });
+
+      await write("REFUND_CREDIT_NOTE", { metadata: { ...STORED_VOID } });
+
+      expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(1);
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({ where: { id: "payment_1", xeroRefundCreditNoteId: "cn_voided" }, data: { xeroRefundCreditNoteId: null } });
+    });
+
+    it.each([
+      ["a Stripe per-delta note", "REFUND_CREDIT_NOTE", { source: "STRIPE", xeroRefundCreditNoteId: null }],
+      ["a bank-transfer per-refund note", "REFUND_CREDIT_NOTE", { source: "INTERNET_BANKING", xeroRefundCreditNoteId: null }],
+      ["a refund request's own note", "REFUND_REQUEST_CREDIT_NOTE", { source: "INTERNET_BANKING", xeroRefundCreditNoteId: null }],
+    ])("MUTATION: %s stays inactive with its stored snapshot", async (_label, role, payment) => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: { ...STORED_VOID, perDelta: true }, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue(payment);
+
+      await write(role);
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: { ...STORED_VOID, perDelta: true } }) }),
+      );
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: the status recorder's write, which passes the activity it read before its fetch, stays inactive", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "STRIPE", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE", { active: true });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }));
+    });
+
+    it("MUTATION (fallback): with no timestamp on either side a stored void still wins", async () => {
+      const legacyVoid: Record<string, unknown> = { ...STORED_VOID };
+      delete legacyVoid.providerUpdatedAt;
+      const unstampedLive: Record<string, unknown> = { ...OLDER_LIVE };
+      delete unstampedLive.providerUpdatedAt;
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: legacyVoid, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE", { metadata: unstampedLive });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: legacyVoid }) }));
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION (order): an older live reading keeps a newer stored live snapshot - its status, figures and activity", async () => {
+      const storedPaid = { amountCents: 20000, status: "PAID", total: 200, appliedAmount: 200, remainingCredit: 0, providerUpdatedAt: "2026-06-30T12:00:00.000Z" };
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: storedPaid, active: true });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "STRIPE", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE");
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: true, metadata: storedPaid }) }));
+    });
+
+    it("a newer live reading over a stored live snapshot is applied: AUTHORISED to PAID is ordinary", async () => {
+      const storedAuthorised = { amountCents: 20000, ...OLDER_LIVE };
+      const newerPaid = { status: "PAID", total: 200, appliedAmount: 200, remainingCredit: 0, providerUpdatedAt: "2026-06-30T13:00:00.000Z" };
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: storedAuthorised, active: true });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "STRIPE", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE", { metadata: newerPaid });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: expect.objectContaining({ active: true, metadata: { ...storedAuthorised, ...newerPaid } }) }),
+      );
     });
   });
 
@@ -1150,6 +1273,7 @@ describe("upsertXeroObjectLink", () => {
 describe("startXeroSyncOperation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.operationFindFirst.mockReset();
     mocks.operationCount.mockResolvedValue(0);
     mocks.operationCreate.mockImplementation(async ({ data }: { data: unknown }) => ({
       id: "op_started_1",
@@ -1187,21 +1311,129 @@ describe("startXeroSyncOperation", () => {
     );
   });
 
-  it("rethrows a unique violation with no surviving active row (or no correlation key)", async () => {
+  // #4338: the active lookup finds nothing, then the newest-row read names the winner's outcome.
+  const lostRaceInput = {
+    direction: "OUTBOUND",
+    entityType: "CREDIT_NOTE",
+    operationType: "CREATE",
+    localModel: "Payment",
+    localId: "payment_1",
+    status: "PENDING",
+    correlationKey: "key-x",
+  } as const;
+  type WinnerResolution = { manuallyResolvedAt: Date; manuallyResolvedById: string | null; manuallyResolvedReason: string };
+  const unresolved = { manuallyResolvedAt: null, manuallyResolvedById: null, manuallyResolvedReason: null };
+  const resolvedAt = new Date("2026-07-01T00:00:00.000Z");
+  // The converge's own close: no officer, the #4219 reason.
+  const convergeClose: WinnerResolution = {
+    manuallyResolvedAt: resolvedAt,
+    manuallyResolvedById: null,
+    manuallyResolvedReason: `${CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX}: the ledger was brought into line`,
+  };
+  // An officer's "resolved in Xero" mark.
+  const officerMark: WinnerResolution = {
+    manuallyResolvedAt: resolvedAt,
+    manuallyResolvedById: "member_officer",
+    manuallyResolvedReason: "Fixed by hand in Xero",
+  };
+  const winnerFinished =
+    (status: string, resolution: WinnerResolution | typeof unresolved = unresolved) =>
+    (args: { where: { status?: unknown } }) =>
+      Promise.resolve(args.where.status ? null : { status, ...resolution });
+
+  // A FAILED row a converge already closed still re-inserts: the loser's converge closes its own.
+  it.each([
+    ["unresolved", unresolved],
+    ["closed by the converge", convergeClose],
+  ] as const)(
+    "inserts again when the winner ended FAILED (%s) before the lookup, as a retry a moment later would (#4338)",
+    async (_label, resolution) => {
+      const status = "FAILED";
+      mocks.operationCreate
+        .mockRejectedValueOnce({ code: "P2002" })
+        .mockImplementationOnce(async ({ data }: { data: unknown }) => ({ id: "op_started_1", data }));
+      mocks.operationFindFirst.mockImplementation(winnerFinished(status, resolution));
+      // The winner's finished row now counts as an earlier attempt.
+      mocks.operationCount.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+
+      const result = await startXeroSyncOperation(lostRaceInput);
+
+      expect(result).toMatchObject({ id: "op_started_1" });
+      expect(mocks.operationCreate).toHaveBeenCalledTimes(2);
+      expect(mocks.operationCreate.mock.calls[1][0].data.attemptCount).toBe(2);
+      expect(mocks.operationFindFirst).toHaveBeenLastCalledWith({
+        where: { correlationKey: "key-x" },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { status: true, manuallyResolvedAt: true, manuallyResolvedById: true, manuallyResolvedReason: true },
+      });
+    }
+  );
+
+  // PARTIAL: the Xero object exists. An officer's mark is done (`INV-INT-025`), never re-minted beside.
+  it.each([
+    ["SUCCEEDED", "unresolved", unresolved],
+    ["CANCELLED", "unresolved", unresolved],
+    ["PARTIAL", "unresolved", unresolved],
+    ["PARTIAL", "closed by the converge", convergeClose],
+    ["FAILED", "marked by an officer", officerMark],
+    // An officer who wrote the converge's reason by hand is still an officer.
+    ["FAILED", "marked by an officer with the converge's reason", { ...convergeClose, manuallyResolvedById: "member_officer" }],
+  ] as const)(
+    "rethrows the unique violation, without a second insert, when the winner ended %s (%s) (#4338)",
+    async (status, _label, resolution) => {
+      mocks.operationCreate.mockRejectedValueOnce({ code: "P2002" });
+      mocks.operationFindFirst.mockImplementation(winnerFinished(status, resolution));
+
+      await expect(startXeroSyncOperation(lostRaceInput)).rejects.toMatchObject({ code: "P2002" });
+      expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
+      expect(mocks.operationFindFirst).toHaveBeenCalledTimes(2);
+    }
+  );
+
+  it("rethrows the unique violation once its bounded re-inserts all lose to a winner that FAILED (#4338)", async () => {
+    mocks.operationCreate.mockRejectedValue({ code: "P2002" });
+    mocks.operationFindFirst.mockImplementation(winnerFinished("FAILED"));
+
+    await expect(startXeroSyncOperation(lostRaceInput)).rejects.toMatchObject({ code: "P2002" });
+    expect(mocks.operationCreate).toHaveBeenCalledTimes(3);
+  });
+
+  it("rethrows a unique violation with no correlation key, without a lookup or a second insert", async () => {
     mocks.operationCreate.mockRejectedValueOnce({ code: "P2002" });
-    mocks.operationFindFirst.mockResolvedValue(null);
 
     await expect(
-      startXeroSyncOperation({
-        direction: "OUTBOUND",
-        entityType: "CREDIT_NOTE",
-        operationType: "CREATE",
-        localModel: "Payment",
-        localId: "payment_1",
-        status: "PENDING",
-        correlationKey: "key-x",
-      })
+      startXeroSyncOperation({ ...lostRaceInput, correlationKey: undefined })
     ).rejects.toMatchObject({ code: "P2002" });
+    expect(mocks.operationFindFirst).not.toHaveBeenCalled();
+    expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows on a caller's transaction before any lookup, since the violation has aborted it (#4338)", async () => {
+    const txCreate = vi.fn().mockRejectedValue({ code: "P2002" });
+    const txFindFirst = vi.fn().mockImplementation(winnerFinished("FAILED"));
+    const store = {
+      xeroSyncOperation: { count: vi.fn().mockResolvedValue(0), create: txCreate, findFirst: txFindFirst },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(startXeroSyncOperation({ ...lostRaceInput, store })).rejects.toMatchObject({ code: "P2002" });
+    expect(txCreate).toHaveBeenCalledTimes(1);
+    // A read on an aborted transaction throws 25P02 and would replace the violation.
+    expect(txFindFirst).not.toHaveBeenCalled();
+  });
+
+  it("treats the root client passed as `store` as no transaction: it looks up and inserts again (#4338)", async () => {
+    mocks.operationCreate
+      .mockRejectedValueOnce({ code: "P2002" })
+      .mockImplementationOnce(async ({ data }: { data: unknown }) => ({ id: "op_started_1", data }));
+    mocks.operationFindFirst.mockImplementation(winnerFinished("FAILED"));
+
+    const result = await startXeroSyncOperation({
+      ...lostRaceInput,
+      store: prisma as unknown as Prisma.TransactionClient,
+    });
+
+    expect(result).toMatchObject({ id: "op_started_1" });
+    expect(mocks.operationCreate).toHaveBeenCalledTimes(2);
   });
 
   it("writes via the global prisma client when no store is supplied and never leaks store into the payload", async () => {

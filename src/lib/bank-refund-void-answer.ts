@@ -20,7 +20,8 @@ import { callXeroApi, getAuthenticatedXeroClient, XeroDailyLimitError } from "@/
 import { getXeroErrorStatusCode } from "@/lib/xero-error-shape";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 import { reconcileXeroCreditNote } from "@/lib/xero-inbound/credit-note";
-import { isRefundCreditNoteLinkCancelledInXero } from "@/lib/xero-refund-note-status";
+import { isRefundCreditNoteLinkCancelledInXero, judgedRefundNoteReading, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
+import { xeroInstant } from "@/lib/xero-provider-dates";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 import logger from "@/lib/logger";
@@ -35,8 +36,9 @@ import logger from "@/lib/logger";
  * a sales credit note, AUTHORISED or PAID, for exactly the follow-up's amount,
  * for the payment's contact and allocated to no other invoice, and that no
  * other record here tracks it. A mismatch is refused with a plain-English
- * reason and nothing moves. After the commit it is read once more
- * (`reconcileHandMadeNoteAfterCompletion`), so a void in between is caught.
+ * reason and nothing moves. A void that commits before the link write is
+ * refused under the link's row lock (#4288); after the commit it is read once
+ * more (`reconcileHandMadeNoteAfterCompletion`), so a later void is caught.
  *
  * On success the completion (`resolveManualRefundTask`, under its locks) puts
  * the money back on the payment as an ordinary hand-back completion does and
@@ -54,6 +56,8 @@ export interface VerifiedHandMadeRefundNote {
   amountCents: number;
   status: string;
   total: number;
+  /** #4288: Xero's `UpdatedDateUTC` for the reading checked, as an ISO instant, or null when Xero sent none. */
+  updatedDateUTC: string | null;
 }
 
 /**
@@ -128,6 +132,7 @@ export async function verifyHandMadeRefundNote(
     status?: unknown;
     type?: unknown;
     total?: number;
+    updatedDateUTC?: unknown;
     contact?: { contactID?: string };
     allocations?: Array<{ invoice?: { invoiceID?: string } }>;
   }>;
@@ -187,7 +192,10 @@ export async function verifyHandMadeRefundNote(
       409,
     );
   }
-  return { creditNoteId: note.creditNoteID!, creditNoteNumber: number, amountCents, status, total: note.total! };
+  return {
+    creditNoteId: note.creditNoteID!, creditNoteNumber: number, amountCents, status, total: note.total!,
+    updatedDateUTC: xeroInstant(note.updatedDateUTC)?.toISOString() ?? null,
+  };
 }
 
 /** The booking owner's own Xero contact, read through the one owner accessor (`INV-SSOT-005`). */
@@ -280,29 +288,42 @@ export async function recordHandMadeRefundNoteLink(
       409,
     );
   }
-  await upsertXeroObjectLink(
-    {
-      localModel: "Payment",
-      localId: input.paymentId,
-      xeroObjectType: "CREDIT_NOTE",
-      xeroObjectId: input.note.creditNoteId,
-      xeroObjectNumber: input.note.creditNoteNumber,
-      role: "REFUND_CREDIT_NOTE",
-      active: true,
-      metadata: {
-        status: input.note.status,
-        total: input.note.total,
-        amountCents: input.note.amountCents,
-        // A note per refund: it stands beside the payment's other notes and
-        // is never its one canonical note (`isPerDeltaRefundNoteLink`).
-        perDelta: true,
-        handBackTaskId: input.taskId,
-        recordedByHand: true,
-      },
-      mergeMetadata: true,
+  const link = {
+    localModel: "Payment",
+    localId: input.paymentId,
+    xeroObjectType: "CREDIT_NOTE",
+    xeroObjectId: input.note.creditNoteId,
+    xeroObjectNumber: input.note.creditNoteNumber,
+    role: "REFUND_CREDIT_NOTE",
+    active: true,
+    metadata: {
+      // #4288: the reading checked, stamped with its UpdatedDateUTC.
+      ...xeroCreditNoteSnapshotMetadata({ status: input.note.status, total: input.note.total, updatedDateUTC: input.note.updatedDateUTC }),
+      amountCents: input.note.amountCents,
+      // A note per refund: it stands beside the payment's other notes and
+      // is never its one canonical note (`isPerDeltaRefundNoteLink`).
+      perDelta: true,
+      handBackTaskId: input.taskId,
+      recordedByHand: true,
     },
-    { store: tx },
-  );
+    mergeMetadata: true,
+  };
+  const written = await upsertXeroObjectLink(link, { store: tx });
+  // #4288 (owner decision 24 Oct 2026): the link write re-reads the row under
+  // its lock. When it kept the stored snapshot over this reading - a void, or a
+  // newer reading, that committed after the check above - none of this answer's
+  // keys (`handBackTaskId`, `perDelta`, ...) were written, so the answer is
+  // refused and the whole completion rolls back, whether the kept row is
+  // active or not.
+  if (isRefundCreditNoteLinkCancelledInXero(written.metadata)) {
+    throw new ManualBookingPaymentError(
+      `Credit note ${input.note.creditNoteNumber} was voided in Xero while this answer was being recorded, so nothing was recorded. A voided note cannot record a refund: make a new credit note in Xero and answer with its number, or choose a fresh note.`,
+      409,
+    );
+  }
+  if (judgedRefundNoteReading(link.metadata, written).stale || !written.active) {
+    throw new ManualBookingPaymentError(`Credit note ${input.note.creditNoteNumber} changed in Xero while this answer was being recorded, so nothing was recorded. Refresh and try again.`, 409);
+  }
 }
 
 /**

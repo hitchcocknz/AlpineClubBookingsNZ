@@ -592,6 +592,7 @@ import {
   isOrganiserChildRefundKey,
   isRefundRequestRefundRecoveryKey,
 } from "./payment-recovery-keys";
+import { isCreditReleaseAskRecoveryKey } from "./credit-release-ask-keys";
 export {
   buildBookingCancellationRefundMetadata,
   buildBookingModificationRefundMetadata,
@@ -2383,6 +2384,21 @@ async function processCreateAdditionalPaymentIntentOperation(
    * argument while the parser was left here. Fail-closed: null means "not a shape
    * this knows", and every use below tests for it.
    */
+  /**
+   * #4253: a credit-release request has no `BookingModification`, so it never
+   * reaches the replay below - that replay would read the unknown key as "a newer
+   * ask settled this" and close the debt, or mint beside a live edit's ask without
+   * carrying it. Its own module owns the whole branch (`INV-ADDPAY-045`).
+   */
+  if (isCreditReleaseAskRecoveryKey(operation.idempotencyKey)) {
+    const { processCreditReleaseAskOperation } = await import("@/lib/credit-release-ask");
+    await processCreditReleaseAskOperation(operation, format, {
+      holdClaim: holdAdditionalIntentRecoveryClaim,
+      complete: (operationId) => completePaymentRecoveryOperation(operationId),
+    });
+    return;
+  }
+
   const bookingModificationId =
     bookingModificationIdForAdditionalIntentRecoveryKey(
       operation.idempotencyKey,

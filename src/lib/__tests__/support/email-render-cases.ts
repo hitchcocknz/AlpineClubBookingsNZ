@@ -156,6 +156,7 @@ import {
 } from "@/lib/booking-money-lines";
 import {
   additionalPaymentReminderTemplate,
+  creditReleasedPaymentRequestTemplate,
   checkinReminderTemplate,
   preArrivalReminderTemplate,
   wholeLodgeGuestNamesReminderTemplate,
@@ -782,6 +783,8 @@ const GENERATED_CASES: EmailRenderCase[] = [
     preArrivalReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, expectedArrivalTime: "expectedArrivalTime-5", lodgeTravelNote: "lodgeTravelNote-6", doorCode: "doorCode-7", outstandingAdditionalAmountCents: 108, checkoutChoreNote: "checkoutChoreNote-9" }, CLUB_FORMAT_TEST) },
   { id: "additionalPaymentReminderTemplate:minimal", fn: "additionalPaymentReminderTemplate", render: () =>
     additionalPaymentReminderTemplate({ firstName: "firstName-1", additionalAmountCents: 102, checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), requestedOn: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+  { id: "creditReleasedPaymentRequestTemplate:minimal", fn: "creditReleasedPaymentRequestTemplate", render: () =>
+    creditReleasedPaymentRequestTemplate({ firstName: "firstName-1", additionalAmountCents: 102, checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), requestedOn: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "adminNewBookingTemplate:minimal", fn: "adminNewBookingTemplate", render: () =>
     adminNewBookingTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, status: "status-6" }, CLUB_FORMAT_TEST) },
   { id: "adminNewBookingTemplate:full", fn: "adminNewBookingTemplate", render: () =>
@@ -838,6 +841,24 @@ const GENERATED_CASES: EmailRenderCase[] = [
     adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "settler-released", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: null, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminDuplicateCaptureKeptTemplate:settler-released-alone", fn: "adminDuplicateCaptureKeptTemplate", render: () =>
     adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "settler-released", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: null, otherHoldsMoney: false, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  // #4285 review: a lone payment the app had never recorded - no "neither payment" Stripe check.
+  { id: "adminDuplicateCaptureKeptTemplate:new-capture", fn: "adminDuplicateCaptureKeptTemplate", render: () =>
+    adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "new-capture", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: null, otherHoldsMoney: false, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  // #4285 review: that payment's owed alert, sent by the drain after the booking was cancelled.
+  { id: "adminDuplicateCaptureKeptTemplate:new-capture-closed", fn: "adminDuplicateCaptureKeptTemplate", render: () =>
+    adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "new-capture-closed", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: null, otherHoldsMoney: false, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  // #4285 review F2: the same, naming the cancellation's recorded refund as account credit.
+  { id: "adminDuplicateCaptureKeptTemplate:new-capture-closed-credit", fn: "adminDuplicateCaptureKeptTemplate", render: () =>
+    adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "new-capture-closed", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: null, otherHoldsMoney: false, cancellationRefund: { method: "credit", amount: "amount-7" }, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  // #4285 review 7 F1: a card cancel's refund said as its row stands, beside a card refund shortfall's parts.
+  { id: "adminDuplicateCaptureKeptTemplate:new-capture-closed-card-not-sent", fn: "adminDuplicateCaptureKeptTemplate", render: () =>
+    adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "new-capture-closed", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: null, otherHoldsMoney: false, cancellationRefund: { method: "card", card: { amount: "amount-7", standing: "not-sent" }, byBank: { amount: "byBank-8", standing: "owed" }, toCheck: { amount: "toCheck-9", standing: "owed" } }, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  // #4285 review 7 F2: the settle's new-capture alert beside a payment the app no longer counts as settling it.
+  { id: "adminDuplicateCaptureKeptTemplate:new-capture-beside-uncounted", fn: "adminDuplicateCaptureKeptTemplate", render: () =>
+    adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "new-capture", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: "otherPaymentIntentId-7", otherHoldsMoney: true, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
+  // #4285 review: that payment's owed alert, sent by the drain after another payment arrived.
+  { id: "adminDuplicateCaptureKeptTemplate:new-capture-later-payment", fn: "adminDuplicateCaptureKeptTemplate", render: () =>
+    adminDuplicateCaptureKeptTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", reason: "new-capture-later-payment", amountCents: 105, paymentIntentId: "paymentIntentId-6", otherPaymentIntentId: "otherPaymentIntentId-7", otherHoldsMoney: true, bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminSecondInstrumentSettlementConflictTemplate:refund-history", fn: "adminSecondInstrumentSettlementConflictTemplate", render: () =>
     adminSecondInstrumentSettlementConflictTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), bookingId: "bookingId-4", bookingStatus: "bookingStatus-5", conflictKind: "cancelledAfterRefund", invoiceAmountCents: 106, cardHeldCents: 107, cardPaymentIntentId: "cardPaymentIntentId-6", xeroInvoiceNumber: "xeroInvoiceNumber-7", xeroInvoiceUrl: "xeroInvoiceUrl-8", bookingUrl: "bookingUrl-8", reviewUrl: "reviewUrl-9" }, CLUB_FORMAT_TEST) },
   { id: "adminManualRefundTaskTemplate:minimal", fn: "adminManualRefundTaskTemplate", render: () =>

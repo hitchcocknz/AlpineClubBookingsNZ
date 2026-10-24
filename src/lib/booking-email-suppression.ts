@@ -97,6 +97,7 @@ export const ALWAYS_BOOKING_SCOPED_TEMPLATE_NAMES: ReadonlySet<string> =
     "checkin-reminder",
     "pre-arrival-reminder",
     "additional-payment-reminder",
+    "credit-released-payment-request",
     "booking-modified",
     "setup-intent-failed",
     // #3268: sibling of setup-intent-failed, sent by the auto-charge cron once

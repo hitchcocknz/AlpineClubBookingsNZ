@@ -1595,20 +1595,21 @@ _Legacy: settles tasks raised before #4317._
   refund note; a reissue's key names every note whose key it could collide
   with; and on a bank transfer a void undoes the refund** (#4091, owner
   decisions). Its mirror goes inactive on any payment (`INV-ADDPAY-020`),
-  status-less racing writes too, including missing mirrors (#4223);
+  status-less racing writes too, including missing mirrors (#4223),
+  and no live read revives it (#4288);
   `findCanonicalPaymentRefundCreditNote`, `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill
   and conflict check leave out a note a link records VOIDED or DELETED
-  (`refundNoteIdSets`), so nothing writes one back into
-  `Payment.xeroRefundCreditNoteId`. The nightly link cleanup heals a pre-#4091
-  active mirror (#4161). A later inbound event for the voided note still
-  recounts that payment (#4291).
+  (`refundNoteIdSets`), so nothing writes one into
+  `Payment.xeroRefundCreditNoteId`. The nightly cleanup heals a pre-#4091
+  active mirror (#4161). A later event for it still recounts the payment
+  (#4291).
 - **A refund request's own note** (`INV-PAY-118`, #4195) too: its voided
   mirror goes inactive and never covers the request. Only an officer
   re-raises one (#4214), never a retry; the Xero key and any unqueued row
   name the voided notes. Its void moves no refunded
   total; the booking repair still counts the request.
 - **The reissue's key** (`refundNoteKeyAfterVoidParts`, row and Xero alike).
-  Once a refund note is voided it appends `after-void:<sorted ids>`: every
+  Once a note is voided it appends `after-void:<sorted ids>`: every
   refund note, live or voided, recorded at the key's watermark (v2) or amount
   (v1), or every note a "Paid another way" close's own rows raised once one is
   voided (v3). A figure the link lacks comes from its create row, or counts
@@ -1616,12 +1617,12 @@ _Legacy: settles tasks raised before #4317._
   refuses, recording nothing, a VOIDED/DELETED note or one another row raised.
 - **Bank transfers.** The inbound sync never undoes the refund
   (`INV-ADDPAY-021`'s floor). One writer, the nightly follow-up
-  (`INV-ADDPAY-042`), moves the detail, the `BANK_REFUND` line and the total
+  (`INV-ADDPAY-042`), moves the detail, `BANK_REFUND` line and total
   together and raises the follow-up; nothing is re-raised automatically.
   Pinned by `xero-refund-note-{void-pointer,crash-window,after-void-key}`,
   `xero-voided-note-recount`, `bank-refund-void-follow-up`,
   `xero-refund-request-note-void`, `xero-canonical-refund-note-void-race`,
-  `xero-voided-request-note-retry-routes`,
+  `xero-refund-note-stale-live-status`, `xero-voided-request-note-retry-routes`,
   `xero-sync`, `xero-booking-repair`, `xero-operation-retry`,
   `xero-operation-outbox` and `xero-hardening`.
 
@@ -1720,3 +1721,55 @@ _Legacy: settles tasks raised before #4317._
 - **No new advisory key.** Home: `ended-booking-ask-guard.ts`. Pinned by
   `ended-booking-ask-mint-guard`, `payment-recovery`,
   `additional-intent-currency` and `ended-booking-ask-mint-race` (realdb).
+
+### INV-ADDPAY-045
+
+- **Credit released after a Xero offset is asked for once, by card.** When
+  `convergeCreditNoteSpentOutsideApp` (#4251) releases credit applied to a
+  booking, the booking owes that amount and nothing asked for it (#4253). Each
+  release row gets one `credit_release_ask_` recovery row; the runner branch in
+  `credit-release-ask.ts` is reached before the ordinary replay, which has no
+  edit to size from.
+- **The size is re-derived, never trusted.** The smaller of the release, what
+  the ledger still shows owed and unasked (`INV-PAY-047`), and what Xero shows
+  due on the booking's invoice; an unpaid ask it supersedes is carried
+  (`INV-PAY-098`). Nothing owed closes the row with an audit.
+- **No second invoice.** The amount already stands on the booking's invoice, so
+  the row is written `hadIssuedXeroInvoice: false`.
+- **It waits behind an unpaid edit request** (its supplementary invoice could not
+  be paid by this one; release 2 merges them) and retries.
+- **It closes, never guesses.** Cancelled, bumped, uncaptured and
+  organiser-settled bookings close without an ask; an invoice not yet open in
+  Xero throws and retries. A booking that ended is asked nothing
+  (`INV-ADDPAY-044`).
+- **Its own words.** The first email goes out at the next reminder pass instead
+  of after the usual wait (`INV-ADDPAY-024`), worded as credit used elsewhere,
+  never as a change to the stay. A reduction never nets against this request.
+  A chain mixing an edit and a release is worded by its newest request (release 2).
+- **Blue/green.** Enqueueing is off until an operator sets the
+  `CREDIT_RELEASE_ASK`/`WRITER` `XeroSyncCursor` row's `enabled` to `true`, after
+  the previous colour has drained; the runner, recorder and closer are always on.
+  Only releases created after that moment are asked (the backlog is a later
+  run), and once enabled the previous colour must not be rolled back to.
+  Home: `credit-release-ask-sweep.ts`.
+
+### INV-ADDPAY-046
+
+- **The card payment is recorded against the booking's own invoice.** A captured
+  credit-release request's own money (its amount less the ask it carried) is
+  recorded in Xero as a Stripe-account payment on the booking's invoice, dated
+  the day Stripe took it, never a second invoice. An edit's own money stays on
+  its supplementary invoice.
+- **It is a sweep.** `planCreditReleasePayments` re-derives from the ledger chain
+  which captures collected credit-release money; the payment's `XeroObjectLink`
+  (role `CREDIT_RELEASE_PAYMENT`) is the only marker of done, and the Xero key
+  makes a repeat harmless.
+- **It fails closed.** An invoice not open, owing less than the card took, or a
+  chain that cannot be traced records nothing and alerts the officers once a day.
+  Retries are at least an hour apart and capped at five.
+- **Xero paying first closes the request.** An unpaid request that carries
+  nothing is closed when Xero shows its invoice paid: the card payment is
+  cancelled first (a succeeded or processing one is left), then one transaction
+  under the global key fences the row and writes the money as bank cash.
+- **No new advisory key.** Home: `credit-release-xero-payment.ts`,
+  `credit-release-ask-close.ts`.

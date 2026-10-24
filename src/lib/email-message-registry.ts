@@ -508,6 +508,15 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "checkIn",
     "checkOut",
   ],
+  // #4253: the same four are load-bearing for the same reason - this email asks for
+  // money for a stay, and an override that drops one leaves a demand that cannot be
+  // acted on or checked.
+  "credit-released-payment-request": [
+    "additionalAmount",
+    "requestedOn",
+    "checkIn",
+    "checkOut",
+  ],
   // #3827 (D-3813-7): an approved appeal is refunded to the card OR promised
   // by bank transfer, and only {{refundSentence}} says which. An override
   // saved from the old default ("processed to your original payment method"
@@ -954,9 +963,9 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   },
   "admin-duplicate-capture-kept": {
     triggerSummary:
-      "A card payment arrived on a booking that was already paid and the app had no usable record of which payment settled it - while another payment on it still held money, or because the recorded payment no longer holds money - so it kept the payment and refunded nothing",
+      "A card payment arrived on a booking that was already paid and the app had no usable record of which payment settled it - while another payment on it still held money, because the recorded payment no longer holds money, or (a payment the app had never recorded) with no other payment holding money - so it kept the payment and refunded nothing. The last kind is sent again if undelivered, then saying if the booking was cancelled since (with what the payment still holds) or another payment has arrived",
     frequency:
-      "On a payment or a repeat of it reaching such a booking - rare; at most once a day per booking and payment, by a cross-instance cooldown given back when the send throws",
+      "On a payment or a repeat of it reaching such a booking - rare; at most once a day per booking and payment, by a cross-instance cooldown given back when the send throws. One for a payment the app had never recorded is owed until delivered, and the 15-minute payments cron sends it an hour on if nothing else does (about a day at worst)",
   },
   "admin-superseded-capture-refused": {
     triggerSummary:
@@ -1112,6 +1121,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "A booking change increased the total and the extra amount is still uncollected",
     frequency:
       "Twice per outstanding amount at most — a few days after the change, and once more shortly before check-in — plus any manual re-send an admin triggers from the booking page. The chase stops when the money arrives or the stay ends",
+  },
+  "credit-released-payment-request": {
+    triggerSummary:
+      "Account credit applied to a booking was used elsewhere in the club's accounts, so part of the booking is unpaid again and a card payment was requested",
+    frequency:
+      "Sent when the payment request is raised, then repeated on the booking's additional-payment reminder schedule until the money arrives or the stay ends, plus any manual re-send an admin triggers from the booking page",
   },
   "booking-policy-exception-approved": {
     triggerSummary:
@@ -1597,7 +1612,7 @@ export function sampleValue(token: string): string {
   if (token === "duplicateCaptureKeptNote") {
     return duplicateCaptureKeptParagraph({ reason: "not-recorded", otherPaymentIntentId: "pi_example" });
   }
-  if (token === "duplicateCaptureKeptAction") return duplicateCaptureKeptAction({ otherHoldsMoney: true });
+  if (token === "duplicateCaptureKeptAction") return duplicateCaptureKeptAction({ otherHoldsMoney: true, reason: "not-recorded" });
   // #4300: previewed as the still-owing arm, the case a live booking meets.
   if (token === "supersededCaptureNote") return supersededCaptureRefusedParagraph({ bookingCancelled: false });
   if (token === "supersededCaptureAction") return supersededCaptureRefusedAction({ bookingCancelled: false });
