@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NEGATIVE_EDITED_HEADLINE_MESSAGE } from "@/lib/edit-night-valuation";
 import { NextRequest } from "next/server";
 
 /**
@@ -728,6 +729,24 @@ describe("modify-quote — an election on a booking whose rows do not reconcile"
     expect(await quoteDiff(withTick(unreconciled()), untick)).toBe(
       await quoteDiff(withTick(booking()), untick),
     );
+  });
+});
+
+/**
+ * #4317 review round 2: the preview refuses, in the save's words, an edit that
+ * would carry a headline frozen below its guests under zero. The headline here
+ * is $10 over $116 of guests; the tick takes the guests to $88, which carried
+ * forward would be a -$18 total.
+ */
+describe("modify-quote — an edit that would carry a frozen headline below zero", () => {
+  it("answers 409 with the save's refusal, quoting nothing", async () => {
+    h.bookingFindUnique.mockResolvedValue(booking({ totalPriceCents: 1000, finalPriceCents: 1000 }));
+    const res = await POST(
+      req({ otherLodgeId: "lodge-partner", otherLodgeMemberGuestIds: ["g-visitor"] }),
+      { params },
+    );
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toBe(NEGATIVE_EDITED_HEADLINE_MESSAGE);
   });
 });
 

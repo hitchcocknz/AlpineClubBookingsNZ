@@ -1,6 +1,7 @@
 import type { BookingGuestNightPriceSource, MemberGuestConsentStatus } from "@prisma/client";
 
 import { ApiError } from "@/lib/api-error";
+import logger from "@/lib/logger";
 import {
   getGuestBedNightKeys,
   type BookingStayRange,
@@ -51,9 +52,10 @@ import {
  *
  * Night keys come from `getGuestBedNightKeys`, the canonical helper: a guest's
  * own rows where it has any, otherwise its stay envelope, otherwise the
- * booking's range (`INV-DATE-020`). No clock, no database, no rate table; the
- * one side effect, the D11 refusal's log line, writes to the logger its caller
- * hands in.
+ * booking's range (`INV-DATE-020`). No clock, no database, no rate table. The
+ * two side effects are refusals' log lines: D11's writes to the logger its
+ * caller hands in; the negative-headline refusal in `editedBookingTotalCents`,
+ * which the pure in-progress planner reaches too, writes to the shared one.
  */
 
 /** One held night with what an edit reads it as worth. */
@@ -246,16 +248,59 @@ export function withUnattachedStrandMoney<
  */
 export function editedBookingTotalCents(
   storedBooking: {
+    id?: string;
     totalPriceCents: number;
     guests: ReadonlyArray<{ priceCents: number }>;
   },
   pricedGuestsTotalCents: number,
+  /**
+   * The stored promotional adjustment, where the caller keeps it rather than
+   * re-deciding the promotion (the in-progress planner). A door that re-decides
+   * it leaves this out: the promotion engine caps its codes at the total it is
+   * handed, so a total of zero or more can never reach a negative final price.
+   */
+  carriedPromoAdjustmentCents?: number,
 ): number {
   const storedGuestsTotalCents = storedBooking.guests.reduce(
     (sum, guest) => sum + guest.priceCents,
     0,
   );
-  return storedBooking.totalPriceCents + (pricedGuestsTotalCents - storedGuestsTotalCents);
+  const totalPriceCents =
+    storedBooking.totalPriceCents + (pricedGuestsTotalCents - storedGuestsTotalCents);
+  const finalPriceCents = totalPriceCents + (carriedPromoAdjustmentCents ?? 0);
+  if (totalPriceCents < 0 || finalPriceCents < 0) {
+    // #4317 review round 2: a frozen headline BELOW its guests (a parked add
+    // whose review settled while the re-base declined) can carry an edit's
+    // change below zero - $100 over $400 of guests, less a $300 guest, is
+    // -$200. A negative total or final price misreads everywhere it is used
+    // (the cancellation cap, bank reconciliation), so the edit is refused,
+    // nothing written, until wave B re-bases the headline (#4302 D5).
+    logger.error(
+      {
+        bookingId: storedBooking.id ?? null,
+        storedTotalPriceCents: storedBooking.totalPriceCents,
+        storedGuestsTotalCents,
+        editedTotalPriceCents: totalPriceCents,
+        editedFinalPriceCents: finalPriceCents,
+        flag: "NEGATIVE_EDITED_HEADLINE",
+      },
+      "A booking edit was refused: carrying its frozen headline forward would write a negative total or final price; the clean-up wave re-bases it (#4302 D5)",
+    );
+    throw new NegativeEditedHeadlineError();
+  }
+  return totalPriceCents;
+}
+
+/** What a member or officer is told when an edit would carry the headline below zero. */
+export const NEGATIVE_EDITED_HEADLINE_MESSAGE =
+  "This booking's stored total is out of step with its guests and needs correcting by the club before it can be changed. Nothing has been changed; please contact the club.";
+
+/** The refusal {@link editedBookingTotalCents} throws: a 409, nothing written. */
+export class NegativeEditedHeadlineError extends ApiError {
+  constructor() {
+    super(NEGATIVE_EDITED_HEADLINE_MESSAGE, 409);
+    this.name = "NegativeEditedHeadlineError";
+  }
 }
 
 /**

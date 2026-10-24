@@ -1317,6 +1317,9 @@ export function buildInProgressGuestRangePlan(
     input.booking,
     proposedExistingGuests.reduce((sum, entry) => sum + entry.priceCents, 0) +
       proposedAddedGuests.reduce((sum, entry) => sum + entry.priceCents, 0),
+    // This plan keeps the stored promotion, so the final price it writes is
+    // checked too (review round 2).
+    input.booking.promoAdjustmentCents,
   );
   const newDiscountCents = input.booking.discountCents;
   const newPromoAdjustmentCents = input.booking.promoAdjustmentCents;

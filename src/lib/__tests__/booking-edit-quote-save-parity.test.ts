@@ -43,7 +43,10 @@ import {
 } from "@/lib/booking-modify-plan";
 import { priceBookingGuestsWithMembershipTypePolicy } from "@/lib/membership-type-policy";
 import { calculateBookingPrice, type SeasonRateData } from "@/lib/pricing";
-import { NegativeStoredGuestTotalError } from "@/lib/edit-night-valuation";
+import {
+  NegativeEditedHeadlineError,
+  NegativeStoredGuestTotalError,
+} from "@/lib/edit-night-valuation";
 
 /**
  * THE PREVIEW AND THE SAVE PRICE ONE EDIT IDENTICALLY (#3031; #4317, epic #4302).
@@ -521,6 +524,98 @@ describe("#4317 review H1: a frozen headline is carried, never settled by an edi
     expect(quote.priceDiffCents).toBe(2 * RATE);
     expect(quote.newTotalPriceCents).toBe(70_000);
     expect(save.newTotalPriceCents).toBe(quote.newTotalPriceCents);
+  });
+});
+
+/**
+ * #4317 review round 2: a headline frozen BELOW its guests can carry an edit's
+ * change under zero. The quote's planner and the save refuse it alike, before
+ * anything is priced into the booking: $100 over $100 + $300 of guests, the
+ * $300 guest removed, would be -$200.
+ */
+describe("#4317 review round 2: an edit that would carry a headline below zero is refused", () => {
+  const LOW = guest("g1", "m1", sold([3334, 3333, 3333]), 10_000);
+  const HIGH = guest("g2", "m2", sold([10_000, 10_000, 10_000]), 30_000);
+  const BELOW = {
+    id: "bk-below",
+    checkIn: D(HELD[0]),
+    checkOut: D("2026-08-23"),
+    totalPriceCents: 10_000,
+    discountCents: 0,
+    promoAdjustmentCents: 0,
+    finalPriceCents: 10_000,
+    guests: [LOW, HIGH],
+  };
+
+  it("during the stay: the quote's planner and the save both refuse", async () => {
+    h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] });
+    const input: BuildInProgressGuestRangePlanInput = {
+      booking: BELOW,
+      editableFrom: D("2026-08-21"),
+      newCheckOut: D("2026-08-23"),
+      removeGuestIds: ["g2"],
+      seasons: SEASONS,
+    };
+    expect(() => buildInProgressGuestRangePlan(input)).toThrow(NegativeEditedHeadlineError);
+    await expect(
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
+        booking: { ...BELOW, memberId: "m1", lodgeId: "lodge-1" } as never,
+        bookingId: "bk-below",
+        isInProgressEdit: true,
+        editableFrom: input.editableFrom,
+        newCheckIn: BELOW.checkIn,
+        newCheckOut: input.newCheckOut,
+        normalizedAddGuests: undefined,
+        removeGuestIds: ["g2"],
+        guestsForPricing: [LOW].map((g) => ({
+          bookingGuestId: g.id,
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: g.memberId,
+          stayStart: BELOW.checkIn,
+          stayEnd: input.newCheckOut,
+        })),
+        skipBookingLifecycleRules: false,
+        seasonRateData: SEASONS as never,
+        partnerSharedGuests: [],
+      }),
+    ).rejects.toBeInstanceOf(NegativeEditedHeadlineError);
+  });
+
+  it("before the stay: the save refuses removing the $300 guest", async () => {
+    h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] });
+    vi.mocked(priceBookingGuestsWithMembershipTypePolicy).mockImplementation(
+      async (_db, input) =>
+        calculateBookingPrice(input.checkIn, input.checkOut, input.guests as never, input.seasons),
+    );
+    const booking = { ...BELOW, memberId: "m1", lodgeId: "lodge-1" };
+    await expect(
+      calculateModifiedPricing(NO_DISCOUNT_TX, {
+        booking: booking as never,
+        bookingId: "bk-below",
+        isInProgressEdit: false,
+        editableFrom: null,
+        newCheckIn: BELOW.checkIn,
+        newCheckOut: BELOW.checkOut,
+        normalizedAddGuests: undefined,
+        removeGuestIds: ["g2"],
+        guestsForPricing: [LOW].map((g) => ({
+          bookingGuestId: g.id,
+          ageTier: "ADULT" as const,
+          isMember: true,
+          memberId: g.memberId,
+          rateMembershipTypeId: MEMBER_TYPE,
+          rateSource: "OWN_TYPE" as const,
+          stayStart: BELOW.checkIn,
+          stayEnd: BELOW.checkOut,
+          nights: HELD.map(D),
+          ...editedGuestPricingLocks(g, booking, false),
+        })),
+        skipBookingLifecycleRules: false,
+        seasonRateData: SEASONS as never,
+        partnerSharedGuests: [],
+      }),
+    ).rejects.toBeInstanceOf(NegativeEditedHeadlineError);
   });
 });
 

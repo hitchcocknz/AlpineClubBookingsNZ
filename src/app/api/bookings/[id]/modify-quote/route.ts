@@ -53,6 +53,7 @@ import {
 } from "@/lib/edit-financial-review";
 import {
   editedBookingTotalCents,
+  NegativeEditedHeadlineError,
   NegativeStoredGuestTotalError,
   refuseNegativeStoredGuestTotals,
   withUnattachedStrandMoney,
@@ -1606,6 +1607,11 @@ export async function POST(
         })
         : null;
   } catch (error) {
+    // Review round 2: the save refuses an edit that would carry a frozen
+    // headline below zero in these words; the preview says the same.
+    if (error instanceof NegativeEditedHeadlineError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     logger.error({ err: error, bookingId }, "Failed to price booking modification quote");
     return NextResponse.json(
       { error: "Unable to price the requested future-night changes" },
@@ -1763,6 +1769,9 @@ export async function POST(
       newTotalPriceCents = editedBookingTotalCents(booking, priceBreakdown.totalPriceCents);
     }
   } catch (error) {
+    if (error instanceof NegativeEditedHeadlineError) {
+      return NextResponse.json({ error: error.message }, { status: error.status });
+    }
     if (error instanceof MembershipTypeBookingPolicyError) {
       // Finding 2 (privacy re-review of MG3 #2308). The membership-type refusal
       // is D-8's FOURTH collapsing refusal, so when it collapsed it owes the

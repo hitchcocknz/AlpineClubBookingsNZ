@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   editedBookingTotalCents,
+  NEGATIVE_EDITED_HEADLINE_MESSAGE,
   NEGATIVE_STORED_GUEST_TOTAL_MESSAGE,
+  NegativeEditedHeadlineError,
   NegativeStoredGuestTotalError,
   refuseNegativeStoredGuestTotals,
   valueEditStrand,
@@ -163,6 +165,34 @@ describe("editedBookingTotalCents: the headline moves only by the edit's own cha
         50_000,
       ),
     ).toBe(70_000);
+  });
+
+  it("refuses an edit that would carry a headline below its guests under zero (review round 2)", () => {
+    // $100 headline over $100 + $300 of guests (a parked add's review settled
+    // while its re-base declined). Removing the $300 guest carries -$200.
+    expect(() =>
+      editedBookingTotalCents(
+        { id: "b1", totalPriceCents: 10_000, guests: [{ priceCents: 10_000 }, { priceCents: 30_000 }] },
+        10_000,
+      ),
+    ).toThrow(NegativeEditedHeadlineError);
+    // Exactly zero is a price, not a refusal.
+    expect(
+      editedBookingTotalCents(
+        { totalPriceCents: 30_000, guests: [{ priceCents: 10_000 }, { priceCents: 30_000 }] },
+        10_000,
+      ),
+    ).toBe(0);
+  });
+
+  it("refuses where a carried promotion would take the final price below zero", () => {
+    // $100 total stays $100, but the kept -$150 promotion would make it -$50.
+    expect(() =>
+      editedBookingTotalCents({ totalPriceCents: 10_000, guests: [{ priceCents: 10_000 }] }, 10_000, -15_000),
+    ).toThrow(NEGATIVE_EDITED_HEADLINE_MESSAGE);
+    expect(
+      editedBookingTotalCents({ totalPriceCents: 10_000, guests: [{ priceCents: 10_000 }] }, 10_000, -10_000),
+    ).toBe(10_000);
   });
 
   it("counts a removed guest among the stored guests, so a removal moves the headline by its stored total", () => {
