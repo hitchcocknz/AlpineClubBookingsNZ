@@ -520,8 +520,10 @@ async function markResentSlices(
   plan: ReadonlyArray<RefundAllocationSlice>,
   answered: ReadonlyArray<AnsweredRefund>,
 ): Promise<void> {
+  const resent = plan.map((slice) => cardRefundSliceFailedRefundIds(operation, slice).length > 0);
+  if (!resent.includes(true)) return;
   const made = planAfterAttempt(plan, answered);
-  const marked = plan.map((slice, index) => (cardRefundSliceFailedRefundIds(operation, slice).length > 0 ? (made[index] ?? slice) : slice));
+  const marked = plan.map((slice, index) => (resent[index] ? (made[index] ?? slice) : slice));
   if (marked.every((slice, index) => slice === plan[index])) return;
   if (!(await moveRefusedSlices(operation, marked))) {
     logger.warn({ operationId: operation.id }, "A card refund re-send's slice was not marked made: another attempt holds the row and marks it (#4312)");
