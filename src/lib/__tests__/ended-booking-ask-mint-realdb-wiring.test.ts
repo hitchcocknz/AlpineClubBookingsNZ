@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * #4316 (`INV-ADDPAY-023`): the real-PostgreSQL proof that an edit's
+ * #4316 (`INV-ADDPAY-044`): the real-PostgreSQL proof that an edit's
  * after-commit mint never leaves a live ask on a booking cancelled in the gap
  * self-skips without `RUN_CONCURRENCY_RACE_TESTS`, and hosted CI reaches it
  * only because the race harness imports it. Lose that import and the proof
@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
  */
 const REPO_ROOT = resolve(__dirname, "../../..");
 
-describe("INV-ADDPAY-023: the ended-booking mint race proof stays wired into CI (#4316)", () => {
+describe("INV-ADDPAY-044: the ended-booking mint race proof stays wired into CI (#4316)", () => {
   it("is imported by the race harness CI runs against a real database", () => {
     const harness = readFileSync(
       resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),

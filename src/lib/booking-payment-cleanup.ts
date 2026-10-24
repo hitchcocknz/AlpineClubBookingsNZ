@@ -272,15 +272,16 @@ export function hasOutstandingAdditionalPaymentIntent(
 
 /**
  * RETIRE A CANCELLED BOOKING'S OUTSTANDING ADDITIONAL ASK, in the caller's
- * transaction (`INV-ADDPAY-023`). The one routine both writers that end an ask
+ * transaction (`INV-ADDPAY-044`). The one routine the writers that end an ask
  * with its booking run (#4316):
  *
- *  - the paid cancel's claim (`booking-cancel.ts`, tx1), on the mirror it read
- *    under the `Payment` row lock, beside its CANCELLED flip;
- *  - the edit doors' after-commit minter
- *    (`createModificationAdditionalPaymentIntent`), when a cancel committed
- *    after the edit but before the minter wrote its new intent's row - that
- *    cancel read the mirror before the intent existed and could not retire it.
+ *  - both cancel claims (`booking-cancel.ts`: the paid path's tx1 and, review
+ *    round 2, the never-captured branch's), on the mirror each reads under the
+ *    `Payment` row lock, beside its CANCELLED flip;
+ *  - the after-commit minters (`ended-booking-ask-guard.ts`: the edit doors,
+ *    the recovery runner's replay and a currency re-issue), when a cancel
+ *    committed before the minter wrote its new intent's row - that cancel read
+ *    the mirror before the intent existed and could not retire it.
  *
  * The caller holds the `Payment` row lock and passes the mirror it read under
  * it. The mirror is marked FAILED, the intent's row FAILED (never over a

@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof for #4316 (`INV-ADDPAY-023`): an edit's after-commit
+ * Real-PostgreSQL proof for #4316 (`INV-ADDPAY-044`): an edit's after-commit
  * mint never leaves a live additional ask on a booking cancelled in the gap.
  *
  * The edit doors decide to ask the card under `lock(1)` but create the Stripe
@@ -307,7 +307,7 @@ let observerClient: PrismaClient;
       expect(booking.status).toBe("CANCELLED");
       expect(stripe.created).toHaveLength(1);
       const intentId = stripe.created[0]!;
-      expect(stripe.intents.get(intentId)?.status, "INV-ADDPAY-023: the ask's intent is left live at Stripe on a cancelled booking").toBe("canceled");
+      expect(stripe.intents.get(intentId)?.status, "INV-ADDPAY-044: the ask's intent is left live at Stripe on a cancelled booking").toBe("canceled");
       expect(row).toMatchObject({ stripePaymentIntentId: intentId, status: "FAILED" });
       expect(payment).toMatchObject({ additionalPaymentIntentId: intentId, additionalPaymentStatus: "FAILED" });
       // The durable backstop both writers key the same way (#1350).

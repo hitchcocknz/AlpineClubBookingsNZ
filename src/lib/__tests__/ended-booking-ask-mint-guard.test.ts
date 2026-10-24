@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /*
-  #4316 (`INV-ADDPAY-023`): AN ORDINARY EDIT'S AFTER-COMMIT MINT NEVER LEAVES A
+  #4316 (`INV-ADDPAY-044`): AN ORDINARY EDIT'S AFTER-COMMIT MINT NEVER LEAVES A
   LIVE ASK ON A BOOKING THAT HAS ENDED.
 
   The edit doors decide to ask the card inside their transaction, under

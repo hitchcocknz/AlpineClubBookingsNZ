@@ -127,7 +127,8 @@ export function isAdditionalPayableBookingStatus(
 }
 
 /**
- * The booking statuses that RETIRE every ask on the booking (`INV-ADDPAY-023`):
+ * The booking statuses that RETIRE every ask on the booking (`INV-ADDPAY-044`,
+ * the cancelled-booking case of `INV-ADDPAY-023`):
  * both lists above exclude them, and no surface may offer or take a card
  * payment for one. A CANCELLED or BUMPED booking keeps its ask columns as they
  * were, so its residual says nothing to the ledger census either
@@ -142,7 +143,7 @@ export const ADDITIONAL_ASK_RETIRED_BOOKING_STATUSES = [
   "BUMPED",
 ] as const;
 
-/** Has this booking's lifecycle retired every ask on it (`INV-ADDPAY-023`)? */
+/** Has this booking's lifecycle retired every ask on it (`INV-ADDPAY-044`)? */
 export function isAdditionalAskRetiredBookingStatus(
   status: string | null | undefined,
 ): boolean {
