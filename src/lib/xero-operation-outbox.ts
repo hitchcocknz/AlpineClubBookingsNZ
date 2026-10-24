@@ -1629,8 +1629,8 @@ async function enqueueSupplementaryInvoiceForAnchor(
    * stale, smaller total arriving second changes nothing.
    */
   const decide = async (tx: Prisma.TransactionClient) => {
-    // #3953 round 7: where the booking has a change capture no change can be read from, its receipt decides under the BOOKING's key, so this takes that key first (booking, then anchor - the one order; nothing takes them the other way).
-    if (localId !== bookingId && (options?.recordPayment ?? true) && !options?.primaryInvoiceGap && (await bookingHasUnattributedCaptures(tx, bookingId))) await lockSupplementaryInvoiceAnchor(tx, bookingId);
+    // #3953 round 7: where the booking has a change capture no change can be read from, its receipt decides under the BOOKING's key, so this takes that key first (booking, then anchor - the one order; nothing takes them the other way). Round 9: only for an invoice naming no capture, the one kind that might record such a capture.
+    if (localId !== bookingId && (options?.recordPayment ?? true) && !options?.primaryInvoiceGap && !options?.paymentIntentId && (await bookingHasUnattributedCaptures(tx, bookingId))) await lockSupplementaryInvoiceAnchor(tx, bookingId);
     await lockSupplementaryInvoiceAnchor(tx, localId);
 
     const existingLink = await tx.xeroObjectLink.findFirst({

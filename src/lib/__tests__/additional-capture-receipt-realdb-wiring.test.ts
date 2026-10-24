@@ -41,5 +41,6 @@ describe("the change capture receipt proof stays wired into CI (#3953)", () => {
     expect(unattributed).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
     expect(unattributed).toContain("a review charge's capture, read to its change by its reason, makes that change's paid invoice unpaid");
     expect(unattributed).toContain("a capture no change can be read from: the enqueue queues on the booking's lock first");
+    expect(unattributed).toContain("a legacy capture's receipt leaves a later change's invoice naming its own capture paid");
   });
 });

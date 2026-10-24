@@ -75,7 +75,7 @@ describe("bookingHasPaidUnnamedSupplementary", () => {
 });
 
 describe("anchorCaptureHasReceipt", () => {
-  it("asks about the change's stamped and review-charge captures, the named one, and the booking's unattributed ones", async () => {
+  it("asks about the change's stamped and review-charge captures and the named one - never the booking's unattributed ones (round 9)", async () => {
     const db = store({ captures: [{ id: "tx_1" }], link: { id: "link_1" } });
     await expect(
       anchorCaptureHasReceipt(db as never, { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: "pi_1" }),
@@ -88,8 +88,20 @@ describe("anchorCaptureHasReceipt", () => {
             { bookingModificationId: "mod_1" },
             { reason: buildEditFinancialReviewChargeReason("mod_1") },
             { stripePaymentIntentId: "pi_1" },
-            UNATTRIBUTED,
           ],
+        },
+      }),
+    );
+  });
+
+  it("MUTATION round 9: asks about the booking's unattributed captures only for an invoice naming no capture", async () => {
+    const db = store({});
+    await anchorCaptureHasReceipt(db as never, { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: null });
+    expect(db.paymentTransaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          kind: "ADDITIONAL",
+          OR: [{ bookingModificationId: "mod_1" }, { reason: buildEditFinancialReviewChargeReason("mod_1") }, UNATTRIBUTED],
         },
       }),
     );

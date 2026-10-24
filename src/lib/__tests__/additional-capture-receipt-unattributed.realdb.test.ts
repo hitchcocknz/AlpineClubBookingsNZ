@@ -15,6 +15,8 @@
  *     queues the change's invoice paid and naming no capture; the enqueue
  *     takes the booking's lock first (booking, then anchor - the one order),
  *     queues behind a session holding it, and raises the invoice unpaid.
+ *  3. Round 9: such a capture's receipt never touches an invoice that NAMES
+ *     another capture - a later change's own paying invoice stays paid.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -39,6 +41,9 @@ const CHANGE_TX_ID = "race-3953u-change-capture";
 const CHANGE_INTENT = "pi_race_3953u_change";
 const MODIFICATION_ID = "race-3953u-modification";
 const INVOICE_ID = "race-3953u-xero-invoice";
+const NEW_TX_ID = "race-3953u-new-capture";
+const NEW_INTENT = "pi_race_3953u_new";
+const NEW_MODIFICATION_ID = "race-3953u-new-modification";
 const RECEIPT_KEY = `payment-intent:${CHANGE_INTENT}:additional-capture-receipt:v1`;
 const LOCK_POLL_TIMEOUT_MS = 5_000;
 
@@ -47,7 +52,10 @@ let observerClient: PrismaClient;
 let outbox: typeof import("@/lib/xero-operation-outbox");
 
 async function clean(): Promise<void> {
-  await prisma.xeroSyncOperation.deleteMany({ where: { localId: { in: [CHANGE_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID] } } });
+  await prisma.xeroSyncOperation.deleteMany({
+    where: { localId: { in: [CHANGE_TX_ID, NEW_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID, NEW_MODIFICATION_ID] } },
+  });
+  await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: [CHANGE_TX_ID, NEW_TX_ID] } } });
   await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
   await prisma.payment.deleteMany({ where: { id: PAYMENT_ID } });
   await prisma.booking.deleteMany({ where: { id: BOOKING_ID } });
@@ -236,5 +244,48 @@ async function untilQueuedBehind(blockerPid: number): Promise<number> {
     const invoices = await changeInvoices();
     expect(invoices).toHaveLength(1);
     expect(invoices[0]!.requestPayload).toMatchObject({ recordPayment: false });
+  });
+
+  it("MUTATION round 9: a legacy capture's receipt leaves a later change's invoice naming its own capture paid", async () => {
+    await seed(null);
+    // The legacy capture's receipt is in Xero.
+    await prisma.xeroObjectLink.create({
+      data: {
+        localModel: "PaymentTransaction",
+        localId: CHANGE_TX_ID,
+        xeroObjectType: "PAYMENT",
+        xeroObjectId: "race-3953u-xero-payment",
+        role: "ADDITIONAL_CAPTURE_PAYMENT",
+        active: true,
+        metadata: { invoiceId: INVOICE_ID },
+      },
+    });
+    // A later change, stamped, paid by card.
+    await prisma.paymentTransaction.create({
+      data: {
+        id: NEW_TX_ID,
+        paymentId: PAYMENT_ID,
+        kind: "ADDITIONAL",
+        source: "STRIPE",
+        stripePaymentIntentId: NEW_INTENT,
+        amountCents: 5_000,
+        status: "SUCCEEDED",
+        hadIssuedXeroInvoice: false,
+        bookingModificationId: NEW_MODIFICATION_ID,
+      },
+    });
+
+    await outbox.enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: BOOKING_ID, priceDiffCents: 5_000, changeFeeCents: 0, bookingModificationId: NEW_MODIFICATION_ID },
+      { recordPayment: true, paymentIntentId: NEW_INTENT },
+    );
+
+    const invoices = await prisma.xeroSyncOperation.findMany({
+      where: { localModel: "BookingModification", localId: NEW_MODIFICATION_ID, queueType: "SUPPLEMENTARY_INVOICE" },
+      select: { requestPayload: true },
+    });
+    expect(invoices).toHaveLength(1);
+    expect(invoices[0]!.requestPayload).toMatchObject({ paymentIntentId: NEW_INTENT });
+    expect(invoices[0]!.requestPayload).not.toMatchObject({ recordPayment: false });
   });
 });

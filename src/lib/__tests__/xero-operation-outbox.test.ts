@@ -896,6 +896,16 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
       { createdByMemberId: "admin_1" },
     );
     expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+
+    // Round 9: an invoice naming its capture records only that one, so it never takes the booking's key.
+    mocks.executeRaw.mockClear();
+    mocks.bookingHasUnattributedCaptures.mockResolvedValue(true);
+    await enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: "booking_1", priceDiffCents: 2500, changeFeeCents: 500, bookingModificationId: "mod_1" },
+      { createdByMemberId: "admin_1", paymentIntentId: "pi_named" },
+    );
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+    mocks.bookingHasUnattributedCaptures.mockResolvedValue(undefined);
   });
 
   it("#3953 round 6 (1a): a #3980 gap invoice decides its own cash; an unpaid ask is never asked", async () => {

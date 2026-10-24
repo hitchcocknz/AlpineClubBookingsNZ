@@ -135,8 +135,10 @@ export async function anchorCaptureHasReceipt(
   input: { bookingId: string; bookingModificationId: string | null; paymentIntentId: string | null },
 ): Promise<boolean> {
   // Round 7: the change's captures by its stamp or its review charge's
-  // reason, the one the invoice names, and every capture on the booking no
-  // change can be read from - any of which this invoice might be recording.
+  // reason, and the one the invoice names. Round 9: an invoice naming its
+  // capture records that capture only, so the booking's captures no change
+  // can be read from are asked about only for one naming none - the one kind
+  // that might be recording them (`bookingHasPaidUnnamedSupplementary`).
   const arms: Prisma.PaymentTransactionWhereInput[] = [
     ...(input.bookingModificationId
       ? [
@@ -145,8 +147,9 @@ export async function anchorCaptureHasReceipt(
         ]
       : []),
     ...(input.paymentIntentId ? [{ stripePaymentIntentId: input.paymentIntentId }] : []),
-    unattributedCapturesWhere(input.bookingId),
+    ...(input.paymentIntentId ? [] : [unattributedCapturesWhere(input.bookingId)]),
   ];
+  if (arms.length === 0) return false;
   const captures = await store.paymentTransaction.findMany({
     where: { kind: "ADDITIONAL", OR: arms },
     orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
