@@ -67,6 +67,7 @@ import { readMigrationFinishedAt } from "@/lib/migration-finished-at";
 import {
   CARD_REFUND_OPERATION_WHERE,
   cardRefundPaymentBeforeFailure,
+  carriesCardRefundOperationMetadata,
   cardRefundSliceFailedRefundIds,
   cardRefundSliceFilledBy,
   isOpenCardRefundOperationStatus,
@@ -80,7 +81,6 @@ import {
 import {
   buildCardRefundFailedLaterRecoveryKey,
   CARD_REFUND_FAILED_LATER_REASON,
-  carriesCardRefundOperationMetadata,
   nextRefusedRefundKeySuffix,
 } from "@/lib/payment-recovery-keys";
 import { stripeReferenceId, type StripeReference } from "@/lib/stripe-references";

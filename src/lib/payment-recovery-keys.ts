@@ -544,22 +544,6 @@ export function cardRefundOperationRefundMetadata(operation: {
   );
 }
 
-/**
- * #4104 review (CM), #4312 round 8 (`INV-SSOT`): whether a Stripe refund
- * carries exactly the metadata this row's runner sends
- * (`cardRefundOperationRefundMetadata`) - no key missing, none extra. The one
- * test of "this row's runner could have sent it": a refund another door or the
- * Stripe dashboard made never passes it.
- */
-export function carriesCardRefundOperationMetadata(
-  operation: Parameters<typeof cardRefundOperationRefundMetadata>[0],
-  metadata: Record<string, string> | null | undefined,
-): boolean {
-  const expected = Object.entries(cardRefundOperationRefundMetadata(operation));
-  const actual = metadata ?? {};
-  return Object.keys(actual).length === expected.length && expected.every(([key, value]) => actual[key] === value);
-}
-
 // #1507: map a modification refund's Stripe idempotency-key prefix to the
 // Stripe metadata `reason`. THE ONE SPELLING (`INV-MOD-061`, #4101): the inline
 // settlement helper (executeBookingModificationRefund) stamps the reason this
