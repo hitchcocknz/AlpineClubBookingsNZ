@@ -1,11 +1,15 @@
-- **Two Xero tasks for the same document started at the same moment no longer
-  fail one of them by mistake (#4338).** The app keeps at most one live Xero
-  task per document. When two parts of the app tried to start the same task at
-  once, the second was told to use the first one's task, but if the first had
-  already finished in that split second, the second failed with a database error
-  instead. The clearest case was applying a member's credit to a booking twice
-  at once while the credit note had been used in Xero outside the app: the
-  ledger was brought into line correctly, but one run still showed as failed.
-  The second task now simply starts its own attempt, exactly as it would have a
-  moment later, so nothing fails. No credit balances, invoices or Xero records
-  change, and there is nothing for an officer to do.
+- **A Xero task that loses a start-up race to a failed twin now tries again
+  instead of failing by mistake (#4338).** The app keeps at most one live Xero
+  task per document. When two parts of the app started the same task at once,
+  the second was told to use the first one's task; if the first had already
+  failed in that split second, the second failed with a database error instead.
+  It now starts its own attempt, as a retry a moment later would, so it makes
+  one more call to Xero, which can fail again and add one failed entry towards
+  the repeated-failure alert. If the first task had succeeded or been cancelled,
+  the second still stops with the same error as before. The clearest case was
+  applying a member's credit to a booking twice at once while the credit note
+  had been used in Xero outside the app: the ledger was brought into line
+  correctly, but one run showed as failed, and the second run's failed
+  allocation could stay on the Active failures list. Both runs now finish, and
+  every failed allocation from the pair is closed when the ledger is brought
+  into line. No credit balances, invoices or Xero records change.
