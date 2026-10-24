@@ -1731,16 +1731,17 @@ _Legacy: settles tasks raised before #4317._
   The invoice it credits is read from the refund (`queueCardRefundOwnNotes`).
 - **Each writer asks where it first knows the refund.** A refund request's
   approval and replay, for each refund made, on any outcome
-  (`replayNotingEachRefund`, `INV-PAY-118`); any other replay, for its
-  re-sends and late-capture refunds; `charge.refunded`, for a refund it first
-  records, by its metadata (`cardRefundDoorOf`); a late capture's note, per
-  refund (`planLateCaptureCardNotes`).
+  (`replayNotingEachRefund`, `INV-PAY-118`); any other replay, only for
+  re-sends whose failures were own-noted and for late-capture refunds;
+  `charge.refunded`, for a refund it first records, by its metadata
+  (`cardRefundDoorOf`); a late capture's note, per refund.
 - **A re-send is paired with its failures only by the replay's record**
-  (#4104). The replay marks the slice it sent for a failed refund with the
-  refund it made (`madeRefundId`); that refund is sized less the failures' own
-  notes, a chain followed through marks (`cardRefundFailuresAnsweredBy`). A
-  refund no slice is marked with - a dashboard refund - is noted in full. A
-  re-send never enters the canonical delta.
+  (#4104). The replay marks the slice it sent with the refund it made
+  (`madeRefundId`), compare-and-set on its plan; that refund is sized less the
+  failures' own notes, a chain followed through marks
+  (`cardRefundFailuresAnsweredBy`). A dashboard refund is noted in full. A
+  re-send never enters the canonical delta: one recorded first is left to its
+  row's replay, or marked on a dead row (`pairResendRecordedFirst`).
 - **Never for a historical refund.** Only a refund Stripe made since the
   marker migration finished qualifies (`madeSinceCardRefundNoteCutover`);
   none if the marker never finished, when the approval takes the one note. An

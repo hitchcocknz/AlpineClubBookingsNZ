@@ -2155,7 +2155,11 @@ raises nothing.
   `card_refund_failed_later_<refund>`, or a re-planned slice's
   `failedRefundIds`) and, once Stripe answers, marks that slice with the
   refund Stripe made (`madeRefundId`, `refundPlanOrRetryRefusals` - on success
-  as already beside a refusal, fenced on the attempt it holds). That refund
+  as already beside a refusal). The mark is compare-and-set on the plan the
+  attempt sent from, never on its hold of the row: Stripe's answer under the
+  slice's key is a fact whoever holds the row, so a late attempt the reaper
+  already moved to FAILED still marks it, while a re-plan in between changes
+  the plan and wins. That refund
   answers the slice's failures (`cardRefundFailuresAnsweredBy`). No charge,
   amount or time is read: a refund no slice is marked with - one made in the
   Stripe dashboard, whenever - answers nothing and is noted in full. So a
@@ -2172,10 +2176,16 @@ raises nothing.
   note answers it and it is noted nowhere. It never enters the canonical delta,
   whose payment-wide gap would hand it another refund's share. The replay asks
   once it has marked the slice; `charge.refunded` asks the same rule for a
-  marked one, and leaves one it records before the mark - Stripe's answer
-  reached the webhook first - to the replay, which marks and asks when its
-  retry reads the same refund back under the same key. A failed-later row's
-  refund says so in its metadata (`CARD_REFUND_FAILED_LATER_REASON`).
+  marked one. One it records before the mark - Stripe's answer reached the
+  webhook first - is known by the unmarked re-send it could answer
+  (`pairResendRecordedFirst`): a slice sent for failures, on its charge for its
+  amount, of a row whose runner sends exactly its metadata
+  (`carriesCardRefundOperationMetadata`), raised before it. A row that will
+  replay the slice is left to: the retry reads the same refund back under the
+  same key, marks and asks. A dead row is never replayed, so its one such
+  slice is marked there and the rule applied. A failed-later row's refund also
+  says so in its metadata (`CARD_REFUND_FAILED_LATER_REASON`), and is never
+  the delta even when no slice is found.
 
 Late captures keep their capture's sizing.
 
@@ -2244,8 +2254,16 @@ Stated limits:
   against the failed refund's card note. A refund made in the Stripe dashboard
   instead is linked to nothing the app made, so it gets its own note and the
   failed refund's note still stands: Xero credits that amount twice until an
-  officer voids one. #4359 tracks refunds the owed figure takes from an
-  unexpected source.
+  officer voids one (owner decision, 25 Oct 2026). #4361 plans the automated
+  design for this family of cases, #4359 included.
+- **A re-send whose final attempt loses its answer after `charge.refunded`
+  left it to that attempt is noted by nobody.** The webhook defers to a row
+  still mid-attempt; when that attempt's answer is lost (a timeout, a crash the
+  reaper finds) and its retries are spent, no writer reads the refund again,
+  and no refund row stores the slice's key or Stripe metadata to pair it from.
+  So too a re-send that several dead rows' slices could each be (the webhook
+  logs it). The #4162 floor's alert and the #4230 deploy note find the refund
+  with no note, for a note by hand.
 - **A voided failure note is not asked again.** When Xero voids the note of a
   refund Stripe failed later, the re-send it answered was sized less it, and
   nothing asks for the difference: Stuck States lists the void (`card-refund`)
