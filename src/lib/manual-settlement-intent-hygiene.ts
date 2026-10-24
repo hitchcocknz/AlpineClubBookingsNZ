@@ -404,8 +404,9 @@ async function readRestoredAdditionalAsk(
  * is fenced on the attempt it claimed (`attempts`, `processingStartedAt` set),
  * which the re-arm reset, so it matches nothing; its success write closes the
  * row, which is true (the intent is cancelled, or its capture handed on); its
- * hand-off re-claims a PENDING row as any webhook's does, and queues the refund
- * by key, once.
+ * hand-off re-claims the PENDING row through the status-fenced claim the
+ * webhook's hand-off uses (only the webhook's adds an attempt), and queues the
+ * refund by key, once.
  */
 async function rearmDeadIntentCancellations(
   tx: Prisma.TransactionClient,

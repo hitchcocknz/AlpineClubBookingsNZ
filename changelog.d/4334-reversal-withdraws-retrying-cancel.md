@@ -15,11 +15,13 @@
   A saved-card charge is judged against the booking's full value: the amount
   the app's automatic saved-card charge takes, and the amount it accepts a
   card payment at. A card request for an extra the reversal puts back to owing is
-  found even when the cash settlement had hidden it, and the booking points
-  at it again, so when the member pays it the extra reads as paid and is no
-  longer chased. A card payment the member makes while the reversal is
+  found even when the cash settlement had hidden it, as long as it is still
+  open and not one the reversal keeps cancelling. The booking points at it
+  again, so when the member pays it the extra reads as paid and is no longer
+  chased, and an officer can still withdraw it. A card payment the member makes while the reversal is
   running now waits for it, then pays the booking. The reversal's audit entry
   lists every cancellation it withdrew or restarted, every card payment still
   being cancelled, and the card request the extra points at again.
-  Reversals made before this release may have left a cancellation behind:
-  `docs/UPGRADING.md` has a read-only query to find them and what to do.
+  Reversals made before this release may have left a cancellation behind, or
+  a hidden card request with nothing cancelling it: `docs/UPGRADING.md` has
+  read-only queries to find both and what to do.

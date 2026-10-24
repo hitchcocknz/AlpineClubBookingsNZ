@@ -222,20 +222,20 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   amount owed (a saved-card charge attempt: not at the booking's worth, what
   the cron charges and capture accepts), and an additional intent that is not
   the live ask (a nulled pointer with the extra restored: the newest
-  unwithdrawn card ask at that figure), stay or become queued for
+  unwithdrawn open card ask at that figure), stay or become queued for
   cancellation. So does one the settle found queued
   (`adoptedCancelPaymentIntentIds`; none before #4320): a superseded intent is
-  never handed out again (`INV-PAY-138`). Any such row the runner will not
+  never reissued (`INV-PAY-138`). Any such row the runner will not
   finish (exhausted, or PROCESSING on its last attempt) is re-armed. Every
   other live (not SUCCEEDED) `CANCEL_PAYMENT_INTENT` /
   `REFUND_SUPERSEDED_PAYMENT` row on a live card intent is DELETED, since
   webhook-side liveness keys on `status != SUCCEEDED`. With the extra back on a
-  live card ask, the reversed cash ADDITIONAL row is stamped `withdrawnAt` and
+  live ask not left cancelled, the reversed cash ADDITIONAL row is stamped `withdrawnAt` and
   the pointer restored to that ask (#4355). The audit row records each step.
 - The superseded hand-off re-claims its row, marks the capture SUCCEEDED and
   rebuilds in one transaction under the `Payment` row, which the reversal holds
   from its settled-transaction check to its commit, so a member-owed superseded
-  refund is never deleted. A worker's Stripe cancel may land after the commit,
+  refund is never deleted. A worker's Stripe cancel may land after commit,
   moving no money. Proven by `manual-reversal-retrying-cancel.realdb.test.ts`.
 
 ## INV-PAY-046

@@ -4086,7 +4086,8 @@ the pre-#4217 code). Now:
   That worker cannot undo the re-arm: its failure write is fenced on the
   attempt it claimed (`attempts`, with `processingStartedAt` set), which the
   re-arm reset; its success write closes the row, which is true; its hand-off
-  re-claims the PENDING row as a webhook's would, and queues the refund by key.
+  re-claims the PENDING row through the same status-fenced claim the webhook's
+  uses (only the webhook's adds an attempt), and queues the refund by key.
 - A writer that reaches only the rebuild, such as the superseded refund's own
   late flip in `processRefundSupersededPaymentOperation` (an autocommit row
   write, then the root-client rebuild), is covered by the rebuild's own lock.

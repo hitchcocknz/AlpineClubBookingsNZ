@@ -175,14 +175,17 @@ For each row:
 - if `intentRowStatus` is not `PENDING` or `PROCESSING`, or the booking is
   cancelled, there is nothing to do;
 - if `nextRetryAt` is empty, the cancellation has given up and will never run
-  again, whatever the rest of the row says. Cancel that payment intent
+  again, whatever the rest of the row says. The same goes for a row on its
+  last attempt (`FAILED` with `attempts` 4, or `PROCESSING` with `attempts` 5):
+  if Stripe is still failing, that attempt gives up too. Cancel that payment intent
   (`paymentIntentId`) in the Stripe dashboard: that moves no money, and
   Stripe's cancellation event closes the row. Where the bullets below would not
   have left the cancellation, the last one also says what the member is left
   with;
 - if `kind` is `PRIMARY` and `reference` starts with `pending_charge_`, the row
   is a saved-card charge, judged against the booking's full value:
-  `finalPriceCents` plus `changeFeeCents`. If `amountCents` differs from that,
+  `finalPriceCents` plus `changeFeeCents` (never empty; 0 when the booking
+  carries no change fee). If `amountCents` differs from that,
   the cancellation is right: leave it;
 - if `kind` is any other `PRIMARY` row and `amountCents` differs from what the
   booking page asks the member to pay, the cancellation is right: leave it;
@@ -204,11 +207,68 @@ For each row:
 Do not wait for the cancellation to finish on its own. Until its retry runs, a
 member who pays from a page they still have open is charged and then refunded,
 because the app hands that payment to the cancellation's refund, and the
-booking stays unpaid. A row with a `nextRetryAt` cancels the card payment
-itself once Stripe answers, closing the member's page anyway; a row with no
-`nextRetryAt` has given up, which is why the second bullet has it cancelled in
-Stripe. No admin screen closes these rows, and they must never be deleted by
-hand.
+booking stays unpaid. A row with retries left cancels the card payment itself
+once Stripe answers, closing the member's page anyway. A row with no
+`nextRetryAt` has given up, and one on its last attempt gives up if Stripe is
+still failing, which is why the second bullet has both cancelled in Stripe. No
+admin screen closes these rows, and they must never be deleted by hand.
+
+**A hidden card request with no cancellation left.** A reversal made before
+this release, after a cash settlement that also covered the extra, left the
+reversed cash record newer than the extra's card request. The app reads the
+extra off the newest record, so it shows the extra as owed with no card button,
+even though the card request may still be open at Stripe with nothing
+cancelling it. If the member pays it from a page they still have open, the
+money arrives but the booking still shows the extra as owed, and the reminder
+emails chase them for money they have paid. This release avoids that for new
+reversals; this read-only query lists the earlier ones:
+
+```sql
+SELECT p."bookingId", b."status" AS "bookingStatus", p."id" AS "paymentId",
+       p."additionalAmountCents", p."additionalPaymentStatus",
+       ask."stripePaymentIntentId" AS "askPaymentIntentId",
+       ask."status" AS "askStatus", ask."amountCents" AS "askAmountCents"
+FROM "Payment" p
+JOIN "Booking" b ON b."id" = p."bookingId"
+JOIN LATERAL (
+  SELECT n.* FROM "PaymentTransaction" n
+  WHERE n."paymentId" = p."id" AND n."kind" = 'ADDITIONAL'
+    AND n."withdrawnAt" IS NULL
+  ORDER BY n."createdAt" DESC, n."insertionSeq" DESC LIMIT 1
+) newest ON newest."source" = 'INTERNET_BANKING'
+        AND newest."reason" = 'manual_mark_paid_additional_reversed'
+JOIN LATERAL (
+  SELECT c.* FROM "PaymentTransaction" c
+  WHERE c."paymentId" = p."id" AND c."kind" = 'ADDITIONAL'
+    AND c."source" = 'STRIPE' AND c."withdrawnAt" IS NULL
+  ORDER BY c."createdAt" DESC, c."insertionSeq" DESC LIMIT 1
+) ask ON ask."status" IN ('PENDING', 'PROCESSING', 'SUCCEEDED',
+                          'PARTIALLY_REFUNDED')
+WHERE NOT EXISTS (
+  SELECT 1 FROM "PaymentRecoveryOperation" o
+  WHERE o."paymentId" = p."id"
+    AND o."paymentIntentId" = ask."stripePaymentIntentId"
+    AND o."type" IN ('CANCEL_PAYMENT_INTENT', 'REFUND_SUPERSEDED_PAYMENT')
+    AND o."status" <> 'SUCCEEDED'
+)
+ORDER BY p."bookingId";
+```
+
+For each row:
+
+- if the booking is cancelled, or `askAmountCents` is not
+  `additionalAmountCents`, the request was replaced before the cash
+  settlement; there is nothing to do here;
+- if `askStatus` is `PENDING` or `PROCESSING`, cancel `askPaymentIntentId` in
+  the Stripe dashboard. That moves no money and closes the open page, and the
+  extra stays owed with no card button: collect it another way, such as by
+  internet banking. If Stripe shows the intent already succeeded, treat the row
+  as the next bullet;
+- if `askStatus` is `SUCCEEDED` or `PARTIALLY_REFUNDED`, the member has paid the
+  extra by card and the club holds the money. Do not chase them, and do not
+  record the extra as paid in cash, which would count it twice. No admin
+  screen corrects what the booking shows, so do not edit the rows by hand:
+  report the booking id to the maintainers.
 
 ### Check finished stays for a second card payment that was never refunded (#4285)
 

@@ -2144,7 +2144,8 @@ PaymentTransaction (the manual PRIMARY row): SUCCEEDED -> FAILED,
   resurrected by a later re-mark (the mint predicate skips FAILED rows)
 PaymentTransaction (the manual ADDITIONAL row, when the settle covered the
   extra): SUCCEEDED -> FAILED, reason "manual_mark_paid_additional_reversed".
-  When the extra goes back to owing and a card ask for it stands, the row is
+  When the extra goes back to owing and an open card ask for it stands that
+  the reversal does not keep cancelled, the row is
   also stamped `withdrawnAt` and `additionalPaymentIntentId` is put back to
   that ask (#4355): the mirror reads past the stamped row, so a capture of the
   ask reads SUCCEEDED. With no such ask the row stays the mirror's anchor.
@@ -2177,7 +2178,8 @@ the capture path accepts), an ADDITIONAL intent that is not the live ask
 settle that covered the extra minted a newer cash ADDITIONAL row, so any
 rebuild of the mirror since nulls that pointer; when the reversal puts the
 extra back to owing, the live ask is the newest card ask an officer has not
-withdrawn, if it asks exactly that extra. It also keeps an intent the settle
+withdrawn, if it asks exactly that extra and its intent is still open
+(PENDING or PROCESSING: a FAILED one may be cancelled at Stripe). It also keeps an intent the settle
 found already queued (`adoptedCancelPaymentIntentIds` on the mark-paid's audit
 row), because a superseded intent is never handed out again (`INV-PAY-138`)
 and a wrong-currency supersede (#3567) is not derivable. A settle row without
