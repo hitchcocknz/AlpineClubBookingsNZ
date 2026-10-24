@@ -1702,6 +1702,11 @@ decision and would need its own owner decision.
   none). `charge.refunded`, for a refund it first
   records that no app door made (`cardRefundDoorOf`). A late capture's note
   splits its ask (`planLateCaptureCardNotes`).
+- **A re-send answers with the failed refund's note** (#4104). A refund sent
+  again for one Stripe failed later, found by #4104's links (the row's key,
+  `failedRefundIds`), is sized less the failed refund's own notes
+  (`readFailedRefundsAnsweredBy`): no second note. `charge.refunded` keeps it
+  off the canonical delta; a failed-later row's replay asks for it too.
 - **Never for a historical refund.** Only a refund Stripe made since the
   marker migration finished qualifies (`madeSinceCardRefundNoteCutover`);
   none if the marker never finished, when the approval takes the one note. An

@@ -2126,14 +2126,34 @@ writers asking for one refund at once collide on one row.
   also runs the late-capture checks when the refunded total did not move), sorted by the
   Stripe metadata every app door stamps (`cardRefundDoorOf`): a refund with
   none - made in the Stripe dashboard - gets its own note here; a refund
-  request's is left to its approval; any other door's stays in the delta,
-  queued as before, which converges on that door's own note.
+  request's is left to its approval; one sent again for a refund Stripe failed
+  later that had a note of its own goes to its own record too (below); any
+  other door's stays in the delta, queued as before, which converges on that
+  door's own note.
 - **A late capture's note** (`noteLateCaptureRefunds`) keeps its one ask per
   capture and splits it (`planLateCaptureCardNotes`): each refund made since the
   cutover is asked for on its own record, naming the capture, oldest first; the
   older refunds keep the capture's one note. A capture-wide note that already
   answers more than the older refunds takes the excess off the own asks, so no
   refund is noted twice.
+
+**A refund sent again for one Stripe failed later (round 5, #4104).** The
+failed refund keeps the note it took while it counted, and #4104 meant that
+note to answer the money once it goes back. So a refund sent again for it is
+sized less the failed refund's own notes (`readFailedRefundsAnsweredBy`, in
+`readCardRefundNoteShare`): normally it raises nothing. #4104's own links name
+the failure - a row of its own's key (`card_refund_failed_later_<refund>`), a
+re-planned slice's `failedRefundIds` - and the slice is answered by the refund
+it is marked made with, else the first refund made after its latest failure on
+its charge for its amount (each refund answers one slice; a row closed as
+"Paid another way" answers none, its close being sized against the card note
+already). Three writers rely on it: the refund request's replay, which sends a
+re-planned slice again; `charge.refunded`, which takes such a re-send off the
+canonical delta - that note is sized on the payment's whole gap at execution,
+so it would take another refund's share still waiting on its own note; and a
+failed-later row's replay, which asks for its refund's note, so a failure that
+overtook the failed refund's note before it was raised still gets one note.
+Late captures keep their capture's sizing.
 
 **Never for a historical refund.** Only a refund Stripe made since the cutover
 marker migration finished on the install
@@ -2193,9 +2213,11 @@ Stated limits:
   job during the switch - gets no note: this release's approval left the note to
   the refund, and the previous release's replay raises none. The #4230 deploy
   note's query lists the payment for a note by hand.
-- **A refund request's card refund Stripe fails later** is asked for again by
-  its failed-later row (#4104), whose refund carries that row's own metadata,
-  not the request's: its note goes in the delta, as before.
+- **Which refund answers a failure is read by charge, amount and time**: neither
+  the refund row nor Stripe's metadata names it. A refund of the same amount
+  on the same charge made after the failure and before the re-send (one made
+  in the Stripe dashboard) is read as the answer instead: it raises no note
+  and the re-send raises one, so Xero's total still matches.
 - **A crash after Stripe answered and before the note was queued** loses the
   note, as it always did; the #4162 floor's alert and the deploy note find it.
 
