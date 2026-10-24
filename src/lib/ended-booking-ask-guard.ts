@@ -27,8 +27,6 @@ import { isOpenIntentTransactionStatus } from "@/lib/payment-transaction-status"
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
 import { prisma } from "@/lib/prisma";
 
-const bookingHasEnded = readBookingHasEnded;
-
 /**
  * Before the provider call: has the booking ended (CANCELLED or BUMPED) since
  * its edit committed? Then it is asked nothing and owes nothing - no intent, no
@@ -40,7 +38,7 @@ export async function bookingEndedBeforeAskMint(
   bookingId: string,
   bookingModificationId: string | null,
 ): Promise<boolean> {
-  const ended = await bookingHasEnded(bookingId).catch((err: unknown) => {
+  const ended = await readBookingHasEnded(bookingId).catch((err: unknown) => {
     logger.error({ err, bookingId }, "Could not re-read the booking before minting its additional ask (#4316)");
     return false;
   });
@@ -106,7 +104,7 @@ async function checkAndRetireAfterWrite({
   paymentId: string;
   paymentIntentId: string;
 }): Promise<EndedAskCheck> {
-  const ended = await bookingHasEnded(bookingId).catch((err: unknown) => {
+  const ended = await readBookingHasEnded(bookingId).catch((err: unknown) => {
     logger.error(
       { err, bookingId, paymentIntentId },
       "Could not re-read the booking after writing its additional ask; it is offered as live (#4316)",
