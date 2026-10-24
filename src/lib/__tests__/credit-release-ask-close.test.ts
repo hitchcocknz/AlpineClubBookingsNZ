@@ -28,12 +28,14 @@ vi.mock("@/lib/payment-transactions", () => ({
   recordInternetBankingPaymentTransaction: mocks.recordBank,
 }));
 vi.mock("@/lib/xero-invoice-balance", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/xero-invoice-balance")>("@/lib/xero-invoice-balance");
+  const actual = (await vi.importActual("@/lib/xero-invoice-balance")) as typeof import("@/lib/xero-invoice-balance");
   return { ...actual, readXeroInvoiceBalance: vi.fn() };
 });
 
 import { closeCreditReleaseAsksPaidInXero, CREDIT_RELEASE_PAID_IN_XERO_REASON } from "@/lib/credit-release-ask-close";
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 
 /*
   #4253 (`INV-ADDPAY-045`, owner decision D6): a request is closed when Xero shows its

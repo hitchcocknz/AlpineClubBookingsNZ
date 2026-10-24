@@ -57,7 +57,9 @@ import {
   wholeLodgeGuestNamesUrgencyNote,
 } from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
 import { appliedCreditGiveBackNote, unpaidAskCancelledNote } from "@/lib/booking-credit-give-back-copy";

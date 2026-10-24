@@ -2,7 +2,9 @@ import { PaymentSource, PaymentStatus } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
 import { planCreditReleasePayments, type AskLedgerRow } from "@/lib/credit-release-payment-plan";
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 
 /*
   #4253 (`INV-ADDPAY-045`): which card captures paid for credit-release money, and

@@ -13,7 +13,9 @@ import {
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 import { prisma } from "@/lib/prisma";
 import { readStripeCaptureDocumentDate } from "@/lib/stripe-capture-date";
 import { createXeroPaymentForInvoice } from "@/lib/xero-invoice-payments";

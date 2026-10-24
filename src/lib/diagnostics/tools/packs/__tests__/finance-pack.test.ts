@@ -1145,7 +1145,6 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     buildCapacityClaimFailedRefundRecoveryKeyPrefixForBooking:
       "capacity_claim_failed_refund",
     buildCardRefundFailedLaterRecoveryKey: "card_refund_failed_later",
-    buildCreditReleaseAskRecoveryIdempotencyKey: "credit_release_ask",
     buildDuplicateCaptureRefundRecoveryIdempotencyKey: "duplicate_capture_refund",
     buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking:
       "duplicate_capture_refund",
@@ -1182,11 +1181,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     LATE_CAPTURE_REFUND_METADATA_REASON: "Stripe refund metadata",
     LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON: "Stripe refund metadata (#4170)",
     ORGANISER_CHILD_REFUND_KEY_WHERE: "query fragment over mapped prefixes",
-    CREDIT_RELEASE_ASK_REASON: "ledger reason (#4253)",
     REISSUED_ASK_REASON: "ledger reason",
-    buildCreditReleaseAskStripeIdempotencyKey: "Stripe idempotency key (#4253)",
-    creditReleaseIdForAskRecoveryKey: "parser of a mapped key",
-    isCreditReleaseAskRecoveryKey: "predicate over a mapped key",
     bookingModificationIdForAdditionalIntentRecoveryKey: "parser of a mapped key",
     bookingModificationRefundReasonForKeyPrefix: "Stripe metadata reason",
     buildBookingCancellationRefundMetadata: "Stripe metadata",

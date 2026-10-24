@@ -24,7 +24,9 @@
  * we would chase a member for money they do not owe.
  */
 
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 import { isStripeResourceMissingError } from "@/lib/stripe-errors";
 
 /** Days after the extra was raised before the first reminder goes out. */

@@ -460,35 +460,6 @@ export function reissueUnpaidAdditionalAsk({
 }
 
 /**
- * THE ASK FOR CREDIT RELEASED WHEN A CREDIT NOTE WAS SPENT IN XERO OUTSIDE THE APP
- * (#4253, `INV-ADDPAY-045`).
- *
- * Its own money is the smaller of what the release gave back and what the booking
- * ledger says is owed and nobody is asking for (`unaskedCents`, the identity's
- * residual). It is NEVER the whole residual: an older under-collection is not this
- * cause's to correct (owner, 8 Sep 2026), so a residual larger than the release is
- * clipped to it. It carries any unpaid ask it supersedes, like every constructor
- * (`INV-PAY-098`) - minting retires the other live intents on the payment, so the
- * new figure must absorb them or their money is asked of nobody.
- *
- * Nothing owed means NO ask rather than a carry-only one: restating an existing
- * ask under a new cause would only reword it.
- */
-export function sizeCreditReleaseAsk({
-  releasedCents,
-  unaskedCents,
-  payment,
-}: {
-  releasedCents: number;
-  unaskedCents: number;
-  payment: AdditionalAskPayment | null | undefined;
-}): AdditionalAsk {
-  const ownCents = Math.min(Math.max(0, releasedCents), Math.max(0, unaskedCents));
-  if (ownCents <= 0) return NO_ADDITIONAL_ASK;
-  return buildAdditionalAsk({ ownCents, carriedCents: outstandingAdditionalAskCents(payment) });
-}
-
-/**
  * One row of a settled booking's money, as `INV-PAY-047` reads it. The field
  * names are the Prisma models' own, so a `Booking` + `Payment` pair passes
  * through with no renaming and no chance of two call sites mapping it

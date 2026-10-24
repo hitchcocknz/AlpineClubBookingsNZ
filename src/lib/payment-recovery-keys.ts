@@ -9,21 +9,14 @@
 // declared not-a-recovery-key, so a new recovery key cannot land unlabelled.
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
 export const BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX = "booking_cancel_refund_recovery_";
-export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX =
-  "capacity_claim_failed_refund_recovery_";
+export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX = "capacity_claim_failed_refund_recovery_";
 export const DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX = "duplicate_capture_";
 export const EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX =
   "edit_financial_review_refund_recovery_";
 export const ADDITIONAL_INTENT_RECOVERY_PREFIX = "payment_recovery_additional_intent_";
 export const EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX =
   "edit_financial_review_additional_intent_recovery_";
-/**
- * #4253: the card payment request that asks for credit released when a credit note
- * was spent in Xero outside the app. Scoped to the RELEASE ROW (`MemberCredit`),
- * which is the fact the request answers - not to an edit, because no
- * `BookingModification` is involved (`isCreditReleaseAskRecoveryKey`).
- */
-export const CREDIT_RELEASE_ASK_RECOVERY_PREFIX = "credit_release_ask_";
+export { CREDIT_RELEASE_ASK_RECOVERY_PREFIX } from "@/lib/credit-release-ask-keys"; // #4253
 /** An approved refund appeal's card refund (`enqueueRefundRequestRefundRecovery`). */
 export const REFUND_REQUEST_REFUND_RECOVERY_PREFIX = "refund_request_refund_";
 /** Cancelling a card payment request that was replaced or withdrawn. */
@@ -455,36 +448,6 @@ export function bookingModificationIdForAdditionalIntentRecoveryKey(
   }
   return null;
 }
-
-// #4253: the recovery key, the Stripe key and the ledger reason of a credit-release
-// request. Built and read back here, never sliced at a call site: the ordinary
-// replay's parser knows only the two edit-scoped prefixes and answers null for this
-// one, so the runner tests `isCreditReleaseAskRecoveryKey` BEFORE that parser and
-// hands the row to its own module.
-export function buildCreditReleaseAskRecoveryIdempotencyKey(releaseCreditId: string) {
-  return `${CREDIT_RELEASE_ASK_RECOVERY_PREFIX}${releaseCreditId}`;
-}
-
-export function buildCreditReleaseAskStripeIdempotencyKey(releaseCreditId: string) {
-  return `credit_release_ask_pi_${releaseCreditId}`;
-}
-
-export function isCreditReleaseAskRecoveryKey(idempotencyKey: string | null | undefined): boolean {
-  return Boolean(idempotencyKey?.startsWith(CREDIT_RELEASE_ASK_RECOVERY_PREFIX));
-}
-
-export function creditReleaseIdForAskRecoveryKey(idempotencyKey: string | null | undefined): string | null {
-  if (!isCreditReleaseAskRecoveryKey(idempotencyKey)) return null;
-  const id = (idempotencyKey as string).slice(CREDIT_RELEASE_ASK_RECOVERY_PREFIX.length);
-  return id.length > 0 ? id : null;
-}
-
-/**
- * The `reason` on a credit-release request's intent metadata and `PaymentTransaction`
- * row. It names the CAUSE, so every surface that words an unpaid request can say
- * why it exists without guessing from the amount (`INV-ADDPAY-043`).
- */
-export const CREDIT_RELEASE_ASK_REASON = "credit_released_outside_app";
 
 // #1494: the Stripe refund `metadata` for a booking-cancellation card refund.
 // The inline cancel path (which creates the Stripe refund) and the recovery

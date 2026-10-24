@@ -33,7 +33,8 @@ import {
   type Prisma,
 } from "@prisma/client";
 
-import { bookingLedgerResidualCents, sizeCreditReleaseAsk } from "@/lib/additional-payment-ask";
+import { bookingLedgerResidualCents } from "@/lib/additional-payment-ask";
+import { sizeCreditReleaseAsk } from "@/lib/credit-release-ask-size";
 import { createAuditLog } from "@/lib/audit";
 import { bookingOwner } from "@/lib/booking-owner";
 import type { ClubFormat } from "@/lib/club-format";
@@ -41,16 +42,19 @@ import logger from "@/lib/logger";
 import { ADDITIONAL_ASK_INTENT_TYPE } from "@/lib/ordinary-ask-request";
 import { refuseAdoptedIntentOnLedger } from "@/lib/ordinary-ask-mint";
 import {
+  stripeIdempotencyKeyForAskAmount,
+} from "@/lib/payment-recovery-keys";
+import {
   buildCreditReleaseAskStripeIdempotencyKey,
   CREDIT_RELEASE_ASK_REASON,
   creditReleaseIdForAskRecoveryKey,
-  stripeIdempotencyKeyForAskAmount,
-} from "@/lib/payment-recovery-keys";
+} from "@/lib/credit-release-ask-keys";
 import { isCapturedPaymentStatus } from "@/lib/booking-payment-state";
 import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { mintedIntentCustomerId, resolveAskCustomerId } from "@/lib/reissued-ask-mint";
 import { createPaymentIntent } from "@/lib/stripe";
+import { formatCents } from "@/lib/utils";
 import { isSettledInXero, openBalanceCents, readXeroInvoiceBalance, type XeroInvoiceBalanceReader } from "@/lib/xero-invoice-balance";
 import { localChargeRefusal } from "@/lib/stripe-charge-currency";
 
@@ -211,7 +215,7 @@ export async function processCreditReleaseAskOperation(
         operationId: operation.id,
         amountCents: ask.amountCents,
         paymentIntentId: "none",
-        errorMessage: `The member owes ${ask.amountCents} cents for credit that was used in Xero, which is too small to ask for by card. Please collect it another way. ${refusal.message}`,
+        errorMessage: `The member owes ${formatCents(ask.amountCents, format)} for credit that was used in Xero, which is too small to ask for by card. Please collect it another way. ${refusal.message}`,
       },
       format,
     );

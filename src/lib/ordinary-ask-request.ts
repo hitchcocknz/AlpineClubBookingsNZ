@@ -37,10 +37,12 @@
 import {
   bookingModificationIdForAdditionalIntentRecoveryKey,
   buildReissuedAskStripeIdempotencyKey,
-  isCreditReleaseAskRecoveryKey,
   isEditFinancialReviewAdditionalIntentRecoveryKey,
   stripeIdempotencyKeyForAskAmount,
 } from "@/lib/payment-recovery-keys";
+import {
+  isCreditReleaseAskRecoveryKey,
+} from "@/lib/credit-release-ask-keys";
 import { staleIntentAction } from "@/lib/stale-intent-action";
 
 /** The Stripe metadata `type` every additional ask's intent carries. */

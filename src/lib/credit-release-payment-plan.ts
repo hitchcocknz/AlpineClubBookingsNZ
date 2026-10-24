@@ -1,6 +1,8 @@
 import { PaymentSource, PaymentStatus } from "@prisma/client";
 
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 
 /**
  * WHICH CARD CAPTURES PAID FOR CREDIT-RELEASE MONEY, AND HOW MUCH OF EACH

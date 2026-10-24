@@ -22,7 +22,7 @@ vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn(), error:
 vi.mock("@/lib/stripe-capture-date", () => ({ readStripeCaptureDocumentDate: vi.fn() }));
 vi.mock("@/lib/xero-invoice-payments", () => ({ createXeroPaymentForInvoice: vi.fn() }));
 vi.mock("@/lib/xero-invoice-balance", async () => {
-  const actual = await vi.importActual<typeof import("@/lib/xero-invoice-balance")>("@/lib/xero-invoice-balance");
+  const actual = (await vi.importActual("@/lib/xero-invoice-balance")) as typeof import("@/lib/xero-invoice-balance");
   return { ...actual, readXeroInvoiceBalance: vi.fn() };
 });
 
@@ -33,7 +33,9 @@ import {
   creditReleasePaymentIdempotencyKey,
   recordCreditReleasePayments,
 } from "@/lib/credit-release-xero-payment";
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/payment-recovery-keys";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 
 /*
   #4253 (`INV-ADDPAY-045`): the card payment for released credit is recorded against the
