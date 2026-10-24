@@ -30,7 +30,7 @@ function cardRefundWindowQuerySql(): string {
 }
 
 /** The timestamp an operator replaces with the moment this version served alone. */
-const CARD_REFUND_WINDOW_QUERY_PLACEHOLDER = "TIMESTAMP '2026-01-01 00:00:00'";
+const CARD_REFUND_WINDOW_QUERY_PLACEHOLDER = "TIMESTAMPTZ '2026-01-01 00:00:00+00'";
 
 describe("the #4312 switch-window query matches the code's one definition", () => {
   const sql = cardRefundWindowQuerySql();
@@ -39,6 +39,15 @@ describe("the #4312 switch-window query matches the code's one definition", () =
     expect([...sql.matchAll(/m\."migration_name" = '([^']*)'/g)].map((match) => match[1])).toEqual([CARD_REFUND_NOTE_CUTOVER_MIGRATION]);
     expect(sql).toContain('m."rolled_back_at" IS NULL');
     expect(sql.split(CARD_REFUND_WINDOW_QUERY_PLACEHOLDER)).toHaveLength(2);
+  });
+
+  it("dates a refund as the app does (`madeSinceCardRefundNoteCutover`): Stripe's time else the record's, in UTC, in whole seconds", () => {
+    // `PaymentRefund`'s times are UTC with no zone; the marker's finish and the operator's moment carry one, so
+    // each is read in UTC - never compared through the session's zone - and the marker's own second counts.
+    const madeAt = "date_trunc('second', COALESCE(r.\"stripeCreatedAt\", r.\"createdAt\"))";
+    expect(sql).toContain(`${madeAt} >= (SELECT date_trunc('second', min(m."finished_at") AT TIME ZONE 'UTC')`);
+    expect(sql).toContain(`${madeAt} <= (${CARD_REFUND_WINDOW_QUERY_PLACEHOLDER} AT TIME ZONE 'UTC')`);
+    expect(sql).not.toMatch(/\bTIMESTAMP '/);
   });
 
   it("finds a card refund's note rows as the code does: its payload field, or its key", () => {

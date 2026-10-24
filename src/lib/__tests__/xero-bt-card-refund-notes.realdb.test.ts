@@ -338,16 +338,20 @@ function answerRefundsAsStripeWould() {
 
     /**
      * The UPGRADING switch-window query (#4312), run as an operator would, with its timestamp set to
-     * when this version began serving alone: the note rows it lists, refund and note id.
+     * when this version began serving alone (written in UTC, `+00`) and in a session of that time zone
+     * (the shipped compose file sets the club's on PostgreSQL): the note rows it lists, refund and note id.
      */
-    async function switchWindowListed(servingAloneAt: Date): Promise<Array<{ stripeRefundId: string; creditNoteId: string | null }>> {
+    async function switchWindowListed(servingAloneAt: Date, timeZone = "UTC"): Promise<Array<{ stripeRefundId: string; creditNoteId: string | null }>> {
       const { readFileSync } = await import("node:fs");
       const { resolve } = await import("node:path");
       const doc = readFileSync(resolve(__dirname, "../../../docs/UPGRADING.md"), "utf8");
       const sql = /```sql\n([\s\S]*?)\n```/.exec(doc.slice(doc.indexOf("**Card refunds made in the switch window (#4312).**")))?.[1];
       expect(sql).toBeDefined();
-      const at = servingAloneAt.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
-      const rows = await prisma.$queryRawUnsafe<Array<{ paymentId: string; stripeRefundId: string; creditNoteId: string | null }>>(sql!.replace("TIMESTAMP '2026-01-01 00:00:00'", `TIMESTAMP '${at}'`));
+      const at = servingAloneAt.toISOString().replace("T", " ").replace("Z", "+00");
+      const rows = await prisma.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL TIME ZONE '${timeZone}'`);
+        return tx.$queryRawUnsafe<Array<{ paymentId: string; stripeRefundId: string; creditNoteId: string | null }>>(sql!.replace(/TIMESTAMPTZ '[^']*'/, `TIMESTAMPTZ '${at}'`));
+      });
       return rows.filter((row) => row.paymentId === PAYMENT_ID).map(({ stripeRefundId, creditNoteId }) => ({ stripeRefundId, creditNoteId }));
     }
 
@@ -647,6 +651,38 @@ function answerRefundsAsStripeWould() {
       const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
       await creditBackLateCaptureRefunds(CARD_INTENT_ID);
       expect(await noteRows()).toHaveLength(rows.length);
+    });
+
+    it("MUTATION: the switch-window query compares in UTC, in whole seconds, whatever the session's time zone, and dates an undated refund by its record", async () => {
+      await paid({ bankOnly: true });
+      await lateCaptureKept();
+      // The marker finishes partway through a second; a refund made in that second is made since the cutover (the app floors both).
+      await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "finished_at" = ${new Date(CUTOVER_SECONDS * 1000 + 400)} WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
+      try {
+        const atMarker = refundInDashboard(1_200, CUTOVER_SECONDS);
+        await deliverChargeRefunded();
+        const own = (await noteRows()).find((row) => row.cardRefundId === atMarker);
+        expect(own).toMatchObject({ cents: 1_200, paymentIntentId: CARD_INTENT_ID });
+        // An hour's window - shorter than New Zealand's offset, so a comparison through the session's zone drops it.
+        const end = new Date((CUTOVER_SECONDS + 3_600) * 1000);
+        for (const timeZone of ["UTC", "Pacific/Auckland"]) {
+          expect(await switchWindowListed(end, timeZone), timeZone).toEqual([{ stripeRefundId: atMarker, creditNoteId: null }]);
+        }
+        // Recorded without Stripe's time, the refund is dated by its record, as the app dates it.
+        await prisma.paymentRefund.updateMany({ where: { paymentId: PAYMENT_ID, stripeRefundId: atMarker }, data: { stripeCreatedAt: null, createdAt: new Date(CUTOVER_SECONDS * 1000 + 30_000) } });
+        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([{ stripeRefundId: atMarker, creditNoteId: null }]);
+        // The operator's moment is read in UTC too: a window that ended before the refund lists nothing.
+        expect(await switchWindowListed(new Date(CUTOVER_SECONDS * 1000 + 10_000), "Pacific/Auckland")).toEqual([]);
+        // A row that can never raise a note is left out: cancelled, or resolved by hand.
+        await prisma.xeroSyncOperation.update({ where: { id: own!.id }, data: { status: "FAILED", manuallyResolvedAt: new Date() } });
+        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([]);
+        await prisma.xeroSyncOperation.update({ where: { id: own!.id }, data: { status: "FAILED", manuallyResolvedAt: null } });
+        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([{ stripeRefundId: atMarker, creditNoteId: null }]);
+        await prisma.xeroSyncOperation.update({ where: { id: own!.id }, data: { status: "CANCELLED" } });
+        expect(await switchWindowListed(end, "Pacific/Auckland")).toEqual([]);
+      } finally {
+        await prisma.$executeRaw`UPDATE "_prisma_migrations" SET "finished_at" = ${new Date(CUTOVER_SECONDS * 1000)} WHERE "migration_name" = ${CUTOVER_MIGRATION}`;
+      }
     });
 
     it("a late capture on a payment with no note yet: its older refund takes the capture's one note, its newer one its own", async () => {
