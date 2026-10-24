@@ -5639,8 +5639,9 @@ provenance, and no sibling is retired for it. A pointer naming it is released
 if its Payment row is available without waiting; otherwise the inactive mirror
 commits and the #4161 heal can release the pointer later. A write that names a
 live status it read from Xero before the void committed (#4288: the inbound
-reconcile, the Stripe status recorder, a hand-made note answer) keeps the whole
-stored snapshot the same way. Between two live readings, the one whose Xero
+reconcile, the Stripe status recorder, a hand-made note answer) keeps the
+stored status, stamp and figures the same way; the canonical rule (active flag,
+sibling retirement) still applies. Between two live readings, the one whose Xero
 `UpdatedDateUTC` is older than the stored one's keeps the stored snapshot. A
 write that names VOIDED/DELETED is applied. The ordering reads only the row
 this lock already holds, so it adds no lock.
@@ -5711,10 +5712,13 @@ per-delta note through the real status recorder, a per-refund note and a
 refund request's note. Each ends inactive and VOIDED, the pointer null, and the
 replacement sibling alone covering. It also queues a live reconcile on the
 void's row lock, orders two live readings by `UpdatedDateUTC`, and has a stale
-live write finish while a Payment-first enqueue holds the Payment, which then
-completes with no cycle. It also proves the stale reconcile's recount leaves a
-bank-transfer total the void lowered where it was, and links none of the stale
-reading's allocations or refund payments.
+live write K finish while a Payment-first enqueue F holds the Payment: K never
+waits on the Payment row F holds. The inbound recount reads the note's row after
+the payment rows instead of remembering its link write's verdict. The suite
+pins the schedule A's link write, then B's void and B's recount, then A's
+recount: A counts the void and leaves the total B lowered. A stale reading's
+allocations and refund payments are skipped only where the row is
+VOIDED/DELETED when they are written.
 
 **Mixed releases.** The own-row-first order is consistent within this release;
 the old canonical writer takes siblings before its own row. Running both on

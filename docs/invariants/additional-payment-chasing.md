@@ -1594,7 +1594,7 @@ decision and would need its own owner decision.
   with; and on a bank transfer a void undoes the refund** (#4091, owner
   decisions). Its mirror goes inactive on any payment (`INV-ADDPAY-020`),
   status-less racing writes too, including missing mirrors (#4223),
-  nor revived by an older live read (#4288);
+  and no live read revives it (#4288);
   `findCanonicalPaymentRefundCreditNote`, `mayRecordAsCanonicalRefundNote` and the booking repair's field backfill
   and conflict check leave out a note a link records VOIDED or DELETED
   (`refundNoteIdSets`), so nothing writes one into

@@ -1136,7 +1136,8 @@ orders the two writes (`judgeRefundNoteWrite`):
   writers) this is the decision's fallback; with both, it is the contract above;
 - a VOIDED/DELETED reading is always applied;
 - between two live readings, one whose `UpdatedDateUTC` is older than the stored
-  one's keeps the whole stored snapshot: status, active flag and figures. Equal
+  one's keeps the stored status, stamp and figures; the canonical rule (active
+  flag, sibling retirement) still applies. Equal
   timestamps are one snapshot and apply, as does a write when either side has no
   timestamp.
 
@@ -1145,15 +1146,18 @@ released without waiting on Payment, as for a status-less write, and the inbound
 pointer gate refuses the note. A hand-made answer whose note was voided
 meanwhile is refused (409), and its completion rolls back.
 
-The inbound reconcile then acts on each payment's note as its own link write
-judged it (`judgedRefundNoteReading`), never on the raw reading. Its recount
-counts the kept void, or the newer live figures, so a bank-transfer total that a
-void lowered is not raised back by an older reading. Before #4288 it was: a
-reconcile holding a live reading recounted the voided note's amount. A card
-payment's total could not move either way (Stripe-truth, `INV-ADDPAY-021`). A
-stale reading's allocations and refund payments are not linked either. The link
-keeps neither list to reconcile them against, and the newer snapshot's own
-writer records its own.
+The inbound reconcile then acts on each payment's note as that payment's own
+refund-note row holds it when it acts (`readRefundNoteRowsByPayment`), never on
+the raw reading or on a verdict remembered from its own link write. Its recount
+reads the row after the payment rows: an inactive or VOIDED/DELETED row counts
+nothing, a live one counts its own figures. So a total that a void lowered is
+not raised back by a reconcile still holding an older live reading, even one
+whose link write landed before the void's. Before #4288 it was, on a bank
+transfer and on a card payment alike: `INV-ADDPAY-021` lets an inbound recount
+raise a card ledger, never lower it. A live reading's allocations and refund
+payments are skipped only for a payment whose row is VOIDED/DELETED when they
+are written. Under a newer live snapshot they are written as before, because the
+Stripe status recorder that writes such a snapshot records neither.
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,
@@ -1835,8 +1839,9 @@ limit, "try again tomorrow" on the daily limit), checks it is an `ACCRECCREDIT` 
 amount, for the invoice's contact (else the owner's), allocated to no other
 invoice and tracked by nothing else here (this payment's own inactive,
 non-voided link is reactivated), and the completion links it as a per-refund
-`REFUND_CREDIT_NOTE` naming the follow-up. A void that commits before that link
-write is kept under the link's row lock and the answer is refused (#4288). After
+`REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
+commits before that link write is kept under the link's row lock and the answer
+is refused (#4288). After
 the commit the note is reconciled once more (`reconcileXeroCreditNote`), so a
 later void is caught. A fresh note is refused on a payment with no Xero invoice, and when
 nothing could be queued.

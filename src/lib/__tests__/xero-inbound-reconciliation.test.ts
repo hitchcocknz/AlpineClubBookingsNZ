@@ -394,8 +394,6 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 describe("processStoredXeroInboundEvents", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // #4288: the link funnel applied the write; the row holds what was written.
-    mocks.upsertXeroObjectLink.mockImplementation(async (link: { metadata?: unknown; active?: boolean }) => ({ metadata: link.metadata ?? null, active: link.active ?? true }));
     // #2262: sendBookingConfirmedEmail now RETURNS its send outcome so the
     // manual mark-paid path can report an honest receipt. This suite only cares
     // that it was called, so a benign "sent" stub keeps the mock type-correct.
@@ -6708,6 +6706,8 @@ describe("processStoredXeroInboundEvents", () => {
         metadata: { total: 97, status: "AUTHORISED" },
       }])
       .mockResolvedValueOnce([])
+      // #4288: the recount's own read of the note's refund-note rows (none: an account-credit note).
+      .mockResolvedValueOnce([])
       // Provider allocations are now empty, but this still-active completion
       // link proves the note previously targeted inv_booking_1.
       .mockResolvedValueOnce([{
@@ -6959,8 +6959,6 @@ describe("processStoredXeroInboundEvents", () => {
 describe("runXeroInboundReconciliationCycle", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // #4288: the link funnel applied the write; the row holds what was written.
-    mocks.upsertXeroObjectLink.mockImplementation(async (link: { metadata?: unknown; active?: boolean }) => ({ metadata: link.metadata ?? null, active: link.active ?? true }));
     mocks.inboundUpdateMany.mockResolvedValue({ count: 1 });
     mocks.xeroSyncOperationFindMany.mockResolvedValue([]);
     mocks.processedCreate.mockRejectedValue({ code: "P2002" });
@@ -7269,8 +7267,6 @@ describe("runXeroInboundReconciliationCycle", () => {
 describe("replayStoredXeroInboundEvent", () => {
   beforeEach(() => {
     vi.resetAllMocks();
-    // #4288: the link funnel applied the write; the row holds what was written.
-    mocks.upsertXeroObjectLink.mockImplementation(async (link: { metadata?: unknown; active?: boolean }) => ({ metadata: link.metadata ?? null, active: link.active ?? true }));
     // #3979: the settle's rows and the cross-check's reads, empty by default.
     mocks.txPaymentTransactionFindMany.mockResolvedValue([]);
     mocks.txBookingModificationFindMany.mockResolvedValue([]);

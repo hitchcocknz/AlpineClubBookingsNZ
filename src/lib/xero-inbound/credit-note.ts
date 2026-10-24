@@ -11,7 +11,7 @@ import { type XeroAuditLocalLink } from "./types";
 import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance } from "./credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "./modification-note-refunds";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
-import { isIncludedRefundCreditNoteStatus, judgedRefundNoteReading, mayRecordAsCanonicalRefundNote, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
+import { isIncludedRefundCreditNoteStatus, isRefundCreditNoteLinkCancelledInXero, mayRecordAsCanonicalRefundNote, readRefundNoteRowsByPayment, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
 
 /** #4291: the audit source naming a recount reached only through a voided mirror. */
 const VOIDED_MIRROR_RECOUNT_AUDIT_SOURCE = "xero-inbound-credit-note-voided-mirror-recount";
@@ -134,21 +134,8 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       ),
   ]);
 
-  // #4288: how each payment's own refund-note link write judged this reading.
-  // A stale one (a void, or a newer snapshot, kept over it) is never acted on
-  // below: the recount reads the kept snapshot, and neither its allocations nor
-  // its refund payments are written. Both are as old as its status; the link
-  // keeps neither list to reconcile them against, and the newer snapshot's own
-  // writer records its own.
-  const judgedByPaymentId = new Map<string, ReturnType<typeof judgedRefundNoteReading>>();
-  const isRefundNoteLink = (link: XeroObjectLinkInput) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE";
-  const isStaleRefundNoteLink = (link: XeroObjectLinkInput) => isRefundNoteLink(link) && judgedByPaymentId.get(link.localId)?.stale === true;
-  const writeCreditNoteLink = async (link: XeroObjectLinkInput) => {
-    const written = await upsertXeroObjectLink(link);
-    if (isRefundNoteLink(link)) judgedByPaymentId.set(link.localId, judgedRefundNoteReading(link.metadata, written));
-  };
   for (const link of creditNoteLinks) {
-    await writeCreditNoteLink(link);
+    await upsertXeroObjectLink(link);
   }
 
   const linkedRefundPaymentIds = creditNoteLinks
@@ -281,12 +268,26 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
   ]);
 
   for (const link of resolvedCreditNoteLinks) {
-    await writeCreditNoteLink(link);
+    await upsertXeroObjectLink(link);
   }
+
+  // #4288: a LIVE reading's allocations and refund payments are as old as its
+  // status. Each is written only for a payment whose own refund-note row is not
+  // VOIDED/DELETED when it is written - read fresh at that point, never a
+  // verdict kept from the link write - so a void that won is never given them.
+  // A newer live snapshot kept over this reading keeps them, as before #4288:
+  // the Stripe status recorder that writes one records neither.
+  const isPaymentRefundNoteLink = (link: XeroObjectLinkInput) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE";
+  const withoutVoidedRefundNoteRows = async (links: XeroObjectLinkInput[]) => {
+    if (!isIncludedRefundCreditNoteStatus(creditNote.status)) return links;
+    const rows = await readRefundNoteRowsByPayment(creditNote.creditNoteID!, links.filter(isPaymentRefundNoteLink).map((link) => link.localId), prisma);
+    return links.filter((link) => !(isPaymentRefundNoteLink(link) && isRefundCreditNoteLinkCancelledInXero(rows.get(link.localId)?.metadata)));
+  };
+  const allocationSourceLinks = await withoutVoidedRefundNoteRows(resolvedCreditNoteLinks);
 
   const allocationLinks = dedupeXeroObjectLinks(
     allocationTargets.flatMap(({ invoiceId, amountCents }) => {
-      return resolvedCreditNoteLinks.filter((link) => !isStaleRefundNoteLink(link)).map(
+      return allocationSourceLinks.map(
         (link) =>
           ({
             localModel: link.localModel,
@@ -354,9 +355,6 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       remainingCredit: creditNote.remainingCredit ?? undefined,
       creditNoteNumber: creditNote.creditNoteNumber ?? undefined, // #4230: named in the bank-transfer floor's alert
     },
-    judgedCreditNoteByPaymentId: new Map(
-      [...judgedByPaymentId].filter(([, judged]) => judged.stale).map(([paymentId, judged]) => [paymentId, judged.snapshot]),
-    ),
     directPaymentIds: [
       ...paymentCandidates.map((payment) => payment.id),
       ...voidedMirrorPaymentIds,
@@ -380,14 +378,16 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
           skippedAllocations: 0,
         };
 
+  // #4288: read again here, after the recount, for the same reason.
+  const refundPaymentSourceLinks = await withoutVoidedRefundNoteRows(resolvedCreditNoteLinks);
   const refundPaymentLinks = dedupeXeroObjectLinks(
     (creditNote.payments ?? []).flatMap((payment) => {
       if (!payment.paymentID) {
         return [];
       }
 
-      return resolvedCreditNoteLinks
-        .filter((link) => link.role === "REFUND_CREDIT_NOTE" && !isStaleRefundNoteLink(link))
+      return refundPaymentSourceLinks
+        .filter((link) => link.role === "REFUND_CREDIT_NOTE")
         .map(
           (link) =>
             ({

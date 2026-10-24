@@ -10,9 +10,10 @@
  * builder, `xeroCreditNoteSnapshotMetadata`, and this reads every non-test
  * source file and:
  *
- * - finds each object literal that names `xeroObjectType: "CREDIT_NOTE"` and a
- *   `metadata` object literal. If that metadata names `status` itself it must be
- *   a declared exception below, with the reason it is not a Xero reading;
+ * - finds each object literal that names `xeroObjectType: "CREDIT_NOTE"`, a
+ *   refund-note `role`, or spreads a link (`...link`), and has a `metadata`
+ *   object literal. If that metadata names `status` itself it must be a
+ *   declared exception below, with the reason it is not a Xero reading;
  * - enumerates every site whose metadata is, or spreads, the builder, so a
  *   writer that stops using it fails here by name;
  * - fails any other source file that spells the stamp's key itself.
@@ -22,10 +23,16 @@
  *
  * ## What it cannot see
  *
- * Metadata passed by variable or parameter (`metadata: noteLinkMetadata`,
- * `metadata: params.metadata`). None of those carries a status today: the
- * outbound create's link is status-less, and an inbound status always comes
- * through the builder at the literal.
+ * - Metadata passed by variable or parameter (`metadata: noteLinkMetadata`,
+ *   `metadata: params.metadata`, shorthand `metadata`). None carries a status
+ *   today: the outbound create's link is status-less, and an inbound status
+ *   always comes through the builder at the literal.
+ * - A link literal that names its type and role only through variables or
+ *   parameters (`xeroObjectType: params.type`, `role: params.role`) and spreads
+ *   nothing whose text names a link.
+ * - A link built in steps (`link.metadata = ...`) or by `Object.assign`.
+ * - A metadata object whose status is spread in from another object
+ *   (`metadata: { ...reading }`) rather than named.
  *
  * **Re-measure by running this test. Add an entry only with its reason.**
  */
@@ -60,6 +67,11 @@ const NOT_A_XERO_READING: Record<string, string> = {
   // The demo seed's voided note: a fixed VOIDED fixture written directly, never
   // a Xero reading.
   'prisma/demo-seed.ts:"VOIDED"': "a fixed demo fixture",
+  // `keepStoredRefundNoteVoid` (review 5): a status-less write keeping the
+  // row's own stored VOIDED/DELETED status, read under its lock; the write it
+  // returns carries no reading of its own.
+  "src/lib/xero-refund-note-status.ts:readRefundCreditNoteLinkStatus(stored?.metadata)":
+    "keepStoredRefundNoteVoid keeps the stored void's status (#4223)",
 };
 
 type Finding = { file: string; line: number; kind: "builder" | "status"; text: string };
@@ -74,6 +86,20 @@ function isBuilderCall(node: ts.Expression): boolean {
   return ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === BUILDER;
 }
 
+/** The refund-note roles a link literal can name, as a string or by the request role's constant. */
+const REFUND_NOTE_ROLES = new Set(["REFUND_CREDIT_NOTE", "REFUND_REQUEST_CREDIT_NOTE", "REFUND_REQUEST_CREDIT_NOTE_ROLE"]);
+
+/**
+ * A literal that is, or may be, a credit-note link: it names
+ * `xeroObjectType: "CREDIT_NOTE"`, or (review 5) it names a refund-note `role`,
+ * or it spreads a link (`...link`, `...normalizedLink`) whose type it cannot see.
+ */
+function isCreditNoteLinkLiteral(node: ts.ObjectLiteralExpression, type: ts.ObjectLiteralElementLike | undefined, role: ts.ObjectLiteralElementLike | undefined): boolean {
+  if (type && ts.isPropertyAssignment(type) && ts.isStringLiteral(type.initializer) && type.initializer.text === "CREDIT_NOTE") return true;
+  if (role && ts.isPropertyAssignment(role) && (ts.isStringLiteral(role.initializer) || ts.isIdentifier(role.initializer)) && REFUND_NOTE_ROLES.has(role.initializer.text)) return true;
+  return node.properties.some((property) => ts.isSpreadAssignment(property) && /link/i.test(property.expression.getText()));
+}
+
 /** The credit-note link literals in one file that name a status, or take it from the builder. */
 function scanCode(relative: string, code: string): Finding[] {
   const findings: Finding[] = [];
@@ -83,8 +109,7 @@ function scanCode(relative: string, code: string): Finding[] {
       const find = (name: string) => node.properties.find((property) => propertyName(property) === name);
       const type = find("xeroObjectType");
       const metadata = find("metadata");
-      if (type && ts.isPropertyAssignment(type) && ts.isStringLiteral(type.initializer) && type.initializer.text === "CREDIT_NOTE"
-        && metadata && ts.isPropertyAssignment(metadata)) {
+      if (isCreditNoteLinkLiteral(node, type, find("role")) && metadata && ts.isPropertyAssignment(metadata)) {
         const line = source.getLineAndCharacterOfPosition(node.getStart()).line + 1;
         const value = metadata.initializer;
         if (isBuilderCall(value)) {
@@ -113,7 +138,7 @@ function scan(): { findings: Finding[]; stampKeyFiles: string[] } {
     const code = readFileSync(file, "utf8");
     const relative = relativeSource(file);
     if (relative !== BUILDER_HOME && code.includes(REFUND_NOTE_SNAPSHOT_AT_KEY)) stampKeyFiles.push(relative);
-    if (code.includes('"CREDIT_NOTE"')) findings.push(...scanCode(relative, code));
+    if (/"CREDIT_NOTE"|REFUND_|\.\.\.\w*link/i.test(code)) findings.push(...scanCode(relative, code));
   }
   return { findings, stampKeyFiles };
 }
@@ -150,5 +175,20 @@ describe("every credit-note link that records a Xero status stamps its UpdatedDa
     expect(scanCode("src/lib/probe.ts", writer("{ ...xeroCreditNoteSnapshotMetadata(note), amountCents: 1 }"))).toEqual([
       { file: "src/lib/probe.ts", line: 1, kind: "builder", text: BUILDER },
     ]);
+  });
+
+  it.each([
+    ["a refund-note role and no type", 'upsertXeroObjectLink({ role: "REFUND_CREDIT_NOTE", metadata: { status: note.status } });'],
+    ["the request role's constant", "upsertXeroObjectLink({ role: REFUND_REQUEST_CREDIT_NOTE_ROLE, metadata: { status: note.status } });"],
+    ["a spread link", "upsertXeroObjectLink({ ...link, metadata: { status: note.status } });"],
+    ["a spread normalised link", "return { ...normalizedLink, active: false, metadata: { status: note.status } };"],
+  ])("MUTATION (review 5): a status named on %s is found", (_label, code) => {
+    expect(undeclaredStatuses(scanCode("src/lib/probe.ts", code))).toEqual([
+      "src/lib/probe.ts:1 records status note.status without its UpdatedDateUTC - spread xeroCreditNoteSnapshotMetadata(...) instead",
+    ]);
+  });
+
+  it("an unrelated literal with a status in its metadata is not a link", () => {
+    expect(scanCode("src/lib/probe.ts", 'createAuditLog({ ...base, action: "x", metadata: { status: booking.status } });')).toEqual([]);
   });
 });

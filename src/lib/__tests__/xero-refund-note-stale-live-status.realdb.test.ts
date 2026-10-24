@@ -324,13 +324,58 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
     });
 
-    it("a card payment's stale reconcile moves no money either way: the Stripe ledger is never lowered or raised past Stripe's own refunds", async () => {
+    it("MUTATION (recount, card): a card payment's stale reconcile never raises its total from the voided note", async () => {
       const kase: Case = "Stripe per-delta";
       await seed(kase);
+      // `INV-ADDPAY-021` lets an inbound recount RAISE a card ledger (never lower
+      // it), so the stale reading's $100 counted again would raise $50 to $150.
+      await prisma.payment.update({ where: { id: CARD }, data: { refundedAmountCents: 5_000 } });
       await voidWhileStale(kase, (gate, reached) => staleReconcile(reading("AUTHORISED", EARLY), gate, reached));
       expect(await state(kase)).toEqual(kept(kase));
-      // Stripe-truth (`INV-ADDPAY-021`): $150 was refunded through Stripe, and stays recorded.
-      expect(await refunded(CARD)).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
+      expect(await refunded(CARD)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("MUTATION (review 1): A's live link write, then B's void and B's recount, then A's recount - A counts the void it reads now", async () => {
+      const kase: Case = "bank-transfer canonical";
+      await seed(kase);
+      let current = reading("AUTHORISED", EARLY);
+      const repairs = await import("@/lib/xero-inbound/credit-note-repairs");
+      const original = repairs.repairRefundedPaymentBusinessState;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const atRecount = new Promise<void>((resolve) => (reached = resolve));
+      // A pauses after its link writes, before its recount.
+      const spy = vi.spyOn(repairs, "repairRefundedPaymentBusinessState").mockImplementationOnce(async (...args: Parameters<typeof original>) => {
+        reached();
+        await gate;
+        return original(...args);
+      });
+      const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+      try {
+        await withFakeXero(async () => ({ body: { creditNotes: [current] } }), async () => {
+          const a = reconcileXeroCreditNote(NOTE);
+          void a.catch(() => undefined);
+          try {
+            await Promise.race([atRecount, a.then(() => { throw new Error("A finished before its recount"); })]);
+            // A's live reading was applied: nothing newer was stored when it wrote.
+            expect((await state(kase)).status).toBe("AUTHORISED");
+            // B: the void's whole reconcile - its link write and its recount, $150 to $50.
+            current = reading("VOIDED", LATE);
+            await reconcileXeroCreditNote(NOTE);
+            expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+          } finally {
+            release();
+          }
+          await a;
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      // A's recount reads the note's row as it is now: VOIDED, so it counts nothing.
+      // Acting on its own write's verdict, it wrote $150 back.
+      expect(await state(kase)).toEqual(kept(kase));
+      expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
     });
 
     it("MUTATION (refund payments): a stale reconcile writes no refund-payment link from its older reading's payments", async () => {
@@ -353,6 +398,21 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       await voidWhileStale(kase, (gate, reached) => staleReconcile(reading("AUTHORISED", EARLY, [], ALLOCATED), gate, reached));
       expect(await state(kase)).toEqual(kept(kase));
       expect(await allocationLinks()).toEqual([]);
+    });
+
+    it("MUTATION (review 2): a stale reading kept under a newer LIVE snapshot still records its allocations and refund payments", async () => {
+      // The newer snapshot came from a writer that records neither (the Stripe
+      // status recorder): the note is still allocated and paid, so they stay true.
+      const kase: Case = "bank-transfer canonical";
+      await seed(kase, { storedStatus: "PAID", storedAt: LATE });
+      const payments = [{ paymentID: `xero-pay-${P}-kept`, amount: 100, date: "2026-06-30", paymentType: "ARCREDITPAYMENT", status: "AUTHORISED" }];
+      const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+      await withFakeXero(async () => ({ body: { creditNotes: [reading("AUTHORISED", EARLY, payments, ALLOCATED)] } }), () => reconcileXeroCreditNote(NOTE));
+      expect(await state(kase)).toMatchObject({ active: true, status: "PAID", providerUpdatedAt: LATE });
+      expect(await allocationLinks()).toEqual([
+        { role: "CREDIT_NOTE_ALLOCATION", active: true, metadata: { creditNoteId: NOTE, invoiceId: `inv-${P}-bt`, amountCents: 10_000 } },
+      ]);
+      expect(await prisma.xeroObjectLink.count({ where: { localId: BT, role: "REFUND_PAYMENT", xeroObjectId: `xero-pay-${P}-kept` } })).toBe(1);
     });
 
     it("an applied reading still records its allocations", async () => {

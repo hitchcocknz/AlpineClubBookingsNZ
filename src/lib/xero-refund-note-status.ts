@@ -269,8 +269,9 @@ export function readRefundNoteSnapshotAt(metadata: unknown): Date | null {
 /**
  * What a refund-note link write does with the row it locked: write as asked;
  * keep the stored VOIDED/DELETED status under a write that names none (#4223);
- * or keep the whole stored snapshot (status, active flag and figures) because
- * the write's own snapshot is stale (#4288).
+ * or (#4288), because the write's own snapshot is stale, keep the stored
+ * status, stamp and figures; the canonical rule (active flag, sibling
+ * retirement) still applies.
  */
 export type RefundNoteWriteVerdict = "apply" | "keep-stored-status" | "keep-stored-snapshot";
 
@@ -302,14 +303,37 @@ export function judgeRefundNoteWrite(incoming: unknown, stored: unknown): Refund
 }
 
 /**
+ * #4288: one note's refund-note row (`REFUND_CREDIT_NOTE`) on each of these
+ * payments, active or not, read NOW on the caller's client. A writer that acts
+ * on a Xero reading after its link write - the inbound recount, its allocation
+ * and refund-payment links - reads this at the point it acts, so a void or a
+ * newer snapshot that committed since its own link write is what it acts on,
+ * never a verdict it remembered from that write.
+ */
+export async function readRefundNoteRowsByPayment(
+  creditNoteId: string,
+  paymentIds: readonly string[],
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+): Promise<Map<string, { active: boolean; metadata: unknown }>> {
+  if (paymentIds.length === 0) return new Map();
+  const rows = (await db.xeroObjectLink.findMany({
+    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, localId: { in: [...new Set(paymentIds)] }, xeroObjectId: creditNoteId },
+    select: { localId: true, active: true, metadata: true },
+  })) ?? [];
+  return new Map(rows.map((row) => [row.localId, { active: row.active, metadata: row.metadata }]));
+}
+
+/**
  * #4288: a Xero reading of a refund note as its link write JUDGED it, read from
  * the row that write returned. The link funnel either applies the reading (its
  * status and `UpdatedDateUTC` are then the row's) or, when `judgeRefundNoteWrite`
  * keeps the stored snapshot, leaves the row as it was - and it keeps one only
  * when the row's status or timestamp differs from the reading's. So `stale` is
- * exactly "the reading was not applied", and `snapshot` is the note as the row
- * now holds it: what every later step of the same writer acts on (the inbound
- * recount, its refund-payment links), never the raw reading. `reading` is the
+ * exactly "the reading was not applied" - in that write's own transaction,
+ * where a writer whose keys must land with its reading (the hand-made note
+ * answer) refuses on it. A writer that acts LATER, outside that transaction
+ * (the inbound recount, its allocation and refund-payment links), reads the
+ * row afresh instead (`readRefundNoteRowsByPayment`). `reading` is the
  * builder's shape (`xeroCreditNoteSnapshotMetadata`), which always carries the
  * timestamp's key, so an applied reading always overwrites the row's.
  */
@@ -318,13 +342,7 @@ export function judgedRefundNoteReading(reading: unknown, written: { metadata: u
   const stale =
     readRefundCreditNoteLinkStatus(row) !== readRefundCreditNoteLinkStatus(reading) ||
     readRefundNoteSnapshotAt(row)?.getTime() !== readRefundNoteSnapshotAt(reading)?.getTime();
-  const snapshot = {
-    status: row?.status ?? null,
-    total: readNumber(row?.total),
-    appliedAmount: readNumber(row?.appliedAmount),
-    remainingCredit: readNumber(row?.remainingCredit),
-  };
-  return { stale, snapshot };
+  return { stale };
 }
 
 /**
@@ -373,8 +391,10 @@ export async function keepStoredRefundNoteVoid<L extends {
     // metadata of its own. Its keys and the kept status merge over the locked row.
     return { ...link, active: false, metadata: { ...asRecord(link.metadata), status: readRefundCreditNoteLinkStatus(stored?.metadata) }, mergeMetadata: true };
   }
-  // #4288: a stale snapshot writes nothing of its own. Merging the stored
-  // metadata over itself keeps every stored key; a stored void stays inactive.
+  // #4288: a stale snapshot writes nothing of its own: merging the stored
+  // metadata over itself keeps the stored status, stamp and figures, and a
+  // stored void stays inactive. The canonical rule (active flag, sibling
+  // retirement) still applies to a stored live snapshot.
   return {
     ...link,
     active: isRefundCreditNoteLinkCancelledInXero(stored?.metadata) ? false : stored?.active,

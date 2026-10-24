@@ -101,12 +101,8 @@ describe("judgedRefundNoteReading (#4288)", () => {
     }
   });
 
-  it("hands on the note as the row holds it: the kept void, or the newer live figures", () => {
-    const keptVoid = judgedRefundNoteReading(at("AUTHORISED", EARLY), { metadata: { ...at("VOIDED", LATE), total: 100, appliedAmount: 0, remainingCredit: 0 } });
-    expect(keptVoid).toEqual({ stale: true, snapshot: { status: "VOIDED", total: 100, appliedAmount: 0, remainingCredit: 0 } });
-    const newer = judgedRefundNoteReading({ ...at("AUTHORISED", EARLY), total: 90 }, { metadata: { ...at("PAID", LATE), total: 100 } });
-    expect(newer).toEqual({ stale: true, snapshot: { status: "PAID", total: 100, appliedAmount: null, remainingCredit: null } });
-    const applied = judgedRefundNoteReading(at("PAID", LATE), { metadata: { amountCents: 100, ...at("PAID", LATE) } });
-    expect(applied.stale).toBe(false);
+  it("an applied reading over a row with keys of its own is not stale", () => {
+    expect(judgedRefundNoteReading(at("PAID", LATE), { metadata: { amountCents: 100, handBackTaskId: "t", ...at("PAID", LATE) } })).toEqual({ stale: false });
+    expect(judgedRefundNoteReading(at("AUTHORISED", EARLY), { metadata: at("VOIDED", LATE) })).toEqual({ stale: true });
   });
 });

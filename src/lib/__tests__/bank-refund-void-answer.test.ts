@@ -183,6 +183,15 @@ describe("recordHandMadeRefundNoteLink under the link's own row lock (#4288)", (
     const { tx } = fakeTx({ metadata: { status: "PAID", total: 200, providerUpdatedAt: "2026-06-30T22:00:00.000Z" }, active: false });
     await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("changed in Xero") });
   });
+
+  it("MUTATION (review 4): a newer reading kept on an ACTIVE row is refused too - the answer's keys were never written", async () => {
+    // The stored row is live and active (an inbound reading newer than the
+    // treasurer's check): the funnel keeps it whole, so `handBackTaskId` and
+    // the other keys of this answer would be silently lost.
+    const { tx, upsert } = fakeTx({ metadata: { status: "PAID", total: 200, providerUpdatedAt: "2026-06-30T22:00:00.000Z" }, active: true });
+    await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("changed in Xero") });
+    expect(upsert.mock.calls[0]![0].update.metadata).not.toHaveProperty("handBackTaskId");
+  });
 });
 
 describe("the follow-up's copy (#4162)", () => {

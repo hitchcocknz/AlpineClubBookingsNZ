@@ -29,7 +29,9 @@ describe("the stale live refund-note status proof stays wired into CI (#4288)", 
     expect(suite).toContain("a newer live reading is applied through the real reconcile: AUTHORISED to PAID is ordinary");
     expect(suite).toContain("MUTATION (pointer): a stale live write keeps the void without waiting on the Payment a Payment-first enqueue holds (race)");
     expect(suite).toContain("MUTATION (recount): a bank transfer's stale reconcile recounts the kept void, so the void's lowered total is not raised back");
-    expect(suite).toContain("a card payment's stale reconcile moves no money either way: the Stripe ledger is never lowered or raised past Stripe's own refunds");
+    expect(suite).toContain("MUTATION (recount, card): a card payment's stale reconcile never raises its total from the voided note");
+    expect(suite).toContain("MUTATION (review 1): A's live link write, then B's void and B's recount, then A's recount - A counts the void it reads now");
+    expect(suite).toContain("MUTATION (review 2): a stale reading kept under a newer LIVE snapshot still records its allocations and refund payments");
     expect(suite).toContain("MUTATION (refund payments): a stale reconcile writes no refund-payment link from its older reading's payments");
     expect(suite).toContain("MUTATION (allocations): a stale reconcile writes no allocation link from its older reading's allocations");
     expect(suite).toContain("pg_blocking_pids");
