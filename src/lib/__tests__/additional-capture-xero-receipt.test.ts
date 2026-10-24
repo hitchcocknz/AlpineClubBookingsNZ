@@ -31,6 +31,7 @@ const mocks = vi.hoisted(() => ({
   // Round 9: reads inside the switch's and the plan store's transactions.
   txFindFirstLink: vi.fn(),
   txFindManyModification: vi.fn(),
+  txFindManyLink: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -231,13 +232,14 @@ beforeEach(() => {
         update: mocks.updateOperation,
         updateMany: mocks.updateManyOperation,
       },
-      xeroObjectLink: { findFirst: mocks.txFindFirstLink },
+      xeroObjectLink: { findFirst: mocks.txFindFirstLink, findMany: mocks.txFindManyLink },
       bookingModification: { findMany: mocks.txFindManyModification },
       paymentTransaction: { findMany: mocks.findManyTransaction },
     }),
   );
   mocks.txFindFirstLink.mockResolvedValue(null);
   mocks.txFindManyModification.mockResolvedValue([]);
+  mocks.txFindManyLink.mockResolvedValue([]);
 });
 
 const run = (seam = providers()) => recordAdditionalCaptureReceipt({ syncOperationId: "op_receipt" }, seam);
@@ -861,17 +863,28 @@ describe("recordAdditionalCaptureReceipt", () => {
     it("MUTATION round 9 (item 4): refuses a capture no change can be read from where a change of the booking has its invoice's payment linked in Xero", async () => {
       mocks.findUniqueTransaction.mockResolvedValue(capture({ bookingModificationId: null, reason: null }));
       mocks.txFindManyModification.mockResolvedValue([{ id: "mod_old" }]);
-      mocks.txFindFirstLink.mockImplementation(async ({ where }: { where: { role?: string } }) =>
-        where.role === "SUPPLEMENTARY_INVOICE_PAYMENT" ? { id: "link_old_payment" } : null,
-      );
+      mocks.txFindManyLink.mockResolvedValue([{ localId: "mod_old" }]);
       const seam = providers();
       await run(seam);
-      expect(mocks.txFindFirstLink).toHaveBeenCalledWith({
+      expect(mocks.txFindManyLink).toHaveBeenCalledWith({
         where: { localModel: "BookingModification", localId: { in: ["mod_old"] }, role: "SUPPLEMENTARY_INVOICE_PAYMENT", active: true },
-        select: { id: true },
+        select: { localId: true },
       });
       expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
       expectRefused("change-unknown");
+    });
+
+    it("MUTATION round 11 (item 1): plans freely where the booking's paid change invoice names its own capture", async () => {
+      mocks.findUniqueTransaction.mockResolvedValue(capture({ bookingModificationId: null, reason: null }));
+      mocks.txFindManyModification.mockResolvedValue([{ id: "mod_named" }]);
+      mocks.txFindManyLink.mockResolvedValue([{ localId: "mod_named" }]);
+      mocks.findManyOperation.mockImplementation(async ({ where }: { where: { queueType?: string; localModel?: string } }) =>
+        where.queueType === "SUPPLEMENTARY_INVOICE" && where.localModel
+          ? [{ localId: "mod_named", requestPayload: { queueType: "SUPPLEMENTARY_INVOICE", paymentIntentId: "pi_named" } }]
+          : [],
+      );
+      await run();
+      expect(storedPlan()).toEqual(expect.objectContaining({ invoiceId: PRIMARY }));
     });
 
     it("decides again on the next run where the invoice it belongs to changed meanwhile", async () => {

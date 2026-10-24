@@ -17,7 +17,8 @@ function store(input: {
   supplementaries?: Array<{ requestPayload: unknown }>;
   unattributed?: number;
   modifications?: Array<{ id: string }>;
-  paymentLink?: { id: string } | null;
+  paymentLinks?: Array<{ localId: string }>;
+  queuedOnChanges?: Array<{ localId: string; requestPayload: unknown }>;
 }) {
   return {
     paymentTransaction: {
@@ -25,14 +26,17 @@ function store(input: {
       count: vi.fn(async () => input.unattributed ?? 0),
     },
     xeroObjectLink: {
-      findFirst: vi.fn(async (args: { where: { role: string } }) =>
-        args.where.role === "SUPPLEMENTARY_INVOICE_PAYMENT" ? (input.paymentLink ?? null) : (input.link ?? null),
-      ),
+      findFirst: vi.fn(async () => input.link ?? null),
+      findMany: vi.fn(async () => input.paymentLinks ?? []),
     },
     bookingModification: { findMany: vi.fn(async () => input.modifications ?? []) },
     xeroSyncOperation: {
-      findMany: vi.fn(async (args: { where: { queueType: string } }) =>
-        args.where.queueType === "SUPPLEMENTARY_INVOICE" ? (input.supplementaries ?? []) : (input.receipts ?? []),
+      findMany: vi.fn(async (args: { where: { queueType: string; localModel?: string } }) =>
+        args.where.queueType !== "SUPPLEMENTARY_INVOICE"
+          ? (input.receipts ?? [])
+          : args.where.localModel
+            ? (input.queuedOnChanges ?? [])
+            : (input.supplementaries ?? []),
       ),
     },
   };
@@ -81,16 +85,34 @@ describe("bookingHasPaidUnnamedSupplementary", () => {
   });
 });
 
-describe("bookingHasPaidUnnamedSupplementary - an invoice from before #3641 (round 9, item 4)", () => {
-  it("MUTATION: is true where a change of the booking has its invoice's Stripe payment linked in Xero", async () => {
-    const db = store({ modifications: [{ id: "mod_old" }], paymentLink: { id: "link_old" } });
-    await expect(bookingHasPaidUnnamedSupplementary(db as never, "booking_1")).resolves.toBe(true);
-    expect(db.bookingModification.findMany).toHaveBeenCalledWith({ where: { bookingId: "booking_1" }, select: { id: true } });
-    expect(db.xeroObjectLink.findFirst).toHaveBeenCalledWith({
-      where: { localModel: "BookingModification", localId: { in: ["mod_old"] }, role: "SUPPLEMENTARY_INVOICE_PAYMENT", active: true },
-      select: { id: true },
-    });
-    await expect(bookingHasPaidUnnamedSupplementary(store({ modifications: [{ id: "mod_old" }] }) as never, "booking_1")).resolves.toBe(false);
+describe("bookingHasPaidUnnamedSupplementary - an invoice from before #3641 (rounds 9 and 11)", () => {
+  const modifications = [{ id: "mod_old" }];
+  const paymentLinks = [{ localId: "mod_old" }];
+
+  it("MUTATION round 11: a change's paid invoice whose queued row names its capture, or marks a gap invoice, leaves the receipt free", async () => {
+    for (const requestPayload of [
+      { queueType: "SUPPLEMENTARY_INVOICE", paymentIntentId: "pi_named" },
+      { queueType: "SUPPLEMENTARY_INVOICE", primaryInvoiceGap: true, coveredPaymentIntentIds: [] },
+    ]) {
+      const db = store({ modifications, paymentLinks, queuedOnChanges: [{ localId: "mod_old", requestPayload }] });
+      await expect(bookingHasPaidUnnamedSupplementary(db as never, "booking_1")).resolves.toBe(false);
+    }
+  });
+
+  it("MUTATION: a flattened invoice from before #3641 - its payment linked, no queued row saying what it records - still refuses", async () => {
+    for (const queuedOnChanges of [[], [{ localId: "mod_old", requestPayload: { invoices: [{ lineItems: [] }] } }]]) {
+      const db = store({ modifications, paymentLinks, queuedOnChanges });
+      await expect(bookingHasPaidUnnamedSupplementary(db as never, "booking_1")).resolves.toBe(true);
+      expect(db.xeroObjectLink.findMany).toHaveBeenCalledWith({
+        where: { localModel: "BookingModification", localId: { in: ["mod_old"] }, role: "SUPPLEMENTARY_INVOICE_PAYMENT", active: true },
+        select: { localId: true },
+      });
+      expect(db.xeroSyncOperation.findMany).toHaveBeenCalledWith({
+        where: { queueType: "SUPPLEMENTARY_INVOICE", localModel: "BookingModification", localId: { in: ["mod_old"] }, status: { not: "CANCELLED" } },
+        select: { localId: true, requestPayload: true },
+      });
+    }
+    await expect(bookingHasPaidUnnamedSupplementary(store({ modifications }) as never, "booking_1")).resolves.toBe(false);
   });
 });
 

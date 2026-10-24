@@ -103,9 +103,13 @@ export async function bookingHasUnattributedCaptures(
  * Stripe payment without naming the capture it records - the one kind of
  * document an unattributed capture's receipt cannot tell apart from its own
  * recorder. The receipt refuses, under the booking's lock, where one exists.
- * Round 9: also any change of the booking whose invoice's Stripe payment is
+ * Round 9: also a change of the booking whose invoice's Stripe payment is
  * linked in Xero (`SUPPLEMENTARY_INVOICE_PAYMENT`) - an invoice raised before
  * #3641 may carry no outbox row this can read, and its link names no capture.
+ * Round 11: only such a change - one with a live queued row naming its
+ * capture, or marking a #3980 gap invoice, is explained by that row (it
+ * records its named capture, or cash no receipt claims), so its link never
+ * blocks.
  */
 export async function bookingHasPaidUnnamedSupplementary(
   store: Pick<Prisma.TransactionClient, "xeroSyncOperation" | "bookingModification" | "xeroObjectLink">,
@@ -126,16 +130,34 @@ export async function bookingHasPaidUnnamedSupplementary(
   if (unnamed) return true;
   const changes = await store.bookingModification.findMany({ where: { bookingId }, select: { id: true } });
   if (changes.length === 0) return false;
-  const paid = await store.xeroObjectLink.findFirst({
+  const paid = await store.xeroObjectLink.findMany({
     where: {
       localModel: "BookingModification",
       localId: { in: changes.map((change) => change.id) },
       role: SUPPLEMENTARY_INVOICE_PAYMENT_ROLE,
       active: true,
     },
-    select: { id: true },
+    select: { localId: true },
   });
-  return paid !== null;
+  if (paid.length === 0) return false;
+  const queued = await store.xeroSyncOperation.findMany({
+    where: {
+      queueType: "SUPPLEMENTARY_INVOICE",
+      localModel: "BookingModification",
+      localId: { in: paid.map((link) => link.localId) },
+      status: { not: "CANCELLED" },
+    },
+    select: { localId: true, requestPayload: true },
+  });
+  const explained = new Set(
+    queued
+      .filter((row) => {
+        const payload = asRecord(row.requestPayload);
+        return typeof payload?.paymentIntentId === "string" || payload?.primaryInvoiceGap === true;
+      })
+      .map((row) => row.localId),
+  );
+  return paid.some((link) => !explained.has(link.localId));
 }
 
 /**
