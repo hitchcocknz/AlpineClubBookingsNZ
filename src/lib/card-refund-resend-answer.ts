@@ -19,11 +19,13 @@ import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-x
  * its own names the failed refund in its key (`card_refund_failed_later_<id>`),
  * and a slice an open row re-planned lists it (`failedRefundIds`). Neither the
  * refund row nor Stripe's metadata names the refund that answers it, so each
- * such slice is answered by the first refund made after its latest failure on
- * the same charge for the same amount - a slice's every send asks for exactly
- * its amount on its own charge - or by the refund the slice is marked made with.
- * Each refund answers one slice at most. A later refund that also failed still
- * takes the slice (its own failure has its own owner), and a row closed as
+ * such slice is answered by the first refund recorded after its latest failure
+ * was (a failed refund row is never written again, so its `updatedAt` is when
+ * it failed) on the same charge for the same amount - a slice's every send asks
+ * for exactly its amount on its own charge - or by the refund the slice is
+ * marked made with. A refund made before the failure, failed or not, is never
+ * its answer. Each refund answers one slice at most. A re-send that failed too
+ * still takes the slice (its own failure has its own owner), and a row closed as
  * "Paid another way" sent nothing, so its slices take none: that close is sized
  * against the card note already (`failedLaterCardNoteCoverCents`). A late
  * capture's refunds are its capture's note's to size (`planLateCaptureCardNotes`).
@@ -45,16 +47,17 @@ const NONE: FailedRefundAnswer = { failedRefundIds: [], ownNoted: false, coverCe
 
 type AnswerReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation" | "paymentRefund" | "manualRefundTask" | "xeroObjectLink" | "xeroSyncOperation">;
 
-type RefundRow = { stripeRefundId: string; paymentTransactionId: string | null; stripePaymentIntentId: string | null; amountCents: number; status: string; stripeCreatedAt: Date | null; createdAt: Date };
+type RefundRow = { stripeRefundId: string; paymentTransactionId: string | null; stripePaymentIntentId: string | null; amountCents: number; status: string; createdAt: Date; updatedAt: Date };
 
-const madeAt = (refund: RefundRow) => (refund.stripeCreatedAt ?? refund.createdAt).getTime();
-const byMade = (a: RefundRow, b: RefundRow) => madeAt(a) - madeAt(b) || a.stripeRefundId.localeCompare(b.stripeRefundId);
+/** When the ledger recorded it, and (a refused row) when it failed: the database's one clock, never Stripe's. */
+const recordedAt = (refund: RefundRow) => refund.createdAt.getTime();
+const byRecorded = (a: RefundRow, b: RefundRow) => recordedAt(a) - recordedAt(b) || a.stripeRefundId.localeCompare(b.stripeRefundId);
 
 /** The failed refunds `stripeRefundId` was sent again for on this payment, and what their own notes cover. */
 export async function readFailedRefundsAnsweredBy(db: AnswerReader, paymentId: string, stripeRefundId: string): Promise<FailedRefundAnswer> {
   const refunds = await db.paymentRefund.findMany({
     where: { paymentId },
-    select: { stripeRefundId: true, paymentTransactionId: true, stripePaymentIntentId: true, amountCents: true, status: true, stripeCreatedAt: true, createdAt: true },
+    select: { stripeRefundId: true, paymentTransactionId: true, stripePaymentIntentId: true, amountCents: true, status: true, createdAt: true, updatedAt: true },
   });
   const refund = refunds.find((each) => each.stripeRefundId === stripeRefundId);
   if (!refund?.paymentTransactionId || !isRecordedRefundStatus(refund.status)) return NONE;
@@ -69,7 +72,7 @@ export async function readFailedRefundsAnsweredBy(db: AnswerReader, paymentId: s
       .map((task) => task.occurrenceKey),
   );
   const byId = new Map(refunds.map((each) => [each.stripeRefundId, each]));
-  const ordered = [...refunds].sort(byMade);
+  const ordered = [...refunds].sort(byRecorded);
   const taken = new Set<string>();
   const answered: string[] = [];
   for (const row of rows) {
@@ -78,12 +81,12 @@ export async function readFailedRefundsAnsweredBy(db: AnswerReader, paymentId: s
     for (const slice of parseRefundAllocationPlan(row.allocationPlan) ?? []) {
       const failed = [...new Set([...(ownedByKey ? [ownedByKey] : []), ...(slice.failedRefundIds ?? [])])];
       if (failed.length === 0) continue;
-      const after = Math.max(...failed.map((id) => { const each = byId.get(id); return each ? madeAt(each) : 0; }));
+      const failedAt = Math.max(...failed.map((id) => byId.get(id)?.updatedAt.getTime() ?? 0));
       const answer = slice.madeRefundId
         ? byId.get(slice.madeRefundId)
         : ordered.find((each) =>
             !taken.has(each.stripeRefundId) && !failed.includes(each.stripeRefundId) &&
-            each.paymentTransactionId === slice.paymentTransactionId && each.amountCents === slice.amountCents && madeAt(each) >= after);
+            each.paymentTransactionId === slice.paymentTransactionId && each.amountCents === slice.amountCents && recordedAt(each) >= failedAt);
       if (!answer || taken.has(answer.stripeRefundId)) continue;
       taken.add(answer.stripeRefundId);
       if (answer.stripeRefundId === stripeRefundId) answered.push(...failed);

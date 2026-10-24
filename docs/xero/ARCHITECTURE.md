@@ -2144,8 +2144,8 @@ sized less the failed refund's own notes (`readFailedRefundsAnsweredBy`, in
 `readCardRefundNoteShare`): normally it raises nothing. #4104's own links name
 the failure - a row of its own's key (`card_refund_failed_later_<refund>`), a
 re-planned slice's `failedRefundIds` - and the slice is answered by the refund
-it is marked made with, else the first refund made after its latest failure on
-its charge for its amount (each refund answers one slice; a row closed as
+it is marked made with, else the first refund recorded after its latest
+failure was, on its charge for its amount (each refund answers one slice; a row closed as
 "Paid another way" answers none, its close being sized against the card note
 already). Three writers rely on it: the refund request's replay, which sends a
 re-planned slice again; `charge.refunded`, which takes such a re-send off the
@@ -2215,7 +2215,7 @@ Stated limits:
   note's query lists the payment for a note by hand.
 - **Which refund answers a failure is read by charge, amount and time**: neither
   the refund row nor Stripe's metadata names it. A refund of the same amount
-  on the same charge made after the failure and before the re-send (one made
+  on the same charge recorded after the failure and before the re-send (one made
   in the Stripe dashboard) is read as the answer instead: it raises no note
   and the re-send raises one, so Xero's total still matches.
 - **A crash after Stripe answered and before the note was queued** loses the
