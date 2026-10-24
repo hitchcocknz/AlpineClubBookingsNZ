@@ -3570,7 +3570,7 @@ describe("Cron: Confirm Pending Bookings", () => {
         const result = await confirmPendingBookings();
         expect(result.failedBookingIds).toEqual(["b1"]);
         expect(mockChargePaymentMethod).not.toHaveBeenCalled();
-        expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_paid" }));
+        expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_paid", supersededIntentsToHandOff: ["pi_paid"] }));
       } finally {
         supersededDoor.owned.clear();
       }

@@ -279,11 +279,9 @@ export type SavedCardChargeAttempt =
  *
  * - `captured_primary_exists`: a PRIMARY row on this payment already holds
  *   captured money while the booking is somehow still PENDING.
- * - `superseded_capture_returning` (#4300): the captured row is the superseded
- *   machinery's but only its cancel row names it - no refund under way yet; the
- *   refusing door then asks the doors' check, which hands it off.
- * - `superseded_refund_stopped` (#4300): its superseded refund will never run
- *   again (out of attempts) - a person must refund it or close it by hand.
+ * - `superseded_capture_returning` / `superseded_refund_stopped` (#4300): a
+ *   superseded capture whose refund has not started (the door hands it off) or
+ *   will never run again (a person acts).
  * - `attempt_key_expired`: an earlier attempt's POST never answered and its key
  *   is now past the window in which Stripe would replay rather than re-execute
  *   it (`SAVED_CARD_CHARGE_KEY_RESEND_WINDOW_MS`).
@@ -301,7 +299,7 @@ const REFUSAL_MESSAGES: Record<
   captured_primary_exists: ({ paymentIntentId }) =>
     `A captured charge${paymentIntentId ? ` (${paymentIntentId})` : ""} is already recorded on this booking's payment while the booking is still pending, so no new charge was attempted. An administrator needs to check the payment and either settle the booking or refund the charge by hand.`,
   superseded_capture_returning: ({ paymentIntentId }) =>
-    `A card payment${paymentIntentId ? ` (${paymentIntentId})` : ""} on this booking was made on a payment a later change replaced, and its refund has not started yet, so no new charge was attempted. It has just been handed to the refund queue; the next attempt charges once that refund is running. If this repeats, open Stuck States, or the payment under Refunds owed on the Payments page.`,
+    `A card payment${paymentIntentId ? ` (${paymentIntentId})` : ""} on this booking was made on a payment a later change replaced, and its refund has not started yet, so no new charge was attempted. The app asks for that refund to start each time this happens; the next attempt charges once it is running. If this keeps happening, open Stuck States, or the payment under Refunds owed on the Payments page.`,
   superseded_refund_stopped: ({ paymentIntentId }) =>
     `A card payment${paymentIntentId ? ` (${paymentIntentId})` : ""} on this booking was made on a payment a later change replaced, and its refund has stopped retrying, so no new charge was attempted. A person must act: refund it, or close it as paid another way, from Refunds owed on the Payments page or from Stuck States. The next attempt charges once it is.`,
   attempt_key_expired: () =>
@@ -328,6 +326,8 @@ export class SavedCardChargeRefusedError extends Error {
   readonly bookingId: string;
   readonly paymentIntentId: string | null;
   readonly attemptRowId: string | null;
+  /** #4300: superseded captures with no refund started, for the refusing door to hand off. */
+  readonly supersededIntentsToHandOff: string[];
   /**
    * When the refused state began, read off the ledger row that witnesses it:
    * the captured row's last write for `captured_primary_exists` and the two
@@ -345,6 +345,7 @@ export class SavedCardChargeRefusedError extends Error {
     since: Date;
     paymentIntentId?: string | null;
     attemptRowId?: string | null;
+    supersededIntentsToHandOff?: string[];
   }) {
     const paymentIntentId = params.paymentIntentId ?? null;
     super(REFUSAL_MESSAGES[params.why]({ paymentIntentId }));
@@ -353,6 +354,7 @@ export class SavedCardChargeRefusedError extends Error {
     this.bookingId = params.bookingId;
     this.paymentIntentId = paymentIntentId;
     this.attemptRowId = params.attemptRowId ?? null;
+    this.supersededIntentsToHandOff = params.supersededIntentsToHandOff ?? [];
     this.since = params.since;
   }
 }
@@ -571,7 +573,8 @@ export async function beginSavedCardChargeAttempt(
   // (`INV-PAY-138`): nor is a capture the superseded machinery owns (never "any
   // part owed back") whose refund is in flight - this booking still owes. Every
   // row is read first: real money taken outranks a refund to wait for, a refund
-  // that stopped outranks one not yet started. Read under the claim's lock(1).
+  // that stopped outranks one not yet started; every one not started is handed
+  // off by the refusing door, whichever refusal wins. Under the claim's lock(1).
   const capturedRows = rows.filter((row) => isCapturedTransactionStatus(row.status) && row.amountCents - row.refundedAmountCents > 0);
   const ownership = capturedRows.some((row) => row.stripePaymentIntentId) ? await readSupersededOwnership(tx, paymentId) : null;
   let captured: AttemptLedgerRow | undefined;
@@ -583,16 +586,13 @@ export async function beginSavedCardChargeAttempt(
     else if (ownership.refundState(intent) === "not_started") waiting.push({ row, why: "superseded_capture_returning" });
   }
   const wait = waiting.find((each) => each.why === "superseded_refund_stopped") ?? waiting[0];
+  const supersededIntentsToHandOff = waiting.flatMap((each) => (each.why === "superseded_capture_returning" ? [each.row.stripePaymentIntentId!] : []));
   if (!captured && wait) {
-    throw new SavedCardChargeRefusedError({ why: wait.why, bookingId, since: wait.row.updatedAt, paymentIntentId: wait.row.stripePaymentIntentId });
+    throw new SavedCardChargeRefusedError({ why: wait.why, bookingId, since: wait.row.updatedAt, paymentIntentId: wait.row.stripePaymentIntentId, supersededIntentsToHandOff });
   }
   if (captured) {
-    throw new SavedCardChargeRefusedError({
-      why: "captured_primary_exists",
-      bookingId,
-      since: captured.updatedAt,
-      paymentIntentId: captured.stripePaymentIntentId,
-    });
+    const { updatedAt: since, stripePaymentIntentId: paymentIntentId } = captured;
+    throw new SavedCardChargeRefusedError({ why: "captured_primary_exists", bookingId, since, paymentIntentId, supersededIntentsToHandOff });
   }
 
   const unresolvedAttempts = rows.filter(

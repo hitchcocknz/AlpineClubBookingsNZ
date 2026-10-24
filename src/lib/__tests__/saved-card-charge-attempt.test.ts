@@ -588,7 +588,8 @@ describe("beginSavedCardChargeAttempt", () => {
       ledger.reset();
       for (const intent of order) ledger.seed({ paymentId: PAYMENT, status: PaymentStatus.SUCCEEDED, stripePaymentIntentId: intent, reference: null });
       superseded.owned.add("pi_superseded");
-      await expect(begin()).rejects.toMatchObject({ why: "captured_primary_exists", paymentIntentId: "pi_real" });
+      // The superseded one with no refund started still goes out to be handed off.
+      await expect(begin()).rejects.toMatchObject({ why: "captured_primary_exists", paymentIntentId: "pi_real", supersededIntentsToHandOff: ["pi_superseded"] });
     });
 
     it("a stopped refund outranks one not yet started", async () => {
@@ -596,7 +597,7 @@ describe("beginSavedCardChargeAttempt", () => {
       superseded.owned.add("pi_superseded");
       superseded.owned.add("pi_dead");
       superseded.stopped.add("pi_dead");
-      await expect(begin()).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: "pi_dead" });
+      await expect(begin()).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: "pi_dead", supersededIntentsToHandOff: ["pi_superseded"] });
     });
 
     it("CONTROL: not the machinery's - still captured_primary_exists", async () => {

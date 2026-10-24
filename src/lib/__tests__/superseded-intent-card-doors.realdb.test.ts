@@ -674,18 +674,48 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
       await expect(nextChargeAttempt()).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: superseded });
     });
 
-    it("named only by its cancel row (no refund under way yet), the next attempt waits instead of charging on top", async () => {
-      const superseded = await mintOnPayStep();
-      stripe.failCancel = true;
-      await editAwayAndBack();
-      capture(superseded);
-      // The capture is on the ledger, as a webhook or a door recording it leaves it.
-      const { upsertPaymentIntentTransaction } = await import("@/lib/payment-transactions");
-      const payment = await prisma.payment.findUniqueOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
-      await upsertPaymentIntentTransaction({ paymentId: payment.id, kind: "PRIMARY", paymentIntentId: superseded, amountCents: PRICE_CENTS, status: "SUCCEEDED", paymentMethodId: "pm_race_4300" });
+    for (const cancelRow of ["waiting to retry", "exhausted (FAILED at the ceiling)"] as const) {
+      it(`named only by its cancel row (${cancelRow}): the attempt waits, the door's hand-off starts the refund, and the next attempt charges`, async () => {
+        const superseded = await mintOnPayStep();
+        // Stripe is down for the edit's cancel; for the exhausted variant, for every retry too.
+        stripe.failCancel = true;
+        await editAwayAndBack();
+        if (cancelRow === "exhausted (FAILED at the ceiling)") {
+          const cancel = await prisma.paymentRecoveryOperation.findFirstOrThrow({
+            where: { bookingId: BOOKING_ID, paymentIntentId: superseded, type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT },
+            select: { id: true },
+          });
+          for (let attempt = 0; attempt < 6; attempt += 1) {
+            stripe.failCancel = true;
+            await prisma.paymentRecoveryOperation.updateMany({ where: { id: cancel.id, nextRetryAt: { not: null } }, data: { nextRetryAt: new Date(Date.now() - 1_000) } });
+            await recovery.runPaymentRecoveryOperationNow(cancel.id, CLUB_FORMAT_TEST);
+          }
+          expect(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: cancel.id }, select: { status: true, nextRetryAt: true } })).toEqual({
+            status: PaymentRecoveryOperationStatus.FAILED,
+            nextRetryAt: null,
+          });
+          stripe.failCancel = false;
+        }
+        capture(superseded);
+        // The capture is on the ledger, as a webhook or a door recording it leaves it.
+        const { upsertPaymentIntentTransaction } = await import("@/lib/payment-transactions");
+        const payment = await prisma.payment.findUniqueOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
+        await upsertPaymentIntentTransaction({ paymentId: payment.id, kind: "PRIMARY", paymentIntentId: superseded, amountCents: PRICE_CENTS, status: "SUCCEEDED", paymentMethodId: "pm_race_4300" });
 
-      await expect(nextChargeAttempt()).rejects.toMatchObject({ why: "superseded_capture_returning", paymentIntentId: superseded });
-    });
+        const refusal = await nextChargeAttempt().then(
+          () => null,
+          (err: unknown) => err as import("@/lib/saved-card-charge-attempt").SavedCardChargeRefusedError,
+        );
+        expect(refusal).toMatchObject({ why: "superseded_capture_returning", paymentIntentId: superseded, supersededIntentsToHandOff: [superseded] });
+
+        // What every refusing saved-card door does after the rollback.
+        const { handOffSupersededCaptureAfterRefusal } = await import("@/lib/superseded-paid-intent");
+        await handOffSupersededCaptureAfterRefusal(refusal!);
+        expect((await supersededOperations(superseded)).map((row) => row.type)).toContain(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
+
+        await expect(nextChargeAttempt()).resolves.toMatchObject({ kind: "fresh" });
+      });
+    }
   });
 
   for (const door of ["the pay step", "the /pay link"] as const) {

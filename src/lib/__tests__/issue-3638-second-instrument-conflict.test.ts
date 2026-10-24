@@ -1264,6 +1264,51 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       expect(holds.refundStopped.has(intent)).toBe(true);
     });
 
+    // The owed-again branch (#4221's failed-later rows): X's superseded refund
+    // SUCCEEDED, Stripe failed it later, and failed-later rows owe it back again.
+    describe("owed back again after a refund Stripe failed later", () => {
+      const succeededRefund = () =>
+        op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.SUCCEEDED, attempts: 1, nextRetryAt: null });
+      const failedLater = (refundId: string, amountCents: number, overrides: Partial<Operation> = {}) =>
+        op(PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION, {
+          idempotencyKey: `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}${refundId}`,
+          paymentTransactionId: null,
+          amountCents,
+          allocationPlan: [{ paymentTransactionId: X.id, amountCents }],
+          ...overrides,
+        });
+      const half = Math.floor(X.amountCents / 2);
+
+      it("a failed-later row running and owing it back in full: in flight", async () => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_full", X.amountCents)]);
+        expect(holds.refundInFlight.has(intent)).toBe(true);
+        expect(holds.refundStopped.has(intent)).toBe(false);
+      });
+
+      it.each([
+        ["raised dead (PENDING, retries spent)", { attempts: 5 }],
+        ["failed with its retries spent", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null }],
+      ])("the same row %s: stopped, never in flight", async (_label, overrides) => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_dead", X.amountCents, overrides)]);
+        expect(holds.holdsForMember.has(intent)).toBe(true);
+        expect(holds.refundInFlight.has(intent)).toBe(false);
+        expect(holds.refundStopped.has(intent)).toBe(true);
+      });
+
+      it("half owed by a running row, half by a dead one: stopped - the running half is not all of it", async () => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_half_a", half), failedLater("re_half_b", X.amountCents - half, { attempts: 5 })]);
+        expect(holds.refundInFlight.has(intent)).toBe(false);
+        expect(holds.refundStopped.has(intent)).toBe(true);
+      });
+
+      it("half owed by a running row and nothing more: neither - it still holds money (the Xero reading agrees)", async () => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_half_only", half)]);
+        expect(holds.holdsForMember.has(intent)).toBe(false);
+        expect(holds.refundInFlight.has(intent)).toBe(false);
+        expect(holds.refundStopped.has(intent)).toBe(false);
+      });
+    });
+
     it("a capture only a cancel row names has no refund in flight or stopped", async () => {
       const holds = await holdsOf([op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)]);
       expect(holds.refundInFlight.has(intent)).toBe(false);

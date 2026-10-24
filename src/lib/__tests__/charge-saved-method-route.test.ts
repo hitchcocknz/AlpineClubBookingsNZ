@@ -922,7 +922,7 @@ describe("POST /api/payments/charge-saved-method", () => {
       expect(body).toMatchObject({ paymentIntentId: "pi_superseded" });
       expect(body.error).toMatch(/refund has not started yet/);
       expect(mockChargePaymentMethod).not.toHaveBeenCalled();
-      expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_superseded" }));
+      expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_superseded", supersededIntentsToHandOff: ["pi_superseded"] }));
     } finally {
       supersededDoor.owned.clear();
     }

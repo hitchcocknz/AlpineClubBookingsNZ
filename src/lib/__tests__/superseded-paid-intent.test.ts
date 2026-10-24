@@ -37,19 +37,26 @@ describe("isSupersededCaptureOfBooking", () => {
 });
 
 describe("handOffSupersededCaptureAfterRefusal", () => {
-  it("hands a waiting superseded capture to the doors' check", async () => {
-    mocks.getPaymentIntent.mockResolvedValue(intent());
-    await handOffSupersededCaptureAfterRefusal({ why: "superseded_capture_returning", paymentIntentId: "pi_1", bookingId: "b1" });
-    expect(mocks.queueSuperseded).toHaveBeenCalledWith(intent());
+  const refusal = (why: "captured_primary_exists" | "superseded_capture_returning" | "superseded_refund_stopped", ids: string[]) => ({
+    why,
+    bookingId: "b1",
+    supersededIntentsToHandOff: ids,
   });
 
-  it.each(["captured_primary_exists", "superseded_refund_stopped", "attempt_key_expired"])("leaves a %s refusal alone", async (why) => {
-    await handOffSupersededCaptureAfterRefusal({ why, paymentIntentId: "pi_1", bookingId: "b1" });
+  it("hands every waiting superseded capture to the doors' check, whichever refusal won", async () => {
+    mocks.getPaymentIntent.mockImplementation(async (id: string) => intent({ id }));
+    await handOffSupersededCaptureAfterRefusal(refusal("captured_primary_exists", ["pi_1", "pi_2"]));
+    expect(mocks.queueSuperseded.mock.calls.map(([arg]) => (arg as { id: string }).id)).toEqual(["pi_1", "pi_2"]);
+  });
+
+  it("hands off nothing when nothing is waiting", async () => {
+    await handOffSupersededCaptureAfterRefusal(refusal("superseded_refund_stopped", []));
     expect(mocks.getPaymentIntent).not.toHaveBeenCalled();
   });
 
-  it("never throws", async () => {
-    mocks.getPaymentIntent.mockRejectedValue(new Error("stripe down"));
-    await expect(handOffSupersededCaptureAfterRefusal({ why: "superseded_capture_returning", paymentIntentId: "pi_1", bookingId: "b1" })).resolves.toBeUndefined();
+  it("one failure does not stop the rest, and it never throws", async () => {
+    mocks.getPaymentIntent.mockRejectedValueOnce(new Error("stripe down")).mockImplementation(async (id: string) => intent({ id }));
+    await expect(handOffSupersededCaptureAfterRefusal(refusal("superseded_capture_returning", ["pi_1", "pi_2"]))).resolves.toBeUndefined();
+    expect(mocks.queueSuperseded.mock.calls.map(([arg]) => (arg as { id: string }).id)).toEqual(["pi_2"]);
   });
 });

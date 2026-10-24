@@ -142,7 +142,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `admin-superseded-capture-refused` alert sent, worded by booking status.
   The saved-card doors release their claim; the next attempt charges once the
   refund is in flight and owes back in full, and refuses until then (a dead
-  refund: a person must act).
+  refund: a person must act), the refusing door handing the capture off.
 - **The doors ask first** (`queueSupersededPaymentIntentRefundRecovery`, given
   the intent; a lost claim asks the reading again): the webhook,
   `confirm-payment` and the `/pay` link (its `paidPaymentIntentId`) also for

@@ -1710,6 +1710,16 @@ next attempt finds an unresolved (PENDING/PROCESSING) attempt row:
                                   PROCESSING and IS the answer (never charged beside)
 next attempt finds a PRIMARY row still holding captured cash -> REFUSED
   (`SavedCardChargeRefusedError`: claim rolls back, admins alerted, no charge)
+  ... unless the superseded machinery owns it (#4300, `INV-PAY-138`; every row
+  is read first, and real money taken - or a capture owed back only in part -
+  is `captured_primary_exists` whatever else is found):
+    its refund in flight, owing back in full   -> not money taken: charge as usual
+    only its cancel row names it              -> REFUSED (`superseded_capture_returning`)
+    its refund dead (retries spent)            -> REFUSED (`superseded_refund_stopped`,
+                                                  a person acts: Refunds owed / Stuck States)
+  after the rollback the refusing door hands every capture only a cancel row
+  names to its refund (`handOffSupersededCaptureAfterRefusal`), so the next
+  attempt charges
 `payment_intent.succeeded` / `.payment_failed` for an intent the ledger does not know
   -> adopt the PENDING no-intent attempt row whose `reference` equals the event's
      `request.idempotency_key`, settle it, then handle as usual (lost-response recovery)

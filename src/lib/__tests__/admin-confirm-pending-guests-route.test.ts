@@ -1178,7 +1178,7 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
       expect(res.status).toBe(409);
       expect(body.error).toMatch(/refund has not started yet/);
       expect(mocks.chargePaymentMethod).not.toHaveBeenCalled();
-      expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_superseded" }));
+      expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_superseded", supersededIntentsToHandOff: ["pi_superseded"] }));
       expect(mocks.createStructuredAuditLog).toHaveBeenCalledWith(
         expect.objectContaining({ metadata: expect.objectContaining({ outcome: "charge_refused_superseded_capture_returning" }) }),
       );

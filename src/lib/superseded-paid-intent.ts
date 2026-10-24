@@ -14,6 +14,7 @@
 import { queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
 import { getPaymentIntent } from "@/lib/stripe";
 import logger from "@/lib/logger";
+import type { SavedCardChargeRefusedError } from "@/lib/saved-card-charge-attempt";
 
 export async function isSupersededCaptureOfBooking(paymentIntentId: string, bookingId: string): Promise<boolean> {
   const paid = await getPaymentIntent(paymentIntentId).catch(() => null);
@@ -22,17 +23,21 @@ export async function isSupersededCaptureOfBooking(paymentIntentId: string, book
 }
 
 /**
- * #4300: after a saved-card door refused as `superseded_capture_returning`
- * (the claim transaction rolled back, so outside it), hand the capture to its
- * refund through the doors' own check - a dead cancel row would otherwise
- * leave it waiting for ever. Best-effort; never throws.
+ * #4300: after a saved-card door refused (the claim transaction rolled back, so
+ * outside it), hand every superseded capture with no refund started to its
+ * refund through the doors' own check - whichever refusal won, and a dead
+ * cancel row included, which would otherwise leave it waiting for ever.
+ * Best-effort, one at a time; never throws.
  */
-export async function handOffSupersededCaptureAfterRefusal(refusal: { why: string; paymentIntentId: string | null; bookingId: string }): Promise<void> {
-  if (refusal.why !== "superseded_capture_returning" || !refusal.paymentIntentId) return;
-  try {
-    const paid = await getPaymentIntent(refusal.paymentIntentId);
-    if (paid.status === "succeeded") await queueSupersededPaymentIntentRefundRecovery(paid);
-  } catch (err) {
-    logger.error({ err, bookingId: refusal.bookingId, paymentIntentId: refusal.paymentIntentId }, "Could not hand a waiting superseded capture to its refund after a saved-card refusal; the next attempt asks again (#4300)");
+export async function handOffSupersededCaptureAfterRefusal(
+  refusal: Pick<SavedCardChargeRefusedError, "why" | "bookingId" | "supersededIntentsToHandOff">,
+): Promise<void> {
+  for (const paymentIntentId of refusal.supersededIntentsToHandOff) {
+    try {
+      const paid = await getPaymentIntent(paymentIntentId);
+      if (paid.status === "succeeded") await queueSupersededPaymentIntentRefundRecovery(paid);
+    } catch (err) {
+      logger.error({ err, bookingId: refusal.bookingId, why: refusal.why, paymentIntentId }, "Could not hand a waiting superseded capture to its refund after a saved-card refusal; the next attempt asks again (#4300)");
+    }
   }
 }
