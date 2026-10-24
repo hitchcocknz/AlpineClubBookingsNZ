@@ -151,7 +151,7 @@ export function additionalPaymentReminderTemplate(params: {
       { label: "Check-out", value: emailCalendarDay(params.checkOut) },
     ])}
     ${alertBox(
-      "Open your booking and complete the outstanding payment. If you have already paid, or think this is wrong, contact the club.",
+      "Open your booking and complete the outstanding payment. If you have already paid, or you think this is wrong, please contact the club.",
       "warning",
     )}
     ${button("Pay Now", BASE_URL + "/bookings")}

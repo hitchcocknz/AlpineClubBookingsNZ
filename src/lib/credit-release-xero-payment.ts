@@ -134,7 +134,10 @@ export async function recordCreditReleasePayments(
         },
       ],
     },
-    select: { id: true, transactions: { where: { reason: CREDIT_RELEASE_ASK_REASON }, select: { id: true } } },
+    select: {
+      id: true,
+      transactions: { where: { reason: CREDIT_RELEASE_ASK_REASON }, orderBy: [...LEDGER_ROWS_OLDEST_FIRST], select: { id: true } },
+    },
     orderBy: { createdAt: "asc" },
     take: CREDIT_RELEASE_PAYMENT_CANDIDATES,
   });

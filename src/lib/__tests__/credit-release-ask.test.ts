@@ -36,7 +36,8 @@ vi.mock("@/lib/payment-transactions", () => ({
   lockPaymentForRefundedTotal: mocks.lockPayment,
 }));
 vi.mock("@/lib/credit-release-ask-close", () => ({ recordReleasePaidInXeroCash: mocks.paidCash }));
-vi.mock("@/lib/booking-payment-cleanup", () => ({
+vi.mock("@/lib/booking-payment-cleanup", async () => ({
+  ...((await vi.importActual("@/lib/booking-payment-cleanup")) as typeof import("@/lib/booking-payment-cleanup")),
   queueSupersededAdditionalIntentCancellationRows: mocks.queueSuperseded,
   cancelSupersededAdditionalIntentsNow: mocks.cancelSuperseded,
 }));
@@ -46,7 +47,7 @@ vi.mock("@/lib/ended-booking-ask-guard", () => ({
 }));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers: mocks.alertOfficers }));
 
-import { processCreditReleaseAskOperation } from "@/lib/credit-release-ask";
+import { processCreditReleaseAskOperation, type CreditReleaseAskRunnerDeps } from "@/lib/credit-release-ask";
 import {
   buildCreditReleaseAskRecoveryIdempotencyKey,
   buildCreditReleaseAskStripeIdempotencyKey,
@@ -112,6 +113,8 @@ const runnerDeps = () => ({
   complete: vi.fn().mockResolvedValue(undefined),
 });
 
+const asDeps = (d: ReturnType<typeof runnerDeps>) => d as unknown as CreditReleaseAskRunnerDeps;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.prisma.memberCredit.findUnique.mockResolvedValue(release);
@@ -128,7 +131,7 @@ beforeEach(() => {
 async function run(over: { deps?: ReturnType<typeof runnerDeps>; balance?: unknown } = {}) {
   const deps = over.deps ?? runnerDeps();
   const read = vi.fn().mockResolvedValue(over.balance ?? open);
-  await processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, deps, read);
+  await processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), read);
   return { deps, read };
 }
 
@@ -174,7 +177,7 @@ describe("processCreditReleaseAskOperation", () => {
       payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_edit", amountCents: 32_000 }),
     );
     mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: "edit_price_increase" });
-    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, runnerDeps(), vi.fn().mockResolvedValue(open))).rejects.toThrow(
+    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(runnerDeps()), vi.fn().mockResolvedValue(open))).rejects.toThrow(
       /unpaid edit request/,
     );
     expect(mocks.createIntent).not.toHaveBeenCalled();
@@ -240,14 +243,14 @@ describe("processCreditReleaseAskOperation", () => {
     it("when the booking's invoice is not in Xero yet", async () => {
       mocks.prisma.payment.findUnique.mockResolvedValue(payment({ xeroInvoiceId: null }));
       const deps = runnerDeps();
-      await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, deps, vi.fn())).rejects.toThrow(/not in Xero yet/);
+      await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), vi.fn())).rejects.toThrow(/not in Xero yet/);
       expect(deps.complete).not.toHaveBeenCalled();
     });
 
     it.each(["VOIDED", "DRAFT", ""])("when Xero shows the invoice as %j", async (status) => {
       const deps = runnerDeps();
       await expect(
-        processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, deps, vi.fn().mockResolvedValue({ ...open, status })),
+        processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), vi.fn().mockResolvedValue({ ...open, status })),
       ).rejects.toThrow(/cannot be recorded against it/);
       expect(deps.complete).not.toHaveBeenCalled();
       expect(mocks.createIntent).not.toHaveBeenCalled();
@@ -256,7 +259,7 @@ describe("processCreditReleaseAskOperation", () => {
     it("when Xero cannot be read", async () => {
       const deps = runnerDeps();
       await expect(
-        processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, deps, vi.fn().mockRejectedValue(new Error("timeout"))),
+        processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), vi.fn().mockRejectedValue(new Error("timeout"))),
       ).rejects.toThrow("timeout");
       expect(deps.complete).not.toHaveBeenCalled();
     });
@@ -284,7 +287,7 @@ describe("processCreditReleaseAskOperation", () => {
     mocks.prisma.payment.findUnique.mockResolvedValue(read);
     store.payment.findUnique.mockResolvedValue({ ...read, ...moved });
     const deps = runnerDeps();
-    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, deps, vi.fn().mockResolvedValue(open))).rejects.toThrow(/changed while/);
+    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), vi.fn().mockResolvedValue(open))).rejects.toThrow(/changed while/);
     expect(mocks.upsert).not.toHaveBeenCalled();
     expect(deps.complete).not.toHaveBeenCalled();
   });
@@ -300,6 +303,6 @@ describe("processCreditReleaseAskOperation", () => {
 
   it("rejects a key that names no release", async () => {
     const bad = { ...(operation as object), idempotencyKey: "something_else" } as never;
-    await expect(processCreditReleaseAskOperation(bad, CLUB_FORMAT_TEST, runnerDeps(), vi.fn())).rejects.toThrow(/no release id/);
+    await expect(processCreditReleaseAskOperation(bad, CLUB_FORMAT_TEST, asDeps(runnerDeps()), vi.fn())).rejects.toThrow(/no release id/);
   });
 });

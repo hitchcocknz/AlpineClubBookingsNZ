@@ -69,7 +69,7 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   },
   "additional-payment-reminder": {
     "defaultSubject": "Payment Still Needed - {{CLUB_LODGE_NAME}}",
-    "defaultBody": "Payment Still Needed\n\nHi {{firstName}}, a change to your lodge booking increased the total, and the extra amount has not been paid yet.\n\nAmount still to pay: {{additionalAmount}}\nRequested on: {{requestedOn}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nOpen your booking and complete the outstanding payment. If you have already paid, or think this is wrong, contact the club.\n\nPay Now: {{BASE_URL}}/bookings"
+    "defaultBody": "Payment Still Needed\n\nHi {{firstName}}, a change to your lodge booking increased the total, and the extra amount has not been paid yet.\n\nAmount still to pay: {{additionalAmount}}\nRequested on: {{requestedOn}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nOpen your booking and complete the outstanding payment. If you have already paid, or you think this is wrong, please contact the club.\n\nPay Now: {{BASE_URL}}/bookings"
   },
   "credit-released-payment-request": {
     "defaultSubject": "Payment needed for your lodge booking",

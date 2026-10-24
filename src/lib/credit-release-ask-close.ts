@@ -95,6 +95,7 @@ export async function closeCreditReleaseAsksPaidInXero(
   });
 
   for (const payment of payments) {
+    if (!payment.additionalPaymentIntentId) continue;
     const ask = await prisma.paymentTransaction.findFirst({
       where: {
         paymentId: payment.id,

@@ -59,7 +59,7 @@ function deps(balance = paid, cancel: unknown = { canceled: true, paymentIntent:
   return {
     readInvoiceBalance: vi.fn().mockResolvedValue(balance),
     cancelIntent: vi.fn().mockResolvedValue(cancel),
-  } as never;
+  };
 }
 
 beforeEach(() => {
