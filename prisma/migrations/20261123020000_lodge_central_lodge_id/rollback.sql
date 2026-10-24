@@ -10,7 +10,7 @@
 -- central server on every pull, so the next download restores them).
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
--- 20261121020000 as APPLIED, so `prisma migrate deploy` skips it and the
+-- 20261123020000 as APPLIED, so `prisma migrate deploy` skips it and the
 -- release would fail on the missing columns. Re-apply migration.sql BY HAND
 -- before the release serves traffic.
 

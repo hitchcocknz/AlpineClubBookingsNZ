@@ -7,7 +7,7 @@
 -- run from each start to the other's start again.
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
--- 20261121060000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
+-- 20261123060000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
 -- migration.sql BY HAND before the release serves traffic; the next
 -- whole-registry download refills the end dates other clubs set.
 

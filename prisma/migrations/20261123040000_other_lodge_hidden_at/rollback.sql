@@ -17,7 +17,7 @@
 -- AND v."id" <> o."id");
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
--- 20261121040000 as APPLIED, so `prisma migrate deploy` skips it and the
+-- 20261123040000 as APPLIED, so `prisma migrate deploy` skips it and the
 -- release would fail on the missing column. Re-apply migration.sql BY HAND
 -- before the release serves traffic.
 

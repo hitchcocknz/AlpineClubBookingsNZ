@@ -7,7 +7,7 @@
 -- stay as they are and become hand-edited values again.
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
--- 20261121070000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
+-- 20261123070000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
 -- migration.sql BY HAND before the release serves traffic.
 
 ALTER TABLE "OtherLodge" DROP COLUMN IF EXISTS "ratesFromFees";

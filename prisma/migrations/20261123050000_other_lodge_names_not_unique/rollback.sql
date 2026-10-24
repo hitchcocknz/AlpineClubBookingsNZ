@@ -13,7 +13,7 @@
 -- v."id" <> o."id") ORDER BY "name";
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
--- 20261121050000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
+-- 20261123050000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
 -- migration.sql BY HAND before the release serves traffic.
 
 DROP INDEX IF EXISTS "OtherLodge_name_idx";
