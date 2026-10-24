@@ -137,7 +137,10 @@ describe("the queue payload's reviewGuestRemovedSinceRaised", () => {
   });
 
   it("is false where the booking's guests were not read, and on a hand-back", () => {
-    const { guests: _unread, ...bookingWithoutGuests } = row.booking;
+    const bookingWithoutGuests: Omit<typeof row.booking, "guests"> & { guests?: undefined } = {
+      ...row.booking,
+      guests: undefined,
+    };
     expect(
       toOpenManualRefundTaskPayload({ ...row, booking: bookingWithoutGuests }, null, [])
         .reviewGuestRemovedSinceRaised,
