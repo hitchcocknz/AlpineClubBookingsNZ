@@ -156,6 +156,7 @@ import {
 } from "@/lib/booking-money-lines";
 import {
   additionalPaymentReminderTemplate,
+  creditReleasedPaymentRequestTemplate,
   checkinReminderTemplate,
   preArrivalReminderTemplate,
   wholeLodgeGuestNamesReminderTemplate,
@@ -782,6 +783,8 @@ const GENERATED_CASES: EmailRenderCase[] = [
     preArrivalReminderTemplate({ firstName: "firstName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, expectedArrivalTime: "expectedArrivalTime-5", lodgeTravelNote: "lodgeTravelNote-6", doorCode: "doorCode-7", outstandingAdditionalAmountCents: 108, checkoutChoreNote: "checkoutChoreNote-9" }, CLUB_FORMAT_TEST) },
   { id: "additionalPaymentReminderTemplate:minimal", fn: "additionalPaymentReminderTemplate", render: () =>
     additionalPaymentReminderTemplate({ firstName: "firstName-1", additionalAmountCents: 102, checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), requestedOn: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
+  { id: "creditReleasedPaymentRequestTemplate:minimal", fn: "creditReleasedPaymentRequestTemplate", render: () =>
+    creditReleasedPaymentRequestTemplate({ firstName: "firstName-1", additionalAmountCents: 102, checkIn: new Date("2026-03-04T00:00:00.000Z"), checkOut: new Date("2026-03-05T00:00:00.000Z"), requestedOn: new Date("2026-03-06T00:00:00.000Z") }, CLUB_FORMAT_TEST) },
   { id: "adminNewBookingTemplate:minimal", fn: "adminNewBookingTemplate", render: () =>
     adminNewBookingTemplate({ memberName: "memberName-1", checkIn: new Date("2026-03-03T00:00:00.000Z"), checkOut: new Date("2026-03-04T00:00:00.000Z"), guestCount: 104, totalCents: 105, status: "status-6" }, CLUB_FORMAT_TEST) },
   { id: "adminNewBookingTemplate:full", fn: "adminNewBookingTemplate", render: () =>

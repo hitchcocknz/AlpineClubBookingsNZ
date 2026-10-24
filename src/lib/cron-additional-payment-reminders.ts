@@ -268,6 +268,7 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
         checkOut: booking.checkOut,
         requestedOn: episodeStartedAt,
         lodgeId: booking.lodgeId,
+        askReason: booking.payment?.transactions[0]?.reason ?? null,
       }, format);
 
       if (outcome.status !== "sent") {
@@ -448,7 +449,7 @@ const CHASE_BOOKING_INCLUDE = {
       createdAt: true,
       transactions: {
         where: { kind: "ADDITIONAL" },
-        select: { createdAt: true },
+        select: { createdAt: true, reason: true },
         // A mutable copy, typed as Prisma takes it: `as const` below would
         // otherwise make the spread a readonly tuple.
         orderBy: [...LEDGER_ROWS_NEWEST_FIRST] as Prisma.PaymentTransactionOrderByWithRelationInput[],
@@ -504,6 +505,7 @@ function resolveChaseFor(params: {
     episodeStartedAt,
     reminderSentAt: payment.additionalReminderSentAt,
     finalReminderSentAt: payment.additionalFinalReminderSentAt,
+    askReason: payment.transactions[0]?.reason ?? null,
     chaseStartsAt: params.chaseStartsAt,
   });
   if (!kind) return null;

@@ -399,6 +399,20 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        // #4253. The fifth task of the same cycle: asks members for credit released
+        // after a credit note was spent in Xero, records the card payment in Xero,
+        // and closes a request Xero shows paid.
+        jobName: "credit-release-asks",
+        label: "Released credit payment requests",
+        schedule: "*/15 * * * *",
+        timezone: clubTimeZone,
+        expectedLocalTime: `Every 15 minutes in ${clubTimeZone}`,
+        staleAfterMinutes: FIFTEEN_MINUTE_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "xero-membership-refresh",
         label: "Xero membership refresh",
         schedule: "0 2 * * *",

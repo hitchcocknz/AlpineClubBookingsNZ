@@ -279,6 +279,7 @@ describe("admin cron health", () => {
       "internet-banking-hold-release",
       "xero-waiting-invoice-reaper",
       "late-capture-held-alert",
+      "credit-release-asks",
     ]) {
       expect(
         definitions.find((definition) => definition.jobName === jobName)

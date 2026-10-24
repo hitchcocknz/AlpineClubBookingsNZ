@@ -90,6 +90,11 @@ const paymentsCycleTasks = vi.hoisted(() => ({
   releaseExpiredInternetBankingHolds: vi.fn(),
   reapStaleWaitingPaymentXeroOutboxOperations: vi.fn(),
   reannounceHeldLateCaptures: vi.fn(),
+  runCreditReleaseAskSweep: vi.fn(),
+}));
+
+vi.mock("@/lib/credit-release-ask-sweep", () => ({
+  runCreditReleaseAskSweep: paymentsCycleTasks.runCreditReleaseAskSweep,
 }));
 
 vi.mock("@/lib/payment-recovery", () => ({
@@ -446,6 +451,7 @@ describe("OBS-03: cron job run recording", { timeout: 30_000 }, () => {
       new Error("hold release unavailable")
     );
     paymentsCycleTasks.reannounceHeldLateCaptures.mockResolvedValue({ checked: 0, announced: 0 });
+    paymentsCycleTasks.runCreditReleaseAskSweep.mockResolvedValue({ enqueued: 0, payments: null, closes: null });
     paymentsCycleTasks.reapStaleWaitingPaymentXeroOutboxOperations.mockResolvedValue({
       reaped: 0,
       released: 0,
@@ -475,6 +481,7 @@ describe("OBS-03: cron job run recording", { timeout: 30_000 }, () => {
       }),
       expect.objectContaining({ jobName: "xero-waiting-invoice-reaper", status: "SUCCESS" }),
       expect.objectContaining({ jobName: "late-capture-held-alert", status: "SUCCESS" }),
+      expect.objectContaining({ jobName: "credit-release-asks", status: "SUCCESS" }),
     ]);
   });
 
