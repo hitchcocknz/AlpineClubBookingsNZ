@@ -18,6 +18,7 @@
  * `xero-canonical-refund-note-void-race.realdb.test.ts`; it owns and cleans its
  * own `race-4288-` fixtures.
  */
+import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
@@ -144,7 +145,7 @@ function reading(status: string, updatedAt: string) {
     }
 
     /** The link write the inbound reconcile sends for a reading, on the caller's transaction or its own. */
-    async function writeReading(kase: Case, status: string, updatedAt: string, store?: import("@prisma/client").Prisma.TransactionClient) {
+    async function writeReading(kase: Case, status: string, updatedAt: string, store?: Prisma.TransactionClient) {
       const { upsertXeroObjectLink } = await import("@/lib/xero-sync");
       const { xeroCreditNoteSnapshotMetadata } = await import("@/lib/xero-refund-note-status");
       return upsertXeroObjectLink(
