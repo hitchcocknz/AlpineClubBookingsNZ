@@ -1,3 +1,4 @@
+import { buildUnpaidFinishedStaysWhere } from "@/lib/unpaid-finished-stays";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { BookingRequestStatus } from "@prisma/client";
 
@@ -201,14 +202,7 @@ describe("getAdminPendingCounts", () => {
     // Unpaid finished stays (#1709/#1731): mirrors the dashboard attention
     // card via the shared src/lib/unpaid-finished-stays.ts predicate.
     expect(mocks.bookingCount).toHaveBeenCalledWith({
-      where: {
-        deletedAt: null,
-        checkOut: { lte: CLUB_DAY },
-        OR: [
-          { status: "PAYMENT_PENDING" },
-          { status: "CONFIRMED", wholeLodgeHold: true, payment: null },
-        ],
-      },
+      where: buildUnpaidFinishedStaysWhere(CLUB_DAY),
     });
     // Unsettled finished-stay additions (#1723 path 2): mirrors the sibling
     // dashboard card via the same shared module. Statuses deliberately

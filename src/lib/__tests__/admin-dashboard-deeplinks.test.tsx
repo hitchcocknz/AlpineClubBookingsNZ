@@ -1,3 +1,4 @@
+import { buildUnpaidFinishedStaysWhere } from "@/lib/unpaid-finished-stays";
 import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -191,18 +192,12 @@ describe("admin dashboard deep links", () => {
     expect(html).toContain("3 bookings still payment pending after check-out");
 
     // The count uses the finished-stay predicate (#1709): still owing its price
-    // (PAYMENT_PENDING, or #4019's approved whole-lodge booking with no Payment
-    // row) with check-out on or before NZ today, excluding soft-deleted bookings.
+    // (including #4019's abandoned uncaptured card attempts), bounded by today.
+    // Assert dashboard wiring to the canonical query; its evidence cases live
+    // in unpaid-finished-stays.test.ts rather than duplicating the definition.
     expect(vi.mocked(prisma.booking.count).mock.calls).toContainEqual([
       {
-        where: {
-          deletedAt: null,
-          checkOut: { lte: getTodayDateOnly(ENVIRONMENT_CLUB_ZONE) },
-          OR: [
-            { status: "PAYMENT_PENDING" },
-            { status: "CONFIRMED", wholeLodgeHold: true, payment: null },
-          ],
-        },
+        where: buildUnpaidFinishedStaysWhere(getTodayDateOnly(ENVIRONMENT_CLUB_ZONE)),
       },
     ]);
   });
