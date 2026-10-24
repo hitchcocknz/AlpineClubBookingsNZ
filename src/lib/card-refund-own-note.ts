@@ -13,7 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 
 /**
- * #4312 (owner decision 24 Oct 2026, `INV-ADDPAY-045`): THE WRITERS' SIDE of a
+ * #4312 (owner decision 24 Oct 2026, `INV-ADDPAY-047`): THE WRITERS' SIDE of a
  * card refund's own note on a bank-transfer payment (the record's side, and
  * the rule, are `card-refund-own-note-share.ts`). Three writers used to fold
  * such a refund into the payment's canonical note - a refund request's card
@@ -181,7 +181,7 @@ export async function replayNotingEachRefund<T>(
 }
 
 /**
- * #4312 round 7 (#4104, `INV-ADDPAY-045`): THE ONE RULE for a refund an app
+ * #4312 round 7 (#4104, `INV-ADDPAY-047`): THE ONE RULE for a refund an app
  * door other than an approved refund request made, on a bank transfer (a late
  * capture's is its capture's note's, whichever writer meets it). A refund the
  * recovery replay sent again for

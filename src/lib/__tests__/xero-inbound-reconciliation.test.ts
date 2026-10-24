@@ -5636,6 +5636,14 @@ describe("processStoredXeroInboundEvents", () => {
         status: "SUCCEEDED",
       },
     ]);
+    // #4288: the payment holds the note's refund-note row, so the recount decides under its Payment row lock.
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $executeRaw: vi.fn(async () => 1),
+        xeroObjectLink: { findMany: mocks.linkFindMany },
+        payment: { findFirst: vi.fn(async () => ({ id: "pay_void_1" })), updateMany: mocks.paymentUpdateMany },
+      }),
+    );
     const accountingApi = {
       getCreditNote: vi.fn().mockResolvedValue({
         body: {
@@ -6705,6 +6713,8 @@ describe("processStoredXeroInboundEvents", () => {
         xeroObjectId: "cn_credit_delete_alloc",
         metadata: { total: 97, status: "AUTHORISED" },
       }])
+      .mockResolvedValueOnce([])
+      // #4288: the recount's own read of the note's refund-note rows (none: an account-credit note).
       .mockResolvedValueOnce([])
       // Provider allocations are now empty, but this still-active completion
       // link proves the note previously targeted inv_booking_1.

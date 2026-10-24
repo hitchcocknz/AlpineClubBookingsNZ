@@ -9,14 +9,14 @@
 // declared not-a-recovery-key, so a new recovery key cannot land unlabelled.
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
 export const BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX = "booking_cancel_refund_recovery_";
-export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX =
-  "capacity_claim_failed_refund_recovery_";
+export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX = "capacity_claim_failed_refund_recovery_";
 export const DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX = "duplicate_capture_";
 export const EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX =
   "edit_financial_review_refund_recovery_";
 export const ADDITIONAL_INTENT_RECOVERY_PREFIX = "payment_recovery_additional_intent_";
 export const EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX =
   "edit_financial_review_additional_intent_recovery_";
+export { CREDIT_RELEASE_ASK_RECOVERY_PREFIX } from "@/lib/credit-release-ask-keys"; // #4253
 /** An approved refund appeal's card refund (`enqueueRefundRequestRefundRecovery`). */
 export const REFUND_REQUEST_REFUND_RECOVERY_PREFIX = "refund_request_refund_";
 /** Cancelling a card payment request that was replaced or withdrawn. */

@@ -864,7 +864,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
      */
     handBackTaskId?: string;
     /**
-     * #4312 (`INV-ADDPAY-045`): the card refund (its `stripeRefundId`) on a
+     * #4312 (`INV-ADDPAY-047`): the card refund (its `stripeRefundId`) on a
      * bank-transfer payment this note answers. Keyed and sized on that refund
      * alone (`readCardRefundNoteShare`), as a close's note is on its record.
      */
@@ -975,7 +975,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
       // note already in Xero does not answer (`queuePaidAnotherWayXero`).
       noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
     } else if (options?.cardRefundId) {
-      // #4312 (`INV-ADDPAY-045`): sized by the refund alone, never the payment-wide gap.
+      // #4312 (`INV-ADDPAY-047`): sized by the refund alone, never the payment-wide gap.
       const share = await readCardRefundNoteShare(db, paymentId, options.cardRefundId);
       if (!share) throw new Error(`Refusing to queue a Xero refund note for payment ${paymentId}: its card refund ${options.cardRefundId} is not on this payment`);
       noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);

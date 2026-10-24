@@ -729,7 +729,9 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-042` | A voided bank-transfer refund note is undone once, then asked once |
 | `INV-ADDPAY-043` | A later bank-transfer hand-back gets its own note, sized on its task |
 | `INV-ADDPAY-044` | An edit's after-commit mint leaves no live ask on an ended booking |
-| `INV-ADDPAY-045` | A bank-transfer card refund gets its own note, keyed on its refund |
+| `INV-ADDPAY-045` | Credit released after a Xero offset is asked for once, by card |
+| `INV-ADDPAY-046` | A released-credit card payment is recorded on the booking's own invoice |
+| `INV-ADDPAY-047` | A bank-transfer card refund gets its own note, keyed on its refund |
 
 ## Analytics And Privacy
 

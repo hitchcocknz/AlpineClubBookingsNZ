@@ -548,7 +548,7 @@ export async function enqueueRefundRequestRefundRecovery({
   /** Slices frozen by the approve route BEFORE the inline Stripe refund (#1510). */
   allocationPlan?: RefundAllocationSlice[];
   /**
-   * #4312 (`INV-ADDPAY-045`): the approval queued no Xero note for this card
+   * #4312 (`INV-ADDPAY-047`): the approval queued no Xero note for this card
    * part (a bank-transfer payment), so the replay notes each refund it makes.
    * Recorded as the row's Stripe key prefix - the one the replay sends under
    * anyway - so a row an older approval wrote, which noted the part itself,
@@ -610,6 +610,7 @@ import {
   isOrganiserChildRefundKey,
   isRefundRequestRefundRecoveryKey,
 } from "./payment-recovery-keys";
+import { isCreditReleaseAskRecoveryKey } from "./credit-release-ask-keys";
 export {
   buildBookingCancellationRefundMetadata,
   buildBookingModificationRefundMetadata,
@@ -2130,7 +2131,7 @@ async function processBookingModificationRefundOperation(
   }
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
-  // #4312 (`INV-ADDPAY-045`): a bank transfer's approval left each refund's note to it - every refund made, on any outcome.
+  // #4312 (`INV-ADDPAY-047`): a bank transfer's approval left each refund's note to it - every refund made, on any outcome.
   // Round 7 (#4104): any other row notes a late capture's refund, and one its slice sent again for a failure noted on its
   // own record (the slice marked made with it) - `charge.refunded`'s rule for the same refund (`queueAnsweringRefundNotes`).
   const notesEachRefund = refundRequestRecoveryNotesEachRefund(operation);
@@ -2408,6 +2409,21 @@ async function processCreateAdditionalPaymentIntentOperation(
    * argument while the parser was left here. Fail-closed: null means "not a shape
    * this knows", and every use below tests for it.
    */
+  /**
+   * #4253: a credit-release request has no `BookingModification`, so it never
+   * reaches the replay below - that replay would read the unknown key as "a newer
+   * ask settled this" and close the debt, or mint beside a live edit's ask without
+   * carrying it. Its own module owns the whole branch (`INV-ADDPAY-045`).
+   */
+  if (isCreditReleaseAskRecoveryKey(operation.idempotencyKey)) {
+    const { processCreditReleaseAskOperation } = await import("@/lib/credit-release-ask");
+    await processCreditReleaseAskOperation(operation, format, {
+      holdClaim: holdAdditionalIntentRecoveryClaim,
+      complete: (operationId) => completePaymentRecoveryOperation(operationId),
+    });
+    return;
+  }
+
   const bookingModificationId =
     bookingModificationIdForAdditionalIntentRecoveryKey(
       operation.idempotencyKey,

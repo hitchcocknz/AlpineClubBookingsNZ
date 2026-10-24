@@ -506,7 +506,8 @@ re-run, never offered for retry, never re-minted beside (owner decision,
   booking page says the same.
 
 Pinned by `xero-operation-retry.test.ts`, `xero-operation-queue.test.ts`,
-`xero-operation-routes.test.ts`, `xero-operation-outbox.test.ts`,
+`xero-operation-routes.test.ts`, `xero-operations-panel-failed-default.test.tsx`,
+`xero-operation-outbox.test.ts`,
 `xero-booking-repair.test.ts`, `refunds-missing-credit-notes.test.ts`,
 `booking-provider-mismatches.test.ts`.
 

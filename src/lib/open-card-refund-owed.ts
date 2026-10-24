@@ -127,7 +127,7 @@ export function carriesCardRefundOperationMetadata(
 }
 
 /**
- * #4312 round 7 (#4104, `INV-ADDPAY-045`): WHICH REFUNDS STRIPE FAILED LATER A
+ * #4312 round 7 (#4104, `INV-ADDPAY-047`): WHICH REFUNDS STRIPE FAILED LATER A
  * REFUND WAS SENT AGAIN FOR, by the record the recovery replay keeps and by
  * nothing else. The replay sends a slice for its failures
  * (`cardRefundSliceFailedRefundIds`) and marks that slice with the refund

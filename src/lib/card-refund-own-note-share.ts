@@ -12,7 +12,7 @@ import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
 
 /**
- * #4312 (owner decision 24 Oct 2026, `INV-ADDPAY-045`): A CARD REFUND ON A
+ * #4312 (owner decision 24 Oct 2026, `INV-ADDPAY-047`): A CARD REFUND ON A
  * BANK-TRANSFER PAYMENT IS NOTED ON ITS OWN RECORD.
  *
  * An `INTERNET_BANKING` payment keeps one canonical refund note, for its first

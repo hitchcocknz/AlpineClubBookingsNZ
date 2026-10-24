@@ -527,7 +527,7 @@ describe("a slice's key generation, read from the refusals recorded for it (#410
   });
 });
 
-// #4312 round 7 (#4104, `INV-ADDPAY-045`): a replay Stripe answered in full marks each slice it sent for a refund
+// #4312 round 7 (#4104, `INV-ADDPAY-047`): a replay Stripe answered in full marks each slice it sent for a refund
 // Stripe failed later with the refund it made - the one record that pairs a re-send with its failures - and leaves
 // every other slice as it was. Round 8: compare-and-set on the plan it sent from, never on its hold of the row.
 describe("a re-send's slice is marked made on success (#4312 round 7)", () => {

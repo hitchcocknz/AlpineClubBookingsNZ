@@ -279,7 +279,7 @@ export function paidAnotherWayCloseNoteRowsWhere(paymentId: string, closeId: str
 }
 
 /**
- * #4312 (`INV-ADDPAY-045`): THE SAME QUESTION OF A CARD REFUND'S OWN NOTE ROWS
+ * #4312 (`INV-ADDPAY-047`): THE SAME QUESTION OF A CARD REFUND'S OWN NOTE ROWS
  * on a bank transfer - every refund-note create naming the refund, in any
  * status: by its payload (`cardRefundId`), or by its key
  * (`:card-refund:<id>:`, `cardRefundNoteKey`), which a previous release's

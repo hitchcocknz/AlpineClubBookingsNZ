@@ -49,7 +49,7 @@ describe("the bank-transfer recount hand-back pins stay wired into CI (#4230)", 
     expect(suite).toContain("that hand-made note voided in Xero and undone in turn");
   });
 
-  it("#4312's card refund note proofs (INV-ADDPAY-045) are imported by the race harness too", () => {
+  it("#4312's card refund note proofs (INV-ADDPAY-047) are imported by the race harness too", () => {
     const harness = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"), "utf8");
     expect(harness).toContain('import "./xero-bt-card-refund-notes.realdb.test";');
     const suite = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/xero-bt-card-refund-notes.realdb.test.ts"), "utf8");

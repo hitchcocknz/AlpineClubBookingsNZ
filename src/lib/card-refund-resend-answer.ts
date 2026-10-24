@@ -19,7 +19,7 @@ import { onPlanWhere } from "@/lib/refused-card-refund-retry";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
 
 /**
- * #4312 round 7 (#4104, `INV-ADDPAY-045`): A CARD REFUND SENT AGAIN FOR ONE
+ * #4312 round 7 (#4104, `INV-ADDPAY-047`): A CARD REFUND SENT AGAIN FOR ONE
  * STRIPE FAILED LATER IS ANSWERED BY THE FAILED REFUND'S OWN NOTE.
  *
  * A refund Stripe accepted and failed later keeps the note it took while it
@@ -96,7 +96,7 @@ export type RecordedResend = {
 };
 
 /**
- * #4312 round 8 (#4104, `INV-ADDPAY-045`): THE UNMARKED RE-SENDS ONE REFUND
+ * #4312 round 8 (#4104, `INV-ADDPAY-047`): THE UNMARKED RE-SENDS ONE REFUND
  * COULD BE STRIPE'S ANSWER TO - pure. A slice of an unclosed row, sent for
  * refunds Stripe failed later (`cardRefundSliceFailedRefundIds`), not marked
  * made yet, on the refund's charge for exactly its amount, of a row whose
@@ -135,7 +135,7 @@ export type ResendRecordedFirst = "none" | "replay" | "marked" | "ambiguous";
 type ResendStore = { paymentRefund: Pick<typeof prisma.paymentRefund, "findFirst">; paymentRecoveryOperation: Pick<typeof prisma.paymentRecoveryOperation, "findMany" | "updateMany"> };
 
 /**
- * #4312 round 8 (#4104, `INV-ADDPAY-045`): A RE-SEND `charge.refunded`
+ * #4312 round 8 (#4104, `INV-ADDPAY-047`): A RE-SEND `charge.refunded`
  * RECORDS BEFORE ITS SLICE IS MARKED. Stripe's `charge.refunded` can record
  * the refund the recovery replay sent again before the replay marks its slice
  * with it (`markResentSlices`) - the replay's answer was lost, or is still on

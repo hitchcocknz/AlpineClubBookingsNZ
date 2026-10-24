@@ -502,7 +502,7 @@ async function moveRefusedSlices(
 }
 
 /**
- * #4312 rounds 7-8 (#4104, `INV-ADDPAY-045`): EACH SLICE SENT FOR A REFUND
+ * #4312 rounds 7-8 (#4104, `INV-ADDPAY-047`): EACH SLICE SENT FOR A REFUND
  * STRIPE FAILED LATER (`cardRefundSliceFailedRefundIds`) THAT STRIPE MADE ON
  * THIS ATTEMPT IS MARKED WITH THE REFUND IT MADE (`madeRefundId`) - the one
  * record that pairs a re-send with its failures (`cardRefundFailuresAnsweredBy`),
