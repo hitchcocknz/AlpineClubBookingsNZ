@@ -121,7 +121,7 @@ export interface CardRefundNoteShare {
   amountCents: number;
   /** What its own notes already cover, counted as the payment's coverage counts them. */
   coveredCents: number;
-  /** Round 5 (#4104): what the own notes of the failed refunds it was sent again for cover (`readFailedRefundsAnsweredBy`). */
+  /** #4104: what the own notes of the failed refunds the recovery replay sent it again for cover (`readFailedRefundsAnsweredBy`). */
   answeredCents: number;
   uncoveredCents: number;
 }
@@ -135,7 +135,8 @@ type ShareReader = Pick<
  * WHAT A CARD REFUND'S OWN NOTE STILL HAS TO ANSWER: its amount less its own
  * notes' coverage (`sumRefundCreditNoteCoverageOfRowsCents`, as a close's
  * share is read), and less what the own notes of the refunds Stripe failed
- * later that it was sent again for cover (round 5, `readFailedRefundsAnsweredBy`:
+ * later that the recovery replay sent it again for cover - the slice the
+ * replay marked made with it, and nothing else (`readFailedRefundsAnsweredBy`:
  * #4104 left that note to answer it). It qualifies - a non-zero amount - only on a bank-transfer
  * payment, in a counted status (`isRecordedRefundStatus`: a refund Stripe
  * failed or cancelled paid nothing back), and made since the cutover. The

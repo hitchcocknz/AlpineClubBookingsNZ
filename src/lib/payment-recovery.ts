@@ -2131,8 +2131,8 @@ async function processBookingModificationRefundOperation(
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
   // #4312 (`INV-ADDPAY-045`): a bank transfer's approval left each refund's note to it - every refund made, on any outcome.
-  // Round 6 (#4104): any other row notes a refund it makes only where it answers a failure noted on its own record -
-  // `charge.refunded`'s rule for the same refund (`answersOwnNotedFailure`), so the two never disagree.
+  // Round 7 (#4104): any other row notes a late capture's refund, and one its slice sent again for a failure noted on its
+  // own record (the slice marked made with it) - `charge.refunded`'s rule for the same refund (`queueAnsweringRefundNotes`).
   const notesEachRefund = refundRequestRecoveryNotesEachRefund(operation);
   const notes = { paymentId: operation.paymentId, operationId: operation.id, notesEachRefund, plan };
   const refundId = await replayNotingEachRefund(notes, (send) => refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) =>

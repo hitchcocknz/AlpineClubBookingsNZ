@@ -22,6 +22,7 @@ vi.mock("@/lib/prisma", () => ({
 vi.mock("@/lib/xero-operation-outbox", () => ({ enqueueXeroRefundCreditNoteOperation: vi.fn() }));
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({ noteLateCaptureRefunds: vi.fn() }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({ findLateCapturePaymentIntents: vi.fn(async () => new Set()) }));
+vi.mock("@/lib/additional-capture-receipt-link", () => ({ findAdditionalCaptureReceiptInvoiceId: vi.fn(async () => null) }));
 vi.mock("@/lib/card-refund-resend-answer", () => ({ readFailedRefundsAnsweredBy: vi.fn() }));
 vi.mock("@/lib/card-refund-own-note-share", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/card-refund-own-note-share")),
@@ -31,6 +32,9 @@ vi.mock("@/lib/card-refund-own-note-share", async (importOriginal) => ({
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 import { queueAnsweringRefundNotes, queueWebhookCardRefundNotes, replayNotingEachRefund } from "@/lib/card-refund-own-note";
 import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
+import { findAdditionalCaptureReceiptInvoiceId } from "@/lib/additional-capture-receipt-link";
+import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
+import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 import { PaymentSource } from "@prisma/client";
 import { PartialRefundError } from "@/lib/payment-transactions";
@@ -90,7 +94,7 @@ describe("replayNotingEachRefund (#4312 review)", () => {
     // rethrowing it; when that write fails, the error the replay ends on carries no answers.
     vi.mocked(prisma.paymentRecoveryOperation.updateMany).mockRejectedValueOnce(new Error("database unavailable"));
     const queue = vi.fn().mockResolvedValue([]);
-    const operation = { id: "operation-1", processingStartedAt: new Date(0), bookingId: "booking-1", paymentIntentId: "pi_1" };
+    const operation = { id: "operation-1", idempotencyKey: "refund_request_refund_rr_1", processingStartedAt: new Date(0), bookingId: "booking-1", paymentIntentId: "pi_1" };
     const plan: Array<{ paymentTransactionId: string; amountCents: number; madeRefundId?: string }> = [{ paymentTransactionId: "txn_1", amountCents: 2_000 }, { paymentTransactionId: "txn_2", amountCents: 500 }];
     await expect(
       replayNotingEachRefund({ ...input(true), plan }, (send) =>
@@ -115,35 +119,81 @@ describe("replayNotingEachRefund (#4312 review)", () => {
   });
 });
 
-describe("one rule for a re-send's own note: the replay and charge.refunded agree (#4312 round 6, finding 3)", () => {
-  const answers = (ownNoted: Record<string, boolean>) =>
-    vi.mocked(readFailedRefundsAnsweredBy).mockImplementation(async (_db, _paymentId, id) => ({ failedRefundIds: ownNoted[id] ? ["re_failed"] : [], ownNoted: ownNoted[id] ?? false, coverCents: ownNoted[id] ? 4_000 : 0 }));
-  const appDoor = (id: string) => ({ id, amount: 4_000, metadata: { reason: "card_refund_failed_later", bookingId: "booking-1" } });
+describe("one rule for a re-send's own note: the replay and charge.refunded agree (#4312 round 7)", () => {
+  /** Which refunds the replay's record pairs with failures (`paired`), and whether one of those was noted on its own record. */
+  const answers = (paired: Record<string, { ownNoted: boolean }>) =>
+    vi.mocked(readFailedRefundsAnsweredBy).mockImplementation(async (_db, _paymentId, id) =>
+      paired[id] ? { failedRefundIds: ["re_failed"], ownNoted: paired[id].ownNoted, coverCents: paired[id].ownNoted ? 4_000 : 0 } : { failedRefundIds: [], ownNoted: false, coverCents: 0 },
+    );
+  const appDoor = (id: string, reason = "card_refund_failed_later") => ({ id, amount: 4_000, metadata: { reason, bookingId: "booking-1" } });
 
   /** Which refunds each writer asks for on its own record, and the canonical delta charge.refunded queues, for one refund. */
-  async function bothWriters(id: string) {
+  async function bothWriters(id: string, refund = appDoor(id)) {
     vi.mocked(enqueueXeroRefundCreditNoteOperation).mockReset().mockResolvedValue({ queueOperationId: "op" } as never);
     await queueAnsweringRefundNotes({ paymentId: "payment-1", stripeRefundIds: [id] });
     const replayOwn = vi.mocked(enqueueXeroRefundCreditNoteOperation).mock.calls.filter(([, , options]) => options?.cardRefundId === id).length;
     vi.mocked(enqueueXeroRefundCreditNoteOperation).mockClear();
-    await queueWebhookCardRefundNotes({ payment: { id: "payment-1", source: PaymentSource.INTERNET_BANKING }, deltaCents: 4_000, refunds: [appDoor(id)], newlyCountedRefundIds: [id] });
+    await queueWebhookCardRefundNotes({ payment: { id: "payment-1", source: PaymentSource.INTERNET_BANKING }, deltaCents: 4_000, refunds: [refund], newlyCountedRefundIds: [id] });
     const calls = vi.mocked(enqueueXeroRefundCreditNoteOperation).mock.calls;
     return { replayOwn, webhookOwn: calls.filter(([, , options]) => options?.cardRefundId === id).length, webhookCanonicalCents: calls.filter(([, , options]) => !options?.cardRefundId).reduce((sum, [, cents]) => sum + cents, 0) };
   }
 
-  it("MUTATION: a re-send the owed figure pairs with an own-noted failure: both writers ask for its own note, neither for the canonical delta", async () => {
-    answers({ re_s: true });
+  it("MUTATION: a re-send the replay marked for an own-noted failure: both writers ask for its own note, neither for the canonical delta", async () => {
+    answers({ re_s: { ownNoted: true } });
     expect(await bothWriters("re_s")).toEqual({ replayOwn: 1, webhookOwn: 1, webhookCanonicalCents: 0 });
   });
 
-  it("MUTATION: a re-send its row made that the owed figure pairs with nothing: neither writer asks for an own note - only the canonical delta, once", async () => {
-    // The 3A path: a runner asking by its key's failure would add an own note of $40 beside the webhook's canonical $40.
-    answers({ re_s: false });
-    expect(await bothWriters("re_s")).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 4_000 });
+  it("MUTATION: a re-send the replay marked for a failure that folded: its fold answers it - no note from either writer, nor a canonical delta", async () => {
+    answers({ re_s: { ownNoted: false } });
+    expect(await bothWriters("re_s")).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 0 });
+  });
+
+  it("MUTATION: a failed-later row's re-send charge.refunded records before the replay marks it is left to the replay - never the canonical delta", async () => {
+    answers({});
+    expect(await bothWriters("re_s")).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 0 });
+  });
+
+  it("another app door's refund no slice was sent again for stays in the canonical delta, as before", async () => {
+    answers({});
+    expect(await bothWriters("re_dup", appDoor("re_dup", "duplicate_capture"))).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 4_000 });
+  });
+
+  it("MUTATION: a dashboard refund gets its own note from charge.refunded, never sized by a pairing", async () => {
+    answers({ re_d: { ownNoted: true } });
+    vi.mocked(readFailedRefundsAnsweredBy).mockClear();
+    const { webhookOwn, webhookCanonicalCents } = await bothWriters("re_d", { id: "re_d", amount: 4_000, metadata: {} } as never);
+    expect({ webhookOwn, webhookCanonicalCents }).toEqual({ webhookOwn: 1, webhookCanonicalCents: 0 });
+  });
+
+  it("MUTATION (finding 4): the replay hands every late capture's refund it makes to the capture's note, as charge.refunded does", async () => {
+    answers({});
+    vi.mocked(findLateCapturePaymentIntents).mockResolvedValue(new Set(["pi_card"]));
+    vi.mocked(noteLateCaptureRefunds).mockClear();
+    try {
+      await queueAnsweringRefundNotes({ paymentId: "payment-1", stripeRefundIds: ["re_late"] });
+      expect(noteLateCaptureRefunds).toHaveBeenCalledWith({ paymentId: "payment-1", paymentIntentId: "pi_card" });
+    } finally {
+      vi.mocked(findLateCapturePaymentIntents).mockResolvedValue(new Set());
+    }
+  });
+
+  it("MUTATION (finding 5): every writer's own note names the invoice its capture's receipt paid, read from the refund", async () => {
+    answers({ re_s: { ownNoted: true } });
+    vi.mocked(findAdditionalCaptureReceiptInvoiceId).mockResolvedValue("invoice-capture");
+    try {
+      vi.mocked(enqueueXeroRefundCreditNoteOperation).mockReset().mockResolvedValue({ queueOperationId: "op" } as never);
+      await queueAnsweringRefundNotes({ paymentId: "payment-1", stripeRefundIds: ["re_s"] });
+      await queueWebhookCardRefundNotes({ payment: { id: "payment-1", source: PaymentSource.INTERNET_BANKING }, deltaCents: 4_000, refunds: [appDoor("re_s")], newlyCountedRefundIds: ["re_s"] });
+      const own = vi.mocked(enqueueXeroRefundCreditNoteOperation).mock.calls.filter(([, , options]) => options?.cardRefundId === "re_s");
+      expect(own.map(([, , options]) => options?.creditsInvoiceId)).toEqual(["invoice-capture", "invoice-capture"]);
+      expect(findAdditionalCaptureReceiptInvoiceId).toHaveBeenCalledWith("pi_card");
+    } finally {
+      vi.mocked(findAdditionalCaptureReceiptInvoiceId).mockResolvedValue(null);
+    }
   });
 
   it("asks nothing on a card payment", async () => {
-    answers({ re_s: true });
+    answers({ re_s: { ownNoted: true } });
     const { prisma } = await import("@/lib/prisma");
     vi.mocked(prisma.payment.findUnique).mockResolvedValueOnce({ source: "STRIPE" } as never);
     vi.mocked(enqueueXeroRefundCreditNoteOperation).mockReset();

@@ -1,11 +1,13 @@
 /**
- * #4312 rounds 5 and 6 (#4104, `INV-ADDPAY-045`): which refunds Stripe failed
- * later a card refund was sent again for (`readFailedRefundsAnsweredBy`) - the
- * owed figure's own attribution of the links #4104 keeps on the recovery row (a
- * row of its own's key, a re-planned slice's `failedRefundIds`), a failed
- * re-send's chain included - and what their own notes cover. Each round-6 case
- * also checks Xero's total against what went back (`xeroCoverAfterAsking`). The
- * real PostgreSQL proofs of each writer are `xero-bt-card-refund-notes.realdb.test.ts`.
+ * #4312 round 7 (#4104, `INV-ADDPAY-045`): which refunds Stripe failed later a
+ * card refund was sent again for (`readFailedRefundsAnsweredBy`) - by the
+ * replay's own record alone: the slice it sent for them (a row of its own's
+ * key, a re-planned slice's `failedRefundIds`), marked with the refund Stripe
+ * made (`madeRefundId`), a failed re-send's chain included - and what their own
+ * notes cover. A refund no slice is marked with answers nothing, whatever its
+ * charge, amount or time. Each case also checks Xero's total against what went
+ * back (`xeroCoverAfterAsking`). The real PostgreSQL proofs of each writer are
+ * `xero-bt-card-refund-notes.realdb.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,61 +23,39 @@ vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
 }));
 
 import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
-import { closeKeysOf } from "@/lib/manual-refund-task-settlement-rules";
 
 const PAYMENT = "payment-1";
 const TXN = "txn-card";
-const at = (seconds: number) => new Date(Date.UTC(2026, 9, 1, 0, 0, seconds));
 
-type Refund = {
-  stripeRefundId: string; paymentTransactionId: string | null; stripePaymentIntentId: string | null; amountCents: number; status: string;
-  createdAt: Date; updatedAt: Date; stripeCreatedAt: Date | null;
-};
-type Row = {
-  id: string; type: string; status: string; idempotencyKey: string; amountCents: number; allocationPlan: unknown;
-  paymentTransactionId: string | null; createdAt: Date; succeededAt: Date | null;
-};
+/** Who made a refund: the recovery replay (`replay`), or the treasurer in the Stripe dashboard (`dashboard`). */
+type Refund = { stripeRefundId: string; amountCents: number; status: string; stripePaymentIntentId: string | null; door: "replay" | "dashboard" };
+type Row = { idempotencyKey: string; allocationPlan: unknown };
 
 let refunds: Refund[];
 let rows: Row[];
-let closes: string[];
 let noteRows: Set<string>;
 
-/**
- * A $40 refund Stripe made at `seconds`, recorded then (or at `recordedSeconds`); a failed one failed at
- * `failedSeconds` (its ledger row's last write).
- */
-function refund(
-  id: string,
-  seconds: number,
-  status = "succeeded",
-  amountCents = 4_000,
-  failedSeconds?: number,
-  recordedSeconds = seconds,
-): Refund {
-  return {
-    stripeRefundId: id, paymentTransactionId: TXN, stripePaymentIntentId: "pi_card", amountCents, status,
-    createdAt: at(recordedSeconds), updatedAt: at(failedSeconds ?? recordedSeconds), stripeCreatedAt: at(seconds),
-  };
+function refund(id: string, status = "succeeded", door: Refund["door"] = "replay", amountCents = 4_000): Refund {
+  return { stripeRefundId: id, amountCents, status, stripePaymentIntentId: "pi_card", door };
 }
 
-/** A card refund row raised at `seconds` for one $40 slice; open unless `succeededSeconds` closes it. */
-function row(id: string, idempotencyKey: string, seconds: number, slice: Record<string, unknown> = {}, succeededSeconds?: number): Row {
-  return {
-    id, type: "REFUND_BOOKING_MODIFICATION", status: succeededSeconds === undefined ? "PENDING" : "SUCCEEDED", idempotencyKey, amountCents: 4_000,
-    allocationPlan: [{ paymentTransactionId: TXN, amountCents: 4_000, ...slice }], paymentTransactionId: null, createdAt: at(seconds),
-    succeededAt: succeededSeconds === undefined ? null : at(succeededSeconds),
-  };
+/** A card refund row with one $40 slice on the card charge. */
+function row(idempotencyKey: string, slice: Record<string, unknown> = {}): Row {
+  return { idempotencyKey, allocationPlan: [{ paymentTransactionId: TXN, amountCents: 4_000, ...slice }] };
+}
+
+/** A failed refund noted on its own record for `cents`. */
+function noted(id: string, cents = 4_000) {
+  noteRows.add(id);
+  coverByRefund.set(id, cents);
 }
 
 const db = {
-  payment: { findUnique: async () => ({ status: "SUCCEEDED", amountCents: 25_000, refundedAmountCents: 0 }) },
-  paymentRefund: { findMany: async () => refunds },
-  paymentRecoveryOperation: { findMany: async () => rows },
-  manualRefundTask: {
-    findMany: async ({ where }: { where: { occurrenceKey: { in: string[] } } }) =>
-      closes.filter((key) => where.occurrenceKey.in.includes(key)).map((occurrenceKey) => ({ occurrenceKey })),
+  paymentRefund: {
+    findFirst: async ({ where }: { where: { stripeRefundId: string } }) => refunds.find((each) => each.stripeRefundId === where.stripeRefundId) ?? null,
   },
+  paymentRecoveryOperation: { findMany: async () => rows },
+  manualRefundTask: {},
   xeroSyncOperation: { count: async ({ where }: { where: { OR: Array<{ requestPayload?: { equals: string } }> } }) => (noteRows.has(where.OR[0]!.requestPayload!.equals) ? 1 : 0) },
   xeroObjectLink: {},
 } as never;
@@ -83,15 +63,19 @@ const db = {
 const answered = (id: string) => readFailedRefundsAnsweredBy(db, PAYMENT, id);
 
 /**
- * What Xero holds once each refund still counted has been asked for by the one rule (`answersOwnNotedFailure`):
- * the notes already raised (`coverByRefund`), each answering refund's own note at its share (its amount less what
- * the failures it answers cover), and `canonicalCents` for what the canonical note answers.
+ * What Xero holds once every writer has asked: the failed refunds' own notes (`coverByRefund`), each dashboard
+ * refund's own note in full, each re-send's own note where it answers an own-noted failure, at its amount less what
+ * they cover (`readCardRefundNoteShare`), and `canonicalCents` for what the canonical note answers.
  */
 async function xeroCoverAfterAsking(canonicalCents = 0): Promise<number> {
   let cents = canonicalCents + [...coverByRefund.values()].reduce((sum, each) => sum + each, 0);
   for (const each of refunds.filter((refund) => refund.status === "succeeded")) {
+    if (each.door === "dashboard") {
+      cents += each.amountCents;
+      continue;
+    }
     const answer = await answered(each.stripeRefundId);
-    if (answer.ownNoted) cents += Math.max(0, each.amountCents - (coverByRefund.get(each.stripeRefundId) ?? 0) - answer.coverCents);
+    if (answer.ownNoted) cents += Math.max(0, each.amountCents - answer.coverCents);
   }
   return cents;
 }
@@ -101,130 +85,135 @@ const refundedCents = () => refunds.filter((refund) => refund.status === "succee
 beforeEach(() => {
   lateCaptures.clear();
   coverByRefund.clear();
-  noteRows = new Set(["re_failed"]);
-  coverByRefund.set("re_failed", 4_000);
-  closes = [];
-  refunds = [refund("re_failed", 5, "failed", 4_000, 10)];
-  rows = [row("op-own", "card_refund_failed_later_re_failed", 10)];
+  noteRows = new Set();
+  noted("re_failed");
+  refunds = [refund("re_failed", "failed")];
+  rows = [row("card_refund_failed_later_re_failed")];
 });
 
-describe("a card refund sent again for one Stripe failed later (#4312 round 5)", () => {
-  it("MUTATION: the refund its row's window takes after the failure, on its charge for its amount, answers it - with the failed refund's own note", async () => {
-    refunds.push(refund("re_before", 8), refund("re_other_amount", 15, "succeeded", 1_000), refund("re_resent", 20), refund("re_later", 30));
+describe("a card refund sent again for one Stripe failed later is paired by the replay's record (#4312 round 7)", () => {
+  it("MUTATION: the refund its row's slice is marked with answers the failure, with the failed refund's own note; no other refund does", async () => {
+    rows = [row("card_refund_failed_later_re_failed", { madeRefundId: "re_resent" })];
+    refunds.push(refund("re_resent"), refund("re_same_amount_dashboard", "succeeded", "dashboard"), refund("re_other_amount", "succeeded", "dashboard", 1_000));
     expect(await answered("re_resent")).toEqual({ failedRefundIds: ["re_failed"], ownNoted: true, coverCents: 4_000 });
-    // One refund answers it: a later one of the same amount, an earlier one, another amount - none.
-    for (const id of ["re_later", "re_before", "re_other_amount"]) expect(await answered(id)).toEqual({ failedRefundIds: [], ownNoted: false, coverCents: 0 });
-  });
-
-  it("MUTATION: two failures on one charge for one amount: each re-send answers one, newest row first, as the owed figure fills them", async () => {
-    rows.push(row("op-own-2", "card_refund_failed_later_re_failed_2", 12));
-    noteRows.add("re_failed_2");
-    coverByRefund.set("re_failed_2", 4_000);
-    refunds.push(refund("re_failed_2", 7, "failed", 4_000, 12), refund("re_resent", 20), refund("re_resent_2", 30));
-    expect((await answered("re_resent")).failedRefundIds).toEqual(["re_failed_2"]);
-    expect((await answered("re_resent_2")).failedRefundIds).toEqual(["re_failed"]);
+    for (const id of ["re_same_amount_dashboard", "re_other_amount"]) expect(await answered(id)).toEqual({ failedRefundIds: [], ownNoted: false, coverCents: 0 });
     expect(await xeroCoverAfterAsking()).toBe(refundedCents());
   });
 
-  it("MUTATION: a re-planned slice's failures - every one of them - are answered by the refund made after the latest", async () => {
-    rows = [row("op-request", "refund_request_refund_request-1", 1, { stripeKeySuffix: "refused2", failedRefundIds: ["re_failed", "re_failed_again"] })];
-    refunds.push(refund("re_failed_again", 20, "failed", 4_000, 25), refund("re_resent", 30));
+  it("MUTATION (finding 1): a dashboard refund made before the replay never takes the re-send's place - $80 in Xero for $80 refunded", async () => {
+    // The treasurer refunds $40 in the dashboard while the row of its own still waits; then the replay sends its slice.
+    refunds.push(refund("re_dashboard", "succeeded", "dashboard"));
+    expect((await answered("re_dashboard")).failedRefundIds).toEqual([]);
+    rows = [row("card_refund_failed_later_re_failed", { madeRefundId: "re_resent" })];
+    refunds.push(refund("re_resent"));
+    expect(await answered("re_resent")).toEqual({ failedRefundIds: ["re_failed"], ownNoted: true, coverCents: 4_000 });
+    expect(await xeroCoverAfterAsking()).toBe(8_000);
+    expect(refundedCents()).toBe(8_000);
+  });
+
+  it("before the replay marks its slice, its refund answers nothing; once marked, it answers - whoever recorded it first", async () => {
+    refunds.push(refund("re_resent"));
+    expect((await answered("re_resent")).failedRefundIds).toEqual([]);
+    rows = [row("card_refund_failed_later_re_failed", { madeRefundId: "re_resent" })];
+    expect((await answered("re_resent")).failedRefundIds).toEqual(["re_failed"]);
+  });
+
+  it("MUTATION: two failures on one charge for one amount: each re-send answers the failure its own slice was sent for", async () => {
+    noted("re_failed_2");
+    refunds.push(refund("re_failed_2", "failed"), refund("re_resent_2"), refund("re_resent"));
+    rows = [
+      row("card_refund_failed_later_re_failed", { madeRefundId: "re_resent" }),
+      row("card_refund_failed_later_re_failed_2", { madeRefundId: "re_resent_2" }),
+    ];
+    expect((await answered("re_resent")).failedRefundIds).toEqual(["re_failed"]);
+    expect((await answered("re_resent_2")).failedRefundIds).toEqual(["re_failed_2"]);
+    expect(await xeroCoverAfterAsking()).toBe(refundedCents());
+  });
+
+  it("MUTATION: a re-planned slice's failures - every one of them - are answered by the refund it is marked with", async () => {
+    rows = [row("refund_request_refund_request-1", { stripeKeySuffix: "refused2", failedRefundIds: ["re_failed", "re_failed_again"], madeRefundId: "re_resent" })];
+    refunds.push(refund("re_failed_again", "failed"), refund("re_resent"));
     expect(await answered("re_resent")).toEqual({ failedRefundIds: ["re_failed", "re_failed_again"], ownNoted: true, coverCents: 4_000 });
+    expect(await xeroCoverAfterAsking()).toBe(refundedCents());
   });
 
-  it("MUTATION: a slice marked made answers with that refund only", async () => {
-    rows = [row("op-own", "card_refund_failed_later_re_failed", 10, { madeRefundId: "re_marked" })];
-    refunds.push(refund("re_first", 20), refund("re_marked", 30));
-    expect((await answered("re_marked")).failedRefundIds).toEqual(["re_failed"]);
-    expect((await answered("re_first")).failedRefundIds).toEqual([]);
-  });
-
-  it("MUTATION (round 6, finding 1): a re-send Stripe failed too passes on what it answered - the next refund is answered by the first failure's note", async () => {
-    // R1 failed at 10 and was noted at $40; its row of its own sent S1 at 20 and closed; Stripe failed S1 at 25, so a
-    // row of its own owes S1 (raised dead: a re-send that failed too). The treasurer refunds in the dashboard at 30.
-    rows = [row("op-own", "card_refund_failed_later_re_failed", 10, {}, 20), row("op-own-s1", "card_refund_failed_later_re_s1", 25)];
-    // S1 was answered by R1's note, so its own ask raised nothing: no note row, no cover.
-    refunds.push(refund("re_s1", 20, "failed", 4_000, 25), refund("re_dashboard", 30));
-    expect(await answered("re_dashboard")).toEqual({ failedRefundIds: ["re_s1", "re_failed"], ownNoted: true, coverCents: 4_000 });
-    // Xero holds R1's $40 and nothing more: what went back.
+  it("MUTATION (chain of three): a re-send Stripe failed too passes on what it answered, through the slice marked with it", async () => {
+    // F0 is noted at $40. The request's row re-planned it and sent R1 (marked) and closed; Stripe failed R1, so a row of
+    // its own sent R2 (marked) and closed; Stripe failed R2 too, and a row of its own sent R3.
+    noteRows.clear();
+    coverByRefund.clear();
+    noted("re_f0");
+    refunds = [refund("re_f0", "failed"), refund("re_r1", "failed"), refund("re_r2", "failed"), refund("re_r3")];
+    rows = [
+      row("refund_request_refund_request-1", { stripeKeySuffix: "refused1", failedRefundIds: ["re_f0"], madeRefundId: "re_r1" }),
+      row("card_refund_failed_later_re_r1", { madeRefundId: "re_r2" }),
+      row("card_refund_failed_later_re_r2", { madeRefundId: "re_r3" }),
+    ];
+    expect(await answered("re_r3")).toEqual({ failedRefundIds: ["re_r2", "re_r1", "re_f0"], ownNoted: true, coverCents: 4_000 });
+    // R1 and R2 took no note (each answered by F0's), so Xero holds F0's $40 and nothing more: what went back.
     expect(await xeroCoverAfterAsking()).toBe(4_000);
     expect(refundedCents()).toBe(4_000);
   });
 
-  it("MUTATION (round 6, finding 1): a failed refund's chain is read as the payment stood when it failed - a later failure listed on its slice never sends it to another row", async () => {
-    // An older row still owes R0's re-send (R0 failed at 3, noted). R1 made the newer row's slice at 5 and failed at 10;
-    // G sent it again at 20 and failed at 25; S sent it again at 30. When R1 counted, its slice listed no failure.
-    noteRows = new Set(["re_r0", "re_failed"]);
-    coverByRefund.set("re_r0", 4_000);
-    refunds = [refund("re_r0", 1, "failed", 4_000, 3), refund("re_failed", 5, "failed", 4_000, 10), refund("re_g", 20, "failed", 4_000, 25), refund("re_s", 30)];
+  it("MUTATION (finding 3): each failure's cover is counted for one refund only, however the chains meet", async () => {
+    // Probe: a row of its own sent Z (marked) for F and closed; a dashboard refund X; Stripe failed Z, and a row of its
+    // own owes Z, raised dead; a dashboard refund Y. Neither dashboard refund answers F, and Z no longer counts.
+    refunds = [refund("re_failed", "failed"), refund("re_z", "failed"), refund("re_x", "succeeded", "dashboard"), refund("re_y", "succeeded", "dashboard")];
+    rows = [row("card_refund_failed_later_re_failed", { madeRefundId: "re_z" }), row("card_refund_failed_later_re_z")];
+    const answers = await Promise.all(refunds.map((each) => answered(each.stripeRefundId)));
+    expect(answers.map((each) => each.coverCents)).toEqual([0, 0, 0, 0]);
+    // And where both rows sent again, each failure is reached through one refund only.
+    rows = [row("card_refund_failed_later_re_failed", { madeRefundId: "re_z" }), row("card_refund_failed_later_re_z", { madeRefundId: "re_w" })];
+    refunds.push(refund("re_w"));
+    const chains = await Promise.all(refunds.filter((each) => each.status === "succeeded").map((each) => answered(each.stripeRefundId)));
+    const reached = chains.flatMap((each) => each.failedRefundIds);
+    expect(reached.sort()).toEqual(["re_failed", "re_z"]);
+    expect(chains.reduce((sum, each) => sum + each.coverCents, 0)).toBe(4_000);
+  });
+
+  it("MUTATION (lens probe): an open row's re-planned slice marked with its third send answers both failures; another row's unmarked slice answers nothing", async () => {
+    noteRows.clear();
+    coverByRefund.clear();
+    noted("re_f1");
+    noted("re_f9");
+    refunds = [refund("re_f9", "failed"), refund("re_f1", "failed"), refund("re_f2", "failed"), refund("re_r3"), refund("re_r9")];
     rows = [
-      row("op-old", "refund_request_refund_request-0", 1, { failedRefundIds: ["re_r0"] }),
-      row("op-new", "refund_request_refund_request-1", 2, { failedRefundIds: ["re_failed", "re_g"] }),
+      row("refund_request_refund_request-A", { stripeKeySuffix: "refused2", failedRefundIds: ["re_f1", "re_f2"], madeRefundId: "re_r3" }),
+      row("refund_request_refund_request-C", { stripeKeySuffix: "refused1", failedRefundIds: ["re_f9"] }),
     ];
-    expect(await answered("re_s")).toEqual({ failedRefundIds: ["re_failed", "re_g"], ownNoted: true, coverCents: 4_000 });
+    expect((await answered("re_r3")).failedRefundIds).toEqual(["re_f1", "re_f2"]);
+    expect((await answered("re_r9")).failedRefundIds).toEqual([]);
   });
 
-  it("MUTATION (round 6, finding 2a): an older row never takes a newer row's re-send", async () => {
-    // R2 failed first, at 8, and folded into the canonical note (no note of its own); R1 failed at 10, noted at $40.
-    // R1's row sends S at 20, R2's sends S2 at 30.
-    noteRows = new Set(["re_failed"]);
-    refunds = [refund("re_r2", 3, "failed", 4_000, 8), refund("re_failed", 5, "failed", 4_000, 10), refund("re_s", 20), refund("re_s2", 30)];
-    rows = [row("op-own-r2", "card_refund_failed_later_re_r2", 8), row("op-own", "card_refund_failed_later_re_failed", 10)];
-    expect(await answered("re_s")).toEqual({ failedRefundIds: ["re_failed"], ownNoted: true, coverCents: 4_000 });
-    expect(await answered("re_s2")).toEqual({ failedRefundIds: ["re_r2"], ownNoted: false, coverCents: 0 });
-    // R1's note answers S and the canonical note's $40 answers S2: $80 for $80.
-    expect(await xeroCoverAfterAsking(4_000)).toBe(refundedCents());
+  it("STATED LIMIT: a dashboard refund is never paired, even one settling a row raised dead - the replay's record is the only link", async () => {
+    refunds = [refund("re_failed", "failed"), refund("re_dashboard", "succeeded", "dashboard")];
+    rows = [row("card_refund_failed_later_re_failed")];
+    expect(await answered("re_dashboard")).toEqual({ failedRefundIds: [], ownNoted: false, coverCents: 0 });
   });
 
-  it("MUTATION (round 6, finding 2b): a slice marked made keeps its refund; an older row's unmarked slice never takes it", async () => {
-    noteRows = new Set(["re_failed", "re_r2"]);
-    coverByRefund.set("re_r2", 4_000);
-    refunds = [refund("re_failed", 5, "failed", 4_000, 10), refund("re_r2", 6, "failed", 4_000, 12), refund("re_marked", 20), refund("re_s", 30)];
-    rows = [
-      row("op-own", "card_refund_failed_later_re_failed", 10),
-      row("op-request", "refund_request_refund_request-1", 11, { failedRefundIds: ["re_r2"], madeRefundId: "re_marked" }),
-    ];
-    expect((await answered("re_marked")).failedRefundIds).toEqual(["re_r2"]);
-    expect((await answered("re_s")).failedRefundIds).toEqual(["re_failed"]);
-    expect(await xeroCoverAfterAsking()).toBe(refundedCents());
-  });
-
-  it("MUTATION (round 6, finding 3): a re-send the owed figure gives no failure is noted by neither writer - one rule for both", async () => {
-    // R1's row would send S at 20, but a dashboard refund at 15 filled its slice first: the dashboard refund answers R1.
-    refunds.push(refund("re_dashboard", 15), refund("re_s", 20));
-    expect(await answered("re_dashboard")).toEqual({ failedRefundIds: ["re_failed"], ownNoted: true, coverCents: 4_000 });
-    // So S is the canonical delta's, by `charge.refunded` and the replay alike: R1's $40 and the canonical $40, for $80.
-    expect((await answered("re_s")).ownNoted).toBe(false);
-    expect(await xeroCoverAfterAsking(4_000)).toBe(refundedCents());
-  });
-
-  it("MUTATION (round 6, finding 4): a dashboard refund Stripe made before the failure, recorded after it, is never its answer", async () => {
-    refunds.push(refund("re_dashboard_early", 8, "succeeded", 4_000, undefined, 15), refund("re_resent", 20));
-    rows = [row("op-request", "refund_request_refund_request-1", 1, { failedRefundIds: ["re_failed"] })];
-    expect((await answered("re_dashboard_early")).failedRefundIds).toEqual([]);
-    expect((await answered("re_resent")).failedRefundIds).toEqual(["re_failed"]);
-  });
-
-
-  it("MUTATION: a row closed as Paid another way sent nothing: no refund answers its failure", async () => {
-    refunds.push(refund("re_dashboard", 20));
-    closes = [closeKeysOf("op-own")[0]!];
-    expect((await answered("re_dashboard")).failedRefundIds).toEqual([]);
+  it("a slice made with no failure behind it - an inline refund, say - answers nothing", async () => {
+    rows = [row("refund_request_refund_request-1", { madeRefundId: "re_inline" })];
+    refunds.push(refund("re_inline"));
+    expect((await answered("re_inline")).failedRefundIds).toEqual([]);
   });
 
   it("MUTATION: a failure with no note of its own is answered but not own-noted, and covers nothing", async () => {
     noteRows.clear();
     coverByRefund.clear();
-    refunds.push(refund("re_resent", 20));
+    rows = [row("card_refund_failed_later_re_failed", { madeRefundId: "re_resent" })];
+    refunds.push(refund("re_resent"));
     expect(await answered("re_resent")).toEqual({ failedRefundIds: ["re_failed"], ownNoted: false, coverCents: 0 });
+    // Its failure folded into the canonical note, which answers it: $40 for $40.
+    expect(await xeroCoverAfterAsking(4_000)).toBe(refundedCents());
   });
 
   it("MUTATION: a late capture's refund is its capture note's to size, and a refund no longer counted answers nothing", async () => {
-    refunds.push(refund("re_resent", 20));
+    rows = [row("card_refund_failed_later_re_failed", { madeRefundId: "re_resent" })];
+    refunds.push(refund("re_resent"));
     lateCaptures.add("pi_card");
     expect((await answered("re_resent")).failedRefundIds).toEqual([]);
     lateCaptures.clear();
-    refunds[1] = refund("re_resent", 20, "failed");
+    refunds[1] = refund("re_resent", "failed");
     expect((await answered("re_resent")).failedRefundIds).toEqual([]);
   });
 });

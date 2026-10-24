@@ -1,10 +1,12 @@
 import { PaymentSource } from "@prisma/client";
 
+import { findAdditionalCaptureReceiptInvoiceId } from "@/lib/additional-capture-receipt-link";
 import { cardRefundDoorOf, cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover } from "@/lib/card-refund-own-note-share";
 import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
+import { CARD_REFUND_FAILED_LATER_REASON } from "@/lib/payment-recovery-keys";
 import { answersBeforeFailure } from "@/lib/refused-card-refund-retry";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
@@ -14,7 +16,9 @@ import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbo
  * #4312 (owner decision 24 Oct 2026, `INV-ADDPAY-045`): THE WRITERS' SIDE of a
  * card refund's own note on a bank-transfer payment (the record's side, and
  * the rule, are `card-refund-own-note-share.ts`). Three writers used to fold
- * such a refund into the payment's canonical note; each now asks here:
+ * such a refund into the payment's canonical note - a refund request's card
+ * part, the `charge.refunded` delta and a late capture's note. Now these ask
+ * here, each where it first knows the refund:
  *
  * - an approved refund request's card part: the approval, for each refund its
  *   inline attempt made (`queueRefundRequestCardNotes`), and the recovery
@@ -22,9 +26,9 @@ import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbo
  *   so a refund that did not exist when the approval ran still gets its note;
  * - the `charge.refunded` webhook, for a refund it is the first to record
  *   (`queueWebhookCardRefundNotes`);
- * - any other recovery replay, for each refund it makes that answers a failure
- *   noted on its own record (`answersOwnNotedFailure`, round 6) - the rule
- *   `charge.refunded` applies to the same refund;
+ * - any other recovery replay, for each refund it makes of a late capture, or
+ *   sent again for a refund Stripe failed later that was noted on its own
+ *   record (`queueAnsweringRefundNotes`, round 7);
  * - a late capture's note (`noteLateCaptureRefunds`), sized per capture.
  *
  * ONLY A REFUND MADE SINCE THE CUTOVER (`madeSinceCardRefundNoteCutover`),
@@ -41,16 +45,16 @@ import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbo
  * answer (`readCardRefundNoteShare`): a refund that does not asks for nothing.
  * A refund of a late capture is the late-capture note's to size (per capture,
  * against that capture's receipt, `planLateCaptureCardNotes`), so it is handed
- * there. Returns
- * the queued rows. A refund with no row on the payment is skipped. Outside
- * any transaction, as every caller's note enqueue was before.
+ * there. Each other note names the invoice its refunded capture's own receipt
+ * paid (#3953, `findAdditionalCaptureReceiptInvoiceId`), read here from the
+ * refund for every writer, so it never depends on which writer queues first.
+ * Returns the queued rows. A refund with no row on the payment is skipped.
+ * Outside any transaction, as every caller's note enqueue was before.
  */
 export async function queueCardRefundOwnNotes(params: {
   paymentId: string;
   stripeRefundIds: readonly string[];
   createdByMemberId?: string;
-  /** #3953: the invoice the refunded capture's own receipt paid, which the note names. */
-  creditsInvoiceId?: string;
 }): Promise<string[]> {
   const db = prisma;
   const ids = [...new Set(params.stripeRefundIds)];
@@ -77,11 +81,12 @@ export async function queueCardRefundOwnNotes(params: {
       }
       continue;
     }
+    const creditsInvoiceId = intent ? await findAdditionalCaptureReceiptInvoiceId(intent) : null;
     const result = await enqueueXeroRefundCreditNoteOperation(params.paymentId, refund.amountCents, {
       refundMethod: "card",
       cardRefundId: refund.stripeRefundId,
       ...(params.createdByMemberId ? { createdByMemberId: params.createdByMemberId } : {}),
-      ...(params.creditsInvoiceId ? { creditsInvoiceId: params.creditsInvoiceId } : {}),
+      ...(creditsInvoiceId ? { creditsInvoiceId } : {}),
     });
     if (result.queueOperationId) queued.push(result.queueOperationId);
   }
@@ -138,11 +143,10 @@ export async function queueRefundRequestCardNotes(params: {
  * a retry that may never come. The money has moved, so a note that cannot be
  * queued is logged, never a reason to fail the row; `run`'s error is rethrown.
  *
- * Any other replay (round 6, #4104) asks for those of its refunds that answer
- * a failure noted on its own record (`queueAnsweringRefundNotes`), by the rule
- * `charge.refunded` applies to the same refund - so the two writers never
- * disagree on whether a re-send is noted on its own record or left to the
- * canonical delta.
+ * Any other replay (round 7, #4104) asks for those of its refunds that are a
+ * late capture's or that its slices sent again for an own-noted failure
+ * (`queueAnsweringRefundNotes`), by the rule `charge.refunded` applies to the
+ * same refund - so the two writers never disagree.
  */
 export async function replayNotingEachRefund<T>(
   input: { paymentId: string; operationId: string; notesEachRefund: boolean; plan: ReadonlyArray<{ madeRefundId?: string }> },
@@ -177,26 +181,45 @@ export async function replayNotingEachRefund<T>(
 }
 
 /**
- * #4312 round 6 (#4104): THE ONE RULE for whether a refund an app door made,
- * other than an approved refund request, is noted on its own record: it
- * answers a failed refund that was (`readFailedRefundsAnsweredBy`'s
- * `ownNoted`, the chain behind it included). That note is sized less what the
- * failed refunds' own notes cover, so it raises only what they do not answer.
- * Otherwise the refund stays with the canonical delta. The recovery replay and
- * `charge.refunded` both ask it, so whichever records the refund first, and a
- * replay of either, reach the same answer.
+ * #4312 round 7 (#4104, `INV-ADDPAY-045`): THE ONE RULE for a refund an app
+ * door other than an approved refund request made, on a bank transfer (a late
+ * capture's is its capture's note's, whichever writer meets it). A refund the
+ * recovery replay sent again for
+ * refunds Stripe failed later (`readFailedRefundsAnsweredBy`: the slice it
+ * marked made with it) is noted on its own record, less what their own notes
+ * cover, when one of them was noted on its own record (`ownNoted`); when none
+ * was, their fold in the canonical note answers it and it is noted nowhere.
+ * Any other refund is left to the canonical delta. The recovery replay and
+ * `charge.refunded` both ask it.
  */
-export async function answersOwnNotedFailure(paymentId: string, stripeRefundId: string): Promise<boolean> {
-  return (await readFailedRefundsAnsweredBy(prisma, paymentId, stripeRefundId)).ownNoted;
+async function readAppRefundRule(paymentId: string, stripeRefundId: string): Promise<"own" | "answered" | "delta"> {
+  const answer = await readFailedRefundsAnsweredBy(prisma, paymentId, stripeRefundId);
+  if (answer.failedRefundIds.length === 0) return "delta";
+  return answer.ownNoted ? "own" : "answered";
 }
 
-/** A replay's made refunds that answer a failure noted on its own record (`answersOwnNotedFailure`), each noted on its own; on a bank transfer only. */
+/**
+ * A replay's made refunds, on a bank transfer only: each of a late capture
+ * (always - `charge.refunded` hands every one to its capture's note too), and
+ * each the rule notes on its own record (`readAppRefundRule`), asked for on
+ * its own (`queueCardRefundOwnNotes`, which hands a late capture's to its
+ * capture). Any other refund it made is not asked for here.
+ */
 export async function queueAnsweringRefundNotes(params: { paymentId: string; stripeRefundIds: readonly string[] }): Promise<string[]> {
   const payment = await prisma.payment.findUnique({ where: { id: params.paymentId }, select: { source: true } });
   if (payment?.source !== PaymentSource.INTERNET_BANKING) return [];
-  const answering: string[] = [];
-  for (const id of new Set(params.stripeRefundIds)) if (await answersOwnNotedFailure(params.paymentId, id)) answering.push(id);
-  return queueCardRefundOwnNotes({ paymentId: params.paymentId, stripeRefundIds: answering });
+  const ids = [...new Set(params.stripeRefundIds)];
+  const refunds = await prisma.paymentRefund.findMany({
+    where: { paymentId: params.paymentId, stripeRefundId: { in: ids } },
+    select: { stripeRefundId: true, stripePaymentIntentId: true },
+  });
+  const lateCaptures = await findLateCapturePaymentIntents(refunds.flatMap((refund) => (refund.stripePaymentIntentId ? [refund.stripePaymentIntentId] : [])));
+  const asked: string[] = [];
+  for (const refund of refunds) {
+    const lateCapture = refund.stripePaymentIntentId !== null && lateCaptures.has(refund.stripePaymentIntentId);
+    if (lateCapture || (await readAppRefundRule(params.paymentId, refund.stripeRefundId)) === "own") asked.push(refund.stripeRefundId);
+  }
+  return queueCardRefundOwnNotes({ paymentId: params.paymentId, stripeRefundIds: asked });
 }
 
 type MadeRefund = { refundId: string; status?: string | null };
@@ -210,31 +233,35 @@ type SendNotingRefunds = <R extends { refunds: ReadonlyArray<MadeRefund> }>(call
  * (`newlyCountedRefundIds`) made since the cutover is sorted by its door
  * (`cardRefundDoorOf`):
  *
- * - made outside the app (the Stripe dashboard): its own note, here - the
- *   webhook is the only writer that ever sees it;
- * - an approved refund request's: nothing here. The approval notes it - its
- *   own note when this release approved it, else the note an older approval
- *   queued for the card part - so a note here could only double it;
- * - one sent again for a refund Stripe failed later that was asked for on its
- *   own record (`answersOwnNotedFailure`, the rule the replay applies too):
- *   its own record, where the failed refund's own note answers it - never the
- *   canonical delta, whose payment-wide gap would hand it another refund's
- *   share;
+ * - made outside the app (the Stripe dashboard): its own note, here and in
+ *   full - the webhook is the only writer that ever sees it, and no failure
+ *   is ever answered by it;
+ * - an approved refund request's: nothing here. The approval or its replay
+ *   notes it - its own note when this release approved it, else the note an
+ *   older approval queued for the card part - so a note here could only
+ *   double it;
+ * - one the recovery replay sent again for refunds Stripe failed later: never
+ *   the canonical delta, whose payment-wide gap would hand it another
+ *   refund's share. Once the replay has marked the slice it sent with it, the
+ *   one rule (`readAppRefundRule`) says whether it is noted on its own record;
+ *   before then - Stripe's answer reached the webhook first - it is left to
+ *   the replay, which marks the slice and asks when its retry reads the same
+ *   refund back under the same key. A failed-later row's refund says so in
+ *   its Stripe metadata (`CARD_REFUND_FAILED_LATER_REASON`); a re-planned
+ *   slice's carries its row's, and is known by the mark alone;
  * - any other app door's: left in the delta, which is queued as before. On a
  *   bank transfer that is a duplicate capture's or a superseded intent's
- *   refund, of money Xero never received, or a card refund Stripe failed
- *   later, sent again, whose failed refund folded; a cancellation or an edit
- *   never refunds one to a card.
- *   Each door records its refund the moment Stripe answers, so this sync is
- *   seldom the first to (ARCHITECTURE, "A later refund folded into the first
- *   note").
+ *   refund, of money Xero never received; a cancellation or an edit never
+ *   refunds one to a card. Each door records its refund the moment Stripe
+ *   answers, so this sync is seldom the first to (ARCHITECTURE, "A later
+ *   refund folded into the first note").
  */
 export async function queueWebhookCardRefundNotes(params: {
   payment: { id: string; source: PaymentSource };
   deltaCents: number;
   refunds: ReadonlyArray<{ id: string; amount: number; metadata?: Record<string, string> | null }>;
   newlyCountedRefundIds: readonly string[];
-  /** #3953: the invoice the refunded capture's own receipt paid, named by every note this queues. */
+  /** #3953: the invoice the refunded capture's own receipt paid, named by the canonical delta's note. */
   creditsInvoiceId?: string;
 }): Promise<{ queueOperationId: string | null }> {
   const naming = params.creditsInvoiceId ? [{ creditsInvoiceId: params.creditsInvoiceId }] : [];
@@ -254,11 +281,16 @@ export async function queueWebhookCardRefundNotes(params: {
   for (const refund of params.refunds) {
     if (!newly.has(refund.id) || !sinceCutover.has(refund.id)) continue;
     const door = cardRefundDoorOf(refund.metadata);
-    if (door === "app" && !(await answersOwnNotedFailure(params.payment.id, refund.id))) continue;
+    if (door === "app") {
+      const rule = await readAppRefundRule(params.payment.id, refund.id);
+      if (rule === "delta" && refund.metadata?.reason !== CARD_REFUND_FAILED_LATER_REASON) continue;
+      if (rule === "own") own.push(refund.id);
+    } else if (door === "outside-app") {
+      own.push(refund.id);
+    }
     answeredElsewhereCents += Math.max(0, refund.amount);
-    if (door !== "refund-request") own.push(refund.id);
   }
-  const queued = await queueCardRefundOwnNotes({ paymentId: params.payment.id, stripeRefundIds: own, ...naming[0] });
+  const queued = await queueCardRefundOwnNotes({ paymentId: params.payment.id, stripeRefundIds: own });
   const restCents = params.deltaCents - answeredElsewhereCents;
   if (restCents > 0) {
     const rest = await enqueueXeroRefundCreditNoteOperation(params.payment.id, restCents, ...naming);
