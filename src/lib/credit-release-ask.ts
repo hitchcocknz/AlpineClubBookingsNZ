@@ -33,7 +33,7 @@ import {
   type Prisma,
 } from "@prisma/client";
 
-import { bookingLedgerResidualCents } from "@/lib/additional-payment-ask";
+import { bookingLedgerResidualCents, outstandingAdditionalAskCents } from "@/lib/additional-payment-ask";
 import { sizeCreditReleaseAsk } from "@/lib/credit-release-ask-size";
 import { createAuditLog } from "@/lib/audit";
 import { bookingOwner } from "@/lib/booking-owner";
@@ -219,6 +219,18 @@ export async function processCreditReleaseAskOperation(
     throw new Error(
       `Xero shows the booking's invoice as ${balance.status || "unreadable"}, so a card payment cannot be recorded against it; leaving the request to retry`,
     );
+  }
+
+  // An unpaid EDIT request may have its own supplementary invoice, which a release request
+  // superseding it could not pay (release 2 merges them). Wait for it to be paid or withdrawn.
+  if (outstandingAdditionalAskCents(payment) > 0 && payment.additionalPaymentIntentId) {
+    const live = await prisma.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: payment.additionalPaymentIntentId },
+      select: { reason: true },
+    });
+    if (live?.reason !== CREDIT_RELEASE_ASK_REASON) {
+      throw new Error("An unpaid edit request is open on this booking; the released-credit request waits until it is paid or withdrawn");
+    }
   }
 
   const unaskedCents = bookingLedgerResidualCents({

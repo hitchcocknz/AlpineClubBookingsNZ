@@ -1739,11 +1739,16 @@ _Legacy: settles tasks raised before #4317._
   organiser-settled bookings close without an ask; an invoice not yet open in
   Xero throws and retries. A booking that ended is asked nothing
   (`INV-ADDPAY-044`).
-- **Its own words.** The first email goes out at once, worded as credit used
-  elsewhere, never as a change to the stay.
+- **Its own words.** The first email goes out at the next reminder pass instead
+  of after the usual wait (`INV-ADDPAY-024`), worded as credit used elsewhere,
+  never as a change to the stay. A reduction never nets against this request.
+  The wording follows the newest request, so a chain mixing an edit and a release
+  is worded by the newer one until the shared wording lands (#4253, release 2).
 - **Blue/green.** Enqueueing is off until an operator sets the
   `CREDIT_RELEASE_ASK`/`WRITER` `XeroSyncCursor` row's `enabled` to `true`, after
   the previous colour has drained; the runner, recorder and closer are always on.
+  Only releases created after that moment are asked (the backlog is a later
+  run), and once enabled the previous colour must not be rolled back to.
   Home: `credit-release-ask-sweep.ts`.
 
 ### INV-ADDPAY-046

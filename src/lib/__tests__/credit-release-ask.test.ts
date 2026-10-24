@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   prisma: {
     memberCredit: { findUnique: vi.fn() },
     payment: { findUnique: vi.fn() },
+    paymentTransaction: { findUnique: vi.fn() },
   },
   audit: vi.fn(),
   createIntent: vi.fn(),
@@ -115,6 +116,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.prisma.memberCredit.findUnique.mockResolvedValue(release);
   mocks.prisma.payment.findUnique.mockResolvedValue(payment());
+  mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: CREDIT_RELEASE_ASK_REASON });
   mocks.createIntent.mockResolvedValue({ id: "pi_new" });
   mocks.queueSuperseded.mockResolvedValue([]);
   mocks.retireAfterWrite.mockResolvedValue(false);
@@ -160,11 +162,22 @@ describe("processCreditReleaseAskOperation", () => {
 
   it("carries a live unpaid ask it supersedes, and says so on the row", async () => {
     mocks.prisma.payment.findUnique.mockResolvedValue(
-      payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", amountCents: 32_000 }),
+      payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_rel", amountCents: 32_000 }),
     );
     await run();
     // $80.00 is short, $25.00 of it already asked, so the unasked part is $55.00 and the release's $40.00 is all of its own.
     expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 6500, carriedAskCents: 2500 }));
+  });
+
+  it("waits, throwing, while an unpaid edit request is open: its own invoice could not be paid by this one", async () => {
+    mocks.prisma.payment.findUnique.mockResolvedValue(
+      payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_edit", amountCents: 32_000 }),
+    );
+    mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: "edit_price_increase" });
+    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, runnerDeps(), vi.fn().mockResolvedValue(open))).rejects.toThrow(
+      /unpaid edit request/,
+    );
+    expect(mocks.createIntent).not.toHaveBeenCalled();
   });
 
   it("asks for the smaller figure when part of the release was paid meanwhile, under a key that names the amount", async () => {

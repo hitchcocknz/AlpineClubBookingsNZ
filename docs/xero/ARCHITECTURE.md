@@ -3412,16 +3412,24 @@ once, by card, and Xero is told about the payment without a second invoice.
   account, dated the day Stripe took it. The `XeroObjectLink` (role
   `CREDIT_RELEASE_PAYMENT`) is the done marker. An edit's own money stays on its
   supplementary invoice, so one card payment is recorded against two invoices.
-- **It fails closed.** An invoice no longer open, owing less than the card took, or a
-  chain that cannot be traced records nothing and alerts the officers once a day;
-  failed attempts are an hour apart and capped at five.
+- **One writer per capture.** The ordinary additional-capture receipt writer
+  (`readCaptureRecorder`) stands down for a capture the sweep owns, and subtracts the
+  sweep's share from one it shares with an edit, so the card payment is never recorded
+  twice on the primary invoice.
+- **It fails closed.** An invoice no longer open, owing less than the card took, a
+  partly refunded capture, or a chain that cannot be traced records nothing and alerts
+  the officers once a day; failed attempts are an hour apart and capped at five. A
+  payment attempt that never finished is replayed under the same key (no balance
+  read, Xero's key makes it safe) for twelve hours, then held for an officer.
 - **Xero first closes the request.** An unpaid request that carries nothing is closed
   when Xero shows its invoice paid (`credit-release-ask-close.ts`), the seam the
   inbound credit mirror can feed. The money is written as bank cash.
 - **Switch.** Raising requests starts off. Set the `XeroSyncCursor` row
   `resourceType = CREDIT_RELEASE_ASK`, `scope = WRITER`, `metadata = {"enabled": true}`
   once the previous deploy colour has drained; set `enabled` to anything else to stop
-  new requests (ones already raised still finish).
+  new requests (ones already raised still finish). Only releases created after the
+  row was made are asked, and once it is enabled do not roll back to the previous
+  colour: it would not know these requests.
 
 Rules: `INV-ADDPAY-045`, `INV-ADDPAY-046`.
 

@@ -370,6 +370,7 @@ describe("recordAdditionalCaptureReceipt", () => {
     it.each([
       ["the primary invoice's own payment", { kind: "primary-invoice" }, "recorded-by-primary-invoice"],
       ["a supplementary invoice for the change, or naming or covering it", { kind: "supplementary-invoice", operationId: "op_supp" }, "recorded-by-supplementary-invoice"],
+      ["the credit-release sweep (#4253)", { kind: "credit-release-sweep" }, "recorded-by-credit-release-sweep"],
     ])("stands down, writing nothing to Xero, where %s records it", async (_label, recorder, skipped) => {
       mocks.readCaptureRecorder.mockResolvedValue(recorder);
       const seam = providers();
@@ -1037,6 +1038,7 @@ describe("enqueueAdditionalCaptureReceiptOperation", () => {
   it.each([
     [{ kind: "primary-invoice" }, "recorded-by-primary-invoice"],
     [{ kind: "supplementary-invoice", operationId: "op_supp" }, "recorded-by-supplementary-invoice"],
+    [{ kind: "credit-release-sweep" }, "recorded-by-credit-release-sweep"],
   ])("stands down, under the lock, where another writer records it (%o)", async (recorder, reason) => {
     tx.xeroSyncOperation.findFirst.mockResolvedValue(null);
     mocks.readCaptureRecorder.mockResolvedValue(recorder);
