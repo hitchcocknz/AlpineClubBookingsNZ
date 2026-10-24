@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { redactSensitiveText } from "@/lib/redact-sensitive-json"
 import { summarizeXeroOperation } from "@/lib/xero-operation-summaries"
-import { isResolvedInXero, resolutionLabel } from "@/lib/xero-operation-resolution"
+import { failureStateAfterStatusChange, isResolvedInXero, resolutionLabel } from "@/lib/xero-operation-resolution"
 import { resetXeroOperationsDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
 import { useClubTime } from "@/components/club-time-provider"
 import { requireInstant } from "@/lib/club-time"
@@ -31,6 +31,7 @@ import {
   ToneChip,
   type ToggleSection,
 } from "./shared"
+import { FAILURE_FILTER_LABELS, FailedViewNotice } from "./failed-view-notice"
 import { xeroSectionId } from "./types"
 import type { XeroOperation } from "./types"
 import { useClubFormat } from "@/components/club-format-provider"
@@ -113,6 +114,10 @@ export function OperationsPanel({
     return Number.isInteger(requested) && requested > 0 ? requested : 1
   })
   const [total, setTotal] = useState(0)
+  const [hiddenFailedCount, setHiddenFailedCount] = useState(0)
+  // #4220: set by "Show them"; see FailedViewNotice.
+  const [revealedHiddenCount, setRevealedHiddenCount] = useState<number | null>(null)
+  const noticeRegionRef = useRef<HTMLDivElement>(null)
   const pageSize = 25
   const [urlSyncEnabled, setUrlSyncEnabled] = useState(hasOperationsUrlState)
   const [retryingOperationId, setRetryingOperationId] = useState<string | null>(null)
@@ -174,6 +179,7 @@ export function OperationsPanel({
   const resetPage = () => {
     setUrlSyncEnabled(true)
     setPage(1)
+    setRevealedHiddenCount(null)
   }
 
   const isDatasetDefault =
@@ -201,6 +207,7 @@ export function OperationsPanel({
     setOperationTypeFilter("all")
     setFailureStateFilter("all")
     setResourceIdFilter("")
+    setRevealedHiddenCount(null)
     setCreatedFrom("")
     setCreatedTo("")
     setPage(1)
@@ -224,11 +231,13 @@ export function OperationsPanel({
       })
       if (createdFrom) params.set("createdFrom", createdFrom)
       if (createdTo) params.set("createdTo", createdTo)
-      const data = await fetchJson<{ data?: XeroOperation[]; total?: number }>(`/api/admin/xero/operations?${params.toString()}`, undefined, "Failed to fetch Xero operations")
+      const data = await fetchJson<{ data?: XeroOperation[]; total?: number; hiddenFailedCount?: number }>(`/api/admin/xero/operations?${params.toString()}`, undefined, "Failed to fetch Xero operations")
       setOperations(data.data ?? [])
       setTotal(data.total ?? 0)
+      setHiddenFailedCount(data.hiddenFailedCount ?? 0)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load Xero operation history")
+      setHiddenFailedCount(0)
     } finally {
       setLoading(false)
     }
@@ -438,14 +447,14 @@ export function OperationsPanel({
             <li><span className="font-medium">WAITING_PAYMENT</span> — paused until the related payment settles. No action needed.</li>
             <li><span className="font-medium">SUCCEEDED</span> — completed in Xero. No action needed.</li>
             <li><span className="font-medium">PARTIAL</span> — some steps succeeded; retry to finish the rest.</li>
-            <li><span className="font-medium">FAILED</span> — could not complete. Open the row for the error, fix the cause if needed, then Retry. Use &ldquo;Retry Active Failed&rdquo; to requeue all replayable failures.</li>
+            <li><span className="font-medium">FAILED</span> — could not complete. Open the row for the error, fix the cause if needed, then Retry. Use &ldquo;Retry Active Failed&rdquo; to requeue all replayable failures. Choosing Failed also picks &ldquo;Active only&rdquo; under Failure, so rows already repaired, superseded or marked resolved stay out of the way; &ldquo;Show them&rdquo; brings them back.</li>
           </ul>
         </details>
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
-          <FilterSelect label="Status" value={statusFilter} onValueChange={(value) => { setStatusFilter(value); resetPage() }} values={["all", "FAILED", "PENDING", "PARTIAL", "RUNNING", "WAITING_PAYMENT", "SUCCEEDED"]} />
+          <FilterSelect label="Status" value={statusFilter} onValueChange={(value) => { setFailureStateFilter(failureStateAfterStatusChange({ previousStatus: statusFilter, nextStatus: value, failureState: failureStateFilter })); setStatusFilter(value); resetPage() }} values={["all", "FAILED", "PENDING", "PARTIAL", "RUNNING", "WAITING_PAYMENT", "SUCCEEDED"]} />
           <FilterSelect label="Entity" value={entityFilter} onValueChange={(value) => { setEntityFilter(value); resetPage() }} values={["all", "CONTACT", "CONTACT_GROUP", "INVOICE", "PAYMENT", "CREDIT_NOTE", "ALLOCATION", "SUBSCRIPTION"]} />
           <FilterSelect label="Local Model" value={localModelFilter} onValueChange={(value) => { setLocalModelFilter(value); resetPage() }} values={["all", "Member", "Booking", "Payment", "BookingModification", "ManualRefundTask", "MemberSubscription"]} />
-          <FilterSelect label="Failure" value={failureStateFilter} onValueChange={(value) => { setFailureStateFilter(value); resetPage() }} values={["all", "ACTIVE", "REPAIRED", "SUPERSEDED"]} />
+          <FilterSelect label="Failure" value={failureStateFilter} onValueChange={(value) => { setFailureStateFilter(value); resetPage() }} values={["all", "ACTIVE", "REPAIRED", "SUPERSEDED"]} labels={FAILURE_FILTER_LABELS} />
           <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
         </div>
         <div className="grid gap-3 md:grid-cols-5">
@@ -471,10 +480,25 @@ export function OperationsPanel({
             <Input id="xero-op-created-to" type="date" value={createdTo} onChange={(event) => { setCreatedTo(event.target.value); resetPage() }} />
           </div>
         </div>
+        <FailedViewNotice
+          failureStateFilter={failureStateFilter}
+          loading={loading}
+          hiddenCount={hiddenFailedCount}
+          revealedCount={revealedHiddenCount}
+          regionRef={noticeRegionRef}
+          onShow={() => {
+            setFailureStateFilter("all")
+            resetPage()
+            setRevealedHiddenCount(hiddenFailedCount)
+            noticeRegionRef.current?.focus()
+          }}
+        />
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading recent operations...</p>
         ) : operations.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No Xero operations recorded yet.</p>
+          <p className="text-sm text-muted-foreground">
+            {failureStateFilter === "ACTIVE" ? "No active failures." : "No Xero operations recorded yet."}
+          </p>
         ) : (
           <div className="space-y-3">
             {operations.map((operation) => (
