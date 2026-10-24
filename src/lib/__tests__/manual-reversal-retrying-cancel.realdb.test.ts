@@ -1,14 +1,22 @@
 /**
  * Real-PostgreSQL proof for #4320 (`INV-PAY-045`): reversing a manual mark-paid
- * withdraws every cancellation the mark-paid itself queued - one still waiting
- * to retry after a Stripe outage included - and leaves alone a cancellation an
- * edit had queued before it, whose job outlives the reversal.
+ * re-applies the supersede rule to the restored booking and withdraws the
+ * cancellation of every intent that booking can still be paid with - one still
+ * waiting to retry after a Stripe outage included - while an intent at a price
+ * the booking no longer owes, or one an edit had superseded before the settle,
+ * stays cancelled.
  *
  * The mark-paid queues a CANCEL_PAYMENT_INTENT row for each live card intent on
  * the booking. Before #4320 the reversal deleted only the PENDING and
  * PROCESSING ones, so a row Stripe's outage had left FAILED and retrying
  * survived: once the booking was payable again, the member's capture of that
  * intent was handed to its superseded refund and the booking never settled.
+ * The cases below also pin the cases a remembered list cannot see: an edit on
+ * the PAID booking sharing the settle's cancel row, a settle recorded before
+ * #4320, and a capture whose hand-off lands while the reversal is running.
+ * An ADDITIONAL intent's case is pinned in the unit suite only: an edit on a
+ * cash-paid booking asks no card top-up, so no real writer reaches one on a
+ * booking a reversal accepts.
  *
  * EVERY STEP IS THE REAL CODE: the pay step is the `create-payment-intent`
  * route, the confirm is the `confirm-payment` route, mark-paid and its reversal
@@ -18,7 +26,9 @@
  * harness's one `@/lib/stripe` double, an in-memory intent store in which a
  * capture is something the test does), and the session is the harness's one
  * `@/lib/auth` double. The only state moved by hand is a row's `nextRetryAt`,
- * brought back to now as the passing of its backoff would.
+ * brought back to now as the passing of its backoff would, and, for the
+ * pre-#4320 settle, the adopted list taken off its audit row as that code
+ * never wrote it.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -29,6 +39,7 @@ import { PaymentRecoveryOperationStatus, PaymentRecoveryOperationType, Role, typ
 import type Stripe from "stripe";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 import { assertSafeRaceDbUrl } from "@/lib/__tests__/support/race-db-url";
 import { raceSession } from "@/lib/__tests__/support/race-session-double";
@@ -91,6 +102,9 @@ let manualPayment: typeof import("@/lib/manual-booking-payment");
 let clubTimeServer: typeof import("@/lib/club-time/server");
 let chargeCurrency: typeof import("@/lib/stripe-charge-currency");
 let webhookEventSequence = 0;
+/** Two more connections, for the interleaving proof: one holds a row the reversal needs, one watches. */
+let holderClient: PrismaClient;
+let observerClient: PrismaClient;
 
 async function clean(): Promise<void> {
   const payment = await prisma.payment.findUnique({ where: { bookingId: BOOKING_ID }, select: { id: true } });
@@ -300,13 +314,13 @@ async function editAwayAndBack(): Promise<void> {
 }
 
 /** The officer records cash for the booking: the real mark-paid. */
-async function markPaid() {
+async function markPaid(expectedAmountCents: number = PRICE_CENTS) {
   return manualPayment.applyManualBookingPayment({
     bookingId: BOOKING_ID,
     direction: "paid",
     actingMemberId: OFFICER_ID,
     notifyMember: false,
-    expectedAmountCents: PRICE_CENTS,
+    expectedAmountCents,
     note: "cash at the lodge",
   });
 }
@@ -357,7 +371,7 @@ async function money() {
   return { status: booking.status, capturedCents, refundedCents, heldCents: capturedCents - refundedCents };
 }
 
-(RUN ? describe : describe.skip)("reversing a manual mark-paid withdraws the cancellations it queued, retrying ones included, on PostgreSQL (#4320, INV-PAY-045)", { timeout: 120_000 }, () => {
+(RUN ? describe : describe.skip)("reversing a manual mark-paid re-derives which intents stay cancelled and withdraws the rest, retrying ones included, on PostgreSQL (#4320, INV-PAY-045)", { timeout: 120_000 }, () => {
   beforeAll(async () => {
     assertSafeRaceDbUrl(RACE_DB_URL, "Manual reversal retrying cancel");
     process.env.DATABASE_URL = RACE_DB_URL;
@@ -370,6 +384,19 @@ async function money() {
     manualPayment = await import("@/lib/manual-booking-payment");
     clubTimeServer = await import("@/lib/club-time/server");
     chargeCurrency = await import("@/lib/stripe-charge-currency");
+    const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
+      import("@prisma/client"),
+      import("@/lib/prisma-adapter"),
+    ]);
+    const separateClient = (applicationName: string) => {
+      const url = new URL(RACE_DB_URL);
+      url.searchParams.set("connection_limit", "1");
+      url.searchParams.set("application_name", applicationName);
+      return new SeparatePrismaClient({ adapter: createPrismaPgAdapter(url.toString()) });
+    };
+    holderClient = separateClient("race-4320-holder");
+    observerClient = separateClient("race-4320-observer");
+    await Promise.all([holderClient.$connect(), observerClient.$connect()]);
 
     await clean();
     await prisma.membershipTypeSeasonRate.deleteMany({ where: { seasonId: SEASON_ID } });
@@ -445,6 +472,7 @@ async function money() {
     await prisma.lodge.deleteMany({ where: { id: LODGE_ID } });
     await prisma.memberAccessRole.deleteMany({ where: { memberId: OFFICER_ID } });
     await prisma.member.deleteMany({ where: { id: { in: [OWNER_ID, OFFICER_ID] } } });
+    await Promise.all([holderClient?.$disconnect(), observerClient?.$disconnect()]);
   });
 
   /** The pay step mints the member's intent at the booking's price. */
@@ -559,5 +587,140 @@ async function money() {
     expect(confirmed.status).toBe(409);
     expect(stripe.refunds).toEqual([expect.objectContaining({ paymentIntentId: superseded, amountCents: PRICE_CENTS })]);
     expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
+  });
+
+  /** The officer adds a guest: the real batch edit door. */
+  async function addGuest(firstName: string): Promise<void> {
+    await edit({ addGuests: [{ ...ADDED_GUEST, firstName }] });
+  }
+
+  /** The live cancel rows on the booking, by intent. */
+  async function liveCancelIntents(): Promise<string[]> {
+    const rows = await prisma.paymentRecoveryOperation.findMany({
+      where: { bookingId: BOOKING_ID, type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, status: { not: PaymentRecoveryOperationStatus.SUCCEEDED } },
+      select: { paymentIntentId: true },
+    });
+    return rows.map((row) => row.paymentIntentId).sort();
+  }
+
+  it("MUTATION: an edit on the PAID booking that shares the settle's cancel row: the reversal keeps the intent at the old price cancelled, and its old tab's capture is refunded", async () => {
+    const oldPrice = await mintOnPayStep();
+    stripe.down = true;
+    await markPaid();
+    // The officer adds a guest to the cash-paid booking: the price moves, and
+    // the edit's supersede upserts the very cancel row the settle minted.
+    await addGuest("Later");
+    expect((await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID } })).finalPriceCents).toBe(PRICE_CENTS + GUEST_CENTS);
+    await reverse();
+    stripe.down = false;
+
+    // The old intent is not what the restored booking owes: its cancellation stands.
+    expect(await liveCancelIntents()).toContain(oldPrice);
+    expect(stripe.intents.get(oldPrice)!.status).toBe("requires_payment_method");
+
+    capture(oldPrice);
+    await deliverSucceededWebhook(oldPrice);
+    await drainRecovery();
+    expect(stripe.refunds).toEqual([expect.objectContaining({ paymentIntentId: oldPrice, amountCents: PRICE_CENTS })]);
+    expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
+  });
+
+  it("MUTATION: a settle recorded before #4320 (no adopted list): the reversal still keeps an edit's stale intent cancelled", async () => {
+    const stale = await mintOnPayStep();
+    stripe.down = true;
+    // The edit supersedes the intent first; then the officer records cash at the new price.
+    await addGuest("Before");
+    expect(await cancelRow(stale)).toMatchObject({ status: PaymentRecoveryOperationStatus.FAILED });
+    await markPaid(PRICE_CENTS + GUEST_CENTS);
+    // The audit row as the code before #4320 wrote it: no adopted list.
+    const settleAudit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "booking-payment.manual-payment.mark-paid", targetId: BOOKING_ID },
+      select: { id: true, metadata: true },
+    });
+    const { adoptedCancelPaymentIntentIds, ...legacy } = settleAudit.metadata as Record<string, unknown>;
+    expect(adoptedCancelPaymentIntentIds).toEqual([stale]);
+    await prisma.auditLog.update({ where: { id: settleAudit.id }, data: { metadata: legacy as never } });
+
+    await reverse();
+    stripe.down = false;
+
+    expect(await liveCancelIntents()).toEqual([stale]);
+    await drainRecovery();
+    expect(stripe.intents.get(stale)!.status).toBe("canceled");
+    expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
+  });
+
+  it("MUTATION: the hand-off waits for the reversal on the Payment row: a capture landing mid-reversal settles the booking, never charged and refunded", async () => {
+    const intent = await mintOnPayStep();
+    stripe.down = true;
+    await markPaid();
+    stripe.down = false;
+    // The member pays in the tab they still hold, while the officer reverses.
+    capture(intent);
+
+    // A second connection holds the booking row, so the reversal stops at its
+    // booking write: past its "no settled card money" check, holding the Payment row.
+    const release = (() => {
+      let resolve!: () => void;
+      return { promise: new Promise<void>((done) => (resolve = done)), resolve: () => resolve() };
+    })();
+    const held = (() => {
+      let resolve!: () => void;
+      return { promise: new Promise<void>((done) => (resolve = done)), resolve: () => resolve() };
+    })();
+    const holder = holderClient.$transaction(
+      async (tx) => {
+        await tx.$queryRaw`SELECT "id" FROM "Booking" WHERE "id" = ${BOOKING_ID} FOR UPDATE`;
+        held.resolve();
+        await release.promise;
+      },
+      { maxWait: 5_000, timeout: 20_000 },
+    );
+    await held.promise;
+
+    const blocked = async () => {
+      const rows = await observerClient.$queryRaw<Array<{ count: number }>>`
+        SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+        WHERE datname = current_database() AND cardinality(pg_blocking_pids(pid)) > 0`;
+      return rows[0]?.count ?? 0;
+    };
+    const waitFor = async (count: number) => {
+      const startedAt = process.hrtime.bigint();
+      while (realElapsedMs(startedAt) < 3_000) {
+        if ((await blocked()) >= count) return true;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      return false;
+    };
+
+    let reversalError: unknown;
+    let webhookError: unknown;
+    let reversalQueued = false;
+    let handOffQueued = false;
+    let reversal: Promise<unknown> = Promise.resolve();
+    let webhookRun: Promise<unknown> = Promise.resolve();
+    try {
+      reversal = reverse().catch((error: unknown) => (reversalError = error));
+      reversalQueued = await waitFor(1);
+      // Stripe's success event arrives now: its hand-off finds the cancel row live.
+      webhookRun = deliverSucceededWebhook(intent).catch((error: unknown) => (webhookError = error));
+      handOffQueued = await waitFor(2);
+    } finally {
+      release.resolve();
+      await holder;
+      await reversal;
+      await webhookRun;
+    }
+    expect(reversalQueued, "the reversal never stopped at the held booking row").toBe(true);
+    expect(handOffQueued, "the hand-off never queued behind the reversal").toBe(true);
+    expect(reversalError).toBeUndefined();
+    expect(webhookError).toBeUndefined();
+
+    // The reversal committed first and withdrew the row: the hand-off claimed
+    // nothing, and the capture settled the booking it was meant for.
+    await drainRecovery();
+    expect(stripe.refunds).toEqual([]);
+    expect(await money()).toMatchObject({ status: "PAID", heldCents: PRICE_CENTS });
+    expect(await prisma.paymentRecoveryOperation.count({ where: { bookingId: BOOKING_ID, type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT } })).toBe(0);
   });
 });

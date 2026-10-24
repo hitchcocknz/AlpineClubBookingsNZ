@@ -4,13 +4,15 @@ import { describe, expect, it } from "vitest";
 
 /**
  * #4320 (`INV-PAY-045`): the real-PostgreSQL proof that a manual mark-paid's
- * reversal withdraws the cancellations the mark-paid queued (one a Stripe
- * outage left FAILED and retrying included) and leaves an edit's earlier
- * cancellation alone self-skips without `RUN_CONCURRENCY_RACE_TESTS`, and
+ * reversal re-derives which intents stay cancelled and withdraws the rest (one
+ * a Stripe outage left FAILED and retrying included), and that the superseded
+ * hand-off waits for it on the Payment row, self-skips without
+ * `RUN_CONCURRENCY_RACE_TESTS`, and
  * hosted CI reaches it only because the race harness imports it. Lose that
  * import and the proof silently becomes a no-op while every suite stays green -
  * so the edge is pinned here, as `superseded-intent-card-doors-realdb-wiring.test.ts`
- * pins #4300's.
+ * pins #4300's. Each scenario is matched with its `it("` opening, so one
+ * turned into `it.skip(` or `it.todo(` fails here too.
  */
 const REPO_ROOT = resolve(__dirname, "../../..");
 
@@ -29,11 +31,14 @@ describe("INV-PAY-045: the mark-paid reversal's retrying-cancel real-database pr
     for (const scenario of [
       "the mark-paid's own cancel, FAILED and retrying, is withdrawn: the member's capture of that intent settles the booking",
       "the mark-paid's own cancel, FAILED and retrying, is withdrawn: a later worker run cancels nothing",
-      "the mark-paid's own cancel, exhausted at the ceiling, is withdrawn too",
-      "an edit's cancel the mark-paid found waiting (FAILED, retrying) outlives the reversal",
-      "an edit's cancel the mark-paid found waiting outlives the reversal: the old tab's capture is refunded",
+      "the mark-paid's own cancel, exhausted at the ceiling, is withdrawn too: the reversal makes it moot",
+      "an edit's cancel the mark-paid found waiting (FAILED, retrying) outlives the reversal: the superseded intent is still cancelled",
+      "an edit's cancel the mark-paid found waiting outlives the reversal: the old tab's capture is refunded, never settles (INV-PAY-138)",
+      "MUTATION: an edit on the PAID booking that shares the settle's cancel row: the reversal keeps the intent at the old price cancelled, and its old tab's capture is refunded",
+      "MUTATION: a settle recorded before #4320 (no adopted list): the reversal still keeps an edit's stale intent cancelled",
+      "MUTATION: the hand-off waits for the reversal on the Payment row: a capture landing mid-reversal settles the booking, never charged and refunded",
     ]) {
-      expect(suite).toContain(scenario);
+      expect(suite).toContain(`it("${scenario}"`);
     }
   });
 });
