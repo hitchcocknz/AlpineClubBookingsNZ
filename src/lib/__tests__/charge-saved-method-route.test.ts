@@ -76,10 +76,20 @@ const {
 }));
 
 // #4300 (`INV-PAY-138`): step (b) asks whether the superseded machinery owns a
-// captured row; nothing here is superseded unless a case says so.
+// captured row, and where its refund stands; nothing here is superseded unless
+// a case says so (`supersededDoor.owned`, no refund started).
+const supersededDoor = vi.hoisted(() => ({ owned: new Set<string>(), handOff: vi.fn() }));
 vi.mock("@/lib/superseded-capture-ownership", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/superseded-capture-ownership")),
-  readSupersededOwnership: async () => ({ holdsForMember: new Set<string>(), owns: async () => false, returning: async () => false }),
+  readSupersededOwnership: async () => ({
+    holdsForMember: new Set<string>(),
+    owns: async (intent: string) => supersededDoor.owned.has(intent),
+    refundState: () => "not_started",
+  }),
+}));
+vi.mock("@/lib/superseded-paid-intent", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/superseded-paid-intent")),
+  handOffSupersededCaptureAfterRefusal: supersededDoor.handOff,
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -898,6 +908,24 @@ describe("POST /api/payments/charge-saved-method", () => {
       // The transaction threw, so nothing it wrote is committed; no release runs.
       expect(releaseCall()).toBeUndefined();
     });
+  });
+
+  it("#4300: a superseded capture with no refund started refuses, charges nothing, and is handed off after the rollback", async () => {
+    mockPaymentTransactionFindMany.mockResolvedValue([
+      { id: "txn_superseded", status: "SUCCEEDED", amountCents: 12500, refundedAmountCents: 0, paymentMethodId: "pm_123", stripePaymentIntentId: "pi_superseded", reference: null, reason: null },
+    ]);
+    supersededDoor.owned.add("pi_superseded");
+    try {
+      const response = await POST(makeRequest());
+      const body = await response.json();
+      expect(response.status).toBe(409);
+      expect(body).toMatchObject({ paymentIntentId: "pi_superseded" });
+      expect(body.error).toMatch(/refund has not started yet/);
+      expect(mockChargePaymentMethod).not.toHaveBeenCalled();
+      expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_superseded" }));
+    } finally {
+      supersededDoor.owned.clear();
+    }
   });
 
   it("refuses (400) a card written by a one-off checkout — no SetupIntent — and never calls Stripe (#3269)", async () => {

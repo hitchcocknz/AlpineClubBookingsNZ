@@ -31,17 +31,17 @@ reason: the check joins the existing refund-history discriminator and the
   reuse arm it guards, so the repay mint they share stays one path.
 
 file: src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts
-lines: 932
+lines: 935
 reason: the settle's new outcome needs its own answer among the route's
   existing outcome branches; the body is shared from the recovery contract.
 
 file: src/app/api/payments/charge-saved-method/route.ts
-lines: 658
+lines: 661
 reason: the settle's new outcome needs its own answer among the route's
   existing outcome branches; the body is shared from the recovery contract.
 
 file: src/lib/cron-confirm-pending.ts
-lines: 2065
+lines: 2068
 reason: the settle's new outcome needs its own branch among the cron's
   existing outcome branches, counted as failed for the alerted admins.
 

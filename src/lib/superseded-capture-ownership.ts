@@ -8,8 +8,6 @@
  * across modules) while this composition stays real.
  */
 import {
-  PaymentRecoveryOperationStatus,
-  PaymentRecoveryOperationType,
   PaymentSource,
   PaymentTransactionKind,
   type Prisma,
@@ -45,12 +43,14 @@ export type SupersededOwnership = {
    */
   owns(paymentIntentId: string, options?: { anyOwedBack?: boolean }): Promise<boolean>;
   /**
-   * #4300: is the money of a capture it owns already on its way back - a
-   * superseded refund row not SUCCEEDED, or open rows owing it back - rather
-   * than named only by a cancel row the worker has yet to hand off? What a
-   * saved-card charge asks before it charges beside such a capture.
+   * #4300: where the money of a capture it owns stands, for a saved-card charge
+   * deciding whether it may charge beside it. `in_flight`: a superseded refund
+   * the runner will still run, or running rows owing it back in full - the
+   * charge goes ahead. `stopped`: that refund (or those rows) will never run
+   * again - a person must act. `not_started`: only a cancel row names it.
+   * Fails safe: anything not provably on its way back is not `in_flight`.
    */
-  returning(paymentIntentId: string): Promise<boolean>;
+  refundState(paymentIntentId: string): "in_flight" | "stopped" | "not_started";
 };
 
 /**
@@ -63,7 +63,7 @@ export async function readSupersededOwnership(
   tx: PaymentOwnershipReader,
   paymentId: string | null,
 ): Promise<SupersededOwnership> {
-  const { holdsForMember, owedBackAtAll } = paymentId
+  const { holdsForMember, owedBackAtAll, refundInFlight, refundStopped } = paymentId
     ? await readSupersededCaptureHolds(
         tx,
         paymentId,
@@ -78,19 +78,11 @@ export async function readSupersededOwnership(
           select: { stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
         }),
       )
-    : { holdsForMember: new Set<string>(), owedBackAtAll: new Set<string>() };
+    : { holdsForMember: new Set<string>(), owedBackAtAll: new Set<string>(), refundInFlight: new Set<string>(), refundStopped: new Set<string>() };
   return {
     holdsForMember,
-    returning: async (paymentIntentId) =>
-      owedBackAtAll.has(paymentIntentId) ||
-      (await tx.paymentRecoveryOperation.findFirst({
-        where: {
-          paymentIntentId,
-          type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
-          status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
-        },
-        select: { id: true },
-      })) !== null,
+    refundState: (paymentIntentId) =>
+      refundInFlight.has(paymentIntentId) ? "in_flight" : refundStopped.has(paymentIntentId) ? "stopped" : "not_started",
     owns: async (paymentIntentId, options) =>
       holdsForMember.has(paymentIntentId) ||
       (options?.anyOwedBack === true && owedBackAtAll.has(paymentIntentId)) ||

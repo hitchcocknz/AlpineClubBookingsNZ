@@ -649,6 +649,31 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
       await expect(nextChargeAttempt()).resolves.toMatchObject({ kind: "fresh" });
     });
 
+    it("its superseded refund DEAD (Stripe refused every retry), the next attempt refuses for a person to act - never charges beside it", async () => {
+      const superseded = await mintOnPayStep();
+      stripe.failCancel = true;
+      await editAwayAndBack();
+      capture(superseded);
+      const { markBookingPaymentSucceeded } = await import("@/lib/payment-reconciliation");
+      await markBookingPaymentSucceeded({ bookingId: BOOKING_ID, paymentIntentId: superseded, amountCents: PRICE_CENTS, paymentMethodId: "pm_race_4300", format: CLUB_FORMAT_TEST });
+      // The refund worker runs it until its retries are spent, Stripe down each time.
+      stripeRaceHooks.refund = async () => {
+        throw new Error("fake Stripe: refund unavailable");
+      };
+      const refundRow = await prisma.paymentRecoveryOperation.findFirstOrThrow({
+        where: { bookingId: BOOKING_ID, paymentIntentId: superseded, type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT },
+        select: { id: true },
+      });
+      for (let attempt = 0; attempt < 6; attempt += 1) {
+        await prisma.paymentRecoveryOperation.updateMany({ where: { id: refundRow.id, nextRetryAt: { not: null } }, data: { nextRetryAt: new Date(Date.now() - 1_000) } });
+        await recovery.runPaymentRecoveryOperationNow(refundRow.id, CLUB_FORMAT_TEST);
+      }
+      const { isPaymentRecoveryOperationInFlight } = await import("@/lib/payment-recovery-constants");
+      expect(isPaymentRecoveryOperationInFlight(await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: refundRow.id } }))).toBe(false);
+
+      await expect(nextChargeAttempt()).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: superseded });
+    });
+
     it("named only by its cancel row (no refund under way yet), the next attempt waits instead of charging on top", async () => {
       const superseded = await mintOnPayStep();
       stripe.failCancel = true;

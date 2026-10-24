@@ -294,9 +294,12 @@ back to the card, so the door releases the claim like a failed charge
 the `admin-superseded-capture-refused` alert. The cron and
 `charge-saved-method` do the same. The next attempt
 (`beginSavedCardChargeAttempt`) does not count that capture as money already
-taken once its superseded refund is under way, so it charges as usual; while
-only its cancel row names it, it refuses as `superseded_capture_returning`
-(wait for the refund), never charging on top.
+taken once its refund is in flight and owes back in full, so it charges as
+usual. Otherwise it refuses, never charging on top: `superseded_capture_returning`
+while only its cancel row names it (the refusing door then hands it off),
+`superseded_refund_stopped` once its refund will never run again (a person
+must act, from Refunds owed or Stuck States), and `captured_primary_exists`
+for a capture owed back only in part.
 
 Split-booking guest-portion settlement with no card on file (#1967). A split
 non-member child (#738) is normally auto-charged at its hold deadline to the

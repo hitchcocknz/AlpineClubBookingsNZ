@@ -43,10 +43,20 @@ const mocks = vi.hoisted(() => ({
 }));
 
 // #4300 (`INV-PAY-138`): step (b) asks whether the superseded machinery owns a
-// captured row; nothing here is superseded unless a case says so.
+// captured row, and where its refund stands; nothing here is superseded unless
+// a case says so (`supersededDoor.owned`, no refund started).
+const supersededDoor = vi.hoisted(() => ({ owned: new Set<string>(), handOff: vi.fn() }));
 vi.mock("@/lib/superseded-capture-ownership", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/superseded-capture-ownership")),
-  readSupersededOwnership: async () => ({ holdsForMember: new Set<string>(), owns: async () => false, returning: async () => false }),
+  readSupersededOwnership: async () => ({
+    holdsForMember: new Set<string>(),
+    owns: async (intent: string) => supersededDoor.owned.has(intent),
+    refundState: () => "not_started",
+  }),
+}));
+vi.mock("@/lib/superseded-paid-intent", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/superseded-paid-intent")),
+  handOffSupersededCaptureAfterRefusal: supersededDoor.handOff,
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -1154,6 +1164,27 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(mocks.createStructuredAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ metadata: expect.objectContaining({ outcome: "charged_superseded_capture" }) }),
     );
+  });
+
+  it("#4300: a superseded capture with no refund started refuses, charges nothing, and is handed off after the rollback", async () => {
+    mocks.bookingFindUnique.mockResolvedValue(makeBooking());
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { id: "txn_superseded", status: "SUCCEEDED", amountCents: 10000, refundedAmountCents: 0, paymentMethodId: "pm_1", stripePaymentIntentId: "pi_superseded", reference: null, reason: null, createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    supersededDoor.owned.add("pi_superseded");
+    try {
+      const res = await POST(makeRequest(), { params });
+      const body = await res.json();
+      expect(res.status).toBe(409);
+      expect(body.error).toMatch(/refund has not started yet/);
+      expect(mocks.chargePaymentMethod).not.toHaveBeenCalled();
+      expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_superseded" }));
+      expect(mocks.createStructuredAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({ metadata: expect.objectContaining({ outcome: "charge_refused_superseded_capture_returning" }) }),
+      );
+    } finally {
+      supersededDoor.owned.clear();
+    }
   });
 
   it("moves a no-card (request-origin) booking to payment-owed without charging or capacity gate", async () => {

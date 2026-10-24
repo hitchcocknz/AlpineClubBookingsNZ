@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
 import { SUPERSEDED_CHARGE_NOT_SETTLED_BODY } from "@/lib/payment-recovery-contract";
 import { bookingOwner } from "@/lib/booking-owner";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
@@ -541,6 +542,8 @@ export async function POST(
           },
           "Admin confirm-pending-guests: refused to charge (#3267)"
         );
+        // #4300: a superseded capture with no refund started yet is handed off now.
+        await handOffSupersededCaptureAfterRefusal(claimErr);
         sendAdminPaymentFailureAlert({
           memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
           checkIn: booking.checkIn,

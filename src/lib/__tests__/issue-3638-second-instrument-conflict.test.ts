@@ -1155,6 +1155,8 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       paymentIntentId: true,
       paymentTransactionId: true,
       idempotencyKey: true,
+      attempts: true,
+      nextRetryAt: true,
     },
   };
 
@@ -1212,16 +1214,62 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
               (operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT &&
                 isPaymentRecoveryOperationInFlight(operation))),
         )
-        .map(({ id, type, status, paymentIntentId, paymentTransactionId, idempotencyKey }) => ({
+        .map(({ id, type, status, paymentIntentId, paymentTransactionId, idempotencyKey, attempts, nextRetryAt }) => ({
           id,
           type,
           status,
           paymentIntentId,
           paymentTransactionId,
           idempotencyKey,
+          attempts,
+          nextRetryAt,
         }));
     });
   }
+
+  /**
+   * #4300 (`INV-PAY-138`): the saved-card charge's reading from the same rows -
+   * is X's money on its way back (a refund the runner will still run), or has its
+   * refund stopped (a person must act)? Read straight from the holds reader.
+   */
+  describe("#4300: refundInFlight and refundStopped", () => {
+    async function holdsOf(operations: Operation[]) {
+      ownedBy(operations);
+      const { readSupersededCaptureHolds } = await import("@/lib/superseded-intent-ownership");
+      const reader = {
+        paymentRecoveryOperation: { findMany: mocks.supersededOperationFindMany },
+        payment: { findUnique: mocks.ownershipPaymentFindUnique },
+      } as never;
+      return readSupersededCaptureHolds(reader, "payment-1", [X]);
+    }
+    const intent = X.stripePaymentIntentId!;
+
+    it.each([
+      ["waiting to run", {}],
+      ["being run", { status: PaymentRecoveryOperationStatus.PROCESSING }],
+      ["failed and will retry", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 2 }],
+    ])("a superseded refund %s is in flight", async (_label, overrides) => {
+      const holds = await holdsOf([op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, overrides)]);
+      expect(holds.refundInFlight.has(intent)).toBe(true);
+      expect(holds.refundStopped.has(intent)).toBe(false);
+    });
+
+    it.each([
+      ["failed with its retries spent", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null }],
+      ["raised dead (PENDING, retries spent)", { attempts: 5 }],
+    ])("a superseded refund %s has stopped - never in flight, though the Xero reading still counts it", async (_label, overrides) => {
+      const holds = await holdsOf([op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, overrides)]);
+      expect(holds.holdsForMember.has(intent)).toBe(true);
+      expect(holds.refundInFlight.has(intent)).toBe(false);
+      expect(holds.refundStopped.has(intent)).toBe(true);
+    });
+
+    it("a capture only a cancel row names has no refund in flight or stopped", async () => {
+      const holds = await holdsOf([op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)]);
+      expect(holds.refundInFlight.has(intent)).toBe(false);
+      expect(holds.refundStopped.has(intent)).toBe(false);
+    });
+  });
 
   function alertedIntent() {
     return mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0].cardPaymentIntentId;

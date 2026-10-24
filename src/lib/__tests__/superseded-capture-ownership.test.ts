@@ -28,7 +28,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   findMany.mockResolvedValue(captures);
   recoveryFindFirst.mockResolvedValue(null);
-  mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set() });
+  mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set(), refundInFlight: new Set(), refundStopped: new Set() });
   mocks.findLiveSupersededIntentOperation.mockResolvedValue(null);
 });
 
@@ -44,7 +44,7 @@ describe("readSupersededOwnership", () => {
   });
 
   it("owns a capture the Xero reading holds for the member", async () => {
-    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(["pi_a"]), owedBackAtAll: new Set(["pi_a"]) });
+    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(["pi_a"]), owedBackAtAll: new Set(["pi_a"]), refundInFlight: new Set(), refundStopped: new Set() });
     const ownership = await readSupersededOwnership(tx, "pay-1");
     expect(ownership.holdsForMember.has("pi_a")).toBe(true);
     await expect(ownership.owns("pi_a")).resolves.toBe(true);
@@ -57,7 +57,7 @@ describe("readSupersededOwnership", () => {
   });
 
   it("a capture owed back only in part: not the guard's (it still holds cash), but the settle's", async () => {
-    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set(["pi_a"]) });
+    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set(["pi_a"]), refundInFlight: new Set(), refundStopped: new Set() });
     const ownership = await readSupersededOwnership(tx, "pay-1");
     await expect(ownership.owns("pi_a")).resolves.toBe(false);
     await expect(ownership.owns("pi_a", { anyOwedBack: true })).resolves.toBe(true);
@@ -75,31 +75,34 @@ describe("readSupersededOwnership", () => {
   });
 });
 
-describe("SupersededOwnership.returning (#4300: may a saved-card charge go ahead beside it?)", () => {
-  it("is true while a superseded refund row not SUCCEEDED names the capture", async () => {
-    recoveryFindFirst.mockResolvedValue({ id: "op-refund" });
-    await expect((await readSupersededOwnership(tx, "pay-1")).returning("pi_a")).resolves.toBe(true);
-    expect(recoveryFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: expect.objectContaining({ paymentIntentId: "pi_a", type: "REFUND_SUPERSEDED_PAYMENT", status: { not: "SUCCEEDED" } }) }),
-    );
+describe("SupersededOwnership.refundState (#4300: may a saved-card charge go ahead beside it?)", () => {
+  const holds = (sets: { refundInFlight?: string[]; refundStopped?: string[] }) =>
+    mocks.readSupersededCaptureHolds.mockResolvedValue({
+      holdsForMember: new Set(["pi_a"]),
+      owedBackAtAll: new Set(),
+      refundInFlight: new Set(sets.refundInFlight ?? []),
+      refundStopped: new Set(sets.refundStopped ?? []),
+    });
+
+  it("in_flight while the holds reader says its refund is running", async () => {
+    holds({ refundInFlight: ["pi_a"] });
+    expect((await readSupersededOwnership(tx, "pay-1")).refundState("pi_a")).toBe("in_flight");
   });
 
-  it("is true while open rows owe it back", async () => {
-    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set(["pi_a"]) });
-    await expect((await readSupersededOwnership(tx, "pay-1")).returning("pi_a")).resolves.toBe(true);
+  it("stopped when its refund will never run again - a person must act", async () => {
+    holds({ refundStopped: ["pi_a"] });
+    expect((await readSupersededOwnership(tx, "pay-1")).refundState("pi_a")).toBe("stopped");
   });
 
-  it("is false when only a cancel row names it - no refund under way yet", async () => {
-    mocks.findLiveSupersededIntentOperation.mockResolvedValue({ id: "op-cancel" });
-    const ownership = await readSupersededOwnership(tx, "pay-1");
-    await expect(ownership.owns("pi_a")).resolves.toBe(true);
-    await expect(ownership.returning("pi_a")).resolves.toBe(false);
+  it("not_started when only a cancel row names it", async () => {
+    holds({});
+    expect((await readSupersededOwnership(tx, "pay-1")).refundState("pi_a")).toBe("not_started");
   });
 });
 
 describe("supersededMachineryOwnsCapture", () => {
   it("is the settle's reading: anything owed back counts", async () => {
-    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set(["pi_a"]) });
+    mocks.readSupersededCaptureHolds.mockResolvedValue({ holdsForMember: new Set(), owedBackAtAll: new Set(["pi_a"]), refundInFlight: new Set(), refundStopped: new Set() });
     await expect(supersededMachineryOwnsCapture(tx, { paymentId: "pay-1", paymentIntentId: "pi_a" })).resolves.toBe(true);
   });
 });

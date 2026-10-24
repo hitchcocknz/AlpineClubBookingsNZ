@@ -141,11 +141,13 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   the capture is handed off and the unmuteable
   `admin-superseded-capture-refused` alert sent, worded by booking status.
   The saved-card doors release their claim; the next attempt charges once the
-  superseded refund is under way, and waits until then.
+  refund is in flight and owes back in full, and refuses until then (a dead
+  refund: a person must act).
 - **The doors ask first** (`queueSupersededPaymentIntentRefundRecovery`, given
   the intent; a lost claim asks the reading again): the webhook,
-  `confirm-payment` (also for a captured intent of the booking its pointer
-  moved past) and the reconcile arms. `confirm-payment` answers 409
+  `confirm-payment` and the `/pay` link (its `paidPaymentIntentId`) also for
+  a captured intent of the booking its pointer moved past, and the reconcile
+  arms. `confirm-payment` answers 409
   `SUPERSEDED_CARD_PAYMENT_REFUNDING`; the pay step and link mint a repay
   intent (`_repay_<intent>_<amount>_<currency>`) and return
   `previousPaymentRefunding`, shown by one notice on both pages.
