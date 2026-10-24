@@ -10,6 +10,8 @@ import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
+import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
+import { exactPrefix } from "@/lib/prisma-exact-prefix";
 
 /** The link the capture's Xero payment writes, on its `PaymentTransaction`. */
 export const ADDITIONAL_CAPTURE_PAYMENT_ROLE = "ADDITIONAL_CAPTURE_PAYMENT";
@@ -57,6 +59,68 @@ export async function findAdditionalCaptureReceiptInvoiceId(
   return typeof planned === "string" && planned.length > 0 ? planned : null;
 }
 
+/** The reason an officer's review charge carries, less its change: `buildEditFinancialReviewChargeReason`'s one spelling. */
+const REVIEW_CHARGE_REASON_PREFIX = buildEditFinancialReviewChargeReason("");
+
+/**
+ * #3953 round 7: THE CHANGE A CAPTURE PAYS FOR - its ledger row's stamp
+ * (`bookingModificationId`, every member price ask since #3954), else the
+ * change an officer's review charge names in its deterministic reason. Null
+ * for a capture neither attributes: an older member ask from before the stamp.
+ */
+export function captureChangeId(row: { bookingModificationId: string | null; reason: string | null }): string | null {
+  if (row.bookingModificationId) return row.bookingModificationId;
+  if (row.reason?.startsWith(REVIEW_CHARGE_REASON_PREFIX)) return row.reason.slice(REVIEW_CHARGE_REASON_PREFIX.length) || null;
+  return null;
+}
+
+/**
+ * The booking's change captures no change can be read from (`captureChangeId`
+ * null): older member asks from before the stamp. A fixed set - every mint
+ * since stamps its row - so it is read before any lock is taken.
+ */
+function unattributedCapturesWhere(bookingId: string): Prisma.PaymentTransactionWhereInput {
+  return {
+    payment: { bookingId },
+    kind: "ADDITIONAL",
+    bookingModificationId: null,
+    // Literally - the prefix holds `_`, a LIKE wildcard (`exactPrefix`, #4146).
+    OR: [{ reason: null }, { NOT: { reason: exactPrefix(REVIEW_CHARGE_REASON_PREFIX) } }],
+  };
+}
+
+/** Whether the booking has such a capture (`unattributedCapturesWhere`). */
+export async function bookingHasUnattributedCaptures(
+  store: Pick<Prisma.TransactionClient, "paymentTransaction">,
+  bookingId: string,
+): Promise<boolean> {
+  return (await store.paymentTransaction.count({ where: unattributedCapturesWhere(bookingId) })) > 0;
+}
+
+/**
+ * #3953 round 7: whether a supplementary invoice on the booking records a
+ * Stripe payment without naming the capture it records - the one kind of
+ * document an unattributed capture's receipt cannot tell apart from its own
+ * recorder. The receipt refuses, under the booking's lock, where one exists.
+ */
+export async function bookingHasPaidUnnamedSupplementary(
+  store: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+  bookingId: string,
+): Promise<boolean> {
+  const rows = await store.xeroSyncOperation.findMany({
+    where: {
+      queueType: "SUPPLEMENTARY_INVOICE",
+      status: { not: "CANCELLED" },
+      requestPayload: { path: ["bookingId"], equals: bookingId },
+    },
+    select: { requestPayload: true },
+  });
+  return rows.some((row) => {
+    const payload = asRecord(row.requestPayload);
+    return payload?.recordPayment !== false && payload?.primaryInvoiceGap !== true && typeof payload?.paymentIntentId !== "string";
+  });
+}
+
 /**
  * #3953 review round 6 (item 1a): WHETHER A CAPTURE THIS SUPPLEMENTARY INVOICE
  * WOULD RECORD ALREADY HAS A RECEIPT RECORDING IT - its payment linked, its row
@@ -68,13 +132,21 @@ export async function findAdditionalCaptureReceiptInvoiceId(
  */
 export async function anchorCaptureHasReceipt(
   store: Pick<Prisma.TransactionClient, "paymentTransaction" | "xeroObjectLink" | "xeroSyncOperation">,
-  input: { bookingModificationId: string | null; paymentIntentId: string | null },
+  input: { bookingId: string; bookingModificationId: string | null; paymentIntentId: string | null },
 ): Promise<boolean> {
-  const arms = [
-    ...(input.bookingModificationId ? [{ bookingModificationId: input.bookingModificationId }] : []),
+  // Round 7: the change's captures by its stamp or its review charge's
+  // reason, the one the invoice names, and every capture on the booking no
+  // change can be read from - any of which this invoice might be recording.
+  const arms: Prisma.PaymentTransactionWhereInput[] = [
+    ...(input.bookingModificationId
+      ? [
+          { bookingModificationId: input.bookingModificationId },
+          { reason: buildEditFinancialReviewChargeReason(input.bookingModificationId) },
+        ]
+      : []),
     ...(input.paymentIntentId ? [{ stripePaymentIntentId: input.paymentIntentId }] : []),
+    unattributedCapturesWhere(input.bookingId),
   ];
-  if (arms.length === 0) return false;
   const captures = await store.paymentTransaction.findMany({
     where: { kind: "ADDITIONAL", OR: arms },
     orderBy: [...LEDGER_ROWS_OLDEST_FIRST],

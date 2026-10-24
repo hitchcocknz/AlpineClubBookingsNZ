@@ -33,6 +33,7 @@ import { lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-receipt";
 import { readCaptureRecorder } from "@/lib/additional-capture-recorder";
+import { captureChangeId } from "@/lib/additional-capture-receipt-link";
 import type { PrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-fee-at-link";
 
 export type AdditionalCaptureReceiptEnqueueResult =
@@ -71,6 +72,7 @@ export async function enqueueAdditionalCaptureReceiptOperation(
       source: true,
       status: true,
       bookingModificationId: true,
+      reason: true,
       payment: {
         select: { id: true, bookingId: true, xeroInvoiceId: true, source: true, booking: { select: { status: true } } },
       },
@@ -91,8 +93,10 @@ export async function enqueueAdditionalCaptureReceiptOperation(
   if (payment.source !== PaymentSource.STRIPE) return { outcome: "not-eligible", reason: "not-a-card-booking" };
 
   const key = additionalCaptureReceiptKey(paymentIntentId);
+  // Round 7: the change its stamp or its review charge's reason names.
+  const changeId = captureChangeId(transaction);
   return prisma.$transaction(async (tx) => {
-    await lockSupplementaryInvoiceAnchor(tx, transaction.bookingModificationId ?? payment.bookingId);
+    await lockSupplementaryInvoiceAnchor(tx, changeId ?? payment.bookingId);
     const existing = await tx.xeroSyncOperation.findFirst({
       where: { correlationKey: key, status: { not: "CANCELLED" } },
       orderBy: { createdAt: "desc" },
@@ -104,7 +108,7 @@ export async function enqueueAdditionalCaptureReceiptOperation(
         bookingId: payment.bookingId,
         primaryInvoiceId,
         paymentIntentId,
-        bookingModificationId: transaction.bookingModificationId,
+        bookingModificationId: changeId,
       },
       tx,
     );

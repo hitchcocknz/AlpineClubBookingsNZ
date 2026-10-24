@@ -92,6 +92,7 @@ import {
 import { readAdditionalCaptureReceiptPayload } from "@/lib/additional-capture-receipt-payload";
 import { ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } from "@/lib/additional-capture-receipt-gate";
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
+import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 
 const PRIMARY = "11111111-1111-4111-8111-111111111111";
@@ -223,6 +224,7 @@ beforeEach(() => {
       xeroSyncOperation: {
         findFirst: mocks.findFirstOperation,
         findUnique: mocks.findUniqueOperation,
+        findMany: mocks.findManyOperation,
         update: mocks.updateOperation,
         updateMany: mocks.updateManyOperation,
       },
@@ -764,6 +766,35 @@ describe("recordAdditionalCaptureReceipt", () => {
       );
     });
 
+    it("round 7: a review charge's capture (no stamp) stores under the lock of the change its reason names", async () => {
+      mocks.findUniqueTransaction.mockResolvedValue(
+        capture({ bookingModificationId: null, reason: buildEditFinancialReviewChargeReason("mod_review") }),
+      );
+      await run();
+      expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenLastCalledWith(expect.anything(), "mod_review");
+      expect(mocks.readCaptureRecorder.mock.calls[1]![0]).toEqual(expect.objectContaining({ bookingModificationId: "mod_review" }));
+      expect(storedPlan()).toEqual(expect.objectContaining({ invoiceId: PRIMARY }));
+    });
+
+    it("round 7: a capture no change can be read from stores under the BOOKING's lock where nothing could be recording it", async () => {
+      mocks.findUniqueTransaction.mockResolvedValue(capture({ bookingModificationId: null, reason: null }));
+      await run();
+      expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenLastCalledWith(expect.anything(), "booking_1");
+      expect(storedPlan()).toEqual(expect.objectContaining({ invoiceId: PRIMARY }));
+    });
+
+    it("MUTATION round 7: refuses, telling an officer, a capture no change can be read from where a paid invoice on the booking names no capture", async () => {
+      mocks.findUniqueTransaction.mockResolvedValue(capture({ bookingModificationId: null, reason: null }));
+      mocks.findManyOperation.mockImplementation(async ({ where }: { where: { queueType?: string } }) =>
+        where.queueType === "SUPPLEMENTARY_INVOICE" ? [{ requestPayload: { bookingId: "booking_1", recordPayment: true } }] : [],
+      );
+      const seam = providers();
+      await run(seam);
+      expect(mocks.updateOperation).not.toHaveBeenCalled();
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+      expectRefused("change-unknown");
+    });
+
     it("decides again on the next run where the invoice it belongs to changed meanwhile", async () => {
       mocks.readCaptureRecorder.mockResolvedValueOnce(receiptRecorder()).mockResolvedValueOnce(gapTarget());
       const seam = providers();
@@ -863,6 +894,16 @@ describe("enqueueAdditionalCaptureReceiptOperation", () => {
       queueOperationId: "op_first",
     });
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+  });
+
+  it("round 7: locks the change a review charge's reason names where the ledger row carries no stamp", async () => {
+    tx.xeroSyncOperation.findFirst.mockResolvedValue(null);
+    mocks.findUniqueTransaction.mockResolvedValue(
+      eligible({ bookingModificationId: null, reason: buildEditFinancialReviewChargeReason("mod_review") }),
+    );
+
+    await enqueueAdditionalCaptureReceiptOperation("pi_change");
+    expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(tx, "mod_review");
   });
 
   it("locks the booking where the ledger row names no change", async () => {

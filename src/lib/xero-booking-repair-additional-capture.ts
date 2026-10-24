@@ -19,7 +19,7 @@
  * capture may be in the invoice's own payment already.
  */
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
-import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
+import { ADDITIONAL_CAPTURE_PAYMENT_ROLE, captureChangeId } from "@/lib/additional-capture-receipt-link";
 import { ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE } from "@/lib/additional-capture-xero-receipt";
 import { readPrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-gap-anchors";
 import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
@@ -70,6 +70,7 @@ type LoadBooking = {
       kind: string;
       stripePaymentIntentId: string | null;
       bookingModificationId?: string | null;
+      reason?: string | null;
     }>;
   } | null;
 };
@@ -134,14 +135,15 @@ export async function loadAdditionalCaptureReceiptEvidence(
         (operationsByTransactionId.get(capture.id) ?? []).some(
           (operation) => operation.status === "RUNNING" || asRecord(operation.requestPayload)?.plan != null,
         );
-      if (recording && capture.bookingModificationId) receiptModificationIds.add(capture.bookingModificationId);
+      const changeId = captureChangeId({ bookingModificationId: capture.bookingModificationId ?? null, reason: capture.reason ?? null });
+      if (recording && changeId) receiptModificationIds.add(changeId);
       if (hasReceipt) continue;
       const recorder = await readCaptureRecorder(
         {
           bookingId: booking.id,
           primaryInvoiceId,
           paymentIntentId: capture.stripePaymentIntentId,
-          bookingModificationId: capture.bookingModificationId ?? null,
+          bookingModificationId: changeId,
         },
         store,
       );

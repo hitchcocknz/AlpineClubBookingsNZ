@@ -83,7 +83,11 @@ import {
   switchUnsentRecorderUnpaid,
   waitFor,
 } from "@/lib/additional-capture-receipt-gate";
-import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
+import {
+  ADDITIONAL_CAPTURE_PAYMENT_ROLE,
+  bookingHasPaidUnnamedSupplementary,
+  captureChangeId,
+} from "@/lib/additional-capture-receipt-link";
 import {
   readAdditionalCaptureReceiptPayload,
   type AdditionalCaptureReceiptPlan,
@@ -182,6 +186,8 @@ const REFUSAL_TEXT = {
     "the Xero invoice this payment belongs to has nothing left due once any account credit still to be allocated to it is allowed for, so recording it would overpay that invoice",
   "recorded-elsewhere":
     "it was decided and stored before another document came to record the same payment (a supplementary invoice for the change, naming it or covering it). Check Xero shows the payment on one invoice only, correct it by hand if not, then mark this operation resolved",
+  "change-unknown":
+    "its ledger row names no booking change, and a supplementary invoice on this booking records a card payment without naming which, so whether this payment is already recorded cannot be told. Check Xero, record it by hand if it is missing, then mark this operation resolved",
   "figures-changed":
     "the invoice no longer has the amount due this payment was sized at when it was first tried, and Xero shows no payment under its reference. Record it by hand in Xero, then mark this operation resolved",
 } as const;
@@ -361,6 +367,7 @@ export async function recordAdditionalCaptureReceipt(
         amountCents: true,
         stripePaymentIntentId: true,
         bookingModificationId: true,
+        reason: true,
         payment: {
           select: {
             id: true,
@@ -404,7 +411,7 @@ export async function recordAdditionalCaptureReceipt(
       bookingId,
       primaryInvoiceId,
       paymentIntentId,
-      bookingModificationId: transaction.bookingModificationId,
+      bookingModificationId: captureChangeId(transaction),
     });
     if (recorder.kind === "primary-invoice") {
       return standDown("SUCCEEDED", "recorded-by-primary-invoice", { primaryInvoiceId });
@@ -507,12 +514,15 @@ export async function recordAdditionalCaptureReceipt(
     // other key; no Xero call under it.
     const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
     const stored = await prisma.$transaction(async (tx) => {
-      await lockSupplementaryInvoiceAnchor(tx, transaction.bookingModificationId ?? bookingId);
-      const now = await readCaptureRecorder(
-        { bookingId, primaryInvoiceId, paymentIntentId, bookingModificationId: transaction.bookingModificationId },
-        tx,
-      );
+      const changeId = captureChangeId(transaction);
+      await lockSupplementaryInvoiceAnchor(tx, changeId ?? bookingId);
+      const now = await readCaptureRecorder({ bookingId, primaryInvoiceId, paymentIntentId, bookingModificationId: changeId }, tx);
       if (now.kind !== "receipt") return now.kind;
+      // Round 7: a capture no change can be read from decides under the
+      // booking's key, which a supplementary enqueue on this booking takes
+      // first; a paid invoice there naming no capture may be its recorder,
+      // so nothing is guessed.
+      if (!changeId && (await bookingHasPaidUnnamedSupplementary(tx, bookingId))) return "change-unknown" as const;
       const nowInvoiceId = now.target ? (now.target.link?.active ? now.target.link.xeroObjectId : null) : primaryInvoiceId;
       if (nowInvoiceId !== plan.invoiceId) return "target-moved" as const;
       await tx.xeroSyncOperation.update({
@@ -521,6 +531,7 @@ export async function recordAdditionalCaptureReceipt(
       });
       return "stored" as const;
     });
+    if (stored === "change-unknown") return refuse("change-unknown");
     if (stored === "target-moved") {
       throw waitFor("The invoice this card payment belongs to changed while it was being decided; it is decided again on the next run");
     }
@@ -532,7 +543,7 @@ export async function recordAdditionalCaptureReceipt(
   async function recorderNowElsewhere(): Promise<{ kind: string; operationId: string | null } | null> {
     const capture = await prisma.paymentTransaction.findUnique({
       where: { id: paymentTransactionId },
-      select: { bookingModificationId: true, payment: { select: { xeroInvoiceId: true } } },
+      select: { bookingModificationId: true, reason: true, payment: { select: { xeroInvoiceId: true } } },
     });
     const primaryInvoiceId = capture?.payment.xeroInvoiceId;
     if (!primaryInvoiceId) return null;
@@ -540,7 +551,7 @@ export async function recordAdditionalCaptureReceipt(
       bookingId,
       primaryInvoiceId,
       paymentIntentId,
-      bookingModificationId: capture.bookingModificationId,
+      bookingModificationId: captureChangeId(capture),
     });
     if (recorder.kind === "receipt") return null;
     return { kind: recorder.kind, operationId: recorder.kind === "supplementary-invoice" ? recorder.operationId : null };

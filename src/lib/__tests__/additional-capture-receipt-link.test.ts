@@ -1,0 +1,116 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  anchorCaptureHasReceipt,
+  bookingHasPaidUnnamedSupplementary,
+  bookingHasUnattributedCaptures,
+  captureChangeId,
+} from "@/lib/additional-capture-receipt-link";
+import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
+
+// #3953 round 7 (INV-PAY-138): the change a capture pays for, and the reads
+// the per-anchor lock's callers make about captures no change can be read from.
+
+function store(input: {
+  captures?: Array<{ id: string }>;
+  link?: { id: string } | null;
+  receipts?: Array<{ status: string; requestPayload: unknown }>;
+  supplementaries?: Array<{ requestPayload: unknown }>;
+  unattributed?: number;
+}) {
+  return {
+    paymentTransaction: {
+      findMany: vi.fn(async () => input.captures ?? []),
+      count: vi.fn(async () => input.unattributed ?? 0),
+    },
+    xeroObjectLink: { findFirst: vi.fn(async () => input.link ?? null) },
+    xeroSyncOperation: {
+      findMany: vi.fn(async (args: { where: { queueType: string } }) =>
+        args.where.queueType === "SUPPLEMENTARY_INVOICE" ? (input.supplementaries ?? []) : (input.receipts ?? []),
+      ),
+    },
+  };
+}
+
+const UNATTRIBUTED = {
+  payment: { bookingId: "booking_1" },
+  kind: "ADDITIONAL",
+  bookingModificationId: null,
+  OR: [{ reason: null }, { NOT: { reason: { startsWith: "edit\\_financial\\_review\\_charge\\_" } } }],
+};
+
+describe("captureChangeId", () => {
+  it("reads the stamp first, then a review charge's reason, else nothing", () => {
+    expect(captureChangeId({ bookingModificationId: "mod_1", reason: buildEditFinancialReviewChargeReason("mod_2") })).toBe("mod_1");
+    expect(captureChangeId({ bookingModificationId: null, reason: buildEditFinancialReviewChargeReason("mod_2") })).toBe("mod_2");
+    expect(captureChangeId({ bookingModificationId: null, reason: "member_price_increase" })).toBeNull();
+    expect(captureChangeId({ bookingModificationId: null, reason: null })).toBeNull();
+    // The bare prefix names no change.
+    expect(captureChangeId({ bookingModificationId: null, reason: buildEditFinancialReviewChargeReason("") })).toBeNull();
+  });
+});
+
+describe("bookingHasUnattributedCaptures", () => {
+  it("counts the booking's change captures with no stamp and no review-charge reason, matching the prefix literally", async () => {
+    const db = store({ unattributed: 1 });
+    await expect(bookingHasUnattributedCaptures(db as never, "booking_1")).resolves.toBe(true);
+    expect(db.paymentTransaction.count).toHaveBeenCalledWith({ where: UNATTRIBUTED });
+    await expect(bookingHasUnattributedCaptures(store({}) as never, "booking_1")).resolves.toBe(false);
+  });
+});
+
+describe("bookingHasPaidUnnamedSupplementary", () => {
+  it("is true only for a live supplementary invoice that records a payment without naming its capture", async () => {
+    const named = { requestPayload: { bookingId: "booking_1", paymentIntentId: "pi_1" } };
+    const unpaid = { requestPayload: { bookingId: "booking_1", recordPayment: false } };
+    const gap = { requestPayload: { bookingId: "booking_1", primaryInvoiceGap: true } };
+    const unnamed = { requestPayload: { bookingId: "booking_1", recordPayment: true } };
+    await expect(bookingHasPaidUnnamedSupplementary(store({ supplementaries: [named, unpaid, gap] }) as never, "booking_1")).resolves.toBe(false);
+    const db = store({ supplementaries: [named, unnamed] });
+    await expect(bookingHasPaidUnnamedSupplementary(db as never, "booking_1")).resolves.toBe(true);
+    expect(db.xeroSyncOperation.findMany).toHaveBeenCalledWith({
+      where: { queueType: "SUPPLEMENTARY_INVOICE", status: { not: "CANCELLED" }, requestPayload: { path: ["bookingId"], equals: "booking_1" } },
+      select: { requestPayload: true },
+    });
+  });
+});
+
+describe("anchorCaptureHasReceipt", () => {
+  it("asks about the change's stamped and review-charge captures, the named one, and the booking's unattributed ones", async () => {
+    const db = store({ captures: [{ id: "tx_1" }], link: { id: "link_1" } });
+    await expect(
+      anchorCaptureHasReceipt(db as never, { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: "pi_1" }),
+    ).resolves.toBe(true);
+    expect(db.paymentTransaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          kind: "ADDITIONAL",
+          OR: [
+            { bookingModificationId: "mod_1" },
+            { reason: buildEditFinancialReviewChargeReason("mod_1") },
+            { stripePaymentIntentId: "pi_1" },
+            UNATTRIBUTED,
+          ],
+        },
+      }),
+    );
+  });
+
+  it("asks only about the unattributed captures where the invoice names no change and no capture", async () => {
+    const db = store({});
+    await expect(
+      anchorCaptureHasReceipt(db as never, { bookingId: "booking_1", bookingModificationId: null, paymentIntentId: null }),
+    ).resolves.toBe(false);
+    expect(db.paymentTransaction.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { kind: "ADDITIONAL", OR: [UNATTRIBUTED] } }));
+    expect(db.xeroObjectLink.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("counts a RUNNING row or a stored plan, never a PENDING row with no plan", async () => {
+    const input = { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: null };
+    const captures = [{ id: "tx_1" }];
+    await expect(anchorCaptureHasReceipt(store({ captures, receipts: [{ status: "PENDING", requestPayload: {} }] }) as never, input)).resolves.toBe(false);
+    await expect(anchorCaptureHasReceipt(store({ captures, receipts: [{ status: "RUNNING", requestPayload: {} }] }) as never, input)).resolves.toBe(true);
+    await expect(
+      anchorCaptureHasReceipt(store({ captures, receipts: [{ status: "PENDING", requestPayload: { plan: { invoiceId: "inv_1" } } }] }) as never, input),
+    ).resolves.toBe(true);
+  });
+});

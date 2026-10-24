@@ -59,6 +59,7 @@ const mocks = vi.hoisted(() => ({
   recordAdditionalCaptureReceipt: vi.fn(),
   enqueueAdditionalCaptureReceiptOperation: vi.fn(),
   anchorCaptureHasReceipt: vi.fn(),
+  bookingHasUnattributedCaptures: vi.fn(),
   createXeroMembershipCancellationCreditNote: vi.fn(),
   syncXeroMembershipCancellationContact: vi.fn(),
   isXeroConnected: vi.fn().mockResolvedValue(false),
@@ -256,6 +257,7 @@ vi.mock("@/lib/additional-capture-receipt-enqueue", () => ({
 // #3953 round 6: no capture of the anchor has a receipt unless a case says so.
 vi.mock("@/lib/additional-capture-receipt-link", () => ({
   anchorCaptureHasReceipt: (...args: unknown[]) => mocks.anchorCaptureHasReceipt(...args),
+  bookingHasUnattributedCaptures: async (...args: unknown[]) => (await mocks.bookingHasUnattributedCaptures(...args)) ?? false,
 }));
 vi.mock("@/lib/additional-capture-xero-receipt", () => ({
   recordAdditionalCaptureReceipt: mocks.recordAdditionalCaptureReceipt,
@@ -863,6 +865,7 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
       { createdByMemberId: "admin_1", paymentIntentId: "pi_change" },
     );
     expect(mocks.anchorCaptureHasReceipt).toHaveBeenCalledWith(expect.anything(), {
+      bookingId: "booking_1",
       bookingModificationId: "mod_1",
       paymentIntentId: "pi_change",
     });
@@ -870,6 +873,29 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
     expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
       expect.objectContaining({ requestPayload: expect.objectContaining({ recordPayment: false }) }),
     );
+  });
+
+  it("#3953 round 7: takes the BOOKING's key before the anchor's where the booking has a capture no change can be read from", async () => {
+    mocks.bookingHasUnattributedCaptures.mockResolvedValueOnce(true);
+    await enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: "booking_1", priceDiffCents: 2500, changeFeeCents: 500, bookingModificationId: "mod_1" },
+      { createdByMemberId: "admin_1" },
+    );
+    // Two lock statements, booking first: the one order (nothing takes them the other way round).
+    const locks = mocks.executeRaw.mock.calls.map((call) => (call as unknown[]).slice(1).join("|"));
+    expect(locks).toEqual([expect.stringContaining("booking_1"), expect.stringContaining("mod_1")]);
+    expect(mocks.anchorCaptureHasReceipt).toHaveBeenCalledWith(expect.anything(), {
+      bookingId: "booking_1",
+      bookingModificationId: "mod_1",
+      paymentIntentId: null,
+    });
+
+    mocks.executeRaw.mockClear();
+    await enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: "booking_1", priceDiffCents: 2500, changeFeeCents: 500, bookingModificationId: "mod_1" },
+      { createdByMemberId: "admin_1" },
+    );
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
   });
 
   it("#3953 round 6 (1a): a #3980 gap invoice decides its own cash; an unpaid ask is never asked", async () => {

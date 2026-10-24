@@ -9,7 +9,7 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { SECOND_INSTRUMENT_SETTLEMENT_CONFLICT_EVENT_KIND } from "@/lib/manual-settlement-reversal-event";
 import { unsettledRefundNoteRows } from "@/lib/xero-refund-note-unsettled";
 import { modificationNoteWording, readModificationNoteWording } from "@/lib/xero-refund-method";
-import { buildLateCaptureApprovalRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { buildEditFinancialReviewChargeReason, buildLateCaptureApprovalRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 
 function makeBooking(overrides: Record<string, unknown> = {}) {
@@ -9162,10 +9162,13 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
       xeroObjectNumber: null,
       xeroObjectUrl: null,
     };
-    const withChange = (receipt: "linked" | "queued" | "running" | "planned" | "none") =>
+    const withChange = (
+      receipt: "linked" | "queued" | "running" | "planned" | "none",
+      capture: Record<string, unknown> = { bookingModificationId: "mod_change" },
+    ) =>
       run({
         booking: makeBooking({
-          payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture({ bookingModificationId: "mod_change" })] },
+          payment: { ...makeBooking().payment, amountCents: 18000, transactions: [changeCapture(capture)] },
           modifications: [changeOnPrimary],
         }),
         operations: [
@@ -9222,6 +9225,16 @@ describe("runBookingXeroRepair - a change's card capture no Xero invoice records
       // Control: with no receipt, the enqueue's own default stands.
       const without = (await withChange("none")).bookingReport;
       expect(queueAction(without)?.payload).not.toHaveProperty("recordPayment");
+    });
+
+    it("MUTATION round 7: raises it unpaid where an officer's review charge for the change - no stamp, its reason naming the change - has a receipt", async () => {
+      const queueAction = (bookingReport: { actions: Array<{ type: string; payload: Record<string, unknown> }> }) =>
+        bookingReport.actions.find((action) => action.type === "QUEUE_SUPPLEMENTARY_INVOICE");
+      const reviewCharge = { bookingModificationId: null, reason: buildEditFinancialReviewChargeReason("mod_change") };
+      for (const receipt of ["linked", "planned"] as const) {
+        const report = (await withChange(receipt, reviewCharge)).bookingReport;
+        expect(queueAction(report)?.payload).toMatchObject({ bookingModificationId: "mod_change", recordPayment: false });
+      }
     });
 
     it("MUTATION round 3 (F1): raises it unpaid only for a receipt that RECORDED the capture, never one still queued or refused", async () => {

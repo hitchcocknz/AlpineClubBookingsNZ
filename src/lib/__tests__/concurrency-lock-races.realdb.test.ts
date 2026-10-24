@@ -352,6 +352,11 @@ import "./primary-invoice-edit-race.realdb.test";
 // queueing behind the change's supplementary-invoice anchor lock. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3953-` fixtures.
 import "./additional-capture-receipt.realdb.test";
+// #3953 round 7: a change capture whose ledger row carries no change stamp - a
+// review charge (read to its change by its reason) or an older member ask (the
+// booking's lock, taken before the anchor's) - still has one recorder. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3953u-` fixtures.
+import "./additional-capture-receipt-unattributed.realdb.test";
 // #3854 reuses it to prove a group organiser's settlement posts its children's
 // money to the booking ledger through the real card settle, the Internet Banking
 // invoice's inbound reconcile, the organiser cancel's refund plan and #3653's

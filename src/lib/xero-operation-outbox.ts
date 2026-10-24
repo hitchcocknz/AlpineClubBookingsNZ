@@ -70,7 +70,7 @@ import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-i
 import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
 import { outboxScanSpacesWaitingReceipts } from "@/lib/additional-capture-receipt-gate";
 import { primaryInvoiceGapPayload } from "@/lib/additional-capture-receipt-payload";
-import { anchorCaptureHasReceipt } from "@/lib/additional-capture-receipt-link";
+import { anchorCaptureHasReceipt, bookingHasUnattributedCaptures } from "@/lib/additional-capture-receipt-link";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
 import {
@@ -1629,6 +1629,8 @@ async function enqueueSupplementaryInvoiceForAnchor(
    * stale, smaller total arriving second changes nothing.
    */
   const decide = async (tx: Prisma.TransactionClient) => {
+    // #3953 round 7: where the booking has a change capture no change can be read from, its receipt decides under the BOOKING's key, so this takes that key first (booking, then anchor - the one order; nothing takes them the other way).
+    if (localId !== bookingId && (options?.recordPayment ?? true) && !options?.primaryInvoiceGap && (await bookingHasUnattributedCaptures(tx, bookingId))) await lockSupplementaryInvoiceAnchor(tx, bookingId);
     await lockSupplementaryInvoiceAnchor(tx, localId);
 
     const existingLink = await tx.xeroObjectLink.findFirst({
@@ -1708,7 +1710,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
     }
 
     // #3953 round 6: a capture its own receipt records (or is recording) is never recorded again here; a gap invoice decides its own cash.
-    const recordPayment = (options?.recordPayment ?? true) && (Boolean(options?.primaryInvoiceGap) || !(await anchorCaptureHasReceipt(tx, { bookingModificationId: localModel === "BookingModification" ? localId : null, paymentIntentId: options?.paymentIntentId ?? null })));
+    const recordPayment = (options?.recordPayment ?? true) && (Boolean(options?.primaryInvoiceGap) || !(await anchorCaptureHasReceipt(tx, { bookingId, bookingModificationId: localModel === "BookingModification" ? localId : null, paymentIntentId: options?.paymentIntentId ?? null })));
     const queuedOperation = await startXeroSyncOperation({
       direction: "OUTBOUND",
       entityType: "INVOICE",
