@@ -4,7 +4,7 @@ import { CreditType, PaymentSource, PaymentStatus, type Prisma } from "@prisma/c
 import { bookingOwner } from "@/lib/booking-owner";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { prisma } from "@/lib/prisma";
-import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
+import { withPaymentRowLock } from "@/lib/payment-row-lock";
 import logger from "@/lib/logger";
 import { type AccountCreditAllocationRepairResult, type AccountCreditAllocationTarget, type RefundedPaymentBusinessStateRepairResult } from "./types";
 import { buildBookingAppliedCreditDescription, getAmountCentsFromAllocationMetadata, getCreditNoteAmountCents, getCreditNoteIdFromAllocationMetadata, getJsonRecord, getNextRefundedPaymentStatus, getRefundContributionCentsFromCreditNoteMetadata } from "./amounts";
@@ -505,14 +505,13 @@ export async function repairRefundedPaymentBusinessState(input: {
     // waited on this lock sees the write it waited for. Every outcome is then some serial order of the claim and the void.
     const decide = async (db: Pick<Prisma.TransactionClient, "$executeRaw" | "payment" | "xeroObjectLink">) => {
       if (currentNoteRows.has(payment.id)) {
-        await lockPaymentForRefundedTotal(db, payment.id);
         const now = (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], db)).get(payment.id);
         if (includesCurrentCreditNoteContribution(payment.id) && !(now && includesCurrentCreditNoteContribution(payment.id, now))) return "recount" as const;
         if (Object.keys(updates).length === 0) return (await db.payment.findFirst({ where: asRead, select: { id: true } })) ? ("unchanged" as const) : ("lost" as const);
       } else if (Object.keys(updates).length === 0) return "unchanged" as const;
       return (await db.payment.updateMany({ where: asRead, data: updates })).count === 1 ? ("updated" as const) : ("lost" as const);
     };
-    return currentNoteRows.has(payment.id) ? prisma.$transaction((tx) => decide(tx)) : decide(prisma);
+    return currentNoteRows.has(payment.id) ? withPaymentRowLock(payment.id, decide) : decide(prisma);
   };
 
   const lostPaymentIds: string[] = [];

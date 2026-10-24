@@ -1157,8 +1157,8 @@ whose link write landed before the void's. Before #4288 it was, on a bank
 transfer and on a card payment alike: `INV-ADDPAY-021` lets an inbound recount
 raise a card ledger, never lower it. A void moves no Payment row, so the
 recount's claim alone cannot see one. For a payment holding the note's own
-refund-note row, the recount therefore decides in one short transaction. It takes
-the Payment row lock (`lockPaymentForRefundedTotal`), then re-reads that row by
+refund-note row, the recount therefore decides in one short transaction
+(`withPaymentRowLock`). It takes the Payment row lock, then re-reads that row by
 the same rule it counted it. If the row no longer counts (voided or deactivated
 since), it writes nothing and recounts once more; otherwise it takes the
 as-read claim there. An unchanged verdict also checks the payment as read, so a

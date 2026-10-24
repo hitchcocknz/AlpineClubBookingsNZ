@@ -5728,8 +5728,8 @@ recount: A counts the void and leaves the total B lowered.
 
 The void moves no Payment row, so A's claim alone cannot see a void that
 commits between A's reads and its claim. For a payment holding the note's own
-refund-note row, A decides in one short transaction: the Payment row
-(`lockPaymentForRefundedTotal`, `FOR NO KEY UPDATE`), then a plain re-read of
+refund-note row, A decides in one short transaction (`withPaymentRowLock`): the
+Payment row (`lockPaymentForRefundedTotal`, `FOR NO KEY UPDATE`), then a plain re-read of
 that link row, then the as-read claim, or nothing when the row no longer counts
 (one retry at most; a second is left to the next sync). An unchanged verdict
 also checks the payment as read under the lock. No provider call runs in it, and
