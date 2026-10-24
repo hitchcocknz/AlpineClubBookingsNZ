@@ -885,7 +885,8 @@ async function removeGuest(guestId: string) {
           // Capped at -$100: -$50 each. The first code's two rows on 1 July
           // (-$50 each) scale to -$25; the second's rows were all on nights given
           // back, so it has nothing to scale from: its build-up is not known
-          // while the first's stands, with its own Xero line (INV-MONEY-040).
+          // while the first's rows stand (the booking's Xero promotion lines
+          // fall back to the aggregate meanwhile).
           figures: [-5_000, -5_000],
           rowsByCode: [[-2_500, -2_500], []],
           reconciliation: { state: "UNRECONCILED", reasons: ["PROMO_BUILD_UP_NOT_KNOWN"] },

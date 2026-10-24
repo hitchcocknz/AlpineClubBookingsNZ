@@ -265,7 +265,8 @@ describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner deci
     it("a NOT KNOWN amount, or an allocation with no row left, writes none for that code only", () => {
       const rows = [row(N1, null), row(N1, -2_000, { promoRedemptionId: "redemption-2", bookingGuestId: "guest-b" })];
       const codes = [recorded(-3_000, [["booker", -3_000]]), recorded(-1_000, [["booker", -1_000]], "redemption-2")];
-      // The second code keeps KNOWN rows, and with them its own Xero line (INV-MONEY-040).
+      // The second code keeps KNOWN rows. (The booking's Xero promotion lines
+      // still fall back to the aggregate while the first reads not known.)
       expect(scaleCappedCarriedRows(rows, codes)).toEqual([null, -1_000]);
       expect(scaleCappedCarriedRows([], [recorded(-3_000, [["booker", -3_000]])])).toEqual([]);
     });
