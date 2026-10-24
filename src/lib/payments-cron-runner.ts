@@ -21,6 +21,7 @@ import { processPaymentRecoveryOperations } from "@/lib/payment-recovery";
 import { reapStaleWaitingPaymentXeroOutboxOperations } from "@/lib/xero-waiting-invoice-reaper";
 import { reannounceHeldLateCaptures } from "@/lib/late-capture-refund-hold";
 import { runCreditReleaseAskSweep } from "@/lib/credit-release-ask-sweep";
+import { drainOwedNewCaptureAlerts } from "@/lib/duplicate-capture-kept-alert-drain";
 import { runRecordedCronTask } from "@/lib/cron-recorded-task";
 import { reportCronError } from "@/lib/observability-bridge";
 
@@ -29,7 +30,8 @@ export type PaymentsCronJobName =
   | "internet-banking-hold-release"
   | "xero-waiting-invoice-reaper"
   | "late-capture-held-alert"
-  | "credit-release-asks";
+  | "credit-release-asks"
+  | "duplicate-capture-kept-alert";
 
 /** A task's result, or `null` when that task failed (its FAILURE row says why). */
 export interface PaymentsCronCycleResult {
@@ -44,6 +46,8 @@ export interface PaymentsCronCycleResult {
   lateCaptureHeldAlert: Awaited<ReturnType<typeof reannounceHeldLateCaptures>> | null;
   /** #4253: the sweep that asks for credit released after a Xero offset and records its payment. */
   creditReleaseAsks: Awaited<ReturnType<typeof runCreditReleaseAskSweep>> | null;
+  /** #4285 review: the owed new-capture alert's drain. */
+  duplicateCaptureKeptAlert: Awaited<ReturnType<typeof drainOwedNewCaptureAlerts>> | null;
 }
 
 export interface PaymentsCronFailure {
@@ -122,6 +126,7 @@ export async function runPaymentsCronCycle(): Promise<PaymentsCronCycleResult> {
     xeroOutboxReap: null,
     lateCaptureHeldAlert: null,
     creditReleaseAsks: null,
+    duplicateCaptureKeptAlert: null,
   };
   const failures: PaymentsCronFailure[] = [];
 
@@ -156,6 +161,12 @@ export async function runPaymentsCronCycle(): Promise<PaymentsCronCycleResult> {
     resultKey: "creditReleaseAsks",
     failureMessage: "Failed to run the credit-release payment sweep",
     work: () => runCreditReleaseAskSweep(),
+  });
+  await runRecordedTask(result, failures, {
+    jobName: "duplicate-capture-kept-alert",
+    resultKey: "duplicateCaptureKeptAlert",
+    failureMessage: "Failed to deliver owed kept-capture alerts",
+    work: () => drainOwedNewCaptureAlerts(),
   });
 
   if (failures.length > 0) {

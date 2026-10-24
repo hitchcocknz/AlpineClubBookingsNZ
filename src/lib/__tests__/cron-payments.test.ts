@@ -7,6 +7,7 @@ const {
   mockReapStaleWaitingPaymentXeroOutboxOperations,
   mockReannounceHeldLateCaptures,
   mockRunCreditReleaseAskSweep,
+  mockDrainOwedNewCaptureAlerts,
   mockCronJobRunCreate,
   mockReportCronError,
 } = vi.hoisted(() => ({
@@ -15,6 +16,7 @@ const {
   mockReapStaleWaitingPaymentXeroOutboxOperations: vi.fn(),
   mockReannounceHeldLateCaptures: vi.fn(),
   mockRunCreditReleaseAskSweep: vi.fn(),
+  mockDrainOwedNewCaptureAlerts: vi.fn(),
   mockCronJobRunCreate: vi.fn(),
   mockReportCronError: vi.fn(),
 }));
@@ -57,9 +59,14 @@ vi.mock("@/lib/late-capture-refund-hold", () => ({
   reannounceHeldLateCaptures: (...args: unknown[]) => mockReannounceHeldLateCaptures(...args),
 }));
 
-// #4253: the fifth task, the credit-release payment sweep.
+// #4253: the sixth task, the credit-release payment sweep.
 vi.mock("@/lib/credit-release-ask-sweep", () => ({
   runCreditReleaseAskSweep: (...args: unknown[]) => mockRunCreditReleaseAskSweep(...args),
+}));
+
+// #4285 review: the sixth task, the owed new-capture alert's drain.
+vi.mock("@/lib/duplicate-capture-kept-alert-drain", () => ({
+  drainOwedNewCaptureAlerts: (...args: unknown[]) => mockDrainOwedNewCaptureAlerts(...args),
 }));
 
 vi.mock("@/lib/logger", () => ({
@@ -103,6 +110,7 @@ describe("POST /api/cron/payments", () => {
     });
     mockReannounceHeldLateCaptures.mockResolvedValue({ checked: 0, announced: 0 });
     mockRunCreditReleaseAskSweep.mockResolvedValue({ enqueued: 0, payments: null, closes: null });
+    mockDrainOwedNewCaptureAlerts.mockResolvedValue({ checked: 0, sent: 0 });
     mockReapStaleWaitingPaymentXeroOutboxOperations.mockResolvedValue({
       reaped: 0,
       released: 0,
@@ -143,6 +151,7 @@ describe("POST /api/cron/payments", () => {
     expect(mockReapStaleWaitingPaymentXeroOutboxOperations).toHaveBeenCalledOnce();
     expect(mockReannounceHeldLateCaptures).toHaveBeenCalledOnce();
     expect(mockRunCreditReleaseAskSweep).toHaveBeenCalledOnce();
+    expect(mockDrainOwedNewCaptureAlerts).toHaveBeenCalledOnce();
     expect(data.internetBankingHoldRelease).toMatchObject({ released: 0, failed: 0 });
     expect(data.xeroOutboxReap).toMatchObject({ reaped: 0 });
     expect(recordedRuns()).toEqual([
@@ -151,6 +160,7 @@ describe("POST /api/cron/payments", () => {
       expect.objectContaining({ jobName: "xero-waiting-invoice-reaper", status: "SUCCESS" }),
       expect.objectContaining({ jobName: "late-capture-held-alert", status: "SUCCESS" }),
       expect.objectContaining({ jobName: "credit-release-asks", status: "SUCCESS" }),
+      expect.objectContaining({ jobName: "duplicate-capture-kept-alert", status: "SUCCESS" }),
     ]);
   });
 
@@ -183,6 +193,7 @@ describe("POST /api/cron/payments", () => {
     ["xero-waiting-invoice-reaper", mockReapStaleWaitingPaymentXeroOutboxOperations, "xeroOutboxReap"],
     ["late-capture-held-alert", mockReannounceHeldLateCaptures, "lateCaptureHeldAlert"],
     ["credit-release-asks", mockRunCreditReleaseAskSweep, "creditReleaseAsks"],
+    ["duplicate-capture-kept-alert", mockDrainOwedNewCaptureAlerts, "duplicateCaptureKeptAlert"],
   ] as const)(
     "keeps running the other tasks when %s fails, and reports it as failed",
     async (failingJob, failingMock, resultKey) => {
@@ -207,7 +218,7 @@ describe("POST /api/cron/payments", () => {
         expect.objectContaining({ tag: failingJob })
       );
       const runs = recordedRuns();
-      expect(runs).toHaveLength(5);
+      expect(runs).toHaveLength(6);
       for (const run of runs) {
         expect(run.status).toBe(run.jobName === failingJob ? "FAILURE" : "SUCCESS");
       }
