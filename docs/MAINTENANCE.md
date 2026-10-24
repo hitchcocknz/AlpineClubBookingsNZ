@@ -1444,6 +1444,40 @@ every record-by-hand finding, it keeps appearing after the refund is recorded
 by hand, and that is expected: the app cannot see what is recorded by hand in
 Xero, and the tool has no way to acknowledge a finding (#3924 round 12).
 
+**Card payment not recorded in Xero** (#3953, `INV-PAY-139`). A booking change
+whose extra the member paid by card after the booking's Xero invoice was raised,
+when no supplementary invoice waited on that payment, is recorded by its own
+receipt (`ADDITIONAL_CAPTURE_RECEIPT` in Xero Operations). A capture missed
+before that existed, or whose receipt never queued, raises
+`ADDITIONAL_CAPTURE_NOT_RECORDED_IN_XERO`. It never fires on a cancelled
+booking, on a booking with no Xero invoice, or where another document records
+the payment: the invoice's own payment, the change's own supplementary invoice
+where it records a payment, or one naming or paying it. Its `QUEUE_ADDITIONAL_CAPTURE_RECEIPT` action
+queues the receipt, which reads the invoice in Xero first and records the
+payment only against money still due, or refuses and emails the treasurer; it
+is auto-applied only where the invoice's stored figures say its own payment did
+not cover the capture. Where the invoice predates those figures the finding is
+`manual_review`: check Xero for the payment first, then apply the action by key
+if it is missing. A receipt that failed is offered for retry
+(`BLOCKED_BY_XERO_OPERATION`); one the worker refused (code
+`ADDITIONAL_CAPTURE_RECEIPT_REFUSED`) is reported for an officer - its
+operation says why; record the payment by hand and mark it resolved, or fix the
+cause and **Retry**. The tool's own missing-supplementary-invoice action raises
+that invoice unpaid where the change's capture is recorded, or may be being
+recorded, by its receipt (its Xero payment linked, the operation running, or its
+payment already decided); a receipt that has decided nothing yet then records the
+payment against that unpaid invoice. A **Retry** of a change's supplementary
+invoice whose card payment its own receipt records raises it unpaid, and says
+so. That holds for an officer's review charge
+too (its change is read from the charge), and for an older capture whose change
+the app never recorded, any of whose receipts makes an invoice on the booking
+that names no card payment go unpaid (one naming its own payment is left as
+it is). A receipt for such an older capture refuses, telling the treasurer,
+where a paid invoice on the booking names no card payment, or a change's
+invoice from before that record existed has a Stripe payment recorded in
+Xero: check in Xero whether that
+invoice already records it, then record by hand or resolve.
+
 A late capture the treasurer **approved** refunding, whose card refund Stripe
 gave up on and which was then closed as **Paid another way** before Xero had
 its receipt, owes that receipt too, and the close's bank-transfer note waits
