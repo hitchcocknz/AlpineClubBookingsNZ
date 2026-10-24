@@ -9,13 +9,14 @@
  * Both run inside the caller's transaction, under its locks (global lock(1),
  * the lodge key and the Payment row); neither calls a provider.
  */
-import { PaymentSource, PaymentStatus, PaymentTransactionKind, type Prisma } from "@prisma/client";
+import { PaymentSource, PaymentTransactionKind, type Prisma } from "@prisma/client";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import {
   queueSupersededAdditionalIntentCancellationRows,
   queueSupersededPrimaryIntentCancellations,
 } from "@/lib/booking-payment-cleanup";
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
+import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { buildPaymentIntentCancelRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { liveSupersededOperation } from "@/lib/superseded-intent-ownership";
 
@@ -83,7 +84,7 @@ export async function enqueueManualSettlementIntentCancellations(
       // Non-terminal only. A SUCCEEDED row is money already in the ledger (and
       // the duplicate-capture machinery's business), and FAILED/REFUNDED rows
       // have nothing left to cancel.
-      status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+      status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
     },
     select: {
       id: true,
@@ -242,7 +243,7 @@ export async function withdrawManualSettlementIntentCancellations(
     where: {
       paymentId,
       source: PaymentSource.STRIPE,
-      status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+      status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
       stripePaymentIntentId: { not: null, notIn: kept },
     },
     select: { stripePaymentIntentId: true },
