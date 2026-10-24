@@ -28,6 +28,7 @@ describe("the change capture receipt proof stays wired into CI (#3953)", () => {
     expect(suite).toContain("is recorded once, by its receipt, where the figures say the primary's cash did not cover it");
     expect(suite).toContain("is recorded once, by the gap invoice that names it, where the figures cannot say");
     expect(suite).toContain("only one of two receipts claimed at once reaches Xero; the other waits for it");
+    expect(suite).toContain("both gates queue on the booking's anchor lock held elsewhere; released, only one passes");
     expect(suite).toContain("a create dead past the staleness threshold blocks neither; a live one blocks both");
   });
 });

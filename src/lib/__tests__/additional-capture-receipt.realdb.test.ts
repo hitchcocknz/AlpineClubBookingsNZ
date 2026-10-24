@@ -16,9 +16,11 @@
  *     unpaid and names nothing) when the link's figures say the primary's cash
  *     did not cover it, or by the gap invoice (which names it, and the
  *     receipt then stands down) when the figures cannot say.
- *  5. Review rounds 3 and 4: two receipts on one booking go through the
+ *  5. Review rounds 3 to 5: two receipts on one booking go through the
  *     outbox's real claim and the real worker from one barrier - only one
- *     passes the planning gate and reaches Xero, the other waits for it; a
+ *     passes the planning gate and reaches Xero, the other waits for it -
+ *     also with both gates queued together on the booking's anchor lock held
+ *     by another session; a
  *     create dead past the staleness threshold blocks neither, a live one
  *     blocks both.
  *  3. The enqueue runs under the existing per-anchor supplementary-invoice lock
@@ -538,6 +540,87 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
           waitCode: gate.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
           message: expect.stringContaining(reached[0]!),
         }),
+      });
+    });
+
+    it("both gates queue on the booking's anchor lock held elsewhere; released, only one passes (round 5, item 3)", async () => {
+      let holderPid = 0;
+      let releaseHolder!: () => void;
+      const held = new Promise<void>((resolve) => {
+        releaseHolder = resolve;
+      });
+      let locked!: () => void;
+      const lockTaken = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const holder = prisma.$transaction(
+        async (tx) => {
+          const rows = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid()::int AS pid`;
+          holderPid = rows[0]?.pid ?? 0;
+          await outbox.lockSupplementaryInvoiceAnchor(tx, BOOKING_ID);
+          locked();
+          await held;
+        },
+        { timeout: 20_000 },
+      );
+      await lockTaken;
+
+      const ids = ["race-3953-receipt-1", "race-3953-receipt-2"];
+      const reached: string[] = [];
+      let settledCount = 0;
+      let releaseSeam!: () => void;
+      const seamHeld = new Promise<void>((resolve) => {
+        releaseSeam = resolve;
+      });
+      const runs = ids.map((id) =>
+        (async () => {
+          const claimed = await claim.claimXeroSyncOperationToRunning(id, {
+            direction: "OUTBOUND",
+            entityType: "PAYMENT",
+            operationType: "CREATE",
+            localModel: { in: ["PaymentTransaction"] },
+          });
+          if (!claimed) throw new Error(`claim of ${id} lost`);
+          return worker.recordAdditionalCaptureReceipt(
+            { syncOperationId: id },
+            {
+              getAuthenticatedXeroClient: async () => {
+                reached.push(id);
+                await seamHeld;
+                throw new busy.XeroAppliedCreditOperationBusyError("test: stop at the Xero call");
+              },
+              callXeroApi: (async () => {
+                throw new Error("unreachable");
+              }) as never,
+              createXeroPaymentForInvoice: async () => {
+                throw new Error("unreachable");
+              },
+              readStripeCaptureDocumentDate: async () => null,
+            },
+          );
+        })().finally(() => {
+          settledCount += 1;
+        }),
+      );
+      for (const run of runs) run.catch(() => undefined);
+
+      // Both gates have read nothing yet: they wait on the lock, together.
+      expect(await untilQueuedBehind(holderPid, 2)).toBe(2);
+      expect(reached).toEqual([]);
+      releaseHolder();
+      await holder;
+
+      const startedAt = process.hrtime.bigint();
+      while (settledCount + reached.length < ids.length && realElapsedMs(startedAt) < LOCK_POLL_TIMEOUT_MS) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      releaseSeam();
+      const outcomes = await Promise.allSettled(runs);
+      expect(reached).toHaveLength(1);
+      const waiter = outcomes[ids.indexOf(ids.find((id) => id !== reached[0])!)];
+      expect(waiter).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({ waitCode: gate.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE }),
       });
     });
 
