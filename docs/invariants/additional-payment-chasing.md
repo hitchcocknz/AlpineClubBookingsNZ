@@ -1689,29 +1689,31 @@ decision and would need its own owner decision.
 
 ### INV-ADDPAY-044
 
-- **An edit's after-commit mint never leaves a live ask on a booking that has
-  ended** (#4316, the cancelled-booking case of `INV-ADDPAY-023`). The edit
-  doors decide to ask the card under `lock(1)`, but
-  `createModificationAdditionalPaymentIntent` mints after their commit - as
-  does the recovery runner's replay of a failed mint
-  (`processCreateAdditionalPaymentIntentOperation`) - and the paid cancel's
-  claim retires only the intent it reads on the `Payment` mirror. Both minters
-  re-read the booking twice, against
-  `ADDITIONAL_ASK_RETIRED_BOOKING_STATUSES` (CANCELLED, BUMPED):
+- **An after-commit mint never leaves a live ask on a booking that has ended**
+  (#4316, the cancelled-booking case of `INV-ADDPAY-023`). Three minters run
+  after the decision to ask commits: the edit doors'
+  `createModificationAdditionalPaymentIntent`, the recovery runner's replay of
+  a failed mint (`processCreateAdditionalPaymentIntentOperation`) and a
+  currency re-issue (`reissueAdditionalIntentInClubCurrency`). Each re-reads
+  the booking twice against `ADDITIONAL_ASK_RETIRED_BOOKING_STATUSES`
+  (CANCELLED, BUMPED):
   - **Before the provider call:** an ended booking is asked nothing and owes
-    nothing - no intent, no row, no recovery.
+    nothing.
   - **After the new row is written:** a cancel that committed in between could
-    not see the intent, so the minter retires it with the claim's own routine,
-    `failOutstandingAdditionalAskInClaim`, under the `Payment` row lock - the
-    mirror and the row FAILED and a durable `CANCEL_PAYMENT_INTENT` queued,
-    then run now. The row write takes that lock too, so the two writers cannot
-    both miss: the cancel that held it first is seen by the re-read, and one
-    that took it after reads the new intent and retires it itself.
-- **The door is told the ask is retired, with no intent id.** No secret is
-  offered and no figure named as due; the Xero leg raises no supplementary
-  invoice; a review charge takes its cancelled path (`INV-PAY-112`). The
-  runner closes its recovery row and queues no invoice.
-- **No new advisory key.** A failed retirement is logged with the intent, and
-  still offers no secret.
-  Home: `ended-booking-ask-guard.ts`. Pinned by `ended-booking-ask-mint-guard`
-  and `ended-booking-ask-mint-race` (realdb).
+    not see the intent. Its `CANCEL_PAYMENT_INTENT` row is queued first, on its
+    own, then the ask retired with the cancel claim's own routine,
+    `failOutstandingAdditionalAskInClaim`, under the `Payment` row lock, and
+    cancelled now.
+- **The two writers cannot both miss.** The row write and BOTH cancel claims -
+  the paid path's and the never-captured branch's, which a fully REFUNDED
+  payment takes - hold the `Payment` row: a cancel that held it first is seen
+  by the re-read; one that took it after reads the new intent and retires it.
+- **Nothing is offered.** No secret, no figure named as due, no supplementary
+  invoice; a currency re-issue answers the pay door with nothing payable. A
+  review charge on a CANCELLED or BUMPED booking takes its cancelled path
+  (`INV-PAY-112`).
+- **A failed retirement still ends.** The door's queued cancellation finishes
+  it; the runner throws, retries, and retires the ask before closing.
+- **No new advisory key.** Home: `ended-booking-ask-guard.ts`. Pinned by
+  `ended-booking-ask-mint-guard`, `payment-recovery`,
+  `additional-intent-currency` and `ended-booking-ask-mint-race` (realdb).
