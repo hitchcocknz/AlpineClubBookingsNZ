@@ -60,6 +60,8 @@ export const OPEN_TASK_BOOKING_PAYMENT_SELECT = {
   payment: {
     select: { id: true, status: true, amountCents: true, refundedAmountCents: true, source: true },
   },
+  // #4317: the guests as they stand, ids only, for `reviewGuestRemovedSinceRaised`.
+  guests: { select: { id: true } },
 } as const;
 
 /** An OPEN row the operator has to settle by hand. */

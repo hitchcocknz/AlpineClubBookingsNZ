@@ -36,10 +36,7 @@ import {
   type ClubDateFormat,
 } from "@/lib/club-time";
 import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
-import {
-  REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING,
-  zeroCompletionRefusal,
-} from "@/lib/manual-refund-task-copy";
+import { REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING, zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
 // #3213: whether a row may be closed as money that moved is decided ONCE, in a
 // client-safe home, and the completion door throws on the same answer
 // (`manual-refund-task-resolution.ts`, `INV-SSOT`). Deciding it again here is
@@ -141,10 +138,7 @@ interface ManualRefundTask {
    */
   reviewEvidence?: EditFinancialReviewEvidence | null;
   reviewEvidenceUnreadable?: boolean;
-  /**
-   * #4317 (owner decision on #4302): a guest this review names was removed after
-   * it was raised and already credited. Optional, as above: absent, no warning.
-   */
+  /** #4317 (owner, #4302): a guest it names was removed since, already credited. Absent: no warning. */
   reviewGuestRemovedSinceRaised?: boolean;
   /**
    * #3191: this booking's nights that carry no stored price, and the two totals
@@ -1895,13 +1889,7 @@ export function ManualRefundTaskQueue() {
                         </p>
                       ) : null}
                       {task.reviewGuestRemovedSinceRaised ? (
-                        <p
-                          role="alert"
-                          className="text-sm font-medium text-warning-11"
-                          data-testid="manual-refund-task-review-guest-removed"
-                        >
-                          {REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING}
-                        </p>
+                        <p role="alert" className="text-sm font-medium text-warning-11" data-testid="manual-refund-task-review-guest-removed">{REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING}</p>
                       ) : null}
                       {task.reviewEvidence ? (
                         <EditFinancialReviewEvidenceBlock

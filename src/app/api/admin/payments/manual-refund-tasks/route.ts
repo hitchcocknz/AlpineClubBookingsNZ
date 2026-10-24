@@ -92,10 +92,6 @@ export async function GET() {
     memberId: true,
     deletedAt: true,
     ...OPEN_TASK_BOOKING_PAYMENT_SELECT,
-    // #4317: the guests as they stand, so a review whose guest was removed
-    // after it was raised can warn the officer (`reviewGuestRemovedSinceRaised`).
-    // Ids only; nothing about the guests reaches the browser.
-    guests: { select: { id: true } },
   } as const;
 
   /*
