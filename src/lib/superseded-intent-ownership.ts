@@ -20,9 +20,8 @@
  *   real settlement (#4177). Never on a CANCELLED booking: there the new bank
  *   cash has nowhere to go, so every capture still counts.
  *
- * One home for the operation types and the refund's liveness. Three readers
- * fail safe in two directions, so they read a CANCEL_PAYMENT_INTENT operation
- * differently:
+ * One home for the operation types and the refund's liveness. Its readers
+ * fail safe in different directions, so they read an operation differently:
  *
  * - guards (b′) and (c′) (`listLiveSupersededIntentIds`,
  *   `findLiveSupersededIntentOperation`) treat any operation not SUCCEEDED as
@@ -42,7 +41,19 @@
  *   is never refunded on top as a duplicate, while one behind a dead cancel is
  *   a duplicate like any other (wrongly keeping it would keep money twice with
  *   nobody told). The guard's (b′) and (c′) add this reading's owed-back
- *   captures to their own (#4227).
+ *   captures to their own (#4227);
+ * - the settle and the card doors (#4300, `INV-PAY-138`) ask whether they may
+ *   settle a booking with a capture at all: (c′), the Xero reading, and any
+ *   capture open rows owe back ANY part of - never settle with money partly
+ *   going back. Composed with the guard's in `superseded-capture-ownership.ts`;
+ * - a saved-card charge (#4300, `beginSavedCardChargeAttempt`) asks whether it
+ *   may charge beside a capture the machinery owns (the Xero reading, never
+ *   "any part owed back": a capture partly owed back still holds money and
+ *   refuses as taken). It reads `refundInFlight`: a superseded refund row the
+ *   runner will still run (`isPaymentRecoveryOperationInFlight`), or running
+ *   rows owing it back in full. It fails safe toward NOT charging: a dead
+ *   refund (`refundStopped`) or one not yet started refuses, because charging
+ *   beside a refund that never completes holds the price twice.
  *
  * Under (b′) and (c′) a superseded-machinery operation counts as LIVE while it
  * is not SUCCEEDED:
@@ -74,12 +85,14 @@ import {
   OPEN_CARD_REFUND_OPERATION_WHERE,
   unsentSliceCents,
 } from "@/lib/open-card-refund-owed";
-import { PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
+import { isPaymentRecoveryOperationInFlight, PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
 import {
   CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
   cardRefundFailedLaterRefundId,
+  duplicateCaptureIntentIdForRecoveryKey,
 } from "@/lib/payment-recovery-keys";
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
+import { duplicateCaptureRefundOperationWhere } from "@/lib/duplicate-capture-ownership";
 
 export const SUPERSEDED_INTENT_OPERATION_TYPES = [
   PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
@@ -89,7 +102,7 @@ export const SUPERSEDED_INTENT_OPERATION_TYPES = [
 type RecoveryOperationReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation">;
 
 /** The Xero reader also reads the payment, for what each open row still owes (#4221). */
-type OwnershipReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation" | "payment">;
+export type OwnershipReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation" | "payment">;
 
 /** The one liveness predicate both reads below share. */
 function liveSupersededOperation() {
@@ -141,6 +154,9 @@ type OwnershipRow = {
   paymentIntentId: string;
   paymentTransactionId: string | null;
   idempotencyKey: string;
+  /** #4300: whether the runner will still run it (`isPaymentRecoveryOperationInFlight`). */
+  attempts: number;
+  nextRetryAt: Date | null;
 };
 
 /** A capture the Xero reader may name: what it holds is its amount less its counted refunds. */
@@ -210,10 +226,25 @@ function supersededRefundsOwedAgainCents(
   payment: CardRefundOwedPaymentRow | null,
 ): Map<string, number> {
   const supersededRefunds = rows.filter((row) => row.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
-  const superseded = new Set(supersededRefunds.map((row) => row.paymentIntentId));
-  const intentOfTransaction = new Map(
-    supersededRefunds.flatMap((row) => (row.paymentTransactionId === null ? [] : [[row.paymentTransactionId, row.paymentIntentId] as const])),
-  );
+  return refundsOwedAgainCents(rows, payment, {
+    intents: new Set(supersededRefunds.map((row) => row.paymentIntentId)),
+    intentOfTransaction: new Map(
+      supersededRefunds.flatMap((row) => (row.paymentTransactionId === null ? [] : [[row.paymentTransactionId, row.paymentIntentId] as const])),
+    ),
+  });
+}
+
+/**
+ * The cents rule behind `supersededRefundsOwedAgainCents`, for any refund
+ * machinery: `intents` are the captures its refunds were made on, and
+ * `intentOfTransaction` names each by its ledger row. #4285 review: the
+ * duplicate-capture refunds read it too (`listDuplicateRefundIntentIdsOwningCaptures`).
+ */
+function refundsOwedAgainCents(
+  rows: readonly OwnershipRow[],
+  payment: CardRefundOwedPaymentRow | null,
+  { intents: superseded, intentOfTransaction }: { intents: ReadonlySet<string>; intentOfTransaction: ReadonlyMap<string, string> },
+): Map<string, number> {
   const slicesOf = new Map(
     (payment ? cardRefundSlicesByOperation(payment) : []).map(({ operation, slices }) => [operation.id, slices] as const),
   );
@@ -238,7 +269,7 @@ function supersededRefundsOwedAgainCents(
 async function readSupersededRefundsOwedAgain(tx: OwnershipReader, paymentId: string, extraRows: Prisma.PaymentRecoveryOperationWhereInput[]) {
   const operations: OwnershipRow[] = await tx.paymentRecoveryOperation.findMany({
     where: { paymentId, OR: [...SUPERSEDED_REFUND_OWED_AGAIN_WHERE, ...extraRows] },
-    select: { id: true, type: true, status: true, paymentIntentId: true, paymentTransactionId: true, idempotencyKey: true },
+    select: { id: true, type: true, status: true, paymentIntentId: true, paymentTransactionId: true, idempotencyKey: true, attempts: true, nextRetryAt: true },
   });
   // What each card refund row still owes, as the owed figure reads it.
   const payment = await tx.payment.findUnique({
@@ -246,6 +277,11 @@ async function readSupersededRefundsOwedAgain(tx: OwnershipReader, paymentId: st
     select: { status: true, amountCents: true, refundedAmountCents: true, ...netCollectedCardRefundSelect },
   });
   return { operations, payment };
+}
+
+/** Whether open rows owe a capture back again for at least all it still holds. */
+function isOwedBackInFull(owedCents: number, capture: OwnershipCapture): boolean {
+  return owedCents >= capture.amountCents - capture.refundedAmountCents;
 }
 
 /** The captures open rows owe back again for at least all each still holds. */
@@ -257,9 +293,46 @@ function owedBackInFull(
   const owned = new Set<string>();
   for (const [intent, owedCents] of supersededRefundsOwedAgainCents(operations, payment)) {
     const capture = captures.find((each) => each.stripePaymentIntentId === intent);
-    if (capture && owedCents >= capture.amountCents - capture.refundedAmountCents) owned.add(intent);
+    if (capture && isOwedBackInFull(owedCents, capture)) owned.add(intent);
   }
   return owned;
+}
+
+/**
+ * #4285 review: of this booking's duplicate-capture refunds, the captures each
+ * still holds for the member - what an admin is told is NOT another payment
+ * (the guard's `readTellingWhere`). A refund operation not yet SUCCEEDED owns its
+ * capture (still being sent, or dead and alerted to the treasurer), as does a
+ * capture its refund left nothing in. One SUCCEEDED whose refund Stripe failed
+ * later owns it only while open rows owe it back again for at least all it
+ * holds - #4221's cents check, by the same rule (`refundsOwedAgainCents`). A
+ * failure nothing re-sends (`not-resent`) leaves money nothing will return, so
+ * that capture is told as another payment holding money. `captures` are the
+ * payment's captured PRIMARY Stripe rows with net cash. Read-only.
+ */
+export async function listDuplicateRefundIntentIdsOwningCaptures(
+  tx: OwnershipReader,
+  input: { bookingId: string; paymentId: string; captures: readonly (OwnershipCapture & { id: string })[] },
+): Promise<string[]> {
+  const { operations, payment } = await readSupersededRefundsOwedAgain(tx, input.paymentId, [duplicateCaptureRefundOperationWhere(input.bookingId)]);
+  const refunds = operations.flatMap((operation) => {
+    const intent = duplicateCaptureIntentIdForRecoveryKey(input.bookingId, operation.idempotencyKey);
+    return intent === null ? [] : [{ operation, intent }];
+  });
+  const intents = new Set(refunds.map(({ intent }) => intent));
+  // Its row is on the payment's newest capture's intent, so its capture is named by the ledger row.
+  const intentOfTransaction = new Map(
+    input.captures.flatMap((capture) =>
+      capture.stripePaymentIntentId !== null && intents.has(capture.stripePaymentIntentId) ? [[capture.id, capture.stripePaymentIntentId] as const] : [],
+    ),
+  );
+  const owedAgain = refundsOwedAgainCents(operations, payment, { intents, intentOfTransaction });
+  return [...new Set(refunds.flatMap(({ operation, intent }) => {
+    const capture = input.captures.find((each) => each.stripePaymentIntentId === intent);
+    const holding =
+      operation.status !== PaymentRecoveryOperationStatus.SUCCEEDED || !capture || isOwedBackInFull(owedAgain.get(intent) ?? 0, capture);
+    return holding ? [intent] : [];
+  }))];
 }
 
 /**
@@ -280,6 +353,24 @@ export async function listSupersededIntentIdsOwningCaptures(
   paymentId: string,
   captures: readonly OwnershipCapture[],
 ): Promise<string[]> {
+  return [...(await readSupersededCaptureHolds(tx, paymentId, captures)).holdsForMember];
+}
+
+/**
+ * The Xero reading's set (`holdsForMember`), and for #4300 from the same read:
+ * every capture open rows owe back ANY part of (`owedBackAtAll`, the settle's
+ * refusal), and the saved-card charge's reading of whether a capture's money is
+ * on its way back - `refundInFlight`: a superseded refund row the runner will
+ * still run (`isPaymentRecoveryOperationInFlight`), or rows still running that
+ * owe it back in full; `refundStopped`: a superseded refund row, or rows owing
+ * it back in full, that the runner will never run again (a person must act).
+ * Composed with (c′) into one payment's reading by `superseded-capture-ownership.ts`.
+ */
+export async function readSupersededCaptureHolds(
+  tx: OwnershipReader,
+  paymentId: string,
+  captures: readonly OwnershipCapture[],
+): Promise<{ holdsForMember: Set<string>; owedBackAtAll: Set<string>; refundInFlight: Set<string>; refundStopped: Set<string> }> {
   const { operations, payment } = await readSupersededRefundsOwedAgain(tx, paymentId, [
     { type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, AND: [PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE] },
   ]);
@@ -298,5 +389,19 @@ export async function listSupersededIntentIdsOwningCaptures(
       owned.add(operation.paymentIntentId);
     }
   }
-  return [...owned];
+  const owedBackAtAll = new Set(
+    [...supersededRefundsOwedAgainCents(operations, payment)].flatMap(([intent, cents]) => (cents > 0 ? [intent] : [])),
+  );
+  // Fails safe toward waiting: only rows the runner will still run count as
+  // returning; the superseded refund rows still name which captures are
+  // superseded (a SUCCEEDED one is the refund Stripe can fail later).
+  const isSupersededRefund = (row: OwnershipRow) => row.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT;
+  const running = operations.filter((row) => isPaymentRecoveryOperationInFlight(row) || (isSupersededRefund(row) && row.status === PaymentRecoveryOperationStatus.SUCCEEDED));
+  const refundInFlight = owedBackInFull(running, payment, captures);
+  for (const row of operations) if (isSupersededRefund(row) && isPaymentRecoveryOperationInFlight(row)) refundInFlight.add(row.paymentIntentId);
+  const refundStopped = new Set([...owedBackInFull(operations, payment, captures)].filter((intent) => !refundInFlight.has(intent)));
+  for (const row of operations) {
+    if (isSupersededRefund(row) && row.status !== PaymentRecoveryOperationStatus.SUCCEEDED && !refundInFlight.has(row.paymentIntentId)) refundStopped.add(row.paymentIntentId);
+  }
+  return { holdsForMember: owned, owedBackAtAll, refundInFlight, refundStopped };
 }

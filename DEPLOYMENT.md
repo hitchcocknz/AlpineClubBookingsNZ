@@ -39,6 +39,14 @@ Postgres `max_connections=40`:
 | `app` | cron leader + warm fallback web | 5 |
 | `migrate` | deploy-window migrations | 2 |
 
+The ceiling holds per container because `src/lib/prisma.ts` shares one client
+through `globalThis` (#4269). Before that, each of Next's server bundles built its
+own client and pool: one container with `connection_limit=10` was measured at 22
+backends under load, which made the 27-connection budget below an undercount by
+about a factor of two. The same measurement after the change reads 10. A pool you
+add elsewhere (the audit-archive client, the diagnostics pool) is extra and is
+opened only when that feature is configured.
+
 The worst case is a blue/green handover (both web slots briefly live) that
 overlaps a migration:
 
@@ -1606,7 +1614,7 @@ truth. The public POST endpoints are:
 | Endpoint | Task(s) | Typical cadence | Recorded `CronJobRun.jobName` |
 | -------- | ------- | --------------- | ----------------------------- |
 | `POST /api/cron` | General cron cycle: pending booking confirmation, group-settlement reaper, abandoned policy-exception capacity-hold reaper, pre-arrival reminders, booking-request retention purge, quote-expiry reminders, school attendee confirmations, and placeholder guest-name reminders. | Every 3 hours in the cron leader. | `confirm-pending`, `group-settlement-reaper`, `placeholder-guest-name-reminders`, `policy-exception-hold-reaper`, `pre-arrival-reminders`, `purge-booking-requests`, `quote-expiry-reminders`, `school-attendee-confirmations` |
-| `POST /api/cron/payments?task=recovery` | The payments cycle: durable Stripe payment recovery (with a read-back of card refunds still recorded pending, so one Stripe failed is owed again, #4104), expired Internet Banking hold release, stale `WAITING_PAYMENT` Xero outbox reaping, and a retry of the held late-capture alert for any approval still open. The cron leader runs the same cycle itself (`src/lib/payments-cron-runner.ts`), so no external scheduler is needed; each task is error-isolated and records its own run. | Every 15 minutes in the cron leader. | `payment-recovery`, `internet-banking-hold-release`, `xero-waiting-invoice-reaper`, `late-capture-held-alert` |
+| `POST /api/cron/payments?task=recovery` | The payments cycle: durable Stripe payment recovery (with a read-back of card refunds still recorded pending, so one Stripe failed is owed again, #4104), expired Internet Banking hold release, stale `WAITING_PAYMENT` Xero outbox reaping, a retry of the held late-capture alert for any approval still open, and delivery of an owed alert for a card payment kept on a paid booking that nothing else paid for (#4285). The cron leader runs the same cycle itself (`src/lib/payments-cron-runner.ts`), so no external scheduler is needed; each task is error-isolated and records its own run. | Every 15 minutes in the cron leader. | `payment-recovery`, `internet-banking-hold-release`, `xero-waiting-invoice-reaper`, `late-capture-held-alert`, `duplicate-capture-kept-alert` |
 | `POST /api/cron/xero?task=memberships` | Optional Xero-backed membership status refresh. | Daily when `XERO_ENABLE_DAILY_MEMBERSHIP_REFRESH=true` and the Xero module is effectively enabled. | `xero-membership-refresh` |
 | `POST /api/cron/xero?task=outbox` | Process queued outbound Xero operations. | Every 15 minutes when the Xero module is effectively enabled. | `xero-outbox` |
 | `POST /api/cron/xero?task=retries` | Replay failed retryable Xero operations. | Every 15 minutes when the Xero module is effectively enabled. | `xero-operation-replay` |

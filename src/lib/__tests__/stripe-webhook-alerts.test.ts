@@ -378,6 +378,11 @@ vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
   releaseXeroSupplementaryInvoiceForCapturedPaymentIntent: (...args: unknown[]) =>
     mockReleaseXeroSupplementaryInvoiceForCapturedPaymentIntent(...args),
 }));
+// #3953: a change's capture recorded by its own receipt names that receipt's invoice; none here unless a case says so.
+const mockFindAdditionalCaptureReceiptInvoiceId = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<string | null>>(async () => null));
+vi.mock("@/lib/additional-capture-receipt-link", () => ({
+  findAdditionalCaptureReceiptInvoiceId: (...args: unknown[]) => mockFindAdditionalCaptureReceiptInvoiceId(...args),
+}));
 
 vi.mock("@/lib/xero-error-alert", () => ({
   notifyXeroSyncError: (...args: unknown[]) => mockNotifyXeroSyncError(...args),
@@ -653,6 +658,8 @@ describe("Stripe webhook Xero alerting", () => {
       paymentIntentId: "pi_primary",
       amountCents: 5000,
       paymentMethodId: "pm_123",
+      // #4285 review: found by its intent, not adopted - nothing this delivery wrote.
+      recordedByCaller: false,
     });
     expect(mockNotifyXeroSyncError).toHaveBeenCalledWith({
       errorType: "INVOICE_CREATION",
@@ -754,6 +761,36 @@ describe("Stripe webhook Xero alerting", () => {
     );
   });
 
+  it("#4300: a capture the settle refuses as superseded sends no confirmation and queues no invoice", async () => {
+    mockConstructWebhookEvent.mockReturnValue({
+      id: "evt_superseded_raced",
+      type: "payment_intent.succeeded",
+      data: { object: { id: "pi_raced", amount: 15000, metadata: { bookingId: "booking-1" }, payment_method: "pm_123" } },
+    } as any);
+    mockFindPaymentTransactionByIntentId.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", bookingId: "booking-1", kind: "PRIMARY", amountCents: 15000, status: "PENDING" });
+    mockBookingFindUnique.mockResolvedValue({
+      id: "booking-1",
+      status: "PAYMENT_PENDING",
+      checkIn: new Date("2026-06-01"),
+      checkOut: new Date("2026-06-03"),
+      finalPriceCents: 15000,
+      discountCents: 0,
+      guests: [{ id: "g1" }],
+      member: { firstName: "Alice", lastName: "Example", email: "alice@example.com" },
+      payment: { status: "PENDING", stripePaymentIntentId: "pi_raced", changeFeeCents: null },
+      promoRedemption: null,
+    });
+    mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
+
+    const response = await POST(makeRequest());
+
+    // Answered 200: the refusal is final, so Stripe is not sent back to retry for days.
+    expect(response.status).toBe(200);
+    expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: "pi_raced" }));
+    expect(mockSendBookingConfirmedEmail).not.toHaveBeenCalled();
+    expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+  });
+
   it("#3955 F5: a redelivered capture the booking already settled with is not re-checked against a later fee", async () => {
     mockConstructWebhookEvent.mockReturnValue({
       id: "evt_redelivered",
@@ -778,10 +815,10 @@ describe("Stripe webhook Xero alerting", () => {
       discountCents: 0,
       guests: [{ id: "g1" }],
       member: { firstName: "Alice", lastName: "Example", email: "alice@example.com" },
-      payment: { status: "SUCCEEDED", stripePaymentIntentId: "pi_settled", changeFeeCents: 2500 },
+      payment: { id: "payment-1", status: "SUCCEEDED", stripePaymentIntentId: "pi_settled", changeFeeCents: 2500 },
       promoRedemption: null,
     });
-    mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "already_paid", booking: { id: "booking-1" } });
+    mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "already_paid", bookingId: "booking-1", bumpedBookingIds: [] });
 
     const response = await POST(makeRequest());
 
@@ -794,63 +831,85 @@ describe("Stripe webhook Xero alerting", () => {
 
   // #4211 review: captured at 15000; a later correction recorded a 2500 fee, so
   // the booking now owes 17500. Which captures skip the stale-amount check.
+  // `outcome` is mocked here: it is the value the REAL settle returns for that
+  // capture (#4285: on a COMPLETED booking as on a PAID one, `INV-PAY-043`), as
+  // `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,
+  // `completed-redelivery.realdb.test.ts` prove.
   const SETTLER = "txn-1";
   it.each([
     {
       label: "the recorded settler, the intent pointer since moved to a later row",
       bookingStatus: "COMPLETED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_later_row", settledByTransactionId: SETTLER },
-      handed: true,
+      handed: true, outcome: "already_paid",
     },
     {
       label: "the recorded settler, partly refunded since",
       bookingStatus: "COMPLETED", rowStatus: "PARTIALLY_REFUNDED", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_later_row", settledByTransactionId: SETTLER },
-      handed: true,
+      handed: true, outcome: "already_paid",
     },
     {
       label: "F1: a kept or refund-queued duplicate replayed on a PAID booking edited since",
       bookingStatus: "PAID", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_settled", settledByTransactionId: "txn-other" },
-      handed: true,
+      handed: true, outcome: "duplicate_capture_refunded",
     },
     {
       label: "F2: a duplicate's FIRST delivery at a stale amount on a PAID booking",
       bookingStatus: "PAID", rowStatus: "PENDING", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: "txn-other" },
-      handed: true,
+      handed: true, outcome: "duplicate_capture_refunded",
+    },
+    {
+      label: "#4285: a duplicate's FIRST delivery at a stale amount on a COMPLETED booking",
+      bookingStatus: "COMPLETED", rowStatus: "PENDING", rowPaymentId: "payment-1",
+      payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: "txn-other" },
+      handed: true, outcome: "duplicate_capture_refunded",
+    },
+    {
+      label: "#4285: not the settler on a COMPLETED booking, settled before the fee",
+      bookingStatus: "COMPLETED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
+      payment: { stripePaymentIntentId: "pi_settled", settledByTransactionId: "txn-other" },
+      handed: true, outcome: "duplicate_capture_refunded",
+    },
+    {
+      label: "#4285 review F7: off a paid-like booking, not the intent pointer naming this SUCCEEDED row (no settler)",
+      bookingStatus: "CONFIRMED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
+      payment: { stripePaymentIntentId: "pi_settled", settledByTransactionId: null },
+      handed: false, outcome: null,
+    },
+    {
+      label: "#4285 review F7: off a paid-like booking, not this row recorded as the settler",
+      bookingStatus: "CONFIRMED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
+      payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: SETTLER },
+      handed: false, outcome: null,
     },
     {
       label: "not widened to an unpaid booking: a stale intent there is refused (#1161)",
       bookingStatus: "PAYMENT_PENDING", rowStatus: "PENDING", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_settled", settledByTransactionId: null },
-      handed: false,
-    },
-    {
-      label: "not the settler on a booking that is not PAID",
-      bookingStatus: "COMPLETED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
-      payment: { stripePaymentIntentId: "pi_settled", settledByTransactionId: "txn-other" },
-      handed: false,
+      handed: false, outcome: null,
     },
     {
       label: "no settler recorded and the intent pointer names another intent, on an unpaid booking",
       bookingStatus: "PAYMENT_PENDING", rowStatus: "SUCCEEDED", rowPaymentId: "payment-1",
       payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: null },
-      handed: false,
+      handed: false, outcome: null,
     },
     {
       label: "the settler's id, but on a row of another payment",
       bookingStatus: "COMPLETED", rowStatus: "SUCCEEDED", rowPaymentId: "payment-elsewhere",
       payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: SETTLER },
-      handed: false,
+      handed: false, outcome: null,
     },
     {
       label: "a PAID booking, but the capture's row is on another payment",
       bookingStatus: "PAID", rowStatus: "SUCCEEDED", rowPaymentId: "payment-elsewhere",
       payment: { stripePaymentIntentId: "pi_other", settledByTransactionId: "txn-other" },
-      handed: false,
+      handed: false, outcome: null,
     },
-  ])("#4211: the stale-amount check skips $label: $handed", async ({ bookingStatus, rowStatus, rowPaymentId, payment, handed }) => {
+  ])("#4211: the stale-amount check skips $label: $handed", async ({ bookingStatus, rowStatus, rowPaymentId, payment, handed, outcome }) => {
     mockConstructWebhookEvent.mockReturnValue({
       id: "evt_redelivered_4211",
       type: "payment_intent.succeeded",
@@ -876,7 +935,7 @@ describe("Stripe webhook Xero alerting", () => {
       payment: { id: "payment-1", status: "SUCCEEDED", changeFeeCents: 2500, ...payment },
       promoRedemption: null,
     });
-    mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "already_paid", booking: { id: "booking-1" } });
+    if (outcome) mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome, bookingId: "booking-1", bumpedBookingIds: [] });
 
     const response = await POST(makeRequest());
 
@@ -1009,6 +1068,30 @@ describe("Stripe webhook Xero alerting", () => {
       "payment-3",
       3800
     );
+  });
+
+  // #3953 (`INV-PAY-139`): a change's capture its own receipt recorded against
+  // the gap invoice - its refund's note names that invoice, not the primary.
+  it("names the invoice a change capture's own receipt paid on that capture's refund note", async () => {
+    mockConstructWebhookEvent.mockReturnValue({
+      id: "evt_refund_receipt",
+      type: "charge.refunded",
+      data: { object: { id: "ch_receipt", payment_intent: "pi_change", amount_refunded: 8000 } },
+    } as any);
+    mockListRefundsForCharge.mockResolvedValue([]);
+    mockSyncRefundsFromStripeCharge.mockResolvedValue({
+      paymentId: "payment-3",
+      refundDeltaCents: 8000,
+      payment: { id: "payment-3", amountCents: 38000, refundedAmountCents: 8000 },
+    });
+    mockIsXeroConnected.mockResolvedValue(false);
+    mockFindAdditionalCaptureReceiptInvoiceId.mockResolvedValueOnce("inv_gap");
+
+    expect((await POST(makeRequest())).status).toBe(200);
+    expect(mockFindAdditionalCaptureReceiptInvoiceId).toHaveBeenCalledWith("pi_change");
+    expect(mockEnqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith("payment-3", 8000, {
+      creditsInvoiceId: "inv_gap",
+    });
   });
 
   // #3635 round-3 R1/R4: a refund of a LATE capture is noted per capture, and
@@ -1251,11 +1334,10 @@ describe("Stripe webhook Xero alerting", () => {
     const response = await POST(makeRequest());
 
     expect(response.status).toBe(200);
-    expect(mockQueueSupersededPaymentIntentRefundRecovery).toHaveBeenCalledWith({
-      paymentIntentId: "pi_superseded_succeeded",
-      amountCents: 6000,
-      paymentMethodId: "pm_superseded",
-    });
+    // #4300: the check takes the intent itself.
+    expect(mockQueueSupersededPaymentIntentRefundRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "pi_superseded_succeeded", amount: 6000, payment_method: "pm_superseded" }),
+    );
     expect(mockMarkBookingPaymentSucceeded).not.toHaveBeenCalled();
     expect(mockSendBookingConfirmedEmail).not.toHaveBeenCalled();
     expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
@@ -1356,6 +1438,8 @@ describe("Stripe webhook Xero alerting", () => {
         paymentIntentId: "pi_lost",
         amountCents: 5000,
         paymentMethodId: "pm_123",
+        // #4285 review: the adoption wrote the capture just now - new money, not a replay.
+        recordedByCaller: true,
       });
     });
 

@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
+import { SUPERSEDED_CHARGE_NOT_SETTLED_BODY } from "@/lib/payment-recovery-contract";
 import { bookingOwner } from "@/lib/booking-owner";
 import { hostingCoverageParticipantRetryResponse } from "@/lib/adult-member-hosting-retry-response";
 import { BookingStatus, PaymentStatus } from "@prisma/client";
@@ -540,6 +542,8 @@ export async function POST(
           },
           "Admin confirm-pending-guests: refused to charge (#3267)"
         );
+        // #4300: a superseded capture with no refund started yet is handed off now.
+        await handOffSupersededCaptureAfterRefusal(claimErr);
         sendAdminPaymentFailureAlert({
           memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
           checkIn: booking.checkIn,
@@ -751,21 +755,20 @@ export async function POST(
 
     const paymentMethodId = stripeReferenceId(paymentIntent.payment_method);
 
-    // Durably record the captured charge BEFORE reconciliation (#1418).
-    // markBookingPaymentSucceeded writes this same PRIMARY transaction inside
-    // its own transaction, so a throw there rolls the row back — and the
-    // payment_intent.succeeded webhook refuses to act without it ("no primary
-    // payment transaction"), which is exactly how captured money used to go
-    // silent. With the row committed here, the webhook can always finish the
-    // promotion (or route a cancelled booking through the #1350 refund guard).
-    // Since #3267 the row already exists (the attempt); this stamps the intent
-    // and SUCCEEDED onto it.
+    // Durably record the captured charge BEFORE reconciliation (#1418). markBookingPaymentSucceeded writes this
+    // same PRIMARY transaction inside its own transaction, so a throw there rolls the row back — and the
+    // payment_intent.succeeded webhook refuses to act without it ("no primary payment transaction"), which is
+    // exactly how captured money used to go silent. With the row committed here, the webhook can always finish
+    // the promotion (or route a cancelled booking through the #1350 refund guard). Since #3267 the row already
+    // exists (the attempt); this stamps the intent and SUCCEEDED onto it, and (#4285 review) `newlyCaptured`
+    // tells the settle it is new money, not a replay.
+    let recordedByCaller = false;
     try {
-      await settleSavedCardChargeAttempt({
+      ({ newlyCaptured: recordedByCaller } = await settleSavedCardChargeAttempt({
         attemptRowId: claim.attempt.attemptRowId,
         paymentId: claim.paymentId,
         paymentIntent,
-      });
+      }));
     } catch (recordErr) {
       // Non-fatal: reconciliation below upserts the identical row.
       logger.error(
@@ -778,7 +781,7 @@ export async function POST(
     try {
       reconciliation = await markBookingPaymentSucceeded({
         format,
-        bookingId,
+        bookingId, recordedByCaller,
         paymentIntentId: paymentIntent.id,
         amountCents: paymentIntent.amount,
         paymentMethodId,
@@ -841,6 +844,13 @@ export async function POST(
         },
         { status: 409 }
       );
+    }
+
+    // #4300 (`INV-PAY-138`): superseded, so going back; nothing paid, so the claim is released.
+    if (reconciliation.outcome === "superseded_capture") {
+      await releaseChargeClaim().catch((err) => logger.error({ err, bookingId }, "Could not release the claim of a refused superseded charge (#4300)"));
+      await audit("charged_superseded_capture", true);
+      return NextResponse.json(SUPERSEDED_CHARGE_NOT_SETTLED_BODY, { status: 409 });
     }
 
     if (settledByAnotherCapture(reconciliation.outcome)) {
