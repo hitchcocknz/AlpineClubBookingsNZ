@@ -72,7 +72,7 @@ import {
   MANUAL_CAPTURED_PAYMENT_REFUSAL,
   MANUAL_SETTLE_FROM_PAYMENT_STATUS_LIST,
 } from "@/lib/booking-payment-state";
-import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST, OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { SUPERSEDED_INTENT_OPERATION_TYPES } from "@/lib/superseded-intent-ownership";
 import { supersededMachineryOwnsCapture } from "@/lib/superseded-capture-ownership";
 import { reportSupersededCaptureRefused } from "@/lib/superseded-capture-refusal";
@@ -737,7 +737,7 @@ async function enqueueManualSettlementIntentCancellations(
       // Non-terminal only. A SUCCEEDED row is money already in the ledger (and
       // the duplicate-capture machinery's business), and FAILED/REFUNDED rows
       // have nothing left to cancel.
-      status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+      status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
     },
     select: {
       id: true,
