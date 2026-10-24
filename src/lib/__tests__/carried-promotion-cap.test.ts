@@ -273,7 +273,12 @@ describe("carriedCapRowScaler: the scaler the save hands the writer (round 6)", 
   it("none where the plan capped nothing, the scale where the records were scaled, and a clear where not", () => {
     expect(carriedCapRowScaler(undefined)).toBeUndefined();
     expect(carriedCapRowScaler(true)).toBe(scaleCappedCarriedRows);
+    // Records left unscaled: rows that already reconcile to them are still
+    // cleared, because the booking's own figure was capped beneath them.
     const clear = carriedCapRowScaler(false)!;
-    expect(clear([{ kind: "PROMO", amountCents: -5_000, promoRedemptionId: "r", promoCodeId: "c", beneficiaryMemberId: "m", bookingGuestId: "g", stayDate: null, heldPriceCents: 9_000 }], [])).toEqual([null]);
+    const row = { kind: "PROMO" as const, amountCents: -5_000, promoRedemptionId: "r", promoCodeId: "c", beneficiaryMemberId: "m", bookingGuestId: "g", stayDate: null, heldPriceCents: 9_000 };
+    const recorded = [{ id: "r", priceAdjustmentCents: -5_000, allocations: [{ memberId: "m", priceAdjustmentCents: -5_000 }] }];
+    expect(clear([row], recorded)).toEqual([null]);
+    expect(carriedCapRowScaler(true)!([row], recorded)).toEqual([-5_000]);
   });
 });

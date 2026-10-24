@@ -565,11 +565,12 @@ describe("snapshot and restore across a mechanical rewrite", () => {
     it("writes none, and clears the rows, where the records could not be scaled (round 6, item 3)", async () => {
       const snapshot = await snapshotBookingNightAdjustments(twoNights().tx, "booking-1");
       const after = fakeTx({
-        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1, priceCents: 5000 }],
+        nights: [{ id: "new-a1", bookingGuestId: "guest-a", stayDate: N1, priceCents: 10000 }],
         guests: [{ id: "guest-a", priceCents: 5000 }],
-        // The redemption still carries its uncapped -$100: rows scaled to it
-        // would disagree with the capped booking, so none is written.
-        redemption: capped(-10000),
+        // The redemption still carries its uncapped -$80, which the $100 night
+        // left could carry - but the booking was capped beneath it, so rows
+        // scaled to it would disagree: none is written.
+        redemption: capped(-8000),
       });
       await expect(
         restoreBookingNightAdjustments(after.tx, { snapshot, writer: "test cap", scaleSurvivors: carriedCapRowScaler(false) }),
