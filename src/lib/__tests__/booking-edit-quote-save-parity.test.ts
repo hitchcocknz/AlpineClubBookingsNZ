@@ -582,6 +582,28 @@ describe("#4317 review round 2: an edit that would carry a headline below zero i
     ).rejects.toBeInstanceOf(NegativeEditedHeadlineError);
   });
 
+  it("during the stay: a kept promotion that would take the final price below zero is refused too", () => {
+    // A consistent $400 headline with a $350 promotion (final $50). The
+    // in-progress plan keeps the stored promotion, so removing $200 of future
+    // nights would leave a $200 total and a -$150 final price.
+    const promoted = {
+      ...BELOW,
+      totalPriceCents: 40_000,
+      promoAdjustmentCents: -35_000,
+      discountCents: 35_000,
+      finalPriceCents: 5_000,
+    };
+    expect(() =>
+      buildInProgressGuestRangePlan({
+        booking: promoted,
+        editableFrom: D("2026-08-21"),
+        newCheckOut: D("2026-08-23"),
+        removeGuestIds: ["g2"],
+        seasons: SEASONS,
+      }),
+    ).toThrow(NegativeEditedHeadlineError);
+  });
+
   it("before the stay: the save refuses removing the $300 guest", async () => {
     h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] });
     vi.mocked(priceBookingGuestsWithMembershipTypePolicy).mockImplementation(
