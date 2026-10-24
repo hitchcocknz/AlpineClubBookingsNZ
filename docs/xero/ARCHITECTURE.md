@@ -1155,10 +1155,17 @@ nothing, a live one counts its own figures. So a total that a void lowered is
 not raised back by a reconcile still holding an older live reading, even one
 whose link write landed before the void's. Before #4288 it was, on a bank
 transfer and on a card payment alike: `INV-ADDPAY-021` lets an inbound recount
-raise a card ledger, never lower it. A live reading's allocations and refund
-payments are skipped only for a payment whose row is VOIDED/DELETED when they
-are written. Under a newer live snapshot they are written as before, because the
-Stripe status recorder that writes such a snapshot records neither.
+raise a card ledger, never lower it. A void that commits between the recount's
+row read and its claim moves no Payment row, so the claim cannot see it. After a
+successful claim the recount re-reads the row it counted, and if that row has
+been voided since, it recounts the payment.
+
+A live reading's allocations and refund payments are skipped only for a payment
+whose row, in either refund-note role, is VOIDED/DELETED when they are written
+(`withoutVoidedRefundNoteLinks`). Under a newer live snapshot they are written
+as before #4288. No money reader uses a payment's `CREDIT_NOTE_ALLOCATION`
+links, and a `REFUND_PAYMENT` reader asks only whether one names the note. An
+older allocation link can therefore stay active beside a newer one.
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,

@@ -5716,9 +5716,14 @@ live write K finish while a Payment-first enqueue F holds the Payment: K never
 waits on the Payment row F holds. The inbound recount reads the note's row after
 the payment rows instead of remembering its link write's verdict. The suite
 pins the schedule A's link write, then B's void and B's recount, then A's
-recount: A counts the void and leaves the total B lowered. A stale reading's
-allocations and refund payments are skipped only where the row is
-VOIDED/DELETED when they are written.
+recount: A counts the void and leaves the total B lowered. A void can also
+commit between A's row read and its claim, after B's recount found nothing to
+change; the void moves no Payment row, so A's claim succeeds. A then re-reads
+the row it counted and, voided since, recounts the payment. That re-read adds
+no lock: a void committing after it runs its own recount, which reads the
+payment after A's claim. The suite pins that schedule too. A stale reading's
+allocations and refund payments are skipped only where the row, in either
+refund-note role, is VOIDED/DELETED when they are written.
 
 **Mixed releases.** The own-row-first order is consistent within this release;
 the old canonical writer takes siblings before its own row. Running both on
