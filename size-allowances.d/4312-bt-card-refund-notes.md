@@ -30,7 +30,7 @@ reason: the same option in `createXeroCreditNote`: its delta-mode default, its
   branch in the one executor every refund note runs through.
 
 file: src/lib/payment-transactions.ts
-lines: 1698
+lines: 1700
 reason: the one card refund ledger writer reports which refunds it newly
   counted (`newlyCountedRefundIds`), so the webhook notes only a refund it is the
   first to record. The count is made in that loop and nowhere else.
