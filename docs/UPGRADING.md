@@ -128,8 +128,17 @@ credit. It writes down only the credit no booking has claimed, gives it back whe
 Xero does, and never takes a member's balance below zero. Nothing is written to Xero
 and the member is not emailed. No migration runs.
 
-**Deploy after the credit-note converge (#4251) is live and the previous colour has
-drained**, so a previous version never meets a restore row its readers cannot net.
+**Deploy order.** The mirror's rows are only safe to write once every running copy of
+the app reads write-downs as spent credit, and that reader arrived with the
+credit-note converge (#4251). A version before #4251 reads a written-down lot as
+fully free again, which errs toward more credit. So either deploy after #4251 is live
+and its predecessor has drained, or, when the two ship in one deploy:
+
+1. Before the deploy, insert the kill-switch row below (writes off).
+2. Deploy. The previous colour keeps serving while the new one starts, with the
+   mirror only logging what it would have done.
+3. Once the previous colour has stopped, delete the row. The mirror writes from its
+   next run.
 
 **It writes from the first run (owner decision, 24 Oct 2026).** Watch the first live
 run: after the deploy, check the audit log for
@@ -145,8 +154,12 @@ effect on the next note; while it exists the mirror logs what it would have done
 writes nothing. Delete the row to switch it back on.
 
 **Rollback of rows already written.** A write-down is an `ADMIN_ADJUSTMENT` row
-marked `outsideSpendConvergedAt`; if one is wrong, switch the writes off and have an
-officer add the opposite adjustment, or let the mirror restore it once Xero agrees.
+marked `outsideSpendConvergedAt`. If one is wrong, switch the writes off, then put
+right the evidence in Xero (undo the offset or payment): the mirror restores the
+credit itself once the note shows it unspent. **Never fix one with a manual credit
+adjustment:** that is an ordinary spendable credit with no Xero note, so the app
+would raise a fresh note for it while the original still holds the credit in Xero,
+and the member would hold it twice.
 
 ### The app records which payment settled each booking (#4211)
 

@@ -3463,6 +3463,11 @@ Oct 2026).
   (`unexplained-spend`); the mirror bounds it by the lot, since it works from the
   whole list. They agree on everything up to that point, in either order, and
   together write down exactly `D`.
-- **Deploy order.** No migration. Deploy only after #4251 (the converge and the
-  marker readers) is live and the previous colour has drained, so a previous version
-  never meets a restore row its readers cannot net.
+- **Deploy order.** No migration. A version before #4251 (the converge and the net
+  readers) reads a written-down lot as free again. Deploy after #4251 is live and its
+  predecessor has drained or, if the two ship together, switch the writes off before
+  the deploy and back on once the previous colour has stopped (UPGRADING).
+- **Rollback.** Switch writes off and correct the note's evidence in Xero; the mirror
+  restores the credit. Never offset a wrong write-down with a manual credit
+  adjustment: it is a spendable credit with no note, so a fresh Xero note would be
+  raised for it while the original still holds the credit.
