@@ -1799,7 +1799,12 @@ mispricing a booking.
   first cap read, then each counter re-read under it; the batch path locks its
   outgoing, kept and incoming codes in one sorted call. A guest's acceptance
   (`booking-guest-acceptance-reprice.ts`) re-prices the same way inside the
-  consent transaction, after its `pg_advisory_xact_lock(1)` and lodge lock. The reprice wrapper also **re-reads
+  consent transaction, after its `pg_advisory_xact_lock(1)` and lodge lock. The
+  in-progress arm of `applyPromoCodeChanges` re-prices no code (#4317 review
+  round 4): where its plan capped a carried promotion it scales the stored
+  redemptions (`capCarriedPromotionRecords`, `src/lib/carried-promotion-cap.ts`),
+  locking every code row in one sorted call first, under the same `lock(1)` and
+  lodge key, because the shared writer may lower a counter; it reads no cap. The reprice wrapper also **re-reads
   `currentRedemptions` under the lock**, because a reprice carries a
   `PromoCode` snapshot loaded with the booking before the locks were taken;
   locking and then deciding against a number read outside the lock would leave
@@ -3419,7 +3424,8 @@ every row it touches**, not a lock:
 The validation runs BEFORE the claim and the writes AFTER it, for the reasons
 listed above; and the blanks are re-read on the caller's transaction rather than
 trusted from the browser, so a screen minutes old cannot price a night the
-booking no longer holds. `INV-MOD-028` carries the rest of the rule.
+booking no longer holds. `INV-MOD-036` carries the rest of the rule (legacy:
+it settles tasks raised before #4317, which made every edit price itself).
 
 **#3214 ADDS A SECOND CALLER OF THAT SAME WRITER, ON THE SAME BASIS, AND STILL NO
 KEY.** An officer may now record what a guest strand's nights sold for from the
@@ -3533,12 +3539,14 @@ make that safe to add here:
   rule about provider calls inside long transactions is not engaged.
 
 The new figures are RECOMPUTED from the strands rather than derived by applying
-the settled amount, which matters here as well as in `INV-MOD-028`: the writer is
+the settled amount, which matters here as well as in `INV-MOD-055`: the writer is
 handed no settlement amount at all, so a reader does not have to check whether it
-is the right one. And where any surviving strand's nights cannot be read back as
-exact, reconciling money the re-price DECLINES - no promo recompute, no booking
-write, no row lock taken at all - so a booking with a second unreadable strand
-leaves this transaction exactly as narrow as it was before #3219.
+is the right one. Where the re-price DECLINES - no promo recompute, no booking
+write, no row lock taken at all - the transaction is exactly as narrow as it was
+before #3219. Until #4317 it declined for any surviving strand whose nights did
+not read back as exact; since #4317 (review H1) it values those strands
+(`INV-MOD-028`) and re-bases, taking the same row lock under the same key, and
+declines only for a negative stored guest total, which the database forbids.
 
 One more write joins the same transaction: a `BookingModification` row of type
 `PRICE_REBASE`, the booking's own history record of the re-price. It is an insert
@@ -3729,8 +3737,8 @@ row could see, because the racing writer is not touching this row at all.
 
 **The Stripe key and the recovery key are scoped to the TASK, not to the
 `BookingModification`.** Owner decision D-3032-1 settles a review against the
-ORIGINAL edit's modification row, and one edit can raise TWO review tasks — two
-unpriceable strands, one modification row. A modification-scoped Stripe prefix
+ORIGINAL edit's modification row, and one edit could raise TWO review tasks — two
+unpriceable strands, one modification row (no edit raises one since #4317). A modification-scoped Stripe prefix
 would give two same-amount refunds identical per-slice keys, so Stripe would
 answer the second with the FIRST refund and the caller would take the replayed id
 as success; a modification-scoped recovery key would let the two tasks upsert one
