@@ -4,6 +4,7 @@ import { isPaymentIntentCancelConfirmed } from "@/lib/card-intent-retirement";
 import {
   cancelSupersededAdditionalIntentsNow,
   failOutstandingAdditionalAskInClaim,
+  failOutstandingAdditionalAskUnderRowLock,
   hasOutstandingAdditionalPaymentIntent,
 } from "@/lib/booking-payment-cleanup";
 import { isXeroConnected } from "./xero";
@@ -1131,18 +1132,25 @@ async function performBookingCancellation(
         await lockMemberCreditLedger(creditLedgerMemberId, tx);
       }
       // #4316 (`INV-ADDPAY-044`): the Payment row fourth, as the paid claim
-      // takes it, and the additional ask read under it. An edit's after-commit
-      // mint writes its ask's row under this same lock, so either this claim
-      // reads that ask here and retires it, or it committed first and the
-      // minter's re-read sees CANCELLED. A fully REFUNDED payment reads
-      // captured to the minter yet lands in this branch.
-      if (fresh.payment) await lockPaymentForRefundedTotal(tx, fresh.payment.id);
-      const askMirror = fresh.payment
-        ? await tx.payment.findUnique({
+      // takes it. An edit's after-commit mint writes its ask's row under this
+      // same lock, so either this claim reads that ask below and retires it,
+      // or it committed first and the minter's re-read sees CANCELLED. A fully
+      // REFUNDED payment reads captured to the minter yet lands in this branch.
+      // Review round 3 (C1): the paid-path test above read the payment BEFORE
+      // this lock, and an ask's capture webhook takes only this row, so a
+      // REFUNDED payment can have become SUCCEEDED since. Re-asked under the
+      // lock: a capture that landed refuses with the 409, and the retry takes
+      // the paid path, which refunds it.
+      const lockedPayment = fresh.payment
+        ? (await lockPaymentForRefundedTotal(tx, fresh.payment.id),
+          await tx.payment.findUnique({
             where: { id: fresh.payment.id },
-            select: { id: true, additionalPaymentIntentId: true, additionalPaymentStatus: true },
-          })
+            select: { id: true, status: true, source: true, refundedAmountCents: true },
+          }))
         : null;
+      if (lockedPayment && (await paymentEligibleForPaidCancelPath({ ...fresh, payment: lockedPayment }, tx))) {
+        return { claimed: false as const };
+      }
 
       if (
         fresh.payment &&
@@ -1154,22 +1162,10 @@ async function performBookingCancellation(
         };
       }
 
-      const freshPaymentCaptured = fresh.payment
-        ? await paymentHasCaptureEvidence({ ...fresh, payment: fresh.payment }, tx)
+      const freshPaymentCaptured = lockedPayment
+        ? await paymentHasCaptureEvidence({ ...fresh, payment: lockedPayment }, tx)
         : false;
 
-      // #4316: the outstanding ask is retired by the paid claim's own routine
-      // (mirror and row FAILED, a durable CANCEL_PAYMENT_INTENT), first, so the
-      // never-captured FAILED flip below lands after its ledger reconcile.
-      const additionalCancellation = askMirror
-        ? await failOutstandingAdditionalAskInClaim(tx, { bookingId, payment: askMirror })
-        : null;
-      if (fresh.payment && !freshPaymentCaptured) {
-        await tx.payment.update({
-          where: { id: fresh.payment.id },
-          data: { status: "FAILED" },
-        });
-      }
       // Status-guarded release (#1881): claim only while still in the
       // never-captured cancellable set. The loser gate above plus lock(1)
       // already single-flight this, but the guard makes it structural. Also
@@ -1194,6 +1190,20 @@ async function performBookingCancellation(
       });
       if (released.count === 0) {
         return { claimed: false as const };
+      }
+      // #4316: only a won claim moves money (review round 3, C2). The ask is
+      // retired by the paid claim's own routine (mirror and row FAILED, a
+      // durable CANCEL_PAYMENT_INTENT), read under the row lock this claim
+      // holds, and first, so the never-captured FAILED flip lands after its
+      // ledger reconcile.
+      const additionalCancellation = fresh.payment
+        ? await failOutstandingAdditionalAskUnderRowLock(tx, { bookingId, paymentId: fresh.payment.id })
+        : null;
+      if (fresh.payment && !freshPaymentCaptured) {
+        await tx.payment.update({
+          where: { id: fresh.payment.id },
+          data: { status: "FAILED" },
+        });
       }
       await reconcileCancelledBookingBedAllocations(fresh, tx);
       // #3643 (owner decision 28 Sep 2026, `INV-PAY-107`): money the app cannot

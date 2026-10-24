@@ -16,23 +16,18 @@
  * write (`retireAskOnEndedBooking`). Both are plain reads: the order the second
  * one needs comes from the `Payment` row lock the row write takes.
  */
-import { PaymentStatus } from "@prisma/client";
-
-import { isAdditionalAskRetiredBookingStatus } from "@/lib/additional-payment-chase";
+import { readBookingHasEnded } from "@/lib/booking-ended";
 import {
   cancelSupersededAdditionalIntentsNow,
-  failOutstandingAdditionalAskInClaim,
+  failOutstandingAdditionalAskUnderRowLock,
 } from "@/lib/booking-payment-cleanup";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
-import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
+import { isOpenIntentTransactionStatus } from "@/lib/payment-transaction-status";
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
 import { prisma } from "@/lib/prisma";
 
-async function bookingHasEnded(bookingId: string): Promise<boolean> {
-  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } });
-  return isAdditionalAskRetiredBookingStatus(booking?.status);
-}
+const bookingHasEnded = readBookingHasEnded;
 
 /**
  * Before the provider call: has the booking ended (CANCELLED or BUMPED) since
@@ -67,14 +62,7 @@ export async function bookingEndedBeforeAskMint(
  * Throws when the transaction fails.
  */
 async function retireOutstandingAsk({ format, bookingId, paymentId }: { format: ClubFormat; bookingId: string; paymentId: string }) {
-  const queued = await prisma.$transaction(async (tx) => {
-    await lockPaymentForRefundedTotal(tx, paymentId);
-    const payment = await tx.payment.findUnique({
-      where: { id: paymentId },
-      select: { id: true, additionalPaymentIntentId: true, additionalPaymentStatus: true },
-    });
-    return payment ? failOutstandingAdditionalAskInClaim(tx, { bookingId, payment }) : null;
-  });
+  const queued = await prisma.$transaction((tx) => failOutstandingAdditionalAskUnderRowLock(tx, { bookingId, paymentId }));
   if (queued) await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: [queued] });
   return queued;
 }
@@ -94,7 +82,7 @@ async function queueAskCancellationFirst({ bookingId, paymentId, paymentIntentId
     select: { id: true, paymentId: true, amountCents: true, status: true },
   });
   if (!row || row.paymentId !== paymentId) return;
-  if (row.status !== PaymentStatus.PENDING && row.status !== PaymentStatus.PROCESSING) return;
+  if (!isOpenIntentTransactionStatus(row.status)) return;
   await enqueuePaymentIntentCancellationRecovery({
     bookingId,
     paymentId,
@@ -159,7 +147,7 @@ async function checkAndRetireAfterWrite({
  * Returns whether the booking has ended; the minter then offers no secret and
  * returns no intent id. A failed status read answers no, as the code did before
  * #4316; a failed retirement is logged and still answers yes - the cancellation
- * queued first finishes it.
+ * queued first finishes it, if it was written.
  */
 export async function retireAskOnEndedBooking(params: {
   format: ClubFormat;

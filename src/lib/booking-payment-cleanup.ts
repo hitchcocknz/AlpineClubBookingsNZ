@@ -1,12 +1,12 @@
 import {
   PaymentSource,
-  PaymentStatus,
   PaymentTransactionKind,
   type Prisma,
 } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import { markPaymentIntentTransactionFailed } from "@/lib/payment-transactions";
+import { lockPaymentForRefundedTotal, markPaymentIntentTransactionFailed } from "@/lib/payment-transactions";
+import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import {
   enqueuePaymentIntentCancellationRecovery,
   runPaymentRecoveryOperationNow,
@@ -47,7 +47,7 @@ export async function queueSupersededPrimaryIntentCancellations(
       paymentId: options.paymentId,
       kind: PaymentTransactionKind.PRIMARY,
       source: PaymentSource.STRIPE,
-      status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+      status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
       stripePaymentIntentId: { not: null },
       // A pending intent is only reusable at exactly the current price:
       // any modification that moves finalPriceCents strands the old intent
@@ -158,7 +158,7 @@ export async function queueSupersededAdditionalIntentCancellationRows(options: {
       paymentId: options.paymentId,
       kind: PaymentTransactionKind.ADDITIONAL,
       source: PaymentSource.STRIPE,
-      status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+      status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
       stripePaymentIntentId: { not: options.newPaymentIntentId },
       amountCents: { gt: 0 },
     },
@@ -326,4 +326,24 @@ export async function failOutstandingAdditionalAskInClaim(
     store: tx,
   });
   return { paymentTransactionId: additionalTransaction.id, paymentIntentId, operationId: operation.id };
+}
+
+/**
+ * `failOutstandingAdditionalAskInClaim` with its lock and its read: take the
+ * `Payment` row (`INV-LOCK-002`; a re-lock where the caller holds it), read the
+ * ask mirror under it, and retire what it names as outstanding. The one
+ * spelling for a writer that has not read the mirror under the lock itself -
+ * the never-captured cancel claim and the after-commit minters' retirement
+ * (#4316 review round 3).
+ */
+export async function failOutstandingAdditionalAskUnderRowLock(
+  tx: Prisma.TransactionClient,
+  { bookingId, paymentId }: { bookingId: string; paymentId: string },
+): Promise<QueuedSupersededIntentCancellation | null> {
+  await lockPaymentForRefundedTotal(tx, paymentId);
+  const payment = await tx.payment.findUnique({
+    where: { id: paymentId },
+    select: { id: true, additionalPaymentIntentId: true, additionalPaymentStatus: true },
+  });
+  return payment ? failOutstandingAdditionalAskInClaim(tx, { bookingId, payment }) : null;
 }

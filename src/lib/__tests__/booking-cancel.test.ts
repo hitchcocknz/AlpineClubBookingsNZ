@@ -1582,6 +1582,72 @@ describe("cancelBooking credit refunds", () => {
     expect(mocks.enqueueXeroModificationCreditNoteOperation).not.toHaveBeenCalled();
   });
 
+  // #4316 review round 3 (C1): the never-captured claim re-asks the paid-path
+  // question under the Payment row lock. An ask's capture webhook takes only
+  // that row, so a REFUNDED payment read before it can be SUCCEEDED by now.
+  function refundedBookingWithAsk() {
+    return {
+      id: "booking_c1",
+      memberId: "member_1",
+      lodgeId: "lodge_1",
+      status: "CONFIRMED",
+      finalPriceCents: 12000,
+      checkIn: new Date("2026-07-10"),
+      checkOut: new Date("2026-07-12"),
+      member: { id: "member_1", email: "member@example.com", firstName: "Alice" },
+      payment: {
+        id: "payment_c1",
+        bookingId: "booking_c1",
+        amountCents: 10000,
+        refundedAmountCents: 10000,
+        status: "REFUNDED",
+        source: "STRIPE",
+        changeFeeCents: 0,
+        creditAppliedCents: 0,
+        stripePaymentIntentId: "pi_c1_primary",
+        additionalPaymentIntentId: "pi_c1_extra",
+        additionalPaymentStatus: "PENDING",
+        xeroInvoiceId: null,
+      },
+    };
+  }
+
+  it("refuses with the 409 when a capture landed on the payment before the never-captured claim's row lock (#4316 C1)", async () => {
+    const booking = refundedBookingWithAsk();
+    mocks.bookingFindUnique.mockResolvedValueOnce(booking);
+    mocks.txBookingFindUnique.mockResolvedValueOnce(booking);
+    // Under the row lock the ask's capture has committed: the payment holds cash again.
+    mocks.txPaymentFindUnique.mockImplementation(async (args: { select?: Record<string, unknown> }) =>
+      args.select?.status ? { id: "payment_c1", status: "PARTIALLY_REFUNDED", source: "STRIPE", refundedAmountCents: 10000 } : null,
+    );
+    mocks.paymentTransactionFindFirst.mockResolvedValue({ id: "ptx_c1_extra" });
+
+    const result = await cancelBooking("booking_c1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(result.status).toBe(409);
+    // Nothing moved: no claim, no FAILED flip, no retirement - the retry takes the paid path.
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+    expect(mocks.enqueuePaymentIntentCancellationRecovery).not.toHaveBeenCalled();
+  });
+
+  it("runs no side effect when the never-captured claim is lost (#4316 C2)", async () => {
+    const booking = refundedBookingWithAsk();
+    mocks.bookingFindUnique.mockResolvedValueOnce(booking);
+    mocks.txBookingFindUnique.mockResolvedValueOnce(booking);
+    mocks.bookingUpdateMany.mockResolvedValueOnce({ count: 0 });
+    mocks.paymentTransactionFindFirst.mockResolvedValue({ id: "ptx_c1_extra" });
+
+    const result = await cancelBooking("booking_c1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+
+    expect(result.status).toBe(409);
+    // The pre-claim best-effort Stripe cancel may still mark its own row; the
+    // claim transaction itself writes nothing once the claim is lost.
+    expect(mocks.paymentUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ data: { additionalPaymentStatus: "FAILED" } }));
+    expect(mocks.paymentUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ data: { status: "FAILED" } }));
+    expect(mocks.enqueuePaymentIntentCancellationRecovery).not.toHaveBeenCalled();
+  });
+
   it("waits for Stripe cancellation before finalising an unpaid booking cancellation", async () => {
     let releaseCancellation: (() => void) | null = null;
 
