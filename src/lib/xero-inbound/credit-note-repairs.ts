@@ -1,10 +1,10 @@
 import { APPLIED_CREDIT_ALLOCATION_ROLE } from "@/lib/xero-applied-credit-link-roles";
 import { type CreditNote as XeroCreditNote } from "xero-node";
-import { CreditType, PaymentSource, PaymentStatus, type Prisma } from "@prisma/client";
+import { CreditType, PaymentSource, PaymentStatus } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { prisma } from "@/lib/prisma";
-import { withPaymentRowLock } from "@/lib/payment-row-lock";
+import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import logger from "@/lib/logger";
 import { type AccountCreditAllocationRepairResult, type AccountCreditAllocationTarget, type RefundedPaymentBusinessStateRepairResult } from "./types";
 import { buildBookingAppliedCreditDescription, getAmountCentsFromAllocationMetadata, getCreditNoteAmountCents, getCreditNoteIdFromAllocationMetadata, getJsonRecord, getNextRefundedPaymentStatus, getRefundContributionCentsFromCreditNoteMetadata } from "./amounts";
@@ -122,6 +122,9 @@ async function includeDeletedAppliedCreditAllocationTargets(
   return [...targetsByInvoiceId.values()];
 }
 
+/** #4288: named so this recount is not read as a transaction wrapper - it opens one, but this callback never runs in it. */
+type RecomputeModificationRefundAmounts = () => Promise<Map<string, number>>;
+
 export async function repairRefundedPaymentBusinessState(input: {
   creditNoteId: string;
   creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit" | "creditNoteNumber">;
@@ -133,7 +136,7 @@ export async function repairRefundedPaymentBusinessState(input: {
    * invoice correction's count depends on the payment's receipt, which that
    * writer (the inbound settle) may just have recorded.
    */
-  recomputeModificationRefundAmounts?: () => Promise<Map<string, number>>;
+  recomputeModificationRefundAmounts?: RecomputeModificationRefundAmounts;
   /** Internal: the one re-run, for the payments whose claims were lost. */
   retryPaymentIds?: string[];
 }): Promise<RefundedPaymentBusinessStateRepairResult> {
@@ -181,7 +184,7 @@ export async function repairRefundedPaymentBusinessState(input: {
   if (payments.length === 0) return { matchedPayments: 0, updatedPayments: 0 };
 
   // #4215 (`INV-PAY-118`): requests' paid-back cash, read AFTER the payment rows, so one completed in between loses the claim
-  // below. #4288: the note's own refund-note row too, but its void moves no Payment: `repairOne` re-reads it after its claim.
+  // below. #4288: the note's own refund-note row too; its void may move no Payment column, so `repairOne` re-reads it locked.
   const [directRefundLinks, modificationAllocationLinks, refundRequestPaidBackCentsByPaymentId, currentNoteRows] = await Promise.all([
     prisma.xeroObjectLink.findMany({
       where: {
@@ -499,19 +502,22 @@ export async function repairRefundedPaymentBusinessState(input: {
     // keeps the stored figure and leaves status and refunded total alone, so
     // `updatedAt` is what catches it.
     const asRead = { id: payment.id, status: payment.status, refundedAmountCents: payment.refundedAmountCents, amountCents: payment.amountCents, updatedAt: payment.updatedAt };
-    // #4288: with the note's own refund-note row on this payment, decide under the Payment row lock - a void moves no Payment
-    // row, so the claim alone cannot see one - re-reading that row there (a plain read; no provider call, no other lock). It
-    // no longer counting writes nothing ("recount"); an unchanged verdict also checks the row as read, so a recount that
-    // waited on this lock sees the write it waited for. Every outcome is then some serial order of the claim and the void.
-    const decide = async (db: Pick<Prisma.TransactionClient, "$executeRaw" | "payment" | "xeroObjectLink">) => {
-      if (currentNoteRows.has(payment.id)) {
-        const now = (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], db)).get(payment.id);
-        if (includesCurrentCreditNoteContribution(payment.id) && !(now && includesCurrentCreditNoteContribution(payment.id, now))) return "recount" as const;
-        if (Object.keys(updates).length === 0) return (await db.payment.findFirst({ where: asRead, select: { id: true } })) ? ("unchanged" as const) : ("lost" as const);
-      } else if (Object.keys(updates).length === 0) return "unchanged" as const;
-      return (await db.payment.updateMany({ where: asRead, data: updates })).count === 1 ? ("updated" as const) : ("lost" as const);
-    };
-    return currentNoteRows.has(payment.id) ? withPaymentRowLock(payment.id, decide) : decide(prisma);
+    if (!currentNoteRows.has(payment.id)) {
+      if (Object.keys(updates).length === 0) return "unchanged";
+      return (await prisma.payment.updateMany({ where: asRead, data: updates })).count === 1 ? "updated" : "lost";
+    }
+    // #4288: with the note's own refund-note row on this payment, decide under the Payment row lock - the claim alone cannot
+    // see a void's link write - re-reading that row there (a plain read; no provider call, no other lock). It no longer
+    // counting writes nothing ("recount"); an unchanged verdict also checks the row as read, so a recount that waited on this
+    // lock sees the write it waited for. Every outcome is then some serial order of the claim and the void. The budget is
+    // `additional-payment-withdraw.ts`'s, not Prisma's 2s/5s: the nightly bank-void follow-up holds this row for up to 30s.
+    return prisma.$transaction(async (tx) => {
+      await lockPaymentForRefundedTotal(tx, payment.id);
+      const now = (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], tx)).get(payment.id);
+      if (includesCurrentCreditNoteContribution(payment.id) && !(now && includesCurrentCreditNoteContribution(payment.id, now))) return "recount" as const;
+      if (Object.keys(updates).length === 0) return (await tx.payment.findFirst({ where: asRead, select: { id: true } })) ? ("unchanged" as const) : ("lost" as const);
+      return (await tx.payment.updateMany({ where: asRead, data: updates })).count === 1 ? ("updated" as const) : ("lost" as const);
+    }, { maxWait: 10_000, timeout: 30_000 });
   };
 
   const lostPaymentIds: string[] = [];

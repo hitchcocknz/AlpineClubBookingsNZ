@@ -176,8 +176,10 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       }) as never);
       // #4288: a payment holding the note's own refund-note row is claimed in a
       // transaction of its own under its row lock; that claim fails the same way.
-      const rowLock = await import("@/lib/payment-row-lock");
-      const lockedClaim = vi.spyOn(rowLock, "withPaymentRowLock").mockRejectedValue(new Error("connection lost before the recount wrote"));
+      const { interceptTransactionPaymentClaims } = await import("./support/transaction-payment-claims");
+      const lockedClaim = interceptTransactionPaymentClaims(prisma, async () => {
+        throw new Error("connection lost before the recount wrote");
+      });
       await expect(inbound(xeroNote(VOIDED_NOTE, "VOIDED", 15_000))).rejects.toThrow("connection lost");
       claim.mockRestore();
       lockedClaim.mockRestore();

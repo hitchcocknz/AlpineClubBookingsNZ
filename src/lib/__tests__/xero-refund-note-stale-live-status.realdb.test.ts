@@ -264,19 +264,27 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       coverage: kase === "refund request" ? REPLACEMENT : 5_000,
     });
 
-    /** Poll until a backend waits on a lock `blockerPid` holds. */
-    async function waitForBlockedBy(blockerPid: number, waiterPid?: number) {
+    /**
+     * Poll until a backend waits on a lock `blockerPid` holds - that backend
+     * (`waiterPid`), or one running the statement `waiterQuery` (a LIKE
+     * pattern), so a schedule never accepts the wrong waiter.
+     */
+    async function waitForBlockedBy(blockerPid: number, waiterPid?: number, waiterQuery?: string) {
       const startedAt = process.hrtime.bigint();
       while (realElapsedMs(startedAt) < 10_000) {
         const rows = await prisma.$queryRaw<Array<{ count: number }>>`
           SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
           WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))
             AND (${waiterPid ?? null}::int IS NULL OR pid = ${waiterPid ?? null}::int)
+            AND (${waiterQuery ?? null}::text IS NULL OR query LIKE ${waiterQuery ?? null}::text)
         `;
         if ((rows[0]?.count ?? 0) >= 1) return;
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
-      throw new Error(`Timed out waiting for a link write to queue behind pid ${blockerPid}.`);
+      const waiting = await prisma.$queryRaw<Array<{ pid: number; query: string }>>`
+        SELECT pid, query FROM pg_stat_activity
+        WHERE datname = current_database() AND ${blockerPid}::int = ANY(pg_blocking_pids(pid))`;
+      throw new Error(`Timed out waiting for ${waiterQuery ?? "a write"} to queue behind pid ${blockerPid}; waiting: ${JSON.stringify(waiting)}`);
     }
 
     /** A reading's link write held open on its own connection until `release()`. */
@@ -476,12 +484,15 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
 
     /**
      * Round 6: A's recount paused INSIDE its locked transaction - after it
-     * re-read the note as live, before it commits its claim - while the void's
-     * link write commits (it takes no Payment row) and the void's own recount
-     * B queues on A's Payment row lock. The serial order is "A, then the
-     * void, then B".
+     * re-read the note as live, before it commits its claim - while the void
+     * runs. Its link write commits (it takes no Payment row) and its own
+     * recount B queues on A's Payment row lock; or, when the payment's pointer
+     * names the note, its link write itself waits on that lock to release the
+     * pointer, holding the link row A only reads. The serial order is "A, then
+     * the void, then B". `waiterQuery` is the statement that must be the one
+     * waiting.
      */
-    async function voidAfterLockedReRead(kase: Case, paymentId: string) {
+    async function voidAfterLockedReRead(kase: Case, paymentId: string, waiterQuery = "%FOR NO KEY UPDATE%") {
       await seed(kase);
       await prisma.payment.update({ where: { id: paymentId }, data: { refundedAmountCents: 5_000 } });
       let current = reading("AUTHORISED", EARLY);
@@ -515,8 +526,7 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
             current = reading("VOIDED", LATE);
             b = reconcileXeroCreditNote(NOTE);
             void b.catch(() => undefined);
-            // B's link write commits; its recount then waits on A's Payment row lock.
-            await Promise.race([b, waitForBlockedBy(pid)]);
+            await waitForBlockedBy(pid, undefined, waiterQuery);
           } finally {
             release();
           }
@@ -536,8 +546,18 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
     });
 
+    it("MUTATION (round 7, F4): the pointer-named canonical note - the void's own link write waits on A's lock, holding the link A only reads", async () => {
+      const { a, b } = await voidAfterLockedReRead("bank-transfer canonical", BT, '%UPDATE%"xeroRefundCreditNoteId"%');
+      expect(a.updatedRefundedPayments).toBe(1);
+      expect(b.updatedRefundedPayments).toBe(1);
+      expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+      expect(await state("bank-transfer canonical")).toMatchObject({ pointer: null });
+    });
+
     it("round 6 stated limit: on a card the same order leaves A's raise standing, raise-only, and alerts", async () => {
-      const { a, alerted } = await voidAfterLockedReRead("Stripe per-delta", CARD);
+      // A's own reconcile pointed the card payment at the note (the inbound
+      // gate), so here too the void's link write is what waits on A's lock.
+      const { a, alerted } = await voidAfterLockedReRead("Stripe per-delta", CARD, '%UPDATE%"xeroRefundCreditNoteId"%');
       expect(a.updatedRefundedPayments).toBe(1);
       // `INV-ADDPAY-021`, F5 #1353: B never lowers a card ledger; it raises the divergence alert.
       expect(await refunded(CARD)).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });

@@ -24,7 +24,6 @@
  * imports this file so CI reaches it; it owns and cleans its own `race-4162b-`
  * fixtures, and never runs the job over notes that are not its own.
  */
-import type { Prisma } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedBankRefundVoidAnswer } from "@/lib/bank-refund-void-answer";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
@@ -652,18 +651,12 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       // #4288: a payment holding the note's own refund-note row is claimed under
       // its row lock, on that transaction's client: observe the claims there.
       const claimed: Array<{ count: number }> = [];
-      const rowLock = await import("@/lib/payment-row-lock");
-      const withRowLock = rowLock.withPaymentRowLock;
-      const lockSpy = vi.spyOn(rowLock, "withPaymentRowLock").mockImplementation(((paymentId: string, fn: (tx: Prisma.TransactionClient) => Promise<unknown>) =>
-        withRowLock(paymentId, (tx) => fn(new Proxy(tx, {
-          get: (target, key) => key !== "payment" ? Reflect.get(target, key) : new Proxy(target.payment, {
-            get: (payment, method) => method !== "updateMany" ? Reflect.get(payment, method) : async (args: never) => {
-              const result = await payment.updateMany(args);
-              claimed.push(result);
-              return result;
-            },
-          }),
-        })))) as never);
+      const { interceptTransactionPaymentClaims } = await import("./support/transaction-payment-claims");
+      const lockSpy = interceptTransactionPaymentClaims(prisma, async (_args, run) => {
+        const result = await run();
+        claimed.push(result);
+        return result;
+      });
 
       try {
         await repairRefundedPaymentBusinessState({

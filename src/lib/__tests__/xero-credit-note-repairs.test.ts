@@ -820,11 +820,11 @@ describe("#4288: the claim and the re-read of the note's own row, under the Paym
     expect(order).toEqual(["lock", "re-read", "claim"]);
   });
 
-  it("an officer's card refund landing between the reads and the claim is never lowered: the claim is lost and the retry only raises", async () => {
+  it("an officer's card refund landing between the reads and the claim loses the claim; the retry finds the note voided and writes nothing - the $175 stands", async () => {
     // A read $50; an officer refunds by card and the aggregates write $175 before A's claim.
     mocks.paymentFindMany
-      .mockResolvedValueOnce([payment({ refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })])
-      .mockResolvedValue([payment({ refundedAmountCents: 17_500, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+      .mockResolvedValueOnce([payment({ amountCents: 20_000, refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })])
+      .mockResolvedValue([payment({ amountCents: 20_000, refundedAmountCents: 17_500, status: PaymentStatus.PARTIALLY_REFUNDED })]);
     let voided = false;
     mocks.paymentUpdateMany.mockImplementation(async ({ where }: { where: { refundedAmountCents: number } }) => ({ count: where.refundedAmountCents === 17_500 ? 1 : 0 }));
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
@@ -841,6 +841,31 @@ describe("#4288: the claim and the re-read of the note's own row, under the Paym
     expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ refundedAmountCents: 5000 }) }));
     expect(mocks.transaction).toHaveBeenCalledTimes(2);
     // The retry's Xero-derived $100 is below the card ledger's $175: kept and alerted, never written lower.
+    expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({ errorType: "refund-ledger-divergence" }));
+  });
+
+  it("an officer's card refund landing between the reads and the claim, the note still live: the retry's locked check keeps the $175, never lowered", async () => {
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([payment({ amountCents: 20_000, refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })])
+      .mockResolvedValue([payment({ amountCents: 20_000, refundedAmountCents: 17_500, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+    mocks.paymentUpdateMany.mockImplementation(async ({ where }: { where: { refundedAmountCents: number } }) => ({ count: where.refundedAmountCents === 17_500 ? 1 : 0 }));
+    const unchangedChecks: unknown[] = [];
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
+      if (mocks.transaction.mock.calls.length > 5) throw new Error("the recount retried without bound");
+      return callback(lockedTx(() => [NOTE_ROW("AUTHORISED")], () => {
+        unchangedChecks.push(true);
+        return { id: "pay-1" };
+      }));
+    });
+
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0 });
+    // First pass: the $100 claim on the $50 it read is lost to the officer's $175.
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ refundedAmountCents: 5000 }) }));
+    // Retry: the note still counts, its $100 is below the card ledger's $175 (kept, alerted), so nothing to write - and the
+    // locked unchanged check confirms the row as read, instead of a write.
+    expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    expect(unchangedChecks).toHaveLength(1);
     expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({ errorType: "refund-ledger-divergence" }));
   });
 });
