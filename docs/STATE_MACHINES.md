@@ -3688,6 +3688,18 @@ unconfirmed environment, and a provider failure — stay distinguishable
 
 ```text
 local business event -> Xero outbox operation queued
+  one ACTIVE (PENDING/RUNNING/WAITING_PAYMENT) operation per correlation key
+  (#1354): a start that loses the insert race takes the winner's active row.
+  If the winner has already finished (#4338): newest row for the key FAILED,
+  unresolved or closed by the converge below -> it inserts its own row and
+  makes its own Xero call, as a retry a moment later would (at most 3 inserts);
+  SUCCEEDED, CANCELLED, PARTIAL (its Xero object exists) or FAILED with an
+  officer's resolved-in-Xero mark (done, `INV-INT-025`) -> the unique
+  violation is thrown, as before. On a caller's transaction (not the root
+  client) the violation is thrown at once: it has aborted the transaction, so
+  nothing can be read. Limit: after a FAILED winner the extra call can fail
+  too and add one FAILED row toward the repeated-failure alert; an
+  applied-credit allocation's is closed by the converge below
 worker claims operation -> provider call -> success or retryable failure
 success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier
   wait's or failure's code is not shown on it (#4049); PARTIAL keeps them
@@ -3725,7 +3737,11 @@ applied-credit allocation raises that named failure (#4219) -> the worker
   booking's applied credit, shrink or delete the unsent slice, close the slice's
   failed allocation rows through the resolution fields and mark them
   non-replayable), then plans again; the operation completes SUCCEEDED when
-  nothing is left to allocate. Only credit Xero shows spent on an invoice or
+  nothing is left to allocate. A converge that finds a concurrent run already
+  converged closes the caller's own failed allocation row the same way, and
+  audits the close, since it failed after that run's close (#4338). It closes
+  it only when that run's write-down and release for this booking and note
+  exist; otherwise the row stays FAILED. Only credit Xero shows spent on an invoice or
   payment the app has no record of counts. Fails closed (original failure
   stands) when it cannot account for the discrepancy
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
