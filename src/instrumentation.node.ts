@@ -759,9 +759,7 @@ export async function register() {
 
         try {
           // #4270: the credit-note mirror's backstop runs right after the inbound cycle.
-          const { runXeroCronTaskList } = await import(
-            "./lib/xero-cron-runner"
-          );
+          const { runXeroCronTaskList } = await import("./lib/xero-cron-runner");
           const result = await runXeroCronTaskList(["inbound", "credit-note-mirror"], { taskLabel: "inbound" });
           logger.info(
             { job: "xero-inbound-reconcile", result: result.inboundReconciliation, creditNoteMirror: result.creditNoteMirror },
