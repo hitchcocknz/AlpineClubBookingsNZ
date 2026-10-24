@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { redactSensitiveText } from "@/lib/redact-sensitive-json"
 import { summarizeXeroOperation } from "@/lib/xero-operation-summaries"
-import { isResolvedInXero, resolutionLabel } from "@/lib/xero-operation-resolution"
+import { failureStateAfterStatusChange, isResolvedInXero, resolutionLabel } from "@/lib/xero-operation-resolution"
 import { resetXeroOperationsDatasetSearchParams } from "@/lib/admin-dataset-reset-state"
 import { useClubTime } from "@/components/club-time-provider"
 import { requireInstant } from "@/lib/club-time"
@@ -46,6 +46,33 @@ export function resolveDialogDescription(entityType: string): string {
   return entityType === "CREDIT_NOTE"
     ? `${base} If you later void a card refund's credit note in Xero, don't make a replacement by hand: the app raises a fresh one overnight.`
     : base
+}
+
+/** #4220: the Failure selector's option names; "all" keeps FilterSelect's own "All failures". */
+const FAILURE_FILTER_LABELS: Record<string, string> = {
+  ACTIVE: "Active only",
+  REPAIRED: "Repaired",
+  SUPERSEDED: "Superseded",
+}
+
+/**
+ * #4220: the line under the filters while Failure = Active only is hiding rows.
+ * The hidden rows are the audit trail, so they stay one click away.
+ */
+export function HiddenFailuresNotice({ count, onShow }: { count: number; onShow: () => void }) {
+  if (count <= 0) return null
+  return (
+    <p className="text-sm text-muted-foreground">
+      {count} hidden (repaired, superseded or resolved).{" "}
+      <button
+        type="button"
+        onClick={onShow}
+        className="rounded-sm font-medium text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        Show them
+      </button>
+    </p>
+  )
 }
 
 export function OperationsPanel({
@@ -113,6 +140,8 @@ export function OperationsPanel({
     return Number.isInteger(requested) && requested > 0 ? requested : 1
   })
   const [total, setTotal] = useState(0)
+  // #4220: FAILED rows the Failure filter is hiding, for the "N hidden" line.
+  const [hiddenFailedCount, setHiddenFailedCount] = useState(0)
   const pageSize = 25
   const [urlSyncEnabled, setUrlSyncEnabled] = useState(hasOperationsUrlState)
   const [retryingOperationId, setRetryingOperationId] = useState<string | null>(null)
@@ -224,9 +253,10 @@ export function OperationsPanel({
       })
       if (createdFrom) params.set("createdFrom", createdFrom)
       if (createdTo) params.set("createdTo", createdTo)
-      const data = await fetchJson<{ data?: XeroOperation[]; total?: number }>(`/api/admin/xero/operations?${params.toString()}`, undefined, "Failed to fetch Xero operations")
+      const data = await fetchJson<{ data?: XeroOperation[]; total?: number; hiddenFailedCount?: number }>(`/api/admin/xero/operations?${params.toString()}`, undefined, "Failed to fetch Xero operations")
       setOperations(data.data ?? [])
       setTotal(data.total ?? 0)
+      setHiddenFailedCount(data.hiddenFailedCount ?? 0)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load Xero operation history")
     } finally {
@@ -438,14 +468,14 @@ export function OperationsPanel({
             <li><span className="font-medium">WAITING_PAYMENT</span> — paused until the related payment settles. No action needed.</li>
             <li><span className="font-medium">SUCCEEDED</span> — completed in Xero. No action needed.</li>
             <li><span className="font-medium">PARTIAL</span> — some steps succeeded; retry to finish the rest.</li>
-            <li><span className="font-medium">FAILED</span> — could not complete. Open the row for the error, fix the cause if needed, then Retry. Use &ldquo;Retry Active Failed&rdquo; to requeue all replayable failures.</li>
+            <li><span className="font-medium">FAILED</span> — could not complete. Open the row for the error, fix the cause if needed, then Retry. Use &ldquo;Retry Active Failed&rdquo; to requeue all replayable failures. Choosing Failed also picks &ldquo;Active only&rdquo; under Failure, so rows already repaired or marked resolved stay out of the way; &ldquo;Show them&rdquo; brings them back.</li>
           </ul>
         </details>
         <div className="flex flex-col gap-3 md:flex-row md:items-center">
-          <FilterSelect label="Status" value={statusFilter} onValueChange={(value) => { setStatusFilter(value); resetPage() }} values={["all", "FAILED", "PENDING", "PARTIAL", "RUNNING", "WAITING_PAYMENT", "SUCCEEDED"]} />
+          <FilterSelect label="Status" value={statusFilter} onValueChange={(value) => { setFailureStateFilter(failureStateAfterStatusChange({ previousStatus: statusFilter, nextStatus: value, failureState: failureStateFilter })); setStatusFilter(value); resetPage() }} values={["all", "FAILED", "PENDING", "PARTIAL", "RUNNING", "WAITING_PAYMENT", "SUCCEEDED"]} />
           <FilterSelect label="Entity" value={entityFilter} onValueChange={(value) => { setEntityFilter(value); resetPage() }} values={["all", "CONTACT", "CONTACT_GROUP", "INVOICE", "PAYMENT", "CREDIT_NOTE", "ALLOCATION", "SUBSCRIPTION"]} />
           <FilterSelect label="Local Model" value={localModelFilter} onValueChange={(value) => { setLocalModelFilter(value); resetPage() }} values={["all", "Member", "Booking", "Payment", "BookingModification", "ManualRefundTask", "MemberSubscription"]} />
-          <FilterSelect label="Failure" value={failureStateFilter} onValueChange={(value) => { setFailureStateFilter(value); resetPage() }} values={["all", "ACTIVE", "REPAIRED", "SUPERSEDED"]} />
+          <FilterSelect label="Failure" value={failureStateFilter} onValueChange={(value) => { setFailureStateFilter(value); resetPage() }} values={["all", "ACTIVE", "REPAIRED", "SUPERSEDED"]} labels={FAILURE_FILTER_LABELS} />
           <DatasetResetButton disabled={isDatasetDefault} onReset={resetDataset} />
         </div>
         <div className="grid gap-3 md:grid-cols-5">
@@ -471,10 +501,17 @@ export function OperationsPanel({
             <Input id="xero-op-created-to" type="date" value={createdTo} onChange={(event) => { setCreatedTo(event.target.value); resetPage() }} />
           </div>
         </div>
+        <div role="status">
+          {!loading && failureStateFilter === "ACTIVE" ? (
+            <HiddenFailuresNotice count={hiddenFailedCount} onShow={() => { setFailureStateFilter("all"); resetPage() }} />
+          ) : null}
+        </div>
         {loading ? (
           <p className="text-sm text-muted-foreground">Loading recent operations...</p>
         ) : operations.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No Xero operations recorded yet.</p>
+          <p className="text-sm text-muted-foreground">
+            {failureStateFilter === "ACTIVE" ? "No active failures." : "No Xero operations recorded yet."}
+          </p>
         ) : (
           <div className="space-y-3">
             {operations.map((operation) => (

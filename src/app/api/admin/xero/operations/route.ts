@@ -115,6 +115,10 @@ export async function GET(request: NextRequest) {
 
     let operations;
     let total: number;
+    // #4220: FAILED rows (matching the other filters) that the failure-state
+    // filter leaves out, so the panel can say "N hidden, show them". Always 0
+    // when no failure-state filter is applied: nothing is hidden then.
+    let hiddenFailedCount = 0;
 
     if (failureState !== "all") {
       const failureCandidates = await prisma.xeroSyncOperation.findMany({
@@ -133,6 +137,12 @@ export async function GET(request: NextRequest) {
       );
       total = filteredFailures.length;
       operations = filteredFailures.slice((page - 1) * pageSize, page * pageSize);
+      // The candidate query above already drops manually-resolved rows, so
+      // they are counted separately: both kinds are the rows the filter hides.
+      const resolvedHidden = await prisma.xeroSyncOperation.count({
+        where: { ...where, status: "FAILED", manuallyResolvedAt: { not: null } },
+      });
+      hiddenFailedCount = failureCandidates.length - filteredFailures.length + resolvedHidden;
     } else {
       [operations, total] = await Promise.all([
         prisma.xeroSyncOperation.findMany({
@@ -179,6 +189,7 @@ export async function GET(request: NextRequest) {
         staleRunning: isStaleRunningXeroOperation(operation, now),
       })),
       total,
+      hiddenFailedCount,
       page,
       pageSize,
     });

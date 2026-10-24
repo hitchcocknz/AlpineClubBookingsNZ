@@ -48,3 +48,34 @@ export function resolutionLabel(reason: string | null | undefined): string {
     ? "Closed: credit used outside the app"
     : "Resolved in Xero";
 }
+
+/**
+ * #4220 (owner decision, 24 Oct 2026): choosing Status = Failed in the admin
+ * Xero operations panel also selects Failure = Active, so rows an officer or a
+ * later run has already dealt with stop crowding out the ones that still need
+ * attention (`status` stays FAILED on those rows by design, `INV-INT-025`). The
+ * choice is visible in the Failure selector and the URL, and the API default
+ * stays "all", so a saved `opStatus=FAILED` link keeps its literal meaning.
+ *
+ * Returns the Failure selection to use after the Status selector changes: only
+ * an untouched "all" is upgraded to "ACTIVE" on the way into Failed, and only
+ * that default is undone on the way out (an "ACTIVE" filter under any other
+ * status would show failed rows beneath the wrong status).
+ */
+export function failureStateAfterStatusChange({
+  previousStatus,
+  nextStatus,
+  failureState,
+}: {
+  previousStatus: string;
+  nextStatus: string;
+  failureState: string;
+}): string {
+  if (previousStatus !== "FAILED" && nextStatus === "FAILED" && failureState === "all") {
+    return "ACTIVE";
+  }
+  if (previousStatus === "FAILED" && nextStatus !== "FAILED" && failureState === "ACTIVE") {
+    return "all";
+  }
+  return failureState;
+}
