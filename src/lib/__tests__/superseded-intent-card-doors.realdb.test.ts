@@ -716,6 +716,49 @@ async function expectFreshPaymentSettles(fresh: { status: number; body: Record<s
         await expect(nextChargeAttempt()).resolves.toMatchObject({ kind: "fresh" });
       });
     }
+
+    it("beside money really taken: refused as captured_primary_exists, yet the superseded capture with no refund started is still handed off, once", async () => {
+      const superseded = await mintOnPayStep();
+      // Stripe is down for the edit's cancel: only the waiting cancel row names the old intent.
+      stripe.failCancel = true;
+      await editAwayAndBack();
+      // The pay step's reload mints the fresh intent, and the member pays it.
+      const reload = await payStep();
+      expect(reload.status, JSON.stringify(reload.body)).toBe(200);
+      const real = reload.body.paymentIntentId as string;
+      expect(real).not.toBe(superseded);
+      capture(real);
+      // The old tab's capture lands too, after the reload.
+      capture(superseded);
+      // Both captures are on the ledger, as a webhook or a door recording them leaves them.
+      const { upsertPaymentIntentTransaction } = await import("@/lib/payment-transactions");
+      const payment = await prisma.payment.findUniqueOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
+      for (const intent of [real, superseded]) {
+        await upsertPaymentIntentTransaction({ paymentId: payment.id, kind: "PRIMARY", paymentIntentId: intent, amountCents: PRICE_CENTS, status: "SUCCEEDED", paymentMethodId: "pm_race_4300" });
+      }
+      const refundRows = () =>
+        prisma.paymentRecoveryOperation.count({ where: { bookingId: BOOKING_ID, paymentIntentId: superseded, type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT } });
+      const refuse = () =>
+        nextChargeAttempt().then(
+          () => null,
+          (err: unknown) => err as import("@/lib/saved-card-charge-attempt").SavedCardChargeRefusedError,
+        );
+      const { handOffSupersededCaptureAfterRefusal } = await import("@/lib/superseded-paid-intent");
+
+      // Real money wins the refusal, but the waiting superseded capture rides along to be handed off.
+      const first = await refuse();
+      expect(first).toMatchObject({ why: "captured_primary_exists", paymentIntentId: real, supersededIntentsToHandOff: [superseded] });
+      expect(await refundRows()).toBe(0);
+      await handOffSupersededCaptureAfterRefusal(first!);
+      expect(await refundRows()).toBe(1);
+
+      // A second refusal (the real capture still holds the booking back) and a second hand-off queue no second refund.
+      const second = await refuse();
+      expect(second).toMatchObject({ why: "captured_primary_exists", paymentIntentId: real, supersededIntentsToHandOff: [] });
+      await handOffSupersededCaptureAfterRefusal(second!);
+      await handOffSupersededCaptureAfterRefusal(first!);
+      expect(await refundRows()).toBe(1);
+    });
   });
 
   for (const door of ["the pay step", "the /pay link"] as const) {

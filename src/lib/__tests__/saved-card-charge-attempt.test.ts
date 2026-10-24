@@ -570,7 +570,7 @@ describe("beginSavedCardChargeAttempt", () => {
       superseded.owned.add("pi_superseded");
       superseded.stopped.add("pi_superseded");
       const refused = begin();
-      await expect(refused).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: "pi_superseded" });
+      await expect(refused).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: "pi_superseded", supersededIntentsToHandOff: [] });
       await expect(refused).rejects.toThrow(/Refunds owed on the Payments page or from Stuck States/);
       expect(ledger.paymentTransaction.create).not.toHaveBeenCalled();
     });

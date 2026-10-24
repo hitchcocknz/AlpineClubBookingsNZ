@@ -296,10 +296,11 @@ the `admin-superseded-capture-refused` alert. The cron and
 (`beginSavedCardChargeAttempt`) does not count that capture as money already
 taken once its refund is in flight and owes back in full, so it charges as
 usual. Otherwise it refuses, never charging on top: `superseded_capture_returning`
-while only its cancel row names it (the refusing door then hands it off),
-`superseded_refund_stopped` once its refund will never run again (a person
-must act, from Refunds owed or Stuck States), and `captured_primary_exists`
-for a capture owed back only in part.
+while only its cancel row names it, `superseded_refund_stopped` once its refund
+will never run again (a person must act, from Refunds owed or Stuck States),
+and `captured_primary_exists` for a capture owed back only in part. Whichever
+refusal wins, the refusing door hands off every capture whose refund has not
+started.
 
 Split-booking guest-portion settlement with no card on file (#1967). A split
 non-member child (#738) is normally auto-charged at its hold deadline to the
@@ -1717,9 +1718,10 @@ next attempt finds a PRIMARY row still holding captured cash -> REFUSED
     only its cancel row names it              -> REFUSED (`superseded_capture_returning`)
     its refund dead (retries spent)            -> REFUSED (`superseded_refund_stopped`,
                                                   a person acts: Refunds owed / Stuck States)
-  after the rollback the refusing door hands every capture only a cancel row
-  names to its refund (`handOffSupersededCaptureAfterRefusal`), so the next
-  attempt charges
+  after the rollback, whichever refusal won, the refusing door hands every
+  capture only a cancel row names to its refund
+  (`handOffSupersededCaptureAfterRefusal`), so that capture no longer holds
+  the next attempt back; a real capture or a stopped refund still refuses
 `payment_intent.succeeded` / `.payment_failed` for an intent the ledger does not know
   -> adopt the PENDING no-intent attempt row whose `reference` equals the event's
      `request.idempotency_key`, settle it, then handle as usual (lost-response recovery)
