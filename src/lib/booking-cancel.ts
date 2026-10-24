@@ -231,6 +231,15 @@ type CancelBookingResponse =
  * credit settlement, audit, booking events, and waitlist processing are
  * unaffected, and the Xero invoice/credit-note side stays untouched.
  */
+/**
+ * #4316 review round 4: the 409 a cancel answers when a payment was recorded on
+ * the booking while it was being cancelled (a capture racing the never-captured
+ * claim). Nobody else is cancelling it: the retry takes the paid path, which
+ * refunds that payment under the cancellation policy.
+ */
+export const CANCEL_PAYMENT_JUST_RECORDED_MESSAGE =
+  "A payment has just been recorded on this booking. Reload the booking and try cancelling again.";
+
 export async function cancelBooking(
   bookingId: string,
   sessionUserId: string,
@@ -1111,11 +1120,12 @@ async function performBookingCancellation(
       ) {
         return { claimed: false as const };
       }
-      // A capture landed between the outer read and this lock: refuse with the
-      // standard 409 so a retry routes into the paid path and gets the tiered
-      // refund (never flatten a now-captured payment here).
+      // A capture landed between the outer read and this lock: refuse with a
+      // 409 so a retry routes into the paid path and gets the tiered refund
+      // (never flatten a now-captured payment here). #4316 review round 4: its
+      // own sentence - the booking is not being cancelled by anyone else.
       if (await paymentEligibleForPaidCancelPath(fresh, tx)) {
-        return { claimed: false as const };
+        return { claimed: false as const, paymentJustRecorded: true as const };
       }
       if (fresh.lodgeId) await acquireLodgeCapacityLock(tx, fresh.lodgeId);
 
@@ -1149,7 +1159,7 @@ async function performBookingCancellation(
           }))
         : null;
       if (lockedPayment && (await paymentEligibleForPaidCancelPath({ ...fresh, payment: lockedPayment }, tx))) {
-        return { claimed: false as const };
+        return { claimed: false as const, paymentJustRecorded: true as const };
       }
 
       if (
@@ -1312,6 +1322,9 @@ async function performBookingCancellation(
           error:
             "Applied credit is still being reconciled with Xero; retry cancellation after it completes",
         };
+      }
+      if ("paymentJustRecorded" in claim) {
+        return { status: 409, error: CANCEL_PAYMENT_JUST_RECORDED_MESSAGE };
       }
       return {
         status: 409,

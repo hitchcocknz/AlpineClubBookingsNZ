@@ -312,7 +312,7 @@ import {
   fenceMemberFindMany,
   recordingBookingDouble,
 } from "@/lib/__tests__/support/hosting-participant-fence-double";
-import { cancelBooking } from "@/lib/booking-cancel";
+import { CANCEL_PAYMENT_JUST_RECORDED_MESSAGE, cancelBooking } from "@/lib/booking-cancel";
 import { addDaysDateOnly, getTodayDateOnly } from "@/lib/date-only";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { lockedPaymentReReadDouble } from "./support/locked-payment-reread-double";
@@ -1624,7 +1624,18 @@ describe("cancelBooking credit refunds", () => {
 
     const result = await cancelBooking("booking_c1", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
 
-    expect(result.status).toBe(409);
+    expect(result).toMatchObject({ status: 409, error: CANCEL_PAYMENT_JUST_RECORDED_MESSAGE });
+    // Review round 4 (F2): the re-asked read is taken UNDER the row lock - the
+    // lock on this payment precedes the read of its status.
+    const lockOrder = mocks.lockPaymentForRefundedTotal.mock.calls.findIndex(([, id]) => id === "payment_c1");
+    const readOrder = mocks.txPaymentFindUnique.mock.calls.findIndex(
+      ([args]) => (args as { select?: Record<string, unknown> }).select?.status === true,
+    );
+    expect(lockOrder).toBeGreaterThanOrEqual(0);
+    expect(readOrder).toBeGreaterThanOrEqual(0);
+    expect(mocks.lockPaymentForRefundedTotal.mock.invocationCallOrder[lockOrder]).toBeLessThan(
+      mocks.txPaymentFindUnique.mock.invocationCallOrder[readOrder]!,
+    );
     // Nothing moved: no claim, no FAILED flip, no retirement - the retry takes the paid path.
     expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
     expect(mocks.paymentUpdate).not.toHaveBeenCalled();
@@ -3789,9 +3800,38 @@ describe("cancelBooking credit refunds", () => {
       );
 
       expect(result.status).toBe(409);
+      // #4316 review round 4: told a payment was just recorded, not that the
+      // booking is being cancelled by someone else.
+      expect(result).toMatchObject({ error: CANCEL_PAYMENT_JUST_RECORDED_MESSAGE });
       expect(mocks.restoreCreditFromBooking).not.toHaveBeenCalled();
       expect(mocks.paymentUpdate).not.toHaveBeenCalled();
       expect(mocks.bookingUpdate).not.toHaveBeenCalled();
+    });
+
+    // #4316 review round 4 (F1): a lost claim on a NEVER-captured payment - the
+    // shape whose won claim flips the payment FAILED - writes no FAILED flip.
+    function lostNeverCapturedClaim(claimCount: number) {
+      const booking = neverCapturedBooking({}, { status: "PENDING" });
+      mocks.bookingFindUnique.mockResolvedValueOnce(booking);
+      mocks.txBookingFindUnique.mockResolvedValueOnce(booking);
+      mocks.txPaymentTransactionFindFirst.mockResolvedValue(null);
+      mocks.paymentTransactionFindFirst.mockResolvedValue(null);
+      mocks.bookingUpdateMany.mockResolvedValueOnce({ count: claimCount });
+      return cancelBooking("bk_nc", "member_1", "MEMBER", "127.0.0.1", CLUB_FORMAT_TEST, "card");
+    }
+
+    it("CONTROL: a won claim on a never-captured payment flips it FAILED (#4316 F1)", async () => {
+      const result = await lostNeverCapturedClaim(1);
+
+      expect(result.status).toBe(200);
+      expect(mocks.paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment_nc" }, data: { status: "FAILED" } });
+    });
+
+    it("a lost claim on a never-captured payment writes no FAILED flip (#4316 F1)", async () => {
+      const result = await lostNeverCapturedClaim(0);
+
+      expect(result).toMatchObject({ status: 409, error: "This booking is already being cancelled or has been cancelled" });
+      expect(mocks.paymentUpdate).not.toHaveBeenCalledWith(expect.objectContaining({ data: { status: "FAILED" } }));
     });
 
     const pendingBooking = () => ({
