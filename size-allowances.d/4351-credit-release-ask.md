@@ -16,12 +16,9 @@ reason: the runner's branch is one early fork at the top of
   this request does not have.
 
 file: src/lib/admin-cron-health.ts
-lines: 939
+lines: 927
 reason: one `defineCronJob` entry for the new `credit-release-asks` job, which the
   health page reads from this registry; the job's own logic is in its own module.
-  #4270 adds a second entry of the same eleven-line shape, for the inbound
-  credit-note mirror's sweep (`xero-credit-note-outside-spend-mirror`): the table
-  is one list, a job missing from it is reported as untracked, and there is no seam.
 
 file: src/lib/email-message-registry.ts
 lines: 2384
