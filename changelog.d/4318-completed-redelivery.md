@@ -23,8 +23,10 @@
   otherwise - about a day later at worst, when the app stopped just after
   claiming that day's alert. That later alert says if the booking was
   cancelled since (naming the cancellation's refund, which may have been
-  made as account credit or by hand) or another payment now holds money too,
-  and every alert shows what the card payment still holds.
+  made as account credit or by hand, and saying a card refund was sent only
+  once it was) or another payment now holds money too, and every alert names
+  a payment the app no longer counts that still holds money and shows what
+  the card payment still holds.
   One case stays quiet: a saved-card charge whose charging request stopped or
   failed between recording the payment and settling it.
 

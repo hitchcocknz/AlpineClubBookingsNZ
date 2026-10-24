@@ -100,14 +100,16 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   the cash row, or the bank receipt's PRIMARY row when exactly one holds
   money. The manual reversal clears it.
 - **The recorded settler is never refunded.** Its redelivery is
-  `already_paid` whatever else holds money, on a COMPLETED stay too (#4285).
+  `already_paid` whatever else holds money, even when COMPLETED (#4285).
 - **Every other card capture arriving on a PAID or COMPLETED booking is
   refunded** while the settler still holds net cash nothing else owns: a third
-  capture, or a stray on a cash- or Xero-settled booking (#2262). Its alert and
-  history name the settlement.
-- **What the superseded machinery holds** (a live operation, or a failed-later
-  refund open rows owe back in full, #4227) is never the settlement, never
-  another payment, and never refunded on top when it arrives (#4283).
+  capture, or a stray on a cash- or Xero-settled booking (#2262). Its alert,
+  and an inline refund's history, name the settlement.
+- **What the superseded machinery holds** (an unsucceeded operation, or a
+  failed-later refund open rows owe back in full, #4227) is never the
+  settlement. An in-flight cancel's or unsucceeded refund's capture is never
+  refunded on top on arrival (#4283) nor named as another payment; a dead
+  cancel's is.
 - **No record, no automatic refund.** Paid before this release or by the
   old colour, if another capture holds money; or a recorded settler
   no longer holding money, whether or not another does: the arriving capture is
@@ -118,8 +120,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   $0 auto-pay, group settlement) never write it; a lone capture there is
   kept and alerted unless already recorded (a replay, or a saved-card
   pre-record whose settle crashed or threw, #4285). The payments cron retries
-  it until delivered or moot (card refunded, booking gone, or a refund
-  machinery owns it).
+  until delivered or moot.
 - **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
   readings (#4283).
 - Decided under `lock(1)`, enqueued before any Stripe call, one operation per
