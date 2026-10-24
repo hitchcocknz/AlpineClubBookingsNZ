@@ -97,15 +97,27 @@ function refundMayTakeFrom(
  * Where the cancel's card refund stands, as the alert says it: the furthest
  * from done of its rows and of the refunds they made that Stripe failed later
  * (each owed again on a row of its own, #4166) - `sent` only once all of it
- * reached the card; no row, `unrecorded`.
+ * reached the card; no row, `unrecorded`. A close recorded as paid another way
+ * names what it left unpaid (its record's, and each such failed-later part's),
+ * and where only failed-later parts were closed that way, beside a refund that
+ * was made, their amount rather than the whole (#4285 review).
  */
-function cardRefundStanding({ cardRefundState, cardRefundFailedLater = [] }: CancelledCardRefund): CardRefundStanding {
-  if (cardRefundState === undefined) return "unrecorded";
+function cardRefundStanding(
+  { cardRefundState, cardRefundClose, cardRefundFailedLater = [] }: CancelledCardRefund,
+  money: (cents: number) => string,
+): Pick<CardRefundNote, "standing" | "unpaid" | "closedAnotherWay"> {
+  if (cardRefundState === undefined) return { standing: "unrecorded" };
   const states = [cardRefundState, ...cardRefundFailedLater.map((part) => part.state)];
-  if (states.some((state) => state === "stalled" || state === "on-its-way")) return "not-sent";
-  return states.includes("paid-another-way") ? "paid-another-way" : "sent";
+  if (states.some((state) => state === "stalled" || state === "on-its-way")) return { standing: "not-sent" };
+  const closedParts = cardRefundFailedLater.filter((part) => part.state === "paid-another-way");
+  const unpaidCents =
+    (cardRefundState === "paid-another-way" ? (cardRefundClose?.unpaidCents ?? 0) : 0) + closedParts.reduce((sum, part) => sum + (part.unpaidCents ?? 0), 0);
+  const unpaid = unpaidCents > 0 ? { unpaid: money(unpaidCents) } : {};
+  if (cardRefundState === "paid-another-way") return { standing: "paid-another-way", ...unpaid };
+  if (closedParts.length === 0) return { standing: "sent" };
+  return { standing: "sent", closedAnotherWay: money(closedParts.reduce((sum, part) => sum + part.amountCents, 0)), ...unpaid };
 }
-type CardRefundStanding = NonNullable<Extract<CancellationRefundNote, { method: "card" }>["card"]>["standing"];
+type CardRefundNote = NonNullable<Extract<CancellationRefundNote, { method: "card" }>["card"]>;
 
 /** A card refund shortfall part's hand-back task, as the alert says it: owed until completed or dismissed. */
 function shortfallPart(cents: number, status: CardShortfallTaskStatuses["bank"], money: (cents: number) => string): ShortfallPartNote | null {
@@ -147,7 +159,7 @@ async function readCancellationRefund(
     const debt = settlement ? await readOrganiserChildCancelledCardRefund(booking.id, settlement.id, tx) : {};
     const cents = debt.amountCents ?? decision.settledAmountCents;
     if (cents <= 0) return { method: "none" };
-    return { method: "card", card: { amount: money(cents), standing: cardRefundStanding(debt), organiserCard: true }, byBank: null, toCheck: null };
+    return { method: "card", card: { amount: money(cents), ...cardRefundStanding(debt, money), organiserCard: true }, byBank: null, toCheck: null };
   }
   if (decision.settledAmountCents <= 0) return { method: "none" };
   if (decision.refundMethod === "credit" || decision.refundMethod === "manual") return { method: decision.refundMethod, amount: money(decision.settledAmountCents) };
@@ -156,7 +168,7 @@ async function readCancellationRefund(
   const tasks = parts.bankCents + parts.checkCents > 0 ? await readCardShortfallTaskStatuses(booking.id, tx) : {};
   return {
     method: "card",
-    card: parts.cardCents > 0 ? { amount: money(parts.cardCents), standing: cardRefundStanding(await readCancelledCardRefund(booking.id, tx)) } : null,
+    card: parts.cardCents > 0 ? { amount: money(parts.cardCents), ...cardRefundStanding(await readCancelledCardRefund(booking.id, tx), money) } : null,
     byBank: shortfallPart(parts.bankCents, tasks.bank, money),
     toCheck: shortfallPart(parts.checkCents, tasks.check, money),
   };

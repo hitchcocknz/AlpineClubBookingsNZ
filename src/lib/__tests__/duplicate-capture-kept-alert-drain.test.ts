@@ -52,6 +52,8 @@ const mocks = vi.hoisted(() => ({
   recoveryReads: vi.fn(),
   /** A "Paid another way" close record on a closed row (`closeKeysOf`), or null. */
   closeRecord: null as { amountCents: number | null; raisedAmountCents: number | null } | null,
+  /** #4285 review 9: close records by recovery row id, where only some rows were closed. */
+  closeRecordFor: null as Record<string, { amountCents: number | null; raisedAmountCents: number | null }> | null,
   /** A card refund shortfall's hand-back tasks (`cancel-card-shortfall:`). */
   shortfallTasks: [] as Array<{ kind: string; occurrenceKey: string; status: string }>,
   /** The group's combined card settlement, for an organiser-settled child. */
@@ -153,7 +155,12 @@ vi.mock("@/lib/prisma", () => {
       },
     },
     manualRefundTask: {
-      findFirst: async () => mocks.closeRecord,
+      // A close record per row where a case keys them (`closeKeysOf` carries the row's id), else the one for every closed row.
+      findFirst: async ({ where }: { where: { occurrenceKey: { in: string[] } } }) => {
+        if (!mocks.closeRecordFor) return mocks.closeRecord;
+        const entry = Object.entries(mocks.closeRecordFor).find(([id]) => where.occurrenceKey.in.some((key) => key.includes(id)));
+        return entry?.[1] ?? null;
+      },
       findMany: async ({ where }: { where: { occurrenceKey: { startsWith: string } } }) =>
         mocks.shortfallTasks.filter((task) => task.occurrenceKey.startsWith(where.occurrenceKey.startsWith)),
     },
@@ -258,6 +265,7 @@ beforeEach(() => {
   mocks.duplicateRefundsHolding.mockImplementation(() => mocks.duplicateRefundIntentIds());
   mocks.recoveryRows = [];
   mocks.closeRecord = null;
+  mocks.closeRecordFor = null;
   mocks.shortfallTasks = [];
   mocks.settlement = null;
 });
@@ -448,6 +456,40 @@ describe("the owed new-capture alert's drain (#4285 review)", () => {
     );
     // The booking page's reading (`readCancelledCardRefund`): the member's cancel row and a capacity race's, by this booking.
     expect(mocks.recoveryReads).toHaveBeenCalledWith(expect.objectContaining({ bookingId: "booking-1", OR: expect.arrayContaining([{ idempotencyKey: CANCEL_KEY }]) }));
+  });
+
+  it("#4285 review 9 F1: a part close as paid another way names what it left unpaid", async () => {
+    prime({ status: "CANCELLED" });
+    mocks.recoveryRows = [recoveryRow()];
+    // The officer paid back $60 of the $100 the row still owed when it closed.
+    mocks.closeRecord = { amountCents: 6000, raisedAmountCents: 10000 };
+    mocks.bookingEvents = [CARD_DECISION];
+
+    await drainOwedNewCaptureAlerts(NOW);
+
+    expect(mocks.alert).toHaveBeenCalledWith(
+      expect.objectContaining({ cancellationRefund: cardNote({ amount: money(10000), standing: "paid-another-way", unpaid: money(4000) }) }),
+    );
+  });
+
+  it("#4285 review 9 F2: a refund made, of which a part failed later and was closed as paid another way, names that part (and what it left unpaid), not the whole", async () => {
+    prime({ status: "CANCELLED" });
+    const madeAgainClosed = { status: "SUCCEEDED", attempts: 1, nextRetryAt: null, succeededAt: NOW } as const;
+    mocks.recoveryRows = [
+      recoveryRow(),
+      failedLaterRow({ ...madeAgainClosed, amountCents: 3000, allocationPlan: [{ paymentTransactionId: "txn-new", amountCents: 3000, madeByOperationId: "op-cancel" }] }),
+    ];
+    // Only the failed-later row was closed: $20 of its $30 paid back.
+    mocks.closeRecordFor = { "op-failed-later": { amountCents: 2000, raisedAmountCents: 3000 } };
+    mocks.bookingEvents = [CARD_DECISION];
+
+    await drainOwedNewCaptureAlerts(NOW);
+
+    expect(mocks.alert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cancellationRefund: cardNote({ amount: money(10000), standing: "sent", closedAnotherWay: money(3000), unpaid: money(1000) }),
+      }),
+    );
   });
 
   it("#4285 review 7 F1/F7: a dead card refund planned on this very capture neither holds the alert back nor is said to have refunded it", async () => {

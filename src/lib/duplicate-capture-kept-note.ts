@@ -51,7 +51,9 @@ export type DuplicateCaptureKeptReason =
  * that refund stands, as of the drain's read - `sent` only once its row
  * SUCCEEDED and no refund it made failed later still owed again, `not-sent`
  * while it (or such a refund) is on its way or dead, `paid-another-way` for a
- * close recorded as paid another way, `unrecorded` with no row (a cancel from
+ * close recorded as paid another way (with what it left `unpaid`), a `sent`
+ * refund naming any part that failed later and was closed that way
+ * (`closedAnotherWay`), `unrecorded` with no row (a cancel from
  * before the row existed); `organiserCard` where it goes to the group
  * organiser's card (#3653) - and, for a card refund shortfall (#4097,
  * `INV-PAY-129`), the parts owed by bank transfer and for the club to check,
@@ -64,7 +66,15 @@ export type CancellationRefundNote =
   | {
       method: "card";
       /** Null when the card plan carried nothing: the whole refund is owed another way. */
-      card: { amount: string; standing: "sent" | "not-sent" | "paid-another-way" | "unrecorded"; organiserCard?: true } | null;
+      card: {
+        amount: string;
+        standing: "sent" | "not-sent" | "paid-another-way" | "unrecorded";
+        organiserCard?: true;
+        /** What a close recorded as paid another way left unpaid, when it left any. */
+        unpaid?: string;
+        /** `sent` only: the part that failed later and was closed as paid another way. */
+        closedAnotherWay?: string;
+      } | null;
       byBank: ShortfallPartNote | null;
       toCheck: ShortfallPartNote | null;
     };
@@ -79,11 +89,13 @@ function joinedClauses(clauses: string[]): string {
 function cardRefundClauses(refund: Extract<CancellationRefundNote, { method: "card" }>): string[] {
   const card = refund.card;
   const refundOf = card?.organiserCard ? `refund of ${card.amount} to the group organiser's card` : `card refund of ${card?.amount}`;
+  const leftUnpaid = card?.unpaid ? `, with ${card.unpaid} of it left unpaid` : "";
+  const failedLaterClosed = card?.closedAnotherWay ? `, but ${card.closedAnotherWay} of that failed later and was closed as paid another way${leftUnpaid}` : "";
   const cardClause = card
     ? {
-        sent: `it refunded ${card.amount} to ${card.organiserCard ? "the group organiser's card" : "card"}`,
+        sent: `it refunded ${card.amount} to ${card.organiserCard ? "the group organiser's card" : "card"}${failedLaterClosed}`,
         "not-sent": `a ${refundOf} was planned but has not been sent in full`,
-        "paid-another-way": `its ${refundOf} was closed as paid another way`,
+        "paid-another-way": `its ${refundOf} was closed as paid another way${leftUnpaid}`,
         unrecorded: `a ${refundOf} was planned, with no record of whether it was sent`,
       }[card.standing]
     : null;

@@ -736,6 +736,14 @@ describe("#2320 review — senders supply the composed notes their defaults rend
       ],
       [{ amount: "$60.00", standing: "sent", organiserCard: true }, "it refunded $60.00 to the group organiser's card.", { byBank: null, toCheck: null }],
       [{ amount: "$60.00", standing: "not-sent", organiserCard: true }, "a refund of $60.00 to the group organiser's card was planned but has not been sent in full.", { byBank: null, toCheck: null }],
+      // #4285 review 9 F1: a part close names what it left unpaid; F2: a refund made, of which a part failed later and was closed another way, names that part.
+      [{ amount: "$60.00", standing: "paid-another-way" }, "its card refund of $60.00 was closed as paid another way.", { byBank: null, toCheck: null }],
+      [{ amount: "$60.00", standing: "paid-another-way", unpaid: "$25.00" }, "its card refund of $60.00 was closed as paid another way, with $25.00 of it left unpaid.", { byBank: null, toCheck: null }],
+      [
+        { amount: "$60.00", standing: "sent", closedAnotherWay: "$20.00", unpaid: "$5.00" },
+        "it refunded $60.00 to card, but $20.00 of that failed later and was closed as paid another way, with $5.00 of it left unpaid.",
+        { byBank: null, toCheck: null },
+      ],
     ] as const) {
       mocks.sendUnmuteableAdminAlert.mockClear();
       await sendAdminDuplicateCaptureKeptAlert(
