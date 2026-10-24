@@ -828,6 +828,7 @@ describe("#4288: the claim and the re-read of the note's own row, under the Paym
     let voided = false;
     mocks.paymentUpdateMany.mockImplementation(async ({ where }: { where: { refundedAmountCents: number } }) => ({ count: where.refundedAmountCents === 17_500 ? 1 : 0 }));
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
+      if (mocks.transaction.mock.calls.length > 5) throw new Error("the recount retried without bound");
       // The first pass finds the note live; the retry finds it voided meanwhile.
       const voidedNow = voided;
       voided = true;
