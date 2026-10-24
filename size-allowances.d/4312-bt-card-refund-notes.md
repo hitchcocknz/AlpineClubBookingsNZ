@@ -11,14 +11,13 @@ lines: 3384
 reason: the refund request recovery row's marker (`notesEachRefund`, written as
   the row's Stripe key prefix by the one enqueue that writes these rows), the
   check the replay reads it back with, and the replay handing each refund it
-  makes to `replayNotingEachRefund` - and, for a failed-later row whose failed
-  refund had its own note, the ask for its refund's note (#4104, review round
-  5). The replay's refunds are only known inside
+  makes to `replayNotingEachRefund`, which asks every other row's refunds by the
+  one rule `charge.refunded` applies (#4104, review round 6). The replay's refunds are only known inside
   its own refund callback, and the marker belongs beside the enqueue that
   writes it.
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3364
+lines: 3380
 reason: the `cardRefundId` option of `enqueueXeroRefundCreditNoteOperation` -
   its sizing branch, key, dedupe rows, payload and the worker passing it on -
   beside the `paidAnotherWayTaskId` route it mirrors, in the one enqueue every
@@ -37,13 +36,13 @@ reason: the one card refund ledger writer reports which refunds it newly
   first to record. The count is made in that loop and nowhere else.
 
 file: src/lib/stripe-webhook-service.ts
-lines: 1775
+lines: 1779
 reason: `charge.refunded` hands its delta and its newly counted refunds to
   `queueWebhookCardRefundNotes` instead of the one enqueue call, and runs its
   late-capture checks for a refund newly recorded when the total did not move.
 
 file: src/lib/xero-operation-retry.ts
-lines: 2067
+lines: 2082
 reason: an operator's retry keeps a card refund's note its own (`cardRefundId`,
   read from the payload or else the row's key, which an older worker's
   payload rewrite keeps), beside the other fields a retry must keep.

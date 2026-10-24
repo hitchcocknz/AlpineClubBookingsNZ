@@ -54,6 +54,7 @@ export async function readFailedRefundsAnsweredBy(db: AnswerReader, paymentId: s
   const refunds = await db.paymentRefund.findMany({
     where: { paymentId },
     select: { stripeRefundId: true, paymentTransactionId: true, stripePaymentIntentId: true, amountCents: true, status: true, createdAt: true, updatedAt: true, stripeCreatedAt: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }], // one order for refunds recorded in the same instant
   });
   const refund = refunds.find((each) => each.stripeRefundId === stripeRefundId);
   if (!payment || !refund?.paymentTransactionId || !isRecordedRefundStatus(refund.status)) return NONE;
@@ -61,6 +62,7 @@ export async function readFailedRefundsAnsweredBy(db: AnswerReader, paymentId: s
   const recoveryOperations = await db.paymentRecoveryOperation.findMany({
     where: { paymentId, ...CARD_REFUND_OPERATION_WHERE },
     select: { id: true, type: true, status: true, idempotencyKey: true, amountCents: true, allocationPlan: true, paymentTransactionId: true, createdAt: true, succeededAt: true },
+    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
   });
   const closes = await db.manualRefundTask.findMany({
     where: { paymentId, occurrenceKey: { in: recoveryOperations.flatMap((operation) => closeKeysOf(operation.id)) } },
