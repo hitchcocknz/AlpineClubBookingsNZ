@@ -266,12 +266,15 @@ export function editFinancialReviewStrandMovesNights(
  * removal, warn the officer here, and let wave B's clean-up (D3) close such a
  * review with no money moved.
  *
- * Only a strand whose nights the review's edit MOVED counts
- * (`editFinancialReviewStrandMovesNights`): a review's money only ever comes from
- * those (#4317 review round 3). A strand the review merely carries - one of its
+ * Only a strand that SURRENDERED nights counts: a credit is owed only for
+ * nights given back, and those are the nights the removal credited too (#4317
+ * review rounds 3 and 4). A strand the review merely carries - one of its
  * `otherStrands`, or a pre-#3498 one-strand row about a guest the edit did not
  * touch - cannot be credited twice by its guest's removal, and warning on it
  * would steer an officer away from money the member is owed for another guest.
+ * Nor can a strand that only ADDED nights: those were never collected, so the
+ * removal credited money the member had not paid, and settling the review's
+ * charge is the very offset that squares it.
  *
  * And a moved strand counts only when the review's OWN edit did not remove it: a
  * parked removal deletes its departing guest in the transaction that raised the
@@ -294,7 +297,7 @@ export function editFinancialReviewGuestsRemovedSinceRaised(
 }> {
   const strands = editFinancialReviewStrandRecords(context.occurrence);
   return strands.flatMap((strand, strandIndex) => {
-    if (!editFinancialReviewStrandMovesNights(strand)) return [];
+    if (strand.surrenderedNightDates.length === 0) return [];
     if (currentGuestIds.has(strand.bookingGuestId)) return [];
     const surrendered = new Set<string>(strand.surrenderedNightDates);
     const removedByItsOwnEdit =

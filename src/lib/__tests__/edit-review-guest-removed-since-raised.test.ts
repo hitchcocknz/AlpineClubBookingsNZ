@@ -115,6 +115,35 @@ describe("editFinancialReviewGuestsRemovedSinceRaised", () => {
       editFinancialReviewGuestsRemovedSinceRaised(read(PARKED_REMOVAL), new Set(["guest-b"])),
     ).toEqual([]);
   });
+
+  /** An extension of D that parked: D only ADDED a night, so the review is a charge. */
+  const EXTENSION = {
+    ...SHORTENING,
+    occurrence: {
+      bookingId: "booking-1",
+      bookingGuestId: "guest-d",
+      cause: "PARTIAL_STORED_NIGHT_PRICES",
+      surrenderedNightDates: [],
+      addedNightDates: ["2026-08-04"],
+      storedEvidence: evidence(30_000, [10_000, null, 10_000]),
+    },
+  };
+
+  it("does NOT flag a guest whose strand only added nights, removed since (review round 4)", () => {
+    // D's added night was never collected, so D's removal credited money the
+    // member had not paid; settling the review's charge is the offset.
+    expect(editFinancialReviewGuestsRemovedSinceRaised(read(EXTENSION), new Set(["guest-b"]))).toEqual([]);
+  });
+
+  it("flags a moved strand - nights given back AND added - removed since", () => {
+    const moved = {
+      ...EXTENSION,
+      occurrence: { ...EXTENSION.occurrence, surrenderedNightDates: ["2026-08-01"] },
+    };
+    expect(editFinancialReviewGuestsRemovedSinceRaised(read(moved), new Set(["guest-b"]))).toEqual([
+      { bookingGuestId: "guest-d", strandIndex: 0, strandCount: 1, guestTotalCents: 30_000 },
+    ]);
+  });
 });
 
 describe("the queue payload's reviewGuestRemovedSinceRaised", () => {
