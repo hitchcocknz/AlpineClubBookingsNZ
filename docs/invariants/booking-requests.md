@@ -300,7 +300,8 @@ produces others under the locks it is refused and rolled back. It then runs thro
 approval's audit row lists the guests entered. Guarded by
 `booking-change-request-structured.test.ts`,
 `booking-change-request-grid-nights.test.ts`,
-`booking-change-request-officer-entry.test.ts` and the realdb cases in
+`booking-change-request-officer-entry.test.ts`,
+`booking-change-request-estimate.test.ts` and
 `booking-change-request-execution.realdb.test.ts`.
 
 ### INV-REQ-012
