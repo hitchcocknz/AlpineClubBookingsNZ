@@ -4080,6 +4080,13 @@ the pre-#4217 code). Now:
   claims nothing. As separate statements the flip could land after that check,
   and the member was charged and refunded on a booking left unpaid. No provider
   call runs inside; its callers all run outside any transaction.
+- The reversal re-arms a cancellation it leaves standing that the runner will
+  not finish (`rearmDeadIntentCancellations`, #4320), including one a worker
+  holds PROCESSING on its last attempt, mid-Stripe-call and holding no lock.
+  That worker cannot undo the re-arm: its failure write is fenced on the
+  attempt it claimed (`attempts`, with `processingStartedAt` set), which the
+  re-arm reset; its success write closes the row, which is true; its hand-off
+  re-claims the PENDING row as a webhook's would, and queues the refund by key.
 - A writer that reaches only the rebuild, such as the superseded refund's own
   late flip in `processRefundSupersededPaymentOperation` (an autocommit row
   write, then the root-client rebuild), is covered by the rebuild's own lock.

@@ -1447,7 +1447,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       });
     });
 
-    describe("F3: a saved-card charge attempt is judged against the booking's worth, the figure its minters charge", () => {
+    describe("F3: a saved-card charge attempt is judged against the booking's worth, the figure the cron charges and the capture path accepts", () => {
       const attempt = (id: string, amountCents: number): CardRow => ({
         id,
         kind: PaymentTransactionKind.PRIMARY,

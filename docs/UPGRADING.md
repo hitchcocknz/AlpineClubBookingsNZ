@@ -144,10 +144,16 @@ WITH last_manual AS (
   ORDER BY a."entityId", a."createdAt" DESC
 )
 SELECT b."id" AS "bookingId", b."status" AS "bookingStatus",
-       b."finalPriceCents", o."id" AS "operationId", o."type", o."status",
-       o."attempts", o."nextRetryAt", o."paymentIntentId",
-       t."kind", t."status" AS "intentRowStatus", t."amountCents",
-       p."additionalPaymentIntentId",
+       b."finalPriceCents", p."changeFeeCents", o."id" AS "operationId",
+       o."type", o."status", o."attempts", o."nextRetryAt",
+       o."paymentIntentId", t."kind", t."status" AS "intentRowStatus",
+       t."amountCents", t."reference", p."additionalPaymentIntentId",
+       p."additionalAmountCents",
+       t."id" = (SELECT n."id" FROM "PaymentTransaction" n
+                 WHERE n."paymentId" = p."id" AND n."kind" = 'ADDITIONAL'
+                   AND n."source" = 'STRIPE' AND n."withdrawnAt" IS NULL
+                 ORDER BY n."createdAt" DESC, n."insertionSeq" DESC
+                 LIMIT 1) AS "newestCardAsk",
        lm."createdAt" AS "reversedAt"
 FROM last_manual lm
 JOIN "Payment" p ON p."id" = lm."paymentId"
@@ -168,12 +174,24 @@ For each row:
 
 - if `intentRowStatus` is not `PENDING` or `PROCESSING`, or the booking is
   cancelled, there is nothing to do;
-- if `kind` is `PRIMARY` and `amountCents` differs from what the booking page
-  asks the member to pay, the cancellation is right: leave it;
-- if `kind` is `ADDITIONAL` and `paymentIntentId` is not the row's
-  `additionalPaymentIntentId`, the cancellation is right: leave it. The amount
-  says nothing here, because an extra's card payment is judged by whether it is
-  the one the booking page offers, not by its figure;
+- if `nextRetryAt` is empty, the cancellation has given up and will never run
+  again, whatever the rest of the row says. Cancel that payment intent
+  (`paymentIntentId`) in the Stripe dashboard: that moves no money, and
+  Stripe's cancellation event closes the row. Where the bullets below would not
+  have left the cancellation, the last one also says what the member is left
+  with;
+- if `kind` is `PRIMARY` and `reference` starts with `pending_charge_`, the row
+  is a saved-card charge, judged against the booking's full value:
+  `finalPriceCents` plus `changeFeeCents`. If `amountCents` differs from that,
+  the cancellation is right: leave it;
+- if `kind` is any other `PRIMARY` row and `amountCents` differs from what the
+  booking page asks the member to pay, the cancellation is right: leave it;
+- if `kind` is `ADDITIONAL` and `additionalPaymentIntentId` is set but is not
+  `paymentIntentId`, the cancellation is right: leave it. If
+  `additionalPaymentIntentId` is empty, the cash settlement hid the extra's card
+  request: the row's payment is still the live one only when `newestCardAsk` is
+  true and `amountCents` equals `additionalAmountCents`. Otherwise the
+  cancellation is right: leave it;
 - otherwise, cancel that payment intent (`paymentIntentId`) in the Stripe
   dashboard, and do it promptly. The cancellation then closes itself and the
   member's open payment page stops working. For a `PRIMARY` row their next
@@ -188,8 +206,9 @@ member who pays from a page they still have open is charged and then refunded,
 because the app hands that payment to the cancellation's refund, and the
 booking stays unpaid. A row with a `nextRetryAt` cancels the card payment
 itself once Stripe answers, closing the member's page anyway; a row with no
-`nextRetryAt` has given up and waits for ever. No admin
-screen closes these rows, and they must never be deleted by hand.
+`nextRetryAt` has given up, which is why the second bullet has it cancelled in
+Stripe. No admin screen closes these rows, and they must never be deleted by
+hand.
 
 ### The app records which payment settled each booking (#4211)
 

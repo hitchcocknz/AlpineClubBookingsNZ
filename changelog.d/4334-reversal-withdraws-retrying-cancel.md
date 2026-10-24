@@ -9,14 +9,17 @@
 
   The reversal now works out again, from the booking as it stands, which open
   card payments are out of date. It keeps cancelling those, including one an
-  edit had already queued, and restarts the cancellation of one that had given
-  up. It withdraws the cancellation of the one the booking can still be paid
-  with, even one waiting to retry or one that has given up: a saved-card
-  charge is judged against the full amount it charges, and a card request for
-  an extra the reversal puts back to owing is found even when the cash
-  settlement had hidden it. A card payment the member makes while the reversal
-  is running now waits for it, then pays the booking. The reversal's audit
-  entry lists every cancellation it withdrew or restarted and every card
-  payment still being cancelled.
+  edit had already queued, and restarts a cancellation that had given up or
+  was on its last try. It withdraws the cancellation of the one the booking
+  can still be paid with, even one waiting to retry or one that has given up.
+  A saved-card charge is judged against the booking's full value: the amount
+  the app's automatic saved-card charge takes, and the amount it accepts a
+  card payment at. A card request for an extra the reversal puts back to owing is
+  found even when the cash settlement had hidden it, and the booking points
+  at it again, so when the member pays it the extra reads as paid and is no
+  longer chased. A card payment the member makes while the reversal is
+  running now waits for it, then pays the booking. The reversal's audit entry
+  lists every cancellation it withdrew or restarted, every card payment still
+  being cancelled, and the card request the extra points at again.
   Reversals made before this release may have left a cancellation behind:
   `docs/UPGRADING.md` has a read-only query to find them and what to do.
