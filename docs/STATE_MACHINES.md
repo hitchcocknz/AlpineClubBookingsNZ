@@ -1785,14 +1785,16 @@ capture the superseded or duplicate-capture machinery owns. Who else holds money
 admin is told (`readOtherSettledCaptureWhere`'s `readTellingWhere`, the Xero
 conflict's reading), by the settle's alert and the drain alike, so a capture
 behind a dead cancel, or one whose duplicate-capture refund Stripe failed later
-with nothing owing it again, is named. That reading counts PRIMARY rows by
+and open rows owe back less than all it holds, is named. That reading counts PRIMARY rows by
 ledger status, so "no other payment" is worded as none the app counts as
 settling the booking. A booking cancelled since is told as
 `new-capture-closed`, naming the cancellation's recorded refund, its card
 refund read in that snapshot as the booking page reads it
 (`readCancelledCardRefund`): refunded only once its row SUCCEEDED and no
 refund it made that Stripe failed later is owed again; planned but not sent
-while it or such a refund is on its way or dead; closed as paid another way.
+while it or such a refund is on its way or dead; closed as paid another way,
+with what the close left unpaid; and, where only a refund that failed later
+was closed that way, that part by its amount (#4285 review).
 An organiser-card child's is its debt to the group organiser's card
 (`readOrganiserChildCancelledCardRefund`; a refund failed later reopens it),
 and is said so. A card refund shortfall's bank and check parts are said as

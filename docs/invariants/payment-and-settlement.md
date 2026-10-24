@@ -95,11 +95,11 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 ## INV-PAY-043
 
 - **The settlement is recorded, never guessed** (#4211, owner decision 17 Oct
-  2026): the winning PAID claim writes `Payment.settledByTransactionId` (a
-  bank receipt's PRIMARY row only when exactly one holds money), and the
-  manual reversal clears it.
+  2026): the winning PAID claim (`payment-settler.ts`) writes
+  `Payment.settledByTransactionId` (a bank receipt's PRIMARY row only when
+  exactly one holds money), and the manual reversal clears it.
 - **The recorded settler is never refunded.** Its redelivery is
-  `already_paid` whatever else holds money, even when COMPLETED (#4285).
+  `already_paid` whatever else holds money, COMPLETED too (#4285).
 - **Every other card capture arriving on a PAID or COMPLETED booking is
   refunded** while the settler still holds net cash nothing else owns: a third
   capture, or a stray on a cash- or Xero-settled booking (#2262). Its alert,
@@ -108,21 +108,22 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   succeeded refund failed later that open rows owe back in full, #4227) is
   never the settlement and, unless a dead cancel's, never refunded on top
   (#4283) or named as another payment. Nor is one a duplicate-capture refund
-  owns named, unless its refund failed later with nothing owing it again.
+  owns named, unless its refund failed later and open rows owe back less than
+  all it holds.
 - **No record, no automatic refund.** Paid before this release or by the
   old colour while another capture holds money, or a recorded settler no
-  longer holding money whatever else does: the arriving capture is
-  kept (`duplicate_capture_kept`, no second confirmation or invoice) and an
+  longer holding money, regardless: the arriving capture is kept
+  (`duplicate_capture_kept`, no second confirmation or invoice) and an
   unmuteable alert asks for a check, daily per capture. An owned duplicate
   re-sends its refund.
 - **Limit:** PAID transitions no transaction settles (zero cash, full credit,
   $0 auto-pay, group settlement) never write it; a lone capture there is
   kept and alerted unless already recorded (a replay, or a saved-card
-  pre-record whose settle crashed or threw, #4285); the payments cron retries
-  until delivered or moot (see `STATE_MACHINES`).
+  pre-record whose settle failed, #4285); the payments cron retries
+  until delivered or moot (`STATE_MACHINES`).
 - **One home**: `duplicate-capture-guard.ts`, sharing the Xero conflict's
   readings (#4283).
-- Decided under `lock(1)`, enqueued before any Stripe call, one operation per
+- Decided under `lock(1)`, enqueued before Stripe, one operation per
   (booking, intent).
 - Proven by `issue-1992-duplicate-capture-refund`; on PostgreSQL by
   `third-duplicate-capture` and `completed-redelivery`.

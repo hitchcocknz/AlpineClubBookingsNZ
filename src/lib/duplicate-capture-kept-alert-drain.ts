@@ -26,7 +26,8 @@
  * capture); any other operation on the payment never holds it back. Who else
  * holds money is read the way an admin is told (`readTellingWhere`, the Xero
  * conflict's reading), so a capture behind a dead cancel, or one whose
- * duplicate-capture refund failed later with nothing owing it again, is named.
+ * duplicate-capture refund failed later and open rows owe back less than all it
+ * holds, is named.
  * A booking cancelled or closed since is told as `new-capture-closed`, naming
  * the cancellation's recorded refund - a card refund read as the booking page
  * reads it (`readCancelledCardRefund`), so one never sent, or one Stripe failed

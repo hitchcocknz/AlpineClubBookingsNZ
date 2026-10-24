@@ -24,8 +24,9 @@
  *   new money on a booking that was paid some other way (account credit, a zero
  *   total, a group settlement) or whose earlier payment was refunded. With
  *   `otherHoldsMoney: true` (#4285 review) a payment the app no longer counts -
- *   behind a dead cancel, or whose duplicate-capture refund failed later with
- *   nothing owing it again - still holds money, and the alert names it.
+ *   behind a dead cancel, or whose duplicate-capture refund failed later and
+ *   open rows owe back less than all it holds - still holds money, and the
+ *   alert names it.
  * - `new-capture-closed` (#4285 review): that alert, still owed when the
  *   payments cron's drain sends it, on a booking cancelled or closed since. A
  *   cancellation refunds at most what the booking was worth, so part or all of

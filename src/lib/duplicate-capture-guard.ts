@@ -162,8 +162,8 @@ export type ArrivingCaptureVerdict =
  * - `readTellingWhere()` (#4285 review): what an admin is TOLD holds money - the
  *   Xero conflict's reading, excluding only `holdsForMember` and the captures a
  *   duplicate-capture refund still holds (`listDuplicateRefundIntentIdsOwningCaptures`:
- *   one that succeeded and that Stripe failed later, with nothing owing it again,
- *   stays in). A capture behind a dead cancel stays in too: that cancel handed its
+ *   one that succeeded and that Stripe failed later, where open rows owe back
+ *   less than all it holds, stays in). A capture behind a dead cancel stays in too: that cancel handed its
  *   money to nobody. Read only by an alert's words, never by a verdict. Both
  *   readings count PRIMARY rows by ledger status: they say which payments the app
  *   counts as settling the booking, never every charge a card still holds.
