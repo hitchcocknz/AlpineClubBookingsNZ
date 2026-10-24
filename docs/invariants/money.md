@@ -703,6 +703,12 @@ check the others.
 ## INV-MONEY-007
 
 - Admin adjustments need audit, approval, and a visible business reason.
+- The one system-written adjustment (#4219; owner decision, 17 Oct 2026): when a
+  credit note was spent in Xero outside the app, the app writes the lot down with a
+  negative `ADMIN_ADJUSTMENT` row and releases the booking's applied credit with a
+  matching row, both marked `outsideSpendConvergedAt`. It has no requester or
+  approver by design (Xero's figure for the note is the decision), but it still has
+  an audit row and a visible business reason, and it moves no member's balance.
 
 ## INV-MONEY-008
 
