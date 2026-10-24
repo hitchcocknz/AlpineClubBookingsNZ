@@ -1465,13 +1465,16 @@ cause and **Retry**. The tool's own missing-supplementary-invoice action raises
 that invoice unpaid where the change's capture is recorded, or may be being
 recorded, by its receipt (its Xero payment linked, the operation running, or its
 payment already decided); a receipt that has decided nothing yet then records the
-payment against that unpaid invoice. That holds for an officer's review charge
+payment against that unpaid invoice. A **Retry** of a change's supplementary
+invoice whose card payment its own receipt records raises it unpaid, and says
+so. That holds for an officer's review charge
 too (its change is read from the charge), and for an older capture whose change
 the app never recorded, any of whose receipts makes an invoice on the booking
 that names no card payment go unpaid (one naming its own payment is left as
 it is). A receipt for such an older capture refuses, telling the treasurer,
 where a paid invoice on the booking names no card payment, or a change's
-invoice has a Stripe payment recorded in Xero: check in Xero whether that
+invoice from before that record existed has a Stripe payment recorded in
+Xero: check in Xero whether that
 invoice already records it, then record by hand or resolve.
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe
