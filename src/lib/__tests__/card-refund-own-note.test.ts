@@ -73,7 +73,7 @@ describe("replayNotingEachRefund (#4312 review)", () => {
     vi.mocked(prisma.paymentRecoveryOperation.updateMany).mockRejectedValueOnce(new Error("database unavailable"));
     const queue = vi.fn().mockResolvedValue([]);
     const operation = { id: "operation-1", processingStartedAt: new Date(0), bookingId: "booking-1", paymentIntentId: "pi_1" };
-    const plan = [{ paymentTransactionId: "txn_1", amountCents: 2_000 }, { paymentTransactionId: "txn_2", amountCents: 500 }];
+    const plan: Array<{ paymentTransactionId: string; amountCents: number; madeRefundId?: string }> = [{ paymentTransactionId: "txn_1", amountCents: 2_000 }, { paymentTransactionId: "txn_2", amountCents: 500 }];
     await expect(
       replayNotingEachRefund({ ...input(true), plan }, (send) =>
         refundPlanOrRetryRefusals({ operation, plan, format: CLUB_FORMAT_TEST, refund: () => send(async () => { throw partialFailure(); }) }),
