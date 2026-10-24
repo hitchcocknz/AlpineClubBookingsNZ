@@ -612,6 +612,9 @@ function createDependencies(state: {
         ),
       },
       paymentTransaction: {
+        // #4253: the capture's receipt writer asks how much of a capture the credit-release sweep records.
+        findUnique: vi.fn().mockResolvedValue(null),
+        findMany: vi.fn().mockResolvedValue([]),
         findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
           const booking = state.bookings.find(
             (item) => item.id === where?.payment?.bookingId
