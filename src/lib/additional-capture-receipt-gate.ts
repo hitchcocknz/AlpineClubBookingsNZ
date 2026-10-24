@@ -200,16 +200,24 @@ export async function supplementaryReplayMayRecordPayment(input: {
     const payload = asRecord(row?.requestPayload);
     if (!row || payload?.recordPayment === false) return { recordPayment: false, raisedUnpaid: false };
     if (payload?.primaryInvoiceGap === true) return { recordPayment: true, raisedUnpaid: false };
-    const recorded = await anchorCaptureHasReceipt(tx, {
-      bookingId: input.bookingId,
-      bookingModificationId: input.bookingModificationId,
-      paymentIntentId: typeof payload?.paymentIntentId === "string" ? payload.paymentIntentId : null,
-    });
+    // Round 12: a payment linked or a decision stored - never a bare running
+    // receipt, which reads this row again before it decides.
+    const recorded = await anchorCaptureHasReceipt(
+      tx,
+      {
+        bookingId: input.bookingId,
+        bookingModificationId: input.bookingModificationId,
+        paymentIntentId: typeof payload?.paymentIntentId === "string" ? payload.paymentIntentId : null,
+      },
+      { decidedOnly: true },
+    );
     if (!recorded) return { recordPayment: true, raisedUnpaid: false };
-    await tx.xeroSyncOperation.updateMany({
-      where: { id: input.operationId, status: row.status },
+    // Only an unsent row - one the Retry may run - is set unpaid.
+    if (row.status !== "FAILED" && row.status !== "PARTIAL") return { recordPayment: false, raisedUnpaid: false };
+    const written = await tx.xeroSyncOperation.updateMany({
+      where: { id: input.operationId, status: { in: ["FAILED", "PARTIAL"] } },
       data: { requestPayload: sanitizeForJson({ ...(payload ?? {}), recordPayment: false }) },
     });
-    return { recordPayment: false, raisedUnpaid: true };
+    return { recordPayment: false, raisedUnpaid: written.count === 1 };
   });
 }

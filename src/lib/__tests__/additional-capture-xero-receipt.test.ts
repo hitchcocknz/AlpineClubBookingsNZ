@@ -924,8 +924,37 @@ describe("supplementaryReplayMayRecordPayment (rounds 9 and 11)", () => {
     mocks.txFindFirstLink.mockResolvedValue({ id: "receipt_link" });
     await expect(ask()).resolves.toEqual({ recordPayment: false, raisedUnpaid: true });
     expect(writes()).toEqual([
-      [{ where: { id: "op_change_invoice", status: "FAILED" }, data: { requestPayload: { paymentIntentId: "pi_change", recordPayment: false } } }],
+      [
+        {
+          where: { id: "op_change_invoice", status: { in: ["FAILED", "PARTIAL"] } },
+          data: { requestPayload: { paymentIntentId: "pi_change", recordPayment: false } },
+        },
+      ],
     ]);
+  });
+
+  it("MUTATION round 12: a receipt RUNNING with no decision stored leaves the invoice paying - it reads this row again before it decides", async () => {
+    mocks.findUniqueOperation.mockResolvedValue({ status: "FAILED", requestPayload: { paymentIntentId: "pi_change" } });
+    mocks.findManyTransaction.mockResolvedValue([{ id: "ptx_1" }]);
+    mocks.txFindFirstLink.mockResolvedValue(null);
+    mocks.findManyOperation.mockResolvedValue([{ status: "RUNNING", requestPayload: { queueType: "ADDITIONAL_CAPTURE_RECEIPT" } }]);
+    await expect(ask()).resolves.toEqual({ recordPayment: true, raisedUnpaid: false });
+    expect(writes()).toEqual([]);
+    // Control: once it stores its decision, it counts.
+    mocks.findManyOperation.mockResolvedValue([{ status: "RUNNING", requestPayload: { plan: { invoiceId: "inv_1" } } }]);
+    await expect(ask()).resolves.toEqual({ recordPayment: false, raisedUnpaid: true });
+  });
+
+  it("MUTATION round 12: never writes to a row that is not unsent (RUNNING), nor says it raised it unpaid; a lost guard says so too", async () => {
+    mocks.findManyTransaction.mockResolvedValue([{ id: "ptx_1" }]);
+    mocks.txFindFirstLink.mockResolvedValue({ id: "receipt_link" });
+    mocks.findUniqueOperation.mockResolvedValue({ status: "RUNNING", requestPayload: { paymentIntentId: "pi_change" } });
+    await expect(ask()).resolves.toEqual({ recordPayment: false, raisedUnpaid: false });
+    expect(writes()).toEqual([]);
+
+    mocks.findUniqueOperation.mockResolvedValue({ status: "FAILED", requestPayload: { paymentIntentId: "pi_change" } });
+    mocks.updateManyOperation.mockResolvedValueOnce({ count: 0 });
+    await expect(ask()).resolves.toEqual({ recordPayment: false, raisedUnpaid: false });
   });
 
   it("records, writing nothing, where no receipt records it", async () => {

@@ -158,6 +158,17 @@ describe("anchorCaptureHasReceipt", () => {
     expect(db.xeroObjectLink.findFirst).not.toHaveBeenCalled();
   });
 
+  it("round 12: with decidedOnly, counts a stored plan or a link, never a bare RUNNING row", async () => {
+    const input = { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: null };
+    const captures = [{ id: "tx_1" }];
+    const decidedOnly = { decidedOnly: true };
+    await expect(anchorCaptureHasReceipt(store({ captures, receipts: [{ status: "RUNNING", requestPayload: {} }] }) as never, input, decidedOnly)).resolves.toBe(false);
+    await expect(
+      anchorCaptureHasReceipt(store({ captures, receipts: [{ status: "RUNNING", requestPayload: { plan: { invoiceId: "inv_1" } } }] }) as never, input, decidedOnly),
+    ).resolves.toBe(true);
+    await expect(anchorCaptureHasReceipt(store({ captures, link: { id: "link_1" } }) as never, input, decidedOnly)).resolves.toBe(true);
+  });
+
   it("counts a RUNNING row or a stored plan, never a PENDING row with no plan", async () => {
     const input = { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: null };
     const captures = [{ id: "tx_1" }];

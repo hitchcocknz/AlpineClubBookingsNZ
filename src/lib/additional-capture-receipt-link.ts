@@ -168,10 +168,20 @@ export async function bookingHasPaidUnnamedSupplementary(
  * one capture never has two recorders whatever a repair sweep's snapshot said.
  * The captures are those of the change (`bookingModificationId`) and the one
  * the invoice names (`paymentIntentId`).
+ *
+ * Round 12: `decidedOnly` counts only a payment linked or a decision stored,
+ * never a bare RUNNING row - for the officer's Retry, which turns an EXISTING
+ * invoice unpaid: a receipt never sends without first storing its decision
+ * under this same anchor lock, after reading the invoice again, so a bare
+ * running one stands down on that read and the invoice must stay paying. The
+ * enqueue keeps counting it: there a NEW invoice is raised unpaid and the
+ * running receipt, on that read, records against it - one recorder either
+ * way, and the window between its claim and its store is covered.
  */
 export async function anchorCaptureHasReceipt(
   store: Pick<Prisma.TransactionClient, "paymentTransaction" | "xeroObjectLink" | "xeroSyncOperation">,
   input: { bookingId: string; bookingModificationId: string | null; paymentIntentId: string | null },
+  options?: { decidedOnly?: boolean },
 ): Promise<boolean> {
   // Round 7: the change's captures by its stamp or its review charge's
   // reason, and the one the invoice names. Round 9: an invoice naming its
@@ -213,6 +223,8 @@ export async function anchorCaptureHasReceipt(
   ]);
   return (
     linked !== null ||
-    receipts.some((receipt) => receipt.status === "RUNNING" || asRecord(receipt.requestPayload)?.plan != null)
+    receipts.some(
+      (receipt) => (!options?.decidedOnly && receipt.status === "RUNNING") || asRecord(receipt.requestPayload)?.plan != null,
+    )
   );
 }
