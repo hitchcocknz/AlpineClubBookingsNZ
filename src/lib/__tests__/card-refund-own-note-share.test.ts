@@ -147,6 +147,12 @@ describe("a card refund's own note row is found by its payload or by its key (#4
     expect(cardRefundIdOfNoteRow({ requestPayload: { creditNotes: [], allocation: { amount: 12 } }, correlationKey: key })).toBe("re_1AbC");
   });
 
+  it("INV-SSOT: the key is read back by the tag's own spelling, and the id stops at the tag's closing part", () => {
+    for (const id of ["re_1AbC", "re_3Qx.y+z", "pyr_(9)"]) {
+      expect(cardRefundIdOfNoteRow({ requestPayload: null, correlationKey: `payment:p:refund-credit-note${cardRefundNoteKeyTag(id)}2500:v3:void:cn_1` })).toBe(id);
+    }
+  });
+
   it("the payload answers first, read the one way a note row's fields are", () => {
     expect(cardRefundIdOfNoteRow({ requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 100, cardRefundId: "re_payload" }, correlationKey: null })).toBe("re_payload");
   });

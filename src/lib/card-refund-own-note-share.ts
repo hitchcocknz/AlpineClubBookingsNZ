@@ -6,7 +6,7 @@ import { buildRefundRequestRefundMetadata } from "@/lib/payment-recovery-keys";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
-import { cardRefundNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
+import { cardRefundNoteKeyTag, cardRefundNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
 
@@ -89,13 +89,26 @@ export async function cardRefundNoteKey(
 }
 
 /**
+ * `INV-SSOT`: the key tag read back, built from `cardRefundNoteKeyTag`'s own
+ * spelling - what it puts either side of the refund id - so the format has one
+ * source. The id is what lies between the two, never crossing the closing part.
+ */
+const CARD_REFUND_KEY_TAG_PATTERN = (() => {
+  const marker = "\u0000";
+  const [before, after] = cardRefundNoteKeyTag(marker).split(marker);
+  if (!before || !after) throw new Error("cardRefundNoteKeyTag must put text either side of the refund id");
+  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`${escape(before)}((?:(?!${escape(after)}).)+)${escape(after)}`);
+})();
+
+/**
  * The card refund a refund-note row answers, or null: its payload's
  * `cardRefundId`, read the one way a note row's fields are
  * (`parsePaymentCreditNoteRetryInput`), else its key (`cardRefundNoteKeyTag`),
  * which a previous release's worker keeps when it rewrites the payload.
  */
 export function cardRefundIdOfNoteRow(row: { requestPayload: unknown; correlationKey?: string | null }): string | null {
-  return parsePaymentCreditNoteRetryInput(row)?.cardRefundId ?? /:card-refund:([^:]+):/.exec(row.correlationKey ?? "")?.[1] ?? null;
+  return parsePaymentCreditNoteRetryInput(row)?.cardRefundId ?? CARD_REFUND_KEY_TAG_PATTERN.exec(row.correlationKey ?? "")?.[1] ?? null;
 }
 
 export interface CardRefundNoteShare {
