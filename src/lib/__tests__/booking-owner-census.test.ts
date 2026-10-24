@@ -487,8 +487,8 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/payments/switch-to-internet-banking/route.ts:121",
   "src/lib/adult-member-hosting-review.ts:3256",
   "src/lib/booking-batch-modification-service.ts:1078",
-  "src/lib/booking-cancel.ts:2510",
-  "src/lib/booking-cancel.ts:543",
+  "src/lib/booking-cancel.ts:2516",
+  "src/lib/booking-cancel.ts:557",
   "src/lib/booking-date-modification-service.ts:406",
   "src/lib/booking-delete.ts:120",
   "src/lib/booking-delete.ts:69",
@@ -523,8 +523,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1344",
-  "src/lib/payment-recovery.ts:2561",
-  "src/lib/payment-recovery.ts:2613",
+  "src/lib/payment-recovery.ts:2560",
+  "src/lib/payment-recovery.ts:2612",
   "src/lib/xero-admin-health.ts:394",
 ];
 
@@ -793,7 +793,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `organisation`.
   "src/lib/booking-owner-name.ts:12",
   "src/lib/cron-additional-payment-reminders.ts:440",
-  "src/lib/cron-confirm-pending.ts:211",
+  "src/lib/cron-confirm-pending.ts:205",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
