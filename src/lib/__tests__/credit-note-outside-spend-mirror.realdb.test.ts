@@ -729,26 +729,26 @@ let observerClient: import("@prisma/client").PrismaClient;
         expect(await allAudits()).toBe(1);
       });
 
-      it("runs after the links and repairs the event writes", async () => {
+      it("runs after the links the event writes: a payment this very event links as the app's own is not an outside spend", async () => {
         await seed();
-        setNote();
-        const order: string[] = [];
-        const sync = await import("@/lib/xero-sync");
-        const realUpsert = sync.upsertXeroObjectLink;
-        spy(vi.spyOn(sync, "upsertXeroObjectLink").mockImplementation(((...args: Parameters<typeof realUpsert>) => {
-          order.push("link");
-          return realUpsert(...args);
-        }) as typeof realUpsert));
-        const realMirror = mirrorModule.mirrorCreditNoteOutsideSpend;
-        spy(vi.spyOn(mirrorModule, "mirrorCreditNoteOutsideSpend").mockImplementation(((...args: Parameters<typeof realMirror>) => {
-          order.push("mirror");
-          return realMirror(...args);
-        }) as typeof realMirror));
+        // The note is a payment's refund note, and Xero lists a payment against it that the app has not linked yet:
+        // this event's link writes record it, so a mirror that ran before them would read it as someone else's.
+        await createBooking(0);
+        await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { xeroRefundCreditNoteId: NOTE_ID } });
+        fakeXero.state.on = true;
+        fakeXero.state.notes.set(NOTE_ID, {
+          totalCents: LOT_CENTS,
+          allocations: [],
+          payments: [{ paymentID: KNOWN_PAYMENT_ID, amountCents: LOT_CENTS }],
+          updatedAt: SETTLED_AT,
+        });
         const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+
         await reconcileXeroCreditNote(NOTE_ID);
 
-        expect(order.at(-1)).toBe("mirror");
-        expect(order.filter((step) => step === "mirror")).toHaveLength(1);
+        expect(await prisma.xeroObjectLink.count({ where: { xeroObjectType: "PAYMENT", xeroObjectId: KNOWN_PAYMENT_ID, localId: PAYMENT_ID } })).toBeGreaterThan(0);
+        await noRows();
+        expect(await allAudits()).toBe(0);
       });
 
       it("never fails the event when the mirror throws: the links are already written", async () => {
