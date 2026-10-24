@@ -154,6 +154,20 @@ import { isCapturedTransactionStatus } from "./payment-transactions";
  */
 export const SAVED_CARD_CHARGE_KEY_PREFIX = "pending_charge_";
 
+/** A ledger filter for the saved-card charge attempt rows, by that prefix. */
+export const SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE = {
+  reference: { startsWith: SAVED_CARD_CHARGE_KEY_PREFIX },
+} satisfies Prisma.PaymentTransactionWhereInput;
+
+/**
+ * Its complement. A negated `startsWith` alone would also drop rows with a NULL
+ * reference (SQL `NOT (NULL LIKE …)` is NULL), so they are included explicitly:
+ * a link intent's row carries no reference.
+ */
+export const NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE = {
+  OR: [{ reference: null }, { NOT: SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE }],
+} satisfies Prisma.PaymentTransactionWhereInput;
+
 /**
  * How long a recorded key may still be RE-SENT for a row whose first POST never
  * answered. Stripe keeps an idempotency key for 24 hours; after that the same

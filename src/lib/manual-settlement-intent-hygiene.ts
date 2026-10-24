@@ -9,15 +9,22 @@
  * Both run inside the caller's transaction, under its locks (global lock(1),
  * the lodge key and the Payment row); neither calls a provider.
  */
-import { PaymentSource, PaymentTransactionKind, type Prisma } from "@prisma/client";
+import { PaymentRecoveryOperationType, PaymentSource, PaymentTransactionKind, type Prisma } from "@prisma/client";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
+import { bookingWorthCents } from "@/lib/booking-payment-state";
 import {
   queueSupersededAdditionalIntentCancellationRows,
   queueSupersededPrimaryIntentCancellations,
 } from "@/lib/booking-payment-cleanup";
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
+import { PAYMENT_RECOVERY_EXHAUSTED_WHERE, rearmedPaymentRecoveryOperationData } from "@/lib/payment-recovery-constants";
 import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { buildPaymentIntentCancelRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
+import {
+  NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
+  SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
+} from "@/lib/saved-card-charge-attempt";
 import { liveSupersededOperation } from "@/lib/superseded-intent-ownership";
 
 /**
@@ -193,14 +200,21 @@ function readAdoptedCancelIntentIds(metadata: Prisma.JsonValue | null | undefine
  *
  * - a PRIMARY intent is stale unless its amount is what the booking owes
  *   (`readBookingAmountOwed`, the figure the pay step mints at), the #1161
- *   rule (`queueSupersededPrimaryIntentCancellations`);
+ *   rule (`queueSupersededPrimaryIntentCancellations`). A saved-card charge
+ *   attempt's row is judged against the figure its minters charge instead,
+ *   the booking's full worth (`bookingWorthCents`, #3864), not the owed amount;
  * - an ADDITIONAL intent is stale unless it is the payment's live ask
  *   (`additionalPaymentIntentId`, the one pointer every consumer honours), the
- *   #3340 rule (`queueSupersededAdditionalIntentCancellationRows`).
+ *   #3340 rule (`queueSupersededAdditionalIntentCancellationRows`). A settle
+ *   that covered the extra minted a newer cash ADDITIONAL row, and any rebuild
+ *   of the mirror since nulls that pointer; when this reversal put the extra
+ *   back to owing (`restoredAdditionalAmountCents`), the live ask is then read
+ *   off the ledger (`readRestoredAdditionalAsk`).
  *
  * Both rules run here first, so a stale intent keeps or regains a live
  * cancellation (a fresh PENDING row where it had none; an existing row keeps
- * its status). Then every live row is withdrawn whose intent is a live card
+ * its status, and a dead one is re-armed: `rearmDeadIntentCancellations`).
+ * Then every live row is withdrawn whose intent is a live card
  * intent on the payment that neither rule condemned and the settle did not
  * adopt (`readAdoptedCancelIntentIds`). A row on an intent the ledger already
  * retired (FAILED, withdrawn) is never withdrawn: no restored state makes that
@@ -212,29 +226,42 @@ export async function withdrawManualSettlementIntentCancellations(
     booking,
     paymentId,
     liveAdditionalPaymentIntentId,
+    restoredAdditionalAmountCents,
     settleAuditMetadata,
   }: {
     booking: { id: string; finalPriceCents: number; payment: { changeFeeCents: number | null } | null };
     paymentId: string;
     liveAdditionalPaymentIntentId: string | null;
+    /** The extra this reversal put back to owing, or null when it put none back. */
+    restoredAdditionalAmountCents: number | null;
     settleAuditMetadata: Prisma.JsonValue | null | undefined;
   }
 ) {
   const { owedCents } = await readBookingAmountOwed(booking, tx);
-  const stalePrimary = await queueSupersededPrimaryIntentCancellations(tx, {
-    bookingId: booking.id,
-    paymentId,
-    newFinalPriceCents: owedCents,
-  });
+  const supersede = (newFinalPriceCents: number, rows: Prisma.PaymentTransactionWhereInput) =>
+    queueSupersededPrimaryIntentCancellations(tx, { bookingId: booking.id, paymentId, newFinalPriceCents, rows });
+  const stalePrimary = [
+    ...(await supersede(owedCents, NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE)),
+    ...(await supersede(
+      bookingWorthCents({ finalPriceCents: booking.finalPriceCents, changeFeeCents: booking.payment?.changeFeeCents ?? null }),
+      SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
+    )),
+  ];
+  const liveAsk =
+    liveAdditionalPaymentIntentId ??
+    (restoredAdditionalAmountCents === null
+      ? null
+      : await readRestoredAdditionalAsk(tx, paymentId, restoredAdditionalAmountCents));
   const staleAdditional = await queueSupersededAdditionalIntentCancellationRows({
     bookingId: booking.id,
     paymentId,
-    newPaymentIntentId: liveAdditionalPaymentIntentId,
+    newPaymentIntentId: liveAsk,
     store: tx,
   });
   const stillCancelledIntentIds = [
     ...new Set([...stalePrimary, ...staleAdditional].map((superseded) => superseded.paymentIntentId)),
   ];
+  const rearmed = await rearmDeadIntentCancellations(tx, paymentId, stillCancelledIntentIds);
   const kept = [...stillCancelledIntentIds, ...readAdoptedCancelIntentIds(settleAuditMetadata)];
 
   // The intents the restored booking can be paid with: live card intents on
@@ -304,5 +331,64 @@ export async function withdrawManualSettlementIntentCancellations(
     });
     if (deleted.count === 1) withdrawn.push(operation);
   }
-  return { withdrawn, stillCancelledIntentIds };
+  return { withdrawn, stillCancelledIntentIds, rearmed };
+}
+
+/**
+ * The live ask a covering settle's mirror rebuild hid (#4320): the newest card
+ * ADDITIONAL row an officer has not withdrawn, when it asks exactly the extra
+ * the reversal restored (`isAdditionalAmountUncollected` read that figure off
+ * this ask before the settle). Any other answer is no live ask, so every card
+ * ADDITIONAL intent stays cancelled: an older ask, or one at another figure,
+ * was superseded before the settle.
+ */
+async function readRestoredAdditionalAsk(
+  tx: Prisma.TransactionClient,
+  paymentId: string,
+  restoredAdditionalAmountCents: number
+): Promise<string | null> {
+  const latest = await tx.paymentTransaction.findFirst({
+    where: { paymentId, kind: PaymentTransactionKind.ADDITIONAL, source: PaymentSource.STRIPE, withdrawnAt: null },
+    orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
+    select: { stripePaymentIntentId: true, amountCents: true },
+  });
+  return latest?.amountCents === restoredAdditionalAmountCents ? latest.stripePaymentIntentId : null;
+}
+
+/**
+ * A condemned intent's cancellation only cancels if the runner will claim it
+ * again (#4320). The enqueue upserts on the shared key and never moves an
+ * existing row's status, so a row the runner gave up on (a Stripe outage
+ * outlasting its retries) would stay dead while the reversal reported the
+ * intent still being cancelled. Each such row is re-armed, fenced on the same
+ * exhausted predicate (`PAYMENT_RECOVERY_EXHAUSTED_WHERE`: the runner's
+ * terminal failure always lands at the attempt ceiling), and returned for the
+ * audit trail. Cancelling an intent is idempotent at Stripe,
+ * and a capture it meets is handed to the superseded refund as before.
+ */
+async function rearmDeadIntentCancellations(
+  tx: Prisma.TransactionClient,
+  paymentId: string,
+  paymentIntentIds: string[]
+): Promise<string[]> {
+  if (paymentIntentIds.length === 0) return [];
+  const dead = {
+    type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+    ...PAYMENT_RECOVERY_EXHAUSTED_WHERE,
+  } satisfies Prisma.PaymentRecoveryOperationWhereInput;
+  const rows = await tx.paymentRecoveryOperation.findMany({
+    where: { paymentId, paymentIntentId: { in: paymentIntentIds }, ...dead },
+    orderBy: { createdAt: "asc" },
+    select: { id: true },
+  });
+  const now = new Date();
+  const rearmed: string[] = [];
+  for (const row of rows) {
+    const reopened = await tx.paymentRecoveryOperation.updateMany({
+      where: { id: row.id, ...dead },
+      data: rearmedPaymentRecoveryOperationData(now),
+    });
+    if (reopened.count === 1) rearmed.push(row.id);
+  }
+  return rearmed;
 }

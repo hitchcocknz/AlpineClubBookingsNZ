@@ -2721,11 +2721,12 @@ export async function reverseManualBookingPayment({
     // the supersede rule is re-applied to it, and the live superseded-intent
     // rows of every intent it can still be paid with are DELETED (#4320).
     // See `withdrawManualSettlementIntentCancellations`.
-    const { withdrawn: doomedOperations, stillCancelledIntentIds } =
+    const { withdrawn: doomedOperations, stillCancelledIntentIds, rearmed } =
       await withdrawManualSettlementIntentCancellations(tx, {
         booking,
         paymentId: payment.id,
         liveAdditionalPaymentIntentId: payment.additionalPaymentIntentId,
+        restoredAdditionalAmountCents,
         settleAuditMetadata: lastManualSettleAudit?.metadata,
       });
 
@@ -2784,9 +2785,11 @@ export async function reverseManualBookingPayment({
           reversedAmountCents: payment.amountCents,
           closedRecoveryOperationIds,
           closedRecoveryOperations,
-          // #4320: the intents the restored booking cannot be paid with, whose
-          // cancellation stands or was queued afresh.
+          // #4320: the intents the restored booking cannot be paid with, each
+          // with a cancellation the runner will take: one that stood, one
+          // queued afresh, or a dead one re-armed (its row id listed below).
           stillCancelledPaymentIntentIds: stillCancelledIntentIds,
+          rearmedRecoveryOperationIds: rearmed,
           clearedInternetBankingHold: clearInternetBankingHold,
           // #2265 (#2262 door 3). The member's credit election, put back on the
           // booking by this reversal — recorded BOTH ways, like the email

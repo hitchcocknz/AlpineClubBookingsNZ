@@ -172,6 +172,11 @@ import {
 } from "@/lib/payment-reconciliation";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
+import { PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
+import {
+  NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
+  SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
+} from "@/lib/saved-card-charge-attempt";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const tx = {
@@ -934,22 +939,49 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     };
   }
 
-  type CardRow = { id: string; kind: PaymentTransactionKind; stripePaymentIntentId: string; amountCents: number; status?: PaymentStatus };
+  type CardRow = {
+    id: string;
+    kind: PaymentTransactionKind;
+    stripePaymentIntentId: string;
+    amountCents: number;
+    status?: PaymentStatus;
+    reference?: string | null;
+    withdrawnAt?: Date | null;
+  };
+
+  /** A reference filter as the saved-card attempt filters spell one (`reference`, `OR`, `NOT`). */
+  type ReferenceClause = { reference?: null | { startsWith: string }; OR?: ReferenceClause[]; NOT?: ReferenceClause };
+  function matchesReference(reference: string | null, clause: ReferenceClause): boolean {
+    if (clause.OR) return clause.OR.some((each) => matchesReference(reference, each));
+    if (clause.NOT) return !matchesReference(reference, clause.NOT);
+    if (clause.reference === undefined) return true;
+    if (clause.reference === null) return reference === null;
+    return reference !== null && reference.startsWith(clause.reference.startsWith);
+  }
 
   /**
    * #4320: the payment's card rows, answered through the filters the supersede
-   * rules and the payable read put on them (kind, status, amount, intent), so
-   * the reversal's derivation is exercised rather than stubbed. The booking
-   * owes 10000 (12000 less the suite's 2000 of applied credit).
+   * rules and the payable read put on them (kind, status, amount, intent, and
+   * the saved-card attempt split on `reference`), so the reversal's derivation
+   * is exercised rather than stubbed. The booking owes 10000 (12000 less the
+   * suite's 2000 of applied credit) and is worth 12000. The newest-ask read
+   * (`findFirst`, newest first) answers the LAST matching row.
    */
   function cardLedger(rows: CardRow[]) {
     type IdFilter = { not?: string | null; notIn?: string[] } | undefined;
     type AmountFilter = { gt?: number; not?: number } | undefined;
     mocks.enqueuePaymentIntentCancellationRecovery.mockImplementation(async (args: { paymentIntentId: string }) => ({ id: `op-${args.paymentIntentId}` }));
+    const ledger = rows.map((row) => ({ status: PaymentStatus.PENDING, source: PaymentSource.STRIPE, reference: null, withdrawnAt: null, ...row }));
+    mocks.paymentTransactionFindFirst.mockImplementation(
+      async ({ where }: { where: { kind?: PaymentTransactionKind; source?: PaymentSource; withdrawnAt?: null } }) =>
+        where.withdrawnAt === null
+          ? ledger.filter((row) => row.kind === where.kind && row.source === where.source && row.withdrawnAt === null).at(-1) ?? null
+          : null,
+    );
     mocks.paymentTransactionFindMany.mockImplementation(
-      async ({ where }: { where: { kind?: PaymentTransactionKind; source?: PaymentSource; status?: { in?: PaymentStatus[] }; stripePaymentIntentId?: IdFilter; amountCents?: AmountFilter } }) =>
-        rows
-          .map((row) => ({ status: PaymentStatus.PENDING, source: PaymentSource.STRIPE, ...row }))
+      async ({ where }: { where: { kind?: PaymentTransactionKind; source?: PaymentSource; status?: { in?: PaymentStatus[] }; stripePaymentIntentId?: IdFilter; amountCents?: AmountFilter; AND?: ReferenceClause[] } }) =>
+        ledger
+          .filter((row) => (where.AND ?? []).every((clause) => matchesReference(row.reference, clause)))
           .filter((row) => where.kind === undefined || row.kind === where.kind)
           .filter((row) => where.source === undefined || row.source === where.source)
           .filter((row) => !where.status?.in || where.status.in.includes(row.status))
@@ -970,6 +1002,20 @@ describe("#2262 — the reversal (direction unpaid)", () => {
 
   /** The member's intent at the owed amount: the one the restored booking is paid with. */
   const PAYABLE_PRIMARY: CardRow = { id: "txn-live", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_live", amountCents: 10000 };
+
+  type RecoveryRead = { where: Record<string, unknown> };
+  /** The withdrawal's reads of live rows on payable intents (both superseded-intent types). */
+  function withdrawReads() {
+    return mocks.paymentRecoveryOperationFindMany.mock.calls
+      .map(([args]) => (args as RecoveryRead).where)
+      .filter((where) => typeof where.type === "object");
+  }
+  /** The re-arm's reads of dead cancellations on condemned intents (#4320 F4). */
+  function rearmReads() {
+    return mocks.paymentRecoveryOperationFindMany.mock.calls
+      .map(([args]) => (args as RecoveryRead).where)
+      .filter((where) => where.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT);
+  }
 
   it("#4211 — clears the recorded settler with the provenance, behind the same fence", async () => {
     primeReversal();
@@ -1087,7 +1133,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     }
 
     function readScope() {
-      return (mocks.paymentRecoveryOperationFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where;
+      return withdrawReads()[0]!;
     }
 
     function enqueuedIntents() {
@@ -1135,7 +1181,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       expect(mocks.enqueuePaymentIntentCancellationRecovery).toHaveBeenCalledWith(
         expect.objectContaining({ paymentId: "payment-1", paymentTransactionId: "txn-old", paymentIntentId: "pi_old_price", store: tx }),
       );
-      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+      expect(withdrawReads()).toEqual([]);
       expect(mocks.paymentRecoveryOperationDeleteMany).not.toHaveBeenCalled();
       expect(result.closedRecoveryOperationIds).toEqual([]);
       expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: ["pi_old_price"] });
@@ -1162,7 +1208,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       await reverse();
 
       expect(enqueuedIntents()).toEqual(["pi_ask"]);
-      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+      expect(withdrawReads()).toEqual([]);
     });
 
     it("an intent the settle adopted from another writer keeps its cancellation even at the owed amount (INV-PAY-138)", async () => {
@@ -1201,7 +1247,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
 
       await reverse();
 
-      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+      expect(withdrawReads()).toEqual([]);
       expect(mocks.paymentRecoveryOperationDeleteMany).not.toHaveBeenCalled();
     });
 
@@ -1213,7 +1259,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       await reverse();
 
       expect(enqueuedIntents()).toEqual(["pi_live"]);
-      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+      expect(withdrawReads()).toEqual([]);
     });
 
     it("a row a worker finished between the read and the delete is left alone and not reported closed", async () => {
@@ -1232,6 +1278,187 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       expect(auditMetadata()).toMatchObject({
         closedRecoveryOperationIds: ["op-cancel"],
         closedRecoveryOperations: [expect.objectContaining({ id: "op-cancel" })],
+      });
+    });
+
+    describe("F2: a covering settle's rebuild nulled the live-ask pointer", () => {
+      const RESTORED_EXTRA = { settledAdditionalAmountCents: 3000, previousAdditionalPaymentStatus: "PENDING" };
+
+      it("MUTATION: the newest card ask at the restored extra is the live ask, so its cancellation is withdrawn", async () => {
+        primeReversal({ payment: { additionalPaymentIntentId: null } });
+        cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+        settleAudit(RESTORED_EXTRA);
+
+        const result = await reverse();
+
+        expect(result.restoredAdditionalAmountCents).toBe(3000);
+        expect(mocks.paymentTransactionFindFirst).toHaveBeenCalledWith({
+          where: { paymentId: "payment-1", kind: PaymentTransactionKind.ADDITIONAL, source: PaymentSource.STRIPE, withdrawnAt: null },
+          orderBy: [{ createdAt: "desc" }, { insertionSeq: "desc" }],
+          select: { stripePaymentIntentId: true, amountCents: true },
+        });
+        expect(enqueuedIntents()).toEqual([]);
+        expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_ask"] } });
+        expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: [] });
+      });
+
+      it("reads past an ask an officer withdrew, as the mirror does", async () => {
+        primeReversal({ payment: { additionalPaymentIntentId: null } });
+        cardLedger([
+          { id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 },
+          { id: "txn-withdrawn", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_withdrawn", amountCents: 3000, withdrawnAt: new Date("2026-07-19T00:00:00Z") },
+        ]);
+        settleAudit(RESTORED_EXTRA);
+
+        await reverse();
+
+        expect(enqueuedIntents()).toEqual(["pi_withdrawn"]);
+        expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_ask"] } });
+      });
+
+      it("a newest card ask at another figure is no live ask: every card ask stays cancelled", async () => {
+        primeReversal({ payment: { additionalPaymentIntentId: null } });
+        cardLedger([
+          { id: "txn-old", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_old", amountCents: 3000 },
+          { id: "txn-new", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_new", amountCents: 4500 },
+        ]);
+        settleAudit(RESTORED_EXTRA);
+
+        await reverse();
+
+        expect(enqueuedIntents()).toEqual(["pi_old", "pi_new"]);
+        expect(withdrawReads()).toEqual([]);
+      });
+
+      it("an extra the reversal did not put back (a writer settled it since) leaves the null pointer null", async () => {
+        primeReversal({ payment: { additionalPaymentIntentId: null } });
+        cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+        settleAudit(RESTORED_EXTRA);
+        mocks.paymentUpdateMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => ({
+          count: "additionalPaymentStatus" in where ? 0 : 1,
+        }));
+
+        const result = await reverse();
+
+        expect(result.restoredAdditionalAmountCents).toBeNull();
+        expect(mocks.paymentTransactionFindFirst).not.toHaveBeenCalledWith(
+          expect.objectContaining({ where: expect.objectContaining({ withdrawnAt: null }) }),
+        );
+        expect(enqueuedIntents()).toEqual(["pi_ask"]);
+      });
+
+      it("a pointer that is set wins: the ledger is not read", async () => {
+        primeReversal({ payment: { additionalPaymentIntentId: "pi_ask" } });
+        cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+        settleAudit(RESTORED_EXTRA);
+
+        await reverse();
+
+        expect(mocks.paymentTransactionFindFirst).not.toHaveBeenCalledWith(
+          expect.objectContaining({ where: expect.objectContaining({ withdrawnAt: null }) }),
+        );
+        expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_ask"] } });
+      });
+    });
+
+    describe("F3: a saved-card charge attempt is judged against the booking's worth, the figure its minters charge", () => {
+      const attempt = (id: string, amountCents: number): CardRow => ({
+        id,
+        kind: PaymentTransactionKind.PRIMARY,
+        stripePaymentIntentId: `pi_${id}`,
+        amountCents,
+        reference: `pending_charge_booking-1_${id}`,
+      });
+
+      it("MUTATION: an attempt at the booking's worth (12000, not the 10000 owed) keeps no cancellation; a link intent at the worth does", async () => {
+        primeReversal();
+        cardLedger([attempt("txn-attempt", 12000), { id: "txn-link", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_link", amountCents: 12000 }]);
+
+        await reverse();
+
+        expect(enqueuedIntents()).toEqual(["pi_link"]);
+        expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_txn-attempt"] } });
+        expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: ["pi_link"] });
+      });
+
+      it("an attempt at another figure than the worth stays cancelled, and so does one at the owed amount", async () => {
+        primeReversal();
+        cardLedger([attempt("txn-stale", 9000), attempt("txn-owed", 10000), PAYABLE_PRIMARY]);
+
+        await reverse();
+
+        expect(enqueuedIntents()).toEqual(["pi_txn-stale", "pi_txn-owed"]);
+        expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_live"] } });
+      });
+
+      it("splits the rows by the shared attempt filters, the owed amount for the rest and the worth for the attempts", async () => {
+        primeReversal();
+        cardLedger([]);
+
+        await reverse();
+
+        const primaryReads = mocks.paymentTransactionFindMany.mock.calls
+          .map(([args]) => (args as { where: Record<string, unknown> }).where)
+          .filter((where) => where.kind === PaymentTransactionKind.PRIMARY);
+        expect(primaryReads).toEqual([
+          expect.objectContaining({ amountCents: { gt: 0, not: 10000 }, AND: [NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE] }),
+          expect.objectContaining({ amountCents: { gt: 0, not: 12000 }, AND: [SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE] }),
+        ]);
+      });
+    });
+
+    describe("F4: a condemned intent's dead cancellation is re-armed", () => {
+      const STALE: CardRow = { id: "txn-old", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_old_price", amountCents: 8000 };
+
+      it("MUTATION: re-arms an exhausted cancel on a condemned intent, fenced, and records it", async () => {
+        primeReversal();
+        cardLedger([STALE]);
+        mocks.paymentRecoveryOperationFindMany.mockImplementation(async ({ where }: RecoveryRead) =>
+          where.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT ? [{ id: "op-dead" }] : [],
+        );
+        mocks.paymentRecoveryOperationUpdateMany.mockResolvedValue({ count: 1 });
+
+        const result = await reverse();
+
+        const dead = { type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, ...PAYMENT_RECOVERY_EXHAUSTED_WHERE };
+        expect(rearmReads()).toEqual([{ paymentId: "payment-1", paymentIntentId: { in: ["pi_old_price"] }, ...dead }]);
+        expect(mocks.paymentRecoveryOperationUpdateMany).toHaveBeenCalledWith({
+          where: { id: "op-dead", ...dead },
+          data: {
+            status: PaymentRecoveryOperationStatus.PENDING,
+            attempts: 0,
+            nextRetryAt: new Date("2026-07-01T00:00:00.000Z"),
+            lastError: null,
+            processingStartedAt: null,
+            succeededAt: null,
+          },
+        });
+        expect(result.closedRecoveryOperationIds).toEqual([]);
+        expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: ["pi_old_price"], rearmedRecoveryOperationIds: ["op-dead"] });
+      });
+
+      it("a row a worker reopened or finished between the read and the write is not reported re-armed", async () => {
+        primeReversal();
+        cardLedger([STALE]);
+        mocks.paymentRecoveryOperationFindMany.mockImplementation(async ({ where }: RecoveryRead) =>
+          where.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT ? [{ id: "op-dead" }] : [],
+        );
+        mocks.paymentRecoveryOperationUpdateMany.mockResolvedValue({ count: 0 });
+
+        await reverse();
+
+        expect(auditMetadata()).toMatchObject({ rearmedRecoveryOperationIds: [] });
+      });
+
+      it("with nothing condemned, nothing is read for re-arming", async () => {
+        primeReversal();
+        cardLedger([PAYABLE_PRIMARY]);
+
+        await reverse();
+
+        expect(rearmReads()).toEqual([]);
+        expect(mocks.paymentRecoveryOperationUpdateMany).not.toHaveBeenCalled();
+        expect(auditMetadata()).toMatchObject({ rearmedRecoveryOperationIds: [] });
       });
     });
   });
