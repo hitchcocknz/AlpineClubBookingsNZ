@@ -487,8 +487,8 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/payments/switch-to-internet-banking/route.ts:118",
   "src/lib/adult-member-hosting-review.ts:3256",
   "src/lib/booking-batch-modification-service.ts:1080",
-  "src/lib/booking-cancel.ts:2503",
-  "src/lib/booking-cancel.ts:548",
+  "src/lib/booking-cancel.ts:2516",
+  "src/lib/booking-cancel.ts:557",
   "src/lib/booking-date-modification-service.ts:406",
   "src/lib/booking-delete.ts:120",
   "src/lib/booking-delete.ts:69",
@@ -793,7 +793,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `organisation`.
   "src/lib/booking-owner-name.ts:12",
   "src/lib/cron-additional-payment-reminders.ts:440",
-  "src/lib/cron-confirm-pending.ts:211",
+  "src/lib/cron-confirm-pending.ts:205",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
