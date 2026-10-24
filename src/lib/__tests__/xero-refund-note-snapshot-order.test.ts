@@ -10,6 +10,7 @@ import {
   judgeRefundNoteWrite,
   readRefundNoteSnapshotAt,
   REFUND_NOTE_SNAPSHOT_AT_KEY,
+  withoutVoidedRefundNoteLinks,
   xeroCreditNoteSnapshotMetadata,
 } from "@/lib/xero-refund-note-status";
 
@@ -104,5 +105,31 @@ describe("judgedRefundNoteReading (#4288)", () => {
   it("an applied reading over a row with keys of its own is not stale", () => {
     expect(judgedRefundNoteReading(at("PAID", LATE), { metadata: { amountCents: 100, handBackTaskId: "t", ...at("PAID", LATE) } })).toEqual({ stale: false });
     expect(judgedRefundNoteReading(at("AUTHORISED", EARLY), { metadata: at("VOIDED", LATE) })).toEqual({ stale: true });
+  });
+});
+
+describe("withoutVoidedRefundNoteLinks (#4288 review 4)", () => {
+  type Row = { localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; active: boolean; metadata: unknown };
+  /** A link store that answers the reader's where-clause, as Prisma would. */
+  const store = (rows: Row[]) => ({
+    xeroObjectLink: {
+      findMany: async ({ where }: { where: { localModel: string; xeroObjectType: string; role: string; xeroObjectId: string; localId: { in: string[] } } }) =>
+        rows.filter((row) => row.localModel === where.localModel && row.xeroObjectType === where.xeroObjectType && row.role === where.role
+          && row.xeroObjectId === where.xeroObjectId && where.localId.in.includes(row.localId)),
+    },
+  }) as never;
+  const row = (localId: string, role: string, status: string): Row =>
+    ({ localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_1", role, active: status !== "VOIDED", metadata: { status } });
+  const link = (localId: string, role: string) => ({ localModel: "Payment", localId, xeroObjectType: "CREDIT_NOTE", role });
+
+  it("MUTATION: drops the links of a refund request's own note voided now, as it does a payment's own", async () => {
+    const db = store([row("pay_request", "REFUND_REQUEST_CREDIT_NOTE", "VOIDED"), row("pay_own", "REFUND_CREDIT_NOTE", "VOIDED"), row("pay_live", "REFUND_CREDIT_NOTE", "AUTHORISED")]);
+    const links = [link("pay_request", "REFUND_REQUEST_CREDIT_NOTE"), link("pay_own", "REFUND_CREDIT_NOTE"), link("pay_live", "REFUND_CREDIT_NOTE"), link("pay_credit", "ACCOUNT_CREDIT_NOTE")];
+    expect(await withoutVoidedRefundNoteLinks("cn_1", links, db)).toEqual([link("pay_live", "REFUND_CREDIT_NOTE"), link("pay_credit", "ACCOUNT_CREDIT_NOTE")]);
+  });
+
+  it("a payment's void in one role never drops its link in the other", async () => {
+    const db = store([row("pay_1", "REFUND_CREDIT_NOTE", "VOIDED"), row("pay_1", "REFUND_REQUEST_CREDIT_NOTE", "AUTHORISED")]);
+    expect(await withoutVoidedRefundNoteLinks("cn_1", [link("pay_1", "REFUND_REQUEST_CREDIT_NOTE")], db)).toEqual([link("pay_1", "REFUND_REQUEST_CREDIT_NOTE")]);
   });
 });

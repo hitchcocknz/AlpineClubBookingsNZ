@@ -11,7 +11,7 @@ import { type XeroAuditLocalLink } from "./types";
 import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance } from "./credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "./modification-note-refunds";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
-import { isIncludedRefundCreditNoteStatus, isRefundCreditNoteLinkCancelledInXero, mayRecordAsCanonicalRefundNote, readRefundNoteRowsByPayment, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
+import { isIncludedRefundCreditNoteStatus, isRefundNoteLinkOf, mayRecordAsCanonicalRefundNote, withoutVoidedRefundNoteLinks, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
 
 /** #4291: the audit source naming a recount reached only through a voided mirror. */
 const VOIDED_MIRROR_RECOUNT_AUDIT_SOURCE = "xero-inbound-credit-note-voided-mirror-recount";
@@ -139,7 +139,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
   }
 
   const linkedRefundPaymentIds = creditNoteLinks
-    .filter((link) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE")
+    .filter((link) => isRefundNoteLinkOf(link))
     .map((link) => link.localId);
   const linkedAccountCreditPaymentIds = creditNoteLinks
     .filter((link) => link.localModel === "Payment" && link.role === "ACCOUNT_CREDIT_NOTE")
@@ -272,17 +272,15 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
   }
 
   // #4288: a LIVE reading's allocations and refund payments are as old as its
-  // status. Each is written only for a payment whose own refund-note row is not
-  // VOIDED/DELETED when it is written - read fresh at that point, never a
-  // verdict kept from the link write - so a void that won is never given them.
-  // A newer live snapshot kept over this reading keeps them, as before #4288:
-  // the Stripe status recorder that writes one records neither.
-  const isPaymentRefundNoteLink = (link: XeroObjectLinkInput) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE";
-  const withoutVoidedRefundNoteRows = async (links: XeroObjectLinkInput[]) => {
-    if (!isIncludedRefundCreditNoteStatus(creditNote.status)) return links;
-    const rows = await readRefundNoteRowsByPayment(creditNote.creditNoteID!, links.filter(isPaymentRefundNoteLink).map((link) => link.localId), prisma);
-    return links.filter((link) => !(isPaymentRefundNoteLink(link) && isRefundCreditNoteLinkCancelledInXero(rows.get(link.localId)?.metadata)));
-  };
+  // status, so neither is written for a payment whose refund-note row (either
+  // role) is VOIDED/DELETED when it is written - read fresh at that point, never
+  // a verdict kept from the link write - and a void that won is never given
+  // them. Under a newer live snapshot they are written as before #4288: no money
+  // reader uses a payment's CREDIT_NOTE_ALLOCATION links, and a REFUND_PAYMENT
+  // reader asks only whether one names the note. An older allocation link can
+  // so stay active beside a newer one.
+  const withoutVoidedRefundNoteRows = async (links: XeroObjectLinkInput[]) =>
+    isIncludedRefundCreditNoteStatus(creditNote.status) ? withoutVoidedRefundNoteLinks(creditNote.creditNoteID!, links, prisma) : links;
   const allocationSourceLinks = await withoutVoidedRefundNoteRows(resolvedCreditNoteLinks);
 
   const allocationLinks = dedupeXeroObjectLinks(

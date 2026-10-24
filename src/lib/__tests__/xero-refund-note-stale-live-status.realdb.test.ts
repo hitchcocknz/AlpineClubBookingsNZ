@@ -400,6 +400,50 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       expect(await allocationLinks()).toEqual([]);
     });
 
+    it("MUTATION (round 4, review 1): A reads the live note's row, then the void and B's recount, then A claims - A recounts the void", async () => {
+      // A $200 bank transfer recorded at $50, with a live $100 per-refund note
+      // beside the $50 one: A's recount reads the note as live and owes $150.
+      const kase: Case = "bank-transfer per-refund";
+      await seed(kase);
+      await prisma.payment.update({ where: { id: BT }, data: { refundedAmountCents: 5_000 } });
+      let current = reading("AUTHORISED", EARLY);
+      const floor = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
+      const original = floor.floorBankTransferRefundedTotal;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached!: () => void;
+      const atClaim = new Promise<void>((resolve) => (reached = resolve));
+      // A pauses inside its recount: after its row read, before its claim.
+      const spy = vi.spyOn(floor, "floorBankTransferRefundedTotal").mockImplementationOnce(async (...args: Parameters<typeof original>) => {
+        reached();
+        await gate;
+        return original(...args);
+      });
+      const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+      try {
+        await withFakeXero(async () => ({ body: { creditNotes: [current] } }), async () => {
+          const a = reconcileXeroCreditNote(NOTE);
+          void a.catch(() => undefined);
+          try {
+            await Promise.race([atClaim, a.then(() => { throw new Error("A finished before its claim"); })]);
+            // The void, then B's recount: the note counts nothing and $50 is right, so B writes nothing.
+            current = reading("VOIDED", LATE);
+            await reconcileXeroCreditNote(NOTE);
+            expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+          } finally {
+            release();
+          }
+          await a;
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      // A's claim saw no Payment change (the void moves none). Before the
+      // re-read after its claim, it left $150 against a VOIDED note.
+      expect(await state(kase)).toMatchObject({ active: false, status: "VOIDED" });
+      expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+
     it("MUTATION (review 2): a stale reading kept under a newer LIVE snapshot still records its allocations and refund payments", async () => {
       // The newer snapshot came from a writer that records neither (the Stripe
       // status recorder): the note is still allocated and paid, so they stay true.

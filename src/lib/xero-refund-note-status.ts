@@ -103,10 +103,29 @@ export const REFUND_CREDIT_NOTE_LINK_WHERE = {
   role: "REFUND_CREDIT_NOTE",
 } as const satisfies Prisma.XeroObjectLinkWhereInput;
 
-/** The refund-note links of one payment (or several), active or not: the one fetch every reader below shares. */
-async function readRefundNoteLinks(localId: string | { in: string[] }, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
+/** #4288: the two roles of a payment's refund-note links - its own notes, and a refund request's (`INV-PAY-118`). */
+export const REFUND_NOTE_LINK_ROLES = [REFUND_CREDIT_NOTE_LINK_WHERE.role, REFUND_REQUEST_CREDIT_NOTE_ROLE] as const;
+
+/** #4288: `REFUND_CREDIT_NOTE_LINK_WHERE` as a predicate on a link (for `role`, either refund-note role; its own by default). */
+export function isRefundNoteLinkOf(
+  link: { localModel: string; xeroObjectType: string; role: string },
+  role: (typeof REFUND_NOTE_LINK_ROLES)[number] = REFUND_CREDIT_NOTE_LINK_WHERE.role,
+): boolean {
+  return link.localModel === REFUND_CREDIT_NOTE_LINK_WHERE.localModel && link.xeroObjectType === REFUND_CREDIT_NOTE_LINK_WHERE.xeroObjectType && link.role === role;
+}
+
+/**
+ * The refund-note links of one payment (or several), active or not: the one
+ * fetch every reader below shares. #4288: optionally of one note only, and of
+ * a refund request's role instead of the payment's own.
+ */
+async function readRefundNoteLinks(
+  localId: string | { in: string[] },
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+  only?: { xeroObjectId?: string; role?: (typeof REFUND_NOTE_LINK_ROLES)[number] },
+) {
   return (await db.xeroObjectLink.findMany({
-    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, localId },
+    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, ...only, localId },
     select: { localId: true, xeroObjectId: true, metadata: true, active: true },
   })) ?? [];
 }
@@ -303,24 +322,42 @@ export function judgeRefundNoteWrite(incoming: unknown, stored: unknown): Refund
 }
 
 /**
- * #4288: one note's refund-note row (`REFUND_CREDIT_NOTE`) on each of these
- * payments, active or not, read NOW on the caller's client. A writer that acts
- * on a Xero reading after its link write - the inbound recount, its allocation
- * and refund-payment links - reads this at the point it acts, so a void or a
- * newer snapshot that committed since its own link write is what it acts on,
- * never a verdict it remembered from that write.
+ * #4288: one note's refund-note row (by default the payment's own role) on each
+ * of these payments, active or not, read NOW on the caller's client. A writer
+ * that acts on a Xero reading after its link write - the inbound recount, its
+ * allocation and refund-payment links - reads this at the point it acts, so a
+ * void or a newer snapshot that committed since its own link write is what it
+ * acts on, never a verdict it remembered from that write.
  */
 export async function readRefundNoteRowsByPayment(
   creditNoteId: string,
   paymentIds: readonly string[],
   db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+  role: (typeof REFUND_NOTE_LINK_ROLES)[number] = REFUND_CREDIT_NOTE_LINK_WHERE.role,
 ): Promise<Map<string, { active: boolean; metadata: unknown }>> {
   if (paymentIds.length === 0) return new Map();
-  const rows = (await db.xeroObjectLink.findMany({
-    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, localId: { in: [...new Set(paymentIds)] }, xeroObjectId: creditNoteId },
-    select: { localId: true, active: true, metadata: true },
-  })) ?? [];
+  const rows = await readRefundNoteLinks({ in: [...new Set(paymentIds)] }, db, { xeroObjectId: creditNoteId, role });
   return new Map(rows.map((row) => [row.localId, { active: row.active, metadata: row.metadata }]));
+}
+
+/**
+ * #4288: these links, less every one a payment holds through a refund-note row
+ * (either role) for this note that is VOIDED/DELETED now, read fresh on the
+ * caller's client. A live reading's allocation and refund-payment links are
+ * written through this, so a void that won is never given them; any other
+ * link passes untouched.
+ */
+export async function withoutVoidedRefundNoteLinks<L extends { localModel: string; localId: string; xeroObjectType: string; role: string }>(
+  creditNoteId: string,
+  links: readonly L[],
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+): Promise<L[]> {
+  const voided = new Set<string>();
+  for (const role of REFUND_NOTE_LINK_ROLES) {
+    const rows = await readRefundNoteRowsByPayment(creditNoteId, links.filter((link) => isRefundNoteLinkOf(link, role)).map((link) => link.localId), db, role);
+    for (const [paymentId, row] of rows) if (isRefundCreditNoteLinkCancelledInXero(row.metadata)) voided.add(`${paymentId}:${role}`);
+  }
+  return links.filter((link) => !(REFUND_NOTE_LINK_ROLES.some((role) => isRefundNoteLinkOf(link, role)) && voided.has(`${link.localId}:${link.role}`)));
 }
 
 /**
