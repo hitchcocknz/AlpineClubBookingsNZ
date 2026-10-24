@@ -3638,6 +3638,11 @@ unconfirmed environment, and a provider failure — stay distinguishable
 
 ```text
 local business event -> Xero outbox operation queued
+  one ACTIVE (PENDING/RUNNING/WAITING_PAYMENT) operation per correlation key
+  (#1354): a start that loses the insert race takes the winner's active row;
+  if the winner has already finished, it inserts its own row as a later start
+  would (at most 3 inserts; never on a caller's transaction, which the
+  violation has aborted) rather than failing (#4338)
 worker claims operation -> provider call -> success or retryable failure
 success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier
   wait's or failure's code is not shown on it (#4049); PARTIAL keeps them

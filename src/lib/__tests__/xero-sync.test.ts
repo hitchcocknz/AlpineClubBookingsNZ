@@ -1187,8 +1187,29 @@ describe("startXeroSyncOperation", () => {
     );
   });
 
-  it("rethrows a unique violation with no surviving active row (or no correlation key)", async () => {
+  it("inserts again when the winner finished before the lookup, as a caller arriving a moment later would (#4338)", async () => {
     mocks.operationCreate.mockRejectedValueOnce({ code: "P2002" });
+    mocks.operationFindFirst.mockResolvedValue(null);
+    // The winner's finished row now counts as an earlier attempt.
+    mocks.operationCount.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+
+    const result = await startXeroSyncOperation({
+      direction: "OUTBOUND",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localModel: "Payment",
+      localId: "payment_1",
+      status: "PENDING",
+      correlationKey: "key-x",
+    });
+
+    expect(result).toMatchObject({ id: "op_started_1" });
+    expect(mocks.operationCreate).toHaveBeenCalledTimes(2);
+    expect(mocks.operationCreate.mock.calls[1][0].data.attemptCount).toBe(2);
+  });
+
+  it("rethrows the unique violation once its bounded re-inserts all find no active row (#4338)", async () => {
+    mocks.operationCreate.mockRejectedValue({ code: "P2002" });
     mocks.operationFindFirst.mockResolvedValue(null);
 
     await expect(
@@ -1202,6 +1223,46 @@ describe("startXeroSyncOperation", () => {
         correlationKey: "key-x",
       })
     ).rejects.toMatchObject({ code: "P2002" });
+    expect(mocks.operationCreate).toHaveBeenCalledTimes(3);
+  });
+
+  it("rethrows a unique violation with no correlation key, without a lookup or a second insert", async () => {
+    mocks.operationCreate.mockRejectedValueOnce({ code: "P2002" });
+
+    await expect(
+      startXeroSyncOperation({
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "payment_1",
+        status: "PENDING",
+      })
+    ).rejects.toMatchObject({ code: "P2002" });
+    expect(mocks.operationFindFirst).not.toHaveBeenCalled();
+    expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("never inserts again on a caller's transaction, which the violation has aborted (#4338)", async () => {
+    const txCreate = vi.fn().mockRejectedValue({ code: "P2002" });
+    const txFindFirst = vi.fn().mockResolvedValue(null);
+    const store = {
+      xeroSyncOperation: { count: vi.fn().mockResolvedValue(0), create: txCreate, findFirst: txFindFirst },
+    } as unknown as Prisma.TransactionClient;
+
+    await expect(
+      startXeroSyncOperation({
+        direction: "OUTBOUND",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        localModel: "Payment",
+        localId: "payment_1",
+        status: "PENDING",
+        correlationKey: "key-x",
+        store,
+      })
+    ).rejects.toMatchObject({ code: "P2002" });
+    expect(txCreate).toHaveBeenCalledTimes(1);
   });
 
   it("writes via the global prisma client when no store is supplied and never leaks store into the payload", async () => {

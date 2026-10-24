@@ -478,6 +478,9 @@ function getAttemptWhere(
   return { OR: or };
 }
 
+/** Inserts `startXeroSyncOperation` tries when each lost race finds the winner already finished (#4338). */
+const START_OPERATION_INSERT_ATTEMPTS = 3;
+
 export async function startXeroSyncOperation(
   input: XeroSyncOperationInput & { store?: Prisma.TransactionClient }
 ) {
@@ -487,9 +490,6 @@ export async function startXeroSyncOperation(
   // unchanged. `store` is never part of the `create` payload.
   const db = input.store ?? prisma;
   const attemptWhere = getAttemptWhere(input);
-  const attemptCount = attemptWhere
-    ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1
-    : 1;
 
   // Denormalized copy of the outbox queue type (#1271, item 3 of #1208),
   // captured once here at enqueue and never updated afterward. Derive it from
@@ -506,36 +506,40 @@ export async function startXeroSyncOperation(
   const queueType =
     (payloadRecord ? readString(payloadRecord.queueType) : null) ?? input.queueType ?? null;
 
-  try {
-    return await db.xeroSyncOperation.create({
-      data: {
-        direction: input.direction,
-        entityType: input.entityType,
-        operationType: input.operationType,
-        localModel: input.localModel ?? null,
-        localId: input.localId ?? null,
-        status: input.status ?? "RUNNING",
-        idempotencyKey: input.idempotencyKey ?? null,
-        correlationKey: input.correlationKey ?? null,
-        attemptCount,
-        replayable: input.replayable ?? true,
-        requestPayload,
-        queueType,
-        // #2929: immutable after enqueue, exactly like `queueType` above and
-        // for the same reason — the booking-invoice handler rewrites
-        // `requestPayload` wholesale before its first provider call, so the
-        // instruction cannot live there and survive a retry.
-        invoiceEmailDelivery: input.invoiceEmailDelivery ?? null,
-        createdByMemberId: input.createdByMemberId ?? null,
-        startedAt: input.status === "PENDING" ? null : new Date(),
-      },
-    });
-  } catch (error) {
-    // #1354: the partial unique index (one ACTIVE operation per correlation
-    // key) turns a lost concurrent-enqueue race into a unique violation here.
-    // Resolve it the same way the findFirst fast-path dedup would have:
-    // return the winner's active row so the caller's enqueue is idempotent.
-    if (isPrismaUniqueConstraintError(error) && input.correlationKey) {
+  for (let insert = 1; ; insert += 1) {
+    const attemptCount = attemptWhere
+      ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1
+      : 1;
+    try {
+      return await db.xeroSyncOperation.create({
+        data: {
+          direction: input.direction,
+          entityType: input.entityType,
+          operationType: input.operationType,
+          localModel: input.localModel ?? null,
+          localId: input.localId ?? null,
+          status: input.status ?? "RUNNING",
+          idempotencyKey: input.idempotencyKey ?? null,
+          correlationKey: input.correlationKey ?? null,
+          attemptCount,
+          replayable: input.replayable ?? true,
+          requestPayload,
+          queueType,
+          // #2929: immutable after enqueue, exactly like `queueType` above and
+          // for the same reason — the booking-invoice handler rewrites
+          // `requestPayload` wholesale before its first provider call, so the
+          // instruction cannot live there and survive a retry.
+          invoiceEmailDelivery: input.invoiceEmailDelivery ?? null,
+          createdByMemberId: input.createdByMemberId ?? null,
+          startedAt: input.status === "PENDING" ? null : new Date(),
+        },
+      });
+    } catch (error) {
+      // #1354: the partial unique index (one ACTIVE operation per correlation
+      // key) turns a lost concurrent-enqueue race into a unique violation here.
+      // Resolve it the same way the findFirst fast-path dedup would have:
+      // return the winner's active row so the caller's enqueue is idempotent.
+      if (!isPrismaUniqueConstraintError(error) || !input.correlationKey) throw error;
       const existing = await db.xeroSyncOperation.findFirst({
         where: {
           correlationKey: input.correlationKey,
@@ -546,8 +550,13 @@ export async function startXeroSyncOperation(
       if (existing) {
         return existing;
       }
+      // #4338: the winner finished between the refused insert and that read, so
+      // the key has no active row and the insert is tried again, exactly as for a
+      // caller that arrived a moment later. Each retry needs another winner to
+      // start and finish inside that window, so a few are enough. Never on a
+      // caller's transaction: the violation has aborted it.
+      if (input.store || insert >= START_OPERATION_INSERT_ATTEMPTS) throw error;
     }
-    throw error;
   }
 }
 

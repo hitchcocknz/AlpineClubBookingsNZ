@@ -403,12 +403,71 @@ let observerClient: import("@prisma/client").PrismaClient;
       const settled = await Promise.allSettled([runEngine(), runEngine()]);
 
       // Neither run fails: the one that lost the race finds nothing left to allocate.
-      expect(settled.map((run) => run.status)).toEqual(["fulfilled", "fulfilled"]);
+      // Asserted with the reason (#4338), so a rejection names its cause.
+      expect(settled.map((run) => (run.status === "rejected" ? `rejected: ${String(run.reason)}` : run.status))).toEqual(["fulfilled", "fulfilled"]);
       expect(await writeDowns()).toHaveLength(1);
       expect(await prisma.memberCredit.count({ where: { appliedToBookingId: BOOKING_ID, type: "BOOKING_APPLIED", amountCents: { gt: 0 } } })).toBe(1);
       expect(await convergedAudits()).toBe(1);
       expect(await applied()).toBe(0);
       expect(await balance()).toBe(0);
+    });
+
+    it("FORCES the lost start: the loser's operation insert meets the winner's running row, which fails before the loser looks for it, and neither run fails (#4338)", async () => {
+      await seed();
+      const api = fakeXero.client.accountingApi;
+      const realAllocate = api.createCreditNoteAllocation;
+      const realFindFirst = prisma.xeroSyncOperation.findFirst.bind(prisma.xeroSyncOperation);
+      const winnerInXero = deferred();
+      const releaseWinner = deferred();
+      let allocateCalls = 0;
+      let lostStarts = 0;
+      // The winner pauses inside its Xero call, its operation row RUNNING.
+      api.createCreditNoteAllocation = async (...args: Parameters<typeof realAllocate>) => {
+        allocateCalls += 1;
+        if (allocateCalls === 1) {
+          winnerInXero.resolve();
+          await releaseWinner.promise;
+        }
+        return realAllocate(...args);
+      };
+      // The loser's insert was refused by the one-active-row index and it now looks for that
+      // active row: let the winner finish first (Xero refuses, its row goes FAILED).
+      const findFirst = vi.spyOn(prisma.xeroSyncOperation, "findFirst").mockImplementation((async (args: Parameters<typeof realFindFirst>[0]) => {
+        const where = args?.where as { correlationKey?: unknown; status?: { in?: unknown } } | undefined;
+        if (typeof where?.correlationKey === "string" && Array.isArray(where.status?.in) && lostStarts === 0) {
+          lostStarts += 1;
+          releaseWinner.resolve();
+          const startedAt = process.hrtime.bigint();
+          let active = 1;
+          while (active > 0 && realElapsedMs(startedAt) < 10_000) {
+            active = await observerClient.xeroSyncOperation.count({ where: { correlationKey: where.correlationKey, status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] } } });
+            if (active > 0) await new Promise((resolve) => setTimeout(resolve, 10));
+          }
+          expect(active, "the winner's row finished before the loser's lookup").toBe(0);
+        }
+        return realFindFirst(args);
+      }) as unknown as typeof prisma.xeroSyncOperation.findFirst);
+      try {
+        const winner = runEngine();
+        await winnerInXero.promise;
+        const loser = runEngine();
+
+        const settled = await Promise.allSettled([winner, loser]);
+
+        expect(lostStarts, "the loser's insert lost to the winner's running row").toBe(1);
+        expect(settled.map((run) => (run.status === "rejected" ? `rejected: ${String(run.reason)}` : run.status))).toEqual(["fulfilled", "fulfilled"]);
+        expect(await writeDowns()).toHaveLength(1);
+        expect(await convergedAudits()).toBe(1);
+        expect(await applied()).toBe(0);
+        expect(await balance()).toBe(0);
+        // The loser started its own attempt rather than failing; none is left active.
+        const operations = await prisma.xeroSyncOperation.findMany({ where: { requestPayload: { path: ["appliedCreditContext", "bookingId"], equals: BOOKING_ID } }, orderBy: { attemptCount: "asc" } });
+        expect(operations.map((operation) => [operation.attemptCount, operation.status])).toEqual([[1, "FAILED"], [2, "FAILED"]]);
+      } finally {
+        api.createCreditNoteAllocation = realAllocate;
+        releaseWinner.resolve();
+        findFirst.mockRestore();
+      }
     });
 
     it("counts only what the app has no record of: an allocation to an invoice the app tracks is the app's own and converges nothing", async () => {
@@ -485,7 +544,7 @@ let observerClient: import("@prisma/client").PrismaClient;
 
       const settled = await Promise.allSettled([runEngine(), runEngine()]);
 
-      expect(settled.map((run) => run.status)).toEqual(["fulfilled", "fulfilled"]);
+      expect(settled.map((run) => (run.status === "rejected" ? `rejected: ${String(run.reason)}` : run.status))).toEqual(["fulfilled", "fulfilled"]);
       expect(await writeDowns()).toHaveLength(1);
       expect(fakeXero.state.acceptedAllocations).toBe(1);
       expect(fakeXero.remainingCents(SPENT_NOTE_ID)).toBe(0);
