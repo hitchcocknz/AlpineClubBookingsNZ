@@ -3177,8 +3177,14 @@ fully REFUNDED payment reads captured to the minter but cancels down that
 branch, which used to read its payment with no row lock and queue no
 cancellation, so the two could both miss. Its claim now takes the `Payment` row
 FOURTH - `lock(1)`, the per-lodge key, the member credit-ledger key, then the
-row, the paid claim's own order (`INV-LOCK-002`) - re-reads the ask under it and
-retires it through the same routine, then cancels it at Stripe after commit.
+row, the paid claim's own order (`INV-LOCK-002`). Under the row it re-asks the
+paid-path question (`paymentEligibleForPaidCancelPath`, review round 3): an
+ask's capture webhook takes only that row, so a REFUNDED payment read before it
+may hold captured cash again, and the claim then refuses with the 409 and the
+retry takes the paid path. Only a won status-guarded claim then retires the ask
+(`failOutstandingAdditionalAskUnderRowLock`, the same routine) and flips the
+payment FAILED - a lost claim writes nothing - and the ask is cancelled at
+Stripe after commit.
 Nothing it calls after the row takes a key the paid claim takes before it (the
 hosting reconcile comes after the row in both), so no new order exists.
 
@@ -3193,8 +3199,9 @@ row write is inside its claim hold (`holdAdditionalIntentRecoveryClaim`), which
 takes the `Payment` row before either write since #4217, so the same ordering
 holds. It re-reads after that transaction commits, retires through the same
 routine and closes its recovery row; a failed retirement THROWS, so the row
-backs off and retries, and its check before the mint then retires the ask the
-failed attempt left outstanding. A currency re-issue
+backs off and retries, and its check before the mint - ahead of the settled
+check, which would read that ask's own row as settling the debt - retires the
+ask the failed attempt left outstanding. A currency re-issue
 (`reissueAdditionalIntentInClubCurrency`) writes its row through the same
 `upsertPaymentIntentTransaction` and runs the same two guards. Proven - cancel
 before the mint, between the provider call and the row write, queued on the

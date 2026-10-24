@@ -3009,6 +3009,18 @@ describe("#4272: a review charge on a cancelled booking is refused", () => {
     expectNothingWritten();
   });
 
+  // #4316 (`INV-ADDPAY-044`): a BUMPED booking has ended too, and the sentence names it.
+  it("refuses a bumped booking with the ended-booking sentence, before the claim", async () => {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(cancelledTask({ status: "BUMPED" }));
+
+    await expect(charge()).rejects.toMatchObject({
+      status: 409,
+      message: REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE,
+    });
+    expect(REVIEW_CHARGE_BOOKING_CANCELLED_MESSAGE).toContain("has ended (cancelled or bumped)");
+    expectNothingWritten();
+  });
+
   it("refuses a cancelled booking whose edit already has an open card request, raising nothing", async () => {
     // A second share of an edit whose first share was asked by card before the
     // cancellation: raising that request would ask again on the cancelled booking.

@@ -1712,8 +1712,9 @@ decision and would need its own owner decision.
   invoice; a currency re-issue answers the pay door with nothing payable. A
   review charge on a CANCELLED or BUMPED booking takes its cancelled path
   (`INV-PAY-112`).
-- **A failed retirement still ends.** The door's queued cancellation finishes
-  it; the runner throws, retries, and retires the ask before closing.
+- **A failed retirement still ends.** The door's queued cancellation, if
+  written, finishes it; the runner throws and retries, and its retry retires
+  the ask before its settled check, then closes.
 - **No new advisory key.** Home: `ended-booking-ask-guard.ts`. Pinned by
   `ended-booking-ask-mint-guard`, `payment-recovery`,
   `additional-intent-currency` and `ended-booking-ask-mint-race` (realdb).

@@ -447,6 +447,12 @@ let observerClient: PrismaClient;
       await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { status: "REFUNDED", refundedAmountCents: PAID_CENTS } });
     }
 
+    /** Review round 3 (M5): the cancel leaves the refunded money's record as it was. */
+    async function expectRefundStillRecorded() {
+      const payment = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { status: true, refundedAmountCents: true } });
+      expect(payment).toEqual({ status: "REFUNDED", refundedAmountCents: PAID_CENTS });
+    }
+
     it("a fully REFUNDED payment: the never-captured cancel's claim holds the Payment row while the row write waits on it", async () => {
       await refundTheWholeCard();
       const release = deferred();
@@ -467,6 +473,7 @@ let observerClient: PrismaClient;
       expect(cancelled).toMatchObject({ status: 200 });
       expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined, additionalAskRetired: true });
       await expectNoLiveAsk();
+      await expectRefundStillRecorded();
     });
 
     it("a fully REFUNDED payment: the row write holds the Payment row first, and the never-captured cancel reads the new ask and retires it", async () => {
@@ -488,6 +495,7 @@ let observerClient: PrismaClient;
 
       expect(cancelled).toMatchObject({ status: 200 });
       await expectNoLiveAsk();
+      await expectRefundStillRecorded();
     });
 
     it("the recovery runner's replay on a booking bumped before it runs: nothing is minted and the debt closes", async () => {

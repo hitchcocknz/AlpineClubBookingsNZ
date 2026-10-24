@@ -2189,8 +2189,8 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   claim, with the task left OPEN. The Xero leg bills the same supplementary
   invoice a POSITIVE amount: the only place direction becomes a sign.
 - **Which instrument a charge uses** (#3947; owner decisions 15 and 22 Oct
-  2026). A CANCELLED booking is refused first (#4272, 21 Oct 2026): nobody
-  can pay its ask ([INV-ADDPAY-023]). Else the card when
+  2026). A CANCELLED or BUMPED booking is refused first (#4272, 21 Oct 2026):
+  its ask is unpayable ([INV-ADDPAY-023]). Else the card when
   `canAskCardForReviewCharge` says so: the edit doors' `canAskCardForIncrease`,
   so a settled credit-paid booking too, Xero or not, plus captured card money
   on an unsettled booking that is not cancelled. Otherwise the issued invoice.
