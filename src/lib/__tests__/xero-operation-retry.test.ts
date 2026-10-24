@@ -55,7 +55,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/additional-capture-receipt-gate", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/additional-capture-receipt-gate")>()),
+  ...((await importOriginal()) as typeof import("@/lib/additional-capture-receipt-gate")),
   supplementaryReplayMayRecordPayment: async (...args: unknown[]) =>
     (await mocks.supplementaryReplayMayRecordPayment(...args)) ?? true,
 }));
