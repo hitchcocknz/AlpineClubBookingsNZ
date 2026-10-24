@@ -255,6 +255,44 @@ export function editFinancialReviewStrandMovesNights(
 }
 
 /**
+ * #4317 (owner decision on #4302, after review round 1): THE GUESTS A REVIEW
+ * NAMES THAT WERE REMOVED FROM THE BOOKING AFTER IT WAS RAISED.
+ *
+ * Since #4317 a removal is priced, and a consent removal is exempt from the
+ * open-review fence (D-14), so a guest a pre-#4317 review is about can come off
+ * the booking while the review is open - credited its whole stored total, which
+ * still holds the nights the review was raised over. Settling the review then
+ * would credit those nights a second time. The owner's answer: price the
+ * removal, warn the officer here, and let wave B's clean-up (D3) close such a
+ * review with no money moved.
+ *
+ * A strand missing from `currentGuestIds` counts unless the review's OWN edit
+ * removed it: a parked removal deletes its departing guest in the transaction
+ * that raised the review, and that strand records every night it held as
+ * surrendered and none added. Read through `editFinancialReviewStrandRecords`,
+ * the one list of an item's strands (`INV-SSOT`). Where a strand held no
+ * stored rows, a whole surrender is read as the review's own removal, so the
+ * warning errs towards silence rather than telling an officer to dismiss a
+ * review the member is owed.
+ */
+export function editFinancialReviewGuestsRemovedSinceRaised(
+  context: EditFinancialReviewContext,
+  currentGuestIds: ReadonlySet<string>,
+): string[] {
+  return editFinancialReviewStrandRecords(context.occurrence)
+    .filter((strand) => !currentGuestIds.has(strand.bookingGuestId))
+    .filter((strand) => {
+      const surrendered = new Set<string>(strand.surrenderedNightDates);
+      const removedByItsOwnEdit =
+        surrendered.size > 0 &&
+        strand.addedNightDates.length === 0 &&
+        strand.storedEvidence.nightPrices.every((night) => surrendered.has(night.date));
+      return !removedByItsOwnEdit;
+    })
+    .map((strand) => strand.bookingGuestId);
+}
+
+/**
  * What is written to `ManualRefundTask.reviewContext`: the identity above, plus
  * the display-only evidence D3 asks for.
  *

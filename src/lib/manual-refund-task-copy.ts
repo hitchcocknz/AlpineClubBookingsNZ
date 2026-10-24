@@ -252,6 +252,15 @@ export function completionSummary(shape: CompletionSettlementShape): string {
 }
 
 /**
+ * #4317 (owner decision on #4302): the officer's warning on an OPEN edit review
+ * whose guest was removed from the booking after the review was raised
+ * (`editFinancialReviewGuestsRemovedSinceRaised`). The removal already credited
+ * that guest's stored total; settling would credit the reviewed nights again.
+ */
+export const REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING =
+  "This guest was removed from the booking after this review was raised, and their stored total was already credited. Settling this review would credit those nights again. Dismiss it, or leave it for the clean-up.";
+
+/**
  * #3191: the second half of the receipt, when the officer also said what the
  * booking's unpriced nights sold for.
  *

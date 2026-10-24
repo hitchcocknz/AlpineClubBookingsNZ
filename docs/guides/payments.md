@@ -523,7 +523,11 @@ automatically when it is saved — see
 [Bookings — How a booking change is priced](bookings.md#how-a-booking-change-is-priced).
 The rows still on this card were raised before that. Work them as described below
 until the club's clean-up has settled them; while one is open, a further price
-change to its booking is refused.
+change to its booking is refused. **A row warned "This guest was removed from
+the booking after this review was raised"** is one whose guest came off the
+booking since, and that removal already credited the guest's stored total:
+settling the row would credit those nights again. Dismiss it with a note, or
+leave it for the clean-up, which closes it with no money moved.
 
 Before that, sometimes a member changed a booking — gave back a night, took a
 guest off — and the change itself was fine, but the club's records did not say clearly enough

@@ -1,4 +1,5 @@
 import {
+  editFinancialReviewGuestsRemovedSinceRaised,
   parseEditFinancialReviewContext,
   toEditFinancialReviewEvidence,
   type EditFinancialReviewEvidence,
@@ -110,6 +111,12 @@ export type OpenManualRefundTaskRow = {
      */
     memberId: string | null;
     deletedAt: Date | null;
+    /**
+     * #4317: the booking's guests as they stand, for
+     * `reviewGuestRemovedSinceRaised`. Optional so a caller that does not read
+     * them gets no warning rather than a false one.
+     */
+    guests?: ReadonlyArray<{ id: string }>;
   };
 };
 
@@ -229,6 +236,12 @@ export type OpenManualRefundTaskPayload = {
   viewerOwnsBooking: boolean;
   reviewEvidence: EditFinancialReviewEvidence | null;
   reviewEvidenceUnreadable: boolean;
+  /**
+   * #4317 (owner decision on #4302): a guest this review names was removed from
+   * the booking after the review was raised, and already credited — the settle
+   * screen warns that settling would credit those nights again.
+   */
+  reviewGuestRemovedSinceRaised: boolean;
   /**
    * #3191: the nights whose stored price is blank, and the two totals the
    * officer's figures have to reconcile against. EMPTY when there is nothing
@@ -351,6 +364,20 @@ export function toOpenManualRefundTaskPayload(
       section and assume none was ever taken.
     */
     reviewEvidenceUnreadable: !ownContext && task.reviewContext !== null && !reviewContext,
+    /*
+      #4317 (owner decision on #4302): a guest this review names came off the
+      booking after it was raised, already credited its stored total, so
+      settling the review would credit those nights again. Only on a review
+      whose booking guests were read; never on a hand-back.
+    */
+    reviewGuestRemovedSinceRaised:
+      task.kind === "EDIT_FINANCIAL_REVIEW" &&
+      reviewContext !== null &&
+      task.booking.guests !== undefined &&
+      editFinancialReviewGuestsRemovedSinceRaised(
+        reviewContext,
+        new Set(task.booking.guests.map((guest) => guest.id)),
+      ).length > 0,
     unpricedNights,
   };
 }

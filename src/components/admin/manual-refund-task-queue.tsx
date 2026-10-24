@@ -36,7 +36,10 @@ import {
   type ClubDateFormat,
 } from "@/lib/club-time";
 import { unverifiedWriteMessage } from "@/lib/unverified-write-copy";
-import { zeroCompletionRefusal } from "@/lib/manual-refund-task-copy";
+import {
+  REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING,
+  zeroCompletionRefusal,
+} from "@/lib/manual-refund-task-copy";
 // #3213: whether a row may be closed as money that moved is decided ONCE, in a
 // client-safe home, and the completion door throws on the same answer
 // (`manual-refund-task-resolution.ts`, `INV-SSOT`). Deciding it again here is
@@ -138,6 +141,11 @@ interface ManualRefundTask {
    */
   reviewEvidence?: EditFinancialReviewEvidence | null;
   reviewEvidenceUnreadable?: boolean;
+  /**
+   * #4317 (owner decision on #4302): a guest this review names was removed after
+   * it was raised and already credited. Optional, as above: absent, no warning.
+   */
+  reviewGuestRemovedSinceRaised?: boolean;
   /**
    * #3191: this booking's nights that carry no stored price, and the two totals
    * the officer's figures must reconcile against.
@@ -1884,6 +1892,15 @@ export function ManualRefundTaskQueue() {
                           {task.amountCents === null
                             ? "Open this booking's invoices in Xero and compare them against the settled total on the change. This item cannot say how much is missing — it was raised by the recovery pass, which knows the change's combined total but not which part the sent invoice already carried. If the invoices fall short, bill the difference by hand. Then close the item with a note saying what Xero showed and what you billed."
                             : `Open this booking's invoices in Xero and check whether they already include ${formatCents(task.amountCents, format)}. If they do, nothing is owed. If they fall short, raise a supplementary invoice for that amount only — never for the change's full total, which the member has already been asked for. Then close the item with a note saying what Xero showed and what you billed.`}
+                        </p>
+                      ) : null}
+                      {task.reviewGuestRemovedSinceRaised ? (
+                        <p
+                          role="alert"
+                          className="text-sm font-medium text-warning-11"
+                          data-testid="manual-refund-task-review-guest-removed"
+                        >
+                          {REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING}
                         </p>
                       ) : null}
                       {task.reviewEvidence ? (

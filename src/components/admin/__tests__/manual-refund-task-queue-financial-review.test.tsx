@@ -19,6 +19,7 @@ vi.mock("@/hooks/use-admin-area-edit-access", async (importOriginal) => ({
 }));
 
 import { ManualRefundTaskQueue } from "@/components/admin/manual-refund-task-queue";
+import { REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING } from "@/lib/manual-refund-task-copy";
 
 /**
  * #3033 (epic #2797) — the finance queue told every admin the wrong thing about
@@ -429,6 +430,29 @@ describe("the evidence an admin prices from (#3033, owner decision D3)", () => {
     expect(
       screen.getByTestId("manual-refund-task-review-evidence-unreadable"),
     ).toHaveTextContent(/cannot be read/);
+  });
+
+  it("warns, in the owner's words, when the review's guest was removed after it was raised (#4317)", async () => {
+    // The removal already credited that guest's stored total; settling would
+    // credit the reviewed nights again. The owner asked for this warning on the
+    // settle screen until wave B's clean-up closes such reviews.
+    await renderQueue({
+      tasks: [{ ...REVIEW_TASK, reviewGuestRemovedSinceRaised: true }],
+      viewerCanViewBookings: true,
+    });
+
+    expect(screen.getByTestId("manual-refund-task-review-guest-removed")).toHaveTextContent(
+      REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING,
+    );
+  });
+
+  it("says nothing about a removed guest on a review whose guests are all still there", async () => {
+    await renderQueue({
+      tasks: [{ ...REVIEW_TASK, reviewGuestRemovedSinceRaised: false }],
+      viewerCanViewBookings: true,
+    });
+
+    expect(screen.queryByTestId("manual-refund-task-review-guest-removed")).not.toBeInTheDocument();
   });
 
   it("prints the identifier instead of a link the viewer cannot follow", async () => {
