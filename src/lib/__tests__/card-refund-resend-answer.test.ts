@@ -151,6 +151,19 @@ describe("a card refund sent again for one Stripe failed later (#4312 round 5)",
     expect(refundedCents()).toBe(4_000);
   });
 
+  it("MUTATION (round 6, finding 1): a failed refund's chain is read as the payment stood when it failed - a later failure listed on its slice never sends it to another row", async () => {
+    // An older row still owes R0's re-send (R0 failed at 3, noted). R1 made the newer row's slice at 5 and failed at 10;
+    // G sent it again at 20 and failed at 25; S sent it again at 30. When R1 counted, its slice listed no failure.
+    noteRows = new Set(["re_r0", "re_failed"]);
+    coverByRefund.set("re_r0", 4_000);
+    refunds = [refund("re_r0", 1, "failed", 4_000, 3), refund("re_failed", 5, "failed", 4_000, 10), refund("re_g", 20, "failed", 4_000, 25), refund("re_s", 30)];
+    rows = [
+      row("op-old", "refund_request_refund_request-0", 1, { failedRefundIds: ["re_r0"] }),
+      row("op-new", "refund_request_refund_request-1", 2, { failedRefundIds: ["re_failed", "re_g"] }),
+    ];
+    expect(await answered("re_s")).toEqual({ failedRefundIds: ["re_failed", "re_g"], ownNoted: true, coverCents: 4_000 });
+  });
+
   it("MUTATION (round 6, finding 2a): an older row never takes a newer row's re-send", async () => {
     // R2 failed first, at 8, and folded into the canonical note (no note of its own); R1 failed at 10, noted at $40.
     // R1's row sends S at 20, R2's sends S2 at 30.
