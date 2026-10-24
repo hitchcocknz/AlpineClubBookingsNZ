@@ -1503,7 +1503,11 @@ peculiar to each:
 - the IN-PROGRESS planner, `buildInProgressGuestRangePlan`
   (`src/lib/booking-edit-guest-ranges.ts`), behind both the modify-quote preview
   and the modify save (#3031). Its windows come from the guest's held night rows,
-  not the stored stay envelope (`INV-DATE-020`), and its result is priced-only;
+  not the stored stay envelope (`INV-DATE-020`), and its result is priced-only.
+  It carries the stored promotion, never re-validated, capped at the new total;
+  the save scales the stored redemptions to the cap in proportion
+  (`capCarriedPromotionRecords`) and keeps a night row only where the rows left
+  still reconcile (`INV-MONEY-029`);
 - the single-guest removal, `removeBookingGuestInTransaction`
   (`src/lib/booking-guest-removal-service.ts`), from the guest DELETE route
   (#3032). It credits the guest's stored `priceCents` and keeps every remaining

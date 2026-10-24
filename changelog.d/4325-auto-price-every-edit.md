@@ -19,7 +19,10 @@
   what saving charges or credits. A booking whose total an older held change
   left out of step with its guests keeps that difference: a new change moves
   the total only by what it changes itself, never settling the held money, and
-  is refused if that would take the total below zero.
+  is refused if that would take the total below zero. During the stay a promo
+  code is kept as it was, even one that has since expired, and where the change
+  leaves less to pay than the code took off, its discount shrinks to what is
+  left, so a shorter stay is never charged more.
   Closing an older review now recalculates the booking's total from its guests,
   and a correction to a finished stay is charged on the removed nights' values
   rather than refused when a night has no recorded price.

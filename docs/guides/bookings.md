@@ -260,6 +260,10 @@ Booking** is exactly what saving charges or credits.
 - **Taking a guest off** credits everything stored for that guest.
 - **Nights added** are charged at today's prices.
 - **The club's normal change fee** applies, as on any other change.
+- **During the stay, a promo code is kept as it was**, even one that has since
+  expired or been switched off. If the change leaves less to pay than the code
+  took off, the code's discount shrinks to what is left: the stay is never
+  charged for being shortened, and never priced below $0.
 
 A booking whose total an older held change left out of step with its guests
 keeps that difference through a new change: the change moves the total only by
