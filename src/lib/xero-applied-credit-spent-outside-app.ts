@@ -56,6 +56,7 @@ import {
   BOOKING_INVOICE_LINK_MODELS,
   creditNoteReleaseDescription,
   creditNoteWriteDownDescription,
+  creditNoteWriteDownWhere,
   writtenDownCentsByCreditNote,
 } from "./xero-credit-note-write-down";
 
@@ -118,6 +119,36 @@ function closeFailedAllocations(tx: Prisma.TransactionClient, match: Prisma.Xero
       replayable: false,
     },
   });
+}
+
+/**
+ * Did a converge run for this booking and note (#4338)? Its release (a marked
+ * positive application to the booking) and its write-down (a marked negative row
+ * stamped with the note) carry the same `outsideSpendConvergedAt`.
+ */
+async function convergeEvidenceExists(
+  tx: Prisma.TransactionClient,
+  memberId: string,
+  bookingId: string,
+  creditNoteId: string,
+): Promise<boolean> {
+  const releases = await tx.memberCredit.findMany({
+    where: {
+      memberId,
+      appliedToBookingId: bookingId,
+      type: CreditType.BOOKING_APPLIED,
+      amountCents: { gt: 0 },
+      outsideSpendConvergedAt: { not: null },
+    },
+    select: { outsideSpendConvergedAt: true },
+  });
+  const releasedAt = releases.flatMap((r) => (r.outsideSpendConvergedAt ? [r.outsideSpendConvergedAt] : []));
+  if (releasedAt.length === 0) return false;
+  const writeDown = await tx.memberCredit.findFirst({
+    where: { ...creditNoteWriteDownWhere(memberId, [creditNoteId]), outsideSpendConvergedAt: { in: releasedAt } },
+    select: { id: true },
+  });
+  return writeDown !== null;
 }
 
 /**
@@ -197,9 +228,30 @@ export async function convergeCreditNoteSpentOutsideApp(input: ConvergeInput): P
 
     // A concurrent run converged first. Its close ran before this caller's own
     // attempt failed, so that row is closed here or it stays on the Active list.
+    // Only on that run's evidence: its release for this booking and its write-down
+    // for this note, minted together. Without it the row stays FAILED.
     const alreadyConverged = async (): Promise<ConvergeResult> => {
-      if (input.failedOperationId) {
-        await closeFailedAllocations(tx, { id: input.failedOperationId }, new Date());
+      if (input.failedOperationId && (await convergeEvidenceExists(tx, lockedOwnerId, bookingId, creditNoteId))) {
+        const closedAt = new Date();
+        const closed = await closeFailedAllocations(tx, { id: input.failedOperationId }, closedAt);
+        if (closed.count > 0) {
+          await createAuditLog(
+            {
+              action: "xero.credit_note.spent_outside_app_attempt_closed",
+              subjectMemberId: lockedOwnerId,
+              targetId: bookingId,
+              entityType: "Booking",
+              entityId: bookingId,
+              category: "xero",
+              severity: "info",
+              outcome: "success",
+              summary: "Credit note used outside the app: a concurrent attempt's failed allocation closed",
+              details: CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON,
+              metadata: { creditNoteId, operationId: input.failedOperationId },
+            },
+            tx,
+          );
+        }
       }
       return { converged: false, reason: "already-converged" };
     };

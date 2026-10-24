@@ -674,7 +674,10 @@ export const AUDIT_CENSUS_TOTALS = {
   // RE-MEASURED with `pnpm run audit:census`.
   // 507 -> 508 (#4219): `xero.credit_note.spent_outside_app_converged`, the credit-ledger
   // convergence written with the awaited `createAuditLog` inside its own transaction, under `xero`.
-  writeSites: 508,
+  // 508 -> 509 (#4338): `xero.credit_note.spent_outside_app_attempt_closed`, a concurrent attempt's
+  // failed allocation closed by the converge, awaited in the same transaction, under `xero`.
+  // RE-MEASURED with `pnpm run audit:census`.
+  writeSites: 509,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -881,7 +884,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // awaited on the completion's transaction so the row commits with the correction.
     // 145 -> 147 (#4162): the two voided-note writers.
     // 147 -> 148 (#4219): the credit-note convergence's own row, in its transaction.
-    createAuditLog: { total: 148, uncategorised: 0 },
+    // 148 -> 149 (#4338): its close of a concurrent attempt's failed allocation, in the same transaction.
+    createAuditLog: { total: 149, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1332,7 +1336,10 @@ export const AUDIT_CENSUS_TOTALS = {
     //
     // 39 -> 40 (#4219): `xero.credit_note.spent_outside_app_converged`, beside the other
     // `xero` rows. Nobody's readership changes.
-    xero: 40,
+    //
+    // 40 -> 41 (#4338): `xero.credit_note.spent_outside_app_attempt_closed`, the same
+    // converge's close of a concurrent attempt's failed row. Nobody's readership changes.
+    xero: 41,
     // 12 -> 14 (#2581 child 2): `BULK_COMMUNICATION_SENT` and
     // `EMAIL_SUPPRESSION_CLEARED`. Safe only BECAUSE child 1 moved
     // `communication` out of the support-only system entry into the membership

@@ -517,7 +517,36 @@ let observerClient: import("@prisma/client").PrismaClient;
         [1, true, false],
         [2, true, false],
       ]);
+      // The loser's close is audited once, naming its own row.
+      const closeAudits = await prisma.auditLog.findMany({ where: { action: "xero.credit_note.spent_outside_app_attempt_closed", targetId: BOOKING_ID } });
+      expect(closeAudits.map((audit) => [audit.category, (audit.metadata as { operationId?: string }).operationId])).toEqual([["xero", operations[1].id]]);
     }, LOST_START_TEST_TIMEOUT_MS);
+
+    it("leaves the caller's failed row FAILED when nothing shows a converge ran for this booking and note (#4338)", async () => {
+      await seed();
+      // A slice smaller than the refused amount reads as "already shrunk", but no converge wrote it.
+      await prisma.memberCreditNoteAllocation.create({
+        data: { memberCreditId: SPENT_LOT_ID, xeroCreditNoteId: SPENT_NOTE_ID, appliedToBookingId: BOOKING_ID, amountCents: 1_000 },
+      });
+      const failed = await prisma.xeroSyncOperation.create({
+        data: { direction: "OUTBOUND", entityType: "ALLOCATION", operationType: "CREATE", localModel: "MemberCreditNoteAllocation", localId: "race-4338-no-evidence", status: "FAILED",
+          // Found by booking, so the fixtures sweep removes it.
+          requestPayload: { appliedCreditContext: { bookingId: BOOKING_ID } } },
+      });
+      const { convergeCreditNoteSpentOutsideApp } = await import("@/lib/xero-applied-credit-spent-outside-app");
+
+      const result = await convergeCreditNoteSpentOutsideApp({
+        bookingId: BOOKING_ID, creditNoteId: SPENT_NOTE_ID, requestedCents: CREDIT_CENTS,
+        xeroAllocations: [{ invoiceId: OUTSIDE_INVOICE_ID, cents: CREDIT_CENTS }], xeroPayments: [], noteTotalCents: CREDIT_CENTS, remainingCents: 0,
+        failedOperationId: failed.id,
+      });
+
+      expect(result).toEqual({ converged: false, reason: "already-converged" });
+      const after = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: failed.id } });
+      expect([after.status, after.manuallyResolvedAt, after.replayable]).toEqual(["FAILED", null, true]);
+      expect(await prisma.auditLog.count({ where: { action: "xero.credit_note.spent_outside_app_attempt_closed" } })).toBe(0);
+      expect(await writeDowns()).toHaveLength(0);
+    });
 
     it("keeps main's error when the winner SUCCEEDED before the loser looked: no second row and no second Xero call (#4338)", async () => {
       // A healthy note: the winner's allocation goes through.
