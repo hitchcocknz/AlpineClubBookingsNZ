@@ -472,11 +472,7 @@ async function handlePaymentIntentSucceeded(
   }
 
   if (
-    await queueSupersededPaymentIntentRefundRecovery({
-      paymentIntentId: paymentIntent.id,
-      amountCents: paymentIntent.amount,
-      paymentMethodId: getStripePaymentMethodId(paymentIntent),
-    })
+    await queueSupersededPaymentIntentRefundRecovery(paymentIntent)
   ) {
     logger.warn(
       { bookingId, paymentIntentId: paymentIntent.id },
@@ -631,6 +627,9 @@ async function handlePaymentIntentSucceeded(
     );
     return;
   }
+  // #4300 (`INV-PAY-138`): the settle's own check refused a superseded capture
+  // (an edit overtook the check above); it is the machinery's, already alerted.
+  if (reconciliation.outcome === "superseded_capture") return;
 
   logger.info({ bookingId, paymentIntentId: paymentIntent.id, outcome: reconciliation.outcome }, `PaymentIntent reconciled: ${reconciliation.outcome}`);
 

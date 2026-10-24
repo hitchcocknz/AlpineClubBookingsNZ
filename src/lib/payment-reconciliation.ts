@@ -74,6 +74,8 @@ import {
 } from "@/lib/booking-payment-state";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { SUPERSEDED_INTENT_OPERATION_TYPES } from "@/lib/superseded-intent-ownership";
+import { supersededMachineryOwnsCapture } from "@/lib/superseded-capture-ownership";
+import { reportSupersededCaptureRefused } from "@/lib/superseded-capture-refusal";
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
 import {
   bookingHasCapacityOverride,
@@ -122,7 +124,9 @@ export type MarkBookingPaymentSucceededResult = {
     // its settler, beside another payment holding money (or, #4285, alone and never recorded before) -
     // KEPT, nothing refunded, the admins asked to check by hand. Settled like
     // the two above: no confirmation email, no invoice of its own.
-    | "duplicate_capture_kept";
+    | "duplicate_capture_kept"
+    // #4300 (`INV-PAY-138`): the superseded machinery's; NOT settled, no confirmation or invoice.
+    | "superseded_capture";
   bookingId: string;
   bumpedBookingIds: string[];
   refundError?: string;
@@ -1133,6 +1137,15 @@ async function settleBookingPaymentInTransaction(
       );
     }
 
+    // #4300 (`INV-PAY-138`): nor one the superseded machinery owns (any part owed
+    // back counts). Returned, not thrown, so a webhook is not retried for days.
+    if (
+      settlement.kind === "stripe" &&
+      (await supersededMachineryOwnsCapture(tx, { paymentId: payment.id, paymentIntentId: settlement.paymentIntentId }))
+    ) {
+      return { outcome: "superseded_capture" as const, booking, paymentId: payment.id, bumpedBookingIds: [] as string[] };
+    }
+
     if (!PAYABLE_SUCCESS_STATUSES.has(booking.status)) {
       throw new Error(`Booking is not payable from status ${booking.status}`);
     }
@@ -1820,6 +1833,12 @@ export async function markBookingPaymentSucceeded({
     // Unreachable: the Stripe settlement source never produces it. Narrowing
     // only, so the branches below keep their exact shapes.
     throw new Error("Unexpected manual settlement outcome on the Stripe path");
+  }
+
+  if (reconciliation.outcome === "superseded_capture") {
+    const owner = bookingOwner(reconciliation.booking).member;
+    await reportSupersededCaptureRefused({ booking: reconciliation.booking, memberName: `${owner.firstName} ${owner.lastName}`, paymentIntentId, amountCents, paymentMethodId, format });
+    return { outcome: "superseded_capture", bookingId, bumpedBookingIds: [] };
   }
 
   // #3864: credit given back is reported like an election cleared.

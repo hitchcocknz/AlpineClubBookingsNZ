@@ -172,7 +172,13 @@ vi.mock("@/lib/prisma", () => {
 });
 vi.mock("@/lib/superseded-intent-ownership", () => ({
   listLiveSupersededIntentIds: (...args: unknown[]) => mocks.liveSuperseded(...args),
-  listSupersededIntentIdsOwningCaptures: (...args: unknown[]) => mocks.owningCaptures(...args),
+  // #4300: the guard reads the Xero reading through `superseded-capture-ownership.ts`, over this seam.
+  readSupersededCaptureHolds: async (...args: unknown[]) => ({
+    holdsForMember: new Set<string>(await mocks.owningCaptures(...args)),
+    owedBackAtAll: new Set<string>(),
+    refundInFlight: new Set<string>(),
+    refundStopped: new Set<string>(),
+  }),
   listDuplicateRefundIntentIdsOwningCaptures: (...args: unknown[]) => mocks.duplicateRefundsHolding(...args),
   findLiveSupersededIntentOperation: vi.fn(),
 }));

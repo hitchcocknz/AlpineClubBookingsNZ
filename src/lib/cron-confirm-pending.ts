@@ -1,4 +1,5 @@
 import { bookingWorthCents } from "@/lib/booking-payment-state";
+import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
 import {
   BookingEventType,
   BookingStatus,
@@ -1730,6 +1731,14 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           continue;
         }
 
+        // #4300 (`INV-PAY-138`): superseded, so going back; nothing paid, so the
+        // claim is released (beds and hold back to PENDING) for the next run.
+        if (reconciliation.outcome === "superseded_capture") {
+          await releaseChargeClaim(resolution).catch((err) => logger.error({ err, bookingId: resolution.booking.id }, "Could not release the claim of a refused superseded charge (#4300)"));
+          result.failedBookingIds.push(resolution.booking.id);
+          continue;
+        }
+
         if (settledByAnotherCapture(reconciliation.outcome)) {
           // #1992 — the member's in-flight link intent won the race and had
           // already settled the booking; this saved-card charge was the
@@ -1887,9 +1896,10 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
     } catch (err) {
       if (err instanceof SavedCardChargeRefusedError) {
         // #3267: charging would be wrong — a captured PRIMARY row already
-        // holds this booking's money while the booking is still PENDING, or an
-        // unanswered attempt's key has outlived Stripe's replay window
-        // (`err.why`). The claim transaction rolled back (nothing was claimed,
+        // holds this booking's money while the booking is still PENDING, a
+        // superseded capture's refund has not started or has stopped (#4300;
+        // one not started is handed off just below), or an unanswered attempt's
+        // key has outlived Stripe's replay window (`err.why`). The claim transaction rolled back (nothing was claimed,
         // nothing charged); this is an anomaly a person must resolve, so it is
         // logged at error level on EVERY run — and alerted on the #1993 cadence
         // (windows 1, 2, 3, then every 7th, once each), anchored on when this
@@ -1925,6 +1935,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           "Refused to charge a saved card (#3267)"
         );
         result.failedBookingIds.push(candidate.id);
+        await handOffSupersededCaptureAfterRefusal(err);
         if (alert) {
           sendAdminPaymentFailureAlert({
             memberName: `${bookingOwner(candidate).member.firstName} ${bookingOwner(candidate).member.lastName}`,

@@ -75,11 +75,10 @@ import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { findPaymentTransactionByIntentId, sumRecordedRefundsForCapture } from "@/lib/payment-transactions";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { heldStripeCapturesWhere, readSupersededOwnership } from "@/lib/superseded-capture-ownership";
 import {
-  findLiveSupersededIntentOperation,
   listDuplicateRefundIntentIdsOwningCaptures,
   listLiveSupersededIntentIds,
-  listSupersededIntentIdsOwningCaptures,
 } from "@/lib/superseded-intent-ownership";
 
 /**
@@ -147,7 +146,10 @@ export type ArrivingCaptureVerdict =
  * (`duplicate-capture-kept-alert-drain.ts`, #4285 review) so the two can never
  * disagree about which payment holds money. Read-only.
  *
- * - `holdsForMember`: the Xero conflict's reading
+ * - `ownership`: the payment's superseded-machinery reading, read once in its
+ *   one home (`readSupersededOwnership`, #4300) - the guard's (c′) test of a
+ *   settlement (`owns`).
+ * - `holdsForMember`: its Xero conflict's reading
  *   (`listSupersededIntentIdsOwningCaptures`) - a cancel only while in flight,
  *   a superseded refund until it SUCCEEDED, and (#4227) a capture whose
  *   failed-later refund open rows owe back in full.
@@ -170,17 +172,9 @@ export async function readOtherSettledCaptureWhere(
   tx: Prisma.TransactionClient,
   input: { bookingId: string; paymentId: string; paymentIntentId: string },
 ) {
-  const captures = await tx.paymentTransaction.findMany({
-    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
-    where: {
-      paymentId: input.paymentId,
-      kind: PaymentTransactionKind.PRIMARY,
-      source: PaymentSource.STRIPE,
-      status: { in: [...CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST] },
-    },
-    select: { id: true, stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
-  });
-  const holdsForMember = new Set(await listSupersededIntentIdsOwningCaptures(tx, input.paymentId, captures));
+  // #4300: the Xero reading and (c′) come from the one home, read once.
+  const ownership = await readSupersededOwnership(tx, input.paymentId);
+  const holdsForMember = ownership.holdsForMember;
   const supersededOwned = [...(await listLiveSupersededIntentIds(tx, input.paymentId)), ...holdsForMember];
   const duplicateRefundIntentIds = await listDuplicateCaptureRefundIntentIds({ bookingId: input.bookingId, store: tx });
   const reading = (owned: string[], duplicateOwned: string[]) =>
@@ -190,9 +184,19 @@ export async function readOtherSettledCaptureWhere(
       liveSupersededIntentIds: owned,
       duplicateRefundIntentIds: duplicateOwned,
     });
-  const readTellingWhere = async () =>
-    reading([...holdsForMember], await listDuplicateRefundIntentIdsOwningCaptures(tx, { bookingId: input.bookingId, paymentId: input.paymentId, captures }));
-  return { holdsForMember, supersededOwned, duplicateRefundIntentIds, where: reading(supersededOwned, duplicateRefundIntentIds), readTellingWhere };
+  // Read only when an alert is worded, so the verdict's work under lock(1) stays small.
+  const readTellingWhere = async () => {
+    const captures = await tx.paymentTransaction.findMany({
+      orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
+      where: heldStripeCapturesWhere(input.paymentId),
+      select: { id: true, stripePaymentIntentId: true, amountCents: true, refundedAmountCents: true },
+    });
+    return reading(
+      [...holdsForMember],
+      await listDuplicateRefundIntentIdsOwningCaptures(tx, { bookingId: input.bookingId, paymentId: input.paymentId, captures }),
+    );
+  };
+  return { ownership, holdsForMember, supersededOwned, duplicateRefundIntentIds, where: reading(supersededOwned, duplicateRefundIntentIds), readTellingWhere };
 }
 
 /**
@@ -249,15 +253,16 @@ export async function judgeCaptureOnPaidBooking(
   // Rule 1.
   if (!arriving || arriving.id === input.recordedSettlerId) return { verdict: "keep" };
 
-  const { holdsForMember, duplicateRefundIntentIds, where, readTellingWhere } = await readOtherSettledCaptureWhere(tx, input);
+  const { ownership, holdsForMember, duplicateRefundIntentIds, where, readTellingWhere } = await readOtherSettledCaptureWhere(tx, input);
   const kept = { id: arriving.id, amountCents: arriving.amountCents, paymentIntentId: input.paymentIntentId };
   // #4283: the ARRIVING capture is refunded on top only if nothing is already
   // sending its money back - read the Xero way, so a DEAD cancel (one that
   // handed the money to nobody) leaves it a duplicate like any other. Held:
   // no duplicate refund, no re-send, no alert.
   if (holdsForMember.has(input.paymentIntentId)) return { verdict: "keep" };
-  const supersededOwns = async (paymentIntentId: string) =>
-    holdsForMember.has(paymentIntentId) || !!(await findLiveSupersededIntentOperation(tx, paymentIntentId));
+  // (c′) for a settlement: `holdsForMember`, or a superseded-intent row on its
+  // intent not SUCCEEDED - read in the one home (`readSupersededOwnership`, #4300).
+  const supersededOwns = (paymentIntentId: string) => ownership.owns(paymentIntentId);
 
   const select = { id: true, stripePaymentIntentId: true } as const;
   // Rule 2's settlement: the recorded settler, while it still qualifies.
