@@ -1327,9 +1327,10 @@ the review tasks and is never a line on a main invoice (see below), so the
 timing question does not arise for it and those findings keep their one-click
 repair.
 
-**Booking edits priced by a financial review (#3187).** When an edit's money
-cannot be worked out from the booking's own history, the change is saved and the
-amount is parked for an officer to confirm. The booking's stored totals do not
+**Booking edits priced by a financial review (#3187).** Before #4317, when an
+edit's money could not be worked out from the booking's own history, the change
+was saved and the amount was parked for an officer to confirm; since #4317 every
+edit is priced, and only those older edits remain. The booking's stored totals do not
 move, so the change record itself says "nothing owed" and the tool used to skip
 those bookings entirely. It now reads the settled amount off the completed
 review tasks instead. Two things follow for an operator:
@@ -1703,8 +1704,10 @@ DATABASE_URL=<non-prod copy> pnpm run payments:backfill-orphaned-credits --apply
 local-only rewrite of the per-night split of guest totals that two earlier
 backfills (#1098, #2739) divided evenly across the nights. Those rows reconcile
 to each guest's total but no night among them was ever sold at its own figure,
-so [`INV-MOD-028`](invariants/booking-modifications.md) refuses to read one as a
-night's price and an edit that moves such a night goes to a person.
+so an edit that moved such a night used to go to a person. Since #4317 an edit
+values every night by [`INV-MOD-028`](invariants/booking-modifications.md)
+instead, which keeps a usable row's figure whatever its provenance; the backfill
+still makes those figures the ones the rate table actually sold.
 
 It runs the pricing engine once over each booking's party **as it was sold** —
 every guest's stored rate-type snapshot, age tier and membership, over the
@@ -1767,15 +1770,25 @@ snapshot it reports:
   with every applicable reason — as counts;
 - what the stored night prices are made of (#3531 3c): night rows by
   provenance (`SOLD`, `OFFICER_PRICED`, `EVEN_SPLIT`, `UNKNOWN`, `RATE_DERIVED`)
-  and strands by class — `INV-MOD-028`'s own verdict on the strand at
+  and strands by class — the evidence classifier's verdict on the strand at
   individual-night grain, so `EXACT` or the cause an edit moving one of its
-  nights would park with (`INEXACT_STORED_NIGHT_PRICES`,
+  nights parked with before #4317 (`INEXACT_STORED_NIGHT_PRICES`,
   `STORED_TOTAL_MISMATCH`, `PARTIAL_STORED_NIGHT_PRICES`,
-  `NO_STORED_NIGHT_PRICES`) — overall and per booking-creation month;
+  `NO_STORED_NIGHT_PRICES`) — overall and per booking-creation month. Since
+  #4317 no edit parks, and the class decides nothing an edit does
+  (`INV-MOD-028` values every strand);
 - every `EDIT_FINANCIAL_REVIEW` task by status and by the cause the raise
   recorded, overall and per task-creation month. The two summaries share one
-  cause vocabulary on purpose: strands by cause is what the gate WOULD park;
-  tasks by cause is what it DID park.
+  cause vocabulary on purpose: strands by cause is what the gate would have
+  parked; tasks by cause is what it did park before #4317;
+- `ledgerNightValues` (#4317 review M3): of the bookings an edit can still
+  reach (not cancelled or deleted) that are confirmed on the ledger, how many have a live single-night guest-night line whose figure is
+  not what an edit now values that night at, or a valued night with no live
+  line at all, with up to 100 of their ids. An edit to one of them posts no
+  ledger lines and leaves an `UNPOSTED_EDIT` gap that closes the booking
+  ledger's cut-over gate until wave B's re-base re-posts the lines. **Run it
+  before the auto-pricing release ships** and keep the figure with the release
+  notes, so the gaps that follow are expected rather than found.
 
 The per-month lines are the point: run it before a deploy and again after, and
 the effect of the parking gate's grain (#3531 3a) and the rate-derived backfill

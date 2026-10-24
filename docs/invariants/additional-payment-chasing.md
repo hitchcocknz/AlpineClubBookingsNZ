@@ -1555,9 +1555,11 @@ decision and would need its own owner decision.
 
 ### INV-ADDPAY-040
 
+_Legacy: settles tasks raised before #4317._
+
 - **An unpaid additional-payment request a completed financial review raised
   can always be withdrawn, and withdrawal retires every instrument it minted**
-  (#3528, stage 0 of #3527). One service, `additional-payment-withdraw.ts`, one
+  (#3528). One service, `additional-payment-withdraw.ts`, one
   route (`finance:edit`), one button on the admin booking page. In order: the
   Stripe PaymentIntent is cancelled at the provider FIRST, outside any lock
   (`INV-LOCK-001`; idempotent — an already-cancelled intent makes no call); then,
@@ -1575,7 +1577,7 @@ decision and would need its own owner decision.
   `reconcilePaymentAggregates` derives the additional columns from the latest
   ADDITIONAL row WITHOUT a stamp, so the `payment_intent.canceled` webhook the
   cancel triggers cannot put the ask back. A FAILED row still projects as owed
-  by design (a declined card is retried), which is why FAILED alone cannot mean
+  (a declined card is retried), which is why FAILED alone cannot mean
   withdrawn. `findEditReviewChargeRequest` and the repair pass's
   `planEditReviewChargeInvoicePayment` (`withdrawn` outcome, no finding) read
   past it too, so no fresh invoice is parked on a cancelled intent.
