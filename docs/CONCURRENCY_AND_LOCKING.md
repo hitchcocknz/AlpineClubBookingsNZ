@@ -4387,7 +4387,7 @@ the IB payment mirror must never mix a pre-lock price with post-lock credit (or
 vice versa). Before any switch write, the post-lock payment source is also
 re-read: an already-Internet-Banking payment returns its persisted reference
 and hold fields, without another PRIMARY row, credit consumption, hold reset
-or invoice enqueue. Cancelled/deleted bookings still fail their lifecycle gate.
+or invoice enqueue. For a request that reaches the locked switch path, a concurrent cancellation or deletion wins before the already-IB replay.
 Status alone cannot claim a switch: whole-lodge and ordinary no-hold switches
 leave the booking's status unchanged (#4019).
 The switch and both card mint doors (the pay route and the
