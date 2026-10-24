@@ -1,6 +1,6 @@
 import { CREDIT_NOTE_SPENT_OUTSIDE_APP_CODE } from "@/lib/xero-credit-note-spent-outside-app";
 import { redactSensitiveText } from "@/lib/redact-sensitive-json";
-import { XERO_ORPHANED_STALE_RUNNING_ERROR_CODE } from "@/lib/xero-stale-operations";
+import { XERO_ORPHANED_STALE_RUNNING_ERROR_CODE } from "@/lib/xero-operation-error-codes";
 
 /**
  * #4278: WHY a Xero sync operation failed, in words an officer who does not read
