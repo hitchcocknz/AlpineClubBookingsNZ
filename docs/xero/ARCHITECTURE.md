@@ -1582,7 +1582,11 @@ on `manuallyResolvedAt`.
   writes (`findAppliedCreditDeallocationFence`); a resolved one would hold them
   for good. They are retry-only: the route refuses them, and a mark on one
   written before this release is void on the retry path
-  (`isResolvedInXeroForRetry`), so it can still be retried to convergence.
+  (`isResolvedInXeroForRetry`), so it can still be retried to convergence. The
+  one failure a retry cannot fix, a credit note spent in Xero outside the app
+  (#4218), converges itself for an applied-credit allocation (#4219, below, on its
+  first attempt, or on a retry when it was recorded before that release); no
+  officer mark is involved.
 - **Repair tool.** `getBlockingOperation` returns a discriminated result:
   `retryable`, `blocked` (live, or refused by the retry helper) or `resolved`.
   A resolved row never outranks a newer live failure, and it is never dropped,
@@ -2207,7 +2211,11 @@ The email names the member, booking, invoice (deep-linked, org-stamped at send
 time per #2314) and the exact per-note breakdown, and states plainly that
 nothing was changed — it is a warning, never an auto-correct (the owner asked
 for a warning; auto-correcting would risk masking the very regression the
-checker exists to surface, cf. the #1547 alert-only rule).
+checker exists to surface, cf. the #1547 alert-only rule). The checker stays
+that way. The one narrow exception to "warn, don't correct" lives elsewhere:
+a credit note spent in Xero outside the app converges the ledger from the
+allocation worker (owner decision, 17 Oct 2026; see "A credit note spent
+outside the app" below).
 
 **Safety posture (Critical — Xero + money):**
 
@@ -3314,3 +3322,70 @@ credit-note convergence, is a later release that must not be deployed until this
 one is live and the previous app version has drained, so a previous version never
 meets a marked row it cannot read.
 
+## A credit note spent outside the app (#4218, #4219)
+
+A treasurer can use a member's credit note in Xero directly (an offset, a payment
+made against it, a manual allocation) without the app being told. For this one
+fact, a credit note's remaining balance, **Xero's figure takes precedence over the
+local ledger** (owner decision, 17 Oct 2026); everything else in the credit ledger
+keeps the local ledger as its source of truth.
+
+- **Signal.** The allocation worker asks Xero to allocate the note; Xero refuses it
+  as larger than the note's remaining credit; a read of the note then confirms the
+  refusal (the note shows less than the slice, and this invoice holds no
+  allocation of the app's own that explains it). That is
+  `CREDIT_NOTE_SPENT_OUTSIDE_APP` (owner decision, 19 Oct 2026: Xero's refusal,
+  confirmed by a read, is the trigger, never a read made beforehand, which can lag
+  an edit). A refusal the read cannot confirm is never acted on.
+- **What counts as outside.** Decided from Xero's own list of what was done to the
+  note, in that same read, never inferred from the app's ledger. An allocation to
+  an invoice the app has a record of (a `XeroObjectLink` or a payment's
+  `xeroInvoiceId`) or a payment the app made is the app's own, and the inbound sync
+  mirrors it. Only an allocation to an invoice, and a payment, that the app has no
+  record of is an outside spend. The routine writes down the lesser of the slice
+  and the outside spend not yet written down for the note.
+- **Converge** (`convergeCreditNoteSpentOutsideApp`, called by the worker, which
+  then plans again so the booking's other slices still allocate). In one
+  transaction, global lock then the member's credit-ledger lock, all state
+  re-read under them:
+  - a negative `ADMIN_ADJUSTMENT` row stamped with the note's id writes the lot
+    down, and a positive `BOOKING_APPLIED` row releases the booking's applied
+    credit by the same amount. The member's balance does not move. Both carry
+    `MemberCredit.outsideSpendConvergedAt`: the marker says the row is **not a
+    spendable lot** (a positive row is otherwise the member's own money, and the
+    planner would mint a Xero note for it). `gatherAppliedCreditLots`, the
+    funding-lot finder and the slice-fit check all read through
+    `xero-credit-note-write-down.ts`, which defines the rows;
+  - the booking's slice for that lot shrinks, or is deleted, so every reader that
+    totals a booking's allocations sees only what Xero holds. When nothing is left
+    to allocate the booking's unstamped rows are stamped with the note, as the
+    engine stamps them after allocating, so the release does not net a later
+    application to the booking;
+  - `Payment.creditAppliedCents` is re-derived and the booking-ledger credits
+    synced; the slice's failed allocation rows are closed through the resolution
+    fields (reason `CREDIT_SPENT_OUTSIDE_APP`, no member id) and marked
+    non-replayable; one `xero`-category audit row names the member as its subject,
+    not its actor.
+- **No Xero write, no money moves.** The member owes the released amount on the
+  booking's invoice, which Xero's receivable already shows. The app's own booking
+  page does not show a balance for a booking whose payment succeeded, so until the
+  email lands the treasurer collects it from Xero. An automatic pay-link
+  email to collect it is decided (owner, 17 Oct 2026) and ships as its own change
+  after this one (#4253), settling the booking's existing open invoice.
+- **Fails closed.** A cancelled booking, an owner who changed, no single slice for
+  the note, a slice Xero already holds, a note shared by several lots, or an
+  outside spend larger than the lot: nothing is written and the original failure
+  stands. An unfinished deallocation of the booking's applied credit makes the
+  worker wait (the existing busy path).
+- **The evidence is read once, before the locks.** Xero's list and the note's total
+  and remaining credit must agree (the list accounts for exactly what the note has
+  lost, ignoring entries Xero marks deleted), or nothing is written. If the spend is
+  reversed in the instant between that read and the transaction, credit Xero gave
+  back is written down; it is capped by the booking's slice and is the inbound
+  mirror's to restore.
+- **Idempotent.** The write-down counts in the next calculation, so a repeat finds
+  nothing missing; a concurrent run that lost the race finds the booking already
+  converged, or its slice already shrunk below what was refused, and plans again.
+- **Not yet covered.** A reversed offset (the credit comes back in Xero) does not
+  restore the written-down lot, and a spend that no booking tries to use is not
+  noticed until one does. Both belong to the inbound mirror, the next change.

@@ -4935,6 +4935,26 @@ DB-enforced NULL-distinct unique column, `openStateKey`, present on both the new
   never awaited inside the request path and its failure is logged, so an alert
   outage cannot fail or roll back a member's request.
 
+## A credit note spent outside the app: global, then the member's credit ledger (#4219)
+
+`convergeCreditNoteSpentOutsideApp` releases a booking's applied credit and writes
+the funding lot down. Releasing applied credit changes what the booking owes, so
+it is a settlement-money writer: it takes the global key (`INV-LOCK-002`: global,
+then the member's credit-ledger key) and excludes the cancel, capture and refund
+writers that take the global key as well as the credit writers that take the
+member's. It re-reads the slice, the lot and the write-downs, and checks the
+cancel-settled and deallocation-fence preconditions, under both keys. The Xero
+read that confirmed the signal, and the allocations and payments it listed, happened
+before the transaction, so no provider call is held inside it. That evidence can
+go stale in the milliseconds between: if the treasurer reverses the outside spend
+then, the routine writes down credit Xero has given back. The amount is capped by
+the booking's slice, and the inbound mirror (the next change of #4219) is what
+restores a reversed spend. There is no separate claim row: a repeat finds the
+write-down already counted and writes nothing, and a concurrent run that lost the
+race finds the booking converged or its slice already shrunk below what was refused. Registered in `advisory-lock-guard.test.ts`
+(`convergeCreditNoteSpentOutsideApp#1`); proved against real PostgreSQL by
+`credit-note-spent-outside-app.realdb.test.ts`.
+
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 
 `restoreCreditFromBooking` (`member-credit.ts`) restores a cancelled booking's
@@ -5198,9 +5218,14 @@ Stripe call:
   attempt may re-stamp that itself (`holdAdditionalIntentRecoveryClaim`, the
   worker's own superseded hand-off). The reaper's write takes both fences, each
   its own clause. Every claim therefore counts an attempt: the worker's claim,
-  and the webhook's superseded hand-off
-  (`queueSupersededPaymentIntentRefundRecovery`), which takes the row from
-  outside any attempt and so spends one of its five.
+  and the superseded hand-off a succeeded-intent door makes
+  (`queueSupersededPaymentIntentRefundRecovery`: the webhook, and since #4300
+  `confirm-payment` and the pay step's and `/pay` link's reconcile arms,
+  `INV-PAY-138`), which takes the row from outside any attempt and so spends
+  one of its five. That check takes no advisory lock; the settle reads the
+  same superseded-machinery reading again under `lock(1)` and refuses the
+  capture there (`superseded_capture`), so an edit landing between the two is
+  caught, and the saved-card doors meet the same refusal.
 
 The legacy group settlement replay and the superseded group intent's webhook
 refund carry no plan: each reads Stripe's refunds on the intent before it asks

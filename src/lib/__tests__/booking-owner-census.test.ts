@@ -473,7 +473,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/confirm-draft/route.ts:175",
   "src/app/api/bookings/[id]/confirm-draft/route.ts:96",
   "src/app/api/bookings/[id]/confirm-modification-payment/route.ts:70",
-  "src/app/api/bookings/[id]/confirm-payment/route.ts:86",
+  "src/app/api/bookings/[id]/confirm-payment/route.ts:89",
   "src/app/api/bookings/[id]/exception-requests/route.ts:137",
   "src/app/api/bookings/[id]/guests/route.ts:341",
   "src/app/api/bookings/[id]/modify-quote/route.ts:367",
@@ -482,7 +482,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/app/api/bookings/[id]/refund-request/route.ts:49",
   "src/app/api/bookings/[id]/requested-room/options/route.ts:85",
   "src/app/api/bookings/[id]/send-guest-payment-link/route.ts:67",
-  "src/app/api/payments/create-payment-intent/route.ts:165",
+  "src/app/api/payments/create-payment-intent/route.ts:169",
   "src/app/api/payments/create-setup-intent/route.ts:59",
   "src/app/api/payments/switch-to-internet-banking/route.ts:118",
   "src/lib/adult-member-hosting-review.ts:3256",
@@ -507,6 +507,7 @@ const OWNERSHIP_COMPARISON_SITES: readonly string[] = [
   "src/lib/waitlist-cross-lodge.ts:531",
   "src/lib/waitlist.ts:1091",
   "src/lib/waitlist.ts:949",
+  "src/lib/xero-applied-credit-spent-outside-app.ts:158",
   "src/lib/xero-period-lock-guard.ts:569",
 ];
 
@@ -522,8 +523,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1344",
-  "src/lib/payment-recovery.ts:2558",
-  "src/lib/payment-recovery.ts:2610",
+  "src/lib/payment-recovery.ts:2561",
+  "src/lib/payment-recovery.ts:2613",
   "src/lib/xero-admin-health.ts:394",
 ];
 
@@ -792,7 +793,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `organisation`.
   "src/lib/booking-owner-name.ts:12",
   "src/lib/cron-additional-payment-reminders.ts:440",
-  "src/lib/cron-confirm-pending.ts:210",
+  "src/lib/cron-confirm-pending.ts:211",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
@@ -808,7 +809,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // build. The walk cannot root it only because the literal names no delegate.
   "src/lib/member-lodge-roster.ts:112",
   "src/lib/payment-link.ts:81",
-  "src/lib/payment-reconciliation.ts:100",
+  "src/lib/payment-reconciliation.ts:102",
   "src/lib/stuck-state-dashboard.ts:620",
   "src/lib/xero-booking-repair-types.ts:225",
   "src/lib/xero-inbound/settlement-conflicts.ts:155",

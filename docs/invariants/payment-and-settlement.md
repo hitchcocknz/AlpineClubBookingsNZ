@@ -125,6 +125,41 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - Proven by `issue-1992-duplicate-capture-refund.test.ts` and, on PostgreSQL,
   `third-duplicate-capture.realdb.test.ts`.
 
+## INV-PAY-138
+
+**Related: `INV-PAY-043`** (what the superseded machinery holds) **and #1765**
+(refund history).
+
+- **A card capture on an intent an edit superseded never settles its
+  booking** (#4300). The superseded machinery sends it back or, on a
+  cancelled booking with the club's hold on, holds it for the treasurer.
+- **One reading** (`superseded-capture-ownership.ts`), shared with the
+  duplicate-capture guard; here any capture open rows owe back ANY part of
+  counts too.
+- **The settle refuses it under `lock(1)`**, beside the #1765 refusal:
+  outcome `superseded_capture`, never a throw. Nothing confirmed or invoiced;
+  the capture is handed off and the unmuteable
+  `admin-superseded-capture-refused` alert sent, worded by booking status.
+  The saved-card doors release their claim; the next attempt charges once the
+  refund is in flight and owes back in full, and refuses until then (a dead
+  refund: a person must act); the refusing door hands off every capture
+  whose refund has not started.
+- **The doors ask first** (`queueSupersededPaymentIntentRefundRecovery`, given
+  the intent; a lost claim asks the reading again): the webhook,
+  `confirm-payment` and the `/pay` link (its `paidPaymentIntentId`) also for
+  a captured intent of the booking its pointer moved past, and the reconcile
+  arms. `confirm-payment` answers 409
+  `SUPERSEDED_CARD_PAYMENT_REFUNDING`; the pay step and link mint a repay
+  intent (`_repay_<intent>_<amount>_<currency>`) and return
+  `previousPaymentRefunding`, shown by one notice on both pages.
+- **Never handed out again** (`supersededIntentReuseRefusal`): one
+  `processing` answers `PAYMENT_PROCESSING` in its own words.
+- **Retired** (`isCardIntentRetired`, through the doors' check) once the
+  machinery owns it.
+- Proven on PostgreSQL by `superseded-intent-card-doors.realdb.test.ts`, and
+  by `superseded-capture-ownership.test.ts`, `payment-recovery.test.ts`,
+  `issue-1992-duplicate-capture-refund.test.ts` and the door suites.
+
 ## INV-PAY-102
 
 - **Card first, then bank: a booking is never collected by two instruments

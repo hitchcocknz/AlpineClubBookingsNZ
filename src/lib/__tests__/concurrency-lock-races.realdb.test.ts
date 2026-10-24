@@ -91,6 +91,14 @@ import "./additional-ask-reduction.realdb.test";
 // and left consistent by the cancel, on a fake Xero switched on only inside its
 // own describe. Its describe stays skipped unless the shared race flag is set.
 import "./credit-only-card-allocation.realdb.test";
+// #4219 proves that a credit note spent in Xero outside the app converges the
+// credit ledger from the allocation worker alone (a fully and a partly spent note,
+// two concurrent runs, the written-down lot and the release row never planned as
+// credit, and the fail-closed refusals), on a fake Xero that keeps the outside
+// spend and refuses an over-allocation in Xero's own words. The fake is installed
+// with spies for its own describe only, so it cannot replace the suite above's.
+// Its describe stays skipped unless the shared race flag is set.
+import "./credit-note-spent-outside-app.realdb.test";
 // #2595 reuses the same guarded disposable PostgreSQL to prove that a member
 // merge cannot leave two people sharing a double bed with no confirmed
 // partnership, driving the real `executeMemberMerge` and the real
@@ -496,6 +504,13 @@ import "./xero-partial-repair-claim.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4291-` fixtures.
 import "./xero-voided-note-recount.realdb.test";
+// #4300 reuses it to prove a card intent an edit superseded never settles the
+// booking through any door: the confirm route, the pay step's and the /pay
+// link's reload, and the webhook after the cancel worker handed it off. It
+// drives the session routes through the harness's one `@/lib/auth` double.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4300-` fixtures.
+import "./superseded-intent-card-doors.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

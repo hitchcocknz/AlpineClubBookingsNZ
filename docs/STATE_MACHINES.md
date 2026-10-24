@@ -286,7 +286,21 @@ promote to PAID. A failed or requires-action charge releases the claim back to
 charge is durably recorded as a PRIMARY payment transaction before promotion,
 so if the promotion fails the booking stays CONFIRMED holding its beds, admins
 are alerted, and the Stripe webhook finishes the promotion idempotently —
-captured money is never silently orphaned.
+captured money is never silently orphaned. One captured charge is the
+exception (#4300, `INV-PAY-138`): a charge the settle refuses as
+`superseded_capture` (an edit had replaced the payment it landed on) is going
+back to the card, so the door releases the claim like a failed charge
+(`PENDING`, hold restored, beds reconciled) for the next charge, and admins get
+the `admin-superseded-capture-refused` alert. The cron and
+`charge-saved-method` do the same. The next attempt
+(`beginSavedCardChargeAttempt`) does not count that capture as money already
+taken once its refund is in flight and owes back in full, so it charges as
+usual. Otherwise it refuses, never charging on top: `superseded_capture_returning`
+while only its cancel row names it, `superseded_refund_stopped` once its refund
+will never run again (a person must act, from Refunds owed or Stuck States),
+and `captured_primary_exists` for a capture owed back only in part. Whichever
+refusal wins, the refusing door hands off every capture whose refund has not
+started.
 
 Split-booking guest-portion settlement with no card on file (#1967). A split
 non-member child (#738) is normally auto-charged at its hold deadline to the
@@ -1621,6 +1635,23 @@ at repay settlement (see `docs/DOMAIN_INVARIANTS.md`). The repay path assumes
 no saved card: it always goes through the immediate card-entry PaymentIntent
 flow.
 
+Superseded capture (#4300, `INV-PAY-138`): a capture on an intent an edit
+superseded belongs to the superseded-intent machinery, which refunds it (or
+holds it for the treasurer on a cancelled booking), so it never settles the
+booking. The settle refuses it under `lock(1)` with the outcome
+`superseded_capture`: the transaction row records the capture, the booking
+stays payable, nothing is confirmed or invoiced, and admins get the unmuteable
+`admin-superseded-capture-refused` alert. The webhook and the card doors ask
+the same reading first (`queueSupersededPaymentIntentRefundRecovery`); the pay
+step and the `/pay` link then mint a repay intent under
+`..._repay_<supersededIntentId>_<amount>_<currency>` and say the earlier
+payment is going back (`previousPaymentRefunding`), and `confirm-payment`
+answers 409 `SUPERSEDED_CARD_PAYMENT_REFUNDING`, also for a captured intent of
+the booking its pointer has moved past. Neither reuse arm hands out an intent
+a superseded row still names; one being paid answers `PAYMENT_PROCESSING` in
+its own words. After a card success the `/pay` link asks the server what it
+did and never shows the pay buttons again.
+
 Saved-card provenance (#3269, `INV-PAY-053`). Two writers put a
 `stripePaymentMethodId` on a `Payment` row and only one of them saves a card:
 `markBookingSetupIntentSucceeded` writes it together with `stripeSetupIntentId`
@@ -1683,6 +1714,17 @@ next attempt finds an unresolved (PENDING/PROCESSING) attempt row:
                                   PROCESSING and IS the answer (never charged beside)
 next attempt finds a PRIMARY row still holding captured cash -> REFUSED
   (`SavedCardChargeRefusedError`: claim rolls back, admins alerted, no charge)
+  ... unless the superseded machinery owns it (#4300, `INV-PAY-138`; every row
+  is read first, and real money taken - or a capture owed back only in part -
+  is `captured_primary_exists` whatever else is found):
+    its refund in flight, owing back in full   -> not money taken: charge as usual
+    only its cancel row names it              -> REFUSED (`superseded_capture_returning`)
+    its refund dead (retries spent)            -> REFUSED (`superseded_refund_stopped`,
+                                                  a person acts: Refunds owed / Stuck States)
+  after the rollback, whichever refusal won, the refusing door hands every
+  capture only a cancel row names to its refund
+  (`handOffSupersededCaptureAfterRefusal`), so that capture no longer holds
+  the next attempt back; a real capture or a stopped refund still refuses
 `payment_intent.succeeded` / `.payment_failed` for an intent the ledger does not know
   -> adopt the PENDING no-intent attempt row whose `reference` equals the event's
      `request.idempotency_key`, settle it, then handle as usual (lost-response recovery)
@@ -3622,7 +3664,16 @@ credit-note allocation refused by Xero as more than the note has left (#4218)
   replayable and the named code still counts as refused by Xero
   (xeroRefusedOperation); a retry sends the allocation again and should go
   through once the credit is restored in Xero. Applies to every credit-note
-  allocation, applied credit included
+  allocation; for an applied-credit allocation the next arm then converges and
+  closes the row instead
+applied-credit allocation raises that named failure (#4219) -> the worker
+  converges the credit ledger with Xero (write the lot down, release the
+  booking's applied credit, shrink or delete the unsent slice, close the slice's
+  failed allocation rows through the resolution fields and mark them
+  non-replayable), then plans again; the operation completes SUCCEEDED when
+  nothing is left to allocate. Only credit Xero shows spent on an invoice or
+  payment the app has no record of counts. Fails closed (original failure
+  stands) when it cannot account for the discrepancy
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
   in Xero (before the claim, or the claim lost to the resolve); nothing ran
 outbox copy RUNNING -> CANCELLED when a sibling for the same document was
