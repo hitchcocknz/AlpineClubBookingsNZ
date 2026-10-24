@@ -174,8 +174,13 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         if (args.where?.updatedAt !== undefined) throw new Error("connection lost before the recount wrote");
         return updateMany(args as never);
       }) as never);
+      // #4288: a payment holding the note's own refund-note row is claimed in a
+      // transaction of its own under its row lock; that claim fails the same way.
+      const rowLock = await import("@/lib/payment-row-lock");
+      const lockedClaim = vi.spyOn(rowLock, "withPaymentRowLock").mockRejectedValue(new Error("connection lost before the recount wrote"));
       await expect(inbound(xeroNote(VOIDED_NOTE, "VOIDED", 15_000))).rejects.toThrow("connection lost");
       claim.mockRestore();
+      lockedClaim.mockRestore();
 
       // The mirror is off and the pointer released; Xero no longer records the
       // refund, but the total still does.
