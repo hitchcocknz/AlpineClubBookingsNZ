@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  512
+row-producing sites:  513
 uncategorised:        0
-category values: admin 108, booking 108, xero 41, family 35, payment 63,
+category values: admin 108, booking 108, xero 41, family 35, payment 64,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -836,9 +836,9 @@ lost-record recovery adds `booking.payment.auto_refund_record_recovered`, also
 late-capture handler marked as its own but refunded some other way, named for
 the same people instead of being noted in Xero.
 
-#4253 then added four (`payment` 60 -> 63, `xero` 40 -> 41, 508 -> 512, MEASURED with
+#4253 then added five (`payment` 60 -> 64, `xero` 40 -> 41, 508 -> 513, MEASURED with
 `pnpm run audit:census`): a released-credit card request raised, one closed without
-asking and one closed because Xero shows its invoice paid, filed `payment`, and the
+asking and two closed because Xero shows its invoice paid (one at ask time, one by the sweep), filed `payment`, and the
 recording of its card payment in Xero, filed `xero`.
 
 #4219 then added one more (`xero` 39 -> 40, 507 -> 508, MEASURED with

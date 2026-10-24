@@ -171,6 +171,13 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-001",
   },
   {
+    site: "recordReleasePaidInXeroCash#1",
+    tier: "GLOBAL",
+    reason:
+      "Recording the bank-cash row for a released credit that Xero already shows paid (#4253) changes what the booking's ledger says is owed, so it joins the cancel/capture/refund cohort on the global key, then the Payment row lock, and re-computes the unasked amount under both before writing: a concurrent capture or cancel must not read the ledger between the cash row and the request closing.",
+    invariant: "INV-LOCK-001",
+  },
+  {
     site: "POST /api/admin/hut-leaders#1",
     tier: "GLOBAL",
     reason:
