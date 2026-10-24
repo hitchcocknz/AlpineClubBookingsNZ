@@ -40,6 +40,9 @@ import {
   isEditFinancialReviewAdditionalIntentRecoveryKey,
   stripeIdempotencyKeyForAskAmount,
 } from "@/lib/payment-recovery-keys";
+import {
+  isCreditReleaseAskRecoveryKey,
+} from "@/lib/credit-release-ask-keys";
 import { staleIntentAction } from "@/lib/stale-intent-action";
 
 /** The Stripe metadata `type` every additional ask's intent carries. */
@@ -219,6 +222,8 @@ export function couldRecoveryRowOwnIntent(
   if (row.paymentIntentId === intent.id) return true;
   const bookingModificationId = bookingModificationIdForAdditionalIntentRecoveryKey(row.idempotencyKey);
   if (
+    // #4253: a credit-release request sends a reason of its own (`INV-ADDPAY-045`).
+    isCreditReleaseAskRecoveryKey(row.idempotencyKey) ||
     isEditFinancialReviewAdditionalIntentRecoveryKey(row.idempotencyKey) ||
     (bookingModificationId && row.paymentIntentId === buildReissuedAskStripeIdempotencyKey(bookingModificationId))
   ) {

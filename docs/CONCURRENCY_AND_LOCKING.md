@@ -5046,6 +5046,33 @@ that change a lot's free balance (the allocation engine's plan, a cancel's resto
 an admin adjustment) take the member key, so the mirror's free-credit and balance
 reads under that key are exact.
 
+## A request for released credit: the recovery claim, and one global-key close (#4253)
+
+The card request for credit released by `convergeCreditNoteSpentOutsideApp` is
+raised by the recovery runner (`credit-release-ask.ts`) under the same claim the
+ordinary additional-ask replay holds (`holdAdditionalIntentRecoveryClaim`): the
+Stripe intent is minted first, outside every lock, under a key that names the
+release; the request's row, its audit row and the cancellation rows of the asks
+it supersedes are written in one claimed transaction; the supersede cancels run
+after it. It takes no advisory key of its own. A cancel that commits between the
+runner's ended-booking read and its row write is caught by the second read
+(`INV-ADDPAY-044`), which retires the request.
+
+The Xero payment (`credit-release-xero-payment.ts`) is a sweep that writes no
+local row except the `XeroObjectLink` the existing payment writer creates; it
+holds no lock and reads Xero outside any transaction. A repeat is harmless
+because the Xero idempotency key is stable, and the retry cap bounds the
+operation rows a failing payment can create.
+
+Closing a request Xero shows paid (`credit-release-ask-close.ts`) is a
+settlement-money writer: it cancels the card payment at Stripe first, outside
+any lock, and leaves a succeeded or processing intent alone. It then takes the
+global key and the `Payment` row lock (`INV-LOCK-001`: the global key alone, then the row), fences the
+request row (unpaid, unwithdrawn, carrying nothing) with a status-guarded
+`updateMany`, and writes the bank-cash row in the same transaction; a lost fence writes
+nothing. Registered in `advisory-lock-guard.test.ts`
+(`closeCreditReleaseAsksPaidInXero#1`).
+
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 
 `restoreCreditFromBooking` (`member-credit.ts`) restores a cancelled booking's

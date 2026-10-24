@@ -1451,8 +1451,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // one answered by a person, unpinned `payment` (507 sites minus 128 pinned).
     // 379 -> 380 unpinned (#4219): the credit-note convergence's `xero` row, unpinned.
     // 380 -> 381 unpinned (#4338): its close of a concurrent attempt's failed row, unpinned `xero`.
-    // 381 -> 383 unpinned (#4270): the credit-note mirror's two `xero` rows, unpinned.
-    ).toEqual({ pinned: 128, unpinned: 383 });
+    // 381 -> 386 unpinned (#4253): the released-credit request's five rows, all unpinned.
+    // 386 -> 388 unpinned (#4270): the credit-note mirror's two `xero` rows, unpinned.
+    ).toEqual({ pinned: 128, unpinned: 388 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

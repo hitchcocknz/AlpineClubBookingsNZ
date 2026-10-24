@@ -1124,6 +1124,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX: "booking_modification_refund",
     CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX: "capacity_claim_failed_refund",
     CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX: "card_refund_failed_later",
+    CREDIT_RELEASE_ASK_RECOVERY_PREFIX: "credit_release_ask",
     DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX: "duplicate_capture_refund",
     EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX:
       "edit_financial_review_additional_intent",

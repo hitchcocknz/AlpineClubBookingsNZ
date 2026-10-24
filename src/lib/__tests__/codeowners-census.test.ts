@@ -89,8 +89,11 @@ const OWNER = "@thatskiff33";
  * the shared outside-spend comparator (`xero-credit-note-mirror*.ts`,
  * `xero-credit-note-outside-spend.ts`): 270 of 1457, 18.53%, so the ceiling
  * moves to 18.6%.
+ * And 25 Oct 2026 (#4270, merged onto #4253's new money modules,
+ * which the ceiling above had no room for): the same four mirror modules
+ * measured on the composed tree, 277 of 1480, 18.72%, so the ceiling moves to 18.8%.
  */
-const MAX_OWNED_SRC_LIB_SHARE = 0.186;
+const MAX_OWNED_SRC_LIB_SHARE = 0.188;
 
 /**
  * Outside `src/lib`, a share of one directory bounds nothing, so every pattern

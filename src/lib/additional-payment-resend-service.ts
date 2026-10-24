@@ -104,7 +104,7 @@ export async function resendAdditionalPaymentEmail(params: {
           createdAt: true,
           transactions: {
             where: { kind: "ADDITIONAL" },
-            select: { createdAt: true },
+            select: { createdAt: true, reason: true },
             orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
             take: 1,
           },
@@ -324,6 +324,7 @@ export async function resendAdditionalPaymentEmail(params: {
       checkOut: booking.checkOut,
       requestedOn: episodeStartedAt,
       lodgeId: booking.lodgeId,
+      askReason: payment.transactions[0]?.reason ?? null,
     }, format);
   } catch (err) {
     await restoreStamps("transport_error");
