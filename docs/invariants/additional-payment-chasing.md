@@ -1692,9 +1692,11 @@ decision and would need its own owner decision.
 - **An edit's after-commit mint never leaves a live ask on a booking that has
   ended** (#4316, the cancelled-booking case of `INV-ADDPAY-023`). The edit
   doors decide to ask the card under `lock(1)`, but
-  `createModificationAdditionalPaymentIntent` mints after their commit, and
-  the paid cancel's claim retires only the intent it reads on the `Payment`
-  mirror. Two re-reads of the booking close the gap, against
+  `createModificationAdditionalPaymentIntent` mints after their commit - as
+  does the recovery runner's replay of a failed mint
+  (`processCreateAdditionalPaymentIntentOperation`) - and the paid cancel's
+  claim retires only the intent it reads on the `Payment` mirror. Both minters
+  re-read the booking twice, against
   `ADDITIONAL_ASK_RETIRED_BOOKING_STATUSES` (CANCELLED, BUMPED):
   - **Before the provider call:** an ended booking is asked nothing and owes
     nothing - no intent, no row, no recovery.
@@ -1707,7 +1709,8 @@ decision and would need its own owner decision.
     that took it after reads the new intent and retires it itself.
 - **The door is told the ask is retired, with no intent id.** No secret is
   offered and no figure named as due; the Xero leg raises no supplementary
-  invoice; a review charge takes its cancelled path (`INV-PAY-112`).
+  invoice; a review charge takes its cancelled path (`INV-PAY-112`). The
+  runner closes its recovery row and queues no invoice.
 - **No new advisory key.** A failed retirement is logged with the intent, and
   still offers no secret.
   Home: `ended-booking-ask-guard.ts`. Pinned by `ended-booking-ask-mint-guard`

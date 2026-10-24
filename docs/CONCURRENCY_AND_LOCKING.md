@@ -3176,6 +3176,12 @@ booking whose payment reads captured (a credit-paid $0 one included), which the
 paid path claims. Proven,
 cancel before the mint, between the provider call and the row write, and queued
 on the `Payment` row in both orders, by `ended-booking-ask-mint-race.realdb.test.ts`.
+The recovery runner's replay of a failed mint
+(`processCreateAdditionalPaymentIntentOperation`) runs the same two guards: its
+row write is inside its claim hold (`holdAdditionalIntentRecoveryClaim`), which
+takes the `Payment` row before either write since #4217, so the same ordering
+holds; it re-reads after that transaction commits, retires through the same
+routine, and closes its recovery row. Proven by the same suite's runner cases.
 
 **#4042 adds the organiser's hand-back to the same claim, and no key.** An
 Internet Banking settlement's per-child claim, after its `lock(1)` and the

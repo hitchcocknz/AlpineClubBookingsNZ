@@ -710,7 +710,8 @@ member/admin starts edit -> quoted delta -> local booking mutation
 positive delta -> additional payment or supplementary Xero invoice
   (minted after the edit's commit; a booking CANCELLED or BUMPED by then is
   asked nothing, and an ask a cancel landing mid-mint could not see is retired
-  FAILED by the minter, #4316, INV-ADDPAY-044)
+  FAILED by the minter - the door's or the recovery runner's - #4316,
+  INV-ADDPAY-044)
 uncollected additional payment -> reminder at +3 days, reminder 2 days before
   check-in, admin re-send on demand; stops at check-out (never auto-cancelled)
 uncollected review-raised request -> WITHDRAWN by a finance officer (#3528)

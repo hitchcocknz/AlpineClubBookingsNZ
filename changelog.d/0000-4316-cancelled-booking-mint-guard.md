@@ -9,5 +9,6 @@
   asked and again straight afterwards. A booking that has been cancelled is
   asked for nothing, and a request that slipped through in the moment between
   is withdrawn and cancelled with Stripe, the same way a cancellation withdraws
-  one. The change email no longer names the extra as due on a cancelled
+  one. The automatic retry of a card request that failed the first time follows
+  the same rule. The change email no longer names the extra as due on a cancelled
   booking. Nothing changes for bookings that stay live.
