@@ -506,6 +506,13 @@ import "./xero-voided-note-recount.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4300-` fixtures.
 import "./superseded-intent-card-doors.realdb.test";
+// #4320 reuses it to prove a manual mark-paid's reversal withdraws the
+// cancellations the mark-paid queued, one Stripe's outage left FAILED and
+// retrying included, so the member's capture of the intent it made payable
+// again settles the booking; and leaves an edit's earlier cancellation to do
+// its job. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
+// own `race-4320-` fixtures.
+import "./manual-reversal-retrying-cancel.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

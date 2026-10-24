@@ -790,6 +790,54 @@ describe("#2262 — Stripe intent hygiene", () => {
     expect(mocks.cancelPaymentIntentIfCancellable).toHaveBeenCalledWith("pi_live");
   });
 
+  it("#4320 — records which of its cancellations another writer had already queued, so the reversal leaves those", async () => {
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { id: "txn-live", kind: "PRIMARY", stripePaymentIntentId: "pi_live", amountCents: 10000 },
+      { id: "txn-edit", kind: "PRIMARY", stripePaymentIntentId: "pi_edit", amountCents: 9000 },
+    ]);
+    // An edit queued pi_edit's cancellation before this settle.
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([{ paymentIntentId: "pi_edit" }]);
+
+    await settle();
+
+    expect(mocks.paymentRecoveryOperationFindMany).toHaveBeenCalledWith({
+      where: {
+        idempotencyKey: {
+          in: ["payment_recovery_cancel_txn-live_pi_live", "payment_recovery_cancel_txn-edit_pi_edit"],
+        },
+      },
+      select: { paymentIntentId: true },
+    });
+    // Read before either upsert, or the settle's own row would read as adopted.
+    expect(mocks.paymentRecoveryOperationFindMany.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.enqueuePaymentIntentCancellationRecovery.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.enqueuePaymentIntentCancellationRecovery).toHaveBeenCalledTimes(2);
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking-payment.manual-payment.mark-paid",
+        metadata: expect.objectContaining({
+          cancelledPaymentIntentIds: ["pi_live", "pi_edit"],
+          adoptedCancelPaymentIntentIds: ["pi_edit"],
+        }),
+      }),
+      tx,
+    );
+  });
+
+  it("#4320 — a settle with no live intent reads nothing and records that it adopted nothing", async () => {
+    await settle();
+
+    expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+    expect(mocks.createAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "booking-payment.manual-payment.mark-paid",
+        metadata: expect.objectContaining({ cancelledPaymentIntentIds: [], adoptedCancelPaymentIntentIds: [] }),
+      }),
+      tx,
+    );
+  });
+
   it("only considers non-terminal intents", async () => {
     await settle();
 
@@ -859,6 +907,33 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     });
   }
 
+  /** The liveness predicate the reversal reads and deletes behind (#4320): every status but SUCCEEDED. */
+  const LIVE_SUPERSEDED_WHERE = {
+    type: {
+      in: [
+        PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+        PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
+      ],
+    },
+    status: { not: PaymentRecoveryOperationStatus.SUCCEEDED },
+  };
+
+  /** A cancel row the settle queued for its live intent, as the reversal reads it. */
+  function liveCancelOperation(overrides: Record<string, unknown> = {}) {
+    return {
+      id: "op-cancel",
+      type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+      status: PaymentRecoveryOperationStatus.PENDING,
+      paymentIntentId: "pi_live",
+      paymentTransactionId: "txn-live",
+      amountCents: 10000,
+      idempotencyKey: "payment_recovery_cancel_txn-live_pi_live",
+      attempts: 0,
+      createdAt: new Date("2026-07-20T00:00:00Z"),
+      ...overrides,
+    };
+  }
+
   it("#4211 — clears the recorded settler with the provenance, behind the same fence", async () => {
     primeReversal();
     await reverse();
@@ -875,6 +950,8 @@ describe("#2262 — the reversal (direction unpaid)", () => {
   // cancellation rows it upserts) - and before the booking and ledger writes.
   it("MUTATION (#4217): locks the Payment row after the lodge key and before the recovery rows, the booking or the payment are read or written", async () => {
     primeReversal();
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([liveCancelOperation()]);
+    mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 1 });
     await reverse();
 
     expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(expect.anything(), "payment-1");
@@ -924,21 +1001,9 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     );
   });
 
-  it("HIGH #1 — DELETES every pending CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT operation inside its own transaction, behind the status fence", async () => {
+  it("HIGH #1 — DELETES every live CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT operation inside its own transaction, each behind the liveness fence", async () => {
     primeReversal();
-    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
-      {
-        id: "op-cancel",
-        type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-        status: PaymentRecoveryOperationStatus.PENDING,
-        paymentIntentId: "pi_live",
-        paymentTransactionId: "txn-live",
-        amountCents: 10000,
-        idempotencyKey: "payment_recovery_cancel_txn-live_pi_live",
-        attempts: 0,
-        createdAt: new Date("2026-07-20T00:00:00Z"),
-      },
-    ]);
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([liveCancelOperation()]);
     mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 1 });
 
     const result = await reverse();
@@ -949,22 +1014,12 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     // FAILED "closed" row would still hand a post-reversal capture to the
     // superseded-refund machinery and poison the duplicate-guard notIn
     // exclusion forever. Only deletion makes every predicate coherent.
+    expect(mocks.paymentRecoveryOperationFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { paymentId: "payment-1", ...LIVE_SUPERSEDED_WHERE } }),
+    );
+    expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledTimes(1);
     expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledWith({
-      where: {
-        paymentId: "payment-1",
-        type: {
-          in: [
-            PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-            PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT,
-          ],
-        },
-        status: {
-          in: [
-            PaymentRecoveryOperationStatus.PENDING,
-            PaymentRecoveryOperationStatus.PROCESSING,
-          ],
-        },
-      },
+      where: { id: "op-cancel", ...LIVE_SUPERSEDED_WHERE },
     });
     expect(mocks.paymentRecoveryOperationUpdateMany).not.toHaveBeenCalled();
     expect(result.closedRecoveryOperationIds).toEqual(["op-cancel"]);
@@ -985,6 +1040,110 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       }),
       tx
     );
+  });
+
+  describe("#4320 — which recovery rows the reversal withdraws", () => {
+    function settleAudit(metadata: Record<string, unknown>) {
+      mocks.auditLogFindFirst.mockResolvedValue({ metadata });
+    }
+
+    function readScope() {
+      return (mocks.paymentRecoveryOperationFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where;
+    }
+
+    for (const [label, row] of [
+      ["FAILED and still retrying", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 1, nextRetryAt: new Date("2026-07-20T00:05:00Z") }],
+      ["FAILED and exhausted at the ceiling", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null }],
+    ] as const) {
+      it(`withdraws the settle's own cancel ${label}: the read and the delete both reach every status but SUCCEEDED`, async () => {
+        primeReversal();
+        settleAudit({ cancelledPaymentIntentIds: ["pi_live"], adoptedCancelPaymentIntentIds: [] });
+        mocks.paymentRecoveryOperationFindMany.mockResolvedValue([liveCancelOperation(row)]);
+        mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 1 });
+
+        const result = await reverse();
+
+        expect(readScope()).toMatchObject({ status: { not: PaymentRecoveryOperationStatus.SUCCEEDED } });
+        expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledWith({ where: { id: "op-cancel", ...LIVE_SUPERSEDED_WHERE } });
+        expect(result.closedRecoveryOperationIds).toEqual(["op-cancel"]);
+        expect(mocks.createAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              closedRecoveryOperations: [expect.objectContaining({ id: "op-cancel", status: PaymentRecoveryOperationStatus.FAILED, attempts: row.attempts })],
+            }),
+          }),
+          tx,
+        );
+      });
+    }
+
+    it("reads only the intents the settle itself condemned: its cancelled list less the ones it adopted from another writer", async () => {
+      primeReversal();
+      settleAudit({ cancelledPaymentIntentIds: ["pi_settle", "pi_edit"], adoptedCancelPaymentIntentIds: ["pi_edit"] });
+
+      await reverse();
+
+      expect(readScope()).toEqual({ paymentId: "payment-1", ...LIVE_SUPERSEDED_WHERE, paymentIntentId: { in: ["pi_settle"] } });
+    });
+
+    it("a settle that adopted every cancellation it queued withdraws nothing", async () => {
+      primeReversal();
+      settleAudit({ cancelledPaymentIntentIds: ["pi_edit"], adoptedCancelPaymentIntentIds: ["pi_edit"] });
+
+      const result = await reverse();
+
+      expect(readScope()).toMatchObject({ paymentIntentId: { in: [] } });
+      expect(mocks.paymentRecoveryOperationDeleteMany).not.toHaveBeenCalled();
+      expect(result.closedRecoveryOperationIds).toEqual([]);
+    });
+
+    it("a settle row written before #4320 (no adopted list) adopts nothing: every intent it cancelled", async () => {
+      primeReversal();
+      settleAudit({ cancelledPaymentIntentIds: ["pi_a", "pi_b"] });
+
+      await reverse();
+
+      expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_a", "pi_b"] } });
+    });
+
+    for (const [label, audit] of [
+      ["no settle row at all", null],
+      ["a settle row with no cancelled list", { metadata: { clearedCreditElectionCents: null } }],
+      ["a settle row whose cancelled list is not a list of ids", { metadata: { cancelledPaymentIntentIds: [42] } }],
+    ] as const) {
+      it(`${label}: the pre-#4320 scope, every live row on the payment`, async () => {
+        primeReversal();
+        mocks.auditLogFindFirst.mockResolvedValue(audit);
+
+        await reverse();
+
+        expect(readScope()).toEqual({ paymentId: "payment-1", ...LIVE_SUPERSEDED_WHERE });
+      });
+    }
+
+    it("a row a worker finished between the read and the delete is left alone and not reported closed", async () => {
+      primeReversal();
+      settleAudit({ cancelledPaymentIntentIds: ["pi_live", "pi_done"], adoptedCancelPaymentIntentIds: [] });
+      mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
+        liveCancelOperation(),
+        liveCancelOperation({ id: "op-done", paymentIntentId: "pi_done", idempotencyKey: "payment_recovery_cancel_txn-done_pi_done" }),
+      ]);
+      mocks.paymentRecoveryOperationDeleteMany.mockImplementation(async ({ where }: { where: { id: string } }) => ({ count: where.id === "op-done" ? 0 : 1 }));
+
+      const result = await reverse();
+
+      expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledTimes(2);
+      expect(result.closedRecoveryOperationIds).toEqual(["op-cancel"]);
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          metadata: expect.objectContaining({
+            closedRecoveryOperationIds: ["op-cancel"],
+            closedRecoveryOperations: [expect.objectContaining({ id: "op-cancel" })],
+          }),
+        }),
+        tx,
+      );
+    });
   });
 
   it("M3 — a member-owed superseded-refund operation SURVIVES: its settled transaction 409s the reversal before the disarm is reached", async () => {
