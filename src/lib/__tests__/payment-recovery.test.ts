@@ -3556,7 +3556,14 @@ describe("payment recovery worker", () => {
       );
       mockCancelPaymentIntentIfCancellableWithResult.mockResolvedValue({ paymentIntent: { id: "pi_recovered", status: "canceled" }, canceled: true });
 
-      const result = await processPaymentRecoveryOperations({ limit: 1 });
+      let result: Awaited<ReturnType<typeof processPaymentRecoveryOperations>>;
+      try {
+        result = await processPaymentRecoveryOperations({ limit: 1 });
+      } finally {
+        // Nothing this case queued may reach the next one (an unread status would).
+        mockBookingFindUnique.mockReset();
+        mockPaymentRecoveryFindUnique.mockReset();
+      }
 
       expect(result.succeeded).toBe(1);
       expect(mockUpsertPaymentIntentTransaction).toHaveBeenCalledWith(expect.objectContaining({ paymentIntentId: "pi_recovered" }));
@@ -3568,6 +3575,7 @@ describe("payment recovery worker", () => {
       );
       // ...run now, and the intent is dead at Stripe.
       expect(mockCancelPaymentIntentIfCancellableWithResult).toHaveBeenCalledWith("pi_recovered");
+      mockCancelPaymentIntentIfCancellableWithResult.mockReset();
       // Nothing is owed on an ended booking: no invoice waits on the dead intent.
       expect(mockAttachRecoveredIntent).not.toHaveBeenCalled();
       expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
