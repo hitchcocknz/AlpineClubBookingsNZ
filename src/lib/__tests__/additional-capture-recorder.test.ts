@@ -170,7 +170,14 @@ describe("readCaptureRecorder (B, C)", () => {
     const repairLink = { id: "link_repair", xeroObjectId: "inv_repair", active: true };
     found.naming = repairInvoice;
     store.xeroObjectLink.findFirst.mockResolvedValueOnce(repairLink);
-    const { localModel: _model, localId: _id, ...operation } = repairInvoice;
+    // The operation the target carries: the row as read, without its anchor.
+    const operation = {
+      id: repairInvoice.id,
+      status: repairInvoice.status,
+      requestPayload: repairInvoice.requestPayload,
+      responsePayload: repairInvoice.responsePayload,
+      manuallyResolvedAt: repairInvoice.manuallyResolvedAt,
+    };
     await expect(read()).resolves.toEqual({
       kind: "receipt",
       figures,
