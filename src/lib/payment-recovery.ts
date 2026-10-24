@@ -2130,18 +2130,16 @@ async function processBookingModificationRefundOperation(
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
   // #4312 (`INV-ADDPAY-044`): a bank transfer's approval left each refund's note to it - every refund made, on any outcome.
   const notes = { paymentId: operation.paymentId, operationId: operation.id, notesEachRefund: refundRequestRecoveryNotesEachRefund(operation), plan };
-  const refundId = await replayNotingEachRefund(notes, (made) => refundPlanOrRetryRefusals({ operation, plan, format, refund: async (allocation) => {
-    const result = await refundPaymentTransactions({
+  const refundId = await replayNotingEachRefund(notes, (send) => refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) =>
+    send(() => refundPaymentTransactions({
       format,
       paymentId: operation.paymentId,
       amountCents: allocation.reduce((sum, slice) => sum + slice.amountCents, 0),
       allocation,
       metadata,
       idempotencyKeyPrefix,
-    });
-    made(result.refunds);
-    return result;
-  } }));
+    })),
+  }));
 
   // #2008 — the #1992 duplicate-capture auto-refund replays through this generic
   // modification-refund executor (its durable operation is a

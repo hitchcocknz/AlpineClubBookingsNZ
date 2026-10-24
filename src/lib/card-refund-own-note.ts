@@ -116,32 +116,43 @@ export async function queueRefundRequestCardNotes(params: {
 
 /**
  * #4312 review: THE RECOVERY REPLAY OF A REFUND REQUEST'S CARD PART, NOTING
- * EVERY REFUND IT MADE - whatever the replay's own outcome. `run` sends the
- * slices still to send and hands back each answer through `made`; the refunds
- * marked made on the row's plan count too. When the approval left the notes
- * to the refunds (`notesEachRefund`), each made refund is asked for once the
- * replay ends - succeeded, a slice refused (the replay then throws to retry it
- * on its next key), or a slice that threw after earlier ones were made
- * (`PartialRefundError`, whose made refunds are read off it the way the
- * replay reads them, `answersBeforeFailure`). So a refund made
- * on an attempt that fails is noted on that attempt, never left waiting on a
- * retry that may never come. The money has moved, so a note that cannot be
+ * EVERY REFUND IT MADE - whatever the replay's own outcome. `run` makes each
+ * Stripe call through `send`, which records the refunds that call made the
+ * moment it returns or throws - before any work the replay does after it - and
+ * the refunds marked made on the row's plan count too. When the approval left
+ * the notes to the refunds (`notesEachRefund`), each made refund is asked for
+ * once the replay ends - succeeded, a slice refused (the replay then throws to
+ * retry it on its next key), or a slice that threw after earlier ones were
+ * made (`PartialRefundError`, whose made refunds are read off it the way the
+ * replay reads them, `answersBeforeFailure`). Read at the call, not off what
+ * the replay finally throws: re-planning the row or alerting after a partial
+ * failure can throw an error of its own, which carries no answers. So a refund
+ * made on an attempt that fails is noted on that attempt, never left waiting on
+ * a retry that may never come. The money has moved, so a note that cannot be
  * queued is logged, never a reason to fail the row; `run`'s error is rethrown.
  */
 export async function replayNotingEachRefund<T>(
   input: { paymentId: string; operationId: string; notesEachRefund: boolean; plan: ReadonlyArray<{ madeRefundId?: string }> },
-  run: (made: (refunds: ReadonlyArray<{ refundId: string; status?: string | null }>) => void) => Promise<T>,
+  run: (send: SendNotingRefunds) => Promise<T>,
   queue: typeof queueCardRefundOwnNotes = queueCardRefundOwnNotes,
 ): Promise<T> {
   const ids = input.plan.flatMap((slice) => (slice.madeRefundId ? [slice.madeRefundId] : []));
-  const made = (refunds: ReadonlyArray<{ refundId: string; status?: string | null }>) => {
+  const made = (refunds: ReadonlyArray<MadeRefund>) => {
     ids.push(...refunds.filter((refund) => !isRefusedRefundStatus(refund.status)).map((refund) => refund.refundId));
   };
+  const send: SendNotingRefunds = async (call) => {
+    let result;
+    try {
+      result = await call();
+    } catch (err) {
+      made(answersBeforeFailure(err)); // the slices answered before a later one threw (`PartialRefundError`), as the replay reads them
+      throw err;
+    }
+    made(result.refunds);
+    return result;
+  };
   try {
-    return await run(made);
-  } catch (err) {
-    made(answersBeforeFailure(err)); // the slices answered before a later one threw (`PartialRefundError`), as the replay reads them
-    throw err;
+    return await run(send);
   } finally {
     if (input.notesEachRefund && ids.length > 0) {
       await queue({ paymentId: input.paymentId, stripeRefundIds: ids }).catch((err: unknown) =>
@@ -150,6 +161,10 @@ export async function replayNotingEachRefund<T>(
     }
   }
 }
+
+type MadeRefund = { refundId: string; status?: string | null };
+/** One Stripe call of the replay, its refunds recorded as it returns or throws. */
+type SendNotingRefunds = <R extends { refunds: ReadonlyArray<MadeRefund> }>(call: () => Promise<R>) => Promise<R>;
 
 /**
  * The `charge.refunded` webhook's note for what its sync newly recorded. On a
