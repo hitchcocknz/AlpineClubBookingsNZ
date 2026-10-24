@@ -401,7 +401,16 @@ async function removeGuest(guestId: string) {
       clubTimeKernel = await import("@/lib/club-time");
       nightAdjustments = await import("@/lib/night-adjustment-write");
       reconciliationStore = await import("@/lib/booking-money-reconciliation-store");
-      authModule = await import("@/lib/auth");
+      // The quote route reads the session through `@/lib/auth`, spied on per
+      // call. Under the harness that module is the election suite's mock; run
+      // alone, the real one cannot load under Vitest (next-auth's `next/server`),
+      // so a mock of the same shape stands in before the route is first imported.
+      try {
+        authModule = await import("@/lib/auth");
+      } catch {
+        vi.doMock("@/lib/auth", () => ({ auth: async () => null }));
+        authModule = await import("@/lib/auth");
+      }
       quoteRoute = await import("@/app/api/bookings/[id]/modify-quote/route");
       const xeroQueue = await import("@/lib/xero-booking-edit-settlement");
       const queue = xeroQueue.queueXeroBookingEditSettlement;
