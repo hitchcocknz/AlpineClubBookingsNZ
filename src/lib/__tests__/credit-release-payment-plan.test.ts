@@ -35,7 +35,7 @@ describe("planCreditReleasePayments", () => {
   });
 
   it("records nothing for a request that has not been paid", () => {
-    expect(planCreditReleasePayments([row({ amountCents: 4000 })])).toEqual({ items: [], unexplainedRowIds: [] });
+    expect(planCreditReleasePayments([row({ amountCents: 4000 })])).toEqual({ items: [], unexplainedRowIds: [], unexplainedCaptureIntentIds: [] });
   });
 
   it("records nothing for a withdrawn or fully refunded request", () => {
@@ -44,14 +44,18 @@ describe("planCreditReleasePayments", () => {
     expect(planCreditReleasePayments([withdrawn, refunded]).items).toEqual([]);
   });
 
-  it("keeps a partly refunded capture: the club still holds the money", () => {
+  it("does not guess at a partly refunded capture: it is held for an officer", () => {
     const captured = row({ amountCents: 4000, status: PaymentStatus.PARTIALLY_REFUNDED });
-    expect(planCreditReleasePayments([captured]).items).toHaveLength(1);
+    expect(planCreditReleasePayments([captured])).toEqual({
+      items: [],
+      unexplainedRowIds: [captured.id],
+      unexplainedCaptureIntentIds: [captured.stripePaymentIntentId],
+    });
   });
 
   it("leaves a plain edit request to its own supplementary invoice", () => {
     const edit = row({ amountCents: 4000, status: PaymentStatus.SUCCEEDED, reason: null });
-    expect(planCreditReleasePayments([edit])).toEqual({ items: [], unexplainedRowIds: [] });
+    expect(planCreditReleasePayments([edit])).toEqual({ items: [], unexplainedRowIds: [], unexplainedCaptureIntentIds: [] });
   });
 
   it("an edit after the release absorbs it: only the released part is recorded against the booking invoice", () => {
@@ -89,6 +93,7 @@ describe("planCreditReleasePayments", () => {
     const plan = planCreditReleasePayments([release, edit]);
     expect(plan.items).toEqual([]);
     expect(plan.unexplainedRowIds).toEqual([release.id]);
+    expect(plan.unexplainedCaptureIntentIds).toEqual([edit.stripePaymentIntentId]);
   });
 
   it("never reads bank cash as a card payment", () => {

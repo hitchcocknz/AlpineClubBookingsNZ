@@ -1,6 +1,6 @@
 import "server-only";
 
-import { PaymentTransactionKind } from "@prisma/client";
+import { PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 
 import { claimAlertCooldown } from "@/lib/alert-cooldown";
 import { createAuditLog } from "@/lib/audit";
@@ -54,6 +54,15 @@ export const CREDIT_RELEASE_PAYMENT_LOCAL_MODEL = "PaymentTransaction";
 export const CREDIT_RELEASE_PAYMENT_RETRY_AFTER_MS = 60 * 60 * 1000;
 export const CREDIT_RELEASE_PAYMENT_MAX_ATTEMPTS = 5;
 const ALERT_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** Requests older than this are no longer live work for the sweep; an officer was told long before. */
+export const CREDIT_RELEASE_PAYMENT_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000;
+const CREDIT_RELEASE_PAYMENT_CANDIDATES = 500;
+/**
+ * An attempt that never finished (the process died after Xero may have taken the payment) is
+ * replayed under the same Xero key for this long, then held for an officer: past it, Xero's own
+ * replay protection is not relied on.
+ */
+export const CREDIT_RELEASE_PAYMENT_IN_DOUBT_MS = 12 * 60 * 60 * 1000;
 
 export function creditReleasePaymentIdempotencyKey(askRowId: string, invoiceId: string): string {
   return buildXeroIdempotencyKey("payment-transaction", askRowId, "credit-release-payment", invoiceId, "v1");
@@ -99,25 +108,50 @@ export async function recordCreditReleasePayments(
   const now = options.now ?? new Date();
   const result: CreditReleasePaymentRunResult = { recorded: 0, held: 0, failed: 0, waiting: 0 };
 
-  const asks = await prisma.paymentTransaction.findMany({
-    where: { kind: PaymentTransactionKind.ADDITIONAL, reason: CREDIT_RELEASE_ASK_REASON, withdrawnAt: null },
-    select: { id: true, paymentId: true },
+  // Payments with a credit-release request AND a captured card payment, recent enough to be live
+  // work: a booking whose request nobody paid, or one recorded long ago, never fills the slice.
+  const candidates = await prisma.payment.findMany({
+    where: {
+      AND: [
+        {
+          transactions: {
+            some: {
+              kind: PaymentTransactionKind.ADDITIONAL,
+              reason: CREDIT_RELEASE_ASK_REASON,
+              withdrawnAt: null,
+              createdAt: { gt: new Date(now.getTime() - CREDIT_RELEASE_PAYMENT_LOOKBACK_MS) },
+            },
+          },
+        },
+        {
+          transactions: {
+            some: {
+              kind: PaymentTransactionKind.ADDITIONAL,
+              source: PaymentSource.STRIPE,
+              status: { in: [PaymentStatus.SUCCEEDED, PaymentStatus.PARTIALLY_REFUNDED] },
+            },
+          },
+        },
+      ],
+    },
+    select: { id: true, transactions: { where: { reason: CREDIT_RELEASE_ASK_REASON }, select: { id: true } } },
     orderBy: { createdAt: "asc" },
+    take: CREDIT_RELEASE_PAYMENT_CANDIDATES,
   });
   const recordedLinks = await prisma.xeroObjectLink.findMany({
     where: {
       localModel: CREDIT_RELEASE_PAYMENT_LOCAL_MODEL,
-      localId: { in: asks.map((ask) => ask.id) },
+      localId: { in: candidates.flatMap((candidate) => candidate.transactions.map((row) => row.id)) },
       role: CREDIT_RELEASE_PAYMENT_ROLE,
       active: true,
     },
     select: { localId: true },
   });
   const done = new Set(recordedLinks.map((link) => link.localId));
-  const paymentIds = [...new Set(asks.filter((ask) => !done.has(ask.id)).map((ask) => ask.paymentId))].slice(
-    0,
-    options.limit ?? 25,
-  );
+  const paymentIds = candidates
+    .filter((candidate) => candidate.transactions.some((row) => !done.has(row.id)))
+    .map((candidate) => candidate.id)
+    .slice(0, options.limit ?? 25);
 
   for (const paymentId of paymentIds) {
     const payment = await prisma.payment.findUnique({
@@ -192,14 +226,41 @@ async function recordOne({
   const last = attempts[0];
   if (last && now.getTime() - last.createdAt.getTime() < CREDIT_RELEASE_PAYMENT_RETRY_AFTER_MS) return "waiting";
 
-  let dueCents: number | null;
-  try {
-    dueCents = openBalanceCents(await deps.readInvoiceBalance(invoiceId));
-  } catch (err) {
-    logger.warn({ err, askRowId: item.askRowId }, "Could not read the booking's Xero invoice to record a credit-release payment; will retry");
-    return "waiting";
+  // An attempt that may have reached Xero: the balance below may already be net of it, so it must
+  // not be read as "paid twice". Replayed under the same key (Xero returns the original payment),
+  // or held for an officer once too old to trust that.
+  const inDoubt = await prisma.xeroSyncOperation.findFirst({
+    where: {
+      entityType: "PAYMENT",
+      operationType: "CREATE",
+      localModel: CREDIT_RELEASE_PAYMENT_LOCAL_MODEL,
+      localId: item.askRowId,
+      status: { in: ["PENDING", "RUNNING"] },
+    },
+    orderBy: { createdAt: "asc" },
+    select: { createdAt: true },
+  });
+  const replayInDoubt = inDoubt !== null && now.getTime() - inDoubt.createdAt.getTime() < CREDIT_RELEASE_PAYMENT_IN_DOUBT_MS;
+  if (inDoubt && !replayInDoubt) {
+    await alertOnce(
+      `credit-release-payment-in-doubt:${item.askRowId}`,
+      payment.bookingId,
+      "A card payment for credit used in Xero may or may not be recorded",
+      "An attempt to record the member's card payment for credit that was used in Xero did not finish, and is too old to retry safely. Please check the booking's invoice in Xero: record the payment by hand if it is missing.",
+    );
+    return "held";
   }
-  if (dueCents === null || dueCents < item.ownCents) {
+
+  let dueCents: number | null = null;
+  if (!replayInDoubt) {
+    try {
+      dueCents = openBalanceCents(await deps.readInvoiceBalance(invoiceId));
+    } catch (err) {
+      logger.warn({ err, askRowId: item.askRowId }, "Could not read the booking's Xero invoice to record a credit-release payment; will retry");
+      return "waiting";
+    }
+  }
+  if (!replayInDoubt && (dueCents === null || dueCents < item.ownCents)) {
     await alertOnce(
       `credit-release-payment-overpaid:${item.askRowId}`,
       payment.bookingId,

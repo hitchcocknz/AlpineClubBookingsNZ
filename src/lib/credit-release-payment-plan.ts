@@ -48,8 +48,13 @@ export type CreditReleasePaymentItem = {
 
 export type CreditReleasePaymentPlan = {
   items: CreditReleasePaymentItem[];
-  /** Credit-release rows a capture followed whose carrying cannot be traced. */
+  /**
+   * Credit-release rows a capture followed whose carrying cannot be traced, and
+   * rows a PARTIALLY refunded capture holds (what the club kept is not guessed).
+   */
   unexplainedRowIds: string[];
+  /** The captures those rows belong to: no other Xero writer records them either. */
+  unexplainedCaptureIntentIds: string[];
 };
 
 /** Captured and not given back in full: money the club holds. */
@@ -60,6 +65,7 @@ export function isHeldCapture(status: PaymentStatus): boolean {
 export function planCreditReleasePayments(rows: readonly AskLedgerRow[]): CreditReleasePaymentPlan {
   const items: CreditReleasePaymentItem[] = [];
   const unexplainedRowIds: string[] = [];
+  const unexplainedCaptureIntentIds = new Set<string>();
   let chain: AskLedgerRow[] = [];
 
   for (const row of rows) {
@@ -83,8 +89,12 @@ export function planCreditReleasePayments(rows: readonly AskLedgerRow[]): Credit
         const before = offset === 0 ? ask : rest[offset - 1]!;
         return later.carriedAskCents >= before.amountCents;
       });
-      if (!carriedThrough) unexplainedRowIds.push(ask.id);
-      else {
+      // A capture partly given back holds an amount nobody has worked out for this money:
+      // fail closed, as for a chain that cannot be traced.
+      if (!carriedThrough || row.status !== PaymentStatus.SUCCEEDED) {
+        unexplainedRowIds.push(ask.id);
+        unexplainedCaptureIntentIds.add(row.stripePaymentIntentId as string);
+      } else {
         items.push({
           askRowId: ask.id,
           ownCents,
@@ -94,5 +104,5 @@ export function planCreditReleasePayments(rows: readonly AskLedgerRow[]): Credit
       }
     });
   }
-  return { items, unexplainedRowIds };
+  return { items, unexplainedRowIds, unexplainedCaptureIntentIds: [...unexplainedCaptureIntentIds] };
 }

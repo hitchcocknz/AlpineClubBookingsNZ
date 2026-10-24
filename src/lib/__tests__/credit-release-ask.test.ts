@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   cancelSuperseded: vi.fn(),
   alertOfficers: vi.fn(),
   retireOutstanding: vi.fn(),
+  lockPayment: vi.fn(),
+  paidCash: vi.fn(),
   retireAfterWrite: vi.fn(),
 }));
 
@@ -28,7 +30,11 @@ vi.mock("@/lib/reissued-ask-mint", () => ({
   mintedIntentCustomerId: vi.fn().mockReturnValue("cus_1"),
 }));
 vi.mock("@/lib/ordinary-ask-mint", () => ({ refuseAdoptedIntentOnLedger: mocks.refuseAdopted }));
-vi.mock("@/lib/payment-transactions", () => ({ upsertPaymentIntentTransaction: mocks.upsert }));
+vi.mock("@/lib/payment-transactions", () => ({
+  upsertPaymentIntentTransaction: mocks.upsert,
+  lockPaymentForRefundedTotal: mocks.lockPayment,
+}));
+vi.mock("@/lib/credit-release-ask-close", () => ({ recordReleasePaidInXeroCash: mocks.paidCash }));
 vi.mock("@/lib/booking-payment-cleanup", () => ({
   queueSupersededAdditionalIntentCancellationRows: mocks.queueSuperseded,
   cancelSupersededAdditionalIntentsNow: mocks.cancelSuperseded,
@@ -99,7 +105,7 @@ function payment(over: Record<string, unknown> = {}, booking: Record<string, unk
 const open = { invoiceId: "inv-1", status: "AUTHORISED", amountDueCents: 4000, invoiceNumber: "INV-1" };
 const paid = { invoiceId: "inv-1", status: "PAID", amountDueCents: 0, invoiceNumber: "INV-1" };
 
-const store = { paymentRecoveryOperation: { update: vi.fn() } };
+const store = { paymentRecoveryOperation: { update: vi.fn() }, payment: { findUnique: vi.fn() } };
 const runnerDeps = () => ({
   holdClaim: vi.fn(async (_op: unknown, write: (s: unknown) => Promise<unknown>) => ({ value: await write(store), heldAt: new Date() })),
   complete: vi.fn().mockResolvedValue(undefined),
@@ -112,6 +118,9 @@ beforeEach(() => {
   mocks.createIntent.mockResolvedValue({ id: "pi_new" });
   mocks.queueSuperseded.mockResolvedValue([]);
   mocks.retireAfterWrite.mockResolvedValue(false);
+  mocks.paidCash.mockResolvedValue(0);
+  // Under the lock the payment is as it was read, unless a test moves it.
+  store.payment.findUnique.mockImplementation(async () => mocks.prisma.payment.findUnique.mock.results.at(-1)?.value);
 });
 
 async function run(over: { deps?: ReturnType<typeof runnerDeps>; balance?: unknown } = {}) {
@@ -195,8 +204,10 @@ describe("processCreditReleaseAskOperation", () => {
       expect(mocks.createIntent).not.toHaveBeenCalled();
     });
 
-    it("an invoice Xero already shows paid", async () => {
+    it("an invoice Xero already shows paid, writing the money into the ledger as paid", async () => {
+      mocks.paidCash.mockResolvedValue(4000);
       const { deps } = await run({ balance: paid });
+      expect(mocks.paidCash).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay-1", releasedCents: 4000 }));
       closedFor("invoice-settled-in-xero");
       expect(deps.complete).toHaveBeenCalled();
       expect(mocks.createIntent).not.toHaveBeenCalled();
@@ -249,6 +260,20 @@ describe("processCreditReleaseAskOperation", () => {
     mocks.prisma.payment.findUnique.mockResolvedValue(payment({}, { status: BookingStatus.CANCELLED }));
     await run();
     expect(mocks.retireOutstanding).toHaveBeenCalledWith(expect.objectContaining({ bookingId: "bk-1", paymentId: "pay-1" }));
+  });
+
+  it.each([
+    ["a capture landed", { amountCents: 38_500 }],
+    ["a live ask appeared", { additionalAmountCents: 2500, additionalPaymentStatus: "PENDING" }],
+    ["the live ask changed", { additionalPaymentIntentId: "pi_other" }],
+  ])("throws, to retry re-sized, when %s between the read and the write", async (_name, moved) => {
+    const read = payment();
+    mocks.prisma.payment.findUnique.mockResolvedValue(read);
+    store.payment.findUnique.mockResolvedValue({ ...read, ...moved });
+    const deps = runnerDeps();
+    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, deps, vi.fn().mockResolvedValue(open))).rejects.toThrow(/changed while/);
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(deps.complete).not.toHaveBeenCalled();
   });
 
   it("writes nothing and leaves the row open when it loses its claim", async () => {

@@ -5,12 +5,13 @@ const mocks = vi.hoisted(() => {
   const tx = {
     $executeRaw: vi.fn(),
     paymentTransaction: { updateMany: vi.fn() },
+    payment: { findUnique: vi.fn() },
   };
   return {
     tx,
     prisma: {
-      paymentTransaction: { findMany: vi.fn() },
-      payment: { findUnique: vi.fn() },
+      paymentTransaction: { findFirst: vi.fn() },
+      payment: { findMany: vi.fn() },
       $transaction: vi.fn(),
     },
     audit: vi.fn(),
@@ -44,6 +45,13 @@ import {
 const NOW = new Date("2026-07-01T00:00:00.000Z");
 const ask = { id: "ask-1", paymentId: "pay-1", amountCents: 4000, stripePaymentIntentId: "pi_1" };
 
+const payment = {
+  id: "pay-1",
+  xeroInvoiceId: "inv-1",
+  additionalPaymentIntentId: "pi_1",
+  booking: { id: "bk-1", memberId: "m-1", member: { id: "m-1", firstName: "A", lastName: "B", email: "a@example.test" } },
+};
+
 const paid = { invoiceId: "inv-1", status: "PAID", amountDueCents: 0, invoiceNumber: "INV-1" };
 const open = { invoiceId: "inv-1", status: "AUTHORISED", amountDueCents: 4000, invoiceNumber: "INV-1" };
 
@@ -56,27 +64,38 @@ function deps(balance = paid, cancel: unknown = { canceled: true, paymentIntent:
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.prisma.paymentTransaction.findMany.mockResolvedValue([ask]);
-  mocks.prisma.payment.findUnique.mockResolvedValue({
-    xeroInvoiceId: "inv-1",
+  mocks.prisma.payment.findMany.mockResolvedValue([payment]);
+  mocks.prisma.paymentTransaction.findFirst.mockResolvedValue(ask);
+  mocks.tx.payment.findUnique.mockResolvedValue({
     additionalPaymentIntentId: "pi_1",
-    booking: { id: "bk-1", memberId: "m-1", member: { id: "m-1", firstName: "A", lastName: "B", email: "a@example.test" } },
+    additionalPaymentStatus: PaymentStatus.PENDING,
+    booking: { status: "CONFIRMED", deletedAt: null },
   });
   mocks.prisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mocks.tx));
   mocks.tx.paymentTransaction.updateMany.mockResolvedValue({ count: 1 });
 });
 
 describe("closeCreditReleaseAsksPaidInXero", () => {
-  it("only looks at unpaid, unwithdrawn credit-release requests that carry nothing", async () => {
+  it("only looks at uncollected asks on bookings that can still be paid, holding an unpaid credit-release request that carries nothing", async () => {
     await closeCreditReleaseAsksPaidInXero({ deps: deps(), now: NOW });
-    const where = mocks.prisma.paymentTransaction.findMany.mock.calls[0]![0].where;
+    const where = mocks.prisma.payment.findMany.mock.calls[0]![0].where;
     expect(where).toMatchObject({
+      additionalAmountCents: { gt: 0 },
+      additionalPaymentStatus: { not: PaymentStatus.SUCCEEDED },
+      booking: { deletedAt: null },
+    });
+    expect(where.booking.status.in).not.toContain("CANCELLED");
+    expect(where.booking.status.in).not.toContain("BUMPED");
+    expect(where.transactions.some).toMatchObject({
       kind: PaymentTransactionKind.ADDITIONAL,
       reason: CREDIT_RELEASE_ASK_REASON,
       withdrawnAt: null,
       carriedAskCents: 0,
     });
-    expect(where.status.in).not.toContain(PaymentStatus.SUCCEEDED);
+    // The row closed is the one the payment's summary points at, and only an unpaid one.
+    const rowWhere = mocks.prisma.paymentTransaction.findFirst.mock.calls[0]![0].where;
+    expect(rowWhere.stripePaymentIntentId).toBe("pi_1");
+    expect(rowWhere.status.in).not.toContain(PaymentStatus.SUCCEEDED);
   });
 
   it("cancels the card payment, retires the request and books the money as bank cash", async () => {
@@ -117,12 +136,8 @@ describe("closeCreditReleaseAsksPaidInXero", () => {
     expect(mocks.prisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it("leaves a request that is no longer the payment's live one", async () => {
-    mocks.prisma.payment.findUnique.mockResolvedValue({
-      xeroInvoiceId: "inv-1",
-      additionalPaymentIntentId: "pi_other",
-      booking: { id: "bk-1" },
-    });
+  it("leaves a payment whose live ask is not a credit-release request", async () => {
+    mocks.prisma.paymentTransaction.findFirst.mockResolvedValue(null);
     const d = deps();
     expect(await closeCreditReleaseAsksPaidInXero({ deps: d, now: NOW })).toEqual({ closed: 0, left: 1 });
     expect(d.cancelIntent).not.toHaveBeenCalled();
@@ -137,6 +152,27 @@ describe("closeCreditReleaseAsksPaidInXero", () => {
 
   it("writes no cash when the fence is lost to another writer", async () => {
     mocks.tx.paymentTransaction.updateMany.mockResolvedValue({ count: 0 });
+    expect(await closeCreditReleaseAsksPaidInXero({ deps: deps(), now: NOW })).toEqual({ closed: 0, left: 1 });
+    expect(mocks.recordBank).not.toHaveBeenCalled();
+    expect(mocks.audit).not.toHaveBeenCalled();
+  });
+
+  it("writes no cash when the request stopped being the live ask while the card payment was cancelled", async () => {
+    mocks.tx.payment.findUnique.mockResolvedValue({
+      additionalPaymentIntentId: "pi_newer",
+      additionalPaymentStatus: PaymentStatus.PENDING,
+      booking: { status: "CONFIRMED", deletedAt: null },
+    });
+    expect(await closeCreditReleaseAsksPaidInXero({ deps: deps(), now: NOW })).toEqual({ closed: 0, left: 1 });
+    expect(mocks.recordBank).not.toHaveBeenCalled();
+  });
+
+  it.each(["CANCELLED", "BUMPED"])("writes no cash on a booking that was %s meanwhile", async (status) => {
+    mocks.tx.payment.findUnique.mockResolvedValue({
+      additionalPaymentIntentId: "pi_1",
+      additionalPaymentStatus: PaymentStatus.FAILED,
+      booking: { status, deletedAt: null },
+    });
     expect(await closeCreditReleaseAsksPaidInXero({ deps: deps(), now: NOW })).toEqual({ closed: 0, left: 1 });
     expect(mocks.recordBank).not.toHaveBeenCalled();
     expect(mocks.audit).not.toHaveBeenCalled();

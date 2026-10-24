@@ -44,23 +44,28 @@ export const CREDIT_RELEASE_SETTLE_WINDOW_MS = 2 * 60 * 1000;
  * so no migration), read live, so it takes effect on the next pass with no deploy and
  * no restart, and setting `enabled` to anything but `true` turns it off again. Only
  * the enqueue is switched: a request already raised is always carried to its end.
+ *
+ * THE ROW'S CREATION TIME IS THE FLOOR. Only releases written after the row was created are
+ * looked at: the backlog of earlier ones is release 2's owner-decided run (#4253, D4), with the
+ * live re-check and its own wording, and turning the switch on must not start it. Turning the
+ * switch off and on again keeps the floor; delete the row to move it.
  */
 const SWITCH_KEY = { resourceType: "CREDIT_RELEASE_ASK", scope: "WRITER" } as const;
 
-export async function creditReleaseAskWritesEnabled(
+export async function creditReleaseAskWriterSince(
   db: Pick<typeof prisma, "xeroSyncCursor"> = prisma,
-): Promise<boolean> {
+): Promise<Date | null> {
   const row = await db.xeroSyncCursor.findUnique({
     where: { resourceType_scope: SWITCH_KEY },
-    select: { metadata: true },
+    select: { metadata: true, createdAt: true },
   });
   const metadata = row?.metadata;
-  return (
+  const enabled =
     metadata !== null &&
     typeof metadata === "object" &&
     !Array.isArray(metadata) &&
-    (metadata as Record<string, unknown>).enabled === true
-  );
+    (metadata as Record<string, unknown>).enabled === true;
+  return enabled && row ? row.createdAt : null;
 }
 
 export type CreditReleaseSweepResult = {
@@ -70,7 +75,7 @@ export type CreditReleaseSweepResult = {
 };
 
 export async function enqueueCreditReleaseAsks(
-  options: { limit?: number; now?: Date } = {},
+  options: { limit?: number; now?: Date; since: Date },
 ): Promise<number> {
   const now = options.now ?? new Date();
   const releases = await prisma.memberCredit.findMany({
@@ -79,7 +84,7 @@ export async function enqueueCreditReleaseAsks(
       outsideSpendConvergedAt: { not: null },
       amountCents: { gt: 0 },
       appliedToBookingId: { not: null },
-      createdAt: { lt: new Date(now.getTime() - CREDIT_RELEASE_SETTLE_WINDOW_MS) },
+      createdAt: { gte: options.since, lt: new Date(now.getTime() - CREDIT_RELEASE_SETTLE_WINDOW_MS) },
     },
     orderBy: { createdAt: "asc" },
     select: { id: true, amountCents: true, appliedToBookingId: true },
@@ -130,7 +135,10 @@ export async function runCreditReleaseAskSweep(): Promise<CreditReleaseSweepResu
     }
   };
   result.enqueued =
-    (await step("enqueue", async () => ((await creditReleaseAskWritesEnabled()) ? enqueueCreditReleaseAsks() : 0))) ?? 0;
+    (await step("enqueue", async () => {
+      const since = await creditReleaseAskWriterSince();
+      return since ? enqueueCreditReleaseAsks({ since }) : 0;
+    })) ?? 0;
   result.payments = await step("record", () => recordCreditReleasePayments());
   result.closes = await step("close", () => closeCreditReleaseAsksPaidInXero());
   if (failures.length > 0) {

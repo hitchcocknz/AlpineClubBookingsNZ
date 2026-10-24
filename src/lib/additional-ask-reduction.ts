@@ -77,6 +77,7 @@ import {
   isCapturedTransactionStatus,
 } from "@/lib/payment-transaction-status";
 import {
+  CREDIT_RELEASE_ASK_REASON,
   CREDIT_RELEASE_ASK_RECOVERY_PREFIX,
 } from "@/lib/credit-release-ask-keys";
 import { lockPaymentForRefundedTotal, reconcilePaymentAggregates } from "@/lib/payment-transactions";
@@ -372,6 +373,10 @@ async function unpaidChain(
     modifications.some((modification) => isEditReviewChargeRequestRow(row, modification.id)),
   );
   if (reviewRaised) return null;
+  // #4253: a credit-release request is not an edit's price ask either. Netting a reduction
+  // against it would retire it and re-issue a smaller one under the reissue reason, which the
+  // Xero payment sweep (`credit-release-xero-payment.ts`) does not recognise.
+  if (chain.some((row) => row.reason === CREDIT_RELEASE_ASK_REASON)) return null;
   return {
     askCents: live.amountCents,
     rows: chain.map((row) => ({

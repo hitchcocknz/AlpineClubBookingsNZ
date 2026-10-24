@@ -3,10 +3,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   prisma: {
-    paymentTransaction: { findMany: vi.fn() },
     xeroObjectLink: { findMany: vi.fn() },
-    payment: { findUnique: vi.fn() },
-    xeroSyncOperation: { findMany: vi.fn() },
+    payment: { findUnique: vi.fn(), findMany: vi.fn() },
+    xeroSyncOperation: { findMany: vi.fn(), findFirst: vi.fn() },
   },
   claimAlertCooldown: vi.fn(),
   sendAlert: vi.fn(),
@@ -27,6 +26,8 @@ vi.mock("@/lib/xero-invoice-balance", async () => {
 });
 
 import {
+  CREDIT_RELEASE_PAYMENT_IN_DOUBT_MS,
+  CREDIT_RELEASE_PAYMENT_LOOKBACK_MS,
   CREDIT_RELEASE_PAYMENT_MAX_ATTEMPTS,
   CREDIT_RELEASE_PAYMENT_RETRY_AFTER_MS,
   CREDIT_RELEASE_PAYMENT_ROLE,
@@ -70,7 +71,8 @@ function deps(over: { due?: number | null; status?: string } = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.prisma.paymentTransaction.findMany.mockResolvedValue([{ id: "ask-1", paymentId: "pay-1" }]);
+  mocks.prisma.payment.findMany.mockResolvedValue([{ id: "pay-1", transactions: [{ id: "ask-1" }] }]);
+  mocks.prisma.xeroSyncOperation.findFirst.mockResolvedValue(null);
   mocks.prisma.xeroObjectLink.findMany.mockResolvedValue([]);
   mocks.prisma.payment.findUnique.mockResolvedValue({ bookingId: "bk-12345678", xeroInvoiceId: "inv-1", transactions: [releaseRow] });
   mocks.prisma.xeroSyncOperation.findMany.mockResolvedValue([]);
@@ -145,12 +147,49 @@ describe("recordCreditReleasePayments", () => {
         { ...releaseRow, id: "ask-1", reason: null, carriedAskCents: 100, amountCents: 5000 },
       ],
     });
-    mocks.prisma.paymentTransaction.findMany.mockResolvedValue([{ id: "ask-0", paymentId: "pay-1" }]);
+    mocks.prisma.payment.findMany.mockResolvedValue([{ id: "pay-1", transactions: [{ id: "ask-0" }, { id: "ask-1" }] }]);
     const d = deps();
     const result = await recordCreditReleasePayments({ deps: d, now: NOW });
     expect(result.held).toBe(1);
     expect(d.createPayment).not.toHaveBeenCalled();
     expect(mocks.sendAlert).toHaveBeenCalledTimes(1);
+  });
+
+  it("selects payments by a recent credit-release request AND a captured card payment, so unpaid requests never fill the slice", async () => {
+    await recordCreditReleasePayments({ deps: deps(), now: NOW });
+    const where = mocks.prisma.payment.findMany.mock.calls[0]![0].where;
+    const [release, captured] = where.AND;
+    expect(release.transactions.some).toMatchObject({ reason: CREDIT_RELEASE_ASK_REASON, withdrawnAt: null });
+    expect(release.transactions.some.createdAt.gt).toEqual(new Date(NOW.getTime() - CREDIT_RELEASE_PAYMENT_LOOKBACK_MS));
+    expect(captured.transactions.some.status.in).toEqual([PaymentStatus.SUCCEEDED, PaymentStatus.PARTIALLY_REFUNDED]);
+  });
+
+  it("skips a payment whose requests are all recorded already", async () => {
+    mocks.prisma.xeroObjectLink.findMany.mockResolvedValue([{ localId: "ask-1" }]);
+    await recordCreditReleasePayments({ deps: deps(), now: NOW });
+    expect(mocks.prisma.payment.findUnique).not.toHaveBeenCalled();
+  });
+
+  describe("an attempt that never finished", () => {
+    const startedAgo = (ms: number) => ({ createdAt: new Date(NOW.getTime() - ms) });
+
+    it("is replayed under the same key without reading the balance, which may already be net of it", async () => {
+      mocks.prisma.xeroSyncOperation.findFirst.mockResolvedValue(startedAgo(60 * 60 * 1000));
+      const d = deps({ due: 0, status: "PAID" });
+      expect((await recordCreditReleasePayments({ deps: d, now: NOW })).recorded).toBe(1);
+      expect(d.readInvoiceBalance).not.toHaveBeenCalled();
+      expect(d.createPayment).toHaveBeenCalledWith(
+        expect.objectContaining({ idempotencyKey: creditReleasePaymentIdempotencyKey("ask-1", "inv-1") }),
+      );
+    });
+
+    it("is held for an officer once too old to trust Xero's replay protection", async () => {
+      mocks.prisma.xeroSyncOperation.findFirst.mockResolvedValue(startedAgo(CREDIT_RELEASE_PAYMENT_IN_DOUBT_MS + 1000));
+      const d = deps();
+      expect((await recordCreditReleasePayments({ deps: d, now: NOW })).held).toBe(1);
+      expect(d.createPayment).not.toHaveBeenCalled();
+      expect(mocks.sendAlert).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("retries", () => {

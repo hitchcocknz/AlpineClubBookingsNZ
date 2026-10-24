@@ -2,6 +2,9 @@ import "server-only";
 
 import { PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 
+import { bookingLedgerResidualCents } from "@/lib/additional-payment-ask";
+import { ADDITIONAL_PAYABLE_BOOKING_STATUSES, isAdditionalPaymentDoorOpenForBooking } from "@/lib/additional-payment-chase";
+
 import { createAuditLog } from "@/lib/audit";
 import { bookingOwner } from "@/lib/booking-owner";
 import logger from "@/lib/logger";
@@ -40,6 +43,8 @@ import { isSettledInXero, readXeroInvoiceBalance, type XeroInvoiceBalanceReader 
  * (`carriedAskCents` > 0) is part something else's money, which a paid invoice says
  * nothing about, so it stays open for a person.
  */
+const UNPAID_STATUSES = [PaymentStatus.PENDING, PaymentStatus.PROCESSING, PaymentStatus.FAILED];
+
 export const CREDIT_RELEASE_PAID_IN_XERO_REASON = "credit_released_paid_in_xero";
 
 export type CreditReleaseCloseResult = { closed: number; left: number };
@@ -58,31 +63,54 @@ export async function closeCreditReleaseAsksPaidInXero(
     ...options.deps,
   };
   const result: CreditReleaseCloseResult = { closed: 0, left: 0 };
-  const open = await prisma.paymentTransaction.findMany({
+  // Payments that have an uncollected ask on a booking that can still be paid, with a
+  // credit-release request among their rows. Selected by PAYMENT, so a settled or superseded
+  // request on another booking never takes a slot; the live request is then found by the intent
+  // the payment points at.
+  const payments = await prisma.payment.findMany({
     where: {
-      kind: PaymentTransactionKind.ADDITIONAL,
-      source: PaymentSource.STRIPE,
-      reason: CREDIT_RELEASE_ASK_REASON,
-      withdrawnAt: null,
-      carriedAskCents: 0,
-      status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING, PaymentStatus.FAILED] },
+      xeroInvoiceId: { not: null },
+      additionalPaymentIntentId: { not: null },
+      additionalAmountCents: { gt: 0 },
+      additionalPaymentStatus: { not: PaymentStatus.SUCCEEDED },
+      booking: { deletedAt: null, status: { in: [...ADDITIONAL_PAYABLE_BOOKING_STATUSES] } },
+      transactions: {
+        some: {
+          kind: PaymentTransactionKind.ADDITIONAL,
+          source: PaymentSource.STRIPE,
+          reason: CREDIT_RELEASE_ASK_REASON,
+          withdrawnAt: null,
+          carriedAskCents: 0,
+          status: { in: UNPAID_STATUSES },
+        },
+      },
     },
-    orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
-    take: options.limit ?? 25,
-    select: { id: true, paymentId: true, amountCents: true, stripePaymentIntentId: true },
+    orderBy: { updatedAt: "asc" },
+    take: options.limit ?? 100,
+    select: {
+      id: true,
+      xeroInvoiceId: true,
+      additionalPaymentIntentId: true,
+      booking: { select: { id: true, memberId: true, member: true, organisation: { select: { name: true, email: true } } } },
+    },
   });
 
-  for (const ask of open) {
-    const payment = await prisma.payment.findUnique({
-      where: { id: ask.paymentId },
-      select: {
-        xeroInvoiceId: true,
-        additionalPaymentIntentId: true,
-        booking: { select: { id: true, memberId: true, member: true, organisation: { select: { name: true, email: true } } } },
+  for (const payment of payments) {
+    const ask = await prisma.paymentTransaction.findFirst({
+      where: {
+        paymentId: payment.id,
+        stripePaymentIntentId: payment.additionalPaymentIntentId,
+        kind: PaymentTransactionKind.ADDITIONAL,
+        source: PaymentSource.STRIPE,
+        reason: CREDIT_RELEASE_ASK_REASON,
+        withdrawnAt: null,
+        carriedAskCents: 0,
+        status: { in: UNPAID_STATUSES },
       },
+      select: { id: true, paymentId: true, amountCents: true, stripePaymentIntentId: true },
     });
     // Only the LIVE request (the one the payment's summary points at) is closed.
-    if (!payment?.xeroInvoiceId || payment.additionalPaymentIntentId !== ask.stripePaymentIntentId) {
+    if (!ask || !payment.xeroInvoiceId) {
       result.left += 1;
       continue;
     }
@@ -118,13 +146,32 @@ export async function closeCreditReleaseAsksPaidInXero(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         await lockPaymentForRefundedTotal(tx, ask.paymentId);
-        // The fence: the row is still this unpaid, unwithdrawn request and still the live one.
+        // Re-read under the locks: the request is still the payment's LIVE ask, uncollected, and the
+        // booking has not ended meanwhile (a cancel retires the ask but leaves its row FAILED, which
+        // this must not turn into cash on a cancelled booking).
+        const live = await tx.payment.findUnique({
+          where: { id: ask.paymentId },
+          select: {
+            additionalPaymentIntentId: true,
+            additionalPaymentStatus: true,
+            booking: { select: { status: true, deletedAt: true } },
+          },
+        });
+        if (
+          !live ||
+          live.additionalPaymentIntentId !== ask.stripePaymentIntentId ||
+          live.additionalPaymentStatus === PaymentStatus.SUCCEEDED ||
+          !isAdditionalPaymentDoorOpenForBooking({ bookingStatus: live.booking.status, bookingDeletedAt: live.booking.deletedAt })
+        ) {
+          return false;
+        }
+        // The fence: the row is still this unpaid, unwithdrawn request.
         const stamped = await tx.paymentTransaction.updateMany({
           where: {
             id: ask.id,
             withdrawnAt: null,
             carriedAskCents: 0,
-            status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING, PaymentStatus.FAILED] },
+            status: { in: UNPAID_STATUSES },
           },
           data: { status: PaymentStatus.FAILED, withdrawnAt: options.now ?? new Date() },
         });
@@ -163,4 +210,87 @@ export async function closeCreditReleaseAsksPaidInXero(
     else result.left += 1;
   }
   return result;
+}
+
+/**
+ * A release whose booking invoice Xero ALREADY shows paid when the request would be raised
+ * (#4253): nothing is asked, but the booking's ledger would still read the released amount as
+ * owed and unasked (`INV-PAY-047`), so the money is written as what it was, the same bank-cash row
+ * a request closed later gets. Sized under the locks from the booking's own figures, never more
+ * than the release, so a repeat finds nothing unasked and writes nothing. Returns the cents written.
+ */
+export async function recordReleasePaidInXeroCash({
+  paymentId,
+  releasedCents,
+  balance,
+}: {
+  paymentId: string;
+  releasedCents: number;
+  balance: { invoiceId: string; invoiceNumber: string | null };
+}): Promise<number> {
+  return prisma.$transaction(
+    async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
+      await lockPaymentForRefundedTotal(tx, paymentId);
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentId },
+        select: {
+          amountCents: true,
+          refundedAmountCents: true,
+          changeFeeCents: true,
+          creditAppliedCents: true,
+          additionalAmountCents: true,
+          additionalPaymentStatus: true,
+          booking: {
+            select: { id: true, status: true, deletedAt: true, finalPriceCents: true, memberId: true, member: true, organisation: { select: { name: true, email: true } } },
+          },
+        },
+      });
+      if (
+        !payment ||
+        !isAdditionalPaymentDoorOpenForBooking({ bookingStatus: payment.booking.status, bookingDeletedAt: payment.booking.deletedAt })
+      ) {
+        return 0;
+      }
+      const unasked = bookingLedgerResidualCents({
+        finalPriceCents: payment.booking.finalPriceCents,
+        changeFeeCents: payment.changeFeeCents,
+        amountCents: payment.amountCents,
+        refundedAmountCents: payment.refundedAmountCents,
+        creditAppliedCents: payment.creditAppliedCents,
+        additionalAmountCents: payment.additionalAmountCents,
+        additionalPaymentStatus: payment.additionalPaymentStatus,
+      });
+      const cents = Math.min(releasedCents, unasked);
+      if (cents <= 0) return 0;
+      await recordInternetBankingPaymentTransaction({
+        paymentId,
+        kind: PaymentTransactionKind.ADDITIONAL,
+        amountCents: cents,
+        status: PaymentStatus.SUCCEEDED,
+        xeroInvoiceId: balance.invoiceId,
+        xeroInvoiceNumber: balance.invoiceNumber,
+        reference: balance.invoiceNumber ? `Xero ${balance.invoiceNumber}` : null,
+        reason: CREDIT_RELEASE_PAID_IN_XERO_REASON,
+        store: tx,
+      });
+      await createAuditLog(
+        {
+          action: "payment.credit_release_ask.closed_paid_in_xero",
+          subjectMemberId: bookingOwner(payment.booking).memberId,
+          targetId: payment.booking.id,
+          entityType: "Booking",
+          entityId: payment.booking.id,
+          category: "payment",
+          severity: "important",
+          outcome: "success",
+          summary: "Credit used in Xero was already paid on the booking's invoice, so no card payment was requested",
+          metadata: { amountCents: cents },
+        },
+        tx,
+      );
+      return cents;
+    },
+    { maxWait: 10_000, timeout: 30_000 },
+  );
 }

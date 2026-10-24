@@ -50,7 +50,7 @@ import {
   creditReleaseIdForAskRecoveryKey,
 } from "@/lib/credit-release-ask-keys";
 import { isCapturedPaymentStatus } from "@/lib/booking-payment-state";
-import { upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
+import { lockPaymentForRefundedTotal, upsertPaymentIntentTransaction } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { mintedIntentCustomerId, resolveAskCustomerId } from "@/lib/reissued-ask-mint";
 import { createPaymentIntent } from "@/lib/stripe";
@@ -112,6 +112,33 @@ async function closeWithoutAsk(
   });
   logger.info({ operationId: operation.id, bookingId: operation.bookingId, reason }, NO_ASK_SUMMARY[reason]);
   await deps.complete(operation.id);
+}
+
+/** Everything the request's size and the ask it supersedes were read from; compared again under the lock. */
+function sizingBasis(payment: {
+  status: unknown;
+  amountCents: number;
+  refundedAmountCents: number;
+  changeFeeCents: number;
+  creditAppliedCents: number;
+  additionalAmountCents: number;
+  additionalPaymentStatus: unknown;
+  additionalPaymentIntentId: string | null;
+  booking: { status: unknown; deletedAt: Date | null; finalPriceCents: number };
+}): string {
+  return JSON.stringify([
+    payment.status,
+    payment.amountCents,
+    payment.refundedAmountCents,
+    payment.changeFeeCents,
+    payment.creditAppliedCents,
+    payment.additionalAmountCents,
+    payment.additionalPaymentStatus,
+    payment.additionalPaymentIntentId,
+    payment.booking.status,
+    payment.booking.deletedAt,
+    payment.booking.finalPriceCents,
+  ]);
 }
 
 export async function processCreditReleaseAskOperation(
@@ -177,7 +204,14 @@ export async function processCreditReleaseAskOperation(
   }
   const balance = await readInvoiceBalance(payment.xeroInvoiceId);
   if (isSettledInXero(balance)) {
-    await closeWithoutAsk(operation, "invoice-settled-in-xero", deps, { invoiceId: balance.invoiceId });
+    // Paid another way: nothing to ask, but the ledger must still show the money as paid.
+    const { recordReleasePaidInXeroCash } = await import("@/lib/credit-release-ask-close");
+    const cashCents = await recordReleasePaidInXeroCash({
+      paymentId: operation.paymentId,
+      releasedCents: Math.min(operation.amountCents, release.amountCents),
+      balance,
+    });
+    await closeWithoutAsk(operation, "invoice-settled-in-xero", deps, { invoiceId: balance.invoiceId, cashCents });
     return;
   }
   const invoiceDueCents = openBalanceCents(balance);
@@ -245,6 +279,14 @@ export async function processCreditReleaseAskOperation(
     "@/lib/booking-payment-cleanup"
   );
   const held = await deps.holdClaim(operation, async (store) => {
+    // Re-read under the Payment row lock: the figures that sized this request, and the ask it
+    // supersedes, must be the ones now (a capture, a reduction, an edit or another release may
+    // have moved them since the read above). A difference throws and the row retries, re-sized.
+    await lockPaymentForRefundedTotal(store, operation.paymentId);
+    const fresh = await store.payment.findUnique({ where: { id: operation.paymentId }, include: { booking: true } });
+    if (!fresh?.booking || sizingBasis(fresh) !== sizingBasis(payment)) {
+      throw new Error("The booking's payment changed while the released-credit request was being raised; retrying");
+    }
     await refuseAdoptedIntentOnLedger(store, { intent, adopted: false });
     await upsertPaymentIntentTransaction({
       paymentId: operation.paymentId,

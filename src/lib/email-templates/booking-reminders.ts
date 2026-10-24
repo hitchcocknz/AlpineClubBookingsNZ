@@ -151,7 +151,7 @@ export function additionalPaymentReminderTemplate(params: {
       { label: "Check-out", value: emailCalendarDay(params.checkOut) },
     ])}
     ${alertBox(
-      "Open your booking and complete the outstanding payment. If you have already paid, or you think this is wrong, please contact the club.",
+      "Open your booking and complete the outstanding payment. If you have already paid, or think this is wrong, contact the club.",
       "warning",
     )}
     ${button("Pay Now", BASE_URL + "/bookings")}
@@ -177,7 +177,7 @@ export function creditReleasedPaymentRequestTemplate(params: {
 ): string {
   return layout(`
     ${heading("Payment Needed")}
-    ${paragraph("Hi " + escapeHtml(params.firstName) + ", the account credit applied to your lodge booking was used elsewhere in the club's accounts, so " + escapeHtml(formatCents(params.additionalAmountCents, format)) + " of your booking has not been paid.")}
+    ${paragraph("Hi " + escapeHtml(params.firstName) + ", the account credit applied to your booking was used elsewhere in the club's accounts, so " + escapeHtml(formatCents(params.additionalAmountCents, format)) + " of your booking has not been paid.")}
     ${infoTable([
       { label: "Amount still to pay", value: formatCents(params.additionalAmountCents, format) },
       { label: "Requested on", value: emailClubDate(params.requestedOn) },
@@ -185,7 +185,7 @@ export function creditReleasedPaymentRequestTemplate(params: {
       { label: "Check-out", value: emailCalendarDay(params.checkOut) },
     ])}
     ${alertBox(
-      "Open your booking to pay by card. If you have already paid, or you think this is wrong, please contact the club.",
+      "Open your booking to pay by card. If you have already paid, or think this is wrong, contact the club.",
       "warning",
     )}
     ${button("Pay Now", BASE_URL + "/bookings")}
