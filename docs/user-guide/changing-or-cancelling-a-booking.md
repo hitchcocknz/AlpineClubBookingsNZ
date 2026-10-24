@@ -65,8 +65,8 @@ off the request and contact the club about them.
 
 Changing the nights still to come once your stay has started keeps any promo
 code on the booking as it was, even one that has since expired. If what is left
-costs less than the code took off, the discount shrinks to match, so you are
-never charged for leaving early.
+costs less than the code took off, the discount shrinks to match, so your stay
+never costs more for leaving early (the club's usual change fee still applies).
 
 If your club has **member guests** turned on, the Guests heading carries two
 buttons — **+ Add Member Guest** and **+ Add Non-Member Guest** — exactly as it

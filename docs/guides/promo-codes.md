@@ -210,8 +210,9 @@ A booking whose stay has started is never re-priced for its codes: every code it
 carries is kept exactly as it was, even one that has since expired, been
 switched off or used up, and nobody is asked about it again. If a change during
 the stay leaves less to pay than the codes took off, their discount shrinks to
-what is left, so the stay costs nothing and the member is never charged for the
-change. The redemptions report then shows the smaller figure.
+what is left, so the stay costs nothing and its price never rises for being
+shortened (the club's normal change fee still applies). The redemptions report
+then shows the smaller figure.
 
 ### Several codes on one booking
 
