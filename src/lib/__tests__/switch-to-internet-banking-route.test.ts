@@ -306,6 +306,26 @@ describe("POST /api/payments/switch-to-internet-banking", () => {
     expect(mocks.enqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
   });
 
+  it.each(["PAYMENT_PENDING", "CONFIRMED"])("replays a concurrent switch from the locked %s source without effects", async (status) => {
+    mocks.txBookingFindUnique.mockResolvedValue(stripeBooking({ status }));
+    const persistedHoldUntil = new Date("2026-08-04T12:00:00.000Z");
+    mocks.txPaymentFindUnique.mockResolvedValue({
+      source: PaymentSource.INTERNET_BANKING, reference: "PERSISTED-REFERENCE",
+      stripePaymentIntentId: null, internetBankingHoldSlots: true,
+      internetBankingHoldUntil: persistedHoldUntil,
+    });
+    const res = await POST(postRequest());
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ reference: "PERSISTED-REFERENCE", holdBedSlots: true, holdUntil: persistedHoldUntil.toISOString() });
+    expect(mocks.upsert).not.toHaveBeenCalled();
+    expect(mocks.recordInternetBankingPaymentTransaction).not.toHaveBeenCalled();
+    expect(mocks.lockMemberCreditLedger).not.toHaveBeenCalled();
+    expect(mocks.creditAggregate).not.toHaveBeenCalled();
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.enqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+    expect(mocks.enqueueXeroAppliedCreditAllocationOperation).not.toHaveBeenCalled();
+  });
+
   it("409s and writes nothing when a concurrent cancel moved the booking out of PAYMENT_PENDING under the locks (#1881)", async () => {
     // The pre-transaction read still sees PAYMENT_PENDING, but the under-lock
     // re-read sees a booking a concurrent cancel already moved to CANCELLED.

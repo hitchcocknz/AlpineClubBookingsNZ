@@ -1053,21 +1053,32 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 
 **Related: `INV-PAY-059`, `INV-MOD-012`, `INV-LOCK-002`.**
 
-- **An approved member whole-lodge booking that owes its price with no Payment
-  row reprices like a PAYMENT_PENDING one** (#4019). Until the member chooses
-  how to pay it is CONFIRMED, held and unminted, which `isUnpaidConfirmedWholeLodge`
-  (`booking-payment-flow.ts`) names once: the `INV-MOD-012` applied-credit clamp
-  and the $0 auto-settle in both modification paths reach it, so a price cut
-  after approval gives the excess credit back and settles a covered booking
-  PAID; its SQL twin in `unpaid-finished-stays.ts` puts an approved booking
-  never paid on the dashboard card and the sidebar badge.
+- **An unpaid approved member whole-lodge booking reprices like a
+  PAYMENT_PENDING one** (#4019), including after card entry was opened and
+  abandoned. `isUnpaidConfirmedWholeLodge` (`booking-payment-flow.ts`) admits
+  absent payment or proven uncaptured card attempts: known pending/processing/
+  failed Stripe PRIMARY-only evidence, no captured transaction history, no refund,
+  invoice, manual settlement or recorded settler. Missing evidence fails closed.
+  The runtime and Prisma queue forms derive from the same qualifying facts
+  (`INV-SSOT-001`). Both modification paths load the evidence under their locks;
+  negotiated-price and primary-invoice fences remain authoritative. Approved
+  requests reprice through sanctioned placeholder links or rate elections;
+  structural date edits stay refused. The
+  `INV-MOD-012` clamp preserves credit up to worth including recorded fees,
+  returns excess, and settles a covered booking PAID through the existing $0
+  path while retiring stale intents. The finished-stay collection queue includes
+  the same unpaid card attempts, including bookings with no applied credit.
 - **A credit-covered or $0 approval settles PAID and still queues the Xero
   revenue invoice and the applied-credit allocation**, as every route to PAID
-  does; Xero then has the invoice to allocate the credit note against.
+  does; Xero then has the invoice to allocate the credit note against. Approval
+  and new whole-lodge zero-cash edits post the final stored charge through the
+  cash settlement's shared confirmation poster after PAID, once per booking
+  (`INV-PAY-047`); unpaid approvals post no confirmation charge.
 - **The approval takes the member-credit lock before its hosting reconcile**
   (`INV-LOCK-002`: member-credit precedes Member rows and the coverage keys).
-- Pinned by `booking-modify-credit-clamp.test.ts`, `unpaid-finished-stays.test.ts`,
-  `school-booking-request.test.ts` (the $0 approval queues the invoice).
+- Pinned by `booking-payment-flow.test.ts`, `booking-modify-credit-clamp.test.ts`,
+  `unpaid-finished-stays.test.ts`, `school-booking-request.test.ts` and
+  `whole-lodge-payment-review.realdb.test.ts`.
 
 ## INV-PAY-023
 

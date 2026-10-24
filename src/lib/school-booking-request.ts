@@ -1,3 +1,4 @@
+import { postStoredBookingConfirmationLedgerLines } from "@/lib/booking-ledger-confirmation-sync";
 /**
  * School group booking request variant (issue #709).
  *
@@ -2838,6 +2839,7 @@ export async function approveMemberWholeLodgeRequest(input: {
             where: { id: booking.id },
             data: { status: BookingStatus.PAID },
           });
+          await postStoredBookingConfirmationLedgerLines(tx, booking.id);
           settledByCredit = true;
         }
       } else {

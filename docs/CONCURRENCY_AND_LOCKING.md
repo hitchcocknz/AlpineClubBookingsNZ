@@ -4372,11 +4372,25 @@ both locks. `cron-confirm-pending` shares the per-lodge lock, so either the
 cancel wins and alone runs cancellation side effects, or the cron's confirmed /
 charged state survives and the stale sweep runs no side effect.
 
+The #4019 whole-lodge credit/$0 approval and new whole-lodge zero-cash edit
+settlements use `booking-ledger-confirmation-sync.ts` under their existing global
+then lodge locks (`INV-LOCK-001`/`INV-LOCK-002`). The cash settle uses the same
+extracted poster. It keeps the existing per-booking confirmation fence and fee
+posting keys (`INV-PAY-047`); edit callers invoke it after their guest/night
+writes and modification posting, so first settlement posts the final price
+and an already-confirmed ledger keeps its ordinary modification lines.
+
 `switch-to-internet-banking` also recomputes both the locked booking price and
 the authoritative `BOOKING_APPLIED` credit aggregate after acquiring global,
 lodge, then `lockMemberCreditLedger(memberId)` locks in that order;
 the IB payment mirror must never mix a pre-lock price with post-lock credit (or
-vice versa). The switch and both card mint doors (the pay route and the
+vice versa). Before any switch write, the post-lock payment source is also
+re-read: an already-Internet-Banking payment returns its persisted reference
+and hold fields, without another PRIMARY row, credit consumption, hold reset
+or invoice enqueue. Cancelled/deleted bookings still fail their lifecycle gate.
+Status alone cannot claim a switch: whole-lodge and ordinary no-hold switches
+leave the booking's status unchanged (#4019).
+The switch and both card mint doors (the pay route and the
 `/pay/<token>` link) also exclude each other on lock(1) (#3638,
 `INV-PAY-102`): the switch refuses unless Stripe confirms the card intent is
 dead before its transaction, and under the lock it refuses when the payment

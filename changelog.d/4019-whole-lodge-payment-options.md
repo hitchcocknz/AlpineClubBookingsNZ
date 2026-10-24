@@ -22,3 +22,9 @@
   before. Members can only switch a whole-lodge booking to internet banking
   inside the club's usual internet-banking cut-off before check-in, the same
   rule ordinary bookings follow.
+
+  Starting card entry and leaving it unfinished keeps the booking eligible for
+  excess-credit returns after a price reduction and for the unpaid-stay queue.
+  Concurrent switches to internet banking create one receivable. Officer
+  messages now reflect current payment modules and describe zero-price paid
+  approvals without attributing them to credit.

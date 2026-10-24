@@ -278,14 +278,22 @@ export async function POST(request: NextRequest) {
         payment: { select: { changeFeeCents: true } },
       },
     });
-    // The same status the pre-lock snapshot was admitted on, re-checked under
-    // the locks: a PAYMENT_PENDING booking a concurrent writer confirmed, or a
-    // whole-lodge booking whose hold was cleared, is no longer switchable.
-    if (
-      !locked ||
-      locked.status !== booking.status ||
-      !isSwitchableToInternetBanking(locked)
-    ) {
+    // Lifecycle gates still win over replay: a cancelled/deleted booking must
+    // never be resurrected or return an old successful switch response.
+    if (!locked || locked.deletedAt || locked.organiserSettled ||
+      (locked.status !== "PAYMENT_PENDING" && locked.status !== "CONFIRMED")) {
+      return { type: "notSwitchable" as const };
+    }
+    const lockedPayment = await tx.payment.findUnique({
+      where: { bookingId: booking.id },
+    });
+    // INV-LOCK-001/002: a switch can leave CONFIRMED or PAYMENT_PENDING
+    // unchanged. Source, not a status change, is the idempotence claim. Read it
+    // under the existing locks BEFORE credit, hold, invoice or receipt writes.
+    if (lockedPayment?.source === PaymentSource.INTERNET_BANKING) {
+      return { type: "alreadyInternetBanking" as const, payment: lockedPayment };
+    }
+    if (locked.status !== booking.status || !isSwitchableToInternetBanking(locked)) {
       return { type: "notSwitchable" as const };
     }
 
@@ -293,10 +301,6 @@ export async function POST(request: NextRequest) {
     // one cancelled above: an intent minted while this request waited (a pay
     // page opened in another tab) is still live and still chargeable, and
     // dropping it would re-open the double collection the refusal closed.
-    const lockedPayment = await tx.payment.findUnique({
-      where: { bookingId: booking.id },
-      select: { stripePaymentIntentId: true },
-    });
     if (
       lockedPayment?.stripePaymentIntentId &&
       lockedPayment.stripePaymentIntentId !== cancelledCardIntentId
@@ -513,6 +517,14 @@ export async function POST(request: NextRequest) {
       { error: "This booking can no longer switch to Internet Banking." },
       { status: 409 },
     );
+  }
+
+  if (paymentResult.type === "alreadyInternetBanking") {
+    return NextResponse.json({
+      reference: paymentResult.payment.reference ?? reference,
+      holdBedSlots: paymentResult.payment.internetBankingHoldSlots,
+      holdUntil: paymentResult.payment.internetBankingHoldUntil,
+    });
   }
 
   // #2576 §9: drain the re-evaluation the claim above recorded, now that the

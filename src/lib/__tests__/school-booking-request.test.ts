@@ -27,9 +27,14 @@ vi.mock("@/lib/prisma", () => ({
     booking: {
       create: vi.fn(),
       findUnique: vi.fn(),
+      findUniqueOrThrow: vi.fn(),
       findMany: vi.fn().mockResolvedValue([]),
       update: vi.fn(),
       updateMany: vi.fn(),
+    },
+    bookingLedgerLine: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      createMany: vi.fn().mockImplementation(async ({ data }: { data: unknown[] }) => ({ count: data.length })),
     },
     // MG4 (#2309): the pipeline computes the family boundary for its linked
     // members against the converted booking's owner. That owner is a non-login
@@ -3519,6 +3524,13 @@ describe("approveMemberWholeLodgeRequest (#2263)", () => {
   // the member asked for on the request is applied here, under the ledger lock.
   describe("member chooses the payment method (both modules on)", () => {
     beforeEach(() => {
+      vi.mocked(prisma.booking.findUniqueOrThrow).mockImplementation((async () => {
+        const data = vi.mocked(prisma.booking.create).mock.calls.at(-1)![0].data as Record<string, unknown>;
+        const guests = (data.guests as { create: Array<Record<string, unknown>> }).create;
+        return { ...data, id: "booking-member", payment: null, guests: guests.map((guest, index) => ({
+          ...guest, id: `approved-guest-${index}`, nights: (guest.nights as { create: unknown[] }).create,
+        })) };
+      }) as never);
       mockedCreditBalance.mockResolvedValue(0 as never);
       mockedApplyCredit.mockResolvedValue(undefined as never);
     });

@@ -1,3 +1,4 @@
+import { buildUnpaidConfirmedWholeLodgeWhere } from "@/lib/booking-payment-flow";
 import type { Prisma } from "@prisma/client";
 import { ADDITIONAL_OWED_BOOKING_STATUSES } from "@/lib/additional-payment-chase";
 
@@ -14,22 +15,12 @@ import { ADDITIONAL_OWED_BOOKING_STATUSES } from "@/lib/additional-payment-chase
  * This module stays free of runtime Prisma/server imports so the client-side
  * admin sidebar can consume the href builder directly.
  */
-/**
- * Which bookings still owe their price, before the check-out bound is applied:
- * PAYMENT_PENDING, or (#4019) an approved member whole-lodge booking that is
- * CONFIRMED and held with NO Payment row, because its approval left the
- * payment method to the member and nothing has been minted yet - the SQL twin
- * of `isUnpaidConfirmedWholeLodge` (src/lib/booking-payment-flow.ts). A
- * CONFIRMED booking with a Payment row carries a receivable or a capture and
- * is chased elsewhere. The bookings-list `unpaid=finished` filter composes
- * this fragment with the URL's check-out bound, so the deep link below shows
- * exactly what the dashboard card and the sidebar badge count.
- */
+/** The collection queue uses the modification paths' unpaid classification. */
 export function buildUnpaidFinishedStaysStatusWhere(): Prisma.BookingWhereInput {
   return {
     OR: [
       { status: "PAYMENT_PENDING" },
-      { status: "CONFIRMED", wholeLodgeHold: true, payment: null },
+      buildUnpaidConfirmedWholeLodgeWhere(),
     ],
   };
 }

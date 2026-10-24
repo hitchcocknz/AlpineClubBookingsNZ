@@ -1,3 +1,6 @@
+import type { Payment, PaymentTransaction, Prisma } from "@prisma/client";
+import { CLEAR_SETTLING_TRANSACTION } from "@/lib/payment-settler";
+import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { IMMEDIATE_PAYMENT_BOOKING_STATUSES } from "@/lib/booking-status";
 
 export type BookingPaymentMode = "payment" | "setup";
@@ -63,24 +66,87 @@ export function memberWholeLodgeChoosesPaymentMethod(modules: {
 }
 
 /**
- * An approved member whole-lodge booking the member has not yet paid (#4019):
- * CONFIRMED and capacity-holding through its whole-lodge hold, with NO Payment
- * row because the approval minted no receivable and no card intent. It owes its
- * price (net of applied credit) exactly as a PAYMENT_PENDING card booking does,
- * so every rule that reprices an unpaid booking - the INV-MOD-012 applied-credit
- * clamp, the $0 auto-settle, the unpaid-finished-stays queue - treats it as one.
- * A CONFIRMED booking WITH a Payment row (a receivable, a captured card) is not.
+ * Durable Payment facts for a never-collected card attempt (#4019). The mirror
+ * projects captured/refunded history, while the settler and manual provenance
+ * keep a previously settled payment outside this branch even after reopening.
+ * An incomplete payment snapshot is unknown and fails closed. Amount is an ask
+ * before capture, so amountCents itself is deliberately not a capture test.
+ * Additional asks stay in their existing collection/settlement policy.
+ * Runtime and Prisma forms below derive from these same facts (INV-SSOT-001).
  */
-export function isUnpaidConfirmedWholeLodge(booking: {
+const UNCAPTURED_CARD_STATUSES = ["PENDING", "PROCESSING", "FAILED"] as const;
+const UNCAPTURED_CARD_FACTS_BASE = { source: "STRIPE", xeroInvoiceId: null, refundedAmountCents: 0 } as const;
+const UNCAPTURED_PRIMARY_FACTS = { kind: "PRIMARY", ...UNCAPTURED_CARD_FACTS_BASE } as const;
+const UNCAPTURED_CARD_FACTS = {
+  ...UNCAPTURED_CARD_FACTS_BASE,
+  // Read the same null provenance the canonical reversal clears; this module
+  // defines no second setter or standalone copy of that column's null fact.
+  ...CLEAR_SETTLING_TRANSACTION,
+  manuallyMarkedPaidAt: null,
+} as const;
+
+type WholeLodgeUnpaidState = {
   status: string;
   wholeLodgeHold?: boolean | null;
-  payment?: { id?: string } | null;
-}): boolean {
+  payment?: (Partial<Payment> & { transactions?: readonly Partial<PaymentTransaction>[] }) | null;
+};
+
+/** An approval or abandoned card attempt still owes its price, net of credit. */
+export function isUnpaidConfirmedWholeLodge(booking: WholeLodgeUnpaidState): boolean {
+  if (booking.status !== "CONFIRMED" || booking.wholeLodgeHold !== true) return false;
+  const payment = booking.payment;
+  if (payment == null) return true;
   return (
-    booking.status === "CONFIRMED" &&
-    booking.wholeLodgeHold === true &&
-    (booking.payment === null || booking.payment === undefined)
+    Object.entries(UNCAPTURED_CARD_FACTS).every(([field, value]) =>
+      payment[field as keyof typeof UNCAPTURED_CARD_FACTS] === value,
+    ) &&
+    UNCAPTURED_CARD_STATUSES.some((status) => payment.status === status) &&
+    typeof payment.stripePaymentIntentId === "string" &&
+    payment.stripePaymentIntentId.length > 0 &&
+    Array.isArray(payment.transactions) &&
+    !payment.transactions.some((row) => CAPTURED_TRANSACTION_STATUS_LIST.some((status) => row.status === status)) &&
+    payment.transactions.every((row) =>
+      Object.entries(UNCAPTURED_PRIMARY_FACTS).every(([field, value]) =>
+        row[field as keyof typeof UNCAPTURED_PRIMARY_FACTS] === value,
+      ) && UNCAPTURED_CARD_STATUSES.some((status) => row.status === status),
+    ) &&
+    payment.transactions.some((row) =>
+      Object.entries(UNCAPTURED_PRIMARY_FACTS).every(([field, value]) =>
+        row[field as keyof typeof UNCAPTURED_PRIMARY_FACTS] === value,
+      ) &&
+      UNCAPTURED_CARD_STATUSES.some((status) => row.status === status) &&
+      typeof row.stripePaymentIntentId === "string" && row.stripePaymentIntentId.length > 0,
+    )
   );
+}
+
+/** Query form of the same classification, for the finished-stay collection queue. */
+export function buildUnpaidConfirmedWholeLodgeWhere(): Prisma.BookingWhereInput {
+  return {
+    status: "CONFIRMED",
+    wholeLodgeHold: true,
+    OR: [
+      { payment: null },
+      { payment: { is: {
+        ...UNCAPTURED_CARD_FACTS,
+        status: { in: [...UNCAPTURED_CARD_STATUSES] },
+        stripePaymentIntentId: { not: null },
+        NOT: { stripePaymentIntentId: "" },
+        transactions: {
+          none: { OR: [
+            { status: { in: [...CAPTURED_TRANSACTION_STATUS_LIST] } },
+            { NOT: { ...UNCAPTURED_PRIMARY_FACTS, status: { in: [...UNCAPTURED_CARD_STATUSES] } } },
+          ] },
+          some: {
+            ...UNCAPTURED_PRIMARY_FACTS,
+            status: { in: [...UNCAPTURED_CARD_STATUSES] },
+            stripePaymentIntentId: { not: null },
+            NOT: { stripePaymentIntentId: "" },
+          },
+        },
+      } } },
+    ],
+  };
 }
 
 /**

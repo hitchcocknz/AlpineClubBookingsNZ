@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { buildUnpaidConfirmedWholeLodgeWhere } from "@/lib/booking-payment-flow";
 import {
   addDaysDateOnly,
   formatDateOnly,
@@ -32,10 +33,9 @@ describe("unpaid finished stays helpers", () => {
       checkOut: { lte: GIVEN_DAY },
       OR: [
         { status: "PAYMENT_PENDING" },
-        // #4019: an approved member whole-lodge booking with no Payment row owes
-        // its price until the member chooses how to pay; with a Payment row it
-        // carries a receivable or a capture and is chased elsewhere.
-        { status: "CONFIRMED", wholeLodgeHold: true, payment: null },
+        // #4019: the shared classification includes proven uncaptured card
+        // entry, but excludes receipts, invoices and unknown evidence.
+        buildUnpaidConfirmedWholeLodgeWhere(),
       ],
     });
   });
@@ -106,8 +106,8 @@ describe("unsettled finished-stay additions helpers", () => {
       buildAdditionalOwedWhere().status as { in: string[] }
     ).in;
     // PAYMENT_PENDING is the primary queue's; the whole-lodge branch is CONFIRMED,
-    // which the additions queue also names, but a booking with NO Payment row
-    // can carry no additional transaction, so the two never count one booking twice.
+    // which the additions queue also names, but the shared whole-lodge rule
+    // admits only absent payment or uncaptured PRIMARY attempts, never additions.
     const primaryStatuses = (
       buildUnpaidFinishedStaysWhere(GIVEN_DAY).OR as Array<{ status: string }>
     ).map((o) => o.status);
