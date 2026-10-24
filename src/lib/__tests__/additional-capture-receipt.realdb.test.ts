@@ -318,6 +318,44 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
     expect(await receiptRows()).toHaveLength(1);
   });
 
+  it("an invoice for the change queued after its capture's receipt stored a decision is raised unpaid (round 6, 1a)", async () => {
+    const key = `payment-intent:${CHANGE_INTENT}:additional-capture-receipt:v1`;
+    await prisma.xeroSyncOperation.create({
+      data: {
+        direction: "OUTBOUND",
+        entityType: "PAYMENT",
+        operationType: "CREATE",
+        localModel: "PaymentTransaction",
+        localId: CHANGE_TX_ID,
+        status: "FAILED",
+        queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+        correlationKey: key,
+        idempotencyKey: key,
+        requestPayload: {
+          queueType: "ADDITIONAL_CAPTURE_RECEIPT",
+          bookingId: BOOKING_ID,
+          paymentId: PAYMENT_ID,
+          paymentTransactionId: CHANGE_TX_ID,
+          paymentIntentId: CHANGE_INTENT,
+          plan: { target: "PRIMARY_INVOICE", invoiceId: INVOICE_ID, amountCents: 8_000, capturedCents: 8_000, date: "2026-06-30" },
+        },
+      },
+    });
+
+    // The repair tool's arm, from a sweep that read no receipt: it asks to record the payment.
+    await outbox.enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: BOOKING_ID, priceDiffCents: 8_000, changeFeeCents: 0, bookingModificationId: MODIFICATION_ID },
+      { recordPayment: true, paymentIntentId: CHANGE_INTENT },
+    );
+
+    const invoices = await prisma.xeroSyncOperation.findMany({
+      where: { localModel: "BookingModification", localId: MODIFICATION_ID, queueType: "SUPPLEMENTARY_INVOICE" },
+      select: { requestPayload: true },
+    });
+    expect(invoices).toHaveLength(1);
+    expect(invoices[0]!.requestPayload).toMatchObject({ recordPayment: false, paymentIntentId: CHANGE_INTENT });
+  });
+
   describe("a capture landing between the primary create's read and its gap check (review round 1)", () => {
     const INVOICE_LINES_CENTS = 30_000;
     /** The figures the create stored at its link: it billed and recorded the booking's own 300.00. */
@@ -538,7 +576,7 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
         status: "rejected",
         reason: expect.objectContaining({
           waitCode: gate.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
-          message: expect.stringContaining(reached[0]!),
+          message: expect.stringMatching(new RegExp(`Another card payment receipt for this booking \\(operation ${reached[0]!}\\)`)),
         }),
       });
     });
@@ -620,7 +658,10 @@ async function untilQueuedBehind(blockerPid: number, target = 1): Promise<number
       const waiter = outcomes[ids.indexOf(ids.find((id) => id !== reached[0])!)];
       expect(waiter).toMatchObject({
         status: "rejected",
-        reason: expect.objectContaining({ waitCode: gate.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE }),
+        reason: expect.objectContaining({
+          waitCode: gate.ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE,
+          message: expect.stringContaining("Another card payment receipt for this booking"),
+        }),
       });
     });
 
