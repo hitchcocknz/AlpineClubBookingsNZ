@@ -857,13 +857,12 @@ async function upsertXeroObjectLinkWithClient(
       select: { xeroRefundCreditNoteId: true },
     });
     if (payment?.xeroRefundCreditNoteId === normalizedLink.xeroObjectId) {
-      // INV-LOCK-001, INV-LOCK-002: a write whose void was kept from the stored
-      // row - one naming no status (#4223) or an older live one (#4288) - can
-      // hold this link while a Payment-first enqueue waits for it. Never wait
-      // back on that Payment. SKIP LOCKED still returns a row this transaction
-      // already holds. When busy, commit the inactive mirror; the #4161 heal
-      // can release its pointer. A caller that itself names VOIDED/DELETED
-      // keeps its existing waiting order (#4200).
+      // INV-LOCK-001, INV-LOCK-002: a write whose void was kept (it named no
+      // status, #4223, or an older live one, #4288) can hold this link while a
+      // Payment-first enqueue waits for it: never wait back on that Payment.
+      // SKIP LOCKED still returns a row this transaction holds. When busy, the
+      // inactive mirror commits and the #4161 heal can release its pointer. A
+      // caller naming VOIDED/DELETED itself keeps its waiting order (#4200).
       if (!isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
         const available = await client.$executeRaw`
           SELECT 1 FROM "Payment" WHERE "id" = ${normalizedLink.localId}
