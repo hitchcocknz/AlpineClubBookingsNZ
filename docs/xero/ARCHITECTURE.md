@@ -1108,8 +1108,8 @@ A link write that names no Xero status (a retry recording the note as its
 cover, the enqueue's existing-note branch, a repair) can race the void: it
 read the note as live, and the void commits before its write. Every
 refund-note link write first reserves its natural key as an inactive row
-without changing any existing row, then locks it in the same transaction and,
-when it names no status, re-reads it (`keepStoredRefundNoteVoid`). Concurrent
+without changing any existing row, then locks it in the same transaction and
+re-reads it (`keepStoredRefundNoteVoid`). Concurrent
 first insertions wait on the unique key before this read; the reservation
 rolls back with the write. A void that committed while it waited is kept. The
 mirror stays inactive, the status and incoming metadata merge over its stored
@@ -1119,6 +1119,67 @@ back at the note is released if its Payment row is available without waiting
 to the nightly #4161 heal, so a Payment-first enqueue waiting for this same
 link cannot deadlock the retry (#4223). Lock order: [Refund-note
 link writes racing a void](../CONCURRENCY_AND_LOCKING.md#refund-note-link-writes-racing-a-void-4195-4223).
+
+**An older live reading never revives a void (#4288, owner decision 24 Oct
+2026).** Xero's contract: a VOIDED or DELETED credit note is terminal. It is
+never live again, and re-crediting always raises a new note, so no officer
+override revives one. Three writers record a status they read from Xero outside
+any transaction: the inbound reconcile, the Stripe status recorder
+(`recordStripeRefundNoteLinkStatuses`) and the hand-made note answer. A reading
+taken before a void can therefore be written after it. Each records the note's
+`UpdatedDateUTC` beside the status (`providerUpdatedAt`, through the one builder
+`xeroCreditNoteSnapshotMetadata`; `refund-note-snapshot-stamp-census.test.ts`
+fails a writer that names a status any other way). The same locked re-read
+orders the two writes (`judgeRefundNoteWrite`):
+
+- a live status never overwrites a stored VOIDED/DELETED, whatever either
+  timestamp says. With no timestamp on either side (legacy rows, status-less
+  writers) this is the decision's fallback; with both, it is the contract above;
+- a VOIDED/DELETED reading is always applied;
+- between two live readings, one whose `UpdatedDateUTC` is older than the stored
+  one's keeps the stored status, stamp and figures; the canonical rule (active
+  flag, sibling retirement) still applies. Equal
+  timestamps are one snapshot and apply, as does a write when either side has no
+  timestamp.
+
+A kept void stays inactive and retires no sibling. A pointer naming it is
+released without waiting on Payment, as for a status-less write, and the inbound
+pointer gate refuses the note. A hand-made answer whose note was voided
+meanwhile is refused (409), and its completion rolls back.
+
+The inbound reconcile then acts on each payment's note as that payment's own
+refund-note row holds it when it acts (`readRefundNoteRowsByPayment`), never on
+the raw reading or on a verdict remembered from its own link write. Its recount
+reads the row after the payment rows: an inactive or VOIDED/DELETED row counts
+nothing, a live one counts its own figures. So a total that a void lowered is
+not raised back by a reconcile still holding an older live reading, even one
+whose link write landed before the void's. Before #4288 it was, on a bank
+transfer and on a card payment alike: `INV-ADDPAY-021` lets an inbound recount
+raise a card ledger, never lower it. A void's link write changes no Payment
+column the claim compares, except a pointer naming the note, so the recount's
+claim alone cannot see it. For a payment holding the note's own refund-note
+row, the recount therefore decides in one short transaction, on a 10s/30s
+budget because the nightly follow-up holds the Payment row for up to 30s. It
+takes the Payment row lock, then re-reads that row by the same rule it counted
+it. If the row no longer counts (voided or deactivated
+since), it writes nothing and recounts once more; otherwise it takes the
+as-read claim there. An unchanged verdict also checks the payment as read, so a
+recount that waited on the lock sees the write it waited for.
+
+Every outcome is then some serial order of the recount and the void. Stated
+limit: a void that commits after the locked re-read is the order "the recount,
+then the void, then the void's own recount". On a bank transfer that last recount
+lowers the total back. On a card the ledger is raise-only (`INV-ADDPAY-021`,
+#1353), so the recount's raise stands and the existing refund-ledger-divergence
+alert fires for a person to check. A recount that would need a second retry is
+left to the next sync.
+
+A live reading's allocations and refund payments are skipped only for a payment
+whose row, in either refund-note role, is VOIDED/DELETED when they are written
+(`withoutVoidedRefundNoteLinks`). Under a newer live snapshot they are written
+as before #4288. No money reader uses a payment's `CREDIT_NOTE_ALLOCATION`
+links, and a `REFUND_PAYMENT` reader asks only whether one names the note. An
+older allocation link can therefore stay active beside a newer one.
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,
@@ -1800,9 +1861,11 @@ limit, "try again tomorrow" on the daily limit), checks it is an `ACCRECCREDIT` 
 amount, for the invoice's contact (else the owner's), allocated to no other
 invoice and tracked by nothing else here (this payment's own inactive,
 non-voided link is reactivated), and the completion links it as a per-refund
-`REFUND_CREDIT_NOTE` naming the follow-up. After the commit the note is
-reconciled once more (`reconcileXeroCreditNote`), so a void in between is
-caught. A fresh note is refused on a payment with no Xero invoice, and when
+`REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
+commits before that link write is kept under the link's row lock and the answer
+is refused (#4288). After
+the commit the note is reconciled once more (`reconcileXeroCreditNote`), so a
+later void is caught. A fresh note is refused on a payment with no Xero invoice, and when
 nothing could be queued.
 
 **Count before switching on.** `pnpm run xero:bank-refund-void-count` (read-only:

@@ -13,7 +13,7 @@ import { type XeroAuditLocalLink } from "./types";
 import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance } from "./credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "./modification-note-refunds";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
-import { isIncludedRefundCreditNoteStatus, mayRecordAsCanonicalRefundNote } from "@/lib/xero-refund-note-status";
+import { isIncludedRefundCreditNoteStatus, isRefundNoteLinkOf, mayRecordAsCanonicalRefundNote, withoutVoidedRefundNoteLinks, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
 
 /** #4291: the audit source naming a recount reached only through a voided mirror. */
 const VOIDED_MIRROR_RECOUNT_AUDIT_SOURCE = "xero-inbound-credit-note-voided-mirror-recount";
@@ -73,7 +73,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
 
   const existingRefundPaymentIds = new Set(
     relatedLinks
-      .filter((link) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE")
+      .filter((link) => isRefundNoteLinkOf(link))
       .map((link) => link.localId)
   );
   const existingAccountCreditPaymentIds = new Set(
@@ -94,12 +94,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
           xeroObjectId: creditNote.creditNoteID!,
           xeroObjectNumber: creditNote.creditNoteNumber ?? null,
           role: link.role,
-          metadata: {
-            status: creditNote.status ?? null,
-            total: creditNote.total ?? null,
-            appliedAmount: creditNote.appliedAmount ?? null,
-            remainingCredit: creditNote.remainingCredit ?? null,
-          },
+          metadata: xeroCreditNoteSnapshotMetadata(creditNote), // #4288: stamped with its UpdatedDateUTC
           // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
           // instead of destroying the per-delta covering inputs.
           mergeMetadata: true,
@@ -116,12 +111,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
             xeroObjectId: creditNote.creditNoteID!,
             xeroObjectNumber: creditNote.creditNoteNumber ?? null,
             role: "REFUND_CREDIT_NOTE",
-            metadata: {
-              status: creditNote.status ?? null,
-              total: creditNote.total ?? null,
-              appliedAmount: creditNote.appliedAmount ?? null,
-              remainingCredit: creditNote.remainingCredit ?? null,
-            },
+            metadata: xeroCreditNoteSnapshotMetadata(creditNote),
             // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
             // instead of destroying the per-delta covering inputs.
             mergeMetadata: true,
@@ -138,12 +128,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
             xeroObjectId: creditNote.creditNoteID!,
             xeroObjectNumber: creditNote.creditNoteNumber ?? null,
             role: "ACCOUNT_CREDIT_NOTE",
-            metadata: {
-              status: creditNote.status ?? null,
-              total: creditNote.total ?? null,
-              appliedAmount: creditNote.appliedAmount ?? null,
-              remainingCredit: creditNote.remainingCredit ?? null,
-            },
+            metadata: xeroCreditNoteSnapshotMetadata(creditNote),
             // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
             // instead of destroying the per-delta covering inputs.
             mergeMetadata: true,
@@ -156,7 +141,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
   }
 
   const linkedRefundPaymentIds = creditNoteLinks
-    .filter((link) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE")
+    .filter((link) => isRefundNoteLinkOf(link))
     .map((link) => link.localId);
   const linkedAccountCreditPaymentIds = creditNoteLinks
     .filter((link) => link.localModel === "Payment" && link.role === "ACCOUNT_CREDIT_NOTE")
@@ -261,10 +246,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       .filter(
         (payment) =>
           !creditNoteLinks.some(
-            (link) =>
-              link.localModel === "Payment" &&
-              link.localId === payment.id &&
-              link.role === "REFUND_CREDIT_NOTE"
+            (link) => link.localId === payment.id && isRefundNoteLinkOf(link)
           )
       )
       .map(
@@ -276,12 +258,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
             xeroObjectId: creditNote.creditNoteID!,
             xeroObjectNumber: creditNote.creditNoteNumber ?? null,
             role: "REFUND_CREDIT_NOTE",
-            metadata: {
-              status: creditNote.status ?? null,
-              total: creditNote.total ?? null,
-              appliedAmount: creditNote.appliedAmount ?? null,
-              remainingCredit: creditNote.remainingCredit ?? null,
-            },
+            metadata: xeroCreditNoteSnapshotMetadata(creditNote),
             // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
             // instead of destroying the per-delta covering inputs.
             mergeMetadata: true,
@@ -293,9 +270,21 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     await upsertXeroObjectLink(link);
   }
 
+  // #4288: a LIVE reading's allocations and refund payments are as old as its
+  // status, so neither is written for a payment whose refund-note row (either
+  // role) is VOIDED/DELETED when it is written - read fresh at that point, never
+  // a verdict kept from the link write - and a void that won is never given
+  // them. Under a newer live snapshot they are written as before #4288: no money
+  // reader uses a payment's CREDIT_NOTE_ALLOCATION links, and a REFUND_PAYMENT
+  // reader asks only whether one names the note. An older allocation link can
+  // so stay active beside a newer one.
+  const withoutVoidedRefundNoteRows = async (links: XeroObjectLinkInput[]) =>
+    isIncludedRefundCreditNoteStatus(creditNote.status) ? withoutVoidedRefundNoteLinks(creditNote.creditNoteID!, links, prisma) : links;
+  const allocationSourceLinks = await withoutVoidedRefundNoteRows(resolvedCreditNoteLinks);
+
   const allocationLinks = dedupeXeroObjectLinks(
     allocationTargets.flatMap(({ invoiceId, amountCents }) => {
-      return resolvedCreditNoteLinks.map(
+      return allocationSourceLinks.map(
         (link) =>
           ({
             localModel: link.localModel,
@@ -386,14 +375,16 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
           skippedAllocations: 0,
         };
 
+  // #4288: read again here, after the recount, for the same reason.
+  const refundPaymentSourceLinks = await withoutVoidedRefundNoteRows(resolvedCreditNoteLinks);
   const refundPaymentLinks = dedupeXeroObjectLinks(
     (creditNote.payments ?? []).flatMap((payment) => {
       if (!payment.paymentID) {
         return [];
       }
 
-      return resolvedCreditNoteLinks
-        .filter((link) => link.role === "REFUND_CREDIT_NOTE")
+      return refundPaymentSourceLinks
+        .filter((link) => isRefundNoteLinkOf(link))
         .map(
           (link) =>
             ({
