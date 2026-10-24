@@ -195,6 +195,20 @@ describe("readCaptureRecorder (B, C)", () => {
     await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_gap" });
   });
 
+  it("round 10: reads the gap invoice's coverage from its QUEUED row in any status but CANCELLED - a FAILED row an officer's Retry replayed still counts", async () => {
+    found.covering = gapCovering(8_000);
+    await read();
+    expect(store.xeroSyncOperation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          queueType: "SUPPLEMENTARY_INVOICE",
+          status: { not: "CANCELLED" },
+          requestPayload: { path: ["coveredPaymentIntentIds"], array_contains: ["pi_change"] },
+        },
+      }),
+    );
+  });
+
   it("is the primary invoice where its recorded cash covered the capture", async () => {
     mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValue({
       ...figures,

@@ -1549,6 +1549,58 @@ describe("retryXeroSyncOperation", () => {
     );
   });
 
+  // #3953 round 10: a #3980 gap invoice's coverage record (`primaryInvoiceGap`,
+  // `coveredPaymentIntentIds`, `coveredCaptureCents`) is never an input to the
+  // create - the outbox dispatch passes none either; it lives on the QUEUED
+  // row, which the replay never rewrites and which stays FAILED (not
+  // CANCELLED), so the readers that filter on `queueType` keep finding it. The
+  // replay's own row is a direct call's, with no `queueType`, invisible to them.
+  it("replays a #3980 gap invoice with its queued amounts and payment, leaving its coverage record on the queued row (#3953)", async () => {
+    const gapPayload = {
+      queueType: "SUPPLEMENTARY_INVOICE",
+      bookingId: "book_123",
+      bookingModificationId: "mod_gap",
+      priceDiffCents: 0,
+      changeFeeCents: 2500,
+      recordPayment: true,
+      primaryInvoiceGap: true,
+      coveredPaymentIntentIds: ["pi_change"],
+      coveredCaptureCents: { pi_change: 2500 },
+    };
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "BookingModification",
+        localId: "mod_gap",
+        requestPayload: gapPayload,
+      })
+    );
+    mocks.findUniqueBookingModification.mockResolvedValue({
+      bookingId: "book_123",
+      priceDiffCents: 9999,
+      changeFeeCents: 9999,
+      createdAt: new Date("2026-07-01T00:00:00Z"),
+    });
+
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+    expect(mocks.createXeroSupplementaryInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        bookingId: "book_123",
+        bookingModificationId: "mod_gap",
+        priceDiffCents: 0,
+        changeFeeCents: 2500,
+        recordPayment: true,
+      })
+    );
+    expect(mocks.createXeroSupplementaryInvoice.mock.calls[0]![0]).not.toHaveProperty("syncOperationId");
+    // The queued row - the coverage record - is never rewritten by the replay.
+    expect(
+      mocks.updateManyOperation.mock.calls.filter(([args]) => "requestPayload" in ((args as { data?: object }).data ?? {}))
+    ).toEqual([]);
+  });
+
   it("defaults a stored payload without the flag to recordPayment=true like the outbox dispatch (#1882)", async () => {
     mocks.findUniqueOperation.mockResolvedValue(
       makeOperation({
