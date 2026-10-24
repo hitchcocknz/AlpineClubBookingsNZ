@@ -383,6 +383,13 @@ import "./xero-refund-request-note-void.realdb.test";
 // the void's row and re-reads it. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
 // it owns and cleans its own `race-4223-` fixtures.
 import "./xero-canonical-refund-note-void-race.realdb.test";
+// #4288 reuses it to prove an older live Xero reading of a refund note - the
+// inbound reconcile's, the Stripe status recorder's, or a reconcile's write for
+// a per-refund or request note - never revives a mirror a later write recorded
+// VOIDED, and that between two live readings the older keeps the newer.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4288-` fixtures.
+import "./xero-refund-note-stale-live-status.realdb.test";
 // #4215 reuses it to prove the inbound repair of a bank-transfer payment's
 // canonical refund note keeps the cash a refund request paid back through the
 // real completion - queued, raised or voided, and with the canonical note
