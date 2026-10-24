@@ -123,8 +123,9 @@ as a red flag and check the release notes before deploying.
 
 **What changes.** When an officer reverses a booking recorded as paid in cash,
 the app now works out again which of the member's open card payments are out of
-date, keeps cancelling those, and stops cancelling the one the booking can still
-be paid with, even if its cancellation was waiting to retry. No migration runs.
+date, keeps cancelling those (restarting a cancellation that had given up), and
+stops cancelling the one the booking can still be paid with, even if its
+cancellation was waiting to retry. No migration runs.
 
 **After upgrading.** A reversal made before this release (or by the previous
 colour during the switch) could leave such a waiting cancellation behind. It
@@ -146,8 +147,10 @@ SELECT b."id" AS "bookingId", b."status" AS "bookingStatus",
        b."finalPriceCents", o."id" AS "operationId", o."type", o."status",
        o."attempts", o."nextRetryAt", o."paymentIntentId",
        t."kind", t."status" AS "intentRowStatus", t."amountCents",
+       p."additionalPaymentIntentId",
        lm."createdAt" AS "reversedAt"
 FROM last_manual lm
+JOIN "Payment" p ON p."id" = lm."paymentId"
 JOIN "PaymentRecoveryOperation" o ON o."paymentId" = lm."paymentId"
 JOIN "Booking" b ON b."id" = o."bookingId"
 LEFT JOIN "PaymentTransaction" t ON t."id" = o."paymentTransactionId"
@@ -165,18 +168,28 @@ For each row:
 
 - if `intentRowStatus` is not `PENDING` or `PROCESSING`, or the booking is
   cancelled, there is nothing to do;
-- if `amountCents` differs from what the booking page asks the member to pay,
-  the cancellation is right: leave it;
+- if `kind` is `PRIMARY` and `amountCents` differs from what the booking page
+  asks the member to pay, the cancellation is right: leave it;
+- if `kind` is `ADDITIONAL` and `paymentIntentId` is not the row's
+  `additionalPaymentIntentId`, the cancellation is right: leave it. The amount
+  says nothing here, because an extra's card payment is judged by whether it is
+  the one the booking page offers, not by its figure;
 - otherwise, cancel that payment intent (`paymentIntentId`) in the Stripe
-  dashboard. The cancellation then closes itself, the member's open payment page
-  stops working, and their next visit to the pay step starts a fresh card
-  payment. No money moves. If Stripe shows the intent already succeeded, the
-  app is refunding it: check the booking and ask the member to pay again.
+  dashboard, and do it promptly. The cancellation then closes itself and the
+  member's open payment page stops working. For a `PRIMARY` row their next
+  visit to the pay step starts a fresh card payment; an `ADDITIONAL` row's
+  payment was the member's only card door to the extra, so collect the extra
+  another way, such as by internet banking. No money moves. If Stripe shows the
+  intent already succeeded, the app is refunding it: check the booking and ask
+  the member to pay again.
 
-No admin screen closes these rows, and they must never be deleted by hand.
-Waiting is safe only for a row whose `nextRetryAt` is set: it cancels the card
-payment itself once Stripe answers. A row with no `nextRetryAt` has given up
-and waits for ever.
+Do not wait for the cancellation to finish on its own. Until its retry runs, a
+member who pays from a page they still have open is charged and then refunded,
+because the app hands that payment to the cancellation's refund, and the
+booking stays unpaid. A row with a `nextRetryAt` cancels the card payment
+itself once Stripe answers, closing the member's page anyway; a row with no
+`nextRetryAt` has given up and waits for ever. No admin
+screen closes these rows, and they must never be deleted by hand.
 
 ### The app records which payment settled each booking (#4211)
 

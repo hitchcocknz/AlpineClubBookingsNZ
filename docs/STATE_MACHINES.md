@@ -2104,7 +2104,8 @@ PaymentRecoveryOperation (every CANCEL_PAYMENT_INTENT /
 PaymentRecoveryOperation (the cancellation of a stale intent, or of one the
   settle found already queued): KEPT, or queued afresh as PENDING where the
   intent had none — it goes on to cancel the intent, or hand its capture to
-  the superseded refund.
+  the superseded refund. A stale intent's cancellation the runner gave up on
+  (exhausted at the attempt ceiling) is RE-ARMED: PENDING, attempts 0, due now.
 ```
 
 Which intents stay cancelled is derived from the restored booking, never
@@ -2112,15 +2113,21 @@ remembered (#4320): the cancel key is shared, so an edit on the PAID booking,
 an additional ask's supersede or the `/pay` link's supersede can share the very
 row the settle minted, and a settle recorded before #4320 kept no list. The
 reversal re-applies the supersede rules — a PRIMARY intent not at the amount the
-booking owes (`readBookingAmountOwed`, #1161), an ADDITIONAL intent that is not
-the live ask (`additionalPaymentIntentId`, #3340) — and keeps those intents
-cancelled. It also keeps an intent the settle found already queued
+booking owes (`readBookingAmountOwed`, #1161), a saved-card charge attempt not
+at the booking's worth (`bookingWorthCents`, the figure its minters charge), an
+ADDITIONAL intent that is not the live ask (`additionalPaymentIntentId`, #3340)
+— and keeps those intents cancelled. A settle that covered the extra minted a
+newer cash ADDITIONAL row, so any rebuild of the mirror since nulls that
+pointer; when the reversal puts the extra back to owing, the live ask is the
+newest card ask an officer has not withdrawn, if it asks exactly that extra. A
+dead cancellation on a kept intent is re-armed, so "still cancelled" is true. It also keeps an intent the settle found already queued
 (`adoptedCancelPaymentIntentIds` on the mark-paid's audit row), because a
 superseded intent is never handed out again (`INV-PAY-138`) and a wrong-currency
 supersede (#3567) is not derivable. A settle row without that list adopts
 nothing. Every other live row on a live card intent is withdrawn; a row on an
 intent the ledger already retired is left. The reversal's audit row lists the
-intents still cancelled (`stillCancelledPaymentIntentIds`). Each delete is
+intents still cancelled (`stillCancelledPaymentIntentIds`) and the rows it
+re-armed (`rearmedRecoveryOperationIds`). Each delete is
 fenced on the same liveness predicate, so a worker that claims the row
 meanwhile (FAILED -> PROCESSING) loses it, and a row a worker finished
 (SUCCEEDED) is left and not reported closed.

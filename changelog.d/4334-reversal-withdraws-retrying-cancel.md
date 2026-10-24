@@ -9,10 +9,14 @@
 
   The reversal now works out again, from the booking as it stands, which open
   card payments are out of date. It keeps cancelling those, including one an
-  edit had already queued, and withdraws the cancellation of the one the
-  booking can still be paid with, even one waiting to retry or one that has
-  given up. A card payment the member makes while the reversal is running now
-  waits for it, then pays the booking. The reversal's audit entry lists every
-  cancellation it withdrew and every card payment still being cancelled.
+  edit had already queued, and restarts the cancellation of one that had given
+  up. It withdraws the cancellation of the one the booking can still be paid
+  with, even one waiting to retry or one that has given up: a saved-card
+  charge is judged against the full amount it charges, and a card request for
+  an extra the reversal puts back to owing is found even when the cash
+  settlement had hidden it. A card payment the member makes while the reversal
+  is running now waits for it, then pays the booking. The reversal's audit
+  entry lists every cancellation it withdrew or restarted and every card
+  payment still being cancelled.
   Reversals made before this release may have left a cancellation behind:
   `docs/UPGRADING.md` has a read-only query to find them and what to do.

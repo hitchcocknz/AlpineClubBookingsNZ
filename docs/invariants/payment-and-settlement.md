@@ -216,24 +216,25 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   cron would auto-cancel the booking).
 - Its intent hygiene is derived, never remembered (#4320). On the restored
   booking it re-applies the supersede rules: a primary intent not at the amount
-  owed, and an additional intent that is not the live ask, stay or become
-  queued for cancellation. It then DELETES every live (not SUCCEEDED: pending,
-  processing, failed, retrying or exhausted) `CANCEL_PAYMENT_INTENT` /
-  `REFUND_SUPERSEDED_PAYMENT` row on any other live card intent, except one the
-  settle found already queued (`adoptedCancelPaymentIntentIds`). A superseded
-  intent is never handed out again (`INV-PAY-138`). A settle row without that
-  list, written before #4320, adopts nothing. Deletion, not a terminal status:
-  the webhook-side liveness predicates key on `status != SUCCEEDED`, so only a
-  deleted row is invisible to all of them. The deleted rows' content goes into
-  the reversal's `AuditLog` metadata, with `stillCancelledPaymentIntentIds`.
+  owed (a saved-card charge attempt: not at the booking's worth, its minters'
+  figure), and an additional intent that is not the live ask (a nulled
+  pointer with the extra restored: the newest unwithdrawn card ask at that
+  figure), stay or become queued for cancellation, a dead row re-armed. It then
+  DELETES every live (not SUCCEEDED, exhausted included) `CANCEL_PAYMENT_INTENT`
+  / `REFUND_SUPERSEDED_PAYMENT` row on any other live card intent, except one
+  the settle found already queued (`adoptedCancelPaymentIntentIds`; none on a
+  settle row written before #4320). A superseded intent is never handed out
+  again (`INV-PAY-138`). Deletion, not a terminal status: the webhook-side
+  liveness predicates key on `status != SUCCEEDED`. The audit row keeps the
+  deleted rows, `stillCancelledPaymentIntentIds` and
+  `rearmedRecoveryOperationIds`.
 - The superseded hand-off re-claims its row, marks the capture SUCCEEDED and
   rebuilds in one transaction under the `Payment` row, which the reversal holds
   from its settled-transaction check to its commit. So a member-owed superseded
   refund is never deleted: whichever commits first, the other refuses or claims
-  nothing. A worker that claimed a row may still cancel its intent at Stripe
-  after the reversal commits; the member's open tab then fails, and the pay
-  step mints a fresh intent. No money moves. Proven on PostgreSQL by
-  `manual-reversal-retrying-cancel.realdb.test.ts`.
+  nothing. A worker's claimed Stripe cancel may still land after the commit:
+  the open tab fails and the pay step mints afresh, moving no money. Proven on
+  PostgreSQL by `manual-reversal-retrying-cancel.realdb.test.ts`.
 
 ## INV-PAY-046
 
