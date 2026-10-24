@@ -178,9 +178,13 @@ type SendNotingRefunds = <R extends { refunds: ReadonlyArray<MadeRefund> }>(call
  * - an approved refund request's: nothing here. The approval notes it - its
  *   own note when this release approved it, else the note an older approval
  *   queued for the card part - so a note here could only double it;
- * - any other app door's (a cancellation, an edit, a superseded payment):
- *   left in the delta, which is queued as before. Those doors note their own
- *   refunds, and this delta converges on that note as it always has.
+ * - any other app door's: left in the delta, which is queued as before. On a
+ *   bank transfer that is a duplicate capture's or a superseded intent's
+ *   refund, of money Xero never received, or a card refund Stripe failed
+ *   later, sent again; a cancellation or an edit never refunds one to a card.
+ *   Each door records its refund the moment Stripe answers, so this sync is
+ *   seldom the first to (ARCHITECTURE, "A later refund folded into the first
+ *   note").
  */
 export async function queueWebhookCardRefundNotes(params: {
   payment: { id: string; source: PaymentSource };

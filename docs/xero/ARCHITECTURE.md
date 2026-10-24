@@ -1840,10 +1840,19 @@ its task
 part, a refund made in the Stripe dashboard and a late capture's refund each get
 a note of their own, keyed and sized on the card refund
 ([A card refund on a bank transfer gets its own note](#a-card-refund-on-a-bank-transfer-gets-its-own-note-4312)).
-No other card writer reaches a bank-transfer payment: a cancellation gives a
-bank-transfer payment account credit, never a card refund
-(`forcedCancelRefundMethod`), and a group cancel refunds to a card only the
-children paid by card.
+No other writer card-refunds money Xero holds on a bank-transfer payment: a
+cancellation gives it account credit, never a card refund
+(`forcedCancelRefundMethod`); an edit's reduction goes back by hand, because
+its card refund needs a payment taken through Stripe (`hasSucceededPayment` in
+`applyPaymentAdjustments`, `editRefundGoesBackByHand`); and a group cancel
+refunds to a card only the children paid by card. Two other card refunds can
+land on one, and neither is owed a note: a duplicate capture's (#4211, a bank
+receipt counts as the booking's settler) and a superseded intent's that
+captured anyway. Neither capture was ever receipted in Xero - a bank-transfer
+invoice records no Stripe payment - so a note would credit money Xero never
+received. Each records its refund row the moment Stripe answers, so
+`charge.refunded` usually finds nothing new; if the webhook records one first,
+its refund goes in the delta to the single-note branch, as before #4312.
 Refunds folded before either release stay folded: nothing raises their notes,
 and the deploy note below is how they are found.
 
