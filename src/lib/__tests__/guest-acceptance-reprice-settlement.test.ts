@@ -345,6 +345,33 @@ describe("a settled booking's price is never raised by an acceptance (A3)", () =
   });
 });
 
+describe("#4317 a booking whose rows cannot price each night is re-priced, not skipped", () => {
+  it("re-decides the code over the valued nights: Ann's blank night is worth the $100 her total leaves it", async () => {
+    // Ann holds one sold $100 night and one BLANK against a stored $200. Until
+    // #4317 the acceptance skipped the booking (`STRANDS_UNREADABLE`); R2 now
+    // values the blank at $100, so the promotion is re-decided over $320 again.
+    const loaded = booking();
+    loaded.guests[0] = {
+      ...loaded.guests[0]!,
+      nights: [
+        { stayDate: N1, priceCents: 10000, priceSource: "SOLD" },
+        { stayDate: N2, priceCents: null as unknown as number, priceSource: "UNKNOWN" },
+      ],
+    };
+    const result = await accept(loaded);
+
+    expect(result).toMatchObject({ repriced: true, priceDiffCents: -6000 });
+    const call = h.priceStoredBookingPromotions.mock.calls[0]?.[1] as {
+      guests: Array<{ bookingGuestId: string; perNightRates: number[]; nightDates: Date[] }>;
+    };
+    expect(call.guests.map((guest) => [guest.bookingGuestId, guest.perNightRates])).toEqual([
+      ["g-ann", [10000, 10000]],
+      ["g-cara", [6000, 6000]],
+    ]);
+    expect(call.guests[0]!.nightDates).toEqual([N1, N2]);
+  });
+});
+
 describe("only the member edit door for a stay yet to start re-prices (A4)", () => {
   it.each([["AWAITING_REVIEW"], ["WAITLISTED"], ["WAITLIST_OFFERED"]])("%s is left alone", async (status) => {
     expect(await accept(booking({ status }))).toEqual({ repriced: false, reason: "BOOKING_STATUS" });
@@ -417,7 +444,7 @@ describe("after commit: the card refund, the Xero correction, the email and the 
     expect(h.refundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "pay-1", amountCents: 6000 }));
     expectQueuedOnce(h.enqueueBookingModificationRefundRecovery, queued, 6000);
     expect(h.sendBookingModifiedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ refundAmountCents: 6000, refundDestination: destination, refundByBankTransfer: false }),
+      expect.objectContaining({ refundAmountCents: 6000, refundDestination: destination, refundByBankTransfer: null }),
       CLUB_FORMAT_TEST,
     );
   });
@@ -512,7 +539,7 @@ describe("an internet-banking reduction asks the treasurer to send it back (D-38
     await settleGuestAcceptanceRepriceAfterCommit({ bookingId: "booking-1", actorMemberId: "cara", reprice, format: CLUB_FORMAT_TEST });
     expect(h.refundPaymentTransactions).not.toHaveBeenCalled();
     expect(h.sendBookingModifiedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ refundAmountCents: 6000, refundByBankTransfer: true, refundDestination: "own" }),
+      expect.objectContaining({ refundAmountCents: 6000, refundByBankTransfer: "member", refundDestination: "own" }),
       CLUB_FORMAT_TEST,
     );
   });
@@ -531,7 +558,7 @@ describe("an internet-banking reduction asks the treasurer to send it back (D-38
     h.sendBookingModifiedEmail.mockResolvedValue(undefined);
     await settleGuestAcceptanceRepriceAfterCommit({ bookingId: "booking-1", actorMemberId: "cara", reprice, format: CLUB_FORMAT_TEST });
     expect(h.sendBookingModifiedEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ refundByBankTransfer: false }),
+      expect.objectContaining({ refundByBankTransfer: null }),
       CLUB_FORMAT_TEST,
     );
   });

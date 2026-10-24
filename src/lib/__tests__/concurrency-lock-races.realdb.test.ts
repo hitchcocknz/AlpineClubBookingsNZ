@@ -74,6 +74,11 @@ import "./edit-financial-review-races.realdb.test";
 // removal takes the member's credit-ledger key before any Payment row lock.
 // Its describe stays skipped unless the shared race flag is set.
 import "./credit-paid-reduction.realdb.test";
+// #4317 reuses it to prove every edit door PRICES what #3031/#3166/#3170
+// parked - the removal, the date change and the batch edit, each against real
+// rows with blank, drifted and negative stored history - and raises no review.
+// Its describe stays skipped unless the shared race flag is set.
+import "./edit-auto-pricing-doors.realdb.test";
 // #3954 reuses it to prove a reduction cancels or shrinks the unpaid card ask
 // before it refunds, through the REAL guest removal on card-paid and credit-paid
 // bookings, and that a capture racing the reduction either rolls the edit back
@@ -86,6 +91,14 @@ import "./additional-ask-reduction.realdb.test";
 // and left consistent by the cancel, on a fake Xero switched on only inside its
 // own describe. Its describe stays skipped unless the shared race flag is set.
 import "./credit-only-card-allocation.realdb.test";
+// #4219 proves that a credit note spent in Xero outside the app converges the
+// credit ledger from the allocation worker alone (a fully and a partly spent note,
+// two concurrent runs, the written-down lot and the release row never planned as
+// credit, and the fail-closed refusals), on a fake Xero that keeps the outside
+// spend and refuses an over-allocation in Xero's own words. The fake is installed
+// with spies for its own describe only, so it cannot replace the suite above's.
+// Its describe stays skipped unless the shared race flag is set.
+import "./credit-note-spent-outside-app.realdb.test";
 // #2595 reuses the same guarded disposable PostgreSQL to prove that a member
 // merge cannot leave two people sharing a double bed with no confirmed
 // partnership, driving the real `executeMemberMerge` and the real
@@ -338,6 +351,17 @@ import "./booking-change-request-execution.realdb.test";
 // Payment row is refused whole. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
 // it owns and cleans its own `race-3980-` fixtures.
 import "./primary-invoice-edit-race.realdb.test";
+// #3953 reuses it to prove a change's card capture that no supplementary invoice
+// waited on gets one Xero receipt operation: the webhook and the confirm route
+// at once and a replay through the real late-success release, and the enqueue
+// queueing behind the change's supplementary-invoice anchor lock. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3953-` fixtures.
+import "./additional-capture-receipt.realdb.test";
+// #3953 round 7: a change capture whose ledger row carries no change stamp - a
+// review charge (read to its change by its reason) or an older member ask (the
+// booking's lock, taken before the anchor's) - still has one recorder. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3953u-` fixtures.
+import "./additional-capture-receipt-unattributed.realdb.test";
 // #3854 reuses it to prove a group organiser's settlement posts its children's
 // money to the booking ledger through the real card settle, the Internet Banking
 // invoice's inbound reconcile, the organiser cancel's refund plan and #3653's
@@ -345,6 +369,12 @@ import "./primary-invoice-edit-race.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-3854-` fixtures.
 import "./booking-ledger-group-settlement.realdb.test";
+// #3949 reuses it to prove an edit's and an approved appeal's hand-back on a
+// joiner the organiser paid for by internet banking completes onto the child's
+// mirror, dismisses and reopens as the rules say, and that a group cancel after
+// one (live, and re-driven after its plan froze) neither skips nor double-counts
+// it. Its describe stays skipped unless the shared race flag is set.
+import "./ib-group-child-hand-back.realdb.test";
 // #3971 reuses it to prove the membership subscription invoice retry: a row
 // stored before the fix comes back PENDING as its bare queue type, two retries
 // requeue it once, and the real active-correlation-key index refuses it while
@@ -383,6 +413,15 @@ import "./xero-bt-repair-request-cash.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4230-` fixtures.
 import "./xero-bt-recount-handbacks.realdb.test";
+// #4287 reuses it to prove a later cancellation hand-back on a bank transfer
+// gets its own Xero note, keyed and sized on its task: through the real
+// completion and outbox worker (a fake Xero transport), two completions racing
+// on the Payment row lock, a card note never squeezed by it, the readers and
+// the #4162 floor, no note for a refund the old release absorbed, and the
+// self-heal never selecting a bank transfer.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4287-` fixtures.
+import "./xero-bt-per-refund-notes.realdb.test";
 // #4098 reuses it to prove closing a subscription charge as already paid: two
 // closes at once close it once (one audit row, each voidGeneration bumped
 // once), and a manual reversal committing while the close waits for the
@@ -418,6 +457,11 @@ import "./ledger-insertion-seq.realdb.test";
 // first. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4177-` fixtures.
 import "./settled-capture-order.realdb.test";
+// #4211 reuses it to prove a member paying one booking three times keeps exactly
+// one capture and has the other two refunded, in every arrival order, through
+// the real settle. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
+// cleans its own `race-4211-` fixtures.
+import "./third-duplicate-capture.realdb.test";
 // #4146 reuses it to prove a key-prefix lookup built from an id matches only
 // its own rows: Prisma's `startsWith` is SQL `LIKE`, whose `_` no mock reads as
 // a wildcard. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans
@@ -471,6 +515,21 @@ import "./xero-partial-repair-claim.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4291-` fixtures.
 import "./xero-voided-note-recount.realdb.test";
+// #4300 reuses it to prove a card intent an edit superseded never settles the
+// booking through any door: the confirm route, the pay step's and the /pay
+// link's reload, and the webhook after the cancel worker handed it off. It
+// drives the session routes through the harness's one `@/lib/auth` double.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4300-` fixtures.
+import "./superseded-intent-card-doors.realdb.test";
+// #4316 reuses it to prove an edit's after-commit mint never leaves a live ask
+// on a booking cancelled in the gap: the REAL cancelBooking before the mint,
+// between the provider call and the row write, and queued on the Payment row
+// in both orders against the row write (on a fully REFUNDED payment's
+// never-captured cancel too); and the recovery runner's replay of a
+// failed mint, bumped before it runs and cancelled mid-mint. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4316-` fixtures.
+import "./ended-booking-ask-mint-race.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

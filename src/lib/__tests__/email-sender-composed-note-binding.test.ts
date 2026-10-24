@@ -61,6 +61,8 @@ import { LATE_CAPTURE_REFUNDED_OUTSIDE_APP_NOTE } from "@/lib/late-capture-outsi
 import {
   sendAdminBankTransferSettlementFigureAlert,
   sendAdminSecondInstrumentSettlementConflictAlert,
+  sendAdminDuplicateCaptureKeptAlert,
+  sendAdminSupersededCaptureRefusedAlert,
 } from "@/lib/email/admin-alerts-settlement";
 import {
   sendBookingBumpedEmail,
@@ -498,7 +500,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
   });
 
   it("admin-manual-refund-task: {{handBackNote}} and {{handBackLabel}} say which hand-back it is (#4042)", async () => {
-    const send = async (situation?: "group-organiser-internet-banking") => {
+    const send = async (situation?: "group-organiser-internet-banking" | "joiner-cancel-organiser") => {
       mocks.sendToAdmins.mockClear();
       await sendAdminManualRefundTaskAlert({
         memberName: "Alice Example",
@@ -544,6 +546,19 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(group.body).not.toContain("settled in cash");
     expect(group.body).not.toContain("no Xero invoice to credit");
     expect(group.body).not.toMatch(/in Xero/);
+
+    // #3949 (owner decision, 22 Oct 2026): a joiner's own cancel of a place the organiser paid for by Internet Banking.
+    const joiner = await send("joiner-cancel-organiser");
+    expect(joiner.subject).toBe("Manual refund needed — group joiner cancelled, refund to the organiser: Alice Example");
+    expect(joiner.body.startsWith("Manual Refund Needed - Group Joiner Cancelled, Refund to the Organiser\n")).toBe(true);
+    expect(joiner.body).toContain("repay the organiser by bank transfer");
+    expect(joiner.body).toContain("never to the joiner");
+    expect(joiner.body).toContain("Until automatic Xero notes are added");
+    expect(joiner.body).not.toMatch(/#\d/);
+    // Review round 4: the row names the organiser it repays, as #4042's alert does.
+    expect(joiner.body).toContain("Organiser: Alice Example");
+    expect(joiner.body).toContain("Amount to refund to the organiser: $75.00");
+    expect(joiner.body).not.toContain("settled in cash");
   });
 
   it("admin-second-instrument-settlement-conflict: {{secondInstrumentConflictNote}} says what the card money already did (#3638)", async () => {
@@ -607,6 +622,80 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(refundRendered).toContain("refunded before it moved to Internet Banking");
     expect(refundRendered).toContain("Nothing was paid twice");
     expect(refundRendered).not.toContain("already settled the card payment");
+  });
+
+  it("admin-duplicate-capture-kept: {{duplicateCaptureKeptNote}} says why nothing was refunded, per reason (#4211)", async () => {
+    const alert = {
+      memberName: "Alice Example",
+      checkIn: new Date("2026-08-01"),
+      checkOut: new Date("2026-08-03"),
+      bookingId: "booking-9",
+      reason: "not-recorded" as const,
+      amountCents: 27000,
+      paymentIntentId: "pi_kept",
+      otherPaymentIntentId: "pi_other",
+    };
+    await sendAdminDuplicateCaptureKeptAlert(alert, CLUB_FORMAT_TEST);
+    const notRecorded = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(notRecorded).toContain("card payment pi_other on it still holds money");
+    expect(notRecorded).toContain("no record of which payment settled this booking");
+    expect(notRecorded).toContain("check in Stripe that neither payment has already been refunded");
+    expect(notRecorded).toContain("refund the other one by hand");
+    expect(notRecorded).toContain("Booking: booking-9");
+    const [args] = mocks.sendUnmuteableAdminAlert.mock.calls[0] as [{ subject: string; templateName: string }];
+    expect(args.subject).toBe("Booking may have been paid twice — check by hand: Alice Example");
+    expect(args.templateName).toBe("admin-duplicate-capture-kept");
+    expect(mocks.sendToAdmins).not.toHaveBeenCalled();
+
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminDuplicateCaptureKeptAlert(
+      { ...alert, reason: "settler-released", otherPaymentIntentId: null },
+      CLUB_FORMAT_TEST,
+    );
+    const released = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(released).toContain("a cash or bank payment on it still holds money");
+    expect(released).toContain("no longer holds money");
+    expect(released).not.toContain("no record of which payment settled");
+
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminDuplicateCaptureKeptAlert(
+      { ...alert, reason: "settler-released", otherPaymentIntentId: null, otherHoldsMoney: false },
+      CLUB_FORMAT_TEST,
+    );
+    const alone = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(alone).toContain("no other payment on it still holds money");
+    expect(alone).toContain("whether this payment now pays for the booking or is a duplicate");
+    expect(alone).not.toContain("a cash or bank payment");
+    // #4211 review: never "refund the other one" when there is no other one.
+    expect(alone).not.toContain("refund the other one");
+    expect(alone).toContain("refund it by hand only if the booking should not be paid by it");
+  });
+
+  it("admin-superseded-capture-refused: {{supersededCaptureNote}} says it was not applied, worded by the booking's status (#4300)", async () => {
+    const alert = {
+      memberName: "Alice Example",
+      checkIn: new Date("2026-08-01"),
+      checkOut: new Date("2026-08-03"),
+      bookingId: "booking-9",
+      bookingCancelled: false,
+      amountCents: 27000,
+      paymentIntentId: "pi_superseded",
+    };
+    await sendAdminSupersededCaptureRefusedAlert(alert, CLUB_FORMAT_TEST);
+    const owing = renderDefaultBody("admin-superseded-capture-refused", capturedUnmuteableTemplateData());
+    expect(owing).toContain("It did not mark the booking paid");
+    expect(owing).toContain("The booking still owes its payment.");
+    expect(owing).toContain("Stripe PI: pi_superseded");
+    const [args] = mocks.sendUnmuteableAdminAlert.mock.calls[0] as [{ subject: string; templateName: string }];
+    expect(args.subject).toBe("Card payment on a replaced payment — not applied: Alice Example");
+    expect(args.templateName).toBe("admin-superseded-capture-refused");
+    expect(mocks.sendToAdmins).not.toHaveBeenCalled();
+
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminSupersededCaptureRefusedAlert({ ...alert, bookingCancelled: true }, CLUB_FORMAT_TEST);
+    const cancelled = renderDefaultBody("admin-superseded-capture-refused", capturedUnmuteableTemplateData());
+    expect(cancelled).toContain("The booking has been cancelled");
+    expect(cancelled).not.toContain("still owes");
   });
 
   it("split-guest-portion-cancelled: {{ownBookingNote}} is supplied and renders its reassurance sentence", async () => {

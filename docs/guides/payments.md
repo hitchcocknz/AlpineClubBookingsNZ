@@ -249,6 +249,50 @@ made (being retried, or stopped and listed on
 made after the booking is cancelled, the cancellation never counted this task,
 and it can be dismissed (with a note) if the club settles it another way.
 
+**On a joiner's booking the group organiser paid for by internet banking
+(#3949).** Both tasks above can be raised on such a booking: a joiner's change
+that lowers the price, or an approved appeal on their place. A change that
+lowers the price offers no choice of card or account credit: the refund, at the
+card refund tier, always goes back to the organiser this way, and the joiner is
+never given account credit for it (a guest whose consent lapses is removed the
+same way, and a member's single card-or-credit choice for a linked move of two
+bookings does not apply to such a booking: the offer says how much goes back to
+the organiser instead, and while the organiser is cancelling the group the
+offer lets the member move only their own booking). The money came
+from the organiser's one group payment, so it goes back to the **organiser**,
+not the joiner: the task's reason says "to the group organiser by bank
+transfer", the paid-back dialog says the money goes back to the group
+organiser, and the joiner's email says the club will refund the group organiser
+directly. Send it to the organiser and mark it paid back as above; that records
+the refund against the joiner's share of the group payment, and the group's own
+settlement is left as it was. Until #4292 ships automatic notes, the app raises
+no Xero credit note for these (the joiner's booking has no invoice of its own;
+the money was taken on the group's combined invoice), so once you mark one paid
+back the finance contacts get a **Xero Sync Error** email naming the amount,
+the organiser and the invoice: in Xero, raise a credit note for that amount to
+the organiser against the group's invoice and record the bank refund against it.
+When the joiner cancels their own place with a refund due, the cancel raises
+one of these tasks too, for the policy's card-tier refund, to the organiser
+(never account credit for the joiner), and admins get the **Manual refund
+needed** email naming the organiser the refund goes to, and the task's reason
+names them too (a customised message
+shows that through `{{handBackNote}}`, as below). A price review on
+such a booking that the club settles as money owed back goes to the organiser
+the same way. One that finds the joiner owes the club is refused: the club
+cannot ask for that money from here, so agree it with the organiser, collect it
+another way and dismiss the review with a note. Once the joiner's booking is cancelled, by the joiner or by the
+organiser's cancellation of the group, such a review is refused and has to be
+settled by hand and dismissed. While the organiser's cancellation of the group
+is still part-way through, marking one of these paid back is refused: mark it
+once the cancellation has finished. Any change to the booking's price or that
+charges a change fee (adding a guest included), and an approved appeal that
+would raise a new one, is refused too - the member's edit screen says so before
+they save; once the booking shows as cancelled, decide whether anything more is
+owed. The rules above are unchanged: once the organiser has
+cancelled the group, a change's task can only be marked paid back, while an
+appeal's can still be dismissed with a note. Tasks raised before this change,
+which could not be marked paid back at all, now can.
+
 **The same task for a group paid by internet banking (#4042).** When the
 organiser of a group they paid for with one internet banking settlement
 cancels it, each joiner's refund is recorded in the app's ledger straight
@@ -474,13 +518,27 @@ record, so do not wait for the email.
 
 ### Decide a booking change the system would not price
 
-Sometimes a member changes a booking — gives back a night, takes a guest off —
-and the change itself is fine, but the club's records do not say clearly enough
+**No new row of this kind appears any more.** Every booking change is now priced
+automatically when it is saved — see
+[Bookings — How a booking change is priced](bookings.md#how-a-booking-change-is-priced).
+The rows still on this card were raised before that. Work them as described below
+until the club's clean-up has settled them; while one is open, a further price
+change to its booking is refused. **A row warned that a guest "was removed
+from the booking after this review was raised"** names a guest whose nights that
+change moved and who came off the booking since. The removal credited the
+guest's stored total, which a held change never altered: it still included the
+nights the change gave back, so settling could credit those nights again, and it
+never included the nights the change added, so settling could charge for nights
+the guest no longer holds. The warning says which applies. Check Xero and the
+booking before settling: the row may still hold money owed for another guest.
+The clean-up closes such a row with no money moved.
+
+Before that, sometimes a member changed a booking — gave back a night, took a
+guest off — and the change itself was fine, but the club's records did not say clearly enough
 what those nights were sold for. Rather than work out a plausible-looking number
-that was never actually charged, the system **saves the booking change and holds
-the money for you to decide**. No refund is made, no account credit is created,
-nothing is sent to Xero, and no amount is assumed. This is the club's settled
-rule: exact stored evidence, or a person decides.
+that was never actually charged, the system **saved the booking change and held
+the money for you to decide**. No refund was made, no account credit was created,
+nothing was sent to Xero, and no amount was assumed.
 
 The member is told their change saved and that the club is working the amount
 out. They are not shown a figure, and they are not told anything about why.
@@ -567,9 +625,10 @@ they said, because the row itself stops carrying them once it is open again.
 #### Say what the unpriced nights sold for, so the booking stops coming back
 
 Some of these bookings have nights with **no stored price at all** — that is
-usually why the change could not be worked out. Until somebody says what those
-nights sold for, the booking comes back to this queue *every time it is changed*,
-and you price it by hand again each time.
+usually why the change could not be worked out. Such a booking used to come back
+to this queue every time it was changed; now that every change is priced
+automatically it no longer does, but a row that shows these boxes still needs
+them filled in to close.
 
 So when a row has nights like that, the settle box lists them and asks. It is on
 both buttons: **Record the adjustment** and **No adjustment**, because a change
@@ -706,8 +765,7 @@ why, and shows what is on file for each of their nights.
 - **Nothing is filled in for you**, here or anywhere in this feature. If the
   figures will not add up honestly, do not adjust one to close the gap; a figure
   typed to close a gap is a price nobody decided.
-- **One guest at a time.** A booking with two such guests needs both recorded
-  before it stops coming back.
+- **One guest at a time.** A booking with two such guests needs each recorded.
 - **It is not offered while the booking has a review waiting** on this queue.
   Settle that first — its boxes ask for the same figures, against a total that
   also includes the amount being settled — and record anything still missing
@@ -718,10 +776,9 @@ why, and shows what is on file for each of their nights.
 You need **Finance — Edit** to use it; a finance viewer sees the section and
 every control disabled.
 
-**Why this exists.** Until an officer records them, every change to such a
-booking has to be priced by hand, and an other-club member rate cannot be set on
-it at all — the edit that would set one is refused, and its message points
-here.
+**Why this existed.** Until every change was priced automatically, a change to
+such a booking had to be priced by hand. A booking no longer needs this to be
+changed or re-rated, and the tool is due to be removed.
 
 A booking with a review waiting also shows a **Money waiting for review** warning
 on its own page, under **Admin tools**, with a link back to this page.

@@ -204,6 +204,32 @@ describe("a cancel's card refund shortfall has its own sentence (#4097, `INV-PAY
     expect(dialog.textContent).not.toMatch(/once the money has actually gone back/);
   });
 
+  it("#3949: an edit's or appeal's hand-back on a joiner the organiser paid for by internet banking is paid back to the organiser", async () => {
+    for (const marker of [{ editRefundHandBack: true }, { refundRequestHandBack: true }]) {
+      cleanup();
+      await renderQueue({ tasks: [{ ...HAND_BACK_TASK, ...marker, paidToGroupOrganiser: true }], viewerCanViewBookings: true });
+      fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
+      const dialog = await screen.findByRole("dialog");
+      expect(dialog.textContent).toMatch(/once the money has actually gone back to the group organiser, who paid for this booking/);
+      expect(dialog.textContent).toMatch(/emailed to raise its Xero credit note by hand/);
+      expect(dialog.textContent).not.toMatch(/gone back to the member/);
+      // Review: the title names the organiser too.
+      expect(screen.getByRole("heading", { name: /as paid back to the group organiser for /i })).toBeInTheDocument();
+    }
+  });
+
+  it("#3949 review: such rows get the organiser intro, never the member's edit or appeal sentence, and their dismissal names the organiser", async () => {
+    for (const marker of [{ editRefundHandBack: true }, { refundRequestHandBack: true }]) {
+      cleanup();
+      await renderQueue({ tasks: [{ ...HAND_BACK_TASK, ...marker, paidToGroupOrganiser: true }], viewerCanViewBookings: true });
+      expect(screen.getByTestId("manual-refund-task-organiser-payee-intro").textContent).toMatch(/goes back to the organiser by bank transfer/);
+      expect(screen.queryByTestId("manual-refund-task-edit-refund-intro")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("manual-refund-task-refund-request-intro")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole("button", { name: /dismiss/i }));
+      expect((await screen.findByRole("dialog")).textContent).toMatch(/for a group organiser who declined the refund/);
+    }
+  });
+
   it("CONTROL: a cash hand-back's paid-back dialog keeps its sentence", async () => {
     await renderQueue({ tasks: [HAND_BACK_TASK], viewerCanViewBookings: true });
     fireEvent.click(screen.getByRole("button", { name: /paid back/i }));
@@ -403,6 +429,42 @@ describe("the evidence an admin prices from (#3033, owner decision D3)", () => {
     expect(
       screen.getByTestId("manual-refund-task-review-evidence-unreadable"),
     ).toHaveTextContent(/cannot be read/);
+  });
+
+  it("warns, naming the guest, when a guest whose nights the review moved was removed after it was raised (#4317)", async () => {
+    // The removal credited that guest's stored total, which a parked edit never
+    // changed: settling could credit given-back nights again, or charge for
+    // added ones the guest no longer holds. It asks for a check, not a
+    // dismissal: the review may still hold money owed for another guest.
+    await renderQueue({
+      tasks: [
+        {
+          ...REVIEW_TASK,
+          reviewGuestsRemovedSinceRaised: [
+            { strandIndex: 0, strandCount: 2, guestTotalCents: 30_000, gaveNightsBack: true, addedNights: false },
+            { strandIndex: 1, strandCount: 2, guestTotalCents: 20_000, gaveNightsBack: false, addedNights: true },
+          ],
+        },
+      ],
+      viewerCanViewBookings: true,
+    });
+
+    const [credit, charge] = screen.getAllByTestId("manual-refund-task-review-guest-removed");
+    expect(credit).toHaveTextContent("Guest 1 of 2, stored at $300.00, was removed from the booking after this review was raised.");
+    expect(credit).toHaveTextContent("Check Xero and the booking before settling");
+    expect(credit).toHaveTextContent("could credit those nights again");
+    expect(credit).not.toHaveTextContent(/dismiss/i);
+    expect(charge).toHaveTextContent("Guest 2 of 2, stored at $200.00, was removed");
+    expect(charge).toHaveTextContent("could charge for nights this guest no longer holds");
+  });
+
+  it("says nothing about a removed guest on a review whose guests are all still there", async () => {
+    await renderQueue({
+      tasks: [{ ...REVIEW_TASK, reviewGuestsRemovedSinceRaised: [] }],
+      viewerCanViewBookings: true,
+    });
+
+    expect(screen.queryByTestId("manual-refund-task-review-guest-removed")).not.toBeInTheDocument();
   });
 
   it("prints the identifier instead of a link the viewer cannot follow", async () => {
@@ -684,6 +746,19 @@ describe("what completing or dismissing means, per kind (#3033)", () => {
       expect(body.direction).toBe("REFUND_TO_MEMBER");
       expect(body.handedBackInCash).toBe(true);
     });
+  });
+
+  it("#3949 review round 3: a review on a joiner the organiser paid for by internet banking is worded for the organiser, and asks no cash-or-bank", async () => {
+    await openDialog({ ...REVIEW_TASK, id: "task-review-organiser", paidBackByHand: true, paidToGroupOrganiser: true }, "Record the adjustment");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toMatch(/money the club owes goes back to the organiser by bank transfer, never to the member/);
+    // Round 4: a charge is refused here, so the member is never said to be asked to pay on this booking.
+    expect(dialog.textContent).toMatch(/it cannot be asked for from here: agree it with the organiser/);
+    expect(dialog.textContent).not.toMatch(/asked to pay it on this booking/);
+    fireEvent.click(screen.getByLabelText(/The club owes the member/));
+    expect(screen.queryByLabelText("In cash")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pay the group organiser back" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Pay the member back" })).not.toBeInTheDocument();
   });
 
   it("never asks cash-or-bank where a refund is not paid back by hand (#3536)", async () => {

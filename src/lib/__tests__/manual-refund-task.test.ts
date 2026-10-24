@@ -16,6 +16,8 @@ import {
  */
 
 const mocks = vi.hoisted(() => ({
+  // #4287: whether a cancellation hand-back's note stands on its own record; the payment's canonical note by default.
+  cancellationHandBackNotedOnItsOwnRecord: vi.fn().mockResolvedValue(false),
   transaction: vi.fn(),
   executeRaw: vi.fn().mockResolvedValue(0),
   manualRefundTaskFindUnique: vi.fn(),
@@ -87,6 +89,9 @@ const mocks = vi.hoisted(() => ({
   // #4159 round 4: the payment's Xero refund-note coverage, none unless a case says so.
   noteCoverage: vi.fn(async () => 0),
   paymentFindUnique: vi.fn(),
+  paymentTransactionCount: vi.fn(async () => 0),
+  // #3949 review M1: the Xero-by-hand alert a group child's refund to the organiser sends after the commit.
+  sendAdminXeroSyncErrorAlert: vi.fn(async () => ({})),
   // #3827 (`INV-PAY-117`): the by-hand review route's pre-claim cap reads the
   // payment and the open hand-backs on the completion's own transaction.
   txPaymentFindUnique: vi.fn(),
@@ -117,10 +122,14 @@ vi.mock("@/lib/booking-ledger-hand-back", () => ({
 }));
 
 vi.mock("server-only", () => ({}));
+vi.mock("@/lib/email", () => ({ sendAdminXeroSyncErrorAlert: (...a: unknown[]) => mocks.sendAdminXeroSyncErrorAlert(...(a as [])) }));
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: (...a: unknown[]) => mocks.transaction(...a),
     payment: { findUnique: (...a: unknown[]) => mocks.paymentFindUnique(...a) },
+    // #3949 review M1: the Xero-by-hand alert names the joiner and organiser when it can read them.
+    booking: { findUnique: async () => null },
+    groupBooking: { findUnique: async () => null },
     paymentRecoveryOperation: {
       updateMany: (...a: unknown[]) =>
         mocks.markLateCaptureApprovalRefundRecoverySucceeded(...a),
@@ -199,6 +208,9 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
   kickQueuedXeroOutboxOperationsIfConnected: (...a: unknown[]) =>
     mocks.kickQueuedXeroOutboxOperationsIfConnected(...a),
 }));
+vi.mock("@/lib/bank-hand-back-refund-note", () => ({
+  cancellationHandBackNotedOnItsOwnRecord: (...a: unknown[]) => mocks.cancellationHandBackNotedOnItsOwnRecord(...a),
+}));
 vi.mock("@/lib/xero-refund-request-credit-note-outbox", () => ({
   enqueueXeroRefundRequestCreditNoteOperation: (...a: unknown[]) =>
     mocks.enqueueXeroRefundRequestCreditNoteOperation(...a),
@@ -268,6 +280,8 @@ vi.mock("@/lib/member-credit", () => {
 
 import { resolveManualRefundTask } from "@/lib/manual-refund-task-resolution";
 import { EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE } from "@/lib/manual-refund-task-settlement-rules";
+import { editRefundHandBackDismissAfterCancelMessage } from "@/lib/manual-refund-task-copy";
+import { GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
 import { GROUP_ORGANISER_HAND_BACK_DISMISS_MESSAGE } from "@/lib/group-organiser-hand-back-rules";
 import { completionMessage } from "@/lib/manual-refund-task-copy";
 import { loadCancellationPolicy } from "@/lib/cancellation";
@@ -285,7 +299,7 @@ import { requireCalendarDate } from "@/lib/club-time";
 import { bookingCancelCardRefundRecoveryWhere, buildEditFinancialReviewRefundStripeKeyPrefix } from "@/lib/payment-recovery-keys";
 import { deletedBookingModificationRefundReason } from "@/lib/deleted-booking-modification-payment";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
-import { REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
+import { REVIEW_CANCELLATION_ORGANISER_PAID_BY_BANK_MESSAGE, REVIEW_REFUND_EXCEEDS_UNPROMISED_CASH_MESSAGE } from "@/lib/edit-financial-review-refund-refusals";
 
 const tx = {
   // #3582: an edit review's completion takes lock(1) first, before its claim.
@@ -295,6 +309,8 @@ const tx = {
     findUnique: (...a: unknown[]) => mocks.paymentTransactionFindUnique(...a),
     // #3639: the #2700 hand-back's capture, found by its frozen reason sentence.
     findMany: (...a: unknown[]) => mocks.paymentTransactionFindMany(...a),
+    // #3949: a group child's mirror route is taken only where no transaction backs the payment.
+    count: (...a: unknown[]) => mocks.paymentTransactionCount(...(a as [])),
   },
   paymentRefund: { findMany: (...a: unknown[]) => mocks.paymentRefundFindMany(...a) },
   manualRefundTask: {
@@ -371,6 +387,8 @@ const tx = {
   payment: {
     update: (...a: unknown[]) => mocks.paymentUpdate(...a),
     findUnique: (...a: unknown[]) => mocks.txPaymentFindUnique(...a),
+    // #3949: the group child's mirror, re-read under its row lock before the write.
+    findUniqueOrThrow: (...a: unknown[]) => mocks.txPaymentFindUnique(...a),
     // #3980 review round 2 F4: a re-price claims the closure's unlinked invoice.
     updateMany: vi.fn().mockResolvedValue({ count: 1 }),
   },
@@ -387,6 +405,8 @@ const tx = {
   // #3791: what a netted or limited give-back reads of earlier reviews and
   // the cancellation - none of either unless a case installs some.
   bookingEvent: { findFirst: (...a: unknown[]) => mocks.bookingEventFindFirst(...a) },
+  // #3949 review round 3: whether the organiser's group cancel is mid-way (no group by default).
+  groupBooking: { findUnique: vi.fn(async () => null) },
 };
 
 /**
@@ -2326,6 +2346,46 @@ describe("#3032 - routing a confirmed review amount through canonical settlement
     );
     expect(mocks.kickQueuedXeroOutboxOperationsIfConnected).toHaveBeenCalledWith({ limit: 1 });
     expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+    expect(mocks.cancellationHandBackNotedOnItsOwnRecord).toHaveBeenCalledWith(tx, "payment-1", "task-1");
+    // #4287 review (F4, INV-ADDPAY-043): decided AFTER the allocation, on its transaction - so under the
+    // Payment row lock the allocation took first (`payment-lock-before-rebuild.test.ts`) - and before the enqueue.
+    expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "payment-1", store: tx }));
+    expect(mocks.applyLocalRefundAllocation.mock.invocationCallOrder[0]).toBeLessThan(mocks.cancellationHandBackNotedOnItsOwnRecord.mock.invocationCallOrder[0]!);
+    expect(mocks.cancellationHandBackNotedOnItsOwnRecord.mock.invocationCallOrder[0]).toBeLessThan(mocks.enqueueXeroRefundCreditNoteOperation.mock.invocationCallOrder[0]!);
+  });
+
+  it("a LATER cancellation hand-back's note is keyed and sized on its own task, never absorbed into the canonical note (#4287, INV-ADDPAY-043)", async () => {
+    mocks.cancellationHandBackNotedOnItsOwnRecord.mockResolvedValueOnce(true);
+    mocks.manualRefundTaskFindUnique.mockResolvedValue({
+      id: "task-1",
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      amountCents: 3000,
+      raisedAmountCents: 3000,
+      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+      status: ManualRefundTaskStatus.OPEN,
+      booking: {
+        memberId: "member-1",
+        status: "CANCELLED",
+        payment: { id: "payment-1", status: "PARTIALLY_REFUNDED", xeroInvoiceId: "inv-1" },
+      },
+    });
+
+    await resolveManualRefundTask({
+      taskId: "task-1",
+      resolution: "completed",
+      note: null,
+      actingMemberId: "admin-1",
+      confirmedAmountCents: null,
+      direction: "REFUND_TO_MEMBER",
+      recordedNightPrices: null,
+    }, CLUB_FORMAT_TEST);
+
+    expect(mocks.enqueueXeroRefundCreditNoteOperation).toHaveBeenCalledWith(
+      "payment-1",
+      3000,
+      { createdByMemberId: "admin-1", refundMethod: "internet-banking", handBackTaskId: "task-1", paidAnotherWayTaskId: "task-1", store: tx }
+    );
   });
 
   it("completes an EDIT refund hand-back like any hand-back but sends Xero nothing: the edit's credit note already stands (D-3813-6, INV-PAY-117)", async () => {
@@ -3863,15 +3923,15 @@ describe("re-basing the booking's headline totals while settling (#3219)", () =>
     );
   });
 
-  it("SHAPE 2 (#3257): a surviving strand with NO night rows DECLINES rather than inventing a figure", async () => {
+  it("SHAPE 2 (#3257): a surviving strand with NO night rows now RE-BASES from its stored total (#4317 review H1)", async () => {
     /*
-      The strand carries $80.00 and no evidence whatever of what any night of it
-      sold for. Its review is raised, but boxes appear only for a strand with
-      genuine BLANK nights among readable ones, so it closes with none - and this
-      is the shape that would be dangerous if a re-price-on-any-close simply
-      summed what it found. `INV-MOD-028` applied to the whole booking says the
-      strands do not reconcile, so the booking's four columns are left exactly
-      where the park put them.
+      The strand carries $80.00 and no row saying what any night of it sold for.
+      Its review is raised, but boxes appear only for a strand with genuine BLANK
+      nights among readable ones, so it closes with none. Until #4317 the
+      closure DECLINED here and left the frozen $240 headline behind, which the
+      next priced edit would have settled as if it were its own. Every night now
+      has a value (`valueStrandNights`, D1), so the closure re-bases the headline
+      to the sum of the guests' stored totals (D5): $80.00.
     */
     mocks.bookingGuestFindUnique.mockResolvedValue({
       id: "guest-2",
@@ -3900,6 +3960,8 @@ describe("re-basing the booking's headline totals while settling (#3219)", () =>
             priceCents: 8_000,
             memberId: null,
             isMember: false,
+            stayStart: null,
+            stayEnd: null,
             nights: [],
           },
         ],
@@ -3914,21 +3976,20 @@ describe("re-basing the booking's headline totals while settling (#3219)", () =>
       recordedNightPrices: null,
     }, CLUB_FORMAT_TEST);
 
-    // NOTHING was written to the booking, and no history row claims a price was
-    // recalculated. The task still closes - declining is an answer.
-    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
-    expect(mocks.bookingModificationCreate).not.toHaveBeenCalled();
+    expect(mocks.bookingUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: "booking-1", totalPriceCents: 24_000 }),
+        data: expect.objectContaining({ totalPriceCents: 8_000, finalPriceCents: 8_000 }),
+      }),
+    );
     expect(mocks.manualRefundTaskUpdateMany).toHaveBeenCalled();
-    // And WHY it wrote nothing is on the record rather than silent.
     expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         action: "booking-payment.review-closure.reprice",
         metadata: expect.objectContaining({
-          bookingRebased: false,
-          bookingPriceMoved: false,
-          bookingRebaseDeclinedReason: "strand-evidence-unreadable",
-          previousBookingTotalPriceCents: null,
-          newBookingTotalPriceCents: null,
+          bookingRebased: true,
+          previousBookingTotalPriceCents: 24_000,
+          newBookingTotalPriceCents: 8_000,
         }),
       }),
       tx,
@@ -3994,8 +4055,8 @@ describe("re-basing the booking's headline totals while settling (#3219)", () =>
  *
  * The fix is a re-read, not a backfill: a task with NO payment id asks the
  * booking's own row, inside the completion transaction, through the same
- * `editReviewSettlementPayment` gate the raise sites use (they take its id-only
- * sibling `editReviewSettlementPaymentId`). Nothing is written, so there is no
+ * `editReviewSettlementPayment` gate the raise sites used before #4317 retired
+ * them. Nothing is written, so there is no
  * second write for a webhook replay to duplicate.
  *
  * Every test here has its control, because the property being protected is
@@ -5362,5 +5423,202 @@ describe("#3880 - a review's refund on a cancelled booking reaches Xero as the c
 
     expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2_500 }));
     expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #3949 (`INV-PAY-137`): an edit's or an approved appeal's hand-back on a
+ * joiner's booking the group organiser paid for by internet banking. The
+ * child's payment is the settle's mirror, with no `PaymentTransaction`, so the
+ * completion records the refund on the mirror (lock(1), then the Payment row)
+ * and never asks `applyLocalRefundAllocation`, which would find nothing captured.
+ */
+describe("#3949 - a hand-back on a joiner the organiser paid for by internet banking", () => {
+  function groupChildTask(occurrenceKey: string, bookingStatus: string) {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue({
+      id: "task-9",
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      amountCents: 1500,
+      raisedAmountCents: 1500,
+      kind: ManualRefundTaskKind.CANCELLED_BOOKING_HAND_BACK,
+      occurrenceKey,
+      status: ManualRefundTaskStatus.OPEN,
+      payment: { source: PaymentSource.INTERNET_BANKING },
+      booking: {
+        memberId: "member-1",
+        lodgeId: "lodge-1",
+        status: bookingStatus,
+        organiserSettled: true,
+        parentBookingId: "organiser-booking",
+        // A real IB group child has no invoice of its own (review M1): the money was taken on the group's.
+        payment: { id: "payment-1", status: "SUCCEEDED", source: PaymentSource.INTERNET_BANKING, xeroInvoiceId: null, amountCents: 10000, refundedAmountCents: 0 },
+      },
+    });
+    mocks.txPaymentFindUnique.mockResolvedValue({ id: "payment-1", status: "SUCCEEDED", amountCents: 10000, refundedAmountCents: 0 });
+  }
+  const complete = () =>
+    resolveManualRefundTask({
+      taskId: "task-9",
+      resolution: "completed",
+      note: null,
+      actingMemberId: "admin-1",
+      confirmedAmountCents: null,
+      direction: "REFUND_TO_MEMBER",
+      recordedNightPrices: null,
+    }, CLUB_FORMAT_TEST);
+  const dismiss = () =>
+    resolveManualRefundTask({ taskId: "task-9", resolution: "dismissed", note: "settled another way", actingMemberId: "admin-1", recordedNightPrices: null }, CLUB_FORMAT_TEST);
+
+  for (const [label, key, snapshotKind] of [
+    ["an edit's", "edit-refund-hand-back:mod-1", "edit_refund_hand_back_completed"],
+    ["an approved appeal's", "refund-request-hand-back:req-1", "refund_request_hand_back_completed"],
+  ] as const) {
+    for (const bookingStatus of ["PAID", "CANCELLED"]) {
+      it(`completes ${label} hand-back on a ${bookingStatus} child onto its mirror, under lock(1) then the Payment row`, async () => {
+        groupChildTask(key, bookingStatus);
+
+        await complete();
+
+        // Never the ledger allocation that refused it before: the mirror is the record.
+        expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+        expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+          where: { id: "payment-1" },
+          data: { refundedAmountCents: 1500, status: "PARTIALLY_REFUNDED" },
+        });
+        // lock(1) first, then the Payment row, then the claim, then the write.
+        expect(String((mocks.executeRaw.mock.calls[0]![0] as TemplateStringsArray).join(""))).toContain("pg_advisory_xact_lock(1)");
+        expect(mocks.lockPaymentForRefundedTotal).toHaveBeenCalledWith(tx, "payment-1");
+        expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.lockPaymentForRefundedTotal.mock.invocationCallOrder[0]!);
+        expect(mocks.lockPaymentForRefundedTotal.mock.invocationCallOrder[0]).toBeLessThan(mocks.manualRefundTaskUpdateMany.mock.invocationCallOrder[0]!);
+        expect(mocks.manualRefundTaskUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(mocks.paymentUpdate.mock.invocationCallOrder[0]!);
+        // The bank-transfer line on the booking ledger, and the marked REFUNDED event.
+        expect(postHandBackLedgerLine).toHaveBeenCalledWith(
+          expect.objectContaining({ manualRefundTaskId: "task-9", amountCents: 1500, refundMethod: "internet-banking", paymentSource: "INTERNET_BANKING" }),
+        );
+        expect(mocks.recordBookingEvent).toHaveBeenCalledWith(
+          expect.objectContaining({ type: BookingEventType.REFUNDED, amountCents: 1500, snapshot: { kind: snapshotKind, manualRefundTaskId: "task-9" } }),
+        );
+        // Review M1: no Xero note can be placed (no invoice of its own); the officers are told instead.
+        expect(mocks.enqueueXeroRefundCreditNoteOperation).not.toHaveBeenCalled();
+        expect(mocks.queueXeroBookingEditSettlement).not.toHaveBeenCalled();
+        expect(mocks.enqueueXeroRefundRequestCreditNoteOperation).not.toHaveBeenCalled();
+        expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(expect.objectContaining({ errorType: "GROUP_ORGANISER_REFUND_NOTE_BY_HAND" }));
+        expect(mocks.manualRefundTaskUpdateMany.mock.invocationCallOrder[0]).toBeLessThan(mocks.sendAdminXeroSyncErrorAlert.mock.invocationCallOrder[0]!);
+        expect(mocks.createAuditLog).toHaveBeenCalledWith(
+          expect.objectContaining({ metadata: expect.objectContaining({ settlementRoute: "group-settlement-mirror" }) }),
+          expect.anything(),
+        );
+      });
+    }
+  }
+
+  // #3949 review: a refund-direction review on such a child took the ledger route and was refused the same way.
+  const groupChildReview = (bookingStatus: string) =>
+    editReviewTask({
+      paymentId: "payment-1",
+      booking: {
+        memberId: "member-1",
+        lodgeId: "lodge-1",
+        status: bookingStatus,
+        checkIn: new Date("2026-08-01T00:00:00.000Z"),
+        organiserSettled: true,
+        parentBookingId: "organiser-booking",
+        payment: { id: "payment-1", status: "SUCCEEDED", source: PaymentSource.INTERNET_BANKING, xeroInvoiceId: null, amountCents: 10000, refundedAmountCents: 0, stripeCustomerId: null },
+      },
+    });
+  const completeReview = () =>
+    resolveManualRefundTask({
+      taskId: "task-1",
+      resolution: "completed",
+      note: "Priced from the stay as booked.",
+      actingMemberId: "admin-1",
+      confirmedAmountCents: 2000,
+      direction: "REFUND_TO_MEMBER",
+      recordedNightPrices: null,
+    }, CLUB_FORMAT_TEST);
+
+  it("review: a refund-direction review's share on a live child goes to the organiser onto the mirror", async () => {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(groupChildReview("PAID"));
+    mocks.txPaymentFindUnique.mockResolvedValue({ id: "payment-1", status: "SUCCEEDED", amountCents: 10000, refundedAmountCents: 0 });
+
+    await completeReview();
+
+    expect(mocks.applyLocalRefundAllocation).not.toHaveBeenCalled();
+    expect(mocks.createBookingModificationCredit).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment-1" }, data: { refundedAmountCents: 2000, status: "PARTIALLY_REFUNDED" } });
+    expect(postHandBackLedgerLine).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2000, refundMethod: "internet-banking" }));
+    expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalled();
+  });
+
+  it("review: on a cancelled child it is refused before the claim, as the card twin's is - no part becomes the joiner's credit", async () => {
+    mocks.manualRefundTaskFindUnique.mockResolvedValue(groupChildReview("CANCELLED"));
+    mocks.bookingFindUniqueOrThrow.mockResolvedValue({ organiserSettled: true, parentBookingId: "organiser-booking", payment: { source: "INTERNET_BANKING" } });
+
+    await expect(completeReview()).rejects.toMatchObject({ status: 409, message: REVIEW_CANCELLATION_ORGANISER_PAID_BY_BANK_MESSAGE });
+    expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.giveBackAppliedCredit).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("writes REFUNDED when the hand-back takes the mirror to the whole payment", async () => {
+    groupChildTask("edit-refund-hand-back:mod-1", "PAID");
+    mocks.txPaymentFindUnique.mockResolvedValue({ id: "payment-1", status: "PARTIALLY_REFUNDED", amountCents: 10000, refundedAmountCents: 8500 });
+
+    await complete();
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({ where: { id: "payment-1" }, data: { refundedAmountCents: 10000, status: "REFUNDED" } });
+  });
+
+  it("refuses, before the claim, more than the payment holds less the OTHER open hand-backs; the task stays OPEN", async () => {
+    groupChildTask("edit-refund-hand-back:mod-1", "PAID");
+    mocks.txPaymentFindUnique.mockResolvedValue({ id: "payment-1", status: "PARTIALLY_REFUNDED", amountCents: 10000, refundedAmountCents: 8000 });
+    mocks.manualRefundTaskAggregate.mockResolvedValue({ _sum: { amountCents: 1000 } });
+
+    await expect(complete()).rejects.toMatchObject({ status: 400, message: GROUP_MIRROR_HAND_BACK_EXCEEDS_CASH_MESSAGE });
+    expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+    // This task's own amount is the one being settled, so it is left out of "the others".
+    expect(mocks.manualRefundTaskAggregate).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ paymentId: "payment-1", NOT: { id: "task-9" } }) }),
+    );
+  });
+
+  it("CONTROL: a payment some transaction backs keeps the ledger route", async () => {
+    groupChildTask("edit-refund-hand-back:mod-1", "PAID");
+    mocks.paymentTransactionCount.mockResolvedValueOnce(1);
+
+    await complete();
+
+    expect(mocks.applyLocalRefundAllocation).toHaveBeenCalledWith(expect.objectContaining({ paymentId: "payment-1", amountCents: 1500 }));
+    expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+  });
+
+  it("refuses dismissing an edit's after the group cancel, naming the organiser (the cancel netted it)", async () => {
+    groupChildTask("edit-refund-hand-back:mod-1", "CANCELLED");
+
+    const organiserPaid = { organiserSettled: true, parentBookingId: "organiser-booking", payment: { source: "INTERNET_BANKING" } };
+    await expect(dismiss()).rejects.toMatchObject({ status: 409, message: editRefundHandBackDismissAfterCancelMessage(organiserPaid) });
+    expect(editRefundHandBackDismissAfterCancelMessage(organiserPaid)).toContain("group organiser");
+    expect(editRefundHandBackDismissAfterCancelMessage({ ...organiserPaid, organiserSettled: false })).toBe(EDIT_REFUND_HAND_BACK_DISMISS_AFTER_CANCEL_MESSAGE);
+    expect(mocks.manualRefundTaskUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it("dismisses an edit's on a live child, and an appeal's even after the cancel, moving nothing", async () => {
+    for (const [key, status] of [["edit-refund-hand-back:mod-1", "PAID"], ["refund-request-hand-back:req-1", "CANCELLED"]] as const) {
+      vi.clearAllMocks();
+      mocks.transaction.mockImplementation(async (fn: (store: typeof tx) => Promise<unknown>) => fn(tx));
+      mocks.manualRefundTaskUpdateMany.mockResolvedValue({ count: 1 });
+      mocks.planKeptLateCaptureXeroRecord.mockResolvedValue({ kind: "none" });
+      groupChildTask(key, status);
+
+      await dismiss();
+
+      expect(mocks.manualRefundTaskUpdateMany).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ status: ManualRefundTaskStatus.DISMISSED }) }),
+      );
+      expect(mocks.paymentUpdate).not.toHaveBeenCalled();
+      expect(postHandBackLedgerLine).not.toHaveBeenCalled();
+    }
   });
 });
