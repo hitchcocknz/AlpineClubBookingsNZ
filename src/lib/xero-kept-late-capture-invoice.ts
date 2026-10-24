@@ -87,6 +87,8 @@ import {
   XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
   readQueuedOutboxPayload,
 } from "@/lib/xero-operation-outbox-payload";
+import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
+import { captureChangeId } from "@/lib/additional-capture-receipt-link";
 
 /** Stamped on a row withdrawn because the task stopped keeping the money. */
 export const KEPT_LATE_CAPTURE_WITHDRAWN_ERROR_CODE = "KEPT_LATE_CAPTURE_WITHDRAWN";
@@ -285,7 +287,12 @@ export async function enqueueXeroKeptLateCaptureInvoiceOperation(params: {
  *    refund gets no automatic note: the officer records that by hand, as the
  *    repair tool asks (`KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`, #4039).
  * The change's released supplementary invoice for the same capture, still
- * PENDING, is withdrawn too.
+ * PENDING, is withdrawn too, and (#4324, `INV-PAY-141`) the capture's own
+ * receipt where it has decided nothing yet - PENDING, or FAILED before it
+ * stored its decision - under the change's anchor lock, after the task row
+ * (the one order). One that stored its decision may already be in Xero: it
+ * stands, its worker sends it, and the refund note answers it; a RUNNING one
+ * that has not stored it reads the task again under that lock and stands down.
  */
 export async function settleKeptLateCaptureRecordOnApproval(params: {
   manualRefundTaskId: string;
@@ -355,6 +362,48 @@ export async function settleKeptLateCaptureRecordOnApproval(params: {
       lastErrorMessage: withdrawnMessage,
     },
   });
+  await withdrawUndecidedKeptCaptureReceipt(db, params, withdrawnMessage);
+}
+
+/** #4324: the approval's withdrawal of the capture's undecided receipt (see above). */
+async function withdrawUndecidedKeptCaptureReceipt(
+  db: Prisma.TransactionClient,
+  params: { manualRefundTaskId: string; paymentIntentId: string },
+  message: string,
+): Promise<void> {
+  const { paymentIntentId } = params;
+  const [capture, task] = await Promise.all([
+    db.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: paymentIntentId },
+      select: { bookingModificationId: true, reason: true },
+    }),
+    db.manualRefundTask.findUnique({ where: { id: params.manualRefundTaskId }, select: { bookingId: true } }),
+  ]);
+  if (!capture || !task) return;
+  // Imported here: the outbox dispatches to this module's worker.
+  const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
+  await lockSupplementaryInvoiceAnchor(db, captureChangeId(capture) ?? task.bookingId);
+  const rows = await db.xeroSyncOperation.findMany({
+    where: {
+      queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
+      status: { in: ["PENDING", "FAILED"] },
+      manuallyResolvedAt: null,
+      requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
+    },
+    select: { id: true, status: true, requestPayload: true },
+  });
+  for (const row of rows) {
+    if (asRecord(row.requestPayload)?.plan != null) continue;
+    await db.xeroSyncOperation.updateMany({
+      where: { id: row.id, status: row.status, manuallyResolvedAt: null },
+      data: {
+        status: "CANCELLED",
+        completedAt: new Date(),
+        lastErrorCode: KEPT_LATE_CAPTURE_WITHDRAWN_ERROR_CODE,
+        lastErrorMessage: message,
+      },
+    });
+  }
 }
 
 /**

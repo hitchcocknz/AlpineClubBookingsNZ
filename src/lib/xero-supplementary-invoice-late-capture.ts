@@ -55,6 +55,19 @@ const CAPTURED_NOT_ISSUED_ERROR_CODE = "STALE_WAITING_PAYMENT_CAPTURED";
 const COVERED_ERROR_CODE = "STALE_WAITING_PAYMENT_COVERED";
 
 /**
+ * #4324: the codes of a retired supplementary invoice that still answers the
+ * capture its payload names - the release revives it, has alerted on it, or
+ * found it covered - so a kept change capture is left to the release
+ * (`keptChangeCaptureRoute`'s `change-invoice`). Any other CANCELLED row was
+ * withdrawn, and bills nothing.
+ */
+export const RETIRED_CODES_ANSWERING_CAPTURE = [
+  STALE_WAITING_PAYMENT_ERROR_CODE,
+  CAPTURED_NOT_ISSUED_ERROR_CODE,
+  COVERED_ERROR_CODE,
+] as const;
+
+/**
  * What a captured additional payment did to its Xero supplementary invoice.
  * Every outcome is named, so "released nothing" is never silent.
  */

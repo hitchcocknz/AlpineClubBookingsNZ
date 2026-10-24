@@ -11,7 +11,8 @@ import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-key
 // the per-anchor lock's callers make about captures no change can be read from.
 
 function store(input: {
-  captures?: Array<{ id: string }>;
+  captures?: Array<{ id: string; stripePaymentIntentId?: string | null }>;
+  kept?: Array<{ queueType: string }>;
   link?: { id: string } | null;
   receipts?: Array<{ status: string; requestPayload: unknown }>;
   supplementaries?: Array<{ requestPayload: unknown }>;
@@ -32,7 +33,9 @@ function store(input: {
     bookingModification: { findMany: vi.fn(async () => input.modifications ?? []) },
     xeroSyncOperation: {
       findMany: vi.fn(async (args: { where: { queueType: string; localModel?: string } }) =>
-        args.where.queueType !== "SUPPLEMENTARY_INVOICE"
+        args.where.queueType === "KEPT_LATE_CAPTURE_INVOICE"
+          ? (input.kept ?? [])
+          : args.where.queueType !== "SUPPLEMENTARY_INVOICE"
           ? (input.receipts ?? [])
           : args.where.localModel
             ? (input.queuedOnChanges ?? [])
@@ -167,6 +170,25 @@ describe("anchorCaptureHasReceipt", () => {
       anchorCaptureHasReceipt(store({ captures, receipts: [{ status: "RUNNING", requestPayload: { plan: { invoiceId: "inv_1" } } }] }) as never, input, decidedOnly),
     ).resolves.toBe(true);
     await expect(anchorCaptureHasReceipt(store({ captures, link: { id: "link_1" } }) as never, input, decidedOnly)).resolves.toBe(true);
+  });
+
+  it("MUTATION #4324 (INV-PAY-141): counts a kept late capture's own invoice naming one of the captures, in both modes", async () => {
+    const input = { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: "pi_kept" };
+    const captures = [{ id: "tx_1", stripePaymentIntentId: "pi_kept" }];
+    const kept = [{ queueType: "KEPT_LATE_CAPTURE_INVOICE" }];
+    await expect(anchorCaptureHasReceipt(store({ captures, kept }) as never, input)).resolves.toBe(true);
+    await expect(anchorCaptureHasReceipt(store({ captures, kept }) as never, input, { decidedOnly: true })).resolves.toBe(true);
+    await expect(anchorCaptureHasReceipt(store({ captures }) as never, input)).resolves.toBe(false);
+    const db = store({ captures, kept });
+    await anchorCaptureHasReceipt(db as never, input);
+    expect(db.xeroSyncOperation.findMany).toHaveBeenCalledWith({
+      where: {
+        queueType: "KEPT_LATE_CAPTURE_INVOICE",
+        status: { not: "CANCELLED" },
+        OR: [{ requestPayload: { path: ["paymentIntentId"], equals: "pi_kept" } }],
+      },
+      select: { queueType: true },
+    });
   });
 
   it("counts a RUNNING row or a stored plan, never a PENDING row with no plan", async () => {

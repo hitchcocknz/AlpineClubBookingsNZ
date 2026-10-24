@@ -90,6 +90,7 @@ import {
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
 import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
 import { addUnrecordedAdditionalCaptureFindings } from "./xero-booking-repair-additional-capture";
+import { addKeptChangeCaptureFinding } from "./xero-booking-repair-kept-change-capture";
 import { addRefundRequestNoteNotQueuedFindings, paidBackRefundRequestCents } from "./xero-booking-repair-request-notes";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
@@ -2001,8 +2002,14 @@ export function classifyBookingContext(
             paymentXeroInvoiceId: payment.xeroInvoiceId,
             paymentLinks,
           }),
-        }) !== "kept-invoice"
+        }) !== "kept-invoice" &&
+        !keptLateCaptureInvoiceAsked(kept.operations)
       ) {
+        // #4324 (`INV-PAY-141`): a kept change capture on an invoiced booking,
+        // decided by its change's evidence. One the keep already gave a
+        // kept-capture invoice is retried or reported below like any.
+        const { stripePaymentIntentId } = transaction;
+        addKeptChangeCaptureFinding({ findings, actionMap, booking, payment, transaction: { ...transaction, stripePaymentIntentId }, kept, found: context.keptChangeCaptures?.get(stripePaymentIntentId) });
         continue;
       }
       const { recordCents } = decideLateCapture({

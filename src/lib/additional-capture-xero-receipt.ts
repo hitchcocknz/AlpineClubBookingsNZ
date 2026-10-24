@@ -43,6 +43,15 @@
  * receipt waits for it. A capture on a booking since cancelled, or paid by
  * internet banking, is closed unsent.
  *
+ * #4324 (`INV-PAY-141`): save a late capture on a cancelled booking that a
+ * treasurer KEPT (its approval task DISMISSED), whose change the primary
+ * invoice bills - queued by the keep's decision. It records as any receipt
+ * does, capped at the invoice's room, with no gap check (nothing new is billed
+ * on a cancelled booking); the task is read again under the change's lock
+ * where the decision is stored, so an approval after a reopen stands it down;
+ * and once recorded, any refund of it is credited back and a paid-another-way
+ * close's waiting note queued, as the kept-capture invoice's worker does.
+ *
  * NEVER TWICE. One row per capture, queued under the per-anchor
  * supplementary-invoice lock; the payment link returns early; an earlier run's
  * payment is found by its reference; and the payment decided is stored on the
@@ -52,7 +61,7 @@
  * No provider call is made under a lock or inside a transaction (`INV-LOCK-004`).
  */
 import type { Invoice } from "xero-node";
-import { PaymentSource } from "@prisma/client";
+import { PaymentSource, type Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
@@ -398,7 +407,9 @@ export async function recordAdditionalCaptureReceipt(
     const payment = transaction.payment;
     // Review round 1 (K, H): the cancellation answers a cancelled booking's
     // invoice; a booking paid by internet banking is the treasurer's to settle.
-    if (payment.booking.status === "CANCELLED") return standDown("CANCELLED", "booking-cancelled");
+    // #4324: save a late capture whose approval task decides it (kept, below).
+    const cancelled = payment.booking.status === "CANCELLED";
+    if (cancelled && !(await hasLateCaptureApprovalTask(paymentIntentId))) return standDown("CANCELLED", "booking-cancelled");
     if (payment.source !== PaymentSource.STRIPE) return standDown("CANCELLED", "not-a-card-booking");
     const primaryInvoiceId = payment.xeroInvoiceId;
     if (!primaryInvoiceId) return refuse("no-primary-invoice");
@@ -419,8 +430,8 @@ export async function recordAdditionalCaptureReceipt(
     if (recorder.kind === "primary-invoice") {
       return standDown("SUCCEEDED", "recorded-by-primary-invoice", { primaryInvoiceId });
     }
-    if (recorder.kind === "supplementary-invoice") {
-      return standDown("SUCCEEDED", "recorded-by-supplementary-invoice", { operationId: recorder.operationId });
+    if (recorder.kind === "supplementary-invoice" || recorder.kind === "kept-late-capture-invoice") {
+      return standDown("SUCCEEDED", `recorded-by-${recorder.kind}`, { operationId: recorder.operationId });
     }
     const { gap, target: supplementary, alreadyRecordedCents } = recorder;
     // Only the part no other writer recorded: the primary's payment, or the
@@ -480,7 +491,8 @@ export async function recordAdditionalCaptureReceipt(
     const roomCents = target === "PRIMARY_INVOICE" ? await primaryRoom(read, payment, capturedCents) : amountDueOn(read);
     const chosen = chooseAdditionalCaptureReceiptTarget(capturedCents, [{ target, invoiceId, roomCents }]);
 
-    if (!gap && target === "PRIMARY_INVOICE" && (!chosen || chosen.amountCents < capturedCents)) {
+    // #4324: never on a cancelled booking - nothing new is billed there.
+    if (!cancelled && !gap && target === "PRIMARY_INVOICE" && (!chosen || chosen.amountCents < capturedCents)) {
       // The primary cannot take it all and no gap invoice exists: the primary
       // may bill less than the booking was worth at its link. #3980's own check
       // raises that gap, or finds it raised, and never a second. This capture
@@ -519,6 +531,9 @@ export async function recordAdditionalCaptureReceipt(
     const stored = await prisma.$transaction(async (tx) => {
       const changeId = captureChangeId(transaction);
       await lockSupplementaryInvoiceAnchor(tx, changeId ?? bookingId);
+      // #4324: a kept capture is still kept, read under the lock the approval
+      // withdraws an undecided receipt under.
+      if (cancelled && !(await lateCaptureStillKept(tx, paymentIntentId))) return "not-kept" as const;
       const now = await readCaptureRecorder({ bookingId, primaryInvoiceId, paymentIntentId, bookingModificationId: changeId }, tx);
       if (now.kind !== "receipt") return now.kind;
       // Round 7: a capture no change can be read from decides under the
@@ -535,6 +550,7 @@ export async function recordAdditionalCaptureReceipt(
       return "stored" as const;
     });
     if (stored === "change-unknown") return refuse("change-unknown");
+    if (stored === "not-kept") return standDown("CANCELLED", "capture-not-kept", { decidedAgainUnderLock: true });
     if (stored === "target-moved") {
       throw waitFor("The invoice this card payment belongs to changed while it was being decided; it is decided again on the next run");
     }
@@ -559,7 +575,7 @@ export async function recordAdditionalCaptureReceipt(
     if (recorder.kind === "receipt") return null;
     return {
       kind: recorder.kind,
-      operationId: recorder.kind === "supplementary-invoice" ? recorder.operationId : null,
+      operationId: recorder.kind === "primary-invoice" ? null : recorder.operationId,
       changeId: captureChangeId(capture),
     };
   }
@@ -567,6 +583,7 @@ export async function recordAdditionalCaptureReceipt(
   /** Rounds 6 and 9: this receipt's payment is in Xero and another invoice would record it too - set unpaid where unsent (`switchUnsentRecorderUnpaid`); an officer checks Xero either way. */
   async function settleOtherRecorder(other: OtherRecorder, invoiceId: string): Promise<void> {
     const switched =
+      other.kind === "supplementary-invoice" &&
       other.operationId !== null &&
       (await switchUnsentRecorderUnpaid(other.operationId, { paymentIntentId, bookingModificationId: other.changeId }));
     await alertOfficer(
@@ -661,6 +678,7 @@ export async function recordAdditionalCaptureReceipt(
       await alertOfficer(paymentIntentId, operationId, message);
     }
     if (plan.target !== "PRIMARY_INVOICE") await flagRefundNotesNamingAnotherInvoice(plan.invoiceId);
+    await answerKeptLateCaptureRefunds(paymentIntentId);
   }
 
   /**
@@ -694,5 +712,47 @@ export async function recordAdditionalCaptureReceipt(
       operationId,
       `This card payment was refunded before its Xero receipt was recorded against supplementary invoice ${receiptInvoiceId}, and its refund credit note (outbox operation ${naming.map((note) => note.id).join(", ")}) names the booking's own invoice instead. The amounts balance; check the note's reference in Xero.`,
     );
+  }
+}
+
+/** #4324: whether a #3639 approval task owns this capture - a late capture on a cancelled booking. */
+async function hasLateCaptureApprovalTask(paymentIntentId: string): Promise<boolean> {
+  const task = await prisma.manualRefundTask.findUnique({
+    where: { lateCaptureApprovalIntentId: paymentIntentId },
+    select: { id: true },
+  });
+  return task !== null;
+}
+
+/** #4324: under the change's anchor lock, whether the capture's approval task still keeps it. */
+async function lateCaptureStillKept(
+  tx: Pick<Prisma.TransactionClient, "manualRefundTask">,
+  paymentIntentId: string,
+): Promise<boolean> {
+  const task = await tx.manualRefundTask.findUnique({
+    where: { lateCaptureApprovalIntentId: paymentIntentId },
+    select: { status: true },
+  });
+  return task?.status === "DISMISSED";
+}
+
+/**
+ * #4324: once a kept late capture's receipt is in Xero, any refund of it
+ * already taken gets its note (`creditBackLateCaptureRefunds`), and a close of
+ * its approved refund as paid another way gets its waiting bank note
+ * (`queueWaitingPaidAnotherWayNote`), as the kept-capture invoice's worker
+ * does. Each is a no-op for a capture no approval task owns. Never throws: the
+ * payment is recorded, and the nightly credit check retries the note step.
+ */
+async function answerKeptLateCaptureRefunds(paymentIntentId: string): Promise<void> {
+  if (!(await hasLateCaptureApprovalTask(paymentIntentId))) return;
+  // Imported here: those modules reach the outbox, which dispatches to this worker.
+  const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
+  await creditBackLateCaptureRefunds(paymentIntentId);
+  try {
+    const { queueWaitingPaidAnotherWayNote } = await import("@/lib/paid-another-way-receipt-note");
+    await queueWaitingPaidAnotherWayNote(paymentIntentId);
+  } catch (err) {
+    logger.error({ err, paymentIntentId }, "Failed to queue a paid-another-way close's note after a kept capture's receipt; the nightly credit check retries it");
   }
 }

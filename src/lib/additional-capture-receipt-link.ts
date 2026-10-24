@@ -10,6 +10,7 @@ import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
+import { XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import { SUPPLEMENTARY_INVOICE_PAYMENT_ROLE } from "@/lib/xero-inbound/object-links";
@@ -177,6 +178,11 @@ export async function bookingHasPaidUnnamedSupplementary(
  * enqueue keeps counting it: there a NEW invoice is raised unpaid and the
  * running receipt, on that read, records against it - one recorder either
  * way, and the window between its claim and its store is covered.
+ *
+ * #4324 (`INV-PAY-141`): a kept late capture's own invoice
+ * (`KEPT_LATE_CAPTURE_INVOICE`, any status but CANCELLED, its payload naming
+ * the capture) counts in both modes: the keep queued it as the capture's
+ * recorder, under this same anchor lock.
  */
 export async function anchorCaptureHasReceipt(
   store: Pick<Prisma.TransactionClient, "paymentTransaction" | "xeroObjectLink" | "xeroSyncOperation">,
@@ -202,11 +208,12 @@ export async function anchorCaptureHasReceipt(
   const captures = await store.paymentTransaction.findMany({
     where: { kind: "ADDITIONAL", OR: arms },
     orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
-    select: { id: true },
+    select: { id: true, stripePaymentIntentId: true },
   });
   const ids = captures.map((capture) => capture.id);
   if (ids.length === 0) return false;
-  const [linked, receipts] = await Promise.all([
+  const intents = captures.flatMap((capture) => (capture.stripePaymentIntentId ? [capture.stripePaymentIntentId] : []));
+  const [linked, receipts, kept] = await Promise.all([
     store.xeroObjectLink.findFirst({
       where: { localModel: "PaymentTransaction", localId: { in: ids }, role: ADDITIONAL_CAPTURE_PAYMENT_ROLE, active: true },
       select: { id: true },
@@ -220,9 +227,20 @@ export async function anchorCaptureHasReceipt(
       },
       select: { status: true, requestPayload: true },
     }),
+    intents.length === 0
+      ? []
+      : store.xeroSyncOperation.findMany({
+          where: {
+            queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+            status: { not: "CANCELLED" },
+            OR: intents.map((intent) => ({ requestPayload: { path: ["paymentIntentId"], equals: intent } })),
+          },
+          select: { queueType: true },
+        }),
   ]);
   return (
     linked !== null ||
+    kept.some((row) => row.queueType === XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE) ||
     receipts.some(
       (receipt) => (!options?.decidedOnly && receipt.status === "RUNNING") || asRecord(receipt.requestPayload)?.plan != null,
     )

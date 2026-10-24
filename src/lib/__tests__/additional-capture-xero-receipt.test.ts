@@ -32,6 +32,10 @@ const mocks = vi.hoisted(() => ({
   txFindFirstLink: vi.fn(),
   txFindManyModification: vi.fn(),
   txFindManyLink: vi.fn(),
+  // #4324: the capture's approval task, and what a kept capture's receipt does once recorded.
+  findUniqueTask: vi.fn(),
+  creditBackLateCaptureRefunds: vi.fn(),
+  queueWaitingPaidAnotherWayNote: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -47,9 +51,12 @@ vi.mock("@/lib/prisma", () => ({
     paymentTransaction: { findUnique: mocks.findUniqueTransaction, findMany: mocks.findManyTransaction },
     payment: { findUniqueOrThrow: mocks.findUniqueOrThrowPayment },
     paymentRefund: { findFirst: mocks.findFirstRefund },
+    manualRefundTask: { findUnique: mocks.findUniqueTask },
     $transaction: mocks.transaction,
   },
 }));
+vi.mock("@/lib/late-capture-refund-credit-note", () => ({ creditBackLateCaptureRefunds: mocks.creditBackLateCaptureRefunds }));
+vi.mock("@/lib/paid-another-way-receipt-note", () => ({ queueWaitingPaidAnotherWayNote: mocks.queueWaitingPaidAnotherWayNote }));
 vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
 vi.mock("@/lib/email", () => ({ sendAdminXeroSyncErrorAlert: mocks.sendAdminXeroSyncErrorAlert }));
 vi.mock("@/lib/club-time-zone-runtime", () => ({
@@ -235,8 +242,10 @@ beforeEach(() => {
       xeroObjectLink: { findFirst: mocks.txFindFirstLink, findMany: mocks.txFindManyLink },
       bookingModification: { findMany: mocks.txFindManyModification },
       paymentTransaction: { findMany: mocks.findManyTransaction },
+      manualRefundTask: { findUnique: mocks.findUniqueTask },
     }),
   );
+  mocks.findUniqueTask.mockResolvedValue(null);
   mocks.txFindFirstLink.mockResolvedValue(null);
   mocks.txFindManyModification.mockResolvedValue([]);
   mocks.txFindManyLink.mockResolvedValue([]);
@@ -508,6 +517,76 @@ describe("recordAdditionalCaptureReceipt", () => {
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", { status: "CANCELLED", responsePayload: { skipped } });
     expect(mocks.sendAdminXeroSyncErrorAlert).not.toHaveBeenCalled();
     expect(seam.getAuthenticatedXeroClient).not.toHaveBeenCalled();
+  });
+
+  /**
+   * #4324 (owner decision 25 Oct 2026; `INV-PAY-141`): a late capture a
+   * treasurer KEPT on a cancelled booking whose primary invoice bills its
+   * change is recorded as a payment on that invoice, capped at what Xero
+   * shows due.
+   */
+  describe("#4324: a kept capture on a cancelled booking", () => {
+    beforeEach(() => {
+      mocks.findUniqueTransaction.mockResolvedValue(capture({}, "CANCELLED"));
+      mocks.findUniqueTask.mockResolvedValue({ id: "task_kept", status: "DISMISSED" });
+    });
+
+    it("MUTATION: records it against the primary that bills the change, then answers its refunds and a waiting close's note", async () => {
+      const seam = providers();
+      await expect(run(seam)).resolves.toBe("xero_payment_1");
+      expect(storedPlan()).toEqual(expect.objectContaining({ target: "PRIMARY_INVOICE", invoiceId: PRIMARY, amountCents: 8000 }));
+      expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: PRIMARY, amountCents: 8000 }));
+      expect(mocks.creditBackLateCaptureRefunds).toHaveBeenCalledWith("pi_change");
+      expect(mocks.queueWaitingPaidAnotherWayNote).toHaveBeenCalledWith("pi_change");
+      expect(mocks.creditBackLateCaptureRefunds.mock.invocationCallOrder[0]).toBeGreaterThan(
+        mocks.completeXeroSyncOperation.mock.invocationCallOrder[0]!,
+      );
+    });
+
+    it("MUTATION: caps it at Xero's AmountDue, tells an officer the rest, and never raises a gap invoice on a cancelled booking", async () => {
+      invoices[PRIMARY] = { amountDue: 5000 };
+      const seam = providers();
+      await run(seam);
+      expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 5000 }));
+      expect(mocks.recheckPrimaryInvoiceWorthGap).not.toHaveBeenCalled();
+      expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses, telling an officer, where the primary has nothing due - never overpaying it", async () => {
+      invoices[PRIMARY] = { amountDue: 0 };
+      const seam = providers();
+      await run(seam);
+      expectRefused("nothing-due");
+      expect(mocks.recheckPrimaryInvoiceWorthGap).not.toHaveBeenCalled();
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: stands down, unsent, where the task was reopened or approved before the decision was stored (read under the anchor lock)", async () => {
+      mocks.findUniqueTask
+        .mockResolvedValueOnce({ id: "task_kept", status: "DISMISSED" })
+        .mockResolvedValueOnce({ status: "COMPLETED" });
+      const seam = providers();
+      await expect(run(seam)).resolves.toBeNull();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", {
+        status: "CANCELLED",
+        responsePayload: { skipped: "capture-not-kept", decidedAgainUnderLock: true },
+      });
+      expect(mocks.updateOperation).not.toHaveBeenCalled();
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+      const lock = mocks.lockSupplementaryInvoiceAnchor.mock.invocationCallOrder.at(-1)!;
+      expect(lock).toBeLessThan(mocks.findUniqueTask.mock.invocationCallOrder.at(-1)!);
+    });
+
+    it("stands down where its kept-capture invoice records it (INV-PAY-139)", async () => {
+      mocks.readCaptureRecorder.mockResolvedValue({ kind: "kept-late-capture-invoice", operationId: "op_kept" });
+      const seam = providers();
+      await expect(run(seam)).resolves.toBeNull();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", {
+        status: "SUCCEEDED",
+        responsePayload: { skipped: "recorded-by-kept-late-capture-invoice", operationId: "op_kept" },
+      });
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+    });
   });
 
   it("refuses while the primary invoice's own card payment is still owed (its create PARTIAL)", async () => {
@@ -1037,6 +1116,7 @@ describe("enqueueAdditionalCaptureReceiptOperation", () => {
   it.each([
     [{ kind: "primary-invoice" }, "recorded-by-primary-invoice"],
     [{ kind: "supplementary-invoice", operationId: "op_supp" }, "recorded-by-supplementary-invoice"],
+    [{ kind: "kept-late-capture-invoice", operationId: "op_kept" }, "recorded-by-kept-late-capture-invoice"],
   ])("stands down, under the lock, where another writer records it (%o)", async (recorder, reason) => {
     tx.xeroSyncOperation.findFirst.mockResolvedValue(null);
     mocks.readCaptureRecorder.mockResolvedValue(recorder);
@@ -1084,6 +1164,55 @@ describe("enqueueAdditionalCaptureReceiptOperation", () => {
 
     await expect(enqueueAdditionalCaptureReceiptOperation("pi_change")).resolves.toEqual({ outcome: "not-eligible", reason });
     expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  describe("#4324: a kept late capture on a cancelled booking", () => {
+    const keepTx = {
+      xeroSyncOperation: { findFirst: vi.fn() },
+      manualRefundTask: { findUnique: vi.fn() },
+      paymentTransaction: { findUnique: mocks.findUniqueTransaction },
+    };
+    beforeEach(() => {
+      keepTx.xeroSyncOperation.findFirst.mockReset().mockResolvedValue(null);
+      keepTx.manualRefundTask.findUnique.mockReset().mockResolvedValue({ status: "DISMISSED" });
+      mocks.findUniqueTransaction.mockResolvedValue(eligible({}, { booking: { status: "CANCELLED" } }));
+    });
+
+    it("MUTATION: queues it on the keep's own transaction, under the anchor lock, once the task is read there still kept", async () => {
+      await expect(
+        enqueueAdditionalCaptureReceiptOperation("pi_change", { store: keepTx as never, keptLateCapture: true }),
+      ).resolves.toEqual({ outcome: "queued", queueOperationId: "op_receipt" });
+      expect(mocks.transaction).not.toHaveBeenCalled();
+      expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(keepTx, "mod_1");
+      expect(keepTx.manualRefundTask.findUnique).toHaveBeenCalledWith({
+        where: { lateCaptureApprovalIntentId: "pi_change" },
+        select: { status: true },
+      });
+      expect(mocks.lockSupplementaryInvoiceAnchor.mock.invocationCallOrder[0]).toBeLessThan(
+        keepTx.manualRefundTask.findUnique.mock.invocationCallOrder[0]!,
+      );
+      expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ store: keepTx }));
+    });
+
+    it("queues nothing for a capture no longer kept", async () => {
+      keepTx.manualRefundTask.findUnique.mockResolvedValue({ status: "OPEN" });
+      await expect(
+        enqueueAdditionalCaptureReceiptOperation("pi_change", { store: keepTx as never, keptLateCapture: true }),
+      ).resolves.toEqual({ outcome: "not-eligible", reason: "capture-not-kept" });
+      expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: any other caller (a replayed release) finds the keep's row, and queues none of its own", async () => {
+      mocks.findFirstOperation.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        where.correlationKey === "payment-intent:pi_change:additional-capture-receipt:v1" ? { id: "op_kept_receipt" } : null,
+      );
+      await expect(enqueueAdditionalCaptureReceiptOperation("pi_change")).resolves.toEqual({
+        outcome: "already-queued",
+        queueOperationId: "op_kept_receipt",
+      });
+      expect(mocks.transaction).not.toHaveBeenCalled();
+      expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+    });
   });
 });
 

@@ -1,6 +1,9 @@
 import { ManualRefundTaskStatus, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { KEPT_LATE_CAPTURE_INVOICE_ROLE, xeroCreateCallAttempted } from "@/lib/late-capture-kept-xero-rules";
+import { asRecord } from "@/lib/xero-json";
+import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
+import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 import { automaticCancelledBookingRefundTaskReasons } from "@/lib/deleted-booking-modification-payment";
 import {
   XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
@@ -39,6 +42,15 @@ type ReceiptStore = Pick<
  *    raises no note for its refunds - the officer records those by hand too,
  *    and the repair tool says so.
  *  - `none`: nothing in Xero; a refund of it needs no note.
+ *
+ * #4324 (`INV-PAY-141`): a kept change capture whose primary invoice bills its
+ * change is recorded by its own receipt (`ADDITIONAL_CAPTURE_RECEIPT`), a
+ * payment on that invoice: `recorded` naming the invoice its payment link
+ * records, or with no id while a row that stored its decision has not linked
+ * one (FAILED: `invoiceFailed` and `invoiceMayBeInXero`, since the decision is
+ * stored before the Xero call). One resolved by hand is `resolved-by-hand`. A
+ * row still undecided is not yet a receipt: its worker credits back any
+ * refund once it has recorded.
  *
  * TWO VERDICTS, ONE BODY (#3924 round 11). `readLateCaptureXeroReceipt` is the
  * verdict every card-refund path reads - the refund note's eligible cash
@@ -117,6 +129,9 @@ async function readReceipt(
     if (keptSent?.xeroObjectId) return { kind: "recorded", invoiceId: keptSent.xeroObjectId };
     resolvedByHand = resolvedKept.length > 0;
   }
+  const receipt = await readKeptCaptureReceipt(paymentIntentId, store);
+  if (receipt.kind === "recorded") return receipt;
+  resolvedByHand ||= receipt.kind === "resolved-by-hand";
   const released = await store.xeroSyncOperation.findMany({
     where: {
       direction: "OUTBOUND",
@@ -152,6 +167,43 @@ async function readReceipt(
   }
   if (resolvedByHand || released.length > 0) return { kind: "resolved-by-hand" };
   return { kind: "none" };
+}
+
+/**
+ * #4324: the capture's own receipt (`ADDITIONAL_CAPTURE_RECEIPT`, the payment
+ * link its worker writes on the capture's `PaymentTransaction`), as the
+ * verdict above reads it.
+ */
+async function readKeptCaptureReceipt(paymentIntentId: string, store: ReceiptStore): Promise<LateCaptureXeroReceipt> {
+  const link = await store.xeroObjectLink.findFirst({
+    where: {
+      localModel: "PaymentTransaction",
+      xeroObjectType: "PAYMENT",
+      role: ADDITIONAL_CAPTURE_PAYMENT_ROLE,
+      active: true,
+      metadata: { path: ["paymentIntentId"], equals: paymentIntentId },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { metadata: true },
+  });
+  const linkedInvoiceId = asRecord(link?.metadata)?.invoiceId;
+  if (typeof linkedInvoiceId === "string" && linkedInvoiceId.length > 0) {
+    return { kind: "recorded", invoiceId: linkedInvoiceId };
+  }
+  const rows = await store.xeroSyncOperation.findMany({
+    where: {
+      queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
+      status: { not: "CANCELLED" },
+      requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
+    },
+    select: { status: true, manuallyResolvedAt: true, requestPayload: true },
+  });
+  if (rows.some((row) => row.manuallyResolvedAt !== null)) return { kind: "resolved-by-hand" };
+  const decided = rows.filter((row) => asRecord(row.requestPayload)?.plan != null && row.status !== "SUCCEEDED");
+  if (decided.length === 0) return { kind: "none" };
+  return decided.every((row) => row.status === "FAILED")
+    ? { kind: "recorded", invoiceId: null, invoiceFailed: true, invoiceMayBeInXero: true }
+    : { kind: "recorded", invoiceId: null };
 }
 
 /**
