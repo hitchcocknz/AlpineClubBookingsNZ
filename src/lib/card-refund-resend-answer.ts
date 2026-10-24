@@ -3,39 +3,37 @@ import type { Prisma } from "@prisma/client";
 import { cardRefundNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import { closeKeysOf } from "@/lib/manual-refund-task-settlement-rules";
-import { CARD_REFUND_OPERATION_WHERE, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
-import { cardRefundFailedLaterRefundId } from "@/lib/payment-recovery-keys";
+import { CARD_REFUND_OPERATION_WHERE, cardRefundResendsByRefund } from "@/lib/open-card-refund-owed";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
 
 /**
- * #4312 round 5 (#4104, `INV-ADDPAY-045`): A CARD REFUND SENT AGAIN FOR ONE
- * STRIPE FAILED LATER IS ANSWERED BY THE FAILED REFUND'S OWN NOTE.
+ * #4312 rounds 5 and 6 (#4104, `INV-ADDPAY-045`): A CARD REFUND SENT AGAIN FOR
+ * ONE STRIPE FAILED LATER IS ANSWERED BY THE FAILED REFUND'S OWN NOTE.
  *
  * A refund Stripe accepted and failed later keeps the note it took while it
  * counted, and #4104 meant that note to answer the money once it goes back -
- * so the refund sent again in its place is owed no second note. #4104 records
- * which failures a recovery row sends again, and nothing else does: a row of
- * its own names the failed refund in its key (`card_refund_failed_later_<id>`),
- * and a slice an open row re-planned lists it (`failedRefundIds`). Neither the
- * refund row nor Stripe's metadata names the refund that answers it, so each
- * such slice is answered by the first refund recorded after its latest failure
- * was (a failed refund row is never written again, so its `updatedAt` is when
- * it failed) on the same charge for the same amount - a slice's every send asks
- * for exactly its amount on its own charge - or by the refund the slice is
- * marked made with. A refund made before the failure, failed or not, is never
- * its answer. Each refund answers one slice at most. A re-send that failed too
- * still takes the slice (its own failure has its own owner), and a row closed as
- * "Paid another way" sent nothing, so its slices take none: that close is sized
- * against the card note already (`failedLaterCardNoteCoverCents`). A late
- * capture's refunds are its capture's note's to size (`planLateCaptureCardNotes`).
+ * so the refund sent again in its place is owed no second note. Which refund
+ * that is comes from the owed figure's own attribution
+ * (`cardRefundResendsByRefund`): a refund filling a slice that owes a failure
+ * - a row of its own's key, a re-planned slice's `failedRefundIds` - answers
+ * it. A late capture's refunds are its capture's note's to size
+ * (`planLateCaptureCardNotes`).
+ *
+ * THE CHAIN (round 6). A re-send Stripe failed too took no note of its own -
+ * the first failure's note answered it - so whatever answers it inherits what
+ * it answered: the failed refunds it answered while it counted (read as the
+ * payment stood when it failed), and theirs, each once. The walk follows
+ * time - a refund answers only failures the ledger saw before Stripe made it -
+ * so it ends.
  *
  * Read by a card refund's note share (`readCardRefundNoteShare`), so its
- * enqueue and its execution size it alike, and by `charge.refunded`, which
- * hands such a refund to its own record instead of the canonical delta.
+ * enqueue and its execution size it alike, and - whether it is noted on its
+ * own record at all (`ownNoted`) - by the recovery replay and
+ * `charge.refunded` alike (`answersOwnNotedFailure`): one rule, two writers.
  */
-export type FailedRefundAnswer = {
-  /** The failed refunds this refund was sent again for. */
+type FailedRefundAnswer = {
+  /** The failed refunds this refund was sent again for, the chain behind them included. */
   failedRefundIds: string[];
   /** Whether any of them was asked for on its own record (it has a note row of its own, in any status). */
   ownNoted: boolean;
@@ -45,61 +43,50 @@ export type FailedRefundAnswer = {
 
 const NONE: FailedRefundAnswer = { failedRefundIds: [], ownNoted: false, coverCents: 0 };
 
-type AnswerReader = Pick<Prisma.TransactionClient, "paymentRecoveryOperation" | "paymentRefund" | "manualRefundTask" | "xeroObjectLink" | "xeroSyncOperation">;
+type AnswerReader = Pick<
+  Prisma.TransactionClient,
+  "payment" | "paymentRecoveryOperation" | "paymentRefund" | "manualRefundTask" | "xeroObjectLink" | "xeroSyncOperation"
+>;
 
-type RefundRow = { stripeRefundId: string; paymentTransactionId: string | null; stripePaymentIntentId: string | null; amountCents: number; status: string; createdAt: Date; updatedAt: Date };
-
-/** When the ledger recorded it, and (a refused row) when it failed: the database's one clock, never Stripe's. */
-const recordedAt = (refund: RefundRow) => refund.createdAt.getTime();
-const byRecorded = (a: RefundRow, b: RefundRow) => recordedAt(a) - recordedAt(b) || a.stripeRefundId.localeCompare(b.stripeRefundId);
-
-/** The failed refunds `stripeRefundId` was sent again for on this payment, and what their own notes cover. */
+/** The failed refunds `stripeRefundId` was sent again for on this payment, the chain behind them, and what their own notes cover. */
 export async function readFailedRefundsAnsweredBy(db: AnswerReader, paymentId: string, stripeRefundId: string): Promise<FailedRefundAnswer> {
+  const payment = await db.payment.findUnique({ where: { id: paymentId }, select: { status: true, amountCents: true, refundedAmountCents: true } });
   const refunds = await db.paymentRefund.findMany({
     where: { paymentId },
-    select: { stripeRefundId: true, paymentTransactionId: true, stripePaymentIntentId: true, amountCents: true, status: true, createdAt: true, updatedAt: true },
+    select: { stripeRefundId: true, paymentTransactionId: true, stripePaymentIntentId: true, amountCents: true, status: true, createdAt: true, updatedAt: true, stripeCreatedAt: true },
   });
   const refund = refunds.find((each) => each.stripeRefundId === stripeRefundId);
-  if (!refund?.paymentTransactionId || !isRecordedRefundStatus(refund.status)) return NONE;
+  if (!payment || !refund?.paymentTransactionId || !isRecordedRefundStatus(refund.status)) return NONE;
   if (refund.stripePaymentIntentId && (await findLateCapturePaymentIntents([refund.stripePaymentIntentId], db)).size > 0) return NONE;
-  const rows = await db.paymentRecoveryOperation.findMany({
+  const recoveryOperations = await db.paymentRecoveryOperation.findMany({
     where: { paymentId, ...CARD_REFUND_OPERATION_WHERE },
-    select: { id: true, idempotencyKey: true, allocationPlan: true },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    select: { id: true, type: true, status: true, idempotencyKey: true, amountCents: true, allocationPlan: true, paymentTransactionId: true, createdAt: true, succeededAt: true },
   });
-  const closed = new Set(
-    (await db.manualRefundTask.findMany({ where: { paymentId, occurrenceKey: { in: rows.flatMap((row) => closeKeysOf(row.id)) } }, select: { occurrenceKey: true } }))
-      .map((task) => task.occurrenceKey),
-  );
-  const byId = new Map(refunds.map((each) => [each.stripeRefundId, each]));
-  const ordered = [...refunds].sort(byRecorded);
-  const taken = new Set<string>();
-  const answered: string[] = [];
-  for (const row of rows) {
-    if (closeKeysOf(row.id).some((key) => closed.has(key))) continue;
-    const ownedByKey = cardRefundFailedLaterRefundId(row.idempotencyKey);
-    for (const slice of parseRefundAllocationPlan(row.allocationPlan) ?? []) {
-      const failed = [...new Set([...(ownedByKey ? [ownedByKey] : []), ...(slice.failedRefundIds ?? [])])];
-      if (failed.length === 0) continue;
-      const failedAt = Math.max(...failed.map((id) => byId.get(id)?.updatedAt.getTime() ?? 0));
-      const answer = slice.madeRefundId
-        ? byId.get(slice.madeRefundId)
-        : ordered.find((each) =>
-            !taken.has(each.stripeRefundId) && !failed.includes(each.stripeRefundId) &&
-            each.paymentTransactionId === slice.paymentTransactionId && each.amountCents === slice.amountCents && recordedAt(each) >= failedAt);
-      if (!answer || taken.has(answer.stripeRefundId)) continue;
-      taken.add(answer.stripeRefundId);
-      if (answer.stripeRefundId === stripeRefundId) answered.push(...failed);
-    }
+  const closes = await db.manualRefundTask.findMany({
+    where: { paymentId, occurrenceKey: { in: recoveryOperations.flatMap((operation) => closeKeysOf(operation.id)) } },
+    select: { occurrenceKey: true },
+  });
+  const closed = new Set(closes.map((task) => task.occurrenceKey));
+  const paidAnotherWay = new Set(recoveryOperations.filter((operation) => closeKeysOf(operation.id).some((key) => closed.has(key))).map((operation) => operation.id));
+  // A failed refund row is not written again once it failed, so its `updatedAt` is when the ledger saw it fail.
+  const failedAt = new Map(refunds.filter((each) => !isRecordedRefundStatus(each.status)).map((each) => [each.stripeRefundId, each.updatedAt]));
+  const ledger = { ...payment, recoveryOperations, refunds };
+  const options = { failedAt: (id: string) => failedAt.get(id) ?? null, paidAnotherWay };
+
+  const chain = new Set<string>();
+  const toWalk = [...(cardRefundResendsByRefund(ledger, options).get(stripeRefundId) ?? [])];
+  for (let failed = toWalk.shift(); failed !== undefined; failed = toWalk.shift()) {
+    if (failed === stripeRefundId || chain.has(failed)) continue;
+    chain.add(failed);
+    toWalk.push(...(cardRefundResendsByRefund(ledger, { ...options, asOfFailureOf: failed }).get(failed) ?? []));
   }
-  if (answered.length === 0) return NONE;
-  const failedRefundIds = [...new Set(answered)];
+  if (chain.size === 0) return NONE;
   let ownNoted = false;
   let coverCents = 0;
-  for (const id of failedRefundIds) {
+  for (const id of chain) {
     const rowsWhere = cardRefundNoteRowsWhere(paymentId, id);
     ownNoted ||= (await db.xeroSyncOperation.count({ where: rowsWhere })) > 0;
     coverCents += await sumRefundCreditNoteCoverageOfRowsCents(paymentId, rowsWhere, db);
   }
-  return { failedRefundIds, ownNoted, coverCents };
+  return { failedRefundIds: [...chain], ownNoted, coverCents };
 }

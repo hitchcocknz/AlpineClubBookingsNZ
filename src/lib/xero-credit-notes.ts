@@ -400,7 +400,7 @@ export async function createXeroCreditNote(
       if (!share) throw new Error(`Refusing to create a Xero refund credit note for payment ${paymentId}: its card refund ${cardRefundId} is not on this payment`);
       uncoveredCents = share.uncoveredCents;
       cardRefundCoveredCents = share.coveredCents;
-      evidenceLog = { cardRefundId, refundAmountCents: share.amountCents, cardRefundCoveredCents: share.coveredCents };
+      evidenceLog = { cardRefundId, refundAmountCents: share.amountCents, cardRefundCoveredCents: share.coveredCents, answeredCents: share.answeredCents };
     } else {
       // #3635 round-3 R1: the cash a note may answer, the figure the enqueue
       // capped against, never refunds of late captures Xero never received.

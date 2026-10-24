@@ -372,7 +372,9 @@ export function cardRefundSlicesByOperation(
 function attributeRecordedRefunds(
   payment: CardRefundOwedPaymentRow,
   /** #4104: told which slice each recorded refund filled, and with how much (`cardRefundSliceFilledBy`). */
-  onFill?: (refund: RecordedCardRefundRow, operation: CardRefundOperationRow, sliceIndex: number, cents: number) => void,
+  onFill?: (refund: RecordedCardRefundRow, operation: CardRefundOperationRow, sliceIndex: number, cents: number, slice: CardRefundSlice) => void,
+  /** #4312 round 6: one more test an unmarked slice puts to a refund (`cardRefundResendsByRefund`); the owed figure passes none. */
+  sliceAccepts?: (operation: CardRefundOperationRow, slice: CardRefundSlice, refund: RecordedCardRefundRow) => boolean,
 ): {
   operations: Array<{ operation: CardRefundOperationRow; slices: CardRefundSlice[] }>;
   lateCentsByOperation: Map<string, number>;
@@ -406,7 +408,7 @@ function attributeRecordedRefunds(
       if (!refund) continue;
       claimed.add(refund);
       slice.filledCents = Math.min(slice.amountCents, Math.max(0, refund.amountCents));
-      onFill?.(refund, operation, sliceIndex, slice.filledCents);
+      onFill?.(refund, operation, sliceIndex, slice.filledCents, slice);
       if (operation.succeededAt !== null && refund.createdAt.getTime() > operation.succeededAt.getTime()) {
         lateCentsByOperation.set(operation.id, (lateCentsByOperation.get(operation.id) ?? 0) + slice.filledCents);
       }
@@ -420,10 +422,12 @@ function attributeRecordedRefunds(
     for (let index = operations.length - 1; index >= 0 && leftCents > 0; index -= 1) {
       const candidate = operations[index];
       if (!candidate || !operationWindowTakes(candidate.operation, refund)) continue;
-      const slice = candidate.slices.find((each) => sliceTakes(each, refund, leftCents));
+      const slice = candidate.slices.find(
+        (each) => sliceTakes(each, refund, leftCents) && (sliceAccepts?.(candidate.operation, each, refund) ?? true),
+      );
       if (!slice) continue;
       const takenCents = Math.min(leftCents, slice.amountCents - slice.filledCents);
-      onFill?.(refund, candidate.operation, candidate.slices.indexOf(slice), takenCents);
+      onFill?.(refund, candidate.operation, candidate.slices.indexOf(slice), takenCents, slice);
       slice.filledCents += takenCents;
       leftCents -= takenCents;
       const { succeededAt } = candidate.operation;
@@ -465,6 +469,96 @@ export function cardRefundPaymentBeforeFailure(payment: CardRefundOwedPaymentRow
     recoveryOperations: payment.recoveryOperations.filter((operation) => cardRefundFailedLaterRefundId(operation.idempotencyKey) !== stripeRefundId),
     refunds: payment.refunds.map((refund) => (refund.stripeRefundId === stripeRefundId ? { ...refund, status: "pending" } : refund)),
   };
+}
+
+/**
+ * #4312 round 6 (#4104, `INV-ADDPAY-045`, `INV-SSOT`): WHICH REFUNDS STRIPE
+ * FAILED LATER EACH RECORDED REFUND WAS SENT AGAIN FOR - read off the owed
+ * figure's own attribution (`attributeRecordedRefunds`), never a second
+ * matcher. A refund that fills a slice owing a failure - a row of its own
+ * names it in its key (`card_refund_failed_later_<refund>`), a re-planned
+ * slice lists it (`failedRefundIds`) - answers that slice's failures. So a
+ * slice marked made takes its own refund first, and every other refund goes to
+ * the newest row it fits, by Stripe's time.
+ *
+ * One more test, for the pairing only (`sliceAccepts`): a slice owing a
+ * failure takes only a refund Stripe made no earlier than the latest of its
+ * failures, as the ledger dates it (`failedAt`, floored to Stripe's whole
+ * second). A refund made before the failure - a dashboard refund the ledger
+ * recorded late, or one that floats onto a re-planned slice once its own
+ * refund stops counting - is never its answer. The owed figure does not apply
+ * it.
+ *
+ * A row closed as "Paid another way" (`paidAnotherWay`) sent nothing: a refund
+ * it takes answers none of its failures, since that close is sized against the
+ * card note already. `asOfFailureOf` reads the payment as it stood when that
+ * refund failed (`cardRefundPaymentAsOfFailure`), for what it had answered
+ * while it counted.
+ */
+export function cardRefundResendsByRefund(
+  payment: CardRefundOwedPaymentRow,
+  options: {
+    /** When the ledger saw each failed refund fail; null when it has no row. */
+    failedAt: (stripeRefundId: string) => Date | null;
+    paidAnotherWay: ReadonlySet<string>;
+    asOfFailureOf?: string;
+  },
+): Map<string, string[]> {
+  const ledger = options.asOfFailureOf === undefined ? payment : cardRefundPaymentAsOfFailure(payment, options.asOfFailureOf, options.failedAt);
+  const failuresOf = (operation: CardRefundOperationRow, slice: CardRefundSlice) => {
+    const byKey = cardRefundFailedLaterRefundId(operation.idempotencyKey);
+    return [...new Set([...(byKey ? [byKey] : []), ...(slice.failedRefundIds ?? [])])];
+  };
+  const answered = new Map<string, string[]>();
+  attributeRecordedRefunds(
+    ledger,
+    (refund, operation, _sliceIndex, cents, slice) => {
+      if (cents <= 0 || options.paidAnotherWay.has(operation.id)) return;
+      const failed = failuresOf(operation, slice).filter((id) => id !== refund.stripeRefundId);
+      if (failed.length > 0) answered.set(refund.stripeRefundId, [...new Set([...(answered.get(refund.stripeRefundId) ?? []), ...failed])]);
+    },
+    (operation, slice, refund) => {
+      const failedAt = failuresOf(operation, slice).flatMap((id) => options.failedAt(id)?.getTime() ?? []);
+      return failedAt.length === 0 || stripeMadeAt(refund).getTime() >= flooredToSecond(new Date(Math.max(...failedAt)));
+    },
+  );
+  return answered;
+}
+
+/**
+ * The payment as it stood when one refund failed: that refund still counted
+ * (`cardRefundPaymentBeforeFailure`, the row of its own not raised); a refund
+ * Stripe made after it, or a row raised after it, did not exist yet; a refund
+ * that failed after it still counted; a row closed after it was open; and no
+ * slice yet listed it, or a failure that came after it. Without a failure
+ * time, only the first and the last.
+ */
+function cardRefundPaymentAsOfFailure(
+  payment: CardRefundOwedPaymentRow,
+  stripeRefundId: string,
+  failedAt: (stripeRefundId: string) => Date | null,
+): CardRefundOwedPaymentRow {
+  const before = cardRefundPaymentBeforeFailure(payment, stripeRefundId);
+  const at = failedAt(stripeRefundId)?.getTime();
+  const after = (id: string) => id === stripeRefundId || (at !== undefined && (failedAt(id)?.getTime() ?? Number.NEGATIVE_INFINITY) > at);
+  const refunds = before.refunds.flatMap((refund) => {
+    if (at !== undefined && refund.stripeRefundId !== stripeRefundId && stripeMadeAt(refund).getTime() > at) return [];
+    return after(refund.stripeRefundId) && !isRecordedRefundStatus(refund.status) ? [{ ...refund, status: "pending" }] : [refund];
+  });
+  const made = new Set(refunds.map((refund) => refund.stripeRefundId));
+  const recoveryOperations = before.recoveryOperations.flatMap((operation) => {
+    if (at !== undefined && operation.createdAt.getTime() > at) return [];
+    const closedAfter = at !== undefined && operation.succeededAt !== null && operation.succeededAt.getTime() > at;
+    const plan = parseRefundAllocationPlan(operation.allocationPlan);
+    const allocationPlan = plan
+      ? plan.map(({ failedRefundIds, madeRefundId, ...slice }) => {
+          const kept = (failedRefundIds ?? []).filter((id) => !after(id));
+          return { ...slice, ...(madeRefundId && made.has(madeRefundId) ? { madeRefundId } : {}), ...(kept.length > 0 ? { failedRefundIds: kept } : {}) };
+        })
+      : operation.allocationPlan;
+    return [{ ...operation, allocationPlan, ...(closedAfter ? { status: "PROCESSING", succeededAt: null } : {}) }];
+  });
+  return { ...before, recoveryOperations, refunds };
 }
 
 /**
