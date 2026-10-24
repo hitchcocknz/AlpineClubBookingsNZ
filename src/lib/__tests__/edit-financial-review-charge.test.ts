@@ -3451,6 +3451,8 @@ describe("canAskCardForReviewCharge (#3947)", () => {
     // ...but never for a cancelled one (#4272).
     ["refuses: a cancelled booking with money captured on a card", "CANCELLED", payment({ amountCents: 15000 }), false],
     ["refuses: a cancelled credit-paid booking", "CANCELLED", payment(), false],
+    // #4316: a bumped one retires every ask too.
+    ["refuses: a bumped booking with money captured on a card", "BUMPED", payment({ amountCents: 15000 }), false],
     ["refuses: a settled $0 internet-banking payment", "PAID", payment({ source: PaymentSource.INTERNET_BANKING }), false],
     ["refuses: a settled booking whose card payment never captured", "PAYMENT_PENDING", payment({ status: "PENDING" }), false],
   ])("%s", (_label, status, row, expected) => {
@@ -3463,6 +3465,7 @@ describe("canAskCardForReviewCharge (#3947)", () => {
 
   it.each([
     ["CANCELLED", true],
+    ["BUMPED", true],
     ["PAID", false],
     ["CONFIRMED", false],
     ["AWAITING_REVIEW", false],
