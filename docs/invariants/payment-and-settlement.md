@@ -215,19 +215,22 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   forever), clears the provenance, marks the manual transaction FAILED rather
   than deleting it, clears a restored CONFIRMED internet-banking hold deadline
   (or the expiry cron would auto-cancel the booking minutes later), and
-  DELETES every still-PENDING/PROCESSING `CANCEL_PAYMENT_INTENT` /
-  `REFUND_SUPERSEDED_PAYMENT` operation on the payment — those operations
-  must not outlive the settlement they were minted to protect, or a later
-  legitimate capture would be refunded as if superseded. Deletion, not a
-  terminal status flip: the webhook-side liveness predicates key on
-  `status != SUCCEEDED`, so only a deleted row is invisible to all of them.
-  The scope is safe because that set IS the settle's own hygiene: the
-  settle's enqueue upserts on the shared cancel idempotency key (adopting any
-  pre-existing cancel op), and a member-owed superseded refund can never be
-  reached — the handoff that creates one marks its transaction SUCCEEDED
-  first, and the reversal refuses on any settled Stripe transaction before
-  the disarm. The deleted rows' full content is preserved in the reversal's
-  `AuditLog` metadata.
+  DELETES every `CANCEL_PAYMENT_INTENT` / `REFUND_SUPERSEDED_PAYMENT`
+  operation on the payment not yet SUCCEEDED — FAILED, retrying or
+  exhausted, included (#4320) — for an intent the settle itself condemned.
+  Those operations must not outlive the settlement they were minted to
+  protect, or a later legitimate capture would be refunded as if superseded.
+  Deletion, not a terminal status flip: the webhook-side liveness predicates
+  key on `status != SUCCEEDED`, so only a deleted row is invisible to all of
+  them. The settle's enqueue upserts on the shared cancel key and adopts a
+  row another writer queued first; it records those intents
+  (`adoptedCancelPaymentIntentIds`) beside the ones it cancelled, and the
+  reversal leaves their rows, whose writer's reason outlives it. A
+  member-owed superseded refund can never be reached — the handoff that
+  creates one marks its transaction SUCCEEDED first, and the reversal refuses
+  on any settled Stripe transaction before the disarm. The deleted rows' full
+  content is preserved in the reversal's `AuditLog` metadata. Proven on
+  PostgreSQL by `manual-reversal-retrying-cancel.realdb.test.ts`.
 
 ## INV-PAY-046
 

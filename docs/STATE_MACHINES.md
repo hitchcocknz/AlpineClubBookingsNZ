@@ -2086,7 +2086,9 @@ PaymentTransaction (the manual PRIMARY row): SUCCEEDED -> FAILED,
   reason "manual_mark_paid_reversed" — history, never deleted, and never
   resurrected by a later re-mark (the mint predicate skips FAILED rows)
 PaymentRecoveryOperation (every CANCEL_PAYMENT_INTENT /
-  REFUND_SUPERSEDED_PAYMENT on this payment still PENDING|PROCESSING):
+  REFUND_SUPERSEDED_PAYMENT on this payment not yet SUCCEEDED — PENDING,
+  PROCESSING or FAILED, retrying or exhausted (#4320) — for an intent the
+  settle itself condemned):
   DELETED, inside the reversal's transaction — not flipped to a terminal
   status, because every webhook-side liveness predicate keys on
   `status != SUCCEEDED` and a FAILED "closed" row would still hand a
@@ -2094,7 +2096,29 @@ PaymentRecoveryOperation (every CANCEL_PAYMENT_INTENT /
   full content is preserved on the reversal's AuditLog entry, and a member-owed
   superseded refund can never be reached: its settled transaction 409s the
   reversal first.
+PaymentRecoveryOperation (a cancellation another writer queued before the
+  settle, which the settle adopted): UNCHANGED — it goes on to cancel the
+  intent, or hand its capture to the superseded refund, as its writer meant.
 ```
+
+Which intents the settle condemned is read off its own audit row (#4320): the
+mark-paid records `cancelledPaymentIntentIds`, every live intent it queued a
+cancellation for, and `adoptedCancelPaymentIntentIds`, those whose cancellation
+row already existed (an edit that superseded the intent, say) — the shared
+cancel key means the settle's upsert adopts that row and never resets its
+status. The reversal withdraws the first list less the second. A settle row
+recorded before #4320 has no adopted list and adopts nothing; with no cancelled
+list the reversal falls back to every live row on the payment. Each delete is
+fenced on the same liveness predicate, so a worker that claims the row
+meanwhile (FAILED -> PROCESSING) loses it, and a row a worker finished
+(SUCCEEDED) is left and not reported closed.
+
+The FAILED row is why #4320 exists: a mark-paid's cancel that met a Stripe
+outage waits FAILED to retry, and while the reversal deleted only
+PENDING|PROCESSING rows it survived. Once the booking was payable again, the
+member's capture of that intent was refunded as superseded and the booking
+never settled, or the retry cancelled the intent the member still had open.
+Proved on PostgreSQL in `manual-reversal-retrying-cancel.realdb.test.ts`.
 
 Both directions record an `AuditLog` naming the acting admin, and the reversal
 records a durable `BookingEvent` — a `CANCELLED` event carrying the
