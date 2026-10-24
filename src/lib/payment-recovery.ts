@@ -2713,6 +2713,16 @@ async function processCreateAdditionalPaymentIntentOperation(
   });
   const reissuesReducedAsk = replay.kind === "reissue";
 
+  // A booking ended after the edit (#1358; #4316, `INV-ADDPAY-044`: CANCELLED or BUMPED)
+  // has nothing to collect. A retry after a failed retirement retires its own ask first
+  // (throws to retry) - before the settled check, which reads that ask as settled. Cycle: dynamic.
+  const guard = await import("@/lib/ended-booking-ask-guard");
+  if (await guard.bookingEndedBeforeAskMint(operation.bookingId, bookingModificationId)) {
+    await guard.retireOutstandingAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId });
+    await completePaymentRecoveryOperation(operation.id);
+    return;
+  }
+
   // A later edit already created a fresh additional intent: it superseded
   // this modification's collectable, so resurrecting ours would offer the
   // member two instruments for overlapping money. The later edit repriced
@@ -2724,17 +2734,6 @@ async function processCreateAdditionalPaymentIntentOperation(
     isRecoveryReplaySettled(replay, operation, payment.transactions) ||
     operation.amountCents <= 0
   ) {
-    await completePaymentRecoveryOperation(operation.id);
-    return;
-  }
-
-  // A booking that ended after the modification (#1358; #4316, `INV-ADDPAY-044`:
-  // CANCELLED or BUMPED, re-read by the door's own guard) has nothing to collect: a
-  // mint would resurrect an ask the cancel tore down. A retry after a failed
-  // retirement retires its own ask first (throws to retry). Dynamic import: a cycle.
-  const guard = await import("@/lib/ended-booking-ask-guard");
-  if (await guard.bookingEndedBeforeAskMint(operation.bookingId, bookingModificationId)) {
-    await guard.retireOutstandingAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId });
     await completePaymentRecoveryOperation(operation.id);
     return;
   }

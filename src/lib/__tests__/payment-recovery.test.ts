@@ -3611,17 +3611,40 @@ describe("payment recovery worker", () => {
     // mint, and retires the ask the failed attempt left outstanding on the
     // mirror before it closes - minting nothing.
     it("on a retry, retires the ask its earlier attempt left outstanding on an ended booking, then closes (#4316)", async () => {
-      primeQueue(additionalIntentOperation());
+      // Round 3 (M1): a REAL retry. The first attempt wrote its ADDITIONAL row
+      // (after the operation was created) and named its intent on the
+      // operation, so `isRecoveryReplaySettled` reads that row as settling
+      // this debt - the ended-booking check has to come first.
+      const operation = additionalIntentOperation({ paymentIntentId: "pi_recovered" });
+      primeQueue(operation);
       mockBookingFindUnique.mockResolvedValueOnce({ status: "CANCELLED" });
       const house = mockPaymentFindUnique.getMockImplementation()!;
-      mockPaymentFindUnique.mockImplementation((args?: { select?: Record<string, unknown> }) =>
-        args?.select?.additionalPaymentIntentId
-          ? Promise.resolve({ id: "payment-1", additionalPaymentIntentId: "pi_recovered", additionalPaymentStatus: "PENDING" })
-          : house(args),
-      );
+      mockPaymentFindUnique.mockImplementation(async (args?: { select?: Record<string, unknown> }) => {
+        if (args?.select?.additionalPaymentIntentId) {
+          return { id: "payment-1", additionalPaymentIntentId: "pi_recovered", additionalPaymentStatus: "PENDING" };
+        }
+        const fixture = (await house(args)) as { transactions: unknown[] };
+        return {
+          ...fixture,
+          transactions: [
+            ...fixture.transactions,
+            {
+              id: "txn-recovered",
+              kind: "ADDITIONAL",
+              stripePaymentIntentId: "pi_recovered",
+              amountCents: 3000,
+              carriedAskCents: 0,
+              refundedAmountCents: 0,
+              status: PaymentStatus.PENDING,
+              withdrawnAt: null,
+              bookingModificationId: "mod-9",
+              createdAt: new Date("2026-06-02T00:00:00.000Z"),
+            },
+          ],
+        };
+      });
       mock4316.transactionFindFirst.mockResolvedValueOnce({ id: "txn-recovered", amountCents: 3000 });
       mockPaymentRecoveryUpsert.mockResolvedValueOnce({ id: "op-cancel-recovered" });
-      const operation = additionalIntentOperation();
       // The queued cancellation is its own row; the immediate run reads that one.
       mockPaymentRecoveryFindUnique.mockImplementation((args?: { where?: { id?: string } }) =>
         Promise.resolve(
