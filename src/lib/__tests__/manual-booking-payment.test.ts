@@ -934,6 +934,43 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     };
   }
 
+  type CardRow = { id: string; kind: PaymentTransactionKind; stripePaymentIntentId: string; amountCents: number; status?: PaymentStatus };
+
+  /**
+   * #4320: the payment's card rows, answered through the filters the supersede
+   * rules and the payable read put on them (kind, status, amount, intent), so
+   * the reversal's derivation is exercised rather than stubbed. The booking
+   * owes 10000 (12000 less the suite's 2000 of applied credit).
+   */
+  function cardLedger(rows: CardRow[]) {
+    type IdFilter = { not?: string | null; notIn?: string[] } | undefined;
+    type AmountFilter = { gt?: number; not?: number } | undefined;
+    mocks.enqueuePaymentIntentCancellationRecovery.mockImplementation(async (args: { paymentIntentId: string }) => ({ id: `op-${args.paymentIntentId}` }));
+    mocks.paymentTransactionFindMany.mockImplementation(
+      async ({ where }: { where: { kind?: PaymentTransactionKind; source?: PaymentSource; status?: { in?: PaymentStatus[] }; stripePaymentIntentId?: IdFilter; amountCents?: AmountFilter } }) =>
+        rows
+          .map((row) => ({ status: PaymentStatus.PENDING, source: PaymentSource.STRIPE, ...row }))
+          .filter((row) => where.kind === undefined || row.kind === where.kind)
+          .filter((row) => where.source === undefined || row.source === where.source)
+          .filter((row) => !where.status?.in || where.status.in.includes(row.status))
+          .filter((row) => {
+            const id = where.stripePaymentIntentId;
+            if (!id) return true;
+            if (id.not !== undefined && id.not !== null && row.stripePaymentIntentId === id.not) return false;
+            return !id.notIn?.includes(row.stripePaymentIntentId);
+          })
+          .filter((row) => {
+            const amount = where.amountCents;
+            if (!amount) return true;
+            if (amount.gt !== undefined && !(row.amountCents > amount.gt)) return false;
+            return amount.not === undefined || row.amountCents !== amount.not;
+          }),
+    );
+  }
+
+  /** The member's intent at the owed amount: the one the restored booking is paid with. */
+  const PAYABLE_PRIMARY: CardRow = { id: "txn-live", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_live", amountCents: 10000 };
+
   it("#4211 — clears the recorded settler with the provenance, behind the same fence", async () => {
     primeReversal();
     await reverse();
@@ -950,6 +987,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
   // cancellation rows it upserts) - and before the booking and ledger writes.
   it("MUTATION (#4217): locks the Payment row after the lodge key and before the recovery rows, the booking or the payment are read or written", async () => {
     primeReversal();
+    cardLedger([PAYABLE_PRIMARY]);
     mocks.paymentRecoveryOperationFindMany.mockResolvedValue([liveCancelOperation()]);
     mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 1 });
     await reverse();
@@ -1001,8 +1039,9 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     );
   });
 
-  it("HIGH #1 — DELETES every live CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT operation inside its own transaction, each behind the liveness fence", async () => {
+  it("HIGH #1 — DELETES every live CANCEL_PAYMENT_INTENT / REFUND_SUPERSEDED_PAYMENT operation on a payable intent inside its own transaction, each behind the liveness fence", async () => {
     primeReversal();
+    cardLedger([PAYABLE_PRIMARY]);
     mocks.paymentRecoveryOperationFindMany.mockResolvedValue([liveCancelOperation()]);
     mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 1 });
 
@@ -1015,7 +1054,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     // superseded-refund machinery and poison the duplicate-guard notIn
     // exclusion forever. Only deletion makes every predicate coherent.
     expect(mocks.paymentRecoveryOperationFindMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { paymentId: "payment-1", ...LIVE_SUPERSEDED_WHERE } }),
+      expect.objectContaining({ where: { paymentId: "payment-1", paymentIntentId: { in: ["pi_live"] }, ...LIVE_SUPERSEDED_WHERE } }),
     );
     expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledTimes(1);
     expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledWith({
@@ -1042,7 +1081,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
     );
   });
 
-  describe("#4320 — which recovery rows the reversal withdraws", () => {
+  describe("#4320 — the reversal re-derives which intents stay cancelled, and withdraws the rest", () => {
     function settleAudit(metadata: Record<string, unknown>) {
       mocks.auditLogFindFirst.mockResolvedValue({ metadata });
     }
@@ -1051,79 +1090,135 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       return (mocks.paymentRecoveryOperationFindMany.mock.calls[0]![0] as { where: Record<string, unknown> }).where;
     }
 
+    function enqueuedIntents() {
+      return mocks.enqueuePaymentIntentCancellationRecovery.mock.calls.map(([args]) => (args as { paymentIntentId: string }).paymentIntentId);
+    }
+
+    function auditMetadata() {
+      return (mocks.createAuditLog.mock.calls.at(-1)![0] as { metadata: Record<string, unknown> }).metadata;
+    }
+
     for (const [label, row] of [
       ["FAILED and still retrying", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 1, nextRetryAt: new Date("2026-07-20T00:05:00Z") }],
       ["FAILED and exhausted at the ceiling", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null }],
     ] as const) {
-      it(`withdraws the settle's own cancel ${label}: the read and the delete both reach every status but SUCCEEDED`, async () => {
+      it(`withdraws the settle's cancel ${label} on the intent at the owed amount: the read and the delete both reach every status but SUCCEEDED`, async () => {
         primeReversal();
+        cardLedger([PAYABLE_PRIMARY]);
         settleAudit({ cancelledPaymentIntentIds: ["pi_live"], adoptedCancelPaymentIntentIds: [] });
         mocks.paymentRecoveryOperationFindMany.mockResolvedValue([liveCancelOperation(row)]);
         mocks.paymentRecoveryOperationDeleteMany.mockResolvedValue({ count: 1 });
 
         const result = await reverse();
 
-        expect(readScope()).toMatchObject({ status: { not: PaymentRecoveryOperationStatus.SUCCEEDED } });
+        expect(readScope()).toEqual({ paymentId: "payment-1", paymentIntentId: { in: ["pi_live"] }, ...LIVE_SUPERSEDED_WHERE });
         expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledWith({ where: { id: "op-cancel", ...LIVE_SUPERSEDED_WHERE } });
+        expect(enqueuedIntents()).toEqual([]);
         expect(result.closedRecoveryOperationIds).toEqual(["op-cancel"]);
-        expect(mocks.createAuditLog).toHaveBeenCalledWith(
-          expect.objectContaining({
-            metadata: expect.objectContaining({
-              closedRecoveryOperations: [expect.objectContaining({ id: "op-cancel", status: PaymentRecoveryOperationStatus.FAILED, attempts: row.attempts })],
-            }),
-          }),
-          tx,
-        );
+        expect(auditMetadata()).toMatchObject({
+          closedRecoveryOperations: [expect.objectContaining({ id: "op-cancel", status: PaymentRecoveryOperationStatus.FAILED, attempts: row.attempts })],
+          stillCancelledPaymentIntentIds: [],
+        });
       });
     }
 
-    it("reads only the intents the settle itself condemned: its cancelled list less the ones it adopted from another writer", async () => {
+    it("MUTATION: a primary intent at another amount than the booking owes stays cancelled - its row is queued (an existing one kept), never withdrawn", async () => {
+      // An edit on the PAID booking moved the price after the settle and
+      // shared the settle's cancel row on the old intent.
       primeReversal();
-      settleAudit({ cancelledPaymentIntentIds: ["pi_settle", "pi_edit"], adoptedCancelPaymentIntentIds: ["pi_edit"] });
-
-      await reverse();
-
-      expect(readScope()).toEqual({ paymentId: "payment-1", ...LIVE_SUPERSEDED_WHERE, paymentIntentId: { in: ["pi_settle"] } });
-    });
-
-    it("a settle that adopted every cancellation it queued withdraws nothing", async () => {
-      primeReversal();
-      settleAudit({ cancelledPaymentIntentIds: ["pi_edit"], adoptedCancelPaymentIntentIds: ["pi_edit"] });
+      cardLedger([{ id: "txn-old", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_old_price", amountCents: 8000 }]);
+      settleAudit({ cancelledPaymentIntentIds: ["pi_old_price"], adoptedCancelPaymentIntentIds: [] });
 
       const result = await reverse();
 
-      expect(readScope()).toMatchObject({ paymentIntentId: { in: [] } });
+      expect(enqueuedIntents()).toEqual(["pi_old_price"]);
+      expect(mocks.enqueuePaymentIntentCancellationRecovery).toHaveBeenCalledWith(
+        expect.objectContaining({ paymentId: "payment-1", paymentTransactionId: "txn-old", paymentIntentId: "pi_old_price", store: tx }),
+      );
+      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
       expect(mocks.paymentRecoveryOperationDeleteMany).not.toHaveBeenCalled();
       expect(result.closedRecoveryOperationIds).toEqual([]);
+      expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: ["pi_old_price"] });
     });
 
-    it("a settle row written before #4320 (no adopted list) adopts nothing: every intent it cancelled", async () => {
-      primeReversal();
-      settleAudit({ cancelledPaymentIntentIds: ["pi_a", "pi_b"] });
+    it("an additional intent that is not the payment's live ask stays cancelled; the live ask's intent is withdrawn", async () => {
+      primeReversal({ payment: { additionalPaymentIntentId: "pi_ask_live" } });
+      cardLedger([
+        { id: "txn-ask-old", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask_old", amountCents: 3000 },
+        { id: "txn-ask-live", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask_live", amountCents: 4000 },
+      ]);
 
       await reverse();
 
-      expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_a", "pi_b"] } });
+      expect(enqueuedIntents()).toEqual(["pi_ask_old"]);
+      expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_ask_live"] } });
+      expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: ["pi_ask_old"] });
+    });
+
+    it("with no live ask, every additional intent stays cancelled", async () => {
+      primeReversal({ payment: { additionalPaymentIntentId: null } });
+      cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+
+      await reverse();
+
+      expect(enqueuedIntents()).toEqual(["pi_ask"]);
+      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+    });
+
+    it("an intent the settle adopted from another writer keeps its cancellation even at the owed amount (INV-PAY-138)", async () => {
+      primeReversal();
+      cardLedger([PAYABLE_PRIMARY, { id: "txn-settle", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_settle", amountCents: 10000 }]);
+      settleAudit({ cancelledPaymentIntentIds: ["pi_live", "pi_settle"], adoptedCancelPaymentIntentIds: ["pi_live"] });
+
+      await reverse();
+
+      expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_settle"] } });
+      expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ stripePaymentIntentId: { not: null, notIn: ["pi_live"] } }) }),
+      );
     });
 
     for (const [label, audit] of [
+      ["a settle row written before #4320 (no adopted list)", { metadata: { cancelledPaymentIntentIds: ["pi_live"] } }],
       ["no settle row at all", null],
-      ["a settle row with no cancelled list", { metadata: { clearedCreditElectionCents: null } }],
-      ["a settle row whose cancelled list is not a list of ids", { metadata: { cancelledPaymentIntentIds: [42] } }],
+      ["a settle row whose adopted list is not a list of ids", { metadata: { adoptedCancelPaymentIntentIds: "pi_live" } }],
     ] as const) {
-      it(`${label}: the pre-#4320 scope, every live row on the payment`, async () => {
+      it(`${label} adopts nothing: the intent at the owed amount is withdrawn, a stale one still cancelled`, async () => {
         primeReversal();
+        cardLedger([PAYABLE_PRIMARY, { id: "txn-old", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_old_price", amountCents: 8000 }]);
         mocks.auditLogFindFirst.mockResolvedValue(audit);
 
         await reverse();
 
-        expect(readScope()).toEqual({ paymentId: "payment-1", ...LIVE_SUPERSEDED_WHERE });
+        expect(enqueuedIntents()).toEqual(["pi_old_price"]);
+        expect(readScope()).toEqual({ paymentId: "payment-1", paymentIntentId: { in: ["pi_live"] }, ...LIVE_SUPERSEDED_WHERE });
       });
     }
 
+    it("a row on an intent the ledger already retired is never read for withdrawal", async () => {
+      primeReversal();
+      cardLedger([{ ...PAYABLE_PRIMARY, status: PaymentStatus.FAILED }]);
+
+      await reverse();
+
+      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+      expect(mocks.paymentRecoveryOperationDeleteMany).not.toHaveBeenCalled();
+    });
+
+    it("a booking credit covers in full: every positive primary intent stays cancelled", async () => {
+      primeReversal();
+      mocks.deriveBookingAppliedCreditCents.mockResolvedValue(12000);
+      cardLedger([PAYABLE_PRIMARY]);
+
+      await reverse();
+
+      expect(enqueuedIntents()).toEqual(["pi_live"]);
+      expect(mocks.paymentRecoveryOperationFindMany).not.toHaveBeenCalled();
+    });
+
     it("a row a worker finished between the read and the delete is left alone and not reported closed", async () => {
       primeReversal();
-      settleAudit({ cancelledPaymentIntentIds: ["pi_live", "pi_done"], adoptedCancelPaymentIntentIds: [] });
+      cardLedger([PAYABLE_PRIMARY, { id: "txn-done", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_done", amountCents: 10000 }]);
       mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
         liveCancelOperation(),
         liveCancelOperation({ id: "op-done", paymentIntentId: "pi_done", idempotencyKey: "payment_recovery_cancel_txn-done_pi_done" }),
@@ -1134,15 +1229,10 @@ describe("#2262 — the reversal (direction unpaid)", () => {
 
       expect(mocks.paymentRecoveryOperationDeleteMany).toHaveBeenCalledTimes(2);
       expect(result.closedRecoveryOperationIds).toEqual(["op-cancel"]);
-      expect(mocks.createAuditLog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          metadata: expect.objectContaining({
-            closedRecoveryOperationIds: ["op-cancel"],
-            closedRecoveryOperations: [expect.objectContaining({ id: "op-cancel" })],
-          }),
-        }),
-        tx,
-      );
+      expect(auditMetadata()).toMatchObject({
+        closedRecoveryOperationIds: ["op-cancel"],
+        closedRecoveryOperations: [expect.objectContaining({ id: "op-cancel" })],
+      });
     });
   });
 

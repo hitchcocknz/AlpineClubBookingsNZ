@@ -2,12 +2,19 @@
  * A manual mark-paid's Stripe-intent hygiene and its reversal's undoing of it,
  * in one home (#2262, #4320, `INV-PAY-045`): the settle queues a
  * CANCEL_PAYMENT_INTENT for every live card intent and records which of those
- * another writer had already queued; the reversal withdraws the rest.
+ * another writer had already queued; the reversal re-applies the supersede
+ * rule to the restored booking and withdraws the cancellation of every intent
+ * that booking can still be paid with.
  *
  * Both run inside the caller's transaction, under its locks (global lock(1),
  * the lodge key and the Payment row); neither calls a provider.
  */
 import { PaymentSource, PaymentStatus, PaymentTransactionKind, type Prisma } from "@prisma/client";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
+import {
+  queueSupersededAdditionalIntentCancellationRows,
+  queueSupersededPrimaryIntentCancellations,
+} from "@/lib/booking-payment-cleanup";
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
 import { buildPaymentIntentCancelRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { liveSupersededOperation } from "@/lib/superseded-intent-ownership";
@@ -49,10 +56,12 @@ import { liveSupersededOperation } from "@/lib/superseded-intent-ownership";
  * #4320 — `adoptedIntentIds`: the intents whose cancellation another writer
  * had ALREADY queued (an edit that superseded the intent, say). The enqueue
  * upserts on the shared cancel key and never touches an existing row's status,
- * so the settle adopts that row rather than minting one. A reversal undoes only
- * what the settle did: it withdraws the rows the settle minted and leaves an
- * adopted row to finish the job its own writer queued it for
- * (`reverseManualBookingPayment`, `INV-PAY-045`).
+ * so the settle adopts that row rather than minting one. A reversal keeps an
+ * adopted row even when the restored price matches its intent again: a
+ * superseded intent is never handed out again (`INV-PAY-138`), and a reason the
+ * ledger cannot show (an intent in a currency the club no longer charges in,
+ * #3567) is still its writer's. The audit row records the list
+ * (`manualSettleIntentHygieneAuditFields`).
  */
 export async function enqueueManualSettlementIntentCancellations(
   tx: Prisma.TransactionClient,
@@ -105,8 +114,9 @@ export async function enqueueManualSettlementIntentCancellations(
   // #4320: which cancellations were queued before this settle, read before its
   // upserts. Not every writer of these rows holds lock(1) (the `/pay` link's
   // supersede does not), so one landing between this read and the upsert reads
-  // as minted here - the reading every row had before #4320, withdrawn by a
-  // reversal.
+  // as minted here. A reversal then re-derives it: a stale amount is cancelled
+  // again; only a wrong-currency supersede at the owed amount is lost, as it
+  // was before #4320.
   const keys = toCancel.map((transaction) =>
     buildPaymentIntentCancelRecoveryIdempotencyKey(transaction.id, transaction.stripePaymentIntentId)
   );
@@ -134,121 +144,165 @@ export async function enqueueManualSettlementIntentCancellations(
   return { cancelledIntentIds, adoptedIntentIds, sparedIntentId };
 }
 
+
+/** The settle's audit-metadata key for `adoptedIntentIds`, written and read only here (`INV-SSOT`). */
+const ADOPTED_CANCEL_INTENTS_KEY = "adoptedCancelPaymentIntentIds";
+
 /**
- * #4320 — the intents whose cancellation the matching mark-paid itself minted,
- * read back off its audit row, so the REVERSAL withdraws those rows and no
- * others (`INV-PAY-045`): `cancelledPaymentIntentIds` less
- * `adoptedCancelPaymentIntentIds`.
- *
- * Defensive for the same reason as the readers above, and each gap reads as
- * the rule before it: no cancelled list (no settle row found, or one that
- * never recorded it) returns null, which the reversal reads as every live row
- * on the payment; no adopted list, as on every row written before #4320,
- * adopts nothing.
+ * The intent-hygiene fields of the mark-paid's audit row (#4320): every intent
+ * it queued a cancellation for, and those of them another writer had already
+ * queued. The reversal reads the second back (`readAdoptedCancelIntentIds`), so
+ * both must be exactly what THIS settle found (empty when nothing).
  */
-function settleWithdrawableIntentIds(
-  metadata: Prisma.JsonValue | null | undefined
-): string[] | null {
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) {
-    return null;
-  }
-  const object = metadata as Prisma.JsonObject;
-  const strings = (value: Prisma.JsonValue | undefined) =>
-    Array.isArray(value) && value.every((item) => typeof item === "string")
-      ? (value as string[])
-      : null;
-  const cancelled = strings(object.cancelledPaymentIntentIds);
-  if (cancelled === null) return null;
-  const adopted = new Set(strings(object.adoptedCancelPaymentIntentIds) ?? []);
-  return cancelled.filter((intentId) => !adopted.has(intentId));
+export function manualSettleIntentHygieneAuditFields({
+  cancelledIntentIds,
+  adoptedIntentIds,
+}: {
+  cancelledIntentIds: string[];
+  adoptedIntentIds: string[];
+}) {
+  return { cancelledPaymentIntentIds: cancelledIntentIds, [ADOPTED_CANCEL_INTENTS_KEY]: adoptedIntentIds };
 }
 
 /**
- * The reversal's disarm (#2262 HIGH #1, #4320): delete the settle's own
- * superseded-intent rows still live, inside the reversal's transaction, and
- * return the rows it deleted, as it read them, for the audit trail.
- * `settleAuditMetadata` is the matching mark-paid's audit row.
+ * The adopted list off the matching mark-paid's audit row. Every gap - no
+ * settle row, or one written before #4320 - reads as adopting nothing, which
+ * only ever withdraws more: the re-derived supersede rule still cancels every
+ * stale intent.
+ */
+function readAdoptedCancelIntentIds(metadata: Prisma.JsonValue | null | undefined): string[] {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return [];
+  const value = (metadata as Prisma.JsonObject)[ADOPTED_CANCEL_INTENTS_KEY];
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+/**
+ * The reversal's disarm (#2262 HIGH #1, #4320, `INV-PAY-045`), inside the
+ * reversal's transaction, after it has restored the booking: re-apply the
+ * supersede rule to the restored booking, then delete the live
+ * superseded-intent rows of every intent that booking can still be paid with.
+ * Returns the rows it deleted, as it read them, for the audit trail, and the
+ * intents still being cancelled.
+ *
+ * DERIVED, NOT REMEMBERED. Which cancellations the settle "owned" cannot be
+ * read off the rows: the cancel key is shared, so an edit on the PAID booking,
+ * an additional ask's supersede or the `/pay` link's supersede can upsert the
+ * very row the settle minted, and a settle recorded before #4320 kept no list.
+ * What the restored booking needs is derivable, by the rules every other writer
+ * already applies:
+ *
+ * - a PRIMARY intent is stale unless its amount is what the booking owes
+ *   (`readBookingAmountOwed`, the figure the pay step mints at), the #1161
+ *   rule (`queueSupersededPrimaryIntentCancellations`);
+ * - an ADDITIONAL intent is stale unless it is the payment's live ask
+ *   (`additionalPaymentIntentId`, the one pointer every consumer honours), the
+ *   #3340 rule (`queueSupersededAdditionalIntentCancellationRows`).
+ *
+ * Both rules run here first, so a stale intent keeps or regains a live
+ * cancellation (a fresh PENDING row where it had none; an existing row keeps
+ * its status). Then every live row is withdrawn whose intent is a live card
+ * intent on the payment that neither rule condemned and the settle did not
+ * adopt (`readAdoptedCancelIntentIds`). A row on an intent the ledger already
+ * retired (FAILED, withdrawn) is never withdrawn: no restored state makes that
+ * intent payable, and its row is the only thing still cancelling it at Stripe.
  */
 export async function withdrawManualSettlementIntentCancellations(
   tx: Prisma.TransactionClient,
-  { paymentId, settleAuditMetadata }: { paymentId: string; settleAuditMetadata: Prisma.JsonValue | null | undefined }
+  {
+    booking,
+    paymentId,
+    liveAdditionalPaymentIntentId,
+    settleAuditMetadata,
+  }: {
+    booking: { id: string; finalPriceCents: number; payment: { changeFeeCents: number | null } | null };
+    paymentId: string;
+    liveAdditionalPaymentIntentId: string | null;
+    settleAuditMetadata: Prisma.JsonValue | null | undefined;
+  }
 ) {
-  // HIGH #1 — disarm, inside this transaction, before anything else is
-  // written. The disarmed operations are DELETED, not flipped to a terminal
-  // status: every webhook-side liveness predicate keys on
-  // `status != SUCCEEDED` (queueSupersededPaymentIntentRefundRecovery,
-  // listLiveSupersededIntentIds, findLiveSupersededIntentOperation), so a
-  // FAILED "closed" row would still read as LIVE to all of them — a
-  // post-reversal capture from a stale /pay tab would be handed to the
-  // superseded-refund machinery (member charged, silently refunded, booking
-  // never settles) and the intent id would sit in the duplicate-guard's
-  // `notIn` exclusion forever. Deletion makes every one of those predicates
-  // coherent at once, and it re-arms a later re-mark cleanly: the settle's
-  // enqueue upsert finds no row and its CREATE arm fires with a fresh
-  // PENDING status and nextRetryAt.
-  //
-  // #4320 — scope, by status: every row those predicates read as live
-  // (`liveSupersededOperation`), so PENDING, PROCESSING and FAILED, retrying
-  // or exhausted. A FAILED row is not finished: the worker retries it and the
-  // webhook hands a capture to it either way, so one left behind by a Stripe
-  // outage refunded the member's capture of an intent this reversal made
-  // payable again. An exhausted row is moot once the settle it protected is
-  // gone; its alert and content live on in the audit trail.
-  //
-  // #4320 — scope, by intent: only the intents the settle itself condemned,
-  // read back off its audit row - `cancelledPaymentIntentIds` less
-  // `adoptedCancelPaymentIntentIds`, the ones whose cancellation another
-  // writer (an edit that superseded the intent, say) had queued first. The
-  // reversal puts back the state before the settle, and in that state those
-  // intents were already being cancelled: their rows stay and do their
-  // writer's job. A settle row without the cancelled list (none found)
-  // reads as the pre-#4320 scope, every such row on the payment; one without
-  // the adopted list, written before #4320, as adopting nothing.
-  //
-  // A member-owed REFUND_SUPERSEDED_PAYMENT op can never be reached here,
-  // because the handoff that creates one marks its transaction SUCCEEDED
-  // first and the reversal refuses on any settled Stripe transaction before
-  // it calls this.
-  //
-  // The rows' full content is read first and preserved in the AuditLog
-  // metadata and the reversal's BookingEvent snapshot (ids), so the audit
-  // trail — not the queue — is where the closed operations live on.
-  const withdrawnIntentIds = settleWithdrawableIntentIds(settleAuditMetadata);
-  const liveOperations = await tx.paymentRecoveryOperation.findMany({
+  const { owedCents } = await readBookingAmountOwed(booking, tx);
+  const stalePrimary = await queueSupersededPrimaryIntentCancellations(tx, {
+    bookingId: booking.id,
+    paymentId,
+    newFinalPriceCents: owedCents,
+  });
+  const staleAdditional = await queueSupersededAdditionalIntentCancellationRows({
+    bookingId: booking.id,
+    paymentId,
+    newPaymentIntentId: liveAdditionalPaymentIntentId,
+    store: tx,
+  });
+  const stillCancelledIntentIds = [
+    ...new Set([...stalePrimary, ...staleAdditional].map((superseded) => superseded.paymentIntentId)),
+  ];
+  const kept = [...stillCancelledIntentIds, ...readAdoptedCancelIntentIds(settleAuditMetadata)];
+
+  // The intents the restored booking can be paid with: live card intents on
+  // the payment that no rule above condemned.
+  const payable = await tx.paymentTransaction.findMany({
     where: {
       paymentId,
-      ...liveSupersededOperation(),
-      ...(withdrawnIntentIds === null ? {} : { paymentIntentId: { in: withdrawnIntentIds } }),
+      source: PaymentSource.STRIPE,
+      status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+      stripePaymentIntentId: { not: null, notIn: kept },
     },
-    orderBy: { createdAt: "asc" },
-    select: {
-      id: true,
-      type: true,
-      status: true,
-      paymentIntentId: true,
-      paymentTransactionId: true,
-      amountCents: true,
-      idempotencyKey: true,
-      attempts: true,
-      createdAt: true,
-    },
+    select: { stripePaymentIntentId: true },
   });
+  const payableIntentIds = payable.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : []));
+
+  // DELETED, not flipped to a terminal status: every webhook-side liveness
+  // predicate keys on `status != SUCCEEDED` (queueSupersededPaymentIntentRefundRecovery,
+  // listLiveSupersededIntentIds, findLiveSupersededIntentOperation), so a
+  // FAILED "closed" row would still read as LIVE to all of them - a
+  // post-reversal capture would be handed to the superseded refund (member
+  // charged, refunded, booking never settles). Deletion makes every predicate
+  // coherent at once, and re-arms a later re-mark cleanly: its upsert finds no
+  // row and mints a fresh PENDING one. Every status those predicates read as
+  // live is withdrawn (`liveSupersededOperation`): PENDING, PROCESSING and
+  // FAILED, retrying or exhausted. A FAILED row is not finished - the worker
+  // retries it and the webhook hands a capture to it either way.
+  //
+  // A REFUND_SUPERSEDED_PAYMENT row is not reached in practice: the hand-off
+  // that creates one marks its transaction SUCCEEDED in the same transaction
+  // as its claim, under the Payment row this reversal holds, and the reversal
+  // refuses on any settled Stripe transaction before it calls this.
+  //
+  // The rows' full content is read first and preserved in the AuditLog
+  // metadata, so the audit trail - not the queue - is where they live on.
+  const liveOperations =
+    payableIntentIds.length === 0
+      ? []
+      : await tx.paymentRecoveryOperation.findMany({
+          where: { paymentId, paymentIntentId: { in: payableIntentIds }, ...liveSupersededOperation() },
+          orderBy: { createdAt: "asc" },
+          select: {
+            id: true,
+            type: true,
+            status: true,
+            paymentIntentId: true,
+            paymentTransactionId: true,
+            amountCents: true,
+            idempotencyKey: true,
+            attempts: true,
+            createdAt: true,
+          },
+        });
   // Status-fenced WRITE, one row at a time, idempotent by construction: a
   // replayed reversal deletes zero rows (and its own fenced payment write
   // 409s). The fence is the liveness predicate itself, so a worker's claim
   // racing this (FAILED -> PROCESSING) is deleted all the same, while a row a
-  // worker finished meanwhile (SUCCEEDED) is left and not reported closed. A
-  // worker that already claimed one of these PROCESSING can no longer
-  // complete or hand it off — its re-claim and its fenced completion both
-  // match nothing once the row is gone (see
-  // handoffSucceededSupersededIntentToRefund / completePaymentRecoveryOperation
-  // in payment-recovery.ts).
-  const doomedOperations: typeof liveOperations = [];
+  // worker finished meanwhile (SUCCEEDED) is left and not reported closed.
+  // A worker that claimed a row before this delete commits re-claims under
+  // the Payment row before it records a capture, so its hand-off matches
+  // nothing once the row is gone. Its Stripe cancel call is outside that
+  // lock and may still reach Stripe after this commits: the member's open
+  // tab then fails, and the pay step mints a fresh intent. No money moves.
+  const withdrawn: typeof liveOperations = [];
   for (const operation of liveOperations) {
     const deleted = await tx.paymentRecoveryOperation.deleteMany({
       where: { id: operation.id, ...liveSupersededOperation() },
     });
-    if (deleted.count === 1) doomedOperations.push(operation);
+    if (deleted.count === 1) withdrawn.push(operation);
   }
-  return doomedOperations;
+  return { withdrawn, stillCancelledIntentIds };
 }

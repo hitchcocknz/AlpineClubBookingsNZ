@@ -148,7 +148,11 @@ export type QueuedSupersededIntentCancellation = {
 export async function queueSupersededAdditionalIntentCancellationRows(options: {
   bookingId: string;
   paymentId: string;
-  newPaymentIntentId: string;
+  /**
+   * The one ADDITIONAL intent to keep. Null keeps none: a manual mark-paid's
+   * reversal re-applying this rule to a payment with no live ask (#4320).
+   */
+  newPaymentIntentId: string | null;
   store?: Prisma.TransactionClient;
 }): Promise<QueuedSupersededIntentCancellation[]> {
   const store = options.store ?? prisma;

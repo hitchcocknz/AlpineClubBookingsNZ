@@ -1673,16 +1673,19 @@ async function markSupersededTransactionSucceeded({
   operation,
   amountCents,
   paymentMethodId,
+  store = prisma,
 }: {
   operation: PaymentRecoveryOperation;
   amountCents: number;
   paymentMethodId?: string | null;
+  /** #4320: the hand-off's transaction, which already holds the Payment row. */
+  store?: Prisma.TransactionClient | typeof prisma;
 }) {
   if (!operation.paymentTransactionId) {
     throw new Error("Payment recovery operation is missing paymentTransactionId");
   }
 
-  await prisma.paymentTransaction.update({
+  await store.paymentTransaction.update({
     where: { id: operation.paymentTransactionId },
     data: {
       amountCents,
@@ -1694,7 +1697,7 @@ async function markSupersededTransactionSucceeded({
     },
   });
 
-  await reconcilePaymentAggregates({ paymentId: operation.paymentId });
+  await reconcilePaymentAggregates({ paymentId: operation.paymentId, store });
 }
 
 async function handoffSucceededSupersededIntentToRefund({
@@ -1729,16 +1732,33 @@ async function handoffSucceededSupersededIntentToRefund({
   // PENDING/FAILED are included because the webhook-side handoff
   // (queueSupersededPaymentIntentRefundRecovery) legitimately hands off an
   // operation the cron has not claimed.
-  const claimed = await prisma.paymentRecoveryOperation.updateMany({
-    where: {
-      id: operation.id,
-      status: { in: [...NON_TERMINAL_PAYMENT_RECOVERY_STATUSES] },
-    },
-    data: {
-      status: PaymentRecoveryOperationStatus.PROCESSING,
-      processingStartedAt: new Date(),
-      ...(takenFromOutside ? { attempts: { increment: 1 } } : {}),
-    },
+  //
+  // #4320 (`INV-LOCK-002`): the re-claim, the flip to SUCCEEDED and the
+  // rebuild commit together, under the Payment row taken first - then the
+  // recovery row, then the transaction row. The reversal holds that Payment
+  // row from before its "no settled Stripe transaction" check to its commit,
+  // so the two serialise: a hand-off that commits first leaves a SUCCEEDED
+  // transaction the reversal refuses on, and a reversal that commits first has
+  // deleted the row this claim then matches nothing of. As separate
+  // statements, a flip landing after that check left the member charged and
+  // refunded on a booking the reversal had made unpaid. No provider call runs
+  // inside.
+  const claimed = await prisma.$transaction(async (tx) => {
+    await lockPaymentForRefundedTotal(tx, operation.paymentId);
+    const claim = await tx.paymentRecoveryOperation.updateMany({
+      where: {
+        id: operation.id,
+        status: { in: [...NON_TERMINAL_PAYMENT_RECOVERY_STATUSES] },
+      },
+      data: {
+        status: PaymentRecoveryOperationStatus.PROCESSING,
+        processingStartedAt: new Date(),
+        ...(takenFromOutside ? { attempts: { increment: 1 } } : {}),
+      },
+    });
+    if (claim.count === 0) return claim;
+    await markSupersededTransactionSucceeded({ operation, amountCents, paymentMethodId, store: tx });
+    return claim;
   });
   if (claimed.count === 0) {
     logger.error(
@@ -1751,12 +1771,6 @@ async function handoffSucceededSupersededIntentToRefund({
     );
     return false;
   }
-
-  await markSupersededTransactionSucceeded({
-    operation,
-    amountCents,
-    paymentMethodId,
-  });
 
   // #3639: on a CANCELLED booking this capture is a late capture, so it follows
   // the club's setting like every other - held for a treasurer, no refund.

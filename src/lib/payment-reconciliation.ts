@@ -71,7 +71,11 @@ import {
   MANUAL_SETTLE_FROM_PAYMENT_STATUS_LIST,
 } from "@/lib/booking-payment-state";
 import { CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
-import { enqueueManualSettlementIntentCancellations, withdrawManualSettlementIntentCancellations } from "@/lib/manual-settlement-intent-hygiene";
+import {
+  enqueueManualSettlementIntentCancellations,
+  manualSettleIntentHygieneAuditFields,
+  withdrawManualSettlementIntentCancellations,
+} from "@/lib/manual-settlement-intent-hygiene";
 import { supersededMachineryOwnsCapture } from "@/lib/superseded-capture-ownership";
 import { reportSupersededCaptureRefused } from "@/lib/superseded-capture-refusal";
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
@@ -1583,12 +1587,13 @@ async function settleBookingPaymentInTransaction(
             creditAppliedCents: mirrorCreditAppliedCents,
             previousStatus: booking.status,
             hasXeroInvoiceLink: false,
-            cancelledPaymentIntentIds: outstandingIntentIds,
-            // #4320: those of them whose cancellation another writer had
-            // already queued, which the settle adopted rather than minted. The
-            // reversal reads both lists back and withdraws only the rest, so it
-            // must record exactly what THIS settle found (empty when nothing).
-            adoptedCancelPaymentIntentIds: adoptedIntentIds,
+            // Every intent queued for cancellation, and (#4320) those whose
+            // cancellation another writer had already queued, which the
+            // reversal reads back.
+            ...manualSettleIntentHygieneAuditFields({
+              cancelledIntentIds: outstandingIntentIds,
+              adoptedIntentIds,
+            }),
             // #2397 F4: the addition's live intent this settle deliberately did
             // NOT disarm, because the extra is still owed and this is the
             // member's door to pay it. Null on every other settlement — the
@@ -2436,13 +2441,14 @@ const MANUAL_REVERSAL_REFUSAL =
  * member's stale /pay tab captures X and legitimately settles the booking ->
  * the cron processes the now-stale cancel op would REFUND THE REAL SETTLEMENT,
  * leaving a PAID booking at zero net cash. Those operations must not outlive
- * the settlement they were minted to protect, so the reversal DELETES every
- * one still live inside its own transaction — FAILED and retrying included
- * (#4320) — (deletion, not a terminal status flip: every webhook-side liveness
- * predicate keys on `status != SUCCEEDED`, so only a deleted row is invisible
- * to all of them — see the disarm comment in the body). A cancellation another
- * writer had queued before the settle, which the settle adopted, is not the
- * settle's and stays.
+ * the settlement they were minted to protect. #4320: the reversal re-applies
+ * the supersede rule to the restored booking and DELETES, inside its own
+ * transaction, every live one (FAILED and retrying included) on an intent that
+ * booking can still be paid with - deletion, not a terminal status flip, since
+ * every webhook-side liveness predicate keys on `status != SUCCEEDED`. A stale
+ * intent keeps or regains its cancellation, and so does one whose cancellation
+ * another writer queued before the settle
+ * (`withdrawManualSettlementIntentCancellations`).
  *
  * The disarm is idempotent by construction: it is a status-fenced conditional
  * delete, so a replayed reversal deletes zero rows — and the reversal's own
@@ -2539,8 +2545,8 @@ export async function reverseManualBookingPayment({
     // Guard 2 again, for anything acquired SINCE the settle.
     await assertNoXeroInvoiceEvidence(tx, payment);
 
-    // The matching settle's audit row: what it cleared, settled and queued is
-    // what this reversal puts back or withdraws.
+    // The matching settle's audit row: what it cleared, settled and adopted is
+    // what this reversal puts back or keeps.
     const lastManualSettleAudit = await tx.auditLog.findFirst({
       where: {
         action: MANUAL_MARK_PAID_AUDIT_ACTION,
@@ -2549,15 +2555,6 @@ export async function reverseManualBookingPayment({
       },
       orderBy: { createdAt: "desc" },
       select: { metadata: true },
-    });
-
-    // HIGH #1 — disarm, inside this transaction, before anything else is
-    // written: the settle's own superseded-intent rows still live are DELETED
-    // (#4320: FAILED ones included; a cancellation another writer queued first
-    // stays). See `withdrawManualSettlementIntentCancellations`.
-    const doomedOperations = await withdrawManualSettlementIntentCancellations(tx, {
-      paymentId: payment.id,
-      settleAuditMetadata: lastManualSettleAudit?.metadata,
     });
 
     // #2265 (#2262 door 3): RESTORE the credit election this settlement
@@ -2720,6 +2717,18 @@ export async function reverseManualBookingPayment({
         restoredAdditional.count === 1 ? settledAdditional.amountCents : null;
     }
 
+    // HIGH #1 — disarm, inside this transaction, once the booking is restored:
+    // the supersede rule is re-applied to it, and the live superseded-intent
+    // rows of every intent it can still be paid with are DELETED (#4320).
+    // See `withdrawManualSettlementIntentCancellations`.
+    const { withdrawn: doomedOperations, stillCancelledIntentIds } =
+      await withdrawManualSettlementIntentCancellations(tx, {
+        booking,
+        paymentId: payment.id,
+        liveAdditionalPaymentIntentId: payment.additionalPaymentIntentId,
+        settleAuditMetadata: lastManualSettleAudit?.metadata,
+      });
+
     // #3581: the reversal flipped the manual rows from SUCCEEDED to FAILED
     // above, so the cash lines the settle posted no longer hold. The same sync
     // posts their reversals — new lines, the originals untouched, each keyed by
@@ -2775,6 +2784,9 @@ export async function reverseManualBookingPayment({
           reversedAmountCents: payment.amountCents,
           closedRecoveryOperationIds,
           closedRecoveryOperations,
+          // #4320: the intents the restored booking cannot be paid with, whose
+          // cancellation stands or was queued afresh.
+          stillCancelledPaymentIntentIds: stillCancelledIntentIds,
           clearedInternetBankingHold: clearInternetBankingHold,
           // #2265 (#2262 door 3). The member's credit election, put back on the
           // booking by this reversal — recorded BOTH ways, like the email
