@@ -255,9 +255,11 @@ export const scaleCappedCarriedRows: CappedCarryScaler = (rows, redemptions) => 
   // Across codes: every guest and every night against what it is held at.
   // Each pass clears EVERY code on ANY over guest or night, so the answer does
   // not depend on row order; clearing a code can only remove a discount, or a
-  // raise that was offsetting one, so repeat. Each pass clears at least one code
-  // or stops, so it ends.
-  for (let involved = codesOverAHeldPrice(rows, amounts); involved.size > 0; involved = codesOverAHeldPrice(rows, amounts)) {
+  // raise that was offsetting one, so repeat. A pass that finds anything clears
+  // at least one more code, so there are at most as many as there are codes.
+  for (let pass = 0; pass <= redemptions.length; pass += 1) {
+    const involved = codesOverAHeldPrice(rows, amounts);
+    if (involved.size === 0) break;
     rows.forEach((row, index) => {
       if (involved.has(row.promoRedemptionId)) amounts[index] = null;
     });
