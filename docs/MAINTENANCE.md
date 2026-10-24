@@ -278,7 +278,7 @@ Two rules, both learned the expensive way:
 
 | hold | why it exists | retires when |
 | --- | --- | --- |
-| `@sentry/nextjs` (`10.70.0`, exact) | **Compatibility**, not security. `@sentry/server-utils@10.72.0` removed `@apm-js-collab/code-transformer-bundler-plugins`, `@apm-js-collab/tracing-hooks` and `meriyah` from its dependencies, but the code it ships still loads the first of those. Importing it throws `TypeError: The URL must be of scheme file` from `orchestrion/bundler/webpack.js`, which kills six test files at import time and fails a seventh. Nothing in this repository is at fault and there is no local workaround worth carrying, so the version is held instead (#3313, #3304). | Sentry ships a release whose `@sentry/server-utils` loads only what it declares. Verify by pinning that version in a scratch copy and running the suites named in #3313, not by reading the changelog. |
+| _none_ | No package is held today. The `@sentry/nextjs` hold (`10.70.0`, #3313) retired in #3419, which moved to 10.74.0 after Sentry shipped a `@sentry/server-utils` that loads only what it declares. | — |
 
 ### Checking whether an override still earns its place
 
