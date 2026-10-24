@@ -726,6 +726,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-040` | An unpaid review-raised request can be withdrawn; withdrawal retires every instrument, durably |
 | `INV-ADDPAY-041` | A voided refund note is never re-adopted or replayed by Xero |
 | `INV-ADDPAY-042` | A voided bank-transfer refund note is undone once, then asked once |
+| `INV-ADDPAY-043` | A later bank-transfer hand-back gets its own note, sized on its task |
 
 ## Analytics And Privacy
 

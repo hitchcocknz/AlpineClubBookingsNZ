@@ -1940,7 +1940,7 @@ total at apply).
   re-repaired.
 - **On a cancelled booking a completed `CANCELLED_BOOKING_HAND_BACK`, and a
   review's netted card refund or hand-back (#3880), raise
-  the cancellation's refund note** against the invoice's id,
+  a refund note** (`INV-ADDPAY-043`) against the invoice's id,
   never `hasIssuedPrimaryXeroInvoice` (false here); a cash settlement
   (#2262) has none. Cancellation policy is untouched (D2,
   #3527). Pinned by
@@ -2174,23 +2174,23 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   outright. A dismissal records no direction.
 - **The charging direction is the additional-payment path, not a new mechanism**
   (#3170). A `CHARGE_TO_MEMBER` completion re-enters
-  `createModificationAdditionalPaymentIntent` — the same function every ordinary
-  booking-edit price increase goes through — so the instrument, the PENDING
-  `ADDITIONAL` `PaymentTransaction`, the chase reminders, the member's pay link
-  and the Xero supplementary invoice's wait-for-payment are the existing ones.
-  NOTHING IS TAKEN FROM THE CARD BY THE COMPLETION: it raises the request and the
-  member pays it. A booking with neither a card to ask
+  `createModificationAdditionalPaymentIntent`, as every ordinary edit increase
+  does, so the PENDING `ADDITIONAL` row, chase, pay link and Xero
+  wait-for-payment are the existing ones. NOTHING IS TAKEN FROM THE CARD BY THE
+  COMPLETION: the member pays. A booking with neither a card to ask
   (`canAskCardForReviewCharge`) nor an issued Xero invoice is REFUSED before the
-  claim, with the task left OPEN. The Xero leg is the same supplementary-invoice
-  enqueue, billed a POSITIVE amount: the only place direction becomes a sign.
+  claim, with the task left OPEN. The Xero leg bills the same supplementary
+  invoice a POSITIVE amount: the only place direction becomes a sign.
 - **Which instrument a charge uses** (#3947; owner decisions 15 and 22 Oct
-  2026). The card when `canAskCardForReviewCharge` says so: the edit doors'
-  `canAskCardForIncrease`, so a settled credit-paid booking too, Xero or not,
-  plus captured card money on an unsettled booking (pending #4272). Otherwise
-  the issued invoice. ONE INSTRUMENT PER EDIT: a share whose edit has no card
-  request but an invoice queued, sending, retried, or failed and unresolved
-  joins it; one issued, or resolved by hand in Xero, refuses it. The invoice route queues
-  its invoice inside the completion's transaction, and "coming" is read before
+  2026). A CANCELLED booking is refused first (#4272, 21 Oct 2026): nobody
+  can pay its ask ([INV-ADDPAY-023]). Else the card when
+  `canAskCardForReviewCharge` says so: the edit doors' `canAskCardForIncrease`,
+  so a settled credit-paid booking too, Xero or not, plus captured card money
+  on an unsettled booking that is not cancelled. Otherwise the issued invoice.
+  ONE INSTRUMENT PER EDIT: a share whose edit has no card request but an
+  invoice queued, sending, retried, or failed and unresolved joins it; one
+  issued, or resolved by hand in Xero, refuses it. The invoice route queues its
+  invoice inside the completion's transaction, and "coming" is read before
   "issued", so no later share misses it.
 
 ## INV-PAY-062
@@ -2307,9 +2307,11 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   - **A lease, never a lock**: nothing is held across Stripe and no advisory key
     is taken; an expired token is taken over, safe because the derived total
     only grows and a raise is absolute.
-  - **One card question** (#3947): the route chooser and the mint both ask
-    `canAskCardForReviewCharge` ([INV-PAY-069]), so a route chosen as card is
-    always minted for, never left to a replay that cannot raise.
+  - **One card question** (#3947): chooser and mint both ask
+    `canAskCardForReviewCharge` ([INV-PAY-069]), so a card route is always
+    minted for. A booking cancelled since the commit is asked nothing (#4272);
+    its shortfall, net of refunds, is recorded once. A cancellation mid-call is
+    missed.
   - **Stated limits**, ordering and interleavings:
     [`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md).
   - Home: `edit-financial-review-charge-raise-claim.ts`,

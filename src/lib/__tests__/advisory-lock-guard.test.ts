@@ -157,6 +157,13 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-002",
   },
   {
+    site: "convergeCreditNoteSpentOutsideApp#1",
+    tier: "GLOBAL",
+    reason:
+      "Releasing a booking's applied credit changes what it owes, so the converge (#4219) joins the cancel/capture/refund cohort on the global key before the member's credit-ledger key: a concurrent cancel's restore or a capture must not read the applied credit between the release row and the slice change. Global first, then the member key, as the checklist orders them.",
+    invariant: "INV-LOCK-002",
+  },
+  {
     site: "POST /api/admin/hut-leaders#1",
     tier: "GLOBAL",
     reason:
