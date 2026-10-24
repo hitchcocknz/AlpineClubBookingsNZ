@@ -16,7 +16,7 @@ reason: the runner's branch is one early fork at the top of
   this request does not have.
 
 file: src/lib/admin-cron-health.ts
-lines: 952
+lines: 927
 reason: one `defineCronJob` entry for the new `credit-release-asks` job, which the
   health page reads from this registry; the job's own logic is in its own module.
 
