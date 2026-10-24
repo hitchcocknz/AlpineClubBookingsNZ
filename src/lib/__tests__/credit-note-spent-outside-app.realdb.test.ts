@@ -528,6 +528,10 @@ let observerClient: import("@prisma/client").PrismaClient;
       await prisma.memberCreditNoteAllocation.create({
         data: { memberCreditId: SPENT_LOT_ID, xeroCreditNoteId: SPENT_NOTE_ID, appliedToBookingId: BOOKING_ID, amountCents: 1_000 },
       });
+      // Half the evidence only: a marked release for the booking, with no write-down for the note beside it.
+      await prisma.memberCredit.create({
+        data: { memberId: MEMBER_ID, amountCents: 1_000, type: "BOOKING_APPLIED", description: "race 4338 release without a write-down", appliedToBookingId: BOOKING_ID, outsideSpendConvergedAt: new Date("2026-07-01T00:00:00.000Z") },
+      });
       const failed = await prisma.xeroSyncOperation.create({
         data: { direction: "OUTBOUND", entityType: "ALLOCATION", operationType: "CREATE", localModel: "MemberCreditNoteAllocation", localId: "race-4338-no-evidence", status: "FAILED",
           // Found by booking, so the fixtures sweep removes it.
