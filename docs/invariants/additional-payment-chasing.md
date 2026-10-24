@@ -1732,15 +1732,16 @@ _Legacy: settles tasks raised before #4317._
 - **Three writers ask, each where it first knows the refund.** A refund
   request's approval, for each refund its attempt made, and its recovery
   replay for those it makes, whatever its outcome (`replayNotingEachRefund`,
-  `INV-PAY-118`; a row an older approval wrote, no `stripeKeyPrefix`, raises
-  none). `charge.refunded`, for a refund it first
-  records that no app door made (`cardRefundDoorOf`). A late capture's note
-  splits its ask (`planLateCaptureCardNotes`).
-- **A re-send answers with the failed refund's note** (#4104). A refund sent
-  again for one Stripe failed later, found by #4104's links (the row's key,
-  `failedRefundIds`), is sized less the failed refund's own notes
-  (`readFailedRefundsAnsweredBy`): no second note. `charge.refunded` keeps it
-  off the canonical delta; a failed-later row's replay asks for it too.
+  `INV-PAY-118`). `charge.refunded`, for a refund it first records that no app
+  door made (`cardRefundDoorOf`). A late capture's note splits its ask
+  (`planLateCaptureCardNotes`).
+- **A re-send answers with the failed refund's note** (#4104). Which refund
+  answers a failure is the owed figure's attribution
+  (`cardRefundResendsByRefund`), made no earlier than the failure; it is sized
+  less the own notes of the failures it answers, a failed re-send's included
+  (`readFailedRefundsAnsweredBy`). It is noted on its own record only when one
+  of them was: every replay and `charge.refunded` ask that one rule
+  (`answersOwnNotedFailure`).
 - **Never for a historical refund.** Only a refund Stripe made since the
   marker migration finished qualifies (`madeSinceCardRefundNoteCutover`);
   none if the marker never finished, when the approval takes the one note. An

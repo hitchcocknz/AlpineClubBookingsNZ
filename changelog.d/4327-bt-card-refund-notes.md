@@ -10,7 +10,8 @@
   cancelled. A card payment taken twice by mistake, and refunded, still gets
   no note: Xero never received it. If Stripe fails one of these refunds days
   later and the app sends it again, the failed refund's note covers the new
-  one, so Xero is not credited twice. If Xero voids one of these notes, it is
+  one - even when that one fails too and the treasurer refunds it in the
+  Stripe dashboard - so Xero is not credited twice. If Xero voids one of these notes, it is
   listed on Stuck States for a person and never mistaken for a bank refund
   to take back.
 

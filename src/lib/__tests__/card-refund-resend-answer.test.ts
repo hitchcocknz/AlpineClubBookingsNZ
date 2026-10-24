@@ -1,9 +1,11 @@
 /**
- * #4312 round 5 (#4104, `INV-ADDPAY-045`): which refunds Stripe failed later a
- * card refund was sent again for (`readFailedRefundsAnsweredBy`), read from the
- * links #4104 keeps on the recovery row - a row of its own's key, a re-planned
- * slice's `failedRefundIds` - and what their own notes cover. The real
- * PostgreSQL proofs of each writer are `xero-bt-card-refund-notes.realdb.test.ts`.
+ * #4312 rounds 5 and 6 (#4104, `INV-ADDPAY-045`): which refunds Stripe failed
+ * later a card refund was sent again for (`readFailedRefundsAnsweredBy`) - the
+ * owed figure's own attribution of the links #4104 keeps on the recovery row (a
+ * row of its own's key, a re-planned slice's `failedRefundIds`), a failed
+ * re-send's chain included - and what their own notes cover. Each round-6 case
+ * also checks Xero's total against what went back (`xeroCoverAfterAsking`). The
+ * real PostgreSQL proofs of each writer are `xero-bt-card-refund-notes.realdb.test.ts`.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -107,7 +109,7 @@ beforeEach(() => {
 });
 
 describe("a card refund sent again for one Stripe failed later (#4312 round 5)", () => {
-  it("MUTATION: the first refund recorded after the failure, on its charge for its amount, answers it - with the failed refund's own note", async () => {
+  it("MUTATION: the refund its row's window takes after the failure, on its charge for its amount, answers it - with the failed refund's own note", async () => {
     refunds.push(refund("re_before", 8), refund("re_other_amount", 15, "succeeded", 1_000), refund("re_resent", 20), refund("re_later", 30));
     expect(await answered("re_resent")).toEqual({ failedRefundIds: ["re_failed"], ownNoted: true, coverCents: 4_000 });
     // One refund answers it: a later one of the same amount, an earlier one, another amount - none.
