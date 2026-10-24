@@ -1293,7 +1293,10 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // plan store (on the change, else the booking) and its unsent-invoice switch
   // (on that invoice's anchor) each take it alone in a short transaction of
   // their own, and the supplementary enqueue reads the anchor's receipts under
-  // it (`anchorCaptureHasReceipt`). No new raw site, no new key, no nesting.
+  // it (`anchorCaptureHasReceipt`). Round 7: where the booking has a change
+  // capture no change can be read from, that enqueue takes it on the booking
+  // and then on its anchor - the one fixed order, booking -> change; no holder
+  // of a change's key takes a booking's. No new raw site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,

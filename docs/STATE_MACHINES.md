@@ -3713,9 +3713,11 @@ change's card capture kept, nothing parked on its intent, primary invoice
     no room on the primary and no gap invoice -> #3980's re-check:
       gap queued -> busy -> back to PENDING; a review task -> refused
     room on that target, else the primary (the capture less any part another
-      writer recorded) -> decision stored under the change's anchor lock after
-      who records it is read again there (another recorder by now -> SUCCEEDED,
-      stood down; the target moved -> busy) ->
+      writer recorded) -> decision stored under the change's anchor lock (the
+      change from its stamp or a review charge's reason, else the booking's)
+      after who records it is read again there (another recorder by now ->
+      SUCCEEDED, stood down; the target moved -> busy; no change known and a
+      paid invoice on the booking naming no capture -> refused) ->
       Xero payment (or an earlier run's, found by
       reference) -> SUCCEEDED, ADDITIONAL_CAPTURE_PAYMENT link; cash left over
       -> officer alerted; a refund note named another invoice -> flagged
@@ -3738,7 +3740,8 @@ The PARTIAL repair's claim is pinned by `xero-operation-retry.test.ts` and,
 against real PostgreSQL, `xero-partial-repair-claim.realdb.test.ts` (#4256).
 A change capture's receipt is pinned by `additional-capture-xero-receipt.test.ts`,
 `additional-capture-recorder.test.ts` and, against real PostgreSQL,
-`additional-capture-receipt.realdb.test.ts` (#3953).
+`additional-capture-receipt.realdb.test.ts` and
+`additional-capture-receipt-unattributed.realdb.test.ts` (#3953).
 
 ## Cron And Recovery Lifecycle
 

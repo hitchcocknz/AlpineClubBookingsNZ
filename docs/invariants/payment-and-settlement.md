@@ -1561,38 +1561,40 @@ refunded total it corrects).
 
 ## INV-PAY-138
 
-**Related: `INV-PAY-136`** (the gap invoice) and **`INV-PAY-104`** (the
-late-success release).
+**Related: `INV-PAY-136`** (gap invoice), **`INV-PAY-104`** (late-success
+release).
 
 - **A change's card capture that nothing else records is recorded against the
   Xero invoice that bills it, by one recorder** (#3953; owner, 21 Oct 2026).
-- **One recorder.** The primary's create stores the captures its recorded cash
-  covers. Every other captured change gets an `ADDITIONAL_CAPTURE_RECEIPT` row,
-  from the link save before the gap check or from the late-success release.
-  The gap invoice pays itself only from cash no receipt or supplementary
-  invoice records, and names what it took. A receipt stands down where the
-  primary, a paying supplementary invoice naming or wholly covering it, or
-  the change's own paid invoice records it (`readCaptureRecorder`).
+- **One recorder.** The primary's create stores the captures its cash covers;
+  every other gets an `ADDITIONAL_CAPTURE_RECEIPT` row, at the link save or the
+  late-success release. The gap invoice pays only from unclaimed cash, naming
+  what it took. A receipt stands down where the primary or a paying
+  supplementary invoice (naming it, covering it, or the change's own) records
+  it (`readCaptureRecorder`).
+- **No stamp.** A review charge's change is read from its reason
+  (`captureChangeId`). One with neither decides under the booking's key, which
+  a paying supplementary enqueue there takes first, and refuses beside a paid
+  invoice naming no capture.
 - **Once.** Queued per capture under the per-anchor supplementary-invoice lock;
-  never on a cancelled or internet-banking booking.
+  never on an internet-banking or cancelled booking (whose kept capture goes
+  unrecorded here).
 - **Where.** The gap invoice billing its change, else an unpaid invoice naming
-  it or the change's own, else the primary less credit still to allocate: the
-  capture, less what another writer took, capped at that room; any rest goes
-  to an officer.
-- **Never twice.** One receipt plans per booking, past a stamp under its
-  anchor lock, never during a live create; an earlier payment is found by
-  reference; a decision is stored before Xero is called, and a retry sends it
-  or refuses.
-- **Refused, never guessed.** Xero unreadable, nothing due, a target not in
-  Xero, an own payment still owed, or changed figures: FAILED
-  `ADDITIONAL_CAPTURE_RECEIPT_REFUSED`, an officer told.
+  it or the change's own, else the primary less unallocated credit: the
+  capture net of other writers, capped at the room; the rest to an officer.
+- **Never twice.** One receipt plans per booking at a time, never during a
+  live create; it stores its decision under the change's lock before calling
+  Xero; a retry finds its payment by reference, sends it or refuses.
+- **Refused, never guessed.** Xero unreadable, nothing due, an uncertain
+  recorder or changed figures: FAILED `ADDITIONAL_CAPTURE_RECEIPT_REFUSED`,
+  an officer told.
 - **Refunds and repair.** A Stripe refund names the receipt's invoice. The
   repair tool reports "card payment not recorded in Xero", queues the receipt,
-  and raises a change's missing invoice unpaid where a receipt recorded it.
-- **Limits.** A kept capture on a cancelled booking is not recorded here.
+  and raises a change's missing invoice unpaid where a receipt records it.
 - Pinned by `additional-capture-xero-receipt.test.ts`,
   `additional-capture-recorder.test.ts`,
-  `additional-capture-receipt.realdb.test.ts` and
+  `additional-capture-receipt.realdb.test.ts`,
+  `additional-capture-receipt-unattributed.realdb.test.ts` and
   `xero-booking-repair.test.ts`.
 
 ## INV-PAY-031

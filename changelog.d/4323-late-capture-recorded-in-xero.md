@@ -20,7 +20,9 @@
 
   Nothing is guessed. If Xero can't be read, the invoice the payment belongs to
   has nothing left due, or the invoice's own payment hasn't been recorded yet,
-  the payment is not recorded and the treasurer is emailed; the operation in
+  the payment is not recorded and the treasurer is emailed - as it is for an
+  older payment the app can't tie to a booking change, where another invoice
+  on the booking may already record it; the operation in
   **Xero Operations** says why, and **Retry** runs it again once the cause is
   fixed. Payments on cancelled bookings, and on bookings paid by internet
   banking, are not recorded this way.

@@ -30,7 +30,7 @@ reason: the classifier is where every booking's findings are gathered before
   that action.
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3352
+lines: 3354
 reason: the outbox dispatch chain routes every queue type to its worker, and
   its census requires one branch per member of `XERO_OUTBOX_QUEUE_TYPES`; the
   new type's branch, its import and its constant. Review round 1: the
@@ -42,7 +42,10 @@ reason: the outbox dispatch chain routes every queue type to its worker, and
   gate module. Round 6: the supplementary enqueue's decide is the one place,
   under the anchor's lock, that can see a receipt already recording the
   change's capture, so it raises the invoice unpaid there - one read through
-  the receipt-link module and the payload's recordPayment taking it.
+  the receipt-link module and the payload's recordPayment taking it. Round 7:
+  where the booking has a change capture no change can be read from, that
+  same decide first takes the booking's lock, which such a capture's receipt
+  decides under - one read and one lock call.
 
 file: src/lib/xero-operation-retry.ts
 lines: 2076
