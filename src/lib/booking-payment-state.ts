@@ -1,5 +1,6 @@
-import type { BookingStatus, PaymentSource } from "@prisma/client";
+import type { PaymentSource } from "@prisma/client";
 
+import { isAdditionalAskRetiredBookingStatus } from "@/lib/additional-payment-chase";
 import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
 
 /**
@@ -204,14 +205,14 @@ export function canAskCardForIncrease(booking: {
   );
 }
 
-/** The booking status a review charge is refused on, checked by the compiler. */
-const CANCELLED_BOOKING_STATUS = "CANCELLED" satisfies BookingStatus;
-
 /**
  * #4272 (`INV-PAY-112`, owner decision 21 Oct 2026): a review charge on a
  * CANCELLED booking is REFUSED. Its ask is one the member cannot pay — every
  * pay surface excludes a cancelled booking (`INV-ADDPAY-023`) — and the
  * recovery replay already skips one, so the inline path refuses it too.
+ * #4316: and on a BUMPED one, for the same reason: the statuses are the ones
+ * that retire every ask (`isAdditionalAskRetiredBookingStatus`,
+ * `INV-ADDPAY-044`), so the sync and the replay take the cancelled path alike.
  *
  * THE ONE HOME for that rule, asked by the route chooser before the claim
  * (`chooseEditReviewChargeRoute`, which refuses with its own sentence before any
@@ -221,7 +222,7 @@ const CANCELLED_BOOKING_STATUS = "CANCELLED" satisfies BookingStatus;
 export function refusesReviewChargeForCancellation(booking: {
   status: string;
 }): boolean {
-  return booking.status === CANCELLED_BOOKING_STATUS;
+  return isAdditionalAskRetiredBookingStatus(booking.status);
 }
 
 /**
@@ -233,7 +234,8 @@ export function refusesReviewChargeForCancellation(booking: {
  * The two must agree, or a route chosen as "card" mints nothing, queues a
  * recovery row, and every replay reports `not-raised` until the row dies FAILED.
  *
- * NEVER on a CANCELLED booking (`refusesReviewChargeForCancellation`, #4272).
+ * NEVER on a CANCELLED or BUMPED booking (`refusesReviewChargeForCancellation`,
+ * #4272, #4316).
  * Otherwise it is `canAskCardForIncrease` — so a settled booking paid wholly
  * with credit (`{ amountCents: 0, SUCCEEDED, STRIPE }`) IS asked by card, the
  * owner's 15 Oct 2026 decision on #3947, matching the four edit doors (#3502) —

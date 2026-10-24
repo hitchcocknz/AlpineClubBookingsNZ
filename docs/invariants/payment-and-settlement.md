@@ -2241,11 +2241,11 @@ _Legacy: settles tasks raised before #4317._
   claim, with the task left OPEN. The Xero leg bills the same supplementary
   invoice a POSITIVE amount: the only place direction becomes a sign.
 - **Which instrument a charge uses** (#3947; owner, 15 and 22 Oct 2026). A
-  CANCELLED booking is refused first (#4272): nobody can pay its ask
+  CANCELLED or BUMPED booking is refused first (#4272): its ask is unpayable
   ([INV-ADDPAY-023]). Else the card when
   `canAskCardForReviewCharge` says so: the edit doors' `canAskCardForIncrease`,
   so a settled credit-paid booking too, Xero or not, plus captured card money
-  on an unsettled booking that is not cancelled. Otherwise the issued invoice.
+  on an unsettled, uncancelled booking. Otherwise the issued invoice.
   ONE INSTRUMENT PER EDIT: a share whose edit has no card request but an
   invoice queued, sending, retried, or failed and unresolved joins it; one
   issued, or resolved by hand in Xero, refuses it. The invoice route queues its
@@ -2366,14 +2366,14 @@ _Legacy: settles tasks raised before #4317._
   - **The raise writes amounts, never status**, onto a live, uncaptured
     ADDITIONAL row only: a webhook landing mid-raise stands, and a declined
     request KEEPS FAILED (still owed, still payable).
-  - **A lease, never a lock**: nothing is held across Stripe and no advisory key
+  - **A lease, never a lock**: nothing is held across Stripe; no advisory key
     is taken; an expired token is taken over, safe because the derived total
     only grows and a raise is absolute.
   - **One card question** (#3947): chooser and mint both ask
     `canAskCardForReviewCharge` ([INV-PAY-069]), so a card route is always
-    minted for. A booking cancelled since the commit is asked nothing (#4272);
-    its shortfall, net of refunds, is recorded once. A cancellation mid-call is
-    missed.
+    minted for. A booking ended since the commit is asked nothing (#4272);
+    its shortfall, net of refunds, is recorded once. One ending mid-mint is
+    retired ([INV-ADDPAY-044]).
   - **Stated limits**, ordering and interleavings:
     [`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md).
   - Home: `edit-financial-review-charge-raise-claim.ts`,
