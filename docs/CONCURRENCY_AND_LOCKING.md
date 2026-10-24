@@ -3152,6 +3152,67 @@ runner replays is refused and backs off until this runner replays it, and an
 intent the old runner minted under its own reason is adopted only as the one
 unrecorded match no other in-flight recovery of the booking could own.
 
+**#4316 adds the edit minter's retirement of an ask on a booking that has
+ended, and no key** (`INV-ADDPAY-044`). The ordinary doors decide the ask under
+their `lock(1)`, but `createModificationAdditionalPaymentIntent` runs after
+their commit holding nothing, and the paid cancel's claim (global, lodge,
+member, then the `Payment` row) retires only the intent the mirror it reads
+under that row names. The ROW LOCK orders the two writers. The minter's row
+write (`upsertPaymentIntentTransaction`) takes the `Payment` row before it
+writes, as the claim does before it reads the mirror: a claim that held the row
+first committed before the row was written, so the minter's plain re-read of the
+booking after the write sees CANCELLED; a claim that took it after reads the new
+intent on the mirror and retires it itself. So the re-read needs no lock of its
+own, and neither writer can miss the other. On CANCELLED or BUMPED the minter
+retires through the claim's own routine (`failOutstandingAdditionalAskInClaim`,
+moved to `booking-payment-cleanup.ts` and shared) in a short transaction that
+takes the `Payment` row first, then writes the mirror, the intent's row
+(`markPaymentIntentTransactionFailed`) and the recovery row - the claim's own
+order after its advisory keys, with none before it. It takes no `lock(1)`: the
+status it acts on is terminal, so `lock(1)` would exclude nothing it needs
+excluded, and the capture it might race takes only the `Payment` row. The Stripe
+cancel runs after that commit (`runPaymentRecoveryOperationNow`), and the
+recovery's key is the claim's (transaction and intent), so the two writers queue
+one row. A minter that finds the ask already FAILED leaves it to the cancel's
+Phase 2. The check before the provider call is a plain read too: a booking
+cancelled first is asked nothing.
+
+**The never-captured cancel branch is a counterpart too** (review round 2). A
+fully REFUNDED payment reads captured to the minter but cancels down that
+branch, which used to read its payment with no row lock and queue no
+cancellation, so the two could both miss. Its claim now takes the `Payment` row
+FOURTH - `lock(1)`, the per-lodge key, the member credit-ledger key, then the
+row, the paid claim's own order (`INV-LOCK-002`). Under the row it re-asks the
+paid-path question (`paymentEligibleForPaidCancelPath`, review round 3): an
+ask's capture webhook takes only that row, so a REFUNDED payment read before it
+may hold captured cash again, and the claim then refuses with the 409 and the
+retry takes the paid path. Only a won status-guarded claim then retires the ask
+(`failOutstandingAdditionalAskUnderRowLock`, the same routine) and flips the
+payment FAILED - a lost claim writes nothing - and the ask is cancelled at
+Stripe after commit.
+Nothing it calls after the row takes a key the paid claim takes before it (the
+hosting reconcile comes after the row in both), so no new order exists.
+
+**A retirement is durable before it runs.** After its booking re-read finds the
+booking ended, the minter queues the intent's `CANCEL_PAYMENT_INTENT` row on its
+own, autocommit and under no lock, before the retirement transaction; the
+transaction's write of the same key lands on that row. A transaction that fails
+(a deadlock, a timeout) therefore still leaves the cron to cancel the intent and
+mark its row FAILED. The recovery runner's replay of a failed mint
+(`processCreateAdditionalPaymentIntentOperation`) runs the same two guards: its
+row write is inside its claim hold (`holdAdditionalIntentRecoveryClaim`), which
+takes the `Payment` row before either write since #4217, so the same ordering
+holds. It re-reads after that transaction commits, retires through the same
+routine and closes its recovery row; a failed retirement THROWS, so the row
+backs off and retries, and its check before the mint - ahead of the settled
+check, which would read that ask's own row as settling the debt - retires the
+ask the failed attempt left outstanding. A currency re-issue
+(`reissueAdditionalIntentInClubCurrency`) writes its row through the same
+`upsertPaymentIntentTransaction` and runs the same two guards. Proven - cancel
+before the mint, between the provider call and the row write, queued on the
+`Payment` row in both orders (the never-captured branch's included), and the
+runner's replay - by `ended-booking-ask-mint-race.realdb.test.ts`.
+
 **#4042 adds the organiser's hand-back to the same claim, and no key.** An
 Internet Banking settlement's per-child claim, after its `lock(1)` and the
 joiner's mirror, books that joiner's share on the one `ManualRefundTask` keyed
