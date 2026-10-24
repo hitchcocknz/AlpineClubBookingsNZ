@@ -22,6 +22,7 @@ import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instruction";
 import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import { isClosedByCreditSpentOutsideApp } from "@/lib/xero-operation-resolution";
 
 export interface XeroSyncOperationInput {
   direction: string;
@@ -545,17 +546,20 @@ export async function startXeroSyncOperation(
         orderBy: { createdAt: "desc" },
       });
       if (existing) return existing;
-      // #4338: the winner finished in between. Only a FAILED/PARTIAL one leaves
-      // work to do, so only then insert again, as a retry a moment later would
-      // (even when a converge has already closed it). A SUCCEEDED or CANCELLED
-      // winner keeps the error: the caller's own pre-checks never saw it.
+      // #4338: the winner finished in between. Only a FAILED one leaves work to
+      // do, so only then insert again, as a retry a moment later would: while it
+      // is unresolved, or when the converge closed it itself. A PARTIAL winner's
+      // Xero object exists, and an officer's mark is done and never re-minted
+      // beside (`INV-INT-025`); those, like a SUCCEEDED or CANCELLED winner, keep
+      // the error: the caller's own pre-checks never saw it.
       const newest = await db.xeroSyncOperation.findFirst({
         where: { correlationKey },
-        orderBy: { createdAt: "desc" },
-        select: { status: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { status: true, manuallyResolvedAt: true, manuallyResolvedById: true, manuallyResolvedReason: true },
       });
-      const winnerFailed = newest?.status === "FAILED" || newest?.status === "PARTIAL";
-      if (!winnerFailed || insert >= START_OPERATION_INSERT_ATTEMPTS) throw error;
+      const winnerLeftWork =
+        newest?.status === "FAILED" && (newest.manuallyResolvedAt === null || isClosedByCreditSpentOutsideApp(newest));
+      if (!winnerLeftWork || insert >= START_OPERATION_INSERT_ATTEMPTS) throw error;
     }
   }
 }

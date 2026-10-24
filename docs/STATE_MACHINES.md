@@ -3690,9 +3690,11 @@ unconfirmed environment, and a provider failure — stay distinguishable
 local business event -> Xero outbox operation queued
   one ACTIVE (PENDING/RUNNING/WAITING_PAYMENT) operation per correlation key
   (#1354): a start that loses the insert race takes the winner's active row.
-  If the winner has already finished (#4338): newest row for the key FAILED or
-  PARTIAL -> it inserts its own row and makes its own Xero call, as a retry a
-  moment later would (at most 3 inserts); SUCCEEDED or CANCELLED -> the unique
+  If the winner has already finished (#4338): newest row for the key FAILED,
+  unresolved or closed by the converge below -> it inserts its own row and
+  makes its own Xero call, as a retry a moment later would (at most 3 inserts);
+  SUCCEEDED, CANCELLED, PARTIAL (its Xero object exists) or FAILED with an
+  officer's resolved-in-Xero mark (done, `INV-INT-025`) -> the unique
   violation is thrown, as before. On a caller's transaction (not the root
   client) the violation is thrown at once: it has aborted the transaction, so
   nothing can be read. Limit: after a FAILED winner the extra call can fail
@@ -3736,8 +3738,10 @@ applied-credit allocation raises that named failure (#4219) -> the worker
   failed allocation rows through the resolution fields and mark them
   non-replayable), then plans again; the operation completes SUCCEEDED when
   nothing is left to allocate. A converge that finds a concurrent run already
-  converged closes the caller's own failed allocation row the same way, since
-  it failed after that run's close (#4338). Only credit Xero shows spent on an invoice or
+  converged closes the caller's own failed allocation row the same way, and
+  audits the close, since it failed after that run's close (#4338). It closes
+  it only when that run's write-down and release for this booking and note
+  exist; otherwise the row stays FAILED. Only credit Xero shows spent on an invoice or
   payment the app has no record of counts. Fails closed (original failure
   stands) when it cannot account for the discrepancy
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved

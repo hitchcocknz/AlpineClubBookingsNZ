@@ -96,6 +96,7 @@ import {
 // The real builder — the mock above only replaces `buildXeroObjectUrl`.
 import { buildXeroContactUrl } from "@/lib/xero-links";
 import { prisma } from "@/lib/prisma";
+import { CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX } from "@/lib/xero-operation-resolution";
 
 describe("sumCoveredRefundCreditNoteCents (#1162)", () => {
   beforeEach(() => {
@@ -1199,21 +1200,38 @@ describe("startXeroSyncOperation", () => {
     status: "PENDING",
     correlationKey: "key-x",
   } as const;
-  const winnerFinished = (status: string, manuallyResolvedAt: Date | null = null) => (args: { where: { status?: unknown } }) =>
-    Promise.resolve(args.where.status ? null : { status, manuallyResolvedAt });
+  type WinnerResolution = { manuallyResolvedAt: Date; manuallyResolvedById: string | null; manuallyResolvedReason: string };
+  const unresolved = { manuallyResolvedAt: null, manuallyResolvedById: null, manuallyResolvedReason: null };
+  const resolvedAt = new Date("2026-07-01T00:00:00.000Z");
+  // The converge's own close: no officer, the #4219 reason.
+  const convergeClose: WinnerResolution = {
+    manuallyResolvedAt: resolvedAt,
+    manuallyResolvedById: null,
+    manuallyResolvedReason: `${CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX}: the ledger was brought into line`,
+  };
+  // An officer's "resolved in Xero" mark.
+  const officerMark: WinnerResolution = {
+    manuallyResolvedAt: resolvedAt,
+    manuallyResolvedById: "member_officer",
+    manuallyResolvedReason: "Fixed by hand in Xero",
+  };
+  const winnerFinished =
+    (status: string, resolution: WinnerResolution | typeof unresolved = unresolved) =>
+    (args: { where: { status?: unknown } }) =>
+      Promise.resolve(args.where.status ? null : { status, ...resolution });
 
   // A FAILED row a converge already closed still re-inserts: the loser's converge closes its own.
   it.each([
-    ["FAILED", null],
-    ["PARTIAL", null],
-    ["FAILED", new Date("2026-07-01T00:00:00.000Z")],
+    ["unresolved", unresolved],
+    ["closed by the converge", convergeClose],
   ] as const)(
-    "inserts again when the winner ended %s (resolved: %s) before the lookup, as a retry a moment later would (#4338)",
-    async (status, manuallyResolvedAt) => {
+    "inserts again when the winner ended FAILED (%s) before the lookup, as a retry a moment later would (#4338)",
+    async (_label, resolution) => {
+      const status = "FAILED";
       mocks.operationCreate
         .mockRejectedValueOnce({ code: "P2002" })
         .mockImplementationOnce(async ({ data }: { data: unknown }) => ({ id: "op_started_1", data }));
-      mocks.operationFindFirst.mockImplementation(winnerFinished(status, manuallyResolvedAt));
+      mocks.operationFindFirst.mockImplementation(winnerFinished(status, resolution));
       // The winner's finished row now counts as an earlier attempt.
       mocks.operationCount.mockResolvedValueOnce(0).mockResolvedValueOnce(1);
 
@@ -1224,17 +1242,26 @@ describe("startXeroSyncOperation", () => {
       expect(mocks.operationCreate.mock.calls[1][0].data.attemptCount).toBe(2);
       expect(mocks.operationFindFirst).toHaveBeenLastCalledWith({
         where: { correlationKey: "key-x" },
-        orderBy: { createdAt: "desc" },
-        select: { status: true },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { status: true, manuallyResolvedAt: true, manuallyResolvedById: true, manuallyResolvedReason: true },
       });
     }
   );
 
-  it.each(["SUCCEEDED", "CANCELLED"])(
-    "rethrows the unique violation, without a second insert, when the winner ended %s (#4338)",
-    async (status) => {
+  // PARTIAL: the Xero object exists. An officer's mark is done (`INV-INT-025`), never re-minted beside.
+  it.each([
+    ["SUCCEEDED", "unresolved", unresolved],
+    ["CANCELLED", "unresolved", unresolved],
+    ["PARTIAL", "unresolved", unresolved],
+    ["PARTIAL", "closed by the converge", convergeClose],
+    ["FAILED", "marked by an officer", officerMark],
+    // An officer who wrote the converge's reason by hand is still an officer.
+    ["FAILED", "marked by an officer with the converge's reason", { ...convergeClose, manuallyResolvedById: "member_officer" }],
+  ] as const)(
+    "rethrows the unique violation, without a second insert, when the winner ended %s (%s) (#4338)",
+    async (status, _label, resolution) => {
       mocks.operationCreate.mockRejectedValueOnce({ code: "P2002" });
-      mocks.operationFindFirst.mockImplementation(winnerFinished(status));
+      mocks.operationFindFirst.mockImplementation(winnerFinished(status, resolution));
 
       await expect(startXeroSyncOperation(lostRaceInput)).rejects.toMatchObject({ code: "P2002" });
       expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
