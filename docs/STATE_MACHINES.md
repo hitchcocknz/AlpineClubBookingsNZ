@@ -1727,14 +1727,20 @@ is); one never recorded before is new money, kept whatever its amount as
 the settle's transaction (an `AlertCooldown` marker) until it is delivered: the
 capture's next arrival re-alerts while it stands, and the payments cron's
 `duplicate-capture-kept-alert` task sends it an hour on otherwise, re-judged
-first through the guard's own reading of who holds money
-(`readOtherSettledCaptureWhere`): it waits while any refund operation on the
-payment is in flight, clears silently a capture the superseded or
-duplicate-capture machinery owns, tells a booking cancelled since as
-`new-capture-closed` with what the capture still holds after the cancel's
-newest-first card refund, and another payment holding money now as
-`new-capture-later-payment`. Any delivered alert for the capture clears the
-marker. A
+first in one read-only `RepeatableRead` snapshot. It waits while a card refund
+operation that may take from this capture is in flight (its own row or intent,
+a plan with a slice of it, or no plan yet); any other operation, such as an
+additional-payment charge, never holds it back. It clears silently a capture
+whose card no longer holds money, a booking gone, or a capture the superseded
+or duplicate-capture machinery owns. Who else holds money is read the way an
+admin is told (`readOtherSettledCaptureWhere`'s `tellingWhere`, the Xero
+conflict's reading), so a capture behind a dead cancel is named. A booking
+cancelled since is told as `new-capture-closed`, naming the cancellation's
+recorded refund; another payment holding money now as
+`new-capture-later-payment`. Every alert shows what the card still holds: its
+amount less the card refunds recorded against it, since a refund as account
+credit is placed on the capture's ledger row while the money stays on the
+card. Any delivered alert for the capture clears the marker. A
 send whose daily cooldown was claimed before a crash waits out that day, so the
 worst case is about 24 hours. A saved-card capture whose caller crashed or
 threw between its pre-record and the settle reads as a replay on its next
