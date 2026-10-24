@@ -509,7 +509,8 @@ import "./superseded-intent-card-doors.realdb.test";
 // #4316 reuses it to prove an edit's after-commit mint never leaves a live ask
 // on a booking cancelled in the gap: the REAL cancelBooking before the mint,
 // between the provider call and the row write, and queued on the Payment row
-// in both orders against the row write; and the recovery runner's replay of a
+// in both orders against the row write (on a fully REFUNDED payment's
+// never-captured cancel too); and the recovery runner's replay of a
 // failed mint, bumped before it runs and cancelled mid-mint. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4316-` fixtures.
 import "./ended-booking-ask-mint-race.realdb.test";

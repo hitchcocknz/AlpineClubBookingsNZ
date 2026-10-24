@@ -30,6 +30,8 @@ describe("INV-ADDPAY-044: the ended-booking mint race proof stays wired into CI 
       "a cancel committed between the provider call and the row write: the minter retires the ask it wrote",
       "the cancel's claim holds the Payment row while the row write waits on it",
       "the row write holds the Payment row first: the cancel reads the new ask on the mirror and retires it itself",
+      "a fully REFUNDED payment: the never-captured cancel's claim holds the Payment row while the row write waits on it",
+      "a fully REFUNDED payment: the row write holds the Payment row first, and the never-captured cancel reads the new ask and retires it",
       "the recovery runner's replay on a booking bumped before it runs",
       "the recovery runner's replay with a cancel committed between its provider call and its row write",
     ]) {

@@ -20,6 +20,9 @@
  *  - the row write holds it first and the cancel queues behind it: the cancel
  *    reads the new intent on the mirror and retires it itself.
  *
+ *  - review round 2: both Payment-row orders again on a fully REFUNDED payment,
+ *    which reads captured to the minter but cancels down the never-captured
+ *    branch - that branch now takes the row lock and retires the ask too;
  *  - the recovery runner's replay of a failed mint, the same two ways: on a
  *    booking bumped before it runs (nothing minted), and with a cancel landing
  *    between its provider call and its row write (it retires its own ask).
@@ -435,6 +438,55 @@ let observerClient: PrismaClient;
       expect(cancelled).toMatchObject({ status: 200 });
       // Whether the minter's re-read saw the commit is timing; either way the
       // ask is dead, retired by whichever writer ran second.
+      await expectNoLiveAsk();
+    });
+
+    /** Review round 2: the card refunded in full - captured to the minter, never-captured to the cancel. */
+    async function refundTheWholeCard() {
+      await prisma.paymentTransaction.update({ where: { id: PRIMARY_TXN_ID }, data: { status: "REFUNDED", refundedAmountCents: PAID_CENTS } });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { status: "REFUNDED", refundedAmountCents: PAID_CENTS } });
+    }
+
+    it("a fully REFUNDED payment: the never-captured cancel's claim holds the Payment row while the row write waits on it", async () => {
+      await refundTheWholeCard();
+      const release = deferred();
+      const { pid, holder } = await holdPaymentRow(release.promise);
+      let cancel: Promise<unknown> = Promise.resolve();
+      let mint: Promise<unknown> = Promise.resolve();
+      try {
+        cancel = cancelTheBooking();
+        await waitForQueue(pid, 1, "The never-captured cancel's claim never queued on the Payment row");
+        mint = mintTheEditsAsk();
+        await waitForQueue(pid, 2, "The mint's row write never queued behind the cancel");
+      } finally {
+        release.resolve();
+        await holder;
+      }
+      const [cancelled, minted] = await Promise.all([cancel, mint]);
+
+      expect(cancelled).toMatchObject({ status: 200 });
+      expect(minted).toEqual({ additionalPaymentClientSecret: undefined, additionalPaymentIntentId: undefined, additionalAskRetired: true });
+      await expectNoLiveAsk();
+    });
+
+    it("a fully REFUNDED payment: the row write holds the Payment row first, and the never-captured cancel reads the new ask and retires it", async () => {
+      await refundTheWholeCard();
+      const release = deferred();
+      const { pid, holder } = await holdPaymentRow(release.promise);
+      let cancel: Promise<unknown> = Promise.resolve();
+      let mint: Promise<unknown> = Promise.resolve();
+      try {
+        mint = mintTheEditsAsk();
+        await waitForQueue(pid, 1, "The mint's row write never queued on the Payment row");
+        cancel = cancelTheBooking();
+        await waitForQueue(pid, 2, "The never-captured cancel's claim never queued behind the row write");
+      } finally {
+        release.resolve();
+        await holder;
+      }
+      const [cancelled] = await Promise.all([cancel, mint]);
+
+      expect(cancelled).toMatchObject({ status: 200 });
       await expectNoLiveAsk();
     });
 
