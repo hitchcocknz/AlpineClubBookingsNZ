@@ -476,7 +476,7 @@ export async function PUT(
     // when the treasurer marks its task paid back, after the money has moved
     // (`enqueueXeroRefundRequestCreditNoteOperation`). Nor does an
     // organiser-card refund (#3956): the executor queues its note with the
-    // refund row, once Stripe has answered. #4312 (`INV-ADDPAY-044`): on a bank
+    // refund row, once Stripe has answered. #4312 (`INV-ADDPAY-045`): on a bank
     // transfer each refund the attempt made is noted on its own record, and
     // the recovery replay notes those it makes (`queueRefundRequestCardNotes`).
     const unqueuedCents = cardRefund.cardRefundQueued ? 0 : cardRefund.cardRefundOwedCents; // #4117: not refunded, so not noted

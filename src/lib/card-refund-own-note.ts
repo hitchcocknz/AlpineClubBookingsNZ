@@ -13,7 +13,7 @@ import { prisma } from "@/lib/prisma";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 
 /**
- * #4312 (owner decision 24 Oct 2026, `INV-ADDPAY-044`): THE WRITERS' SIDE of a
+ * #4312 (owner decision 24 Oct 2026, `INV-ADDPAY-045`): THE WRITERS' SIDE of a
  * card refund's own note on a bank-transfer payment (the record's side, and
  * the rule, are `card-refund-own-note-share.ts`). Three writers used to fold
  * such a refund into the payment's canonical note; each now asks here:
@@ -48,6 +48,8 @@ export async function queueCardRefundOwnNotes(params: {
   paymentId: string;
   stripeRefundIds: readonly string[];
   createdByMemberId?: string;
+  /** #3953: the invoice the refunded capture's own receipt paid, which the note names. */
+  creditsInvoiceId?: string;
 }): Promise<string[]> {
   const db = prisma;
   const ids = [...new Set(params.stripeRefundIds)];
@@ -78,6 +80,7 @@ export async function queueCardRefundOwnNotes(params: {
       refundMethod: "card",
       cardRefundId: refund.stripeRefundId,
       ...(params.createdByMemberId ? { createdByMemberId: params.createdByMemberId } : {}),
+      ...(params.creditsInvoiceId ? { creditsInvoiceId: params.creditsInvoiceId } : {}),
     });
     if (result.queueOperationId) queued.push(result.queueOperationId);
   }
@@ -212,10 +215,13 @@ export async function queueWebhookCardRefundNotes(params: {
   deltaCents: number;
   refunds: ReadonlyArray<{ id: string; amount: number; metadata?: Record<string, string> | null }>;
   newlyCountedRefundIds: readonly string[];
+  /** #3953: the invoice the refunded capture's own receipt paid, named by every note this queues. */
+  creditsInvoiceId?: string;
 }): Promise<{ queueOperationId: string | null }> {
+  const naming = params.creditsInvoiceId ? [{ creditsInvoiceId: params.creditsInvoiceId }] : [];
   if (params.payment.source !== PaymentSource.INTERNET_BANKING) {
     if (params.deltaCents <= 0) return { queueOperationId: null };
-    return enqueueXeroRefundCreditNoteOperation(params.payment.id, params.deltaCents);
+    return enqueueXeroRefundCreditNoteOperation(params.payment.id, params.deltaCents, ...naming);
   }
   const newly = new Set(params.newlyCountedRefundIds);
   const rows = await prisma.paymentRefund.findMany({
@@ -233,10 +239,10 @@ export async function queueWebhookCardRefundNotes(params: {
     answeredElsewhereCents += Math.max(0, refund.amount);
     if (door !== "refund-request") own.push(refund.id);
   }
-  const queued = await queueCardRefundOwnNotes({ paymentId: params.payment.id, stripeRefundIds: own });
+  const queued = await queueCardRefundOwnNotes({ paymentId: params.payment.id, stripeRefundIds: own, ...naming[0] });
   const restCents = params.deltaCents - answeredElsewhereCents;
   if (restCents > 0) {
-    const rest = await enqueueXeroRefundCreditNoteOperation(params.payment.id, restCents);
+    const rest = await enqueueXeroRefundCreditNoteOperation(params.payment.id, restCents, ...naming);
     if (rest.queueOperationId) queued.push(rest.queueOperationId);
   }
   return { queueOperationId: queued[0] ?? null };

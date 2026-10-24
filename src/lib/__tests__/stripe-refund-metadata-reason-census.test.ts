@@ -9,7 +9,7 @@ import { cardRefundDoorOf } from "@/lib/card-refund-own-note-share";
 import * as keys from "@/lib/payment-recovery-keys";
 
 /**
- * #4312 review (`INV-ADDPAY-044`, `INV-SSOT`): EVERY STRIPE REFUND THE APP
+ * #4312 review (`INV-ADDPAY-045`, `INV-SSOT`): EVERY STRIPE REFUND THE APP
  * MAKES STAMPS A `reason` IN ITS METADATA.
  *
  * The `charge.refunded` webhook gives a card refund on a bank transfer a Xero

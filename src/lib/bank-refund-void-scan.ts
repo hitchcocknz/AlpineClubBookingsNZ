@@ -183,7 +183,7 @@ export type VoidedLink = Prisma.XeroObjectLinkGetPayload<{ select: typeof VOIDED
  * Why a voided note goes to a person. `paid-another-way`: it recorded a card
  * refund the club paid back another way (or a card refund shortfall), whose
  * record and note stay with the card refund pipeline - never undone here.
- * `card-refund` (#4312, `INV-ADDPAY-044`): it recorded a card refund made
+ * `card-refund` (#4312, `INV-ADDPAY-045`): it recorded a card refund made
  * through Stripe, keyed on its refund - no bank refund to take back.
  * `coverage-unknown`: a note resolved by hand in Xero has no readable amount.
  * `partly-picked`: a person has picked some of the refunds it recorded, and

@@ -137,7 +137,7 @@ export interface CreateXeroRefundCreditNoteOptions
    * note records. Rides the executed row only, so a void can be matched to it.
    */
   handBackTaskId?: string;
-  /** #4312 (`INV-ADDPAY-044`): the card refund on a bank transfer this note answers - keyed and sized on it alone. */
+  /** #4312 (`INV-ADDPAY-045`): the card refund on a bank transfer this note answers - keyed and sized on it alone. */
   cardRefundId?: string;
   /**
    * #3827 (D-3813-8, `INV-PAY-118`): this is that refund request's OWN note,
@@ -395,7 +395,7 @@ export async function createXeroCreditNote(
       closeCoveredCents = share.coveredCents;
       evidenceLog = { paidAnotherWayTaskId, closeAmountCents: share.amountCents, closeCoveredCents: share.coveredCents };
     } else if (cardRefundId !== null) {
-      // #4312 (`INV-ADDPAY-044`): a card refund's own note answers that refund alone, as a close's does its record.
+      // #4312 (`INV-ADDPAY-045`): a card refund's own note answers that refund alone, as a close's does its record.
       const share = await readCardRefundNoteShare(prisma, paymentId, cardRefundId);
       if (!share) throw new Error(`Refusing to create a Xero refund credit note for payment ${paymentId}: its card refund ${cardRefundId} is not on this payment`);
       uncoveredCents = share.uncoveredCents;

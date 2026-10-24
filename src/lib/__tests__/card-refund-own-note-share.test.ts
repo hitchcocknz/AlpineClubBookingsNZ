@@ -1,5 +1,5 @@
 /**
- * #4312 (`INV-ADDPAY-044`): the pure rules behind a card refund's own Xero note
+ * #4312 (`INV-ADDPAY-045`): the pure rules behind a card refund's own Xero note
  * on a bank-transfer payment - which refunds a note of their own may answer
  * (made since the cutover), which door made a refund, and how a late
  * capture's ask splits between its newer refunds and the one note its older

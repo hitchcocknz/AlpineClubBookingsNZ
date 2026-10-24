@@ -13,7 +13,7 @@ import { EXCLUDED_LEDGER_REFUND_STATUSES } from "@/lib/payment-transaction-statu
 import { buildRefundDocumentReference } from "@/lib/xero-refund-method";
 
 /**
- * #4312 review (`INV-ADDPAY-044`, `INV-SSOT`): the UPGRADING switch-window
+ * #4312 review (`INV-ADDPAY-045`, `INV-SSOT`): the UPGRADING switch-window
  * query, which lists the card refund notes this release raised for a
  * late-captured payment's refund made while the previous version still served,
  * spells by hand what the code defines once - the marker migration, a card

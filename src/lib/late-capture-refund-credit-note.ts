@@ -55,7 +55,7 @@ import { cardRefundIdOfNoteRow, cardRefundNoteCutoverSeconds, madeSinceCardRefun
  * `queued`, `nothing-owed` (no receipt, or every refunded cent already noted),
  * or `failed` (logged; the note must be raised by hand).
  *
- * #4312 (`INV-ADDPAY-044`): ON A BANK-TRANSFER PAYMENT the same ask is split
+ * #4312 (`INV-ADDPAY-045`): ON A BANK-TRANSFER PAYMENT the same ask is split
  * (`planLateCaptureCardNotes`): each refund made since the cutover gets its
  * own note, keyed on it (`cardRefundId`) and naming the capture, so the
  * single-note branch never folds it; older refunds keep the one note for the

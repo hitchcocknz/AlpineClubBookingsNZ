@@ -9,7 +9,7 @@ import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
 
 /**
- * #4312 round 5 (#4104, `INV-ADDPAY-044`): A CARD REFUND SENT AGAIN FOR ONE
+ * #4312 round 5 (#4104, `INV-ADDPAY-045`): A CARD REFUND SENT AGAIN FOR ONE
  * STRIPE FAILED LATER IS ANSWERED BY THE FAILED REFUND'S OWN NOTE.
  *
  * A refund Stripe accepted and failed later keeps the note it took while it

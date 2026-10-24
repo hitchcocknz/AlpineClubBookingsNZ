@@ -1,6 +1,6 @@
 /**
  * Real-PostgreSQL proofs for #4312 (owner decision 24 Oct 2026,
- * `INV-ADDPAY-044`): on a bank-transfer payment, each card refund gets its own
+ * `INV-ADDPAY-045`): on a bank-transfer payment, each card refund gets its own
  * Xero credit note, keyed on its `PaymentRefund` row (`cardRefundId`) and
  * sized at its amount - never folded into the payment's canonical note - and
  * only for a refund Stripe made since the cutover marker.

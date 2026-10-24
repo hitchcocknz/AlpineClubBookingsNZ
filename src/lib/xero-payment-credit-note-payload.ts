@@ -68,7 +68,7 @@ export function parsePaymentCreditNoteRetryInput(
   creditsInvoiceId?: string;
   /** #4162 (`INV-ADDPAY-042`): the bank hand-back task a note records. */
   handBackTaskId?: string;
-  /** #4312 (`INV-ADDPAY-044`): the card refund on a bank transfer a note answers. */
+  /** #4312 (`INV-ADDPAY-045`): the card refund on a bank transfer a note answers. */
   cardRefundId?: string;
 } | null {
   const payload = asRecord(operation.requestPayload);
