@@ -478,9 +478,6 @@ function getAttemptWhere(
   return { OR: or };
 }
 
-/** Inserts `startXeroSyncOperation` tries when each lost race finds the winner already finished (#4338). */
-const START_OPERATION_INSERT_ATTEMPTS = 3;
-
 export async function startXeroSyncOperation(
   input: XeroSyncOperationInput & { store?: Prisma.TransactionClient }
 ) {
@@ -507,9 +504,7 @@ export async function startXeroSyncOperation(
     (payloadRecord ? readString(payloadRecord.queueType) : null) ?? input.queueType ?? null;
 
   for (let insert = 1; ; insert += 1) {
-    const attemptCount = attemptWhere
-      ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1
-      : 1;
+    const attemptCount = attemptWhere ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1 : 1;
     try {
       return await db.xeroSyncOperation.create({
         data: {
@@ -535,10 +530,9 @@ export async function startXeroSyncOperation(
         },
       });
     } catch (error) {
-      // #1354: the partial unique index (one ACTIVE operation per correlation
-      // key) turns a lost concurrent-enqueue race into a unique violation here.
-      // Resolve it the same way the findFirst fast-path dedup would have:
-      // return the winner's active row so the caller's enqueue is idempotent.
+      // #1354: the partial unique index (one ACTIVE operation per correlation key)
+      // turns a lost concurrent-enqueue race into a unique violation here. Resolve
+      // it as the findFirst fast-path dedup would: return the winner's active row.
       if (!isPrismaUniqueConstraintError(error) || !input.correlationKey) throw error;
       const existing = await db.xeroSyncOperation.findFirst({
         where: {
@@ -547,15 +541,11 @@ export async function startXeroSyncOperation(
         },
         orderBy: { createdAt: "desc" },
       });
-      if (existing) {
-        return existing;
-      }
-      // #4338: the winner finished between the refused insert and that read, so
-      // the key has no active row and the insert is tried again, exactly as for a
-      // caller that arrived a moment later. Each retry needs another winner to
-      // start and finish inside that window, so a few are enough. Never on a
-      // caller's transaction: the violation has aborted it.
-      if (input.store || insert >= START_OPERATION_INSERT_ATTEMPTS) throw error;
+      if (existing) return existing;
+      // #4338: none left means the winner already finished, so insert again as a
+      // later start would (at most three times; never on a caller's transaction,
+      // which the violation has aborted).
+      if (input.store || insert >= 3) throw error;
     }
   }
 }
