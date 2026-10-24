@@ -534,11 +534,12 @@ async function markResentSlices(
   plan: ReadonlyArray<RefundAllocationSlice>,
   answered: ReadonlyArray<AnsweredRefund>,
 ): Promise<void> {
+  const resent = plan.map((slice) => !slice.madeRefundId && cardRefundSliceFailedRefundIds(operation, slice).length > 0);
+  if (!resent.includes(true)) return; // nothing re-sent: not even the answers are read
   const made = planAfterAttempt(plan, answered);
   const marked = plan.map((slice, index) => {
     const madeRefundId = made[index]?.madeRefundId;
-    if (slice.madeRefundId || !madeRefundId || cardRefundSliceFailedRefundIds(operation, slice).length === 0) return slice;
-    return { ...slice, madeRefundId };
+    return resent[index] && madeRefundId ? { ...slice, madeRefundId } : slice;
   });
   if (marked.every((slice, index) => slice === plan[index])) return;
   const written = await prisma.paymentRecoveryOperation.updateMany({
