@@ -68,6 +68,15 @@ describe("a card refund sent again for one Stripe failed later (#4312 round 5)",
     for (const id of ["re_later", "re_before", "re_other_amount"]) expect(await answered(id)).toEqual({ failedRefundIds: [], ownNoted: false, coverCents: 0 });
   });
 
+  it("MUTATION: two failures on one charge for one amount: each re-send answers its own, in turn", async () => {
+    rows.push({ id: "op-own-2", idempotencyKey: "card_refund_failed_later_re_failed_2", allocationPlan: [{ paymentTransactionId: TXN, amountCents: 4_000 }] });
+    noteRows.add("re_failed_2");
+    coverByRefund.set("re_failed_2", 4_000);
+    refunds.push(refund("re_failed_2", 12, "failed"), refund("re_resent", 20), refund("re_resent_2", 30));
+    expect((await answered("re_resent")).failedRefundIds).toEqual(["re_failed"]);
+    expect((await answered("re_resent_2")).failedRefundIds).toEqual(["re_failed_2"]);
+  });
+
   it("MUTATION: a re-planned slice's failures - every one of them - are answered by the refund made after the latest", async () => {
     rows = [{
       id: "op-request", idempotencyKey: "refund_request_refund_request-1",
