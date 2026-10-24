@@ -102,8 +102,9 @@ export type RecordedResend = {
  * made yet, on the refund's charge for exactly its amount, of a row whose
  * runner sends exactly the metadata the refund carries
  * (`carriesCardRefundOperationMetadata`) and that was raised before Stripe made
- * it (`operationWindowTakes`). A refund the Stripe dashboard or another door
- * made carries other metadata, so it is no row's.
+ * it (`operationWindowTakes`) and that has tried to send (a row raised dead
+ * never has). A refund the Stripe dashboard or another door made carries other
+ * metadata, so it is no row's.
  */
 export function unmarkedResendSlicesFor(
   operations: ReadonlyArray<ResendRow>,
@@ -111,6 +112,8 @@ export function unmarkedResendSlicesFor(
 ): Array<{ operation: ResendRow; sliceIndex: number }> {
   return operations.flatMap((operation) => {
     if (operation.status === "SUCCEEDED" || !carriesCardRefundOperationMetadata(operation, refund.metadata)) return [];
+    // Raised dead (`raised-dead`, `raised-backlog`): never claimed, so it never sent anything Stripe could answer.
+    if (operation.status === "PENDING" && isPaymentRecoveryOperationExhausted(operation)) return [];
     if (!operationWindowTakes(operation, refund)) return [];
     return (parseRefundAllocationPlan(operation.allocationPlan) ?? []).flatMap((slice, sliceIndex) => {
       if (slice.madeRefundId || slice.paymentTransactionId !== refund.paymentTransactionId || slice.amountCents !== refund.amountCents) return [];

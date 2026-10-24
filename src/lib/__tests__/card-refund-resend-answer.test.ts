@@ -245,6 +245,8 @@ describe("a re-send charge.refunded records before its slice is marked (#4312 ro
     expect(unmarkedResendSlicesFor([resendRow("row-1", { slice: { madeRefundId: "re_other" } })], recorded)).toEqual([]);
     expect(unmarkedResendSlicesFor([resendRow("row-1", { slice: { failedRefundIds: undefined } })], recorded)).toEqual([]);
     expect(unmarkedResendSlicesFor([resendRow("row-1", { status: "SUCCEEDED" })], recorded)).toEqual([]);
+    // A row raised dead was never claimed, so it sent nothing.
+    expect(unmarkedResendSlicesFor([resendRow("row-1", { dead: true, status: "PENDING" })], recorded)).toEqual([]);
     expect(unmarkedResendSlicesFor([{ ...row1, createdAt: new Date(MADE.getTime() + 1_000) }], recorded)).toEqual([]);
   });
 
