@@ -74,6 +74,11 @@ import "./edit-financial-review-races.realdb.test";
 // removal takes the member's credit-ledger key before any Payment row lock.
 // Its describe stays skipped unless the shared race flag is set.
 import "./credit-paid-reduction.realdb.test";
+// #4317 reuses it to prove every edit door PRICES what #3031/#3166/#3170
+// parked - the removal, the date change and the batch edit, each against real
+// rows with blank, drifted and negative stored history - and raises no review.
+// Its describe stays skipped unless the shared race flag is set.
+import "./edit-auto-pricing-doors.realdb.test";
 // #3954 reuses it to prove a reduction cancels or shrinks the unpaid card ask
 // before it refunds, through the REAL guest removal on card-paid and credit-paid
 // bookings, and that a capture racing the reduction either rolls the edit back
