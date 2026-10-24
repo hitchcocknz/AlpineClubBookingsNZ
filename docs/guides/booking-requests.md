@@ -75,7 +75,9 @@ are listed on the booking for you to relay.
    If those nights would discard a requested check-in or check-out change, the
    card shows the same explanation as submission instead of a price. Editing
    the proposal refreshes that check. The estimate still prices only the guests
-   added in that card; member guests are priced when the officer approves.
+   added in that card; member guests are priced when the officer approves. It
+   judges the group discount on the whole proposed party: the booking's guests,
+   less any the member removed in the editor, plus any the editor added.
 
    What approving does depends on whether the stay has finished:
    - **The stay is still running** (or not yet started): approving only
