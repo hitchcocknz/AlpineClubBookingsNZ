@@ -7,6 +7,7 @@ import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { refundNoteKeyAfterVoidParts } from "@/lib/xero-refund-note-status";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
 import { cardRefundNoteKeyTag, cardRefundNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
+import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
 import { buildXeroIdempotencyKey } from "@/lib/xero-sync";
 
@@ -120,15 +121,22 @@ export interface CardRefundNoteShare {
   amountCents: number;
   /** What its own notes already cover, counted as the payment's coverage counts them. */
   coveredCents: number;
+  /** Round 5 (#4104): what the own notes of the failed refunds it was sent again for cover (`readFailedRefundsAnsweredBy`). */
+  answeredCents: number;
   uncoveredCents: number;
 }
 
-type ShareReader = Pick<Prisma.TransactionClient, "payment" | "paymentRefund" | "xeroObjectLink" | "xeroSyncOperation" | "$queryRaw">;
+type ShareReader = Pick<
+  Prisma.TransactionClient,
+  "payment" | "paymentRefund" | "paymentRecoveryOperation" | "manualRefundTask" | "xeroObjectLink" | "xeroSyncOperation" | "$queryRaw"
+>;
 
 /**
  * WHAT A CARD REFUND'S OWN NOTE STILL HAS TO ANSWER: its amount less its own
  * notes' coverage (`sumRefundCreditNoteCoverageOfRowsCents`, as a close's
- * share is read). It qualifies - a non-zero amount - only on a bank-transfer
+ * share is read), and less what the own notes of the refunds Stripe failed
+ * later that it was sent again for cover (round 5, `readFailedRefundsAnsweredBy`:
+ * #4104 left that note to answer it). It qualifies - a non-zero amount - only on a bank-transfer
  * payment, in a counted status (`isRecordedRefundStatus`: a refund Stripe
  * failed or cancelled paid nothing back), and made since the cutover. The
  * enqueue and the note's execution both ask, so a refund that failed, or a
@@ -148,7 +156,8 @@ export async function readCardRefundNoteShare(db: ShareReader, paymentId: string
     madeSinceCardRefundNoteCutover(refund, await cardRefundNoteCutoverSeconds(db));
   const amountCents = qualifies ? Math.max(0, refund.amountCents) : 0;
   const coveredCents = await sumRefundCreditNoteCoverageOfRowsCents(paymentId, cardRefundNoteRowsWhere(paymentId, stripeRefundId), db);
-  return { amountCents, coveredCents, uncoveredCents: Math.max(0, amountCents - coveredCents) };
+  const answeredCents = amountCents > 0 ? (await readFailedRefundsAnsweredBy(db, paymentId, stripeRefundId)).coverCents : 0;
+  return { amountCents, coveredCents, answeredCents, uncoveredCents: Math.max(0, amountCents - coveredCents - answeredCents) };
 }
 
 /**

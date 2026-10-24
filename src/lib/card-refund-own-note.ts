@@ -1,10 +1,13 @@
 import { PaymentSource } from "@prisma/client";
 
 import { cardRefundDoorOf, cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover } from "@/lib/card-refund-own-note-share";
+import { cardRefundNoteRowsWhere } from "@/lib/card-refund-paid-another-way-cash";
+import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
 import { answersBeforeFailure } from "@/lib/refused-card-refund-retry";
+import { cardRefundFailedLaterRefundId } from "@/lib/payment-recovery-keys";
 import { isRefusedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
@@ -162,6 +165,19 @@ export async function replayNotingEachRefund<T>(
   }
 }
 
+/**
+ * Round 5 (#4104): a row of its own that sends again a refund Stripe failed
+ * later (`card_refund_failed_later_<refund>`) notes each refund it makes, when
+ * the failed refund was asked for on its own record. The failed refund's own
+ * note answers the refund sent again (`readFailedRefundsAnsweredBy`), so the
+ * ask raises a note only for what that note does not cover - one the failure
+ * overtook before it was raised - and never a second.
+ */
+export async function failedLaterRowNotesEachRefund(operation: { idempotencyKey: string; paymentId: string }): Promise<boolean> {
+  const failed = cardRefundFailedLaterRefundId(operation.idempotencyKey);
+  return failed !== null && (await prisma.xeroSyncOperation.count({ where: cardRefundNoteRowsWhere(operation.paymentId, failed) })) > 0;
+}
+
 type MadeRefund = { refundId: string; status?: string | null };
 /** One Stripe call of the replay, its refunds recorded as it returns or throws. */
 type SendNotingRefunds = <R extends { refunds: ReadonlyArray<MadeRefund> }>(call: () => Promise<R>) => Promise<R>;
@@ -178,10 +194,15 @@ type SendNotingRefunds = <R extends { refunds: ReadonlyArray<MadeRefund> }>(call
  * - an approved refund request's: nothing here. The approval notes it - its
  *   own note when this release approved it, else the note an older approval
  *   queued for the card part - so a note here could only double it;
+ * - one sent again for a refund Stripe failed later that was asked for on its
+ *   own record (round 5, `readFailedRefundsAnsweredBy`): its own record too,
+ *   where the failed refund's own note answers it - never the canonical delta,
+ *   whose payment-wide gap would hand it another refund's share;
  * - any other app door's: left in the delta, which is queued as before. On a
  *   bank transfer that is a duplicate capture's or a superseded intent's
  *   refund, of money Xero never received, or a card refund Stripe failed
- *   later, sent again; a cancellation or an edit never refunds one to a card.
+ *   later, sent again, whose failed refund folded; a cancellation or an edit
+ *   never refunds one to a card.
  *   Each door records its refund the moment Stripe answers, so this sync is
  *   seldom the first to (ARCHITECTURE, "A later refund folded into the first
  *   note").
@@ -208,9 +229,9 @@ export async function queueWebhookCardRefundNotes(params: {
   for (const refund of params.refunds) {
     if (!newly.has(refund.id) || !sinceCutover.has(refund.id)) continue;
     const door = cardRefundDoorOf(refund.metadata);
-    if (door === "app") continue;
+    if (door === "app" && !(await readFailedRefundsAnsweredBy(prisma, params.payment.id, refund.id)).ownNoted) continue;
     answeredElsewhereCents += Math.max(0, refund.amount);
-    if (door === "outside-app") own.push(refund.id);
+    if (door !== "refund-request") own.push(refund.id);
   }
   const queued = await queueCardRefundOwnNotes({ paymentId: params.payment.id, stripeRefundIds: own });
   const restCents = params.deltaCents - answeredElsewhereCents;

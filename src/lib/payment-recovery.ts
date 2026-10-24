@@ -67,7 +67,7 @@ import { stripeReferenceId } from "@/lib/stripe-references";
 import { claimAlertCooldown } from "@/lib/alert-cooldown";
 import { formatCents } from "@/lib/utils";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
-import { replayNotingEachRefund } from "@/lib/card-refund-own-note";
+import { failedLaterRowNotesEachRefund, replayNotingEachRefund } from "@/lib/card-refund-own-note";
 import { finishApprovedLateCaptureRefundAfterReplay } from "@/lib/late-capture-refund-credit-note";
 import { holdSupersededLateCaptureIfRequired } from "@/lib/late-capture-refund-hold";
 import { supersededMachineryOwnsCapture } from "@/lib/superseded-capture-ownership";
@@ -2132,7 +2132,9 @@ async function processBookingModificationRefundOperation(
 
   // #4083 (`INV-PAY-128`): a slice Stripe refused fails the attempt, retried under a fresh key.
   // #4312 (`INV-ADDPAY-044`): a bank transfer's approval left each refund's note to it - every refund made, on any outcome.
-  const notes = { paymentId: operation.paymentId, operationId: operation.id, notesEachRefund: refundRequestRecoveryNotesEachRefund(operation), plan };
+  // Round 5 (#4104): so does a failed-later row whose failed refund had its own note, which answers what it sends.
+  const notesEachRefund = refundRequestRecoveryNotesEachRefund(operation) || (await failedLaterRowNotesEachRefund(operation));
+  const notes = { paymentId: operation.paymentId, operationId: operation.id, notesEachRefund, plan };
   const refundId = await replayNotingEachRefund(notes, (send) => refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) =>
     send(() => refundPaymentTransactions({
       format,

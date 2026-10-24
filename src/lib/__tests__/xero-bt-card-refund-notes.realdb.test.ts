@@ -80,7 +80,13 @@ let markerFinishedAt: Date | null = null;
 let eventSequence = 0;
 
 /** Stripe's refunds as it holds them: one per idempotency key, listed per charge. Each made since the cutover unless dated. */
-const stripe = { createdSeconds: 0, byKey: new Map<string, Stripe.Refund>(), failNext: 0, refuseOn: null as string | null };
+const stripe = {
+  createdSeconds: 0, byKey: new Map<string, Stripe.Refund>(), failNext: 0, refuseOn: null as string | null,
+  /** Stripe's answer to a refund it makes: `pending` is what a card refund Stripe can fail later is first answered (#4104). */
+  answer: "succeeded",
+  /** Stripe makes the next refund, and its answer never reaches the caller (a timeout after the request landed). */
+  lostAnswers: 0,
+};
 function stripeRefund(id: string, amount: number, metadata: Record<string, string>, created: number, status = "succeeded"): Stripe.Refund {
   return {
     id, object: "refund", amount, currency: "nzd", status, reason: "requested_by_customer", created,
@@ -97,8 +103,12 @@ function answerRefundsAsStripeWould() {
     if (!stripe.byKey.has(key)) {
       stripe.createdSeconds += 60;
       // A slice on the charge `refuseOn` names is answered refused (`failed`), as Stripe refuses one.
-      const status = stripe.refuseOn !== null && key.includes(stripe.refuseOn) ? "failed" : "succeeded";
+      const status = stripe.refuseOn !== null && key.includes(stripe.refuseOn) ? "failed" : stripe.answer;
       stripe.byKey.set(key, stripeRefund(`re_race_4312_${stripe.byKey.size}`, args.amountCents, args.metadata ?? {}, stripe.createdSeconds, status));
+      if (stripe.lostAnswers > 0) {
+        stripe.lostAnswers -= 1;
+        throw new Error("Stripe timed out after making the refund (race-4312)");
+      }
     }
     return stripe.byKey.get(key)!;
   };
@@ -127,6 +137,8 @@ function answerRefundsAsStripeWould() {
       stripe.byKey.clear();
       stripe.failNext = 0;
       stripe.refuseOn = null;
+      stripe.answer = "succeeded";
+      stripe.lostAnswers = 0;
       stripe.createdSeconds = CUTOVER_SECONDS;
     }
 
@@ -852,6 +864,134 @@ function answerRefundsAsStripeWould() {
       expect(answered.metadata).toMatchObject({ bankRefundVoid: { outcome: "answered", memberId: OFFICER_ID } });
       expect((await classifyVoidedBankRefundNote(prisma, link.id))?.classification).toMatchObject({ kind: "handled", by: "answered" });
       expect(await readers()).toMatchObject({ refundedCents: 10_000, rowsCents: 10_000 });
+    });
+
+    /**
+     * Stripe fails a refund it had answered `pending` (#4104): Stripe now lists it failed, and its
+     * refund-failed event reaches the app's recorder (`recordRefusedCardRefund`), the one door for it.
+     */
+    async function stripeFailsLater(stripeRefundId: string) {
+      const [key, refund] = [...stripe.byKey.entries()].find(([, each]) => each.id === stripeRefundId)!;
+      const failed = { ...refund, status: "failed" } as Stripe.Refund;
+      stripe.byKey.set(key, failed);
+      const { recordRefusedCardRefund } = await import("@/lib/card-refund-status-sync");
+      expect(await recordRefusedCardRefund(failed)).toBe("recorded");
+    }
+
+    /** The recovery row's backoff has passed, as the payments cron finds it. */
+    async function due(operationId: string) {
+      await prisma.paymentRecoveryOperation.update({ where: { id: operationId }, data: { nextRetryAt: new Date(Date.now() - 1_000) } });
+    }
+
+    describe("a card refund Stripe failed later and sent again (#4312 round 5, #4104)", () => {
+      it("MUTATION (a): the refund request's replay sends the failed slice again; the failed refund's own note answers it, and only the other slice is noted", async () => {
+        await paid();
+        await prisma.paymentTransaction.create({
+          data: { id: CARD2_TXN_ID, paymentId: PAYMENT_ID, kind: "ADDITIONAL", source: "STRIPE", stripePaymentIntentId: "pi_race_4312_second", amountCents: 4_000, status: "SUCCEEDED", createdAt: new Date("2026-06-02T00:00:00.000Z") },
+        });
+        await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { amountCents: 29_000 } });
+        const request = await requestRefund(`${P}-failed-later-a`, 6_000);
+        stripe.failNext = 1;
+        await approve(request, 6_000);
+        const operation = await prisma.paymentRecoveryOperation.findFirstOrThrow({ where: { bookingId: BOOKING_ID }, select: { id: true } });
+
+        // The replay: Stripe accepts the newer capture's $40 slice `pending` and refuses the older capture's $20 one, so the row stays open.
+        stripe.answer = "pending";
+        stripe.refuseOn = CARD_TXN_ID;
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("failed");
+        const [failedNote] = await noteRows();
+        expect(failedNote).toMatchObject({ cents: 4_000 });
+        const failedId = failedNote!.cardRefundId!;
+        expect(await raiseQueuedNote(failedNote!.id, `${P}-failed-later-note`)).toEqual([4_000]);
+        expect(await reconcile(`${P}-failed-later-note`, 4_000)).toEqual([]);
+
+        // Days later Stripe fails it: the open row's slice is re-planned to send it again (#4104).
+        await stripeFailsLater(failedId);
+        const { parseRefundAllocationPlan } = await import("@/lib/open-card-refund-owed");
+        const replanned = parseRefundAllocationPlan((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: operation.id } })).allocationPlan);
+        expect(replanned?.find((slice) => slice.paymentTransactionId === CARD2_TXN_ID)?.failedRefundIds).toEqual([failedId]);
+
+        // The next replay makes both slices.
+        stripe.answer = "succeeded";
+        stripe.refuseOn = null;
+        await due(operation.id);
+        expect(await runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+        const resent = (await prisma.paymentRefund.findMany({ where: { paymentId: PAYMENT_ID, status: "succeeded" }, select: { stripeRefundId: true, amountCents: true, paymentTransactionId: true } }));
+        const resentId = resent.find((refund) => refund.paymentTransactionId === CARD2_TXN_ID)!.stripeRefundId;
+        const otherId = resent.find((refund) => refund.paymentTransactionId === CARD_TXN_ID)!.stripeRefundId;
+        // The failed refund's note answers the re-sent $40: only the $20 slice gets a note of its own.
+        const rows = await noteRows();
+        expect(rows.filter((row) => row.status === "PENDING").map((row) => [row.cents, row.cardRefundId])).toEqual([[2_000, otherId]]);
+        expect(rows.some((row) => row.cardRefundId === resentId)).toBe(false);
+        await raiseQueuedNote(rows.find((row) => row.cardRefundId === otherId)!.id, `${P}-other-slice-note`);
+        // Asked for again - a replay, an officer's retry of the ask - the re-sent refund still raises nothing.
+        // (No `charge.refunded` here: this suite's Stripe double lists every refund under the first capture's charge.)
+        const { queueCardRefundOwnNotes } = await import("@/lib/card-refund-own-note");
+        expect(await queueCardRefundOwnNotes({ paymentId: PAYMENT_ID, stripeRefundIds: [resentId] })).toEqual([]);
+        expect(await noteRows()).toHaveLength(2);
+        expect(await readers()).toMatchObject({ refundedCents: 6_000, rowsCents: 6_000, coveredCents: 6_000, uncoveredCents: 0 });
+      });
+
+      it("MUTATION (b): a failed-later row's re-send the webhook records first takes no canonical note, which would be sized on another refund's gap", async () => {
+        await paid();
+        const request = await requestRefund(`${P}-failed-later-b`, 4_000);
+        stripe.answer = "pending";
+        await approve(request, 4_000);
+        const [failedNote] = await noteRows();
+        const failedId = failedNote!.cardRefundId!;
+        expect(await raiseQueuedNote(failedNote!.id, `${P}-failed-later-note`)).toEqual([4_000]);
+        // The approval's own note: the payment has no canonical note.
+        expect(await canonicalPointer()).toBeNull();
+        // A $10 refund made in the Stripe dashboard, whose own note Xero times out on: it waits for an officer's Retry.
+        stripe.answer = "succeeded";
+        const dashboard = refundInDashboard(1_000);
+        await deliverChargeRefunded();
+        const dashboardNote = (await noteRows()).find((row) => row.cardRefundId === dashboard)!;
+        await failQueuedNote(dashboardNote.id);
+
+        // Stripe fails the request's refund; no open row made it, so a row of its own owes it (#4104).
+        await stripeFailsLater(failedId);
+        const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: `card_refund_failed_later_${failedId}` }, select: { id: true } });
+        // The runner asks Stripe again; Stripe makes the refund, and its answer is lost on the way back.
+        stripe.lostAnswers = 1;
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("failed");
+        // Stripe's `charge.refunded` records the re-send first: the failed refund's note answers it, so nothing is queued.
+        await deliverChargeRefunded();
+        expect((await noteRows()).map((note) => note.id)).toEqual([failedNote!.id, dashboardNote.id]);
+        // The runner's retry reads Stripe's answer back: it asks for the refund's note, which raises nothing either.
+        await due(row.id);
+        expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+        expect((await noteRows()).map((note) => note.id)).toEqual([failedNote!.id, dashboardNote.id]);
+        // The officer's Retry raises the dashboard refund's note, and Xero credits exactly what went back.
+        expect(await retryNote(dashboardNote.id, `${P}-dashboard-retried`)).toEqual([1_000]);
+        expect(await readers()).toMatchObject({ refundedCents: 5_000, rowsCents: 5_000, coveredCents: 5_000, uncoveredCents: 0 });
+      });
+
+      it("MUTATION (c): a failure that overtook the failed refund's note before it was raised: the re-send the runner records is noted, once", async () => {
+        await paid();
+        const request = await requestRefund(`${P}-failed-later-c`, 4_000);
+        stripe.answer = "pending";
+        await approve(request, 4_000);
+        const [failedNote] = await noteRows();
+        const failedId = failedNote!.cardRefundId!;
+        // Stripe fails it before the outbox raised its note.
+        await stripeFailsLater(failedId);
+        const row = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { idempotencyKey: `card_refund_failed_later_${failedId}` }, select: { id: true } });
+        stripe.answer = "succeeded";
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+        const resent = (await prisma.paymentRefund.findFirstOrThrow({ where: { paymentId: PAYMENT_ID, status: "succeeded" }, select: { stripeRefundId: true } })).stripeRefundId;
+        // The failed refund's note raises nothing (it paid nothing back); the re-send's own note answers the money.
+        expect(await raiseQueuedNote(failedNote!.id, `${P}-overtaken`)).toEqual([]);
+        const resentNote = (await noteRows()).find((note) => note.cardRefundId === resent)!;
+        expect(resentNote).toMatchObject({ cents: 4_000 });
+        expect(await raiseQueuedNote(resentNote.id, `${P}-resent-note`)).toEqual([4_000]);
+        await deliverChargeRefunded();
+        expect(await noteRows()).toHaveLength(2);
+        expect(await readers()).toMatchObject({ refundedCents: 4_000, rowsCents: 4_000, coveredCents: 4_000, uncoveredCents: 0 });
+      });
     });
 
     /** The #4162 writes switch, on for one call and put back as it was. */
