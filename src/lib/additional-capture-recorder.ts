@@ -108,8 +108,10 @@ export async function readCaptureRecorder(
   },
   store: RecorderStore = prisma,
 ): Promise<CaptureRecorder> {
-  // Round 4 (item 4): a supplementary invoice naming the intent first - that
-  // invoice records it, whatever any gap invoice covers.
+  // Round 4 (item 4): a supplementary invoice naming the intent first. Round 5
+  // (item 1): it records the capture only where it records a payment; one
+  // raised UNPAID naming the intent (the repair tool's invoice for a priced
+  // edit, say) bills the capture's money and is the receipt's target instead.
   const naming = await store.xeroSyncOperation.findFirst({
     where: {
       queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
@@ -117,9 +119,9 @@ export async function readCaptureRecorder(
       requestPayload: { path: ["paymentIntentId"], equals: input.paymentIntentId },
     },
     orderBy: { createdAt: "desc" },
-    select: { id: true },
+    select: { ...SUPPLEMENTARY_SELECT, localModel: true, localId: true },
   });
-  if (naming) return { kind: "supplementary-invoice", operationId: naming.id };
+  if (naming && recordsPayment(naming.requestPayload)) return { kind: "supplementary-invoice", operationId: naming.id };
 
   const figures = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.primaryInvoiceId, store);
   if (figures?.atLink.paymentIntentIdsRecordedAtLink?.includes(input.paymentIntentId)) {
@@ -155,6 +157,23 @@ export async function readCaptureRecorder(
     gapCoveredCents = covered;
   }
   const alreadyRecordedCents = gapCoveredCents + primaryPartCents;
+  if (naming) {
+    const { localModel, localId, ...operation } = naming;
+    const link =
+      localModel && localId
+        ? await store.xeroObjectLink.findFirst({
+            where: { localModel, localId, xeroObjectType: "INVOICE", role: "SUPPLEMENTARY_INVOICE", active: true },
+            select: { id: true, xeroObjectId: true, active: true },
+          })
+        : null;
+    return {
+      kind: "receipt",
+      figures,
+      gap: figures ? await findPrimaryInvoiceGapInvoice(input.bookingId, figures, store) : null,
+      target: { kind: "CHANGE_INVOICE", operation, link },
+      alreadyRecordedCents,
+    };
+  }
   const gap = figures ? await findPrimaryInvoiceGapInvoice(input.bookingId, figures, store) : null;
   const modificationId = input.bookingModificationId;
   if (gap && modificationId && gap.anchorIds.includes(modificationId)) {
@@ -231,7 +250,7 @@ export async function readSupplementaryRecordedIntents(
   for (const row of rows) {
     const payload = asRecord(row.requestPayload);
     if (payload?.primaryInvoiceGap === true) continue;
-    if (typeof payload?.paymentIntentId === "string") named.add(payload.paymentIntentId);
+    if (typeof payload?.paymentIntentId === "string" && recordsPayment(row.requestPayload)) named.add(payload.paymentIntentId);
     if (row.localModel === "BookingModification" && row.localId && recordsPayment(row.requestPayload)) {
       paidChanges.add(row.localId);
     }

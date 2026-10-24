@@ -620,7 +620,43 @@ describe("recordAdditionalCaptureReceipt", () => {
 
       expectRefused("recorded-elsewhere");
       expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
-      expect(seam.getAuthenticatedXeroClient).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION round 5 (item 2): links its own payment found by reference, rather than refuse it, and tells an officer another document records it too", async () => {
+      invoices[GAP] = { amountDue: 0, payments: [{ paymentID: "xero_payment_first", reference: "Stripe pi_change" }] };
+      mocks.readCaptureRecorder.mockResolvedValue({ kind: "supplementary-invoice", operationId: "op_repair_invoice" });
+      const seam = providers();
+
+      await expect(run(seam)).resolves.toBe("xero_payment_first");
+
+      expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", expect.objectContaining({ xeroObjectId: "xero_payment_first" }));
+      expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ errorMessage: expect.stringContaining("another document now records it too") }),
+      );
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION round 5 (item 1): a stored decision, then an UNPAID invoice the repair tool raised naming the capture, then the retry - records it once, as decided", async () => {
+      // What `readCaptureRecorder` answers for an unpaid invoice naming the intent: the receipt still records it.
+      mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { ...PAYLOAD, plan: { ...plan, target: "PRIMARY_INVOICE", invoiceId: PRIMARY } } });
+      invoices[PRIMARY] = { amountDue: 8000 };
+      mocks.readCaptureRecorder.mockResolvedValue(
+        receiptRecorder({
+          target: {
+            kind: "CHANGE_INVOICE",
+            operation: { id: "op_repair_invoice", status: "PENDING", requestPayload: { paymentIntentId: "pi_change", recordPayment: false }, responsePayload: null, manuallyResolvedAt: null },
+            link: null,
+          },
+        }),
+      );
+      const seam = providers();
+
+      await run(seam);
+
+      expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+      expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledTimes(1);
+      expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledWith(expect.objectContaining({ invoiceId: PRIMARY, amountCents: 8000 }));
     });
 
     it("links what the first try recorded, if Xero has it", async () => {

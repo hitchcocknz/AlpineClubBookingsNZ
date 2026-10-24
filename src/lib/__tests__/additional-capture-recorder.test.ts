@@ -152,9 +152,35 @@ describe("readCaptureRecorder (B, C)", () => {
         requestPayload: { path: ["paymentIntentId"], equals: "pi_change" },
       },
       orderBy: { createdAt: "desc" },
-      select: { id: true },
+      select: { id: true, status: true, requestPayload: true, responsePayload: true, manuallyResolvedAt: true, localModel: true, localId: true },
     });
     expect(store.xeroSyncOperation.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it("MUTATION round 5 (item 1): an UNPAID invoice naming the intent is the receipt's target, never its recorder", async () => {
+    const repairInvoice = {
+      id: "op_repair_invoice",
+      status: "SUCCEEDED",
+      requestPayload: { paymentIntentId: "pi_change", recordPayment: false },
+      responsePayload: null,
+      manuallyResolvedAt: null,
+      localModel: "BookingModification",
+      localId: "mod_change",
+    };
+    const repairLink = { id: "link_repair", xeroObjectId: "inv_repair", active: true };
+    found.naming = repairInvoice;
+    store.xeroObjectLink.findFirst.mockResolvedValueOnce(repairLink);
+    const { localModel: _model, localId: _id, ...operation } = repairInvoice;
+    await expect(read()).resolves.toEqual({
+      kind: "receipt",
+      figures,
+      gap: null,
+      target: { kind: "CHANGE_INVOICE", operation, link: repairLink },
+      alreadyRecordedCents: 0,
+    });
+    expect(store.xeroObjectLink.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ localModel: "BookingModification", localId: "mod_change", role: "SUPPLEMENTARY_INVOICE" }) }),
+    );
   });
 
   it("is the gap invoice where its payment took all of the capture", async () => {
@@ -250,6 +276,8 @@ describe("readSupplementaryRecordedIntents (round 3, F3)", () => {
           { localModel: "BookingModification", localId: "mod_named", requestPayload: { paymentIntentId: "pi_named", recordPayment: true } },
           { localModel: "BookingModification", localId: "mod_paid", requestPayload: { paymentIntentId: null, recordPayment: true } },
           { localModel: "BookingModification", localId: "mod_unpaid", requestPayload: { paymentIntentId: null, recordPayment: false } },
+          // Round 5: an unpaid invoice naming its intent records nothing either.
+          { localModel: "BookingModification", localId: "mod_unpaid_named", requestPayload: { paymentIntentId: "pi_unpaid_named", recordPayment: false } },
           { localModel: "BookingModification", localId: "mod_gap", requestPayload: { primaryInvoiceGap: true, recordPayment: true } },
         ]),
       },
@@ -262,6 +290,7 @@ describe("readSupplementaryRecordedIntents (round 3, F3)", () => {
         { paymentIntentId: "pi_unpaid", bookingModificationId: "mod_unpaid" },
         { paymentIntentId: "pi_gap", bookingModificationId: "mod_gap" },
         { paymentIntentId: "pi_none", bookingModificationId: null },
+        { paymentIntentId: "pi_unpaid_named", bookingModificationId: "mod_unpaid_named" },
       ],
       store as never,
     );
