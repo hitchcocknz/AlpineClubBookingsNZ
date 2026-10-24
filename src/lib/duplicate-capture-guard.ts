@@ -212,8 +212,12 @@ async function keptCaptureAlert(
     orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: { stripePaymentIntentId: true },
   });
-  const heldCents = Math.max(0, arriving.amountCents - (await sumRecordedRefundsForCapture(tx, arriving)));
-  return { otherPaymentIntentId: other?.stripePaymentIntentId ?? null, otherHoldsMoney: !!other, heldCents };
+  return { otherPaymentIntentId: other?.stripePaymentIntentId ?? null, otherHoldsMoney: !!other, heldCents: await heldOnCard(tx, arriving) };
+}
+
+/** What a kept capture's card still holds: its amount less the card refunds recorded against it. */
+async function heldOnCard(tx: Prisma.TransactionClient, arriving: { id: string; amountCents: number; paymentIntentId: string }): Promise<number> {
+  return Math.max(0, arriving.amountCents - (await sumRecordedRefundsForCapture(tx, arriving)));
 }
 
 /**
@@ -315,13 +319,14 @@ export async function judgeCaptureOnPaidBooking(
 
   if (!recordedSettler && !arrivingOwned) {
     // Rule 3.
-    // The settlement `where` found is in the telling reading too, so it is the payment named.
+    // The settlement `where` found is in the telling reading too, so it is the payment named:
+    // only what the card holds is read, keeping the work under lock(1) small.
     return {
       verdict: "keep_unrecorded_settler",
       otherPaymentIntentId: settlement.stripePaymentIntentId,
       otherHoldsMoney: true,
       reason: input.recordedSettlerId ? "settler-released" : "not-recorded",
-      heldCents: (await keptCaptureAlert(tx, readTellingWhere, kept)).heldCents,
+      heldCents: await heldOnCard(tx, kept),
     };
   }
 

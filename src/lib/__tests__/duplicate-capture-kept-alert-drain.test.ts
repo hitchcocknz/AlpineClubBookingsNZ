@@ -20,6 +20,18 @@ type Operation = {
   nextRetryAt: Date | null;
 };
 type InFlightArm = { status: string; attempts?: { lt: number }; nextRetryAt?: { not: null } };
+/** A booking's recovery row as the cancel's card refund reading selects it (`readCancelledCardRefund`). */
+type RecoveryRow = {
+  id: string;
+  idempotencyKey: string;
+  paymentId: string;
+  amountCents: number;
+  allocationPlan: unknown;
+  status: string;
+  attempts: number;
+  nextRetryAt: Date | null;
+  succeededAt: Date | null;
+};
 
 const mocks = vi.hoisted(() => ({
   listOwedAlertKeys: vi.fn(),
@@ -30,11 +42,20 @@ const mocks = vi.hoisted(() => ({
   transaction: vi.fn(),
   bookingEvents: [] as Array<{ type: string; snapshot: unknown }>,
   operations: [] as Operation[],
-  /** The member cancel's card refund row (`booking_cancel_refund_recovery_<booking>`), or null. */
-  cancelRefundRow: null as { id: string; status: string; attempts: number; nextRetryAt: Date | null } | null,
-  /** A "Paid another way" close record on that row (`closeKeysOf`), or null. */
+  /**
+   * The booking's recovery rows by key: the member cancel's card refund
+   * (`booking_cancel_refund_recovery_<booking>`), the rows owing a refund Stripe
+   * failed later (`card_refund_failed_later_<refund>`), an organiser child's
+   * debt (`organiser_child_refund_cancel_<settlement>_<child>`).
+   */
+  recoveryRows: [] as RecoveryRow[],
+  recoveryReads: vi.fn(),
+  /** A "Paid another way" close record on a closed row (`closeKeysOf`), or null. */
   closeRecord: null as { amountCents: number | null; raisedAmountCents: number | null } | null,
-  cancelRefundRowWhere: vi.fn(),
+  /** A card refund shortfall's hand-back tasks (`cancel-card-shortfall:`). */
+  shortfallTasks: [] as Array<{ kind: string; occurrenceKey: string; status: string }>,
+  /** The group's combined card settlement, for an organiser-settled child. */
+  settlement: null as { id: string; stripePaymentIntentId: string; amountCents: number; status: string; refundPlan: null } | null,
   /** The card refunds recorded against the capture (`PaymentRefund`), summed. */
   cardRefundedCents: 0,
   cardRefundWhere: vi.fn(),
@@ -86,7 +107,18 @@ function matchesInFlight(operation: Operation, where: { OR?: InFlightArm[] }) {
   );
 }
 
+/** A `LIKE` prefix as `exactPrefix` escapes it, read back. */
+const unescapeLike = (pattern: string) => pattern.replace(/\\(.)/g, "$1");
+
+/** The booking-keyed recovery reads, interpreted: an exact key, a key prefix, or either (`bookingCancelCardRefundRecoveryWhere`). */
+function matchesRecoveryKey(key: string, where: { idempotencyKey?: string | { startsWith: string }; OR?: Array<{ idempotencyKey: string | { startsWith: string } }> }): boolean {
+  const one = (arm: string | { startsWith: string }) => (typeof arm === "string" ? key === arm : key.startsWith(unescapeLike(arm.startsWith)));
+  if (where.OR) return where.OR.some((arm) => one(arm.idempotencyKey));
+  return where.idempotencyKey !== undefined && one(where.idempotencyKey);
+}
+
 vi.mock("@/lib/prisma", () => {
+  // Every read the drain makes runs on the snapshot's transaction: the app's client offers it nothing else.
   const client = {
     $executeRaw: (...args: unknown[]) => mocks.executeRaw(...args),
     booking: { findUnique: (...args: unknown[]) => mocks.bookingFindUnique(...args) },
@@ -105,21 +137,32 @@ vi.mock("@/lib/prisma", () => {
     },
     // F7: the read's own `type`, `paymentId` and in-flight filters are interpreted, so a dead row is read as the drain asks.
     paymentRecoveryOperation: {
-      findMany: async ({ where }: { where: { paymentId: string; type: { in: string[] }; OR?: InFlightArm[] } }) =>
-        mocks.operations.filter(
-          (operation) => operation.paymentId === where.paymentId && where.type.in.includes(operation.type) && matchesInFlight(operation, where),
-        ),
-      findUnique: async ({ where }: { where: unknown }) => {
-        mocks.cancelRefundRowWhere(where);
-        return mocks.cancelRefundRow;
+      findMany: async ({ where }: { where: { paymentId?: string; bookingId?: string; type?: { in: string[] }; OR?: unknown[]; idempotencyKey?: { startsWith: string } } }) => {
+        if (where.bookingId !== undefined) {
+          mocks.recoveryReads(where);
+          return mocks.recoveryRows.filter((row) => matchesRecoveryKey(row.idempotencyKey, where as Parameters<typeof matchesRecoveryKey>[1]));
+        }
+        return mocks.operations.filter(
+          (operation) =>
+            operation.paymentId === where.paymentId && (where.type?.in ?? []).includes(operation.type) && matchesInFlight(operation, where as { OR?: InFlightArm[] }),
+        );
+      },
+      findUnique: async ({ where }: { where: { idempotencyKey: string } }) => {
+        mocks.recoveryReads(where);
+        return mocks.recoveryRows.find((row) => row.idempotencyKey === where.idempotencyKey) ?? null;
       },
     },
-    manualRefundTask: { findFirst: async () => mocks.closeRecord },
+    manualRefundTask: {
+      findFirst: async () => mocks.closeRecord,
+      findMany: async ({ where }: { where: { occurrenceKey: { startsWith: string } } }) =>
+        mocks.shortfallTasks.filter((task) => task.occurrenceKey.startsWith(where.occurrenceKey.startsWith)),
+    },
+    payment: { findMany: async () => [] },
+    groupBookingSettlement: { findFirst: async () => mocks.settlement },
   };
   return {
     prisma: {
-      ...client,
-      // F3: one read-only snapshot, run against the same fake ledger.
+      // F3: one read-only snapshot, run against the fake ledger.
       $transaction: async (fn: (tx: typeof client) => unknown, options: unknown) => {
         mocks.transaction(options);
         return fn(client);
@@ -174,7 +217,8 @@ function prime({
   captureStatus = "SUCCEEDED",
   refundedAmountCents = 0,
   cardRefundedCents = refundedAmountCents,
-}: { status?: string; captureStatus?: string; refundedAmountCents?: number; cardRefundedCents?: number } = {}) {
+  organiserChild = false,
+}: { status?: string; captureStatus?: string; refundedAmountCents?: number; cardRefundedCents?: number; organiserChild?: boolean } = {}) {
   mocks.cardRefundedCents = cardRefundedCents;
   mocks.listOwedAlertKeys.mockResolvedValue([KEY]);
   mocks.bookingFindUnique.mockResolvedValue({
@@ -185,6 +229,10 @@ function prime({
     memberId: "member-1",
     member: { firstName: "Alice", lastName: "Example", email: "alice@example.com" },
     organisation: null,
+    // A joiner's booking the group organiser paid for by card (`paidByOrganiserCard`), or the member's own.
+    organiserSettled: organiserChild,
+    parentBookingId: organiserChild ? "booking-organiser" : null,
+    payment: { source: "STRIPE" },
   });
   mocks.transactionFindUnique.mockResolvedValue({ id: "txn-new", paymentId: "payment-1", status: captureStatus, amountCents: 20000, refundedAmountCents });
   mocks.rows = [{ id: "txn-new", source: "STRIPE", status: captureStatus, stripePaymentIntentId: "pi_new" }];
@@ -202,8 +250,10 @@ beforeEach(() => {
   mocks.duplicateRefundIntentIds.mockResolvedValue([]);
   // By default every duplicate-capture refund still holds its capture, as one at any status does until it failed later.
   mocks.duplicateRefundsHolding.mockImplementation(() => mocks.duplicateRefundIntentIds());
-  mocks.cancelRefundRow = null;
+  mocks.recoveryRows = [];
   mocks.closeRecord = null;
+  mocks.shortfallTasks = [];
+  mocks.settlement = null;
 });
 
 describe("the owed new-capture alert's drain (#4285 review)", () => {
@@ -339,42 +389,110 @@ describe("the owed new-capture alert's drain (#4285 review)", () => {
     expect(mocks.alert).toHaveBeenCalledWith(expect.objectContaining({ reason: "new-capture-closed", amountCents: 20000, cancellationRefund: expected }));
   });
 
+  const CANCEL_KEY = "booking_cancel_refund_recovery_booking-1";
+  /** A booking recovery row: the member cancel's card refund unless the case says otherwise. */
+  const recoveryRow = (overrides: Partial<RecoveryRow> = {}): RecoveryRow => ({
+    id: "op-cancel",
+    idempotencyKey: CANCEL_KEY,
+    paymentId: "payment-1",
+    amountCents: 10000,
+    allocationPlan: [{ paymentTransactionId: "txn-new", amountCents: 10000 }],
+    status: "SUCCEEDED",
+    attempts: 1,
+    nextRetryAt: null,
+    succeededAt: new Date("2026-06-25T00:00:00.000Z"),
+    ...overrides,
+  });
+  /** A card refund the cancel's row made that Stripe failed later, owed again on a row of its own (#4104, #4166). */
+  const failedLaterRow = (overrides: Partial<RecoveryRow> = {}): RecoveryRow =>
+    recoveryRow({
+      id: "op-failed-later",
+      idempotencyKey: "card_refund_failed_later_re_1",
+      allocationPlan: [{ paymentTransactionId: "txn-new", amountCents: 10000, madeByOperationId: "op-cancel" }],
+      status: "PENDING",
+      attempts: 0,
+      nextRetryAt: NOW,
+      succeededAt: null,
+      ...overrides,
+    });
+  const CARD_DECISION = { type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 50, settledAmountCents: 10000 } };
+  const cardNote = (card: unknown) => ({ method: "card", card, byBank: null, toCheck: null });
+
   it.each([
-    ["its row SUCCEEDED: sent", { id: "op-cancel", status: "SUCCEEDED", attempts: 1, nextRetryAt: null }, null, "sent"],
-    ["its row dead: planned, never sent", { id: "op-cancel", ...DEAD }, null, "not-sent"],
-    ["its row still on its way", { id: "op-cancel", status: "FAILED", attempts: 2, nextRetryAt: NOW }, null, "not-sent"],
-    ["closed as paid another way", { id: "op-cancel", status: "SUCCEEDED", attempts: 1, nextRetryAt: null }, { amountCents: 10000, raisedAmountCents: 10000 }, "paid-another-way"],
-    ["no row (a cancel from before it existed)", null, null, "unrecorded"],
-  ])("#4285 review 7 F1: a card cancel's refund is said as its recovery row stands (%s), never as planned", async (_label, row, close, standing) => {
+    ["its row SUCCEEDED: sent", [recoveryRow()], null, "sent"],
+    ["its row dead: planned, never sent", [recoveryRow({ ...DEAD, succeededAt: null })], null, "not-sent"],
+    ["its row still on its way", [recoveryRow({ status: "FAILED", attempts: 2, nextRetryAt: NOW, succeededAt: null })], null, "not-sent"],
+    ["closed as paid another way", [recoveryRow()], { amountCents: 10000, raisedAmountCents: 10000 }, "paid-another-way"],
+    ["no row (a cancel from before it existed)", [], null, "unrecorded"],
+    // #4285 review 8 F1: the row SUCCEEDED, but Stripe failed the refund later and it is owed again.
+    ["its refund failed later, asked for again", [recoveryRow(), failedLaterRow()], null, "not-sent"],
+    ["its refund failed later, dead for the treasurer", [recoveryRow(), failedLaterRow(DEAD)], null, "not-sent"],
+    ["its refund failed later and was sent again", [recoveryRow(), failedLaterRow({ status: "SUCCEEDED", attempts: 1, nextRetryAt: null, succeededAt: NOW })], null, "sent"],
+    ["another booking's failed-later row", [recoveryRow(), failedLaterRow({ allocationPlan: [{ paymentTransactionId: "txn-x", amountCents: 10000, madeByOperationId: "op-elsewhere" }] })], null, "sent"],
+  ])("#4285 review 7 F1, review 8 F1: a card cancel's refund is said as its rows stand (%s), never as planned", async (_label, rows, close, standing) => {
     prime({ status: "CANCELLED" });
-    mocks.cancelRefundRow = row;
+    mocks.recoveryRows = rows;
     mocks.closeRecord = close;
-    mocks.bookingEvents = [{ type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 50, settledAmountCents: 10000 } }];
+    mocks.bookingEvents = [CARD_DECISION];
 
     await drainOwedNewCaptureAlerts(NOW);
 
     expect(mocks.alert).toHaveBeenCalledWith(
-      expect.objectContaining({ reason: "new-capture-closed", cancellationRefund: { method: "card", card: { amount: money(10000), standing }, byBank: null, toCheck: null } }),
+      expect.objectContaining({ reason: "new-capture-closed", cancellationRefund: cardNote({ amount: money(10000), standing }) }),
     );
-    // The member cancel's own row, by its key.
-    expect(mocks.cancelRefundRowWhere).toHaveBeenCalledWith({ idempotencyKey: "booking_cancel_refund_recovery_booking-1" });
+    // The booking page's reading (`readCancelledCardRefund`): the member's cancel row and a capacity race's, by this booking.
+    expect(mocks.recoveryReads).toHaveBeenCalledWith(expect.objectContaining({ bookingId: "booking-1", OR: expect.arrayContaining([{ idempotencyKey: CANCEL_KEY }]) }));
   });
 
   it("#4285 review 7 F1/F7: a dead card refund planned on this very capture neither holds the alert back nor is said to have refunded it", async () => {
     prime({ status: "CANCELLED" });
     const dead = refundOperation({ ...DEAD, paymentIntentId: "pi_new", allocationPlan: [{ paymentTransactionId: "txn-new", amountCents: 10000 }] });
     mocks.operations.push(dead);
-    mocks.cancelRefundRow = { id: "op-cancel", status: dead.status, attempts: dead.attempts, nextRetryAt: dead.nextRetryAt };
-    mocks.bookingEvents = [{ type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 50, settledAmountCents: 10000 } }];
+    mocks.recoveryRows = [recoveryRow({ ...DEAD, succeededAt: null })];
+    mocks.bookingEvents = [CARD_DECISION];
 
     expect(await drainOwedNewCaptureAlerts(NOW)).toEqual({ checked: 1, sent: 1 });
     expect(mocks.noteOwedAlertAttempt).not.toHaveBeenCalled();
     expect(mocks.alert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        reason: "new-capture-closed",
-        amountCents: 20000,
-        cancellationRefund: { method: "card", card: { amount: money(10000), standing: "not-sent" }, byBank: null, toCheck: null },
-      }),
+      expect.objectContaining({ reason: "new-capture-closed", amountCents: 20000, cancellationRefund: cardNote({ amount: money(10000), standing: "not-sent" }) }),
+    );
+  });
+
+  const ORGANISER_KEY = "organiser_child_refund_cancel_settlement-1_booking-1";
+
+  it.each([
+    ["its debt SUCCEEDED", [recoveryRow({ id: "op-debt", idempotencyKey: ORGANISER_KEY, amountCents: 8000 })], "sent", 8000],
+    ["its debt reopened after Stripe failed the refund later", [recoveryRow({ id: "op-debt", idempotencyKey: ORGANISER_KEY, amountCents: 8000, status: "PENDING", attempts: 0, nextRetryAt: NOW, succeededAt: null })], "not-sent", 8000],
+    ["its debt dead", [recoveryRow({ id: "op-debt", idempotencyKey: ORGANISER_KEY, amountCents: 8000, ...DEAD, succeededAt: null })], "not-sent", 8000],
+    ["no debt recorded", [], "unrecorded", 10000],
+    // A member-cancel row under the child's own key is not the organiser's refund.
+    ["only a member-cancel row", [recoveryRow()], "unrecorded", 10000],
+  ])("#4285 review 8 F2: an organiser-card child's cancel is said as a refund to the group organiser's card, as its debt stands (%s)", async (_label, rows, standing, cents) => {
+    prime({ status: "CANCELLED", organiserChild: true });
+    mocks.settlement = { id: "settlement-1", stripePaymentIntentId: "pi_group", amountCents: 40000, status: "PAID", refundPlan: null };
+    mocks.recoveryRows = rows;
+    mocks.bookingEvents = [CARD_DECISION];
+
+    await drainOwedNewCaptureAlerts(NOW);
+
+    expect(mocks.alert).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: "new-capture-closed", cancellationRefund: cardNote({ amount: money(cents), standing, organiserCard: true }) }),
+    );
+    expect(mocks.recoveryReads).toHaveBeenCalledWith({ idempotencyKey: ORGANISER_KEY });
+    // Never the member's own card refund reading.
+    expect(mocks.recoveryReads).not.toHaveBeenCalledWith(expect.objectContaining({ OR: expect.anything() }));
+  });
+
+  it("#4285 review 8 F2: a joiner cancelling behind the group's cancellation (its own refund $0) names the group's debt to the organiser's card", async () => {
+    prime({ status: "CANCELLED", organiserChild: true });
+    mocks.settlement = { id: "settlement-1", stripePaymentIntentId: "pi_group", amountCents: 40000, status: "PAID", refundPlan: null };
+    mocks.recoveryRows = [recoveryRow({ id: "op-debt", idempotencyKey: ORGANISER_KEY, amountCents: 8000 })];
+    mocks.bookingEvents = [{ type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 0, settledAmountCents: 0 } }];
+
+    await drainOwedNewCaptureAlerts(NOW);
+
+    expect(mocks.alert).toHaveBeenCalledWith(
+      expect.objectContaining({ cancellationRefund: cardNote({ amount: money(8000), standing: "sent", organiserCard: true }) }),
     );
   });
 
@@ -383,18 +501,50 @@ describe("the owed new-capture alert's drain (#4285 review)", () => {
     ["the card carried nothing", { cardCents: 0, bankCents: 7000, checkCents: 3000 }, null],
   ])("#4285 review 7 F1: a card refund shortfall says the parts owed by bank transfer and for the club to check beside the card's (%s)", async (_label, cardShortfall, card) => {
     prime({ status: "CANCELLED" });
-    mocks.cancelRefundRow = { id: "op-cancel", status: "SUCCEEDED", attempts: 1, nextRetryAt: null };
+    mocks.recoveryRows = [recoveryRow()];
     mocks.bookingEvents = [{ type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 50, settledAmountCents: 10000, cardShortfall } }];
 
     await drainOwedNewCaptureAlerts(NOW);
 
     expect(mocks.alert).toHaveBeenCalledWith(
       expect.objectContaining({
-        cancellationRefund: { method: "card", card, byBank: money(cardShortfall.bankCents), toCheck: money(cardShortfall.checkCents) },
+        cancellationRefund: {
+          method: "card",
+          card,
+          byBank: { amount: money(cardShortfall.bankCents), standing: "owed" },
+          toCheck: { amount: money(cardShortfall.checkCents), standing: "owed" },
+        },
       }),
     );
     // No card part, no card refund row to read.
-    expect(mocks.cancelRefundRowWhere).toHaveBeenCalledTimes(card ? 1 : 0);
+    expect(mocks.recoveryReads.mock.calls.some(([where]) => "OR" in (where as object))).toBe(card !== null);
+  });
+
+  it.each([
+    ["paid back", "COMPLETED", "COMPLETED", { bank: "paid", check: "paid" }],
+    ["dismissed", "DISMISSED", "DISMISSED", { bank: "closed", check: "closed" }],
+    ["one paid, one still open", "COMPLETED", "OPEN", { bank: "paid", check: "owed" }],
+  ])("#4285 review 8 F3: a shortfall part is said as its hand-back task stands, never owed once %s", async (_label, bankStatus, checkStatus, said) => {
+    prime({ status: "CANCELLED" });
+    mocks.recoveryRows = [recoveryRow()];
+    mocks.shortfallTasks = [
+      { kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1", status: bankStatus },
+      { kind: "CANCELLED_BOOKING_HAND_BACK", occurrenceKey: "cancel-card-shortfall:booking-1:check", status: checkStatus },
+    ];
+    mocks.bookingEvents = [{ type: "CANCELLED", snapshot: { refundMethod: "card", refundPercentage: 50, settledAmountCents: 10000, cardShortfall: { cardCents: 6000, bankCents: 3000, checkCents: 1000 } } }];
+
+    await drainOwedNewCaptureAlerts(NOW);
+
+    expect(mocks.alert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cancellationRefund: {
+          method: "card",
+          card: { amount: money(6000), standing: "sent" },
+          byBank: { amount: money(3000), standing: said.bank },
+          toCheck: { amount: money(1000), standing: said.check },
+        },
+      }),
+    );
   });
 
   it("a paid booking's alert never reads or names a cancellation refund", async () => {

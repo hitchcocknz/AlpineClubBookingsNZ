@@ -718,13 +718,27 @@ describe("#2320 review — senders supply the composed notes their defaults rend
 
     // #4285 review 7 F1: a card refund is said as its row stands - never "refunded to card" before it was sent -
     // and a card refund shortfall's parts beside it.
-    for (const [card, said] of [
+    // #4285 review 8: to the group organiser's card where it went there, and each shortfall part as its hand-back task stands.
+    const owed = { byBank: { amount: "$30.00", standing: "owed" }, toCheck: { amount: "$10.00", standing: "owed" } } as const;
+    for (const [card, said, parts = owed] of [
       [{ amount: "$60.00", standing: "not-sent" }, "a card refund of $60.00 was planned but has not been sent in full, $30.00 is owed back by bank transfer and $10.00 is for the club to check before paying it back."],
       [{ amount: "$60.00", standing: "sent" }, "it refunded $60.00 to card, $30.00 is owed back by bank transfer and $10.00 is for the club to check before paying it back."],
+      [
+        { amount: "$60.00", standing: "sent" },
+        "it refunded $60.00 to card, $30.00 was paid back by bank transfer and $10.00 was paid back by bank transfer after the club checked it.",
+        { byBank: { amount: "$30.00", standing: "paid" }, toCheck: { amount: "$10.00", standing: "paid" } },
+      ],
+      [
+        { amount: "$60.00", standing: "sent" },
+        "it refunded $60.00 to card, the club recorded the $30.00 owed by bank transfer as settled and the club checked the $10.00 and closed it.",
+        { byBank: { amount: "$30.00", standing: "closed" }, toCheck: { amount: "$10.00", standing: "closed" } },
+      ],
+      [{ amount: "$60.00", standing: "sent", organiserCard: true }, "it refunded $60.00 to the group organiser's card.", { byBank: null, toCheck: null }],
+      [{ amount: "$60.00", standing: "not-sent", organiserCard: true }, "a refund of $60.00 to the group organiser's card was planned but has not been sent in full.", { byBank: null, toCheck: null }],
     ] as const) {
       mocks.sendUnmuteableAdminAlert.mockClear();
       await sendAdminDuplicateCaptureKeptAlert(
-        { ...alert, reason: "new-capture-closed", otherPaymentIntentId: null, otherHoldsMoney: false, cancellationRefund: { method: "card", card, byBank: "$30.00", toCheck: "$10.00" } },
+        { ...alert, reason: "new-capture-closed", otherPaymentIntentId: null, otherHoldsMoney: false, cancellationRefund: { method: "card", card, ...parts } },
         CLUB_FORMAT_TEST,
       );
       expect(renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData())).toContain(`The cancellation's record shows ${said}`);

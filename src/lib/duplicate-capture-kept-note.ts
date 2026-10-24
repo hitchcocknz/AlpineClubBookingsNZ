@@ -48,11 +48,15 @@ export type DuplicateCaptureKeptReason =
  * #4285 review: what the cancellation's own record says it refunded, for a
  * `new-capture-closed` alert, with amounts formatted by the caller (this module
  * imports nothing). `none`: no refund was due. `card`: its card part and where
- * that refund stands on its recovery row - `sent` only once it SUCCEEDED,
- * `not-sent` while it is on its way or dead, `paid-another-way` for a close
- * recorded as paid another way, `unrecorded` with no row (a cancel from before
- * the row existed) - and, for a card refund shortfall (#4097, `INV-PAY-129`),
- * the parts owed by bank transfer and for the club to check.
+ * that refund stands, as of the drain's read - `sent` only once its row
+ * SUCCEEDED and no refund it made failed later still owed again, `not-sent`
+ * while it (or such a refund) is on its way or dead, `paid-another-way` for a
+ * close recorded as paid another way, `unrecorded` with no row (a cancel from
+ * before the row existed); `organiserCard` where it goes to the group
+ * organiser's card (#3653) - and, for a card refund shortfall (#4097,
+ * `INV-PAY-129`), the parts owed by bank transfer and for the club to check,
+ * each as its hand-back task stands: `owed` while open, `paid` once completed,
+ * `closed` once dismissed.
  */
 export type CancellationRefundNote =
   | { method: "none" }
@@ -60,28 +64,39 @@ export type CancellationRefundNote =
   | {
       method: "card";
       /** Null when the card plan carried nothing: the whole refund is owed another way. */
-      card: { amount: string; standing: "sent" | "not-sent" | "paid-another-way" | "unrecorded" } | null;
-      byBank: string | null;
-      toCheck: string | null;
+      card: { amount: string; standing: "sent" | "not-sent" | "paid-another-way" | "unrecorded"; organiserCard?: true } | null;
+      byBank: ShortfallPartNote | null;
+      toCheck: ShortfallPartNote | null;
     };
+
+/** One part of a card refund shortfall, as its hand-back task stands. */
+export type ShortfallPartNote = { amount: string; standing: "owed" | "paid" | "closed" };
 
 function joinedClauses(clauses: string[]): string {
   return clauses.length <= 1 ? (clauses[0] ?? "") : `${clauses.slice(0, -1).join(", ")} and ${clauses[clauses.length - 1]}`;
 }
 
 function cardRefundClauses(refund: Extract<CancellationRefundNote, { method: "card" }>): string[] {
-  const card = refund.card
+  const card = refund.card;
+  const refundOf = card?.organiserCard ? `refund of ${card.amount} to the group organiser's card` : `card refund of ${card?.amount}`;
+  const cardClause = card
     ? {
-        sent: `it refunded ${refund.card.amount} to card`,
-        "not-sent": `a card refund of ${refund.card.amount} was planned but has not been sent in full`,
-        "paid-another-way": `its card refund of ${refund.card.amount} was closed as paid another way`,
-        unrecorded: `a card refund of ${refund.card.amount} was planned, with no record of whether it was sent`,
-      }[refund.card.standing]
+        sent: `it refunded ${card.amount} to ${card.organiserCard ? "the group organiser's card" : "card"}`,
+        "not-sent": `a ${refundOf} was planned but has not been sent in full`,
+        "paid-another-way": `its ${refundOf} was closed as paid another way`,
+        unrecorded: `a ${refundOf} was planned, with no record of whether it was sent`,
+      }[card.standing]
     : null;
+  const bank = refund.byBank;
+  const check = refund.toCheck;
   return [
-    ...(card ? [card] : []),
-    ...(refund.byBank ? [`${refund.byBank} is owed back by bank transfer`] : []),
-    ...(refund.toCheck ? [`${refund.toCheck} is for the club to check before paying it back`] : []),
+    ...(cardClause ? [cardClause] : []),
+    ...(bank
+      ? [{ owed: `${bank.amount} is owed back by bank transfer`, paid: `${bank.amount} was paid back by bank transfer`, closed: `the club recorded the ${bank.amount} owed by bank transfer as settled` }[bank.standing]]
+      : []),
+    ...(check
+      ? [{ owed: `${check.amount} is for the club to check before paying it back`, paid: `${check.amount} was paid back by bank transfer after the club checked it`, closed: `the club checked the ${check.amount} and closed it` }[check.standing]]
+      : []),
   ];
 }
 

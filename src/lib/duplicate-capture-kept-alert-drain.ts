@@ -28,9 +28,12 @@
  * conflict's reading), so a capture behind a dead cancel, or one whose
  * duplicate-capture refund failed later with nothing owing it again, is named.
  * A booking cancelled or closed since is told as `new-capture-closed`, naming
- * the cancellation's recorded refund - a card refund as its recovery row
- * stands, so one never sent is never said to be refunded; a payment that holds
- * money beside it as `new-capture-later-payment`. Every alert shows what the
+ * the cancellation's recorded refund - a card refund read as the booking page
+ * reads it (`readCancelledCardRefund`), so one never sent, or one Stripe failed
+ * later and owed again, is never said to be refunded; an organiser-card child's
+ * as its debt to the organiser's card; a shortfall part as its hand-back task
+ * stands - and a payment that holds money beside it as
+ * `new-capture-later-payment`. Every alert shows what the
  * card still holds: its amount less the card refunds recorded against it
  * (`sumRecordedRefundsForCapture`), never the ledger's refunded figure, which a
  * refund as account credit also fills. Any delivered
@@ -40,7 +43,12 @@ import type { Prisma } from "@prisma/client";
 import { listOwedAlertKeys, noteOwedAlertAttempt, settleOwedAlert } from "@/lib/alert-cooldown";
 import { bookingOwner } from "@/lib/booking-owner";
 import { isPaidLikeBookingStatus } from "@/lib/booking-status";
-import { cardRefundRowState } from "@/lib/cancel-card-refund-shortfall-status";
+import {
+  readCancelledCardRefund,
+  readCardShortfallTaskStatuses,
+  readOrganiserChildCancelledCardRefund,
+  type CancelledCardRefund,
+} from "@/lib/cancel-card-refund-shortfall-status";
 import { parsePaidCancellationDecisionSnapshot } from "@/lib/cancellation-settled-money";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -49,13 +57,15 @@ import {
   NEW_CAPTURE_ALERT_OWED_PREFIX,
   readOtherSettledCaptureWhere,
 } from "@/lib/duplicate-capture-guard";
-import type { CancellationRefundNote } from "@/lib/duplicate-capture-kept-note";
+import type { CancellationRefundNote, ShortfallPartNote } from "@/lib/duplicate-capture-kept-note";
+import { paidByOrganiserCard } from "@/lib/group-organiser-paid";
 import logger from "@/lib/logger";
 import { isManualSettlementMarkerEvent } from "@/lib/manual-settlement-reversal-event";
+import type { CardShortfallTaskStatuses } from "@/lib/manual-refund-task-settlement-rules";
 import { CARD_REFUND_OPERATION_WHERE, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { findCombinedCardSettlementForChild } from "@/lib/organiser-child-refund";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { PAYMENT_RECOVERY_OPERATION_IN_FLIGHT_WHERE } from "@/lib/payment-recovery-constants";
-import { buildBookingCancellationRefundIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { sumRecordedRefundsForCapture } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
@@ -83,24 +93,45 @@ function refundMayTakeFrom(
   return !plan || plan.some((slice) => slice.paymentTransactionId === capture.id);
 }
 
-/** Where the cancel's card refund stands, as the alert says it: `sent` only once its row SUCCEEDED. */
-const CARD_REFUND_STANDING = {
-  settled: "sent",
-  "on-its-way": "not-sent",
-  stalled: "not-sent",
-  "paid-another-way": "paid-another-way",
-} as const;
+/**
+ * Where the cancel's card refund stands, as the alert says it: the furthest
+ * from done of its rows and of the refunds they made that Stripe failed later
+ * (each owed again on a row of its own, #4166) - `sent` only once all of it
+ * reached the card; no row, `unrecorded`.
+ */
+function cardRefundStanding({ cardRefundState, cardRefundFailedLater = [] }: CancelledCardRefund): CardRefundStanding {
+  if (cardRefundState === undefined) return "unrecorded";
+  const states = [cardRefundState, ...cardRefundFailedLater.map((part) => part.state)];
+  if (states.some((state) => state === "stalled" || state === "on-its-way")) return "not-sent";
+  return states.includes("paid-another-way") ? "paid-another-way" : "sent";
+}
+type CardRefundStanding = NonNullable<Extract<CancellationRefundNote, { method: "card" }>["card"]>["standing"];
+
+/** A card refund shortfall part's hand-back task, as the alert says it: owed until completed or dismissed. */
+function shortfallPart(cents: number, status: CardShortfallTaskStatuses["bank"], money: (cents: number) => string): ShortfallPartNote | null {
+  if (cents <= 0) return null;
+  return { amount: money(cents), standing: status === "COMPLETED" ? "paid" : status === "DISMISSED" ? "closed" : "owed" };
+}
 
 /**
  * The cancellation's own record of its refund: the newest paid-path CANCELLED
- * snapshot (`parsePaidCancellationDecisionSnapshot`). A card refund is said as
- * its recovery row stands (`cardRefundRowState`), never as planned: a refund
- * on its way or dead was not sent. A card refund shortfall's parts (#4097) are
- * said beside it.
+ * snapshot (`parsePaidCancellationDecisionSnapshot`). Its card refund is read
+ * the way the booking page reads it (`readCancelledCardRefund`, in this
+ * snapshot): as its rows stand, never as planned, and not sent while a refund
+ * it made that Stripe failed later is owed again. A joiner's booking the group
+ * organiser paid for by card (`paidByOrganiserCard`) is refunded to the
+ * ORGANISER's card, by its debt under the combined settlement
+ * (`readOrganiserChildCancelledCardRefund`), and said so. A card refund
+ * shortfall's parts (#4097) are said beside it, each as its hand-back task
+ * stands.
  */
-async function readCancellationRefund(tx: Prisma.TransactionClient, bookingId: string, format: ClubFormat): Promise<CancellationRefundNote | null> {
+async function readCancellationRefund(
+  tx: Prisma.TransactionClient,
+  booking: { id: string; organiserSettled: boolean; parentBookingId: string | null; payment: { source: string } | null },
+  format: ClubFormat,
+): Promise<CancellationRefundNote | null> {
   const events = await tx.bookingEvent.findMany({
-    where: { bookingId, type: "CANCELLED" },
+    where: { bookingId: booking.id, type: "CANCELLED" },
     orderBy: { occurredAt: "desc" },
     select: { type: true, snapshot: true },
   });
@@ -110,22 +141,24 @@ async function readCancellationRefund(tx: Prisma.TransactionClient, bookingId: s
   })[0];
   if (!decision) return null;
   const money = (cents: number) => formatCents(cents, format);
+  if (decision.refundMethod === "card" && paidByOrganiserCard(booking)) {
+    // The debt the joiner's cancel or the group's wrote: what goes to the organiser's card.
+    const settlement = await findCombinedCardSettlementForChild(tx, booking);
+    const debt = settlement ? await readOrganiserChildCancelledCardRefund(booking.id, settlement.id, tx) : {};
+    const cents = debt.amountCents ?? decision.settledAmountCents;
+    if (cents <= 0) return { method: "none" };
+    return { method: "card", card: { amount: money(cents), standing: cardRefundStanding(debt), organiserCard: true }, byBank: null, toCheck: null };
+  }
   if (decision.settledAmountCents <= 0) return { method: "none" };
   if (decision.refundMethod === "credit" || decision.refundMethod === "manual") return { method: decision.refundMethod, amount: money(decision.settledAmountCents) };
   if (decision.refundMethod !== "card") return null;
   const parts = decision.cardShortfall ?? { cardCents: decision.settledAmountCents, bankCents: 0, checkCents: 0 };
-  const row = parts.cardCents > 0
-    ? await tx.paymentRecoveryOperation.findUnique({
-        where: { idempotencyKey: buildBookingCancellationRefundIdempotencyKey(bookingId) },
-        select: { id: true, status: true, attempts: true, nextRetryAt: true },
-      })
-    : null;
-  const standing = row ? CARD_REFUND_STANDING[(await cardRefundRowState(row, tx)).state] : "unrecorded";
+  const tasks = parts.bankCents + parts.checkCents > 0 ? await readCardShortfallTaskStatuses(booking.id, tx) : {};
   return {
     method: "card",
-    card: parts.cardCents > 0 ? { amount: money(parts.cardCents), standing } : null,
-    byBank: parts.bankCents > 0 ? money(parts.bankCents) : null,
-    toCheck: parts.checkCents > 0 ? money(parts.checkCents) : null,
+    card: parts.cardCents > 0 ? { amount: money(parts.cardCents), standing: cardRefundStanding(await readCancelledCardRefund(booking.id, tx)) } : null,
+    byBank: shortfallPart(parts.bankCents, tasks.bank, money),
+    toCheck: shortfallPart(parts.checkCents, tasks.check, money),
   };
 }
 
@@ -139,7 +172,7 @@ async function judgeOwedAlert(bookingId: string, paymentIntentId: string, format
   return withReadOnlySnapshot(prisma, async (tx) => {
     const booking = await tx.booking.findUnique({
       where: { id: bookingId },
-      include: { member: true, organisation: { select: { name: true, email: true } } },
+      include: { member: true, organisation: { select: { name: true, email: true } }, payment: { select: { source: true } } },
     });
     const capture = await tx.paymentTransaction.findUnique({
       where: { stripePaymentIntentId: paymentIntentId },
@@ -179,7 +212,7 @@ async function judgeOwedAlert(bookingId: string, paymentIntentId: string, format
         otherPaymentIntentId: other?.stripePaymentIntentId ?? null,
         otherHoldsMoney: !!other,
         reason: closed ? "new-capture-closed" : other ? "new-capture-later-payment" : "new-capture",
-        ...(closed ? { cancellationRefund: await readCancellationRefund(tx, bookingId, format) } : {}),
+        ...(closed ? { cancellationRefund: await readCancellationRefund(tx, booking, format) } : {}),
       },
     };
   });

@@ -130,8 +130,9 @@ describe("booking money reconciliation store", () => {
         reviewContext: null,
       },
     ]);
+    const executeRaw = vi.fn();
     const transaction = vi.fn(async (callback) =>
-      callback({ booking: { findMany }, manualRefundTask: { findMany: reviewFindMany } }),
+      callback({ $executeRaw: executeRaw, booking: { findMany }, manualRefundTask: { findMany: reviewFindMany } }),
     );
     const result = await censusBookingMoneyReconciliation(
       { $transaction: transaction } as never,
@@ -141,6 +142,9 @@ describe("booking money reconciliation store", () => {
     expect(transaction).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "RepeatableRead",
     });
+    // #4285 review: read-only before its first read (`withReadOnlySnapshot`).
+    expect(String((executeRaw.mock.calls[0] as unknown[])[0])).toContain("SET TRANSACTION READ ONLY");
+    expect(executeRaw.mock.invocationCallOrder[0]).toBeLessThan(findMany.mock.invocationCallOrder[0]!);
     expect(findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         orderBy: { id: "asc" },
