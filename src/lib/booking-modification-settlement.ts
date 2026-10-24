@@ -27,9 +27,11 @@ import {
 } from "@/lib/ordinary-ask-request";
 import {
   cancelSupersededAdditionalIntentsNow,
+  failOutstandingAdditionalAskInClaim,
   queueSupersededAdditionalIntentCancellationRows,
   queueSupersededAdditionalIntentCancellations,
 } from "@/lib/booking-payment-cleanup";
+import { isAdditionalAskRetiredBookingStatus } from "@/lib/additional-payment-chase";
 import logger from "@/lib/logger";
 import {
   enqueueAdditionalPaymentIntentRecovery,
@@ -46,6 +48,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
 import {
+  lockPaymentForRefundedTotal,
   PartialRefundError,
   type RefundAllocationSlice,
   refundPaymentTransactions,
@@ -308,6 +311,18 @@ const NOTHING_MINTED: ModificationAdditionalAskMint = {
 };
 
 /**
+ * Nothing minted, or nothing left standing, and nothing owed: whoever retired
+ * the ask told the member. A re-issue a later reduction netted off (#3954), and
+ * an ask on a booking that ended after its edit committed (#4316). No intent id
+ * goes back, so the edit's Xero leg raises no supplementary invoice and a
+ * review charge's caller takes its recovery's cancelled path (#4272).
+ */
+const ASK_RETIRED_UNMINTED: ModificationAdditionalAskMint = {
+  ...NOTHING_MINTED,
+  additionalAskRetired: true,
+};
+
+/**
  * #3954 final review: what a door that did not mint its re-issue reports. A
  * later reduction that netted the waiting re-issue off retired it - that
  * reduction's own message told the member - so it is not named as due. A
@@ -320,7 +335,7 @@ function reissueNotMinted(
   const nettedOff =
     recovery?.status === PaymentRecoveryOperationStatus.SUCCEEDED &&
     recovery.lastError === PENDING_ASK_NETTED_BY_REDUCTION_NOTE;
-  return nettedOff ? { ...NOTHING_MINTED, additionalAskRetired: true } : NOTHING_MINTED;
+  return nettedOff ? ASK_RETIRED_UNMINTED : NOTHING_MINTED;
 }
 
 function mintedAsk(pi: { id: string; client_secret: string | null }, live: boolean): ModificationAdditionalAskMint {
@@ -329,6 +344,77 @@ function mintedAsk(pi: { id: string; client_secret: string | null }, live: boole
     additionalPaymentIntentId: pi.id,
     additionalAskRetired: !live,
   };
+}
+
+/**
+ * #4316: has the booking ended since its edit committed - CANCELLED or BUMPED,
+ * the statuses that retire every ask on it (`INV-ADDPAY-023`)? The edit decided
+ * to ask under `lock(1)`, but the mint runs after the commit, so a cancel can
+ * land in between. A plain read, no lock: the order it needs comes from the
+ * `Payment` row lock the ask's row write takes (see `retireAskOnEndedBooking`).
+ */
+async function bookingAskRetiredSinceEdit(bookingId: string): Promise<boolean> {
+  const booking = await prisma.booking.findUnique({ where: { id: bookingId }, select: { status: true } });
+  return isAdditionalAskRetiredBookingStatus(booking?.status);
+}
+
+/**
+ * #4316: THE OTHER HALF OF THE RACE. A cancel that committed after the check
+ * before the mint, but before this ask's row was written, read a `Payment`
+ * mirror with no such intent on it, so it retired the ask before this one and
+ * left this one live at Stripe on a cancelled booking.
+ *
+ * Re-read AFTER the row write, and the two writers cannot both miss: the row
+ * write takes the `Payment` row lock, as the paid cancel's claim does before it
+ * reads the mirror. A cancel that held it first committed before the row was
+ * written, so this read sees it; one that took it after reads this intent on
+ * the mirror and retires it itself. When the booking has ended, the ask is
+ * retired here as that claim retires one - the same routine, under the same
+ * row lock (`failOutstandingAdditionalAskInClaim`): the mirror and the row
+ * FAILED and a durable cancellation queued, then run now. One the cancel
+ * already retired is outstanding no longer and is left to it.
+ *
+ * Returns whether the booking has ended. A failed status read answers no, as
+ * the code did before; a failed retirement is logged with the intent, still
+ * answers yes, and so offers no secret for it.
+ */
+async function retireAskOnEndedBooking({
+  format,
+  bookingId,
+  paymentId,
+  paymentIntentId,
+}: {
+  format: ClubFormat;
+  bookingId: string;
+  paymentId: string;
+  paymentIntentId: string;
+}): Promise<boolean> {
+  const ended = await bookingAskRetiredSinceEdit(bookingId).catch((err: unknown) => {
+    logger.error({ err, bookingId, paymentIntentId }, "Could not re-read the booking after writing its additional ask; it is offered as live (#4316)");
+    return false;
+  });
+  if (!ended) return false;
+  try {
+    const queued = await prisma.$transaction(async (tx) => {
+      await lockPaymentForRefundedTotal(tx, paymentId);
+      const payment = await tx.payment.findUnique({
+        where: { id: paymentId },
+        select: { id: true, additionalPaymentIntentId: true, additionalPaymentStatus: true },
+      });
+      return payment ? failOutstandingAdditionalAskInClaim(tx, { bookingId, payment }) : null;
+    });
+    if (queued) await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: [queued] });
+    logger.warn(
+      { bookingId, paymentId, paymentIntentId, retiredHere: queued !== null },
+      "The booking ended while its edit's additional ask was minted; the ask is retired, not offered (#4316)",
+    );
+  } catch (err) {
+    logger.error(
+      { err, bookingId, paymentId, paymentIntentId },
+      "Could not retire an additional ask minted on a booking that has ended; the intent may stay live at Stripe (#4316)",
+    );
+  }
+  return true;
 }
 
 /**
@@ -372,6 +458,14 @@ export function additionalAmountToName(
  * be cancelled. Pairing the two in one value that only
  * `@/lib/additional-payment-ask` can build is what stops a future caller doing
  * one and not the other. `INV-PAY-098` is the rule.
+ *
+ * IT ASKS NOTHING OF A BOOKING THAT HAS ENDED (#4316, `INV-ADDPAY-023`). It
+ * runs after the edit's commit, so a cancel can land first: the booking's
+ * status is re-read before the provider call, and again after the new row is
+ * written, when a cancel that committed in between could not have seen the
+ * intent - and the minter retires it as that cancel would have
+ * (`retireAskOnEndedBooking`). Either way the door is told the ask is retired
+ * and offers no secret.
  *
  * THE CALLER READS THE RESULT, and must. This function swallows a provider
  * failure by design - the ordinary edit path has to return the member's saved
@@ -435,6 +529,23 @@ export async function createModificationAdditionalPaymentIntent(
     !result.paymentId
   ) {
     return NOTHING_MINTED;
+  }
+
+  // #4316: a booking cancelled (or bumped) since the edit committed is asked
+  // nothing (`INV-ADDPAY-023`), and owes nothing: no intent, no recovery row. A
+  // re-issue's recovery, written with the edit, is closed by its runner, which
+  // skips a cancelled booking. A failed read mints as before; the check after
+  // the row write still stands.
+  const endedBeforeMint = await bookingAskRetiredSinceEdit(bookingId).catch((err: unknown) => {
+    logger.error({ err, bookingId }, "Could not re-read the booking before minting its additional ask (#4316)");
+    return false;
+  });
+  if (endedBeforeMint) {
+    logger.info(
+      { bookingId, bookingModificationId: result.bookingModificationId },
+      "The booking ended after its edit committed; no additional ask is minted (#4316)",
+    );
+    return ASK_RETIRED_UNMINTED;
   }
 
   // #3954 review round 4: a RE-ISSUED ask's recovery was written in the edit's
@@ -543,6 +654,10 @@ export async function createModificationAdditionalPaymentIntent(
         return reissueNotMinted(moved);
       }
       await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: superseded });
+      // #4316: a cancel that committed while this minted could not see it.
+      if (await retireAskOnEndedBooking({ format, bookingId, paymentId, paymentIntentId: pi.id })) {
+        return ASK_RETIRED_UNMINTED;
+      }
       // Decision A (#3954): the smaller ask's own invoice, waiting on it - only
       // while it is still live (round 7): a reduction may have retired it during
       // the cancels above, and named this edit for it. Round 8: only the secret
@@ -655,6 +770,11 @@ export async function createModificationAdditionalPaymentIntent(
         "Failed to queue superseded additional intent cancellations",
       ),
     );
+
+    // #4316: a cancel that committed while this minted could not see it.
+    if (await retireAskOnEndedBooking({ format, bookingId, paymentId, paymentIntentId: pi.id })) {
+      return ASK_RETIRED_UNMINTED;
+    }
 
     // #3954 round 6: the re-issues this increase folded in are asked for on
     // this intent now, so their own invoices wait on it. An ordinary edit's ask

@@ -6,6 +6,7 @@ import {
 } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
+import { markPaymentIntentTransactionFailed } from "@/lib/payment-transactions";
 import {
   enqueuePaymentIntentCancellationRecovery,
   runPaymentRecoveryOperationNow,
@@ -245,4 +246,83 @@ export async function cancelSupersededAdditionalIntentsNow(options: {
       );
     }
   }
+}
+
+/** The `Payment` mirror columns that name a booking's outstanding additional ask. */
+export type AdditionalAskMirror = {
+  id: string;
+  additionalPaymentIntentId?: string | null;
+  additionalPaymentStatus?: string | null;
+};
+
+/**
+ * Does the mirror name an additional intent that is still OUTSTANDING - neither
+ * paid nor already failed? An intent that already failed (a declined card) is
+ * left alone: it is not cancelled again (`INV-ADDPAY-023`).
+ */
+export function hasOutstandingAdditionalPaymentIntent(
+  payment: Omit<AdditionalAskMirror, "id"> | null | undefined,
+): boolean {
+  return Boolean(
+    payment?.additionalPaymentIntentId &&
+      payment.additionalPaymentStatus !== "SUCCEEDED" &&
+      payment.additionalPaymentStatus !== "FAILED",
+  );
+}
+
+/**
+ * RETIRE A CANCELLED BOOKING'S OUTSTANDING ADDITIONAL ASK, in the caller's
+ * transaction (`INV-ADDPAY-023`). The one routine both writers that end an ask
+ * with its booking run (#4316):
+ *
+ *  - the paid cancel's claim (`booking-cancel.ts`, tx1), on the mirror it read
+ *    under the `Payment` row lock, beside its CANCELLED flip;
+ *  - the edit doors' after-commit minter
+ *    (`createModificationAdditionalPaymentIntent`), when a cancel committed
+ *    after the edit but before the minter wrote its new intent's row - that
+ *    cancel read the mirror before the intent existed and could not retire it.
+ *
+ * The caller holds the `Payment` row lock and passes the mirror it read under
+ * it. The mirror is marked FAILED, the intent's row FAILED (never over a
+ * capture), and a durable `CANCEL_PAYMENT_INTENT` recovery is queued (F1,
+ * #1350): the cron cancels the intent at Stripe, or hands a capture that won
+ * the race to a full refund. Its key is the transaction and the intent, so the
+ * two writers queue one row. Returns the queued cancellation, for the caller's
+ * after-commit Stripe attempt, or null when nothing was outstanding.
+ */
+export async function failOutstandingAdditionalAskInClaim(
+  tx: Prisma.TransactionClient,
+  { bookingId, payment }: { bookingId: string; payment: AdditionalAskMirror },
+): Promise<QueuedSupersededIntentCancellation | null> {
+  if (!hasOutstandingAdditionalPaymentIntent(payment)) return null;
+  await tx.payment.update({
+    where: { id: payment.id },
+    data: { additionalPaymentStatus: "FAILED" },
+  });
+  const paymentIntentId = payment.additionalPaymentIntentId;
+  if (!paymentIntentId) return null;
+  await markPaymentIntentTransactionFailed({ paymentIntentId, store: tx });
+  const additionalTransaction = await tx.paymentTransaction.findFirst({
+    where: { paymentId: payment.id, stripePaymentIntentId: paymentIntentId },
+    select: { id: true, amountCents: true },
+  });
+  if (!additionalTransaction) {
+    // No ledger row for the outstanding intent (legacy mirror-only payment):
+    // the webhook status guard (#1350 part 1) remains the backstop for a late
+    // capture.
+    logger.warn(
+      { bookingId, paymentId: payment.id, additionalPaymentIntentId: paymentIntentId },
+      "No payment transaction row for outstanding additional intent; skipping durable cancellation recovery enqueue",
+    );
+    return null;
+  }
+  const operation = await enqueuePaymentIntentCancellationRecovery({
+    bookingId,
+    paymentId: payment.id,
+    paymentTransactionId: additionalTransaction.id,
+    paymentIntentId,
+    amountCents: additionalTransaction.amountCents,
+    store: tx,
+  });
+  return { paymentTransactionId: additionalTransaction.id, paymentIntentId, operationId: operation.id };
 }

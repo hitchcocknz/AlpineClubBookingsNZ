@@ -1,6 +1,10 @@
 import { prisma } from "./prisma";
 import { cancelPaymentIntentIfCancellableWithResult, cancelSetupIntentIfCancellable } from "./stripe";
 import { isPaymentIntentCancelConfirmed } from "@/lib/card-intent-retirement";
+import {
+  failOutstandingAdditionalAskInClaim,
+  hasOutstandingAdditionalPaymentIntent,
+} from "@/lib/booking-payment-cleanup";
 import { isXeroConnected } from "./xero";
 import { daysUntilDate, loadCancellationPolicy } from "./cancellation";
 import { sendAdminManualRefundTaskAlert, sendBookingCancelledEmail } from "./email";
@@ -53,7 +57,6 @@ import {
 import {
   buildBookingCancellationRefundMetadata,
   enqueueBookingCancellationRefundRecovery,
-  enqueuePaymentIntentCancellationRecovery,
   markBookingCancellationRefundRecoverySucceeded,
   recordBookingCancellationRefundRecoveryInlineError,
 } from "@/lib/payment-recovery";
@@ -1730,55 +1733,18 @@ async function performBookingCancellation(
 
     // Fail the additional-payment DB state in-tx; the Stripe cancellation of
     // the additional intent is external and runs best-effort in Phase 2.
+    // F1 (#1350): a durable CANCEL_PAYMENT_INTENT recovery operation is
+    // persisted ATOMICALLY with the claim. The Phase-2 Stripe cancel of this
+    // intent is best-effort only, so without this row a member confirming the
+    // additional payment in a stale tab as/after the cancel commits was charged
+    // for a CANCELLED booking with no refund and no alert. With the row, the
+    // recovery cron cancels the intent (or, if Stripe already captured, hands
+    // it off to a full refund), and the payment_intent.succeeded webhook's
+    // superseded-intent hook routes a racing capture straight to refund
+    // recovery. #4316: the one routine, shared with the edit doors' minter,
+    // which retires an intent it wrote after this claim read the mirror.
     if (shouldFailAdditionalPayment) {
-      await tx.payment.update({
-        where: { id: payment.id },
-        data: { additionalPaymentStatus: "FAILED" },
-      });
-      if (payment.additionalPaymentIntentId) {
-        await markPaymentIntentTransactionFailed({
-          paymentIntentId: payment.additionalPaymentIntentId,
-          store: tx,
-        });
-        // F1 (#1350): persist a durable CANCEL_PAYMENT_INTENT recovery
-        // operation ATOMICALLY with the claim. The Phase-2 Stripe cancel of
-        // this intent is best-effort only, so without this row a member
-        // confirming the additional payment in a stale tab as/after the
-        // cancel commits was charged for a CANCELLED booking with no refund
-        // and no alert. With the row, the recovery cron cancels the intent
-        // (or, if Stripe already captured, hands it off to a full refund),
-        // and the payment_intent.succeeded webhook's superseded-intent hook
-        // routes a racing capture straight to refund recovery.
-        const additionalTransaction = await tx.paymentTransaction.findFirst({
-          where: {
-            paymentId: payment.id,
-            stripePaymentIntentId: payment.additionalPaymentIntentId,
-          },
-          select: { id: true, amountCents: true },
-        });
-        if (additionalTransaction) {
-          await enqueuePaymentIntentCancellationRecovery({
-            bookingId,
-            paymentId: payment.id,
-            paymentTransactionId: additionalTransaction.id,
-            paymentIntentId: payment.additionalPaymentIntentId,
-            amountCents: additionalTransaction.amountCents,
-            store: tx,
-          });
-        } else {
-          // No ledger row for the outstanding intent (legacy mirror-only
-          // payment): the webhook status guard (#1350 part 1) remains the
-          // backstop for a late capture.
-          logger.warn(
-            {
-              bookingId,
-              paymentId: payment.id,
-              additionalPaymentIntentId: payment.additionalPaymentIntentId,
-            },
-            "No payment transaction row for outstanding additional intent; skipping durable cancellation recovery enqueue"
-          );
-        }
-      }
+      await failOutstandingAdditionalAskInClaim(tx, { bookingId, payment });
     }
 
     await reconcileCancelledBookingBedAllocations(fresh, tx);
@@ -2775,22 +2741,6 @@ function appendReturnedCreditSentence(
   return creditRestoredCents > 0
     ? `${reason} ${formatCents(creditRestoredCents, format)} of applied account credit was returned.`
     : reason;
-}
-
-function hasOutstandingAdditionalPaymentIntent(
-  payment:
-    | {
-        additionalPaymentIntentId?: string | null;
-        additionalPaymentStatus?: string | null;
-      }
-    | null
-    | undefined
-) {
-  return Boolean(
-    payment?.additionalPaymentIntentId &&
-      payment.additionalPaymentStatus !== "SUCCEEDED" &&
-      payment.additionalPaymentStatus !== "FAILED"
-  );
 }
 
 async function cancelOutstandingPaymentIntents({
