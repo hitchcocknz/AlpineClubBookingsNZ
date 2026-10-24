@@ -355,6 +355,21 @@ let observerClient: import("@prisma/client").PrismaClient;
         expect(await balance()).toBe(0);
       });
 
+      it("bounds the write-down by this lot's own free part, even when the member holds other credit", async () => {
+        await seed();
+        await prisma.memberCredit.create({
+          data: { id: SECOND_LOT_ID, memberId: MEMBER_ID, amountCents: 1_000, type: "CANCELLATION_REFUND", description: "race 4270 other credit", xeroCreditNoteId: SECOND_NOTE_ID },
+        });
+        await drawFromLot(2_000);
+        // The balance (4250) covers more than this lot's free part (3250): the lot is the bound.
+        expect(await balance()).toBe(LOT_CENTS + 1_000 - 2_000);
+
+        const result = await mirror(evidence());
+
+        expect(result).toEqual({ acted: true, action: "written-down", cents: 3_250, leftForAllocationCents: 2_000 });
+        expect(await balance()).toBe(1_000);
+      });
+
       it("never takes the member's balance below zero: credit applied to a booking but not yet planned is left alone", async () => {
         await seed();
         await createBooking(LOT_CENTS);

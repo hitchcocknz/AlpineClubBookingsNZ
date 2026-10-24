@@ -46,7 +46,8 @@ export function planOutsideSpendMirror(input: OutsideSpendMirrorInput): OutsideS
   const targetCents = Math.min(outsideSpendCents, lotCents);
   const deltaCents = targetCents - writtenDownCents;
   if (deltaCents === 0) return { kind: "none", leftForAllocationCents: 0 };
-  if (deltaCents < 0) return { kind: "restore", cents: Math.min(-deltaCents, writtenDownCents), leftForAllocationCents: 0 };
+  // `targetCents >= 0`, so `-deltaCents <= writtenDownCents`: a restore can never exceed the write-down.
+  if (deltaCents < 0) return { kind: "restore", cents: -deltaCents, leftForAllocationCents: 0 };
 
   const freeCents = Math.max(0, lotCents - sliceCents - writtenDownCents);
   const cents = Math.min(deltaCents, freeCents, Math.max(0, balanceCents));
