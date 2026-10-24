@@ -35,6 +35,9 @@ describe("INV-PAY-045: the mark-paid reversal's retrying-cancel real-database pr
       "an edit's cancel the mark-paid found waiting (FAILED, retrying) outlives the reversal: the superseded intent is still cancelled",
       "an edit's cancel the mark-paid found waiting outlives the reversal: the old tab's capture is refunded, never settles (INV-PAY-138)",
       "MUTATION: an edit on the PAID booking that shares the settle's cancel row: the reversal keeps the intent at the old price cancelled, and its old tab's capture is refunded",
+      "MUTATION: a condemned intent's cancellation the runner gave up on during the outage is re-armed by the reversal and cancels once Stripe is back",
+      "MUTATION: a condemned intent's cancellation on its last attempt while the reversal runs is re-armed; the worker's failure cannot kill it, and it cancels once Stripe is back",
+      "MUTATION: an intent the settle adopted, whose cancellation gave up during the outage, is re-armed by the reversal and cancels once Stripe is back",
       "MUTATION: a settle recorded before #4320 (no adopted list): the reversal still keeps an edit's stale intent cancelled",
       "MUTATION: the hand-off waits for the reversal on the Payment row: a capture landing mid-reversal settles the booking, never charged and refunded",
     ]) {

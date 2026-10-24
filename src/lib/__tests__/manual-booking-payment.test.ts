@@ -172,7 +172,7 @@ import {
 } from "@/lib/payment-reconciliation";
 import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { isAdditionalAmountUncollected } from "@/lib/unpaid-finished-stays";
-import { PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
+import { MAX_PAYMENT_RECOVERY_ATTEMPTS, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import {
   NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
   SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
@@ -1302,6 +1302,92 @@ describe("#2262 — the reversal (direction unpaid)", () => {
         expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: [] });
       });
 
+      /** The reversal's stamp of its own cash row (#4355), as it writes it. */
+      const STAMP_REVERSED_CASH_ROW = {
+        where: {
+          paymentId: "payment-1",
+          kind: PaymentTransactionKind.ADDITIONAL,
+          source: PaymentSource.INTERNET_BANKING,
+          status: PaymentStatus.FAILED,
+          reason: "manual_mark_paid_additional_reversed",
+          withdrawnAt: null,
+        },
+        data: { withdrawnAt: expect.any(Date) },
+      };
+      function stampWrites() {
+        return mocks.paymentTransactionUpdateMany.mock.calls.filter(
+          ([args]) => (args as { data: Record<string, unknown> }).data.withdrawnAt !== undefined,
+        );
+      }
+      function pointerWrites() {
+        return mocks.paymentUpdateMany.mock.calls.filter(
+          ([args]) => (args as { data: Record<string, unknown> }).data.additionalPaymentIntentId !== undefined,
+        );
+      }
+
+      it("MUTATION (#4355): the reversed cash row is stamped withdrawn and the pointer put back, so a rebuild after the member pays the ask reads it SUCCEEDED", async () => {
+        primeReversal({ payment: { additionalPaymentIntentId: null } });
+        cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+        settleAudit(RESTORED_EXTRA);
+
+        await reverse();
+
+        expect(stampWrites()).toEqual([[STAMP_REVERSED_CASH_ROW]]);
+        expect(pointerWrites()).toEqual([
+          [{ where: { id: "payment-1", additionalPaymentIntentId: null }, data: { additionalPaymentIntentId: "pi_ask" } }],
+        ]);
+        // After the cash row was flipped FAILED, never before it.
+        const flip = mocks.paymentTransactionUpdateMany.mock.calls.findIndex(
+          ([args]) => (args as { data: { reason?: string } }).data.reason === "manual_mark_paid_additional_reversed",
+        );
+        const stamp = mocks.paymentTransactionUpdateMany.mock.calls.findIndex(
+          ([args]) => (args as { data: Record<string, unknown> }).data.withdrawnAt !== undefined,
+        );
+        expect(flip).toBeGreaterThanOrEqual(0);
+        expect(stamp).toBeGreaterThan(flip);
+        expect(auditMetadata()).toMatchObject({ restoredAdditionalPaymentIntentId: "pi_ask" });
+      });
+
+      it("a pointer that still names the ask is kept; the cash row is still stamped", async () => {
+        primeReversal({ payment: { additionalPaymentIntentId: "pi_ask" } });
+        cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+        settleAudit(RESTORED_EXTRA);
+
+        await reverse();
+
+        expect(stampWrites()).toEqual([[STAMP_REVERSED_CASH_ROW]]);
+        expect(auditMetadata()).toMatchObject({ restoredAdditionalPaymentIntentId: "pi_ask" });
+      });
+
+      for (const [label, prime] of [
+        [
+          "with no live ask (the newest card ask is at another figure)",
+          () => cardLedger([{ id: "txn-new", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_new", amountCents: 4500 }]),
+        ],
+        ["with no card ask at all", () => cardLedger([])],
+        [
+          "when the extra was not put back (a writer settled it since)",
+          () => {
+            cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+            mocks.paymentUpdateMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) => ({
+              count: "additionalPaymentStatus" in where ? 0 : 1,
+            }));
+          },
+        ],
+      ] as const) {
+        it(`${label}, the cash row stays the mirror's anchor: nothing is stamped and the pointer is not written`, async () => {
+          primeReversal({ payment: { additionalPaymentIntentId: null } });
+          prime();
+          settleAudit(RESTORED_EXTRA);
+
+          await reverse();
+
+          expect(stampWrites()).toEqual([]);
+          expect(pointerWrites()).toEqual([]);
+          expect(auditMetadata()).toMatchObject({ restoredAdditionalPaymentIntentId: null });
+        });
+      }
+
       it("reads past an ask an officer withdrew, as the mirror does", async () => {
         primeReversal({ payment: { additionalPaymentIntentId: null } });
         cardLedger([
@@ -1407,8 +1493,77 @@ describe("#2262 — the reversal (direction unpaid)", () => {
       });
     });
 
-    describe("F4: a condemned intent's dead cancellation is re-armed", () => {
+    describe("F4: a cancellation the reversal leaves standing, and the runner will not finish, is re-armed", () => {
       const STALE: CardRow = { id: "txn-old", kind: PaymentTransactionKind.PRIMARY, stripePaymentIntentId: "pi_old_price", amountCents: 8000 };
+      /** Given up (PENDING or FAILED at the ceiling), or held by a worker on its last attempt. */
+      const WILL_NOT_FINISH = {
+        type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+        OR: [
+          PAYMENT_RECOVERY_EXHAUSTED_WHERE,
+          { status: PaymentRecoveryOperationStatus.PROCESSING, attempts: { gte: MAX_PAYMENT_RECOVERY_ATTEMPTS } },
+        ],
+      };
+
+      type QueueRow = { id: string; paymentIntentId: string; status: PaymentRecoveryOperationStatus; attempts: number };
+      type StatusClause = { status: string | { in: readonly string[] }; attempts: { gte: number } };
+      /**
+       * The cancel queue, answered through the re-arm's own filter (intent,
+       * then any OR clause on status and attempts), so the predicate is
+       * exercised rather than echoed. Every other read finds nothing.
+       */
+      function cancelQueue(rows: QueueRow[]) {
+        const matches = (row: QueueRow, clause: StatusClause) =>
+          (typeof clause.status === "string" ? row.status === clause.status : clause.status.in.includes(row.status)) &&
+          row.attempts >= clause.attempts.gte;
+        mocks.paymentRecoveryOperationFindMany.mockImplementation(
+          async ({ where }: { where: { type?: unknown; paymentIntentId?: { in: string[] }; OR?: StatusClause[] } }) =>
+            where.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT
+              ? rows
+                  .filter((row) => where.paymentIntentId!.in.includes(row.paymentIntentId))
+                  .filter((row) => where.OR!.some((clause) => matches(row, clause)))
+                  .map(({ id }) => ({ id }))
+              : [],
+        );
+        mocks.paymentRecoveryOperationUpdateMany.mockResolvedValue({ count: 1 });
+      }
+
+      for (const [label, status, attempts, rearmedExpected] of [
+        ["FAILED at the attempt ceiling (given up)", PaymentRecoveryOperationStatus.FAILED, 5, true],
+        ["PENDING at the attempt ceiling", PaymentRecoveryOperationStatus.PENDING, 5, true],
+        ["PROCESSING on its last attempt", PaymentRecoveryOperationStatus.PROCESSING, 5, true],
+        ["PROCESSING with attempts left", PaymentRecoveryOperationStatus.PROCESSING, 3, false],
+        ["FAILED and still retrying", PaymentRecoveryOperationStatus.FAILED, 2, false],
+        ["PENDING and due", PaymentRecoveryOperationStatus.PENDING, 0, false],
+      ] as const) {
+        it(`MUTATION: a cancellation ${label} on a condemned intent is ${rearmedExpected ? "" : "not "}re-armed`, async () => {
+          primeReversal();
+          cardLedger([STALE]);
+          cancelQueue([{ id: "op-1", paymentIntentId: "pi_old_price", status, attempts }]);
+
+          await reverse();
+
+          expect(auditMetadata()).toMatchObject({ rearmedRecoveryOperationIds: rearmedExpected ? ["op-1"] : [] });
+        });
+      }
+
+      it("MUTATION (F3): an intent the settle adopted keeps its cancellation, and a dead one is re-armed and recorded", async () => {
+        primeReversal();
+        // At the owed amount, so no rule condemns it; the settle found its
+        // cancellation already queued by another writer.
+        cardLedger([PAYABLE_PRIMARY]);
+        settleAudit({ cancelledPaymentIntentIds: ["pi_live"], adoptedCancelPaymentIntentIds: ["pi_live"] });
+        cancelQueue([{ id: "op-adopted", paymentIntentId: "pi_live", status: PaymentRecoveryOperationStatus.FAILED, attempts: 5 }]);
+
+        await reverse();
+
+        expect(rearmReads()).toEqual([{ paymentId: "payment-1", paymentIntentId: { in: ["pi_live"] }, ...WILL_NOT_FINISH }]);
+        expect(withdrawReads()).toEqual([]);
+        expect(mocks.paymentRecoveryOperationDeleteMany).not.toHaveBeenCalled();
+        expect(auditMetadata()).toMatchObject({
+          stillCancelledPaymentIntentIds: ["pi_live"],
+          rearmedRecoveryOperationIds: ["op-adopted"],
+        });
+      });
 
       it("MUTATION: re-arms an exhausted cancel on a condemned intent, fenced, and records it", async () => {
         primeReversal();
@@ -1420,10 +1575,9 @@ describe("#2262 — the reversal (direction unpaid)", () => {
 
         const result = await reverse();
 
-        const dead = { type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT, ...PAYMENT_RECOVERY_EXHAUSTED_WHERE };
-        expect(rearmReads()).toEqual([{ paymentId: "payment-1", paymentIntentId: { in: ["pi_old_price"] }, ...dead }]);
+        expect(rearmReads()).toEqual([{ paymentId: "payment-1", paymentIntentId: { in: ["pi_old_price"] }, ...WILL_NOT_FINISH }]);
         expect(mocks.paymentRecoveryOperationUpdateMany).toHaveBeenCalledWith({
-          where: { id: "op-dead", ...dead },
+          where: { id: "op-dead", ...WILL_NOT_FINISH },
           data: {
             status: PaymentRecoveryOperationStatus.PENDING,
             attempts: 0,

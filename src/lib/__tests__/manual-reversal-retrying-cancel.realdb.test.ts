@@ -14,12 +14,15 @@
  * The cases below also pin the cases a remembered list cannot see: an edit on
  * the PAID booking sharing the settle's cancel row, a settle recorded before
  * #4320, and a capture whose hand-off lands while the reversal is running.
- * A cancellation the runner gave up on, on an intent the reversal condemns, is
- * re-armed and cancels once Stripe is back. An ADDITIONAL intent's cases (the
- * live ask a covering settle's mirror rebuild hid among them) are pinned in the
- * unit suite only: an edit on a cash-paid booking asks no card top-up, and no
- * real writer presents the extra's coverage question on a settle that can
- * complete (`INV-PAY-058`), so none reaches one on a booking a reversal accepts.
+ * A cancellation the runner will not finish (given up, or on its last attempt
+ * while the reversal runs), on an intent the reversal condemns or the settle
+ * adopted, is re-armed and cancels once Stripe is back. An ADDITIONAL intent's
+ * cases (the live ask a covering settle's mirror rebuild hid, and the cash row
+ * the reversal stamps so the mirror reads that ask once paid, #4355) are pinned
+ * in the unit suites only: an edit on a cash-paid booking asks no card top-up,
+ * and no real writer presents the extra's coverage question on a settle that
+ * can complete (`INV-PAY-058`), so none reaches one on a booking a reversal
+ * accepts.
  *
  * EVERY STEP IS THE REAL CODE: the pay step is the `create-payment-intent`
  * route, the confirm is the `confirm-payment` route, mark-paid and its reversal
@@ -31,7 +34,8 @@
  * `@/lib/auth` double. The only state moved by hand is a row's `nextRetryAt`,
  * brought back to now as the passing of its backoff would, and, for the
  * pre-#4320 settle, the adopted list taken off its audit row as that code
- * never wrote it.
+ * never wrote it. One Stripe cancel is held mid-call, to land the reversal
+ * inside a worker's last attempt.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -366,6 +370,13 @@ async function drainRecovery(): Promise<void> {
   throw new Error("recovery did not settle in six passes");
 }
 
+/** A promise the test resolves by hand. */
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => (resolve = done));
+  return { promise, resolve };
+}
+
 /** What the booking says, against what Stripe holds. */
 async function money() {
   const booking = await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { status: true } });
@@ -649,6 +660,85 @@ async function money() {
     stripe.down = false;
     await drainRecovery();
     expect(stripe.intents.get(oldPrice)!.status).toBe("canceled");
+    expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
+    expect(stripe.refunds).toEqual([]);
+  });
+
+  it("MUTATION: a condemned intent's cancellation on its last attempt while the reversal runs is re-armed; the worker's failure cannot kill it, and it cancels once Stripe is back", async () => {
+    const oldPrice = await mintOnPayStep();
+    stripe.down = true;
+    await markPaid();
+    await addGuest("Later");
+    // The doors' own immediate attempts count too: run the worker up to one short of the ceiling.
+    while ((await cancelRow(oldPrice))!.attempts < 4) await runCancelWorker(oldPrice);
+    expect(await cancelRow(oldPrice)).toMatchObject({ status: PaymentRecoveryOperationStatus.FAILED, attempts: 4, nextRetryAt: expect.any(Date) });
+
+    // The fifth and last attempt reaches Stripe's cancel and hangs there.
+    const atStripe = deferred();
+    const answer = deferred();
+    stripeRaceHooks.cancel = async () => {
+      atStripe.resolve();
+      await answer.promise;
+      throw new Error("fake Stripe: connection reset");
+    };
+    const lastAttempt = runCancelWorker(oldPrice);
+    let outcome: unknown;
+    try {
+      await atStripe.promise;
+      const held = await cancelRow(oldPrice);
+      expect(held).toMatchObject({ status: PaymentRecoveryOperationStatus.PROCESSING, attempts: 5 });
+
+      await reverse();
+      expect(await cancelRow(oldPrice)).toMatchObject({ id: held!.id, status: PaymentRecoveryOperationStatus.PENDING, attempts: 0 });
+      const audit = await prisma.auditLog.findFirstOrThrow({
+        where: { action: "booking-payment.manual-payment.mark-unpaid", targetId: BOOKING_ID },
+        select: { metadata: true },
+      });
+      expect(audit.metadata).toMatchObject({ stillCancelledPaymentIntentIds: [oldPrice], rearmedRecoveryOperationIds: [held!.id] });
+    } finally {
+      answer.resolve();
+      outcome = await lastAttempt;
+    }
+    // The worker's failure write is fenced on the attempt it claimed: it misses the re-armed row.
+    expect(outcome).toBe("failed");
+    expect(await cancelRow(oldPrice)).toMatchObject({ status: PaymentRecoveryOperationStatus.PENDING, attempts: 0, nextRetryAt: expect.any(Date) });
+
+    installStripe();
+    stripe.down = false;
+    await drainRecovery();
+    expect(stripe.intents.get(oldPrice)!.status).toBe("canceled");
+    expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
+    expect(stripe.refunds).toEqual([]);
+  });
+
+  it("MUTATION: an intent the settle adopted, whose cancellation gave up during the outage, is re-armed by the reversal and cancels once Stripe is back", async () => {
+    const superseded = await mintOnPayStep();
+    stripe.down = true;
+    // The edit's supersede queues the cancel; the outage outlasts every retry.
+    await editAwayAndBack();
+    for (let attempt = 0; attempt < 6; attempt += 1) await runCancelWorker(superseded);
+    const dead = await cancelRow(superseded);
+    expect(dead).toMatchObject({ status: PaymentRecoveryOperationStatus.FAILED, nextRetryAt: null, attempts: 5 });
+    // The settle finds that cancellation already queued: adopted, not minted.
+    await markPaid();
+    const settleAudit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "booking-payment.manual-payment.mark-paid", targetId: BOOKING_ID },
+      select: { metadata: true },
+    });
+    expect(settleAudit.metadata).toMatchObject({ adoptedCancelPaymentIntentIds: [superseded] });
+
+    // At the price the restored booking owes, so only the adoption keeps it cancelled.
+    await reverse();
+    expect(await cancelRow(superseded)).toMatchObject({ id: dead!.id, status: PaymentRecoveryOperationStatus.PENDING, attempts: 0 });
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "booking-payment.manual-payment.mark-unpaid", targetId: BOOKING_ID },
+      select: { metadata: true },
+    });
+    expect(audit.metadata).toMatchObject({ stillCancelledPaymentIntentIds: [superseded], rearmedRecoveryOperationIds: [dead!.id] });
+
+    stripe.down = false;
+    await drainRecovery();
+    expect(stripe.intents.get(superseded)!.status).toBe("canceled");
     expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
     expect(stripe.refunds).toEqual([]);
   });

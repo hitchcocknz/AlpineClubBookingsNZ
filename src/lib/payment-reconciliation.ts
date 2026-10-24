@@ -2144,6 +2144,7 @@ const MANUAL_MARK_PAID_ADDITIONAL_AUDIT_ACTION =
  * for the same reason as the audit action above: two writers and one reader.
  */
 const MANUAL_MARK_PAID_ADDITIONAL_REASON = "manual_mark_paid_additional";
+const MANUAL_MARK_PAID_ADDITIONAL_REVERSED_REASON = "manual_mark_paid_additional_reversed";
 
 /**
  * Read `clearedCreditElectionCents` back off a mark-paid audit row's metadata.
@@ -2701,7 +2702,7 @@ export async function reverseManualBookingPayment({
         },
         data: {
           status: PaymentStatus.FAILED,
-          reason: "manual_mark_paid_additional_reversed",
+          reason: MANUAL_MARK_PAID_ADDITIONAL_REVERSED_REASON,
         },
       });
 
@@ -2721,7 +2722,7 @@ export async function reverseManualBookingPayment({
     // the supersede rule is re-applied to it, and the live superseded-intent
     // rows of every intent it can still be paid with are DELETED (#4320).
     // See `withdrawManualSettlementIntentCancellations`.
-    const { withdrawn: doomedOperations, stillCancelledIntentIds, rearmed } =
+    const { withdrawn: doomedOperations, stillCancelledIntentIds, rearmed, liveAdditionalAsk } =
       await withdrawManualSettlementIntentCancellations(tx, {
         booking,
         paymentId: payment.id,
@@ -2729,6 +2730,32 @@ export async function reverseManualBookingPayment({
         restoredAdditionalAmountCents,
         settleAuditMetadata: lastManualSettleAudit?.metadata,
       });
+    // #4320 / #4355: the extra is owed again and a card ask for it stands. The
+    // reversed cash row is newer than that ask, and the mirror is rebuilt from
+    // the newest ADDITIONAL row an officer has not withdrawn, so it would read
+    // the extra FAILED with no pointer even after the member paid the ask. The
+    // cash row is stamped withdrawn, which the rebuild reads past (`INV-ADDPAY-040`),
+    // and the pointer is put back to the ask. With no live ask the cash row
+    // stays the mirror's anchor: the extra reads owed, with no card door.
+    const restoredAdditionalPaymentIntentId =
+      restoredAdditionalAmountCents !== null ? liveAdditionalAsk : null;
+    if (restoredAdditionalPaymentIntentId !== null) {
+      await tx.paymentTransaction.updateMany({
+        where: {
+          paymentId: payment.id,
+          kind: PaymentTransactionKind.ADDITIONAL,
+          source: PaymentSource.INTERNET_BANKING,
+          status: PaymentStatus.FAILED,
+          reason: MANUAL_MARK_PAID_ADDITIONAL_REVERSED_REASON,
+          withdrawnAt: null,
+        },
+        data: { withdrawnAt: new Date() },
+      });
+      await tx.payment.updateMany({
+        where: { id: payment.id, additionalPaymentIntentId: null },
+        data: { additionalPaymentIntentId: restoredAdditionalPaymentIntentId },
+      });
+    }
 
     // #3581: the reversal flipped the manual rows from SUCCEEDED to FAILED
     // above, so the cash lines the settle posted no longer hold. The same sync
@@ -2790,6 +2817,8 @@ export async function reverseManualBookingPayment({
           // queued afresh, or a dead one re-armed (its row id listed below).
           stillCancelledPaymentIntentIds: stillCancelledIntentIds,
           rearmedRecoveryOperationIds: rearmed,
+          // #4320 / #4355: the card ask the restored extra's mirror names again.
+          restoredAdditionalPaymentIntentId,
           clearedInternetBankingHold: clearInternetBankingHold,
           // #2265 (#2262 door 3). The member's credit election, put back on the
           // booking by this reversal — recorded BOTH ways, like the email

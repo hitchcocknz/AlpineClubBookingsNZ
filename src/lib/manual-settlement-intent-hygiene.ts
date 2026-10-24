@@ -9,7 +9,13 @@
  * Both run inside the caller's transaction, under its locks (global lock(1),
  * the lodge key and the Payment row); neither calls a provider.
  */
-import { PaymentRecoveryOperationType, PaymentSource, PaymentTransactionKind, type Prisma } from "@prisma/client";
+import {
+  PaymentRecoveryOperationStatus,
+  PaymentRecoveryOperationType,
+  PaymentSource,
+  PaymentTransactionKind,
+  type Prisma,
+} from "@prisma/client";
 import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import { bookingWorthCents } from "@/lib/booking-payment-state";
 import {
@@ -17,7 +23,11 @@ import {
   queueSupersededPrimaryIntentCancellations,
 } from "@/lib/booking-payment-cleanup";
 import { enqueuePaymentIntentCancellationRecovery } from "@/lib/payment-recovery";
-import { PAYMENT_RECOVERY_EXHAUSTED_WHERE, rearmedPaymentRecoveryOperationData } from "@/lib/payment-recovery-constants";
+import {
+  MAX_PAYMENT_RECOVERY_ATTEMPTS,
+  PAYMENT_RECOVERY_EXHAUSTED_WHERE,
+  rearmedPaymentRecoveryOperationData,
+} from "@/lib/payment-recovery-constants";
 import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { buildPaymentIntentCancelRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
@@ -188,8 +198,9 @@ function readAdoptedCancelIntentIds(metadata: Prisma.JsonValue | null | undefine
  * reversal's transaction, after it has restored the booking: re-apply the
  * supersede rule to the restored booking, then delete the live
  * superseded-intent rows of every intent that booking can still be paid with.
- * Returns the rows it deleted, as it read them, for the audit trail, and the
- * intents still being cancelled.
+ * Returns the rows it deleted, as it read them, for the audit trail, the
+ * intents still being cancelled, the rows it re-armed, and the extra's live
+ * ask (the reversal restores the mirror to it).
  *
  * DERIVED, NOT REMEMBERED. Which cancellations the settle "owned" cannot be
  * read off the rows: the cancel key is shared, so an edit on the PAID booking,
@@ -201,8 +212,11 @@ function readAdoptedCancelIntentIds(metadata: Prisma.JsonValue | null | undefine
  * - a PRIMARY intent is stale unless its amount is what the booking owes
  *   (`readBookingAmountOwed`, the figure the pay step mints at), the #1161
  *   rule (`queueSupersededPrimaryIntentCancellations`). A saved-card charge
- *   attempt's row is judged against the figure its minters charge instead,
- *   the booking's full worth (`bookingWorthCents`, #3864), not the owed amount;
+ *   attempt's row is judged against the booking's full worth instead
+ *   (`bookingWorthCents`): the figure the cron charges (#3750) and the one the
+ *   capture path accepts (#3864). The member's and the officer's saved-card
+ *   routes charge the bare price, which is the worth unless the booking
+ *   carries a change fee; an attempt of theirs on such a booking reads stale;
  * - an ADDITIONAL intent is stale unless it is the payment's live ask
  *   (`additionalPaymentIntentId`, the one pointer every consumer honours), the
  *   #3340 rule (`queueSupersededAdditionalIntentCancellationRows`). A settle
@@ -213,12 +227,14 @@ function readAdoptedCancelIntentIds(metadata: Prisma.JsonValue | null | undefine
  *
  * Both rules run here first, so a stale intent keeps or regains a live
  * cancellation (a fresh PENDING row where it had none; an existing row keeps
- * its status, and a dead one is re-armed: `rearmDeadIntentCancellations`).
- * Then every live row is withdrawn whose intent is a live card
- * intent on the payment that neither rule condemned and the settle did not
- * adopt (`readAdoptedCancelIntentIds`). A row on an intent the ledger already
- * retired (FAILED, withdrawn) is never withdrawn: no restored state makes that
- * intent payable, and its row is the only thing still cancelling it at Stripe.
+ * its status). The settle's adopted intents (`readAdoptedCancelIntentIds`)
+ * keep theirs too. A cancellation of either kind the runner will not finish -
+ * given up, or on its last attempt - is re-armed
+ * (`rearmDeadIntentCancellations`). Then every live row is withdrawn whose
+ * intent is a live card intent on the payment that no rule condemned and the
+ * settle did not adopt. A row on an intent the ledger already retired (FAILED,
+ * withdrawn) is never withdrawn: no restored state makes that intent payable,
+ * and its row is the only thing still cancelling it at Stripe.
  */
 export async function withdrawManualSettlementIntentCancellations(
   tx: Prisma.TransactionClient,
@@ -258,11 +274,15 @@ export async function withdrawManualSettlementIntentCancellations(
     newPaymentIntentId: liveAsk,
     store: tx,
   });
+  // Condemned by a rule above, or adopted by the settle: each keeps a
+  // cancellation the runner will take.
   const stillCancelledIntentIds = [
-    ...new Set([...stalePrimary, ...staleAdditional].map((superseded) => superseded.paymentIntentId)),
+    ...new Set([
+      ...[...stalePrimary, ...staleAdditional].map((superseded) => superseded.paymentIntentId),
+      ...readAdoptedCancelIntentIds(settleAuditMetadata),
+    ]),
   ];
   const rearmed = await rearmDeadIntentCancellations(tx, paymentId, stillCancelledIntentIds);
-  const kept = [...stillCancelledIntentIds, ...readAdoptedCancelIntentIds(settleAuditMetadata)];
 
   // The intents the restored booking can be paid with: live card intents on
   // the payment that no rule above condemned.
@@ -271,7 +291,7 @@ export async function withdrawManualSettlementIntentCancellations(
       paymentId,
       source: PaymentSource.STRIPE,
       status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
-      stripePaymentIntentId: { not: null, notIn: kept },
+      stripePaymentIntentId: { not: null, notIn: stillCancelledIntentIds },
     },
     select: { stripePaymentIntentId: true },
   });
@@ -331,7 +351,7 @@ export async function withdrawManualSettlementIntentCancellations(
     });
     if (deleted.count === 1) withdrawn.push(operation);
   }
-  return { withdrawn, stillCancelledIntentIds, rearmed };
+  return { withdrawn, stillCancelledIntentIds, rearmed, liveAdditionalAsk: liveAsk };
 }
 
 /**
@@ -356,15 +376,22 @@ async function readRestoredAdditionalAsk(
 }
 
 /**
- * A condemned intent's cancellation only cancels if the runner will claim it
- * again (#4320). The enqueue upserts on the shared key and never moves an
- * existing row's status, so a row the runner gave up on (a Stripe outage
+ * A cancellation the reversal leaves standing only cancels if the runner will
+ * claim it again (#4320). The enqueue upserts on the shared key and never moves
+ * an existing row's status, so a row the runner gave up on (a Stripe outage
  * outlasting its retries) would stay dead while the reversal reported the
- * intent still being cancelled. Each such row is re-armed, fenced on the same
- * exhausted predicate (`PAYMENT_RECOVERY_EXHAUSTED_WHERE`: the runner's
- * terminal failure always lands at the attempt ceiling), and returned for the
- * audit trail. Cancelling an intent is idempotent at Stripe,
+ * intent still being cancelled. Each such row is re-armed, and so is one a
+ * worker holds on its last attempt (PROCESSING at the ceiling), whose failure
+ * would land dead. Each write is fenced on the read predicate, and the ids are
+ * returned for the audit trail. Cancelling an intent is idempotent at Stripe,
  * and a capture it meets is handed to the superseded refund as before.
+ *
+ * A worker still holding a re-armed row writes nothing wrong: its failure write
+ * is fenced on the attempt it claimed (`attempts`, `processingStartedAt` set),
+ * which the re-arm reset, so it matches nothing; its success write closes the
+ * row, which is true (the intent is cancelled, or its capture handed on); its
+ * hand-off re-claims a PENDING row as any webhook's does, and queues the refund
+ * by key, once.
  */
 async function rearmDeadIntentCancellations(
   tx: Prisma.TransactionClient,
@@ -372,12 +399,15 @@ async function rearmDeadIntentCancellations(
   paymentIntentIds: string[]
 ): Promise<string[]> {
   if (paymentIntentIds.length === 0) return [];
-  const dead = {
+  const willNotFinish = {
     type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
-    ...PAYMENT_RECOVERY_EXHAUSTED_WHERE,
+    OR: [
+      PAYMENT_RECOVERY_EXHAUSTED_WHERE,
+      { status: PaymentRecoveryOperationStatus.PROCESSING, attempts: { gte: MAX_PAYMENT_RECOVERY_ATTEMPTS } },
+    ],
   } satisfies Prisma.PaymentRecoveryOperationWhereInput;
   const rows = await tx.paymentRecoveryOperation.findMany({
-    where: { paymentId, paymentIntentId: { in: paymentIntentIds }, ...dead },
+    where: { paymentId, paymentIntentId: { in: paymentIntentIds }, ...willNotFinish },
     orderBy: { createdAt: "asc" },
     select: { id: true },
   });
@@ -385,7 +415,7 @@ async function rearmDeadIntentCancellations(
   const rearmed: string[] = [];
   for (const row of rows) {
     const reopened = await tx.paymentRecoveryOperation.updateMany({
-      where: { id: row.id, ...dead },
+      where: { id: row.id, ...willNotFinish },
       data: rearmedPaymentRecoveryOperationData(now),
     });
     if (reopened.count === 1) rearmed.push(row.id);
