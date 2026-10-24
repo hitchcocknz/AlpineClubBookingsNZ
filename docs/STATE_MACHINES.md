@@ -3691,6 +3691,9 @@ change's card capture kept, nothing parked on its intent, primary invoice
   the capture (the primary's payment, the change's own supplementary invoice,
   or one naming or covering it); a replay, or the webhook and the confirm
   route at once, find it (already-released)
+  supplementary enqueue for the change (or naming the capture), under its
+    anchor lock: raised unpaid where a capture of it has a receipt linked,
+    RUNNING or carrying a stored decision
   gap check: pays the gap invoice only from cash no receipt row claims and no
     supplementary invoice records, and names the captures it took, with the
     cents, on its payload (coveredPaymentIntentIds, coveredCaptureCents)
@@ -3710,8 +3713,10 @@ change's card capture kept, nothing parked on its intent, primary invoice
     no room on the primary and no gap invoice -> #3980's re-check:
       gap queued -> busy -> back to PENDING; a review task -> refused
     room on that target, else the primary (the capture less any part another
-      writer recorded) -> decision
-      stored on the row -> Xero payment (or an earlier run's, found by
+      writer recorded) -> decision stored under the change's anchor lock after
+      who records it is read again there (another recorder by now -> SUCCEEDED,
+      stood down; the target moved -> busy) ->
+      Xero payment (or an earlier run's, found by
       reference) -> SUCCEEDED, ADDITIONAL_CAPTURE_PAYMENT link; cash left over
       -> officer alerted; a refund note named another invoice -> flagged
     not captured, Xero unreadable, nothing due, gap invoice not in Xero, the

@@ -1289,8 +1289,11 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // change its capture pays for (else the booking), holding nothing, for
   // find-by-key -> create of one outbox row; and its worker's planning gate
   // (`passPlanningGate`) calls it on the booking, holding nothing, for
-  // check-stamp -> stamp, with every Xero call after it commits. No new raw
-  // site, no new key.
+  // check-stamp -> stamp, with every Xero call after it commits. Round 6: its
+  // plan store (on the change, else the booking) and its unsent-invoice switch
+  // (on that invoice's anchor) each take it alone in a short transaction of
+  // their own, and the supplementary enqueue reads the anchor's receipts under
+  // it (`anchorCaptureHasReceipt`). No new raw site, no new key, no nesting.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,
