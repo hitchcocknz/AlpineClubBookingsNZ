@@ -22,7 +22,7 @@ vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
     coverByRefund.get(where.OR[0]!.requestPayload!.equals) ?? 0,
 }));
 
-import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
+import { pairResendRecordedFirst, readFailedRefundsAnsweredBy, unmarkedResendSlicesFor, type ResendRow } from "@/lib/card-refund-resend-answer";
 
 const PAYMENT = "payment-1";
 const TXN = "txn-card";
@@ -215,5 +215,77 @@ describe("a card refund sent again for one Stripe failed later is paired by the 
     lateCaptures.clear();
     refunds[1] = refund("re_resent", "failed");
     expect((await answered("re_resent")).failedRefundIds).toEqual([]);
+  });
+});
+
+// #4312 round 8 (F1, F2): a re-send `charge.refunded` records before its slice is marked is known by the unmarked
+// re-send it could answer - its row's runner metadata, that slice's charge and amount, made after the row was raised.
+describe("a re-send charge.refunded records before its slice is marked (#4312 round 8)", () => {
+  const RAISED = new Date("2026-07-01T00:00:00.000Z");
+  const MADE = new Date("2026-07-02T00:00:00.000Z");
+  const DUPLICATE_PREFIX = "duplicate_capture_refund_booking-1_pi_dup";
+  const runnerMetadata = { bookingId: "booking-1", reason: "duplicate_capture" };
+  /** A duplicate capture's row whose $40 slice was re-planned for `re_failed`; `dead` when its retries are spent. */
+  const resendRow = (id: string, { dead = false, slice = {} as Record<string, unknown>, status = dead ? "FAILED" : "PENDING" } = {}): ResendRow => ({
+    id, type: "REFUND_BOOKING_MODIFICATION", status, attempts: dead ? 5 : 1, idempotencyKey: `payment_recovery_modification_refund_${id}`,
+    stripeKeyPrefix: DUPLICATE_PREFIX, bookingId: "booking-1", createdAt: RAISED, succeededAt: null,
+    allocationPlan: [{ paymentTransactionId: TXN, amountCents: 4_000, stripeKeySuffix: "refused1", failedRefundIds: ["re_failed"], ...slice }],
+  });
+  const recorded = { stripeRefundId: "re_s", paymentTransactionId: TXN, amountCents: 4_000, createdAt: MADE, stripeCreatedAt: MADE, metadata: runnerMetadata };
+
+  it("MUTATION: only an unmarked re-send of a row whose runner sent exactly this metadata, on its charge, for its amount, raised before it", () => {
+    const row1 = resendRow("row-1");
+    expect(unmarkedResendSlicesFor([row1], recorded)).toEqual([{ operation: row1, sliceIndex: 0 }]);
+    // A Stripe dashboard refund, or another door's, carries other metadata.
+    expect(unmarkedResendSlicesFor([row1], { ...recorded, metadata: {} })).toEqual([]);
+    expect(unmarkedResendSlicesFor([row1], { ...recorded, metadata: { ...runnerMetadata, reason: "date_change_price_decrease" } })).toEqual([]);
+    expect(unmarkedResendSlicesFor([row1], { ...recorded, metadata: { ...runnerMetadata, extra: "x" } })).toEqual([]);
+    expect(unmarkedResendSlicesFor([row1], { ...recorded, paymentTransactionId: "txn-other" })).toEqual([]);
+    expect(unmarkedResendSlicesFor([row1], { ...recorded, amountCents: 3_999 })).toEqual([]);
+    expect(unmarkedResendSlicesFor([resendRow("row-1", { slice: { madeRefundId: "re_other" } })], recorded)).toEqual([]);
+    expect(unmarkedResendSlicesFor([resendRow("row-1", { slice: { failedRefundIds: undefined } })], recorded)).toEqual([]);
+    expect(unmarkedResendSlicesFor([resendRow("row-1", { status: "SUCCEEDED" })], recorded)).toEqual([]);
+    expect(unmarkedResendSlicesFor([{ ...row1, createdAt: new Date(MADE.getTime() + 1_000) }], recorded)).toEqual([]);
+  });
+
+  function store(operations: ResendRow[], refund: { paymentTransactionId: string | null; status: string } | null = { paymentTransactionId: TXN, status: "succeeded" }, written = 1) {
+    const updateMany = vi.fn(async () => ({ count: written }));
+    return {
+      updateMany,
+      db: {
+        paymentRefund: { findFirst: async () => (refund ? { ...refund, amountCents: 4_000, createdAt: MADE, stripeCreatedAt: MADE } : null) },
+        paymentRecoveryOperation: { findMany: async () => operations, updateMany },
+      } as never,
+    };
+  }
+  const pair = (db: never) => pairResendRecordedFirst(PAYMENT, { id: "re_s", metadata: runnerMetadata }, db);
+
+  it("MUTATION (F1): a row that will replay its slice is left to: nothing is written", async () => {
+    const { db, updateMany } = store([resendRow("row-1")]);
+    expect(await pair(db)).toBe("replay");
+    expect(updateMany).not.toHaveBeenCalled();
+    // Mid-attempt on its last try is still its replay's to mark.
+    const processing = store([{ ...resendRow("row-1", { status: "PROCESSING" }), attempts: 5 }]);
+    expect(await pair(processing.db)).toBe("replay");
+  });
+
+  it("MUTATION (F2): a dead row's one such re-send is marked, compare-and-set on the plan, status and attempts read", async () => {
+    const dead = resendRow("row-1", { dead: true });
+    const { db, updateMany } = store([dead]);
+    expect(await pair(db)).toBe("marked");
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: "row-1", status: "FAILED", attempts: 5, allocationPlan: { equals: dead.allocationPlan } },
+      data: { allocationPlan: [{ ...(dead.allocationPlan as object[])[0], madeRefundId: "re_s" }] },
+    });
+  });
+
+  it("a write in between leaves it to whoever wrote; several dead rows' re-sends are not guessed at; a refund not counted is none", async () => {
+    expect(await pair(store([resendRow("row-1", { dead: true })], undefined, 0).db)).toBe("replay");
+    const two = store([resendRow("row-1", { dead: true }), resendRow("row-2", { dead: true })]);
+    expect(await pair(two.db)).toBe("ambiguous");
+    expect(two.updateMany).not.toHaveBeenCalled();
+    expect(await pair(store([resendRow("row-1", { dead: true })], { paymentTransactionId: TXN, status: "failed" }).db)).toBe("none");
+    expect(await pair(store([resendRow("row-1", { dead: true })], null).db)).toBe("none");
+    expect(await pair(store([]).db)).toBe("none");
   });
 });

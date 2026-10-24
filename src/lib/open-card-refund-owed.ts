@@ -89,10 +89,13 @@ export function cardRefundSliceOwesFailedLaterRefund(slice: Pick<RefundAllocatio
 
 /**
  * #4104, #4312 (`INV-SSOT`): THE REFUNDS STRIPE FAILED LATER THAT ONE SLICE IS
- * SENT FOR - the one spelling of the two links #4104 keeps: every slice of a
- * row of its own (`card_refund_failed_later_<refund>`, the key names it) and a
- * re-planned slice's `failedRefundIds`. Empty for a slice sent for nothing that
- * failed.
+ * SENT FOR - the one spelling, per slice, of the two links #4104 keeps: every
+ * slice of a row of its own (`card_refund_failed_later_<refund>`, the key names
+ * it) and a re-planned slice's `failedRefundIds`. Empty for a slice sent for
+ * nothing that failed. Every per-slice reader asks it - the pairing, the mark,
+ * the failed-later owner and the paid-another-way cover. A question about the
+ * whole row (is it a row of its own, and so owed at its amount) reads the key
+ * itself (`cardRefundFailedLaterRefundId`).
  */
 export function cardRefundSliceFailedRefundIds(
   operation: { idempotencyKey: string },
@@ -331,7 +334,7 @@ function sliceTakes(slice: CardRefundSlice, refund: RecordedCardRefundRow, leftC
 }
 
 /** When Stripe made a refund: its own time where recorded, else when the app recorded it. */
-function stripeMadeAt(refund: RecordedCardRefundRow): Date {
+function stripeMadeAt(refund: Pick<RecordedCardRefundRow, "createdAt" | "stripeCreatedAt">): Date {
   return refund.stripeCreatedAt ?? refund.createdAt;
 }
 
@@ -342,7 +345,9 @@ function flooredToSecond(at: Date): number {
 
 /**
  * Whether an operation can take a refund: one MADE BY STRIPE at or after it
- * was raised and, once it closed, at or before its close.
+ * was raised and, once it closed, at or before its close. Also the window of a
+ * re-send `charge.refunded` records before its slice is marked
+ * (`unmarkedResendSlicesFor`, #4312 round 8).
  *
  * - One clock at both ends (#3924 round 7, money M3): the raised end reads
  *   Stripe's time too, against the raise floored to its second, so a refund
@@ -366,7 +371,10 @@ function flooredToSecond(at: Date): number {
  * one made in the second an operation was raised, just before it, reads as
  * made after it. A refund with no Stripe time is read at when the app recorded it.
  */
-function operationWindowTakes(operation: CardRefundOperationRow, refund: RecordedCardRefundRow): boolean {
+export function operationWindowTakes(
+  operation: Pick<CardRefundOperationRow, "createdAt" | "status" | "succeededAt">,
+  refund: Pick<RecordedCardRefundRow, "createdAt" | "stripeCreatedAt">,
+): boolean {
   if (flooredToSecond(operation.createdAt) > stripeMadeAt(refund).getTime()) return false;
   if (operation.status !== SUCCEEDED || operation.succeededAt === null) return true;
   return stripeMadeAt(refund).getTime() <= operation.succeededAt.getTime();

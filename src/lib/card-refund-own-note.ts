@@ -2,7 +2,7 @@ import { PaymentSource } from "@prisma/client";
 
 import { findAdditionalCaptureReceiptInvoiceId } from "@/lib/additional-capture-receipt-link";
 import { cardRefundDoorOf, cardRefundNoteCutoverSeconds, madeSinceCardRefundNoteCutover } from "@/lib/card-refund-own-note-share";
-import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
+import { pairResendRecordedFirst, readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
@@ -243,12 +243,15 @@ type SendNotingRefunds = <R extends { refunds: ReadonlyArray<MadeRefund> }>(call
  * - one the recovery replay sent again for refunds Stripe failed later: never
  *   the canonical delta, whose payment-wide gap would hand it another
  *   refund's share. Once the replay has marked the slice it sent with it, the
- *   one rule (`readAppRefundRule`) says whether it is noted on its own record;
- *   before then - Stripe's answer reached the webhook first - it is left to
- *   the replay, which marks the slice and asks when its retry reads the same
- *   refund back under the same key. A failed-later row's refund says so in
- *   its Stripe metadata (`CARD_REFUND_FAILED_LATER_REASON`); a re-planned
- *   slice's carries its row's, and is known by the mark alone;
+ *   one rule (`readAppRefundRule`) says whether it is noted on its own record.
+ *   Before then - Stripe's answer reached the webhook first - it is known by
+ *   the unmarked re-send it could answer (`pairResendRecordedFirst`, round
+ *   8): its row's runner metadata, that slice's charge and amount. A row that
+ *   will replay the slice is left to: the replay reads the same refund back
+ *   under the same key, marks the slice and asks. A dead row's one such slice
+ *   is marked here, and the rule applied. A failed-later row's refund also
+ *   says so in its Stripe metadata (`CARD_REFUND_FAILED_LATER_REASON`), and is
+ *   never the delta even when no unmarked slice is found;
  * - any other app door's: left in the delta, which is queued as before. On a
  *   bank transfer that is a duplicate capture's or a superseded intent's
  *   refund, of money Xero never received; a cancellation or an edit never
@@ -282,8 +285,13 @@ export async function queueWebhookCardRefundNotes(params: {
     if (!newly.has(refund.id) || !sinceCutover.has(refund.id)) continue;
     const door = cardRefundDoorOf(refund.metadata);
     if (door === "app") {
-      const rule = await readAppRefundRule(params.payment.id, refund.id);
-      if (rule === "delta" && refund.metadata?.reason !== CARD_REFUND_FAILED_LATER_REASON) continue;
+      let rule = await readAppRefundRule(params.payment.id, refund.id);
+      if (rule === "delta") {
+        // Round 8: a re-send recorded before its slice is marked - never the delta (`pairResendRecordedFirst`).
+        const resend = await pairResendRecordedFirst(params.payment.id, refund);
+        if (resend === "marked") rule = await readAppRefundRule(params.payment.id, refund.id);
+        else if (resend === "none" && refund.metadata?.reason !== CARD_REFUND_FAILED_LATER_REASON) continue;
+      }
       if (rule === "own") own.push(refund.id);
     } else if (door === "outside-app") {
       own.push(refund.id);

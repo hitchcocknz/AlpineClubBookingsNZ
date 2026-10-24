@@ -23,7 +23,7 @@ vi.mock("@/lib/xero-operation-outbox", () => ({ enqueueXeroRefundCreditNoteOpera
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({ noteLateCaptureRefunds: vi.fn() }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({ findLateCapturePaymentIntents: vi.fn(async () => new Set()) }));
 vi.mock("@/lib/additional-capture-receipt-link", () => ({ findAdditionalCaptureReceiptInvoiceId: vi.fn(async () => null) }));
-vi.mock("@/lib/card-refund-resend-answer", () => ({ readFailedRefundsAnsweredBy: vi.fn() }));
+vi.mock("@/lib/card-refund-resend-answer", () => ({ readFailedRefundsAnsweredBy: vi.fn(), pairResendRecordedFirst: vi.fn(async () => "none") }));
 vi.mock("@/lib/card-refund-own-note-share", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/card-refund-own-note-share")),
   cardRefundNoteCutoverSeconds: async () => null,
@@ -31,7 +31,7 @@ vi.mock("@/lib/card-refund-own-note-share", async (importOriginal) => ({
 
 import { CLUB_FORMAT_TEST } from "@/lib/__tests__/support/club-format-fixture";
 import { queueAnsweringRefundNotes, queueWebhookCardRefundNotes, replayNotingEachRefund } from "@/lib/card-refund-own-note";
-import { readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
+import { pairResendRecordedFirst, readFailedRefundsAnsweredBy } from "@/lib/card-refund-resend-answer";
 import { findAdditionalCaptureReceiptInvoiceId } from "@/lib/additional-capture-receipt-link";
 import { noteLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
@@ -155,6 +155,35 @@ describe("one rule for a re-send's own note: the replay and charge.refunded agre
   it("MUTATION: a failed-later row's re-send charge.refunded records before the replay marks it is left to the replay - never the canonical delta", async () => {
     answers({});
     expect(await bothWriters("re_s")).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 0 });
+  });
+
+  it("MUTATION (round 8, F1): a re-planned slice's re-send charge.refunded records first, under its row's own reason, is left to the replay - never the canonical delta", async () => {
+    answers({});
+    vi.mocked(pairResendRecordedFirst).mockResolvedValueOnce("replay");
+    expect(await bothWriters("re_s", appDoor("re_s", "duplicate_capture"))).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 0 });
+    expect(pairResendRecordedFirst).toHaveBeenLastCalledWith("payment-1", appDoor("re_s", "duplicate_capture"));
+  });
+
+  it("MUTATION (round 8, F2): a dead row's re-send charge.refunded records first is marked there, and the one rule then notes it", async () => {
+    // Before the mark the record pairs it with nothing; the pairing marks it, and the rule is read again.
+    let marked = false;
+    vi.mocked(readFailedRefundsAnsweredBy).mockImplementation(async () =>
+      marked ? { failedRefundIds: ["re_failed"], ownNoted: true, coverCents: 1_000 } : { failedRefundIds: [], ownNoted: false, coverCents: 0 },
+    );
+    vi.mocked(pairResendRecordedFirst).mockImplementationOnce(async () => {
+      marked = true;
+      return "marked";
+    });
+    vi.mocked(enqueueXeroRefundCreditNoteOperation).mockReset().mockResolvedValue({ queueOperationId: "op" } as never);
+    await queueWebhookCardRefundNotes({ payment: { id: "payment-1", source: PaymentSource.INTERNET_BANKING }, deltaCents: 4_000, refunds: [appDoor("re_s", "duplicate_capture")], newlyCountedRefundIds: ["re_s"] });
+    const calls = vi.mocked(enqueueXeroRefundCreditNoteOperation).mock.calls;
+    expect(calls.map(([, cents, options]) => [cents, options?.cardRefundId])).toEqual([[4_000, "re_s"]]);
+  });
+
+  it("round 8: a re-send several dead rows could have sent is noted by nobody here - never the canonical delta", async () => {
+    answers({});
+    vi.mocked(pairResendRecordedFirst).mockResolvedValueOnce("ambiguous");
+    expect(await bothWriters("re_s", appDoor("re_s", "duplicate_capture"))).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 0 });
   });
 
   it("another app door's refund no slice was sent again for stays in the canonical delta, as before", async () => {

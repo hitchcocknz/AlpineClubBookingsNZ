@@ -502,32 +502,71 @@ async function moveRefusedSlices(
 }
 
 /**
- * #4312 round 7 (#4104, `INV-ADDPAY-045`): ON A REPLAY STRIPE ANSWERED IN
- * FULL, EACH SLICE SENT FOR A REFUND STRIPE FAILED LATER
- * (`cardRefundSliceFailedRefundIds`) IS MARKED WITH THE REFUND IT MADE
- * (`madeRefundId`) - the one record that pairs a re-send with its failures
- * (`cardRefundFailuresAnsweredBy`), so it never depends on which refund of the
- * same amount happens to be recorded first. An attempt Stripe refused or that
- * threw part-way marks its made slices already (`planAfterAttempt`). Any other
- * slice is left as it was, so the owed figure reads the rest of the plan
- * exactly as before. Written on the attempt this worker holds, as a refusal is
- * (`moveRefusedSlices`): a lost fence means another worker holds the row now,
- * and its replay - answered by Stripe with the same refund under the same key -
- * marks it.
+ * #4312 rounds 7-8 (#4104, `INV-ADDPAY-045`): EACH SLICE SENT FOR A REFUND
+ * STRIPE FAILED LATER (`cardRefundSliceFailedRefundIds`) THAT STRIPE MADE ON
+ * THIS ATTEMPT IS MARKED WITH THE REFUND IT MADE (`madeRefundId`) - the one
+ * record that pairs a re-send with its failures (`cardRefundFailuresAnsweredBy`),
+ * so it never depends on which refund of the same amount happens to be recorded
+ * first. Only the mark is written: any other slice, and a refused slice's key,
+ * stay as read.
+ *
+ * WHAT THE MARK CHANGES IN THE OWED FIGURE (F4). A marked slice takes its own
+ * refund before the newest-row-first matching (`attributeRecordedRefunds`), so
+ * the re-send fills the row that sent it - never a newer row's unsent slice of
+ * the same charge and amount, which now reads as owed, as it is. That is a
+ * correction. Every other slice is matched as before, from a pool without the
+ * re-send.
+ *
+ * Compare-and-set on the plan this attempt sent from (`onPlanWhere`), never on
+ * its hold of the row (round 8). Stripe's answer under the slice's key is a
+ * fact whoever holds the row now: a reaper that moved a stalled attempt to
+ * FAILED - due again or dead - leaves the plan as it was, so the late attempt's
+ * mark still lands, and its replay's notes (`replayNotingEachRefund`) read it.
+ * A plan written in between - a failure that re-planned the slice onto its next
+ * key, or another attempt that read the same answer and marked it first - fails
+ * the write: the plan there is the record then, and a re-planned slice is
+ * marked by the replay that sends it next (or, on a dead row, paid by the
+ * treasurer). Never a status, and no lock: one guarded single-row write, as the
+ * failed-later re-plan's own (`INV-LOCK-001`).
  */
 async function markResentSlices(
-  operation: Pick<PaymentRecoveryOperation, "id" | "processingStartedAt" | "idempotencyKey">,
+  operation: Pick<PaymentRecoveryOperation, "id" | "idempotencyKey">,
   plan: ReadonlyArray<RefundAllocationSlice>,
   answered: ReadonlyArray<AnsweredRefund>,
 ): Promise<void> {
-  const resent = plan.map((slice) => cardRefundSliceFailedRefundIds(operation, slice).length > 0);
-  if (!resent.includes(true)) return;
   const made = planAfterAttempt(plan, answered);
-  const marked = plan.map((slice, index) => (resent[index] ? (made[index] ?? slice) : slice));
+  const marked = plan.map((slice, index) => {
+    const madeRefundId = made[index]?.madeRefundId;
+    if (slice.madeRefundId || !madeRefundId || cardRefundSliceFailedRefundIds(operation, slice).length === 0) return slice;
+    return { ...slice, madeRefundId };
+  });
   if (marked.every((slice, index) => slice === plan[index])) return;
-  if (!(await moveRefusedSlices(operation, marked))) {
-    logger.warn({ operationId: operation.id }, "A card refund re-send's slice was not marked made: another attempt holds the row and marks it (#4312)");
+  const written = await prisma.paymentRecoveryOperation.updateMany({
+    where: { id: operation.id, ...onPlanWhere(plan) },
+    data: { allocationPlan: marked as unknown as Prisma.InputJsonValue },
+  });
+  if (written.count !== 1) {
+    logger.warn(
+      { operationId: operation.id },
+      "A card refund re-send's slice was not marked made: the row's plan changed since this attempt read it - another attempt marked it, or a failure re-planned it for its next replay to mark (#4312)",
+    );
   }
+}
+
+/**
+ * A refusal's re-plan (`moveRefusedSlices`) that lost its fence - a reaper took
+ * the row from this attempt - still marks the re-sends Stripe made beside it
+ * (`markResentSlices`, round 8): the move is the holder's to write again, the
+ * mark is a fact.
+ */
+async function moveRefusedSlicesOrMarkResent(
+  operation: Pick<PaymentRecoveryOperation, "id" | "processingStartedAt" | "idempotencyKey">,
+  plan: ReadonlyArray<RefundAllocationSlice>,
+  answered: ReadonlyArray<AnsweredRefund>,
+): Promise<boolean> {
+  const moved = await moveRefusedSlices(operation, planAfterAttempt(plan, answered));
+  if (!moved) await markResentSlices(operation, plan, answered);
+  return moved;
 }
 
 /**
@@ -577,7 +616,7 @@ export async function refundPlanOrRetryRefusals({
     // failure Stripe reports later is owed by this row by its refund id - while
     // the slice that threw keeps its key.
     const before = answersBeforeFailure(err);
-    if (before.length > 0) await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, before)), before);
+    if (before.length > 0) await alertIfFirst(await moveRefusedSlicesOrMarkResent(operation, plan, before), before);
     throw err;
   }
   const refused = refusedRefundSlices(answered);
@@ -585,6 +624,6 @@ export async function refundPlanOrRetryRefusals({
     await markResentSlices(operation, plan, answered);
     return plan[0]?.madeRefundId ?? answered[0]?.refundId ?? null;
   }
-  await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, answered)), answered);
+  await alertIfFirst(await moveRefusedSlicesOrMarkResent(operation, plan, answered), answered);
   throw new Error(refusedRefundMessage(refusedRefundCents(refused), format));
 }

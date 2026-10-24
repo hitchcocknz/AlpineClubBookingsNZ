@@ -528,8 +528,8 @@ describe("a slice's key generation, read from the refusals recorded for it (#410
 });
 
 // #4312 round 7 (#4104, `INV-ADDPAY-045`): a replay Stripe answered in full marks each slice it sent for a refund
-// Stripe failed later with the refund it made - the one record that pairs a re-send with its failures - on the
-// attempt it holds, and leaves every other slice as it was.
+// Stripe failed later with the refund it made - the one record that pairs a re-send with its failures - and leaves
+// every other slice as it was. Round 8: compare-and-set on the plan it sent from, never on its hold of the row.
 describe("a re-send's slice is marked made on success (#4312 round 7)", () => {
   const holding = (idempotencyKey: string) => ({ id: "op_1", idempotencyKey, bookingId: "b1", paymentIntentId: "pi_row", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") });
   const resent = { paymentTransactionId: "txn_a", amountCents: 1000, stripeKeySuffix: "refused1", failedRefundIds: ["re_failed"] };
@@ -538,7 +538,7 @@ describe("a re-send's slice is marked made on success (#4312 round 7)", () => {
 
   beforeEach(() => updateMany.mockReset().mockResolvedValue({ count: 1 }));
 
-  it("MUTATION: a re-planned slice is marked with its refund, fenced on the attempt; a slice sent for nothing that failed is not", async () => {
+  it("MUTATION: a re-planned slice is marked with its refund, on the plan it was sent from; a slice sent for nothing that failed is not", async () => {
     await expect(
       refundPlanOrRetryRefusals({
         operation: holding("refund_request_refund_rr_1"),
@@ -548,8 +548,50 @@ describe("a re-send's slice is marked made on success (#4312 round 7)", () => {
       }),
     ).resolves.toBe("re_resent");
     expect(updateMany).toHaveBeenCalledWith({
-      where: { id: "op_1", status: "PROCESSING", processingStartedAt: new Date("2026-06-20T00:00:00.000Z") },
+      where: { id: "op_1", allocationPlan: { equals: [resent, first] } },
       data: { allocationPlan: [{ ...resent, madeRefundId: "re_resent" }, first] },
+    });
+  });
+
+  it("MUTATION (round 8, F2): the mark never names the attempt's hold - a reaper that moved the row on leaves it to land", async () => {
+    await refundPlanOrRetryRefusals({
+      operation: holding("refund_request_refund_rr_1"),
+      plan: [resent],
+      format: CLUB_FORMAT_TEST,
+      refund: async () => ({ refunds: [made(resent, "re_resent")] }),
+    });
+    const where = (updateMany.mock.calls[0]?.[0] as { where: Record<string, unknown> }).where;
+    expect(Object.keys(where).sort()).toEqual(["allocationPlan", "id"]);
+  });
+
+  it("round 8: a mark whose plan changed in between writes nothing and never fails the replay", async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+    await expect(
+      refundPlanOrRetryRefusals({
+        operation: holding("refund_request_refund_rr_1"),
+        plan: [resent],
+        format: CLUB_FORMAT_TEST,
+        refund: async () => ({ refunds: [made(resent, "re_resent")] }),
+      }),
+    ).resolves.toBe("re_resent");
+    expect(updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("MUTATION (round 8, F2): a refusal's re-plan that lost its hold still marks the re-send Stripe made beside it, and moves no key", async () => {
+    const refusedSlice = { paymentTransactionId: "txn_b", amountCents: 500 };
+    updateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    await expect(
+      refundPlanOrRetryRefusals({
+        operation: holding("refund_request_refund_rr_1"),
+        plan: [resent, refusedSlice],
+        format: CLUB_FORMAT_TEST,
+        refund: async () => ({ refunds: [made(resent, "re_resent"), { status: "failed", slice: refusedSlice, refundId: "re_refused", paymentIntentId: "pi_a" }] }),
+      }),
+    ).rejects.toThrow();
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    expect(updateMany.mock.calls[1]?.[0]).toEqual({
+      where: { id: "op_1", allocationPlan: { equals: [resent, refusedSlice] } },
+      data: { allocationPlan: [{ ...resent, madeRefundId: "re_resent" }, refusedSlice] },
     });
   });
 
