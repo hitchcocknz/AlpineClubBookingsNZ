@@ -5,7 +5,7 @@
   recorded and make the note look live again. The app then counted a voided
   note as covering the refund. On a bank transfer, the sync could also put the
   voided note's amount back into the payment's refunded total. It could also
-  record the note's old refund payments.
+  record the note's old allocations and refund payments.
 
   Every reading now carries Xero's own last-updated time, and an older reading
   never overwrites a newer one. A voided note is never made live again: Xero

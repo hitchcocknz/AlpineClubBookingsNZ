@@ -1151,9 +1151,9 @@ counts the kept void, or the newer live figures, so a bank-transfer total that a
 void lowered is not raised back by an older reading. Before #4288 it was: a
 reconcile holding a live reading recounted the voided note's amount. A card
 payment's total could not move either way (Stripe-truth, `INV-ADDPAY-021`). A
-stale reading's refund payments are not linked either. The link keeps no payment
-list to reconcile them against, and the newer snapshot's own writer records its
-payments.
+stale reading's allocations and refund payments are not linked either. The link
+keeps neither list to reconcile them against, and the newer snapshot's own
+writer records its own.
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,
