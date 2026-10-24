@@ -136,14 +136,16 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
 
   // #4288: how each payment's own refund-note link write judged this reading.
   // A stale one (a void, or a newer snapshot, kept over it) is never acted on
-  // below: the recount reads the kept snapshot, and its refund payments are
-  // not written.
+  // below: the recount reads the kept snapshot, and neither its allocations nor
+  // its refund payments are written. Both are as old as its status; the link
+  // keeps neither list to reconcile them against, and the newer snapshot's own
+  // writer records its own.
   const judgedByPaymentId = new Map<string, ReturnType<typeof judgedRefundNoteReading>>();
+  const isRefundNoteLink = (link: XeroObjectLinkInput) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE";
+  const isStaleRefundNoteLink = (link: XeroObjectLinkInput) => isRefundNoteLink(link) && judgedByPaymentId.get(link.localId)?.stale === true;
   const writeCreditNoteLink = async (link: XeroObjectLinkInput) => {
     const written = await upsertXeroObjectLink(link);
-    if (link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE") {
-      judgedByPaymentId.set(link.localId, judgedRefundNoteReading(link.metadata, written));
-    }
+    if (isRefundNoteLink(link)) judgedByPaymentId.set(link.localId, judgedRefundNoteReading(link.metadata, written));
   };
   for (const link of creditNoteLinks) {
     await writeCreditNoteLink(link);
@@ -284,7 +286,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
 
   const allocationLinks = dedupeXeroObjectLinks(
     allocationTargets.flatMap(({ invoiceId, amountCents }) => {
-      return resolvedCreditNoteLinks.map(
+      return resolvedCreditNoteLinks.filter((link) => !isStaleRefundNoteLink(link)).map(
         (link) =>
           ({
             localModel: link.localModel,
@@ -385,10 +387,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       }
 
       return resolvedCreditNoteLinks
-        // #4288: a stale reading's payments are as old as its status. The
-        // newer snapshot's own writer records its payments; the link keeps no
-        // payment list to reconcile these against.
-        .filter((link) => link.role === "REFUND_CREDIT_NOTE" && !(link.localModel === "Payment" && judgedByPaymentId.get(link.localId)?.stale))
+        .filter((link) => link.role === "REFUND_CREDIT_NOTE" && !isStaleRefundNoteLink(link))
         .map(
           (link) =>
             ({

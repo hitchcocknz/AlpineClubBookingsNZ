@@ -57,10 +57,10 @@ const PAYMENT: Record<Case, string> = {
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 
 /** A Xero reading of `NOTE`, as the SDK returns it. */
-function reading(status: string, updatedAt: string, payments: Array<Record<string, unknown>> = []) {
+function reading(status: string, updatedAt: string, payments: Array<Record<string, unknown>> = [], allocations: Array<Record<string, unknown>> = []) {
   return {
     creditNoteID: NOTE, creditNoteNumber: "CN-4288", status, total: 100, appliedAmount: 0,
-    remainingCredit: status === "VOIDED" ? 0 : 100, updatedDateUTC: new Date(updatedAt), allocations: [], payments,
+    remainingCredit: status === "VOIDED" ? 0 : 100, updatedDateUTC: new Date(updatedAt), allocations, payments,
   };
 }
 
@@ -340,6 +340,29 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       await voidWhileStale(kase, (gate, reached) => staleReconcile(reading("AUTHORISED", EARLY, payments), gate, reached));
       expect(await state(kase)).toEqual(kept(kase));
       expect(await prisma.xeroObjectLink.count({ where: { localId: BT, role: "REFUND_PAYMENT" } })).toBe(0);
+    });
+
+    /** The note allocated in full to the bank transfer's invoice, as Xero reports it. */
+    const ALLOCATED = [{ invoice: { invoiceID: `inv-${P}-bt` }, amount: 100 }];
+    const allocationLinks = () =>
+      prisma.xeroObjectLink.findMany({ where: { localId: BT, xeroObjectType: "ALLOCATION" }, select: { role: true, active: true, metadata: true } });
+
+    it("MUTATION (allocations): a stale reconcile writes no allocation link from its older reading's allocations", async () => {
+      const kase: Case = "bank-transfer canonical";
+      await seed(kase);
+      await voidWhileStale(kase, (gate, reached) => staleReconcile(reading("AUTHORISED", EARLY, [], ALLOCATED), gate, reached));
+      expect(await state(kase)).toEqual(kept(kase));
+      expect(await allocationLinks()).toEqual([]);
+    });
+
+    it("an applied reading still records its allocations", async () => {
+      const kase: Case = "bank-transfer canonical";
+      await seed(kase, { storedAt: EARLY });
+      const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+      await withFakeXero(async () => ({ body: { creditNotes: [reading("PAID", LATE, [], ALLOCATED)] } }), () => reconcileXeroCreditNote(NOTE));
+      expect(await allocationLinks()).toEqual([
+        { role: "CREDIT_NOTE_ALLOCATION", active: true, metadata: { creditNoteId: NOTE, invoiceId: `inv-${P}-bt`, amountCents: 10_000 } },
+      ]);
     });
 
     it("an applied reading still records its refund payments", async () => {
