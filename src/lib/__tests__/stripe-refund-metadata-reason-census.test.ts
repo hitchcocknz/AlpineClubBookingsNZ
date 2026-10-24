@@ -26,7 +26,8 @@ import * as keys from "@/lib/payment-recovery-keys";
  *   test proves (`payment-recovery-keys.ts`), or an object literal whose own
  *   top-level `reason` has a non-empty value. `undefined`, `null`, a ternary,
  *   an empty `reason` and anything the walk cannot read (a spread in place of
- *   the property, an argument passed whole) are findings, never passes;
+ *   the property or after it, which may replace it at runtime, an argument
+ *   passed whole) are findings, never passes;
  * - every metadata builder in `payment-recovery-keys.ts` stamps a non-empty one,
  *   so a door passing a builder's answer is read as an app door.
  *
@@ -75,6 +76,11 @@ function ownProperty(object: ts.ObjectLiteralExpression, name: string): ts.Objec
   return [...object.properties].reverse().find((property) => propertyName(property) === name) ?? null;
 }
 
+/** Whether a spread follows the property in its object literal: it may replace the property at runtime, so the census cannot read it. */
+function spreadAfter(object: ts.ObjectLiteralExpression, property: ts.ObjectLiteralElementLike): boolean {
+  return object.properties.slice(object.properties.indexOf(property) + 1).some((later) => ts.isSpreadAssignment(later));
+}
+
 /** A value that names something at runtime: a non-blank literal, a variable, a member, a call or a template. */
 function namesAValue(node: ts.Expression): boolean {
   const value = unwrap(node);
@@ -116,6 +122,7 @@ function metadataMissingReason(node: ts.Expression, seen: ReadonlySet<string> = 
   if (!ts.isObjectLiteralExpression(value)) return `metadata is ${ts.SyntaxKind[value.kind]}, which the census cannot prove names a reason`;
   const reason = ownProperty(value, "reason");
   if (!reason) return "metadata names no reason";
+  if (spreadAfter(value, reason)) return "a spread after metadata's reason may replace it";
   if (ts.isShorthandPropertyAssignment(reason)) return null; // a variable named `reason`
   if (!ts.isPropertyAssignment(reason) || !namesAValue(reason.initializer)) return "metadata's reason is empty or not a value";
   return null;
@@ -128,6 +135,7 @@ function missingReason(call: ts.CallExpression): string | null {
   if (!options || !ts.isObjectLiteralExpression(options)) return "its options are not an object literal the census can read";
   const metadata = ownProperty(options, "metadata");
   if (!metadata) return "no metadata";
+  if (spreadAfter(options, metadata)) return "a spread after metadata may replace it";
   if (ts.isShorthandPropertyAssignment(metadata)) return metadataMissingReason(metadata.name);
   if (!ts.isPropertyAssignment(metadata)) return "metadata is not a value";
   return metadataMissingReason(metadata.initializer);
@@ -193,6 +201,10 @@ describe("every Stripe refund the app makes stamps a reason (#4312 review)", () 
     expect(at("const metadata = { bookingId };\nawait processRefund({ metadata });")).toEqual(["x.ts:2"]);
     expect(at("function f() {\n  const m = undefined;\n  if (x) { return processRefund({ metadata: m }); }\n}")).toEqual(["x.ts:3"]);
     expect(at("await processRefund({ ...options });")).toEqual(["x.ts:1"]);
+    // A spread after the matched property may replace it at runtime: after metadata, or after its reason.
+    expect(at("await processRefund({ metadata: { reason: \"x\" }, ...options });")).toEqual(["x.ts:1"]);
+    expect(at("await processRefund({ metadata: { reason: \"x\", ...extra } });")).toEqual(["x.ts:1"]);
+    expect(at("const metadata = { reason: \"x\", ...extra };\nawait processRefund({ metadata });")).toEqual(["x.ts:2"]);
   });
 
   it("FAILS where a reason sits anywhere but the metadata's own top level (fixture proof)", () => {
@@ -215,6 +227,8 @@ describe("every Stripe refund the app makes stamps a reason (#4312 review)", () 
     expect(at("const metadata = { bookingId, reason: \"x\" };\nawait processRefund({ metadata });")).toEqual([]);
     expect(at("const m = buildRefundRequestRefundMetadata(b, r);\nawait processRefund({ metadata: m });")).toEqual([]);
     expect(at("send(() => refundPaymentTransactions({ metadata: m, format }));")).toEqual([]);
+    // A spread before the property is overridden by it.
+    expect(at("await processRefund({ ...options, metadata: { ...base, reason: \"x\" } });")).toEqual([]);
   });
 
   it("every metadata builder stamps a reason, so its refunds read as an app door's", () => {
