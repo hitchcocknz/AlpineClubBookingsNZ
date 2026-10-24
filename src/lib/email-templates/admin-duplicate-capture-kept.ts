@@ -13,6 +13,7 @@ import { alertBox, button, formatCents, heading, infoTable, layout, paragraph } 
 import {
   duplicateCaptureKeptAction,
   duplicateCaptureKeptParagraph,
+  type CancellationRefundNote,
   type DuplicateCaptureKeptReason,
 } from "@/lib/duplicate-capture-kept-note";
 import { emailCalendarDay } from "@/lib/email-templates-club-time";
@@ -29,13 +30,19 @@ export function adminDuplicateCaptureKeptTemplate(data: {
   checkOut: Date;
   bookingId: string;
   reason: DuplicateCaptureKeptReason;
-  /** The capture that arrived and was kept. */
+  /**
+   * What the kept card capture still holds (#4285 review): its amount less card
+   * refunds taken from it. The settle's capture has none (refund history never
+   * reaches the guard); the owed alert's drain nets them.
+   */
   amountCents: number;
   paymentIntentId: string;
   /** The other payment holding money; null for a cash or bank payment. */
   otherPaymentIntentId: string | null;
   /** False when nothing else holds money (a released settler, this payment alone). */
   otherHoldsMoney?: boolean;
+  /** `new-capture-closed` only: the cancellation's recorded refund (#4285 review). */
+  cancellationRefund?: CancellationRefundNote | null;
   bookingUrl: string;
   reviewUrl: string;
 },
@@ -54,6 +61,7 @@ export function adminDuplicateCaptureKeptTemplate(data: {
           reason: data.reason,
           otherPaymentIntentId: data.otherPaymentIntentId,
           otherHoldsMoney: data.otherHoldsMoney,
+          cancellationRefund: data.cancellationRefund,
         }),
       )
     }
@@ -63,7 +71,7 @@ export function adminDuplicateCaptureKeptTemplate(data: {
       { label: "Check-in", value: emailCalendarDay(data.checkIn) },
       { label: "Check-out", value: emailCalendarDay(data.checkOut) },
       { label: "Booking", value: escapeHtml(data.bookingId) },
-      { label: "Payment kept", value: formatCents(data.amountCents, format) },
+      { label: "Still held by this payment", value: formatCents(data.amountCents, format) },
       { label: "Stripe PI", value: escapeHtml(data.paymentIntentId) },
     ])}
     ${button("Open Booking", data.bookingUrl, { sameOrigin: true })}

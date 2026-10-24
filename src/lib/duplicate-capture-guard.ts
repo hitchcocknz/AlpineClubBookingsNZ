@@ -67,7 +67,7 @@ import { claimAlertCooldownFailOpen, SETTLEMENT_MONEY_ALERT_REPEAT_MS } from "@/
 import type { ClubFormat } from "@/lib/club-format";
 import { listDuplicateCaptureRefundIntentIds } from "@/lib/duplicate-capture-ownership";
 import { releaseAlertCooldown, settleOwedAlert } from "@/lib/alert-cooldown";
-import type { DuplicateCaptureKeptReason } from "@/lib/duplicate-capture-kept-note";
+import type { CancellationRefundNote, DuplicateCaptureKeptReason } from "@/lib/duplicate-capture-kept-note";
 import { sendAdminDuplicateCaptureKeptAlert } from "@/lib/email";
 import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
@@ -151,7 +151,11 @@ export type ArrivingCaptureVerdict =
  *   nothing; wrongly counting refunds the real settlement), plus #4227's
  *   owed-back captures.
  * - `duplicateRefundIntentIds`: captures a duplicate-capture refund owns, at any status.
- * - `where`: `otherSettledCaptureWhere` over all three.
+ * - `where`: `otherSettledCaptureWhere` over all three - the refund-safety reading.
+ * - `tellingWhere` (#4285 review): what an admin is TOLD holds money - the Xero
+ *   conflict's reading, excluding only `holdsForMember` and the duplicate-capture
+ *   refunds. A capture behind a dead cancel stays in: that cancel handed its money
+ *   to nobody, so the owed-alert drain must name it, never say nothing else holds money.
  */
 export async function readOtherSettledCaptureWhere(
   tx: Prisma.TransactionClient,
@@ -175,13 +179,14 @@ export async function readOtherSettledCaptureWhere(
   );
   const supersededOwned = [...(await listLiveSupersededIntentIds(tx, input.paymentId)), ...holdsForMember];
   const duplicateRefundIntentIds = await listDuplicateCaptureRefundIntentIds({ bookingId: input.bookingId, store: tx });
-  const where = otherSettledCaptureWhere({
-    paymentId: input.paymentId,
-    arrivingPaymentIntentId: input.paymentIntentId,
-    liveSupersededIntentIds: supersededOwned,
-    duplicateRefundIntentIds,
-  });
-  return { holdsForMember, supersededOwned, duplicateRefundIntentIds, where };
+  const reading = (owned: string[]) =>
+    otherSettledCaptureWhere({
+      paymentId: input.paymentId,
+      arrivingPaymentIntentId: input.paymentIntentId,
+      liveSupersededIntentIds: owned,
+      duplicateRefundIntentIds,
+    });
+  return { holdsForMember, supersededOwned, duplicateRefundIntentIds, where: reading(supersededOwned), tellingWhere: reading([...holdsForMember]) };
 }
 
 /**
@@ -339,6 +344,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   otherPaymentIntentId,
   otherHoldsMoney = true,
   reason,
+  cancellationRefund = null,
   format,
 }: {
   booking: { id: string; checkIn: Date; checkOut: Date };
@@ -348,6 +354,8 @@ export async function alertCaptureKeptWithoutRecordedSettler({
   otherPaymentIntentId: string | null;
   otherHoldsMoney?: boolean;
   reason: DuplicateCaptureKeptReason;
+  /** `new-capture-closed`: the cancellation's recorded refund, from the drain. */
+  cancellationRefund?: CancellationRefundNote | null;
   format: ClubFormat;
 }): Promise<"sent" | "cooldown" | "send-threw"> {
   const context = { bookingId: booking.id, paymentIntentId, otherPaymentIntentId, reason };
@@ -373,6 +381,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
       paymentIntentId,
       otherPaymentIntentId,
       otherHoldsMoney,
+      cancellationRefund,
     }, format);
   } catch (err) {
     logger.error({ err, ...context }, "Failed to alert admins about a kept capture; giving the claim back so a repeat tries again (#4211)");
