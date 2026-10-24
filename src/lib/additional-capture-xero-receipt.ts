@@ -103,6 +103,9 @@ type CardSettlePayment = Parameters<typeof cardSettleAppliedCreditCents>[1];
 export const ADDITIONAL_CAPTURE_RECEIPT_REFUSED_CODE = "ADDITIONAL_CAPTURE_RECEIPT_REFUSED";
 
 
+/** Another writer that now records the capture, and the change the capture pays for. */
+type OtherRecorder = { kind: string; operationId: string | null; changeId: string | null };
+
 /** The outbox row's key: one per capture. */
 export function additionalCaptureReceiptKey(paymentIntentId: string): string {
   return buildXeroIdempotencyKey("payment-intent", paymentIntentId, "additional-capture-receipt", "v1");
@@ -540,7 +543,7 @@ export async function recordAdditionalCaptureReceipt(
   }
 
   /** Another writer that now records this capture (`readCaptureRecorder`), or null where its receipt still does. */
-  async function recorderNowElsewhere(): Promise<{ kind: string; operationId: string | null } | null> {
+  async function recorderNowElsewhere(): Promise<OtherRecorder | null> {
     const capture = await prisma.paymentTransaction.findUnique({
       where: { id: paymentTransactionId },
       select: { bookingModificationId: true, reason: true, payment: { select: { xeroInvoiceId: true } } },
@@ -554,25 +557,23 @@ export async function recordAdditionalCaptureReceipt(
       bookingModificationId: captureChangeId(capture),
     });
     if (recorder.kind === "receipt") return null;
-    return { kind: recorder.kind, operationId: recorder.kind === "supplementary-invoice" ? recorder.operationId : null };
+    return {
+      kind: recorder.kind,
+      operationId: recorder.kind === "supplementary-invoice" ? recorder.operationId : null,
+      changeId: captureChangeId(capture),
+    };
   }
 
-  /**
-   * Round 6 (item 2): this receipt's own payment is in Xero and another
-   * supplementary invoice would record the same capture. Where that invoice
-   * has not sent - PENDING, WAITING_PAYMENT, or FAILED with no active link -
-   * it is switched to raise UNPAID, under its anchor's lock and guarded on the
-   * status read, so the capture is recorded once; the officer is told which.
-   * One already in Xero (or being sent) is left, and the officer is told to
-   * check for the second recording.
-   */
-  async function settleOtherRecorder(other: { kind: string; operationId: string | null }, invoiceId: string): Promise<void> {
-    const switched = other.operationId ? await switchUnsentRecorderUnpaid(other.operationId) : false;
+  /** Rounds 6 and 9: this receipt's payment is in Xero and another invoice would record it too - set unpaid where unsent (`switchUnsentRecorderUnpaid`); an officer checks Xero either way. */
+  async function settleOtherRecorder(other: OtherRecorder, invoiceId: string): Promise<void> {
+    const switched =
+      other.operationId !== null &&
+      (await switchUnsentRecorderUnpaid(other.operationId, { paymentIntentId, bookingModificationId: other.changeId }));
     await alertOfficer(
       paymentIntentId,
       operationId,
       switched
-        ? `This card payment was recorded in Xero against invoice ${invoiceId} by its own receipt, and another supplementary invoice not yet sent (outbox operation ${other.operationId}) would have recorded it too; that invoice is now set to be raised unpaid, so the payment is recorded once. Check the invoice when it is raised.`
+        ? `This card payment was recorded in Xero against invoice ${invoiceId} by its own receipt, and another supplementary invoice not yet sent (outbox operation ${other.operationId}) would have recorded it too; that invoice is now set to be raised unpaid. Check Xero shows the payment once when that invoice is raised.`
         : `This card payment was recorded in Xero against invoice ${invoiceId} by its own receipt, and another document now records it too (${other.kind}${other.operationId ? `, outbox operation ${other.operationId}` : ""}). Check Xero shows it once, and correct it by hand if not.`,
     );
   }

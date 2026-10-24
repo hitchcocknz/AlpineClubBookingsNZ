@@ -50,6 +50,14 @@ const mocks = vi.hoisted(() => ({
   createXeroMembershipCancellationCreditNote: vi.fn(),
   allocateAppliedCreditForBooking: vi.fn(),
   deallocateExcessAppliedCreditForBooking: vi.fn(),
+  // #3953 round 9: the replay's recordPayment, asked again under the change's anchor lock.
+  supplementaryReplayMayRecordPayment: vi.fn(),
+}));
+
+vi.mock("@/lib/additional-capture-receipt-gate", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/additional-capture-receipt-gate")>()),
+  supplementaryReplayMayRecordPayment: async (...args: unknown[]) =>
+    (await mocks.supplementaryReplayMayRecordPayment(...args)) ?? true,
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -1500,6 +1508,42 @@ describe("retryXeroSyncOperation", () => {
 
     await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
 
+    expect(mocks.createXeroSupplementaryInvoice).toHaveBeenCalledWith(
+      expect.objectContaining({ recordPayment: false })
+    );
+  });
+
+  it("MUTATION #3953 round 9: a replay asked to record the payment asks again under the change's lock, and replays unpaid where a capture's receipt records it", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        entityType: "INVOICE",
+        operationType: "CREATE",
+        localModel: "BookingModification",
+        localId: "mod_receipt",
+        requestPayload: {
+          queueType: "SUPPLEMENTARY_INVOICE",
+          bookingId: "book_123",
+          priceDiffCents: 2500,
+          changeFeeCents: 500,
+          paymentIntentId: "pi_change",
+        },
+      })
+    );
+    mocks.findUniqueBookingModification.mockResolvedValue({
+      bookingId: "book_123",
+      priceDiffCents: 2500,
+      changeFeeCents: 500,
+      createdAt: new Date("2026-07-01T00:00:00Z"),
+    });
+    mocks.supplementaryReplayMayRecordPayment.mockResolvedValueOnce(false);
+
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+    expect(mocks.supplementaryReplayMayRecordPayment).toHaveBeenCalledWith({
+      operationId: "op_123",
+      bookingId: "book_123",
+      bookingModificationId: "mod_receipt",
+    });
     expect(mocks.createXeroSupplementaryInvoice).toHaveBeenCalledWith(
       expect.objectContaining({ recordPayment: false })
     );

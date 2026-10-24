@@ -16,13 +16,20 @@ function store(input: {
   receipts?: Array<{ status: string; requestPayload: unknown }>;
   supplementaries?: Array<{ requestPayload: unknown }>;
   unattributed?: number;
+  modifications?: Array<{ id: string }>;
+  paymentLink?: { id: string } | null;
 }) {
   return {
     paymentTransaction: {
       findMany: vi.fn(async () => input.captures ?? []),
       count: vi.fn(async () => input.unattributed ?? 0),
     },
-    xeroObjectLink: { findFirst: vi.fn(async () => input.link ?? null) },
+    xeroObjectLink: {
+      findFirst: vi.fn(async (args: { where: { role: string } }) =>
+        args.where.role === "SUPPLEMENTARY_INVOICE_PAYMENT" ? (input.paymentLink ?? null) : (input.link ?? null),
+      ),
+    },
+    bookingModification: { findMany: vi.fn(async () => input.modifications ?? []) },
     xeroSyncOperation: {
       findMany: vi.fn(async (args: { where: { queueType: string } }) =>
         args.where.queueType === "SUPPLEMENTARY_INVOICE" ? (input.supplementaries ?? []) : (input.receipts ?? []),
@@ -71,6 +78,19 @@ describe("bookingHasPaidUnnamedSupplementary", () => {
       where: { queueType: "SUPPLEMENTARY_INVOICE", status: { not: "CANCELLED" }, requestPayload: { path: ["bookingId"], equals: "booking_1" } },
       select: { requestPayload: true },
     });
+  });
+});
+
+describe("bookingHasPaidUnnamedSupplementary - an invoice from before #3641 (round 9, item 4)", () => {
+  it("MUTATION: is true where a change of the booking has its invoice's Stripe payment linked in Xero", async () => {
+    const db = store({ modifications: [{ id: "mod_old" }], paymentLink: { id: "link_old" } });
+    await expect(bookingHasPaidUnnamedSupplementary(db as never, "booking_1")).resolves.toBe(true);
+    expect(db.bookingModification.findMany).toHaveBeenCalledWith({ where: { bookingId: "booking_1" }, select: { id: true } });
+    expect(db.xeroObjectLink.findFirst).toHaveBeenCalledWith({
+      where: { localModel: "BookingModification", localId: { in: ["mod_old"] }, role: "SUPPLEMENTARY_INVOICE_PAYMENT", active: true },
+      select: { id: true },
+    });
+    await expect(bookingHasPaidUnnamedSupplementary(store({ modifications: [{ id: "mod_old" }] }) as never, "booking_1")).resolves.toBe(false);
   });
 });
 

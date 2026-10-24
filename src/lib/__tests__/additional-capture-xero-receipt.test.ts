@@ -28,6 +28,9 @@ const mocks = vi.hoisted(() => ({
   cardSettleAppliedCreditCents: vi.fn(),
   recheckPrimaryInvoiceWorthGap: vi.fn(),
   lockSupplementaryInvoiceAnchor: vi.fn(),
+  // Round 9: reads inside the switch's and the plan store's transactions.
+  txFindFirstLink: vi.fn(),
+  txFindManyModification: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
@@ -90,7 +93,7 @@ import {
   queueReceiptsForUnrecordedCaptures,
 } from "@/lib/additional-capture-receipt-enqueue";
 import { readAdditionalCaptureReceiptPayload } from "@/lib/additional-capture-receipt-payload";
-import { ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE } from "@/lib/additional-capture-receipt-gate";
+import { ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE, supplementaryReplayMayRecordPayment } from "@/lib/additional-capture-receipt-gate";
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
@@ -228,8 +231,13 @@ beforeEach(() => {
         update: mocks.updateOperation,
         updateMany: mocks.updateManyOperation,
       },
+      xeroObjectLink: { findFirst: mocks.txFindFirstLink },
+      bookingModification: { findMany: mocks.txFindManyModification },
+      paymentTransaction: { findMany: mocks.findManyTransaction },
     }),
   );
+  mocks.txFindFirstLink.mockResolvedValue(null);
+  mocks.txFindManyModification.mockResolvedValue([]);
 });
 
 const run = (seam = providers()) => recordAdditionalCaptureReceipt({ syncOperationId: "op_receipt" }, seam);
@@ -668,6 +676,61 @@ describe("recordAdditionalCaptureReceipt", () => {
       );
     });
 
+    describe("which unsent invoice it switches (round 9, items 2 and 3)", () => {
+      const switching = async (row: Record<string, unknown>, secondRead?: Record<string, unknown>) => {
+        invoices[GAP] = { amountDue: 0, payments: [{ paymentID: "xero_payment_first", reference: "Stripe pi_change" }] };
+        mocks.readCaptureRecorder.mockResolvedValue({ kind: "supplementary-invoice", operationId: "op_other" });
+        let reads = 0;
+        mocks.findUniqueOperation.mockImplementation(async ({ where }: { where: { id: string } }) => {
+          if (where.id !== "op_other") return { requestPayload: { ...PAYLOAD, plan } };
+          reads += 1;
+          return reads > 2 && secondRead ? secondRead : row;
+        });
+        await run();
+        return mocks.updateManyOperation.mock.calls.filter(([args]) => (args as { where: { id: string } }).where.id === "op_other");
+      };
+      const base = { localModel: "BookingModification", localId: "mod_change", responsePayload: null, xeroObjectId: null };
+
+      it("MUTATION: never a #3980 gap invoice, which may pay for other captures - an officer checks Xero", async () => {
+        const writes = await switching({ ...base, status: "PENDING", requestPayload: { primaryInvoiceGap: true, paymentIntentId: "pi_change" } });
+        expect(writes).toEqual([]);
+        expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
+          expect.objectContaining({ errorMessage: expect.stringContaining("another document now records it too") }),
+        );
+      });
+
+      it("MUTATION: never an invoice of another change naming another capture", async () => {
+        const writes = await switching({ ...base, localId: "mod_other", status: "PENDING", requestPayload: { paymentIntentId: "pi_other" } });
+        expect(writes).toEqual([]);
+      });
+
+      it("MUTATION: a FAILED row whose response names a Xero invoice is not unsent; one with none is", async () => {
+        const failedInXero = { ...base, status: "FAILED", requestPayload: {}, responsePayload: { invoice: { invoices: [{ invoiceID: "inv_made" }] } } };
+        expect(await switching(failedInXero)).toEqual([]);
+        vi.clearAllMocks();
+        mocks.updateManyOperation.mockResolvedValue({ count: 1 });
+        mocks.txFindFirstLink.mockResolvedValue(null);
+        const failedBeforeXero = { ...base, status: "FAILED", requestPayload: {}, responsePayload: { message: "Xero 500" } };
+        expect(await switching(failedBeforeXero)).toEqual([
+          [{ where: { id: "op_other", status: "FAILED" }, data: { requestPayload: { recordPayment: false } } }],
+        ]);
+        expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
+          expect.objectContaining({ errorMessage: expect.stringContaining("Check Xero shows the payment once") }),
+        );
+      });
+
+      it("MUTATION: a waiting invoice released between its read and the guarded write is read again once and switched", async () => {
+        mocks.updateManyOperation.mockImplementation(async ({ where }: { where: { id: string; status: string } }) => ({
+          count: where.id === "op_other" && where.status === "WAITING_PAYMENT" ? 0 : 1,
+        }));
+        const writes = await switching(
+          { ...base, status: "WAITING_PAYMENT", requestPayload: { paymentIntentId: "pi_change" } },
+          { ...base, status: "PENDING", requestPayload: { paymentIntentId: "pi_change" } },
+        );
+        expect(writes.map(([args]) => (args as { where: { status: string } }).where.status)).toEqual(["WAITING_PAYMENT", "PENDING"]);
+      });
+    });
+
     it("leaves an invoice already in Xero as it is, and tells an officer to check for the second recording", async () => {
       invoices[GAP] = { amountDue: 0, payments: [{ paymentID: "xero_payment_first", reference: "Stripe pi_change" }] };
       mocks.readCaptureRecorder.mockResolvedValue({ kind: "supplementary-invoice", operationId: "op_repair_invoice" });
@@ -795,6 +858,22 @@ describe("recordAdditionalCaptureReceipt", () => {
       expectRefused("change-unknown");
     });
 
+    it("MUTATION round 9 (item 4): refuses a capture no change can be read from where a change of the booking has its invoice's payment linked in Xero", async () => {
+      mocks.findUniqueTransaction.mockResolvedValue(capture({ bookingModificationId: null, reason: null }));
+      mocks.txFindManyModification.mockResolvedValue([{ id: "mod_old" }]);
+      mocks.txFindFirstLink.mockImplementation(async ({ where }: { where: { role?: string } }) =>
+        where.role === "SUPPLEMENTARY_INVOICE_PAYMENT" ? { id: "link_old_payment" } : null,
+      );
+      const seam = providers();
+      await run(seam);
+      expect(mocks.txFindFirstLink).toHaveBeenCalledWith({
+        where: { localModel: "BookingModification", localId: { in: ["mod_old"] }, role: "SUPPLEMENTARY_INVOICE_PAYMENT", active: true },
+        select: { id: true },
+      });
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+      expectRefused("change-unknown");
+    });
+
     it("decides again on the next run where the invoice it belongs to changed meanwhile", async () => {
       mocks.readCaptureRecorder.mockResolvedValueOnce(receiptRecorder()).mockResolvedValueOnce(gapTarget());
       const seam = providers();
@@ -811,6 +890,32 @@ describe("recordAdditionalCaptureReceipt", () => {
 
     expect(storedPlan()).toEqual(expect.objectContaining({ invoiceId: PRIMARY }));
     expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith("op_receipt", expect.objectContaining({ message: "Xero 500" }));
+  });
+});
+
+describe("supplementaryReplayMayRecordPayment (round 9, item 3)", () => {
+  const ask = () => supplementaryReplayMayRecordPayment({ operationId: "op_change_invoice", bookingId: "booking_1", bookingModificationId: "mod_change" });
+
+  it("MUTATION: asks under the change's anchor lock, and says no where the row is now unpaid or a capture's receipt records it", async () => {
+    mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { recordPayment: false } });
+    await expect(ask()).resolves.toBe(false);
+    expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(expect.anything(), "mod_change");
+    expect(mocks.lockSupplementaryInvoiceAnchor.mock.invocationCallOrder[0]).toBeLessThan(mocks.findUniqueOperation.mock.invocationCallOrder[0]!);
+
+    mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { paymentIntentId: "pi_change" } });
+    mocks.findManyTransaction.mockResolvedValue([{ id: "ptx_1" }]);
+    mocks.txFindFirstLink.mockResolvedValue({ id: "receipt_link" });
+    await expect(ask()).resolves.toBe(false);
+
+    mocks.findManyTransaction.mockResolvedValue([]);
+    await expect(ask()).resolves.toBe(true);
+  });
+
+  it("leaves a #3980 gap invoice as it was asked: it decides its own cash", async () => {
+    mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { primaryInvoiceGap: true } });
+    mocks.findManyTransaction.mockResolvedValue([{ id: "ptx_1" }]);
+    mocks.txFindFirstLink.mockResolvedValue({ id: "receipt_link" });
+    await expect(ask()).resolves.toBe(true);
   });
 });
 

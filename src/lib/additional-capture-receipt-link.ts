@@ -12,6 +12,7 @@ import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
+import { SUPPLEMENTARY_INVOICE_PAYMENT_ROLE } from "@/lib/xero-inbound/object-links";
 
 /** The link the capture's Xero payment writes, on its `PaymentTransaction`. */
 export const ADDITIONAL_CAPTURE_PAYMENT_ROLE = "ADDITIONAL_CAPTURE_PAYMENT";
@@ -102,9 +103,12 @@ export async function bookingHasUnattributedCaptures(
  * Stripe payment without naming the capture it records - the one kind of
  * document an unattributed capture's receipt cannot tell apart from its own
  * recorder. The receipt refuses, under the booking's lock, where one exists.
+ * Round 9: also any change of the booking whose invoice's Stripe payment is
+ * linked in Xero (`SUPPLEMENTARY_INVOICE_PAYMENT`) - an invoice raised before
+ * #3641 may carry no outbox row this can read, and its link names no capture.
  */
 export async function bookingHasPaidUnnamedSupplementary(
-  store: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+  store: Pick<Prisma.TransactionClient, "xeroSyncOperation" | "bookingModification" | "xeroObjectLink">,
   bookingId: string,
 ): Promise<boolean> {
   const rows = await store.xeroSyncOperation.findMany({
@@ -115,10 +119,23 @@ export async function bookingHasPaidUnnamedSupplementary(
     },
     select: { requestPayload: true },
   });
-  return rows.some((row) => {
+  const unnamed = rows.some((row) => {
     const payload = asRecord(row.requestPayload);
     return payload?.recordPayment !== false && payload?.primaryInvoiceGap !== true && typeof payload?.paymentIntentId !== "string";
   });
+  if (unnamed) return true;
+  const changes = await store.bookingModification.findMany({ where: { bookingId }, select: { id: true } });
+  if (changes.length === 0) return false;
+  const paid = await store.xeroObjectLink.findFirst({
+    where: {
+      localModel: "BookingModification",
+      localId: { in: changes.map((change) => change.id) },
+      role: SUPPLEMENTARY_INVOICE_PAYMENT_ROLE,
+      active: true,
+    },
+    select: { id: true },
+  });
+  return paid !== null;
 }
 
 /**

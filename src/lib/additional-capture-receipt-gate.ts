@@ -106,41 +106,98 @@ export function outboxScanSpacesWaitingReceipts(now: Date) {
   };
 }
 
+/** Round 9: whether a failed row's own response names an invoice Xero made - then it is not unsent. */
+function responseNamesXeroInvoice(value: unknown, depth = 0): boolean {
+  if (depth > 6 || value === null || typeof value !== "object") return false;
+  if (Array.isArray(value)) return value.some((entry) => responseNamesXeroInvoice(entry, depth + 1));
+  return Object.entries(value as Record<string, unknown>).some(([key, entry]) =>
+    /^(xero)?invoice_?id$/i.test(key) ? typeof entry === "string" && entry.length > 0 : responseNamesXeroInvoice(entry, depth + 1),
+  );
+}
+
 /**
- * #3953 review round 6 (item 2): a receipt whose own payment is in Xero found
- * another supplementary invoice that would record the same capture. Where that
- * invoice has not sent - PENDING, WAITING_PAYMENT, or FAILED with no active
- * `SUPPLEMENTARY_INVOICE` link - it is switched to raise UNPAID, under its
- * anchor's lock and guarded on the status read there, so the capture is
- * recorded once. Returns whether it was switched; one in Xero, or being sent,
- * is left (the caller tells an officer either way). Its own transaction,
- * holding no other key; no Xero call.
+ * #3953 review round 6 (item 2), narrowed in round 9: a receipt whose own
+ * payment is in Xero found another supplementary invoice that would record
+ * the same capture. Only the change's OWN invoice or one NAMING the capture
+ * is switched - never a #3980 gap invoice, which may pay for other captures
+ * too. Where it has not sent - PENDING, WAITING_PAYMENT, or FAILED with no
+ * Xero invoice in its response or on its row, and no active
+ * `SUPPLEMENTARY_INVOICE` link - it is set to raise UNPAID, under its
+ * anchor's lock, decided on the row read there and guarded on that status;
+ * a lost guard re-reads once (a waiting invoice released meanwhile is still
+ * unsent). Returns whether it was switched; the caller tells an officer to
+ * check Xero either way. Its own transaction, holding no other key; no Xero
+ * call.
  */
-export async function switchUnsentRecorderUnpaid(supplementaryOperationId: string): Promise<boolean> {
+export async function switchUnsentRecorderUnpaid(
+  supplementaryOperationId: string,
+  capture: { paymentIntentId: string; bookingModificationId: string | null },
+): Promise<boolean> {
   const row = await prisma.xeroSyncOperation.findUnique({
     where: { id: supplementaryOperationId },
-    select: { status: true, localModel: true, localId: true },
+    select: { localModel: true, localId: true },
   });
-  if (!row?.localModel || !row.localId || !["PENDING", "WAITING_PAYMENT", "FAILED"].includes(row.status)) return false;
+  if (!row?.localModel || !row.localId) return false;
   const { localModel, localId } = row;
-  const linked = await prisma.xeroObjectLink.findFirst({
-    where: { localModel, localId, xeroObjectType: "INVOICE", role: "SUPPLEMENTARY_INVOICE", active: true },
-    select: { id: true },
-  });
-  if (linked) return false;
   // Imported here: the outbox dispatches to the receipt's worker.
   const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
   return prisma.$transaction(async (tx) => {
     await lockSupplementaryInvoiceAnchor(tx, localId);
-    const current = await tx.xeroSyncOperation.findUnique({
-      where: { id: supplementaryOperationId },
-      select: { status: true, requestPayload: true },
-    });
-    if (!current || current.status !== row.status) return false;
-    const result = await tx.xeroSyncOperation.updateMany({
-      where: { id: supplementaryOperationId, status: current.status },
-      data: { requestPayload: sanitizeForJson({ ...(asRecord(current.requestPayload) ?? {}), recordPayment: false }) },
-    });
-    return result.count === 1;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const current = await tx.xeroSyncOperation.findUnique({
+        where: { id: supplementaryOperationId },
+        select: { status: true, requestPayload: true, responsePayload: true, xeroObjectId: true },
+      });
+      if (!current) return false;
+      const payload = asRecord(current.requestPayload) ?? {};
+      const own = localModel === "BookingModification" && localId === capture.bookingModificationId;
+      const naming = payload.paymentIntentId === capture.paymentIntentId;
+      if (payload.primaryInvoiceGap === true || (!own && !naming)) return false;
+      const unsent =
+        current.status === "PENDING" ||
+        current.status === "WAITING_PAYMENT" ||
+        (current.status === "FAILED" && !current.xeroObjectId && !responseNamesXeroInvoice(current.responsePayload));
+      if (!unsent) return false;
+      const linked = await tx.xeroObjectLink.findFirst({
+        where: { localModel, localId, xeroObjectType: "INVOICE", role: "SUPPLEMENTARY_INVOICE", active: true },
+        select: { id: true },
+      });
+      if (linked) return false;
+      const result = await tx.xeroSyncOperation.updateMany({
+        where: { id: supplementaryOperationId, status: current.status },
+        data: { requestPayload: sanitizeForJson({ ...payload, recordPayment: false }) },
+      });
+      if (result.count === 1) return true;
+    }
+    return false;
+  });
+}
+
+/**
+ * #3953 review round 9 (item 3): an officer's Retry of a change's
+ * supplementary invoice replays it inline from a payload read before. Asked
+ * again under the change's anchor lock just before that replay: whether the
+ * row now says unpaid (a receipt's switch) or a capture it would record has a
+ * receipt (`anchorCaptureHasReceipt`, the enqueue's own question). A #3980
+ * gap invoice decides its own cash and is left as asked.
+ */
+export async function supplementaryReplayMayRecordPayment(input: {
+  operationId: string;
+  bookingId: string;
+  bookingModificationId: string;
+}): Promise<boolean> {
+  const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
+  const { anchorCaptureHasReceipt } = await import("@/lib/additional-capture-receipt-link");
+  return prisma.$transaction(async (tx) => {
+    await lockSupplementaryInvoiceAnchor(tx, input.bookingModificationId);
+    const row = await tx.xeroSyncOperation.findUnique({ where: { id: input.operationId }, select: { requestPayload: true } });
+    const payload = asRecord(row?.requestPayload);
+    if (payload?.recordPayment === false) return false;
+    if (payload?.primaryInvoiceGap === true) return true;
+    return !(await anchorCaptureHasReceipt(tx, {
+      bookingId: input.bookingId,
+      bookingModificationId: input.bookingModificationId,
+      paymentIntentId: typeof payload?.paymentIntentId === "string" ? payload.paymentIntentId : null,
+    }));
   });
 }

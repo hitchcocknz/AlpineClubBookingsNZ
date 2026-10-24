@@ -1,4 +1,5 @@
 import type { XeroContactUpdateData } from "@/lib/xero-contacts";
+import { supplementaryReplayMayRecordPayment } from "@/lib/additional-capture-receipt-gate";
 import {
   isLateCaptureApprovalChangeInvoice,
   linkedChangeInvoiceRetryRefusal,
@@ -1742,7 +1743,7 @@ export async function retryXeroSyncOperation(
       // edit, so an earlier same-amount capture belongs to another edit).
       // Never record cash without evidence — a skipped payment stays
       // recoverable via the PARTIAL invoice-repair path.
-      const recordPayment = queuedSupplementaryPayload
+      const recordPaymentAsked = queuedSupplementaryPayload
         ? queuedSupplementaryPayload.recordPayment ?? true
         : Boolean(
             await prisma.paymentTransaction.findFirst({
@@ -1757,6 +1758,8 @@ export async function retryXeroSyncOperation(
               select: { id: true },
             })
           );
+      // #3953 round 9 (`INV-PAY-139`): asked again under the change's anchor lock - a capture's receipt may record it, or have set this row unpaid.
+      const recordPayment = recordPaymentAsked && (await supplementaryReplayMayRecordPayment({ operationId: operation.id, bookingId: modification.bookingId, bookingModificationId: operation.localId! }));
       await xero.createXeroSupplementaryInvoice({
         bookingId: modification.bookingId,
         priceDiffCents: amounts.priceDiffCents,
