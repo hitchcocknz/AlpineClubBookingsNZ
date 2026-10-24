@@ -146,6 +146,10 @@ describe("one rule for a re-send's own note: the replay and charge.refunded agre
   it("MUTATION: a re-send the replay marked for a failure that folded: its fold answers it - no note from either writer, nor a canonical delta", async () => {
     answers({ re_s: { ownNoted: false } });
     expect(await bothWriters("re_s")).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 0 });
+    // A re-planned slice's re-send carries its row's metadata, not the failed-later reason: the mark alone decides.
+    expect(await bothWriters("re_s", appDoor("re_s", "duplicate_capture"))).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 0 });
+    answers({ re_s: { ownNoted: true } });
+    expect(await bothWriters("re_s", appDoor("re_s", "duplicate_capture"))).toEqual({ replayOwn: 1, webhookOwn: 1, webhookCanonicalCents: 0 });
   });
 
   it("MUTATION: a failed-later row's re-send charge.refunded records before the replay marks it is left to the replay - never the canonical delta", async () => {
@@ -158,9 +162,8 @@ describe("one rule for a re-send's own note: the replay and charge.refunded agre
     expect(await bothWriters("re_dup", appDoor("re_dup", "duplicate_capture"))).toEqual({ replayOwn: 0, webhookOwn: 0, webhookCanonicalCents: 4_000 });
   });
 
-  it("MUTATION: a dashboard refund gets its own note from charge.refunded, never sized by a pairing", async () => {
-    answers({ re_d: { ownNoted: true } });
-    vi.mocked(readFailedRefundsAnsweredBy).mockClear();
+  it("MUTATION: a dashboard refund gets its own note from charge.refunded, whatever the pairing says", async () => {
+    answers({});
     const { webhookOwn, webhookCanonicalCents } = await bothWriters("re_d", { id: "re_d", amount: 4_000, metadata: {} } as never);
     expect({ webhookOwn, webhookCanonicalCents }).toEqual({ webhookOwn: 1, webhookCanonicalCents: 0 });
   });
