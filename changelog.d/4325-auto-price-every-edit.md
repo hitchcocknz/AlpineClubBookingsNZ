@@ -18,7 +18,8 @@
   exactly what the guest was charged. The quote on **Edit Booking** is exactly
   what saving charges or credits. A booking whose total an older held change
   left out of step with its guests keeps that difference: a new change moves
-  the total only by what it changes itself, never settling the held money.
+  the total only by what it changes itself, never settling the held money, and
+  is refused if that would take the total below zero.
   Closing an older review now recalculates the booking's total from its guests,
   and a correction to a finished stay is charged on the removed nights' values
   rather than refused when a night has no recorded price.

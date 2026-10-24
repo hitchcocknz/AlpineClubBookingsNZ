@@ -264,6 +264,8 @@ Booking** is exactly what saving charges or credits.
 A booking whose total an older held change left out of step with its guests
 keeps that difference through a new change: the change moves the total only by
 what it changes itself, and the difference stays for the open review to settle.
+If carrying it would take the booking's total below zero, the change is refused
+with a message to contact the club, and nothing is changed.
 
 A guest whose stored total is below zero, which the system cannot store, would
 refuse the change with a message to contact the club; nothing is changed.

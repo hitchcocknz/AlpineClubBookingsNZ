@@ -1746,8 +1746,8 @@ snapshot it reports:
   recorded, overall and per task-creation month. The two summaries share one
   cause vocabulary on purpose: strands by cause is what the gate would have
   parked; tasks by cause is what it did park before #4317;
-- `ledgerNightValues` (#4317 review M3): of the bookings confirmed on the
-  ledger, how many have a live single-night guest-night line whose figure is
+- `ledgerNightValues` (#4317 review M3): of the bookings an edit can still
+  reach (not cancelled or deleted) that are confirmed on the ledger, how many have a live single-night guest-night line whose figure is
   not what an edit now values that night at, or a valued night with no live
   line at all, with up to 100 of their ids. An edit to one of them posts no
   ledger lines and leaves an `UNPOSTED_EDIT` gap that closes the booking

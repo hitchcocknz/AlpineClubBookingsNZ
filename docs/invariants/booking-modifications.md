@@ -1326,7 +1326,7 @@ held night at its value (`src/lib/edit-night-valuation.ts`): a kept night keeps
 it, a returned one is credited at it, a bought one is priced at current rates,
 and a removed guest is credited its stored total. The headline moves only by
 that change (`editedBookingTotalCents`), so a gap a parked edit froze stays for
-its review. A promotion re-decided over a split strand's nights can move a
+its review; carrying it below zero refuses the edit. A promotion re-decided over a split strand's nights can move a
 guest the edit did not touch. Quote equals save.
 
 ## INV-MOD-036
