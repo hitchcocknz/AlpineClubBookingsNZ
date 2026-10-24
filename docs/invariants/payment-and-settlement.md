@@ -1233,7 +1233,8 @@ it was).
   refunded retires, undecided stays waiting, kept is released or re-queued. An invoice the capture does not cover
   is not issued, and an officer is told. A retired row is re-queued from
   **that row**, the largest ask per change, under
-  `lockSupplementaryInvoiceAnchor`, once; it alerts once where another invoice
+  `lockSupplementaryInvoiceAnchor`, once - unpaid where the capture's own
+  receipt records it (`INV-PAY-138`); it alerts once where another invoice
   is linked or queued. One for the same request (its sent payload keeps
   `paymentIntentId`) covers it, stamped `STALE_WAITING_PAYMENT_COVERED`.
 - Pinned by `xero-operation-outbox.test.ts`, `additional-payment-chase.test.ts`,
@@ -1589,8 +1590,8 @@ release).
   recorder or changed figures: FAILED `ADDITIONAL_CAPTURE_RECEIPT_REFUSED`,
   an officer told.
 - **Refunds and repair.** A Stripe refund names the receipt's invoice. The
-  repair tool reports "card payment not recorded in Xero", queues the receipt,
-  and raises a change's missing invoice unpaid where a receipt records it.
+  repair tool reports "card payment not recorded in Xero" and queues the
+  receipt; a missing or revived invoice goes unpaid where a receipt records it.
 - Pinned by `additional-capture-xero-receipt.test.ts`,
   `additional-capture-recorder.test.ts`,
   `additional-capture-receipt.realdb.test.ts`,
