@@ -11,5 +11,6 @@
   is withdrawn and cancelled with Stripe, the same way a cancellation withdraws
   one. The automatic retry of a card request that failed the first time, and a
   request re-issued after the club changes its currency, follow the same rule,
-  as does a booking whose card payment had already been refunded in full. The change email no longer names the extra as due on a cancelled
-  booking. Nothing changes for bookings that stay live.
+  as does a booking whose card payment had already been refunded in full. The
+  change email no longer names the extra as due on a cancelled booking.
+  Nothing changes for bookings that stay live.
