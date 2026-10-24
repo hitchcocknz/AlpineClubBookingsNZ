@@ -57,6 +57,7 @@ import {
   CHANGE_REQUEST_DUPLICATE_GUEST_RANGE_MESSAGE,
 } from "@/lib/booking-change-request-guests";
 import { GUEST_NIGHT_INVALID_MESSAGE } from "@/lib/booking-guest-stay-range-input";
+import { changeRequestDeltaSchema } from "@/lib/booking-change-request-input";
 import {
   changeRequestProposalBatchInput,
   describeRequestedGuestNights,
@@ -571,6 +572,7 @@ describe("the card's estimate reads a proposal as submission stores it (#4203, I
     expect(fromRoute?.guestStayRanges).toEqual([
       { guestId: "guest-3", stayStart: "2026-06-30", stayEnd: "2026-07-03", nights: gapped },
     ]);
-    expect(changeRequestProposalBatchInput(party, proposal)).toEqual(fromRoute);
+    // Parsed as the estimate's route parses it.
+    expect(changeRequestProposalBatchInput(party, changeRequestDeltaSchema.parse(proposal))).toEqual(fromRoute);
   });
 });
