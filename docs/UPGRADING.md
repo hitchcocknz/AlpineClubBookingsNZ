@@ -119,6 +119,65 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Check card cancellations left behind by earlier cash-payment reversals (#4320)
+
+**What changes.** When an officer reverses a booking recorded as paid in cash,
+the app now works out again which of the member's open card payments are out of
+date, keeps cancelling those, and stops cancelling the one the booking can still
+be paid with, even if its cancellation was waiting to retry. No migration runs.
+
+**After upgrading.** A reversal made before this release (or by the previous
+colour during the switch) could leave such a waiting cancellation behind. It
+stays live until something finishes it, and it can refund the member's card
+payment for a booking that then stays unpaid. Run this read-only query against
+the live database. It writes nothing:
+
+```sql
+WITH last_manual AS (
+  SELECT DISTINCT ON (a."entityId")
+         a."entityId" AS "paymentId", a."action", a."createdAt", a."metadata"
+  FROM "AuditLog" a
+  WHERE a."entityType" = 'Payment'
+    AND a."action" IN ('booking-payment.manual-payment.mark-paid',
+                       'booking-payment.manual-payment.mark-unpaid')
+  ORDER BY a."entityId", a."createdAt" DESC
+)
+SELECT b."id" AS "bookingId", b."status" AS "bookingStatus",
+       b."finalPriceCents", o."id" AS "operationId", o."type", o."status",
+       o."attempts", o."nextRetryAt", o."paymentIntentId",
+       t."kind", t."status" AS "intentRowStatus", t."amountCents",
+       lm."createdAt" AS "reversedAt"
+FROM last_manual lm
+JOIN "PaymentRecoveryOperation" o ON o."paymentId" = lm."paymentId"
+JOIN "Booking" b ON b."id" = o."bookingId"
+LEFT JOIN "PaymentTransaction" t ON t."id" = o."paymentTransactionId"
+WHERE lm."action" = 'booking-payment.manual-payment.mark-unpaid'
+  AND NOT (lm."metadata" ? 'stillCancelledPaymentIntentIds')
+  AND o."type" IN ('CANCEL_PAYMENT_INTENT', 'REFUND_SUPERSEDED_PAYMENT')
+  AND o."status" <> 'SUCCEEDED'
+  AND o."createdAt" < lm."createdAt"
+ORDER BY lm."createdAt", o."createdAt";
+```
+
+It lists every cancellation still open on a payment whose last cash-payment
+action was a reversal made before this release, and the card payment it names.
+For each row:
+
+- if `intentRowStatus` is not `PENDING` or `PROCESSING`, or the booking is
+  cancelled, there is nothing to do;
+- if `amountCents` differs from what the booking page asks the member to pay,
+  the cancellation is right: leave it;
+- otherwise, cancel that payment intent (`paymentIntentId`) in the Stripe
+  dashboard. The cancellation then closes itself, the member's open payment page
+  stops working, and their next visit to the pay step starts a fresh card
+  payment. No money moves. If Stripe shows the intent already succeeded, the
+  app is refunding it: check the booking and ask the member to pay again.
+
+No admin screen closes these rows, and they must never be deleted by hand.
+Waiting is safe only for a row whose `nextRetryAt` is set: it cancels the card
+payment itself once Stripe answers. A row with no `nextRetryAt` has given up
+and waits for ever.
+
 ### The app records which payment settled each booking (#4211)
 
 `20261121010000_payment_settled_by_transaction` adds one nullable column,

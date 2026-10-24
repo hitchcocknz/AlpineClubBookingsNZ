@@ -209,28 +209,31 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   could not undo: booking PAID, provenance present, no refund, no
   `PaymentRefund` rows, no settled Stripe transaction, no OPEN
   `ManualRefundTask`, and no Xero link or queued mint acquired since. It
-  restores `manuallyMarkedPaidPreviousStatus` (a stored `DRAFT` deliberately
-  restores as `PAYMENT_PENDING`, because the PAID claim cleared
-  `draftExpiresAt` and a restored DRAFT would be an expiry-less draft
-  forever), clears the provenance, marks the manual transaction FAILED rather
-  than deleting it, clears a restored CONFIRMED internet-banking hold deadline
-  (or the expiry cron would auto-cancel the booking minutes later), and
-  DELETES every `CANCEL_PAYMENT_INTENT` / `REFUND_SUPERSEDED_PAYMENT`
-  operation on the payment not yet SUCCEEDED — FAILED, retrying or
-  exhausted, included (#4320) — for an intent the settle itself condemned.
-  Those operations must not outlive the settlement they were minted to
-  protect, or a later legitimate capture would be refunded as if superseded.
-  Deletion, not a terminal status flip: the webhook-side liveness predicates
-  key on `status != SUCCEEDED`, so only a deleted row is invisible to all of
-  them. The settle's enqueue upserts on the shared cancel key and adopts a
-  row another writer queued first; it records those intents
-  (`adoptedCancelPaymentIntentIds`) beside the ones it cancelled, and the
-  reversal leaves their rows, whose writer's reason outlives it. A
-  member-owed superseded refund can never be reached — the handoff that
-  creates one marks its transaction SUCCEEDED first, and the reversal refuses
-  on any settled Stripe transaction before the disarm. The deleted rows' full
-  content is preserved in the reversal's `AuditLog` metadata. Proven on
-  PostgreSQL by `manual-reversal-retrying-cancel.realdb.test.ts`.
+  restores `manuallyMarkedPaidPreviousStatus` (a stored `DRAFT` restores as
+  `PAYMENT_PENDING`, because the PAID claim cleared `draftExpiresAt`), clears
+  the provenance, marks the manual transaction FAILED rather than deleting it,
+  and clears a restored CONFIRMED internet-banking hold deadline (or the expiry
+  cron would auto-cancel the booking).
+- Its intent hygiene is derived, never remembered (#4320). On the restored
+  booking it re-applies the supersede rules: a primary intent not at the amount
+  owed, and an additional intent that is not the live ask, stay or become
+  queued for cancellation. It then DELETES every live (not SUCCEEDED: pending,
+  processing, failed, retrying or exhausted) `CANCEL_PAYMENT_INTENT` /
+  `REFUND_SUPERSEDED_PAYMENT` row on any other live card intent, except one the
+  settle found already queued (`adoptedCancelPaymentIntentIds`). A superseded
+  intent is never handed out again (`INV-PAY-138`). A settle row without that
+  list, written before #4320, adopts nothing. Deletion, not a terminal status:
+  the webhook-side liveness predicates key on `status != SUCCEEDED`, so only a
+  deleted row is invisible to all of them. The deleted rows' content goes into
+  the reversal's `AuditLog` metadata, with `stillCancelledPaymentIntentIds`.
+- The superseded hand-off re-claims its row, marks the capture SUCCEEDED and
+  rebuilds in one transaction under the `Payment` row, which the reversal holds
+  from its settled-transaction check to its commit. So a member-owed superseded
+  refund is never deleted: whichever commits first, the other refuses or claims
+  nothing. A worker that claimed a row may still cancel its intent at Stripe
+  after the reversal commits; the member's open tab then fails, and the pay
+  step mints a fresh intent. No money moves. Proven on PostgreSQL by
+  `manual-reversal-retrying-cancel.realdb.test.ts`.
 
 ## INV-PAY-046
 

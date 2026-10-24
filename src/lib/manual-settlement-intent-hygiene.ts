@@ -144,7 +144,6 @@ export async function enqueueManualSettlementIntentCancellations(
   return { cancelledIntentIds, adoptedIntentIds, sparedIntentId };
 }
 
-
 /** The settle's audit-metadata key for `adoptedIntentIds`, written and read only here (`INV-SSOT`). */
 const ADOPTED_CANCEL_INTENTS_KEY = "adoptedCancelPaymentIntentIds";
 
