@@ -382,7 +382,7 @@ export async function alertCaptureKeptWithoutRecordedSettler({
       paymentIntentId,
       otherPaymentIntentId,
       otherHoldsMoney,
-      cancellationRefund,
+      ...(cancellationRefund ? { cancellationRefund } : {}),
     }, format);
   } catch (err) {
     logger.error({ err, ...context }, "Failed to alert admins about a kept capture; giving the claim back so a repeat tries again (#4211)");

@@ -1972,6 +1972,29 @@ describe("#4285 a capture arriving on a COMPLETED booking is judged as on a PAID
       },
     );
 
+    it("#4285 review 6: the drain's closed alert carries the cancellation's recorded refund to the sender; the settle's alert carries none", async () => {
+      const { alertCaptureKeptWithoutRecordedSettler } = await import("@/lib/duplicate-capture-guard");
+      const cancellationRefund = { method: "credit" as const, amount: "$100.00" };
+
+      expect(
+        await alertCaptureKeptWithoutRecordedSettler({
+          booking: makePaidBooking(),
+          memberName: "Alice Member",
+          paymentIntentId: OTHER_PI,
+          amountCents: 20000,
+          otherPaymentIntentId: null,
+          otherHoldsMoney: false,
+          reason: "new-capture-closed",
+          cancellationRefund,
+          format: CLUB_FORMAT_TEST,
+        }),
+      ).toBe("sent");
+      expect(mocks.sendAdminDuplicateCaptureKeptAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "new-capture-closed", amountCents: 20000, cancellationRefund }),
+        CLUB_FORMAT_TEST,
+      );
+    });
+
     it("a replay of the booking's only capture, already recorded: a silent keep at any amount, a later fee notwithstanding", async () => {
       primeLedger([ledgerRow({ id: "txn-z", stripePaymentIntentId: OTHER_PI, amountCents: 7000 })]);
 
