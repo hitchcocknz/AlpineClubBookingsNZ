@@ -1743,7 +1743,7 @@ export async function retryXeroSyncOperation(
       // edit, so an earlier same-amount capture belongs to another edit).
       // Never record cash without evidence — a skipped payment stays
       // recoverable via the PARTIAL invoice-repair path.
-      const recordPaymentAsked = queuedSupplementaryPayload
+      const recordPayment = queuedSupplementaryPayload
         ? queuedSupplementaryPayload.recordPayment ?? true
         : Boolean(
             await prisma.paymentTransaction.findFirst({
@@ -1759,14 +1759,14 @@ export async function retryXeroSyncOperation(
             })
           );
       // #3953 round 9 (`INV-PAY-139`): asked again under the change's anchor lock - a capture's receipt may record it, or have set this row unpaid.
-      const recordPayment = recordPaymentAsked && (await supplementaryReplayMayRecordPayment({ operationId: operation.id, bookingId: modification.bookingId, bookingModificationId: operation.localId! }));
+      const recordPaymentStands = recordPayment && (await supplementaryReplayMayRecordPayment({ operationId: operation.id, bookingId: modification.bookingId, bookingModificationId: operation.localId! }));
       await xero.createXeroSupplementaryInvoice({
         bookingId: modification.bookingId,
         priceDiffCents: amounts.priceDiffCents,
         changeFeeCents: amounts.changeFeeCents,
         bookingModificationId: operation.localId!,
         createdByMemberId,
-        recordPayment,
+        recordPayment: recordPaymentStands,
         repairExistingLink: true,
         format,
       });
