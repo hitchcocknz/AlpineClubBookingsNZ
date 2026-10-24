@@ -1,13 +1,7 @@
 import { bookingWorthCents } from "@/lib/booking-payment-state";
 import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
-import {
-  BookingEventType,
-  BookingStatus,
-  PaymentSource,
-  PaymentStatus,
-  PaymentTransactionKind,
-  Prisma,
-} from "@prisma/client";
+import { BookingEventType, BookingStatus, PaymentSource, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
+import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 
 import { bookingOwner } from "@/lib/booking-owner";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
@@ -1110,7 +1104,7 @@ async function cancelSupersededLinkIntentsBestEffort(
         paymentId: claim.paymentId,
         kind: PaymentTransactionKind.PRIMARY,
         source: PaymentSource.STRIPE,
-        status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+        status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
         stripePaymentIntentId: { not: null },
         amountCents: { gt: 0 },
         // Never the row this run is REPLAYING (#3267): a legacy shared-key row
@@ -1700,14 +1694,14 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
       if (paymentIntent.status === "succeeded") {
         paymentSucceeded = true;
 
-        await settleSavedCardChargeAttempt({
+        const { newlyCaptured } = await settleSavedCardChargeAttempt({
           attemptRowId: resolution.attempt.attemptRowId,
           paymentId: resolution.paymentId,
           paymentIntent,
         });
 
         const reconciliation = await markBookingPaymentSucceeded({
-          format,
+          format, recordedByCaller: newlyCaptured, // #4285 review: new money, not a replay
           bookingId: resolution.booking.id,
           paymentIntentId: paymentIntent.id,
           amountCents: paymentIntent.amount,

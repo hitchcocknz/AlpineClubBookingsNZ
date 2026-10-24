@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  510
+row-producing sites:  511
 uncategorised:        0
-category values: admin 108, booking 108, xero 42, family 35, payment 60,
+category values: admin 108, booking 108, xero 43, family 35, payment 60,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -840,7 +840,11 @@ the same people instead of being noted in Xero.
 `pnpm run audit:census`): `xero.credit_note.spent_outside_app_converged`, the credit-ledger
 convergence's own row, filed `xero` beside the other Xero rows.
 
-#4270 then added two (`xero` 40 -> 42, 508 -> 510, MEASURED with
+#4338 then added one more (`xero` 40 -> 41, 508 -> 509, MEASURED with
+`pnpm run audit:census`): `xero.credit_note.spent_outside_app_attempt_closed`,
+the same convergence closing a concurrent attempt's failed allocation, filed
+`xero` beside it.
+#4270 then added two (`xero` 41 -> 43, 509 -> 511, MEASURED with
 `pnpm run audit:census`): `xero.credit_note.outside_spend_mirrored` and
 `xero.credit_note.outside_spend_restored`, the inbound credit-note mirror's rows, filed
 `xero` beside the converge's.
