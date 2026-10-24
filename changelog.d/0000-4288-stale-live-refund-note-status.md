@@ -3,7 +3,9 @@
   sync, the card refund-note status recorder, or a treasurer's "I already
   recorded it in Xero myself" answer - could arrive after the void had been
   recorded and make the note look live again. The app then counted a voided
-  note as covering the refund.
+  note as covering the refund. On a bank transfer, the sync could also put the
+  voided note's amount back into the payment's refunded total. It could also
+  record the note's old refund payments.
 
   Every reading now carries Xero's own last-updated time, and an older reading
   never overwrites a newer one. A voided note is never made live again: Xero

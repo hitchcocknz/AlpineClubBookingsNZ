@@ -28,6 +28,9 @@ describe("the stale live refund-note status proof stays wired into CI (#4288)", 
     expect(suite).toContain("MUTATION (order): an older live reading queued behind a newer live one keeps the newer snapshot (lock-queued)");
     expect(suite).toContain("a newer live reading is applied through the real reconcile: AUTHORISED to PAID is ordinary");
     expect(suite).toContain("MUTATION (pointer): a stale live write keeps the void without waiting on the Payment a Payment-first enqueue holds (race)");
+    expect(suite).toContain("MUTATION (recount): a bank transfer's stale reconcile recounts the kept void, so the void's lowered total is not raised back");
+    expect(suite).toContain("a card payment's stale reconcile moves no money either way: the Stripe ledger is never lowered or raised past Stripe's own refunds");
+    expect(suite).toContain("MUTATION (refund payments): a stale reconcile writes no refund-payment link from its older reading's payments");
     expect(suite).toContain("pg_blocking_pids");
     expect(suite).toContain('assertSafeRaceDbUrl(RACE_DB_URL, "Stale live refund-note status")');
     expect(suite.indexOf("assertSafeRaceDbUrl(RACE_DB_URL")).toBeLessThan(suite.indexOf('await import("@/lib/prisma")'));

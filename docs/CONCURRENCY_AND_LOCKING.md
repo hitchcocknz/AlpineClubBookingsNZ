@@ -5712,7 +5712,9 @@ refund request's note. Each ends inactive and VOIDED, the pointer null, and the
 replacement sibling alone covering. It also queues a live reconcile on the
 void's row lock, orders two live readings by `UpdatedDateUTC`, and has a stale
 live write finish while a Payment-first enqueue holds the Payment, which then
-completes with no cycle.
+completes with no cycle. It also proves the stale reconcile's recount leaves a
+bank-transfer total the void lowered where it was, and links none of the stale
+reading's refund payments.
 
 **Mixed releases.** The own-row-first order is consistent within this release;
 the old canonical writer takes siblings before its own row. Running both on
