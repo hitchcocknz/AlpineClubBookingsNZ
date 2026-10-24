@@ -1,4 +1,4 @@
--- Reverse script for 20261121050000_other_lodge_names_not_unique (#69).
+-- Reverse script for 20261123050000_other_lodge_names_not_unique (#69).
 --
 -- Prisma never applies, checksums or reads this file: run it by hand, as the
 -- migration role, against the database being rolled back.

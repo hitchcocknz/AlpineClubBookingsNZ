@@ -1,4 +1,4 @@
--- Reverse script for 20261121010000_other_lodge_non_member_rates (#61).
+-- Reverse script for 20261123010000_other_lodge_non_member_rates (#61).
 --
 -- Prisma never applies, checksums or reads this file: run it by hand, as the
 -- migration role, against the database being rolled back to a release that

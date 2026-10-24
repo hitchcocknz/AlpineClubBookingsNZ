@@ -1,4 +1,4 @@
--- Reverse script for 20261121030000_other_lodge_central_id (#64).
+-- Reverse script for 20261123030000_other_lodge_central_id (#64).
 --
 -- Prisma never applies, checksums or reads this file: run it by hand, as the
 -- migration role, against the database being rolled back.

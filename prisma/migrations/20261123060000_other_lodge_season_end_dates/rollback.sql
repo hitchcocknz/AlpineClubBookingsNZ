@@ -1,4 +1,4 @@
--- Reverse script for 20261121060000_other_lodge_season_end_dates (#75).
+-- Reverse script for 20261123060000_other_lodge_season_end_dates (#75).
 --
 -- Prisma never applies, checksums or reads this file: run it by hand, as the
 -- migration role, against the database being rolled back.
