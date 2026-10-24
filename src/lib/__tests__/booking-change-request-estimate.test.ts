@@ -46,6 +46,7 @@ vi.mock("@/lib/membership-type-policy", () => ({
 }));
 
 import { estimateChangeRequestAddedGuests } from "@/lib/booking-change-request-estimate";
+import { seasonYearOfStoredDate } from "@/lib/financial-year";
 import { CHANGE_REQUEST_DATES_OUTSIDE_NIGHTS_MESSAGE } from "@/lib/booking-change-request-guests";
 import {
   CHANGE_REQUEST_UNKNOWN_RANGE_GUEST_MESSAGE,
@@ -266,6 +267,31 @@ describe("estimateChangeRequestAddedGuests (#4030)", () => {
         guestStayRanges: [{ guestId: "guest-1", stayStart: "2026-06-30", stayEnd: "2026-07-03" }],
       });
       expect(estimate).toMatchObject({ guests: [{ priceCents: 1000 + 2000 + 1000, nights: 3 }] });
+    });
+
+    it("a moved check-out with no ranges counts the guests on the new nights too", async () => {
+      // Check-out moves a night later and no guest names a range: the staying
+      // guests stretch to the new stay, as the planner writes them, so the party
+      // is three on all four nights and the card child is priced on all four.
+      const estimate = await estimateChangeRequestAddedGuests(booking(2), [child("Ari")], {
+        checkOut: "2026-07-04",
+      });
+      expect(estimate).toMatchObject({ guests: [{ priceCents: 4 * 1000, nights: 4 }], totalCents: 4000 });
+    });
+
+    it("resolves the card guest's rate in the season year of the proposed check-in", async () => {
+      const moved = booking(1);
+      moved.checkIn = day("2026-04-01");
+      moved.checkOut = day("2026-04-03");
+      moved.guests[0].stayStart = day("2026-04-01");
+      moved.guests[0].stayEnd = day("2026-04-03");
+      moved.guests[0].nights = [{ stayDate: day("2026-04-01") }, { stayDate: day("2026-04-02") }];
+      // The premise: the proposal crosses a season-year boundary.
+      expect(seasonYearOfStoredDate(day("2026-03-30"))).not.toBe(seasonYearOfStoredDate(moved.checkIn));
+      await estimateChangeRequestAddedGuests(moved, [child("Ari")], { checkIn: "2026-03-30" });
+      expect(mocks.resolveGuestRateMembershipTypes.mock.calls[0][1]).toMatchObject({
+        seasonYear: seasonYearOfStoredDate(day("2026-03-30")),
+      });
     });
 
     it("no editor change leaves the estimate as it was", async () => {

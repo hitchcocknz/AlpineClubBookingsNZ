@@ -32,14 +32,14 @@ export type ChangeRequestDelta = z.infer<typeof changeRequestDeltaSchema>;
  * Preserve editor-first ordering at quote, estimate and submission
  * (INV-SSOT-001): the editor's added guests, then the card's.
  */
-export function mergeChangeRequestGuests<Changes extends { addGuests?: unknown }>(
+export function mergeChangeRequestGuests<Changes extends { addGuests?: readonly ChangeRequestAddGuest[] }>(
   editorChanges: Changes,
   cardGuests: readonly ChangeRequestAddGuest[],
 ): Changes {
   if (cardGuests.length === 0) return editorChanges;
   return {
     ...editorChanges,
-    addGuests: [...((editorChanges.addGuests as readonly ChangeRequestAddGuest[] | undefined) ?? []), ...cardGuests],
+    addGuests: [...(editorChanges.addGuests ?? []), ...cardGuests],
   };
 }
 

@@ -3,7 +3,7 @@ import type { AgeTier } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { getDefaultLodgeId } from "@/lib/lodges";
 import type { NormalizedBookingGuestStayRange } from "@/lib/booking-guest-stay-range-input";
-import { resolveModificationStayRanges } from "@/lib/booking-modification-stay-ranges";
+import { resolveModificationStayRanges, resolvedAddedGuestRange } from "@/lib/booking-modification-stay-ranges";
 import { changeRequestProposalBatchInput } from "@/lib/booking-change-request-stored";
 import { mergeChangeRequestGuests, type ChangeRequestDelta } from "@/lib/booking-change-request-input";
 import { seasonYearOfStoredDate } from "@/lib/financial-year";
@@ -97,7 +97,7 @@ export async function estimateChangeRequestAddedGuests(
   addGuests: ReadonlyArray<ChangeRequestAddGuest>,
   editorChanges: ChangeRequestDelta = {},
 ): Promise<ChangeRequestEstimate> {
-  const editorAddedCount = editorChanges.addGuests?.length ?? 0;
+  const editorAdded = editorChanges.addGuests ?? [];
   const proposal = mergeChangeRequestGuests(editorChanges, addGuests);
   const resolved = resolveModificationStayRanges({
     booking,
@@ -105,10 +105,13 @@ export async function estimateChangeRequestAddedGuests(
     input: changeRequestProposalBatchInput(booking, proposal) ?? {},
   });
   const { checkIn, checkOut } = resolved;
-  // The card's guests, after the editor's, with their nights as the planner
-  // would write them: the grid's night set (#713, #4088), else the two bounds,
-  // else the whole stay, by the canonical range rule (`INV-SSOT`).
-  const cardRanges = resolved.added.slice(editorAddedCount);
+  // Each added guest's nights as the planner would write them — the editor's,
+  // then the card's: the grid's night set (#713, #4088), else the two bounds,
+  // else the whole stay, by the canonical range rule (`INV-SSOT`). Refused,
+  // never invented, if the resolver's list is out of step (#2800).
+  const addedCount = editorAdded.length + addGuests.length;
+  const addedRange = (index: number) => resolvedAddedGuestRange(resolved.added, index, addedCount);
+  const cardRange = (index: number) => addedRange(editorAdded.length + index);
   const nonMembers = addGuests
     .map((guest, index) => ({ guest, index }))
     .filter(({ guest }) => !guest.isMember);
@@ -128,7 +131,7 @@ export async function estimateChangeRequestAddedGuests(
     seasonYear,
     subscriptionLockoutMode,
     guests: nonMembers.map(({ guest, index }) => {
-      const range = cardRanges[index] ?? { stayStart: checkIn, stayEnd: checkOut };
+      const range = cardRange(index);
       return {
         ageTier: guest.ageTier as AgeTier,
         isMember: false,
@@ -148,14 +151,14 @@ export async function estimateChangeRequestAddedGuests(
     if (ratedEntry) return ratedEntry;
     return countOnly(
       { ageTier: guest.ageTier as AgeTier, isMember: true },
-      cardRanges[index] ?? { stayStart: checkIn, stayEnd: checkOut },
+      cardRange(index),
     );
   });
   // Everyone else in the proposed party: counted on their nights, never priced.
   const countedParty = [
     ...resolved.remaining.map(({ guest, ...range }) => countOnly(guest, range)),
-    ...(editorChanges.addGuests ?? []).map((guest, index) =>
-      countOnly({ ageTier: guest.ageTier as AgeTier, isMember: guest.isMember }, resolved.added[index] ?? { stayStart: checkIn, stayEnd: checkOut }),
+    ...editorAdded.map((guest, index) =>
+      countOnly({ ageTier: guest.ageTier as AgeTier, isMember: guest.isMember }, addedRange(index)),
     ),
   ];
   let priced;
