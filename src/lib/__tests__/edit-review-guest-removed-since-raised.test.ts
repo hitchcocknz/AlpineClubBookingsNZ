@@ -4,15 +4,19 @@ import {
   editFinancialReviewGuestsRemovedSinceRaised,
   parseEditFinancialReviewContext,
 } from "@/lib/edit-financial-review-context";
+import { reviewGuestRemovedSinceRaisedWarning } from "@/lib/manual-refund-task-copy";
 import { toOpenManualRefundTaskPayload } from "@/lib/manual-refund-task-queue-payload";
+
+import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 /**
  * #4317 (owner decision on #4302, after review round 1): AN OPEN REVIEW WHOSE
  * GUEST WAS REMOVED AFTER IT WAS RAISED WARNS THE OFFICER.
  *
- * A priced removal credits the guest's whole stored total, which still holds
- * the nights the pre-#4317 review was raised over, so settling the review would
- * credit them a second time. Wave B's clean-up closes such a review with no
+ * A priced removal credits the guest's whole stored total, which a parked edit
+ * never changed: it still holds the nights the review's edit gave back (settling
+ * could credit them a second time) and never held the nights it added (settling
+ * could charge for nights the guest no longer holds). Wave B's clean-up closes such a review with no
  * money moved; until then the settle screen says so. The guest that a parked
  * REMOVAL itself took off - deleted in the transaction that raised the review -
  * is not one of these: nothing was credited for it.
@@ -81,7 +85,16 @@ describe("editFinancialReviewGuestsRemovedSinceRaised", () => {
     // A's stored $300 already.
     expect(
       editFinancialReviewGuestsRemovedSinceRaised(read(SHORTENING), new Set(["guest-b"])),
-    ).toEqual([{ bookingGuestId: "guest-a", strandIndex: 0, strandCount: 2, guestTotalCents: 30_000 }]);
+    ).toEqual([
+      {
+        bookingGuestId: "guest-a",
+        strandIndex: 0,
+        strandCount: 2,
+        guestTotalCents: 30_000,
+        gaveNightsBack: true,
+        addedNights: false,
+      },
+    ]);
   });
 
   it("does NOT flag an untouched guest the review merely carries (review round 3)", () => {
@@ -129,20 +142,62 @@ describe("editFinancialReviewGuestsRemovedSinceRaised", () => {
     },
   };
 
-  it("does NOT flag a guest whose strand only added nights, removed since (review round 4)", () => {
-    // D's added night was never collected, so D's removal credited money the
-    // member had not paid; settling the review's charge is the offset.
-    expect(editFinancialReviewGuestsRemovedSinceRaised(read(EXTENSION), new Set(["guest-b"]))).toEqual([]);
+  it("flags a guest whose strand only ADDED nights, removed since, as a possible charge (review round 6)", () => {
+    // THE FACT, settled at source: a parked edit left the guest's stored total
+    // as it was (INV-MOD-040). On `main` every parked writer stored
+    // `priceCents` unchanged - the batch save's pre-check-in park
+    // (`priceCents: stored.priceCents`), the in-progress planner's park
+    // (`priceCents: entry.guest.priceCents`) and the date change
+    // (`parked ? g.priceCents : ...`) - and `booking-edit-financial-review-
+    // parity.test.ts` pinned it: a three-night $150 strand extended to five
+    // parked at $150. So D's added night was never in the total D's removal
+    // credited, and settling this charge would bill a night D no longer holds.
+    expect(editFinancialReviewGuestsRemovedSinceRaised(read(EXTENSION), new Set(["guest-b"]))).toEqual([
+      {
+        bookingGuestId: "guest-d",
+        strandIndex: 0,
+        strandCount: 1,
+        guestTotalCents: 30_000,
+        gaveNightsBack: false,
+        addedNights: true,
+      },
+    ]);
   });
 
-  it("flags a moved strand - nights given back AND added - removed since", () => {
+  it("flags a moved strand - nights given back AND added - in both directions", () => {
     const moved = {
       ...EXTENSION,
       occurrence: { ...EXTENSION.occurrence, surrenderedNightDates: ["2026-08-01"] },
     };
     expect(editFinancialReviewGuestsRemovedSinceRaised(read(moved), new Set(["guest-b"]))).toEqual([
-      { bookingGuestId: "guest-d", strandIndex: 0, strandCount: 1, guestTotalCents: 30_000 },
+      {
+        bookingGuestId: "guest-d",
+        strandIndex: 0,
+        strandCount: 1,
+        guestTotalCents: 30_000,
+        gaveNightsBack: true,
+        addedNights: true,
+      },
     ]);
+  });
+});
+
+describe("reviewGuestRemovedSinceRaisedWarning: worded in the direction the nights moved", () => {
+  const guest = { ordinal: "Guest 1 of 2", guestTotalCents: 30_000 };
+  it("a credit strand could credit its nights again", () => {
+    const text = reviewGuestRemovedSinceRaisedWarning({ ...guest, gaveNightsBack: true, addedNights: false }, CLUB_FORMAT_TEST);
+    expect(text).toContain("could credit those nights again");
+    expect(text).not.toContain("could charge");
+  });
+  it("an add strand could charge for nights the guest no longer holds", () => {
+    const text = reviewGuestRemovedSinceRaisedWarning({ ...guest, gaveNightsBack: false, addedNights: true }, CLUB_FORMAT_TEST);
+    expect(text).toContain("could charge for nights this guest no longer holds");
+    expect(text).not.toContain("could credit");
+  });
+  it("a mixed strand warns both ways", () => {
+    const text = reviewGuestRemovedSinceRaisedWarning({ ...guest, gaveNightsBack: true, addedNights: true }, CLUB_FORMAT_TEST);
+    expect(text).toContain("could credit those nights again");
+    expect(text).toContain("could charge for nights this guest no longer holds");
   });
 });
 
@@ -180,7 +235,7 @@ describe("the queue payload's reviewGuestRemovedSinceRaised", () => {
 
   it("names the shortened guest, removed since, by place and stored total - never by id", () => {
     expect(toOpenManualRefundTaskPayload(row, null, []).reviewGuestsRemovedSinceRaised).toEqual([
-      { strandIndex: 0, strandCount: 2, guestTotalCents: 30_000 },
+      { strandIndex: 0, strandCount: 2, guestTotalCents: 30_000, gaveNightsBack: true, addedNights: false },
     ]);
   });
 

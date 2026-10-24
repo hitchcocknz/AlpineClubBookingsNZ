@@ -524,12 +524,14 @@ automatically when it is saved — see
 The rows still on this card were raised before that. Work them as described below
 until the club's clean-up has settled them; while one is open, a further price
 change to its booking is refused. **A row warned that a guest "was removed
-from the booking after this review was raised"** names a guest who gave nights
-back in that change and came off the booking since; a guest who only added
-nights is not named, because their removal credited nothing they had paid. That removal already credited
-the guest's own stored total, so settling could credit those nights a second
-time. Check Xero and the booking before settling: the row may still hold money
-owed for another guest. The clean-up closes such a row with no money moved.
+from the booking after this review was raised"** names a guest whose nights that
+change moved and who came off the booking since. The removal credited the
+guest's stored total, which a held change never altered: it still included the
+nights the change gave back, so settling could credit those nights again, and it
+never included the nights the change added, so settling could charge for nights
+the guest no longer holds. The warning says which applies. Check Xero and the
+booking before settling: the row may still hold money owed for another guest.
+The clean-up closes such a row with no money moved.
 
 Before that, sometimes a member changed a booking — gave back a night, took a
 guest off — and the change itself was fine, but the club's records did not say clearly enough

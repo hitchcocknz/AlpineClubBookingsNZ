@@ -240,15 +240,18 @@ export type OpenManualRefundTaskPayload = {
   reviewEvidenceUnreadable: boolean;
   /**
    * #4317 (owner decision on #4302): the guests whose nights this review's edit
-   * moved and who were removed from the booking after it was raised, already
-   * credited. Named by their place among the item's strands (the evidence
-   * block's "Guest N of M") and stored total; no id crosses the wire. Empty on
-   * a hand-back, and where the booking's guests were not read.
+   * moved and who were removed from the booking after it was raised, credited
+   * their stored total. Named by their place among the item's strands (the
+   * evidence block's "Guest N of M") and stored total, with which way their
+   * nights moved; no id crosses the wire. Empty on a hand-back, and where the
+   * booking's guests were not read.
    */
   reviewGuestsRemovedSinceRaised: Array<{
     strandIndex: number;
     strandCount: number;
     guestTotalCents: number | null;
+    gaveNightsBack: boolean;
+    addedNights: boolean;
   }>;
   /**
    * #3191: the nights whose stored price is blank, and the two totals the
@@ -374,16 +377,22 @@ export function toOpenManualRefundTaskPayload(
     reviewEvidenceUnreadable: !ownContext && task.reviewContext !== null && !reviewContext,
     /*
       #4317 (owner decision on #4302): a guest this review names came off the
-      booking after it was raised, already credited its stored total, so
-      settling the review would credit those nights again. Only on a review
-      whose booking guests were read; never on a hand-back.
+      booking after it was raised, credited its stored total, so settling the
+      review could credit given-back nights again or charge for added ones. Only
+      on a review whose booking guests were read; never on a hand-back.
     */
     reviewGuestsRemovedSinceRaised:
       task.kind === "EDIT_FINANCIAL_REVIEW" && reviewContext !== null && task.booking.guests !== undefined
         ? editFinancialReviewGuestsRemovedSinceRaised(
             reviewContext,
             new Set(task.booking.guests.map((guest) => guest.id)),
-          ).map(({ strandIndex, strandCount, guestTotalCents }) => ({ strandIndex, strandCount, guestTotalCents }))
+          ).map((guest) => ({
+            strandIndex: guest.strandIndex,
+            strandCount: guest.strandCount,
+            guestTotalCents: guest.guestTotalCents,
+            gaveNightsBack: guest.gaveNightsBack,
+            addedNights: guest.addedNights,
+          }))
         : [],
     unpricedNights,
   };

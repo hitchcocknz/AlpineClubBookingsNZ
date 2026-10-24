@@ -432,20 +432,30 @@ describe("the evidence an admin prices from (#3033, owner decision D3)", () => {
   });
 
   it("warns, naming the guest, when a guest whose nights the review moved was removed after it was raised (#4317)", async () => {
-    // The removal already credited that guest's stored total; settling could
-    // credit the reviewed nights again. It asks for a check, not a dismissal:
-    // the review may still hold money owed for another guest (round 3).
+    // The removal credited that guest's stored total, which a parked edit never
+    // changed: settling could credit given-back nights again, or charge for
+    // added ones the guest no longer holds. It asks for a check, not a
+    // dismissal: the review may still hold money owed for another guest.
     await renderQueue({
       tasks: [
-        { ...REVIEW_TASK, reviewGuestsRemovedSinceRaised: [{ strandIndex: 0, strandCount: 2, guestTotalCents: 30_000 }] },
+        {
+          ...REVIEW_TASK,
+          reviewGuestsRemovedSinceRaised: [
+            { strandIndex: 0, strandCount: 2, guestTotalCents: 30_000, gaveNightsBack: true, addedNights: false },
+            { strandIndex: 1, strandCount: 2, guestTotalCents: 20_000, gaveNightsBack: false, addedNights: true },
+          ],
+        },
       ],
       viewerCanViewBookings: true,
     });
 
-    const warning = screen.getByTestId("manual-refund-task-review-guest-removed");
-    expect(warning).toHaveTextContent("Guest 1 of 2, stored at $300.00, was removed from the booking after this review was raised.");
-    expect(warning).toHaveTextContent("Check Xero and the booking before settling");
-    expect(warning).not.toHaveTextContent(/dismiss/i);
+    const [credit, charge] = screen.getAllByTestId("manual-refund-task-review-guest-removed");
+    expect(credit).toHaveTextContent("Guest 1 of 2, stored at $300.00, was removed from the booking after this review was raised.");
+    expect(credit).toHaveTextContent("Check Xero and the booking before settling");
+    expect(credit).toHaveTextContent("could credit those nights again");
+    expect(credit).not.toHaveTextContent(/dismiss/i);
+    expect(charge).toHaveTextContent("Guest 2 of 2, stored at $200.00, was removed");
+    expect(charge).toHaveTextContent("could charge for nights this guest no longer holds");
   });
 
   it("says nothing about a removed guest on a review whose guests are all still there", async () => {

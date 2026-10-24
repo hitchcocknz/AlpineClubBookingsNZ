@@ -260,21 +260,28 @@ export function editFinancialReviewStrandMovesNights(
  *
  * Since #4317 a removal is priced, and a consent removal is exempt from the
  * open-review fence (D-14), so a guest a pre-#4317 review is about can come off
- * the booking while the review is open - credited its whole stored total, which
- * still holds the nights the review was raised over. Settling the review then
- * would credit those nights a second time. The owner's answer: price the
- * removal, warn the officer here, and let wave B's clean-up (D3) close such a
- * review with no money moved.
+ * the booking while the review is open - credited its whole STORED total. A
+ * parked edit left that total exactly as it was (`INV-MOD-040`; on `main` every
+ * parked writer stored `priceCents` unchanged, pinned by
+ * `booking-edit-financial-review-parity.test.ts`: a three-night strand extended
+ * to five parked at its three-night total). So:
  *
- * Only a strand that SURRENDERED nights counts: a credit is owed only for
- * nights given back, and those are the nights the removal credited too (#4317
- * review rounds 3 and 4). A strand the review merely carries - one of its
- * `otherStrands`, or a pre-#3498 one-strand row about a guest the edit did not
- * touch - cannot be credited twice by its guest's removal, and warning on it
- * would steer an officer away from money the member is owed for another guest.
- * Nor can a strand that only ADDED nights: those were never collected, so the
- * removal credited money the member had not paid, and settling the review's
- * charge is the very offset that squares it.
+ *  - nights the review's edit GAVE BACK are still inside that total, and the
+ *    removal credited them: settling the review could credit them again;
+ *  - nights it ADDED never were, and the removal did not credit them: settling
+ *    could charge for nights the guest no longer holds.
+ *
+ * The owner's answer: price the removal, warn the officer here (in the direction
+ * each strand moved, `gaveNightsBack` / `addedNights`), and let wave B's
+ * clean-up (D3) close such a review with no money moved.
+ *
+ * Only a strand whose nights the review's edit MOVED counts
+ * (`editFinancialReviewStrandMovesNights`): a review's money only ever comes
+ * from those (#4317 review rounds 3, 4 and 6). A strand the review merely
+ * carries - one of its `otherStrands`, or a pre-#3498 one-strand row about a
+ * guest the edit did not touch - cannot be settled twice by its guest's
+ * removal, and warning on it would steer an officer away from money owed for
+ * another guest.
  *
  * And a moved strand counts only when the review's OWN edit did not remove it: a
  * parked removal deletes its departing guest in the transaction that raised the
@@ -294,10 +301,12 @@ export function editFinancialReviewGuestsRemovedSinceRaised(
   strandIndex: number;
   strandCount: number;
   guestTotalCents: number | null;
+  gaveNightsBack: boolean;
+  addedNights: boolean;
 }> {
   const strands = editFinancialReviewStrandRecords(context.occurrence);
   return strands.flatMap((strand, strandIndex) => {
-    if (strand.surrenderedNightDates.length === 0) return [];
+    if (!editFinancialReviewStrandMovesNights(strand)) return [];
     if (currentGuestIds.has(strand.bookingGuestId)) return [];
     const surrendered = new Set<string>(strand.surrenderedNightDates);
     const removedByItsOwnEdit =
@@ -311,6 +320,8 @@ export function editFinancialReviewGuestsRemovedSinceRaised(
         strandIndex,
         strandCount: strands.length,
         guestTotalCents: strand.storedEvidence.guestTotalCents,
+        gaveNightsBack: strand.surrenderedNightDates.length > 0,
+        addedNights: strand.addedNightDates.length > 0,
       },
     ];
   });

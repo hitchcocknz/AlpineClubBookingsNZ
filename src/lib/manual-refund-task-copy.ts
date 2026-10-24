@@ -252,25 +252,36 @@ export function completionSummary(shape: CompletionSettlementShape): string {
 }
 
 /**
- * #4317 (owner decision on #4302; review round 3 wording): the officer's
+ * #4317 (owner decision on #4302; review rounds 3 and 6 wording): the officer's
  * warning on an OPEN edit review one of whose MOVED guests was removed from the
  * booking after the review was raised (`editFinancialReviewGuestsRemovedSinceRaised`).
- * The removal already credited that guest's own stored total, so settling the
- * review could credit the same nights again - but the review may still hold
- * money owed for another guest, so it asks for a check rather than a dismissal.
+ * The removal credited that guest's STORED total, which a parked edit never
+ * changed (`INV-MOD-040`): it still held the nights the edit gave back, and
+ * never held the nights it added. So settling could credit given-back nights
+ * again, or charge for added nights the guest no longer holds - each strand is
+ * warned in the direction it moved, a mixed one in both. The review may still
+ * hold money owed for another guest, so it asks for a check, not a dismissal.
  *
  * The guest is named the way the settle card's evidence block names it - its
  * ordinal on a several-guest item, and its stored total - because the payload
  * carries no guest id and the guest's row is gone.
  */
 export function reviewGuestRemovedSinceRaisedWarning(
-  guest: { ordinal: string | null; guestTotalCents: number | null },
+  guest: { ordinal: string | null; guestTotalCents: number | null; gaveNightsBack: boolean; addedNights: boolean },
   format: ClubFormat,
 ): string {
   const who = guest.ordinal ?? "This review's guest";
   const stored =
     guest.guestTotalCents !== null ? `, stored at ${formatCents(guest.guestTotalCents, format)},` : "";
-  return `${who}${stored} was removed from the booking after this review was raised. Check Xero and the booking before settling: this guest's own stored total was already credited when they were removed, so settling could credit those nights a second time.`;
+  const risks = [
+    ...(guest.gaveNightsBack
+      ? ["the nights this change gave back were already credited with this guest's stored total, so settling could credit those nights again"]
+      : []),
+    ...(guest.addedNights
+      ? ["the nights this change added were never part of this guest's stored total, so settling could charge for nights this guest no longer holds"]
+      : []),
+  ];
+  return `${who}${stored} was removed from the booking after this review was raised. Check Xero and the booking before settling: ${risks.join("; and ")}.`;
 }
 
 /**

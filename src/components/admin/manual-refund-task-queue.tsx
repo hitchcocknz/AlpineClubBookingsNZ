@@ -139,7 +139,7 @@ interface ManualRefundTask {
   reviewEvidence?: EditFinancialReviewEvidence | null;
   reviewEvidenceUnreadable?: boolean;
   /** #4317 (owner, #4302): moved guests removed since, already credited. Absent: no warning. */
-  reviewGuestsRemovedSinceRaised?: Array<{ strandIndex: number; strandCount: number; guestTotalCents: number | null }>;
+  reviewGuestsRemovedSinceRaised?: Array<{ strandIndex: number; strandCount: number; guestTotalCents: number | null; gaveNightsBack: boolean; addedNights: boolean }>;
   /**
    * #3191: this booking's nights that carry no stored price, and the two totals
    * the officer's figures must reconcile against.
@@ -1889,7 +1889,7 @@ export function ManualRefundTaskQueue() {
                         </p>
                       ) : null}
                       {(task.reviewGuestsRemovedSinceRaised ?? []).map((guest) => (
-                        <p key={guest.strandIndex} role="alert" className="text-sm font-medium text-warning-11" data-testid="manual-refund-task-review-guest-removed">{reviewGuestRemovedSinceRaisedWarning({ ordinal: strandOrdinal(guest.strandIndex, guest.strandCount), guestTotalCents: guest.guestTotalCents }, format)}</p>
+                        <p key={guest.strandIndex} role="alert" className="text-sm font-medium text-warning-11" data-testid="manual-refund-task-review-guest-removed">{reviewGuestRemovedSinceRaisedWarning({ ...guest, ordinal: strandOrdinal(guest.strandIndex, guest.strandCount) }, format)}</p>
                       ))}
                       {task.reviewEvidence ? (
                         <EditFinancialReviewEvidenceBlock
