@@ -784,6 +784,10 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
         expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
         expect(keptAlertReasons(logged)).toEqual([[OTHER, "new-capture-closed"]]);
+        // #4285 review 7 F1: the cancel's card refund row SUCCEEDED, so the alert says it was sent.
+        expect(await prisma.paymentRecoveryOperation.findUnique({ where: { idempotencyKey: `booking_cancel_refund_recovery_${BOOKING_ID}` }, select: { status: true } })).toEqual({ status: "SUCCEEDED" });
+        const [context] = logged.mock.calls.map(([each]) => each as { cancellationRefund?: unknown }).filter((each) => each && typeof each === "object" && "cancellationRefund" in each);
+        expect(context?.cancellationRefund).toEqual({ method: "card", card: { amount: expect.stringContaining("100"), standing: "sent" }, byBank: null, toCheck: null });
         expect(await owedMarkers()).toEqual([]);
       } finally {
         await prisma.cancellationPolicy.deleteMany({ where: { lodgeId: LODGE_ID } });
@@ -827,6 +831,72 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
         expect.objectContaining({ paymentIntentId: OTHER, reason: "new-capture-later-payment", otherPaymentIntentId: SETTLING, amountCents: PRICE_CENTS }),
       ]);
       expect(await owedMarkers()).toEqual([]);
+    });
+
+    /** A dead cancel (attempts spent, no retry) on the second capture: it hands the money to nobody. */
+    const deadCancelOn = (paymentIntentId: string) =>
+      prisma.paymentRecoveryOperation.create({
+        data: { type: "CANCEL_PAYMENT_INTENT", status: "FAILED", attempts: 5, nextRetryAt: null, bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId, amountCents: PRICE_CENTS, idempotencyKey: `race-4285-dead-cancel-${paymentIntentId}` },
+      });
+
+    it("#4285 review 7 F2: the settle's own alert, beside a capture behind a dead cancel, keeps the new capture and names that one - never 'no other payment'", async () => {
+      const asked = stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await secondCapture();
+      await deadCancelOn(SETTLING);
+      const logged = await spyOnLoggedErrors();
+
+      expect((await deliverWebhook(OTHER, "payment_intent.succeeded", key)).init?.status ?? 200).toBe(200);
+
+      expect(asked, "the verdict stays on the refund-safety reading: nothing refunded").toEqual([]);
+      expect(keptAlertContexts(logged)).toEqual([
+        expect.objectContaining({ paymentIntentId: OTHER, reason: "new-capture", otherPaymentIntentId: SETTLING, amountCents: PRICE_CENTS }),
+      ]);
+    });
+
+    it("#4285 review 7 F6: a capture whose duplicate-capture refund Stripe failed later is named while nothing owes it again, and not once an open row owes it back in full", async () => {
+      stripeMakesRefunds();
+      const key = await zeroDollarBookingWithLostAttempt();
+      await deliverWebhook(OTHER, "payment_intent.succeeded", key);
+      await crashedBeforeTheAlert();
+      const settling = await secondCapture();
+      const { buildDuplicateCaptureRefundRecoveryIdempotencyKey, CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX } = await import("@/lib/payment-recovery-keys");
+      // Its duplicate-capture refund closed SUCCEEDED, and Stripe failed that refund later: the capture holds it all again.
+      const duplicateRefund = await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_BOOKING_MODIFICATION", status: "SUCCEEDED", attempts: 1, nextRetryAt: null, bookingId: BOOKING_ID, paymentId: PAYMENT_ID,
+          paymentIntentId: SETTLING, amountCents: PRICE_CENTS, idempotencyKey: buildDuplicateCaptureRefundRecoveryIdempotencyKey(BOOKING_ID, SETTLING),
+          allocationPlan: [{ paymentTransactionId: settling.id, amountCents: PRICE_CENTS }],
+        },
+      });
+      const { readOtherSettledCaptureWhere } = await import("@/lib/duplicate-capture-guard");
+      const read = () => readOtherSettledCaptureWhere(prisma, { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: OTHER });
+      const reading = await read();
+      expect(reading.duplicateRefundIntentIds).toEqual([SETTLING]);
+      expect(await prisma.paymentTransaction.count({ where: reading.where }), "never a settlement candidate").toBe(0);
+      expect(await prisma.paymentTransaction.count({ where: await reading.readTellingWhere() }), "nothing owes it again: it holds money").toBe(1);
+
+      const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");
+      const logged = await spyOnLoggedErrors();
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+      expect(keptAlertContexts(logged)).toEqual([
+        expect.objectContaining({ paymentIntentId: OTHER, reason: "new-capture-later-payment", otherPaymentIntentId: SETTLING }),
+      ]);
+
+      // The club owes it again: an open failed-later row on its intent asks for all it holds.
+      const failedLaterKey = `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}re_race_4285_duplicate`;
+      await prisma.paymentRecoveryOperation.create({
+        data: {
+          type: "REFUND_BOOKING_MODIFICATION", status: "PENDING", attempts: 0, nextRetryAt: new Date("2026-06-30T00:00:00.000Z"), bookingId: BOOKING_ID, paymentId: PAYMENT_ID,
+          paymentIntentId: SETTLING, amountCents: PRICE_CENTS, idempotencyKey: failedLaterKey, stripeKeyPrefix: failedLaterKey,
+          allocationPlan: [{ paymentTransactionId: settling.id, amountCents: PRICE_CENTS, madeByOperationId: duplicateRefund.id }],
+        },
+      });
+      expect(await prisma.paymentTransaction.count({ where: await (await read()).readTellingWhere() }), "owed back in full: its refund machinery holds it").toBe(0);
+      await crashedBeforeTheAlert();
+      logged.mockClear();
+      expect(await drainOwedNewCaptureAlerts(new Date("2026-06-30T21:30:00.000Z"))).toMatchObject({ sent: 1 });
+      expect(keptAlertContexts(logged)).toEqual([expect.objectContaining({ paymentIntentId: OTHER, reason: "new-capture", otherPaymentIntentId: null })]);
     });
 
     it("#4285 review 6 F4: an in-flight operation that refunds nothing (an additional-payment charge) never holds the owed alert back", async () => {
