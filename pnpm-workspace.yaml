@@ -62,10 +62,10 @@ overrides:
 # `core-js: false` is a deliberate denial rather than an omission: its
 # postinstall only prints a funding banner, and nothing here needs it run.
 allowBuilds:
-  "@prisma/engines@7.10.0": true
+  "@prisma/engines@7.10.1": true
   core-js: false
   esbuild@0.28.1: true
-  prisma@7.10.0: true
+  prisma@7.10.1: true
   unrs-resolver@1.12.2: true
 
 # Before `pnpm run` / `pnpm exec`, pnpm checks node_modules against the lockfile.
