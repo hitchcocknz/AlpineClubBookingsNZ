@@ -582,28 +582,6 @@ describe("#4317 review round 2: an edit that would carry a headline below zero i
     ).rejects.toBeInstanceOf(NegativeEditedHeadlineError);
   });
 
-  it("during the stay: a kept promotion that would take the final price below zero is refused too", () => {
-    // A consistent $400 headline with a $350 promotion (final $50). The
-    // in-progress plan keeps the stored promotion, so removing $200 of future
-    // nights would leave a $200 total and a -$150 final price.
-    const promoted = {
-      ...BELOW,
-      totalPriceCents: 40_000,
-      promoAdjustmentCents: -35_000,
-      discountCents: 35_000,
-      finalPriceCents: 5_000,
-    };
-    expect(() =>
-      buildInProgressGuestRangePlan({
-        booking: promoted,
-        editableFrom: D("2026-08-21"),
-        newCheckOut: D("2026-08-23"),
-        removeGuestIds: ["g2"],
-        seasons: SEASONS,
-      }),
-    ).toThrow(NegativeEditedHeadlineError);
-  });
-
   it("before the stay: the save refuses removing the $300 guest", async () => {
     h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] });
     vi.mocked(priceBookingGuestsWithMembershipTypePolicy).mockImplementation(
@@ -638,6 +616,115 @@ describe("#4317 review round 2: an edit that would carry a headline below zero i
         partnerSharedGuests: [],
       }),
     ).rejects.toBeInstanceOf(NegativeEditedHeadlineError);
+  });
+});
+
+/**
+ * #4317 review round 3: the in-progress plan caps the promotion it carries at
+ * its new total, as the engine caps every code a re-deciding door prices, and
+ * flags it so the save and the quote re-decide the promotion's records over the
+ * plan's own nights. A legitimate discounted reduction is priced, never refused.
+ */
+describe("#4317 review round 3: an in-progress plan caps the promotion it carries", () => {
+  const night = (date: string, cents: number) => ({ stayDate: D(date), priceCents: cents, priceSource: "SOLD" as const });
+  const SHORTEN_A = guest("g1", "m1", [night(HELD[0], 5000), night(HELD[1], 0), night(HELD[2], 5000)], 10_000);
+  const SHORTEN_B = guest("g2", "m2", [night(HELD[0], 2500), night(HELD[1], 2500), night(HELD[2], 25_000)], 30_000);
+
+  function promotedBooking(guests: ReturnType<typeof guest>[], promoAdjustmentCents: number) {
+    const totalPriceCents = guests.reduce((sum, g) => sum + g.priceCents, 0);
+    return {
+      id: "bk-promo",
+      checkIn: D(HELD[0]),
+      checkOut: D("2026-08-23"),
+      totalPriceCents,
+      discountCents: -promoAdjustmentCents,
+      promoAdjustmentCents,
+      finalPriceCents: totalPriceCents + promoAdjustmentCents,
+      guests,
+    };
+  }
+
+  it("$400 with a fixed $350 code, shortened mid-stay to $100: priced at $0, the code capped at $100", async () => {
+    const booking = promotedBooking([SHORTEN_A, SHORTEN_B], -35_000);
+    const input: BuildInProgressGuestRangePlanInput = {
+      booking,
+      editableFrom: D("2026-08-21"),
+      newCheckOut: D("2026-08-22"),
+      seasons: SEASONS,
+    };
+    const quote = buildInProgressGuestRangePlan(input).plan;
+
+    expect(quote.newTotalPriceCents).toBe(10_000);
+    expect(quote.promotionCappedAtNewTotal).toBe(true);
+    expect(quote.newPromoAdjustmentCents).toBe(-10_000);
+    expect(quote.newDiscountCents).toBe(10_000);
+    expect(quote.newFinalPriceCents).toBe(0);
+    // The member paid $50; the stay now costs nothing.
+    expect(quote.priceDiffCents).toBe(-5_000);
+
+    h.checkCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 5, nightDetails: [] });
+    const save = await calculateModifiedPricing(NO_DISCOUNT_TX, {
+      booking: { ...booking, memberId: "m1", lodgeId: "lodge-1" } as never,
+      bookingId: "bk-promo",
+      isInProgressEdit: true,
+      editableFrom: input.editableFrom,
+      newCheckIn: booking.checkIn,
+      newCheckOut: input.newCheckOut,
+      normalizedAddGuests: undefined,
+      removeGuestIds: undefined,
+      guestsForPricing: booking.guests.map((g) => ({
+        bookingGuestId: g.id,
+        ageTier: "ADULT" as const,
+        isMember: true,
+        memberId: g.memberId,
+        stayStart: booking.checkIn,
+        stayEnd: input.newCheckOut,
+      })),
+      skipBookingLifecycleRules: false,
+      seasonRateData: SEASONS as never,
+      partnerSharedGuests: [],
+    });
+    // The save prices the same total and hands the promotion engine the plan's
+    // own nights to re-decide the capped code over - the list the quote reads.
+    expect(save.newTotalPriceCents).toBe(quote.newTotalPriceCents);
+    expect(save.inProgressPlan?.promotionCappedAtNewTotal).toBe(true);
+    expect(save.guestNightRates.map((rates) => [rates.bookingGuestId, rates.perNightRates])).toEqual([
+      ["g1", [5000, 0]],
+      ["g2", [2500, 2500]],
+    ]);
+  });
+
+  it("a 100% code, a guest removed mid-stay: priced at $0, the code capped at the $200 left", () => {
+    const LOW = guest("g1", "m1", sold([3334, 3333, 3333]), 10_000);
+    const HIGH = guest("g2", "m2", sold([10_000, 10_000, 10_000]), 30_000);
+    const plan = buildInProgressGuestRangePlan({
+      booking: promotedBooking([LOW, HIGH], -40_000),
+      editableFrom: D("2026-08-21"),
+      newCheckOut: D("2026-08-23"),
+      removeGuestIds: ["g2"],
+      seasons: SEASONS,
+    }).plan;
+
+    // g2 keeps the 20th it slept: $100 + $100 left.
+    expect(plan.newTotalPriceCents).toBe(20_000);
+    expect(plan.promotionCappedAtNewTotal).toBe(true);
+    expect(plan.newPromoAdjustmentCents).toBe(-20_000);
+    expect(plan.newFinalPriceCents).toBe(0);
+    expect(plan.priceDiffCents).toBe(0);
+  });
+
+  it("CONTROL: a code smaller than what is left is carried exactly, and re-decided by nobody", () => {
+    const plan = buildInProgressGuestRangePlan({
+      booking: promotedBooking([SHORTEN_A, SHORTEN_B], -2_000),
+      editableFrom: D("2026-08-21"),
+      newCheckOut: D("2026-08-22"),
+      seasons: SEASONS,
+    }).plan;
+
+    expect(plan.promotionCappedAtNewTotal).toBe(false);
+    expect(plan.newPromoAdjustmentCents).toBe(-2_000);
+    expect(plan.newDiscountCents).toBe(2_000);
+    expect(plan.newFinalPriceCents).toBe(8_000);
   });
 });
 

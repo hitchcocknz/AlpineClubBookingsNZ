@@ -149,6 +149,7 @@ import {
   GUEST_MEMBER_LINK_IN_PROGRESS_MESSAGE,
   GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE,
   editedGuestPricingLocks,
+  inProgressPlanGuestNightRates,
   resolveGuestMemberLinks,
   resolveGuestNameUpdates,
   isMemberWholeLodgeBooking,
@@ -2071,8 +2072,24 @@ export async function POST(
   // #3827: the codes the preview applied, in order, for the line item.
   let appliedPromoCodeLabel: string | null = null;
 
+  // #4317 review round 3: an in-progress plan that capped the stored promotion
+  // at its new total re-decides it over the plan's own nights, exactly as the
+  // save does (`inProgressPlanGuestNightRates`), and is priced through the
+  // ordinary branch below rather than carried.
+  const promotionRedecided = inProgressPlan?.promotionCappedAtNewTotal === true;
+  const consentForPromotion = (guest: { bookingGuestId?: string | null; memberId?: string | null }) =>
+    guest.bookingGuestId
+      ? consentStatusByGuestId.get(guest.bookingGuestId) ?? null
+      : (() => {
+          const added = guestsForPricing.find(
+            (candidate) => !candidate.bookingGuestId && (candidate.memberId ?? null) === (guest.memberId ?? null),
+          );
+          return added ? previewConsentStatus(added) : null;
+        })();
+
   // Helper: get per-night rates per guest for promo calculation
   function getGuestNightRates() {
+    if (inProgressPlan) return inProgressPlanGuestNightRates(inProgressPlan, consentForPromotion);
     return guestsForPricing.map((guest, index) => ({
       bookingGuestId: guest.bookingGuestId,
       memberId: guest.memberId ?? null,
@@ -2086,7 +2103,7 @@ export async function POST(
     }));
   }
 
-  if (inProgressPlan) {
+  if (inProgressPlan && !promotionRedecided) {
     // #3179: an in-progress edit prices from the nights already agreed and
     // re-runs no promotion, so a promo-code change carried alongside it is
     // dropped.
@@ -2278,8 +2295,9 @@ export async function POST(
 
   itemizedChanges.push(
     ...promoBreakdownLines({
-      // An in-progress edit carries the stored adjustment over unchanged.
-      carriedOver: Boolean(inProgressPlan),
+      // An in-progress edit carries the stored adjustment over unchanged,
+      // unless it capped it and re-decided it (review round 3).
+      carriedOver: Boolean(inProgressPlan) && !promotionRedecided,
       // A refused code refuses the save; the promo card shows why instead.
       refused: promoValidation?.valid === false,
       storedCodes: bookingPromoCodeLabel(booking),
@@ -2289,13 +2307,13 @@ export async function POST(
     }),
   );
 
-  const newFinalPriceCents = inProgressPlan
+  const newFinalPriceCents = inProgressPlan && !promotionRedecided
     ? inProgressPlan.newFinalPriceCents
     : bookingFinalPriceCents({
         totalPriceCents: newTotalPriceCents,
         promoAdjustmentCents: newPromoAdjustmentCents,
       });
-  const priceDiffCents = inProgressPlan
+  const priceDiffCents = inProgressPlan && !promotionRedecided
     ? inProgressPlan.priceDiffCents
     : newFinalPriceCents - booking.finalPriceCents;
   const netChargeCents = priceDiffCents + changeFeeCents;

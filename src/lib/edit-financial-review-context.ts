@@ -266,30 +266,51 @@ export function editFinancialReviewStrandMovesNights(
  * removal, warn the officer here, and let wave B's clean-up (D3) close such a
  * review with no money moved.
  *
- * A strand missing from `currentGuestIds` counts unless the review's OWN edit
- * removed it: a parked removal deletes its departing guest in the transaction
- * that raised the review, and that strand records every night it held as
- * surrendered and none added. Read through `editFinancialReviewStrandRecords`,
- * the one list of an item's strands (`INV-SSOT`). Where a strand held no
- * stored rows, a whole surrender is read as the review's own removal, so the
- * warning errs towards silence rather than telling an officer to dismiss a
- * review the member is owed.
+ * Only a strand whose nights the review's edit MOVED counts
+ * (`editFinancialReviewStrandMovesNights`): a review's money only ever comes from
+ * those (#4317 review round 3). A strand the review merely carries - one of its
+ * `otherStrands`, or a pre-#3498 one-strand row about a guest the edit did not
+ * touch - cannot be credited twice by its guest's removal, and warning on it
+ * would steer an officer away from money the member is owed for another guest.
+ *
+ * And a moved strand counts only when the review's OWN edit did not remove it: a
+ * parked removal deletes its departing guest in the transaction that raised the
+ * review, and that strand records every night it held as surrendered and none
+ * added. Where it held no stored rows, a whole surrender is read as that
+ * removal, so the warning errs towards silence.
+ *
+ * Read through `editFinancialReviewStrandRecords`, the one list of an item's
+ * strands (`INV-SSOT`); `strandIndex` is a strand's place in it, the ordinal the
+ * settle card's evidence block names each guest by ("Guest 1 of 2").
  */
 export function editFinancialReviewGuestsRemovedSinceRaised(
   context: EditFinancialReviewContext,
   currentGuestIds: ReadonlySet<string>,
-): string[] {
-  return editFinancialReviewStrandRecords(context.occurrence)
-    .filter((strand) => !currentGuestIds.has(strand.bookingGuestId))
-    .filter((strand) => {
-      const surrendered = new Set<string>(strand.surrenderedNightDates);
-      const removedByItsOwnEdit =
-        surrendered.size > 0 &&
-        strand.addedNightDates.length === 0 &&
-        strand.storedEvidence.nightPrices.every((night) => surrendered.has(night.date));
-      return !removedByItsOwnEdit;
-    })
-    .map((strand) => strand.bookingGuestId);
+): Array<{
+  bookingGuestId: string;
+  strandIndex: number;
+  strandCount: number;
+  guestTotalCents: number | null;
+}> {
+  const strands = editFinancialReviewStrandRecords(context.occurrence);
+  return strands.flatMap((strand, strandIndex) => {
+    if (!editFinancialReviewStrandMovesNights(strand)) return [];
+    if (currentGuestIds.has(strand.bookingGuestId)) return [];
+    const surrendered = new Set<string>(strand.surrenderedNightDates);
+    const removedByItsOwnEdit =
+      surrendered.size > 0 &&
+      strand.addedNightDates.length === 0 &&
+      strand.storedEvidence.nightPrices.every((night) => surrendered.has(night.date));
+    if (removedByItsOwnEdit) return [];
+    return [
+      {
+        bookingGuestId: strand.bookingGuestId,
+        strandIndex,
+        strandCount: strands.length,
+        guestTotalCents: strand.storedEvidence.guestTotalCents,
+      },
+    ];
+  });
 }
 
 /**

@@ -20,7 +20,7 @@ import {
   getExplicitGuestBedNightKeys,
 } from "@/lib/booking-guest-stay-ranges";
 import type { MemberGuestConsentGuestFields } from "@/lib/member-guest-add-policy";
-import { bookingFinalPriceCents } from "@/lib/booking-final-price";
+import { bookingDiscountCents, bookingFinalPriceCents } from "@/lib/booking-final-price";
 import {
   proposedNightPriceSources,
   storedNightPriceDetailsByKey,
@@ -178,6 +178,12 @@ export interface BookingEditGuestRangePlan {
   newTotalPriceCents: number;
   newDiscountCents: number;
   newPromoAdjustmentCents: number;
+  /**
+   * #4317 review round 3: the stored promotion was larger than the new total and
+   * was capped at it. The figures above are the cap; the save and the quote
+   * re-decide the promotion through the engine so its records agree.
+   */
+  promotionCappedAtNewTotal: boolean;
   newFinalPriceCents: number;
   priceDiffCents: number;
   futureExistingDeltaCents: number;
@@ -1317,12 +1323,23 @@ export function buildInProgressGuestRangePlan(
     input.booking,
     proposedExistingGuests.reduce((sum, entry) => sum + entry.priceCents, 0) +
       proposedAddedGuests.reduce((sum, entry) => sum + entry.priceCents, 0),
-    // This plan keeps the stored promotion, so the final price it writes is
-    // checked too (review round 2).
-    input.booking.promoAdjustmentCents,
   );
-  const newDiscountCents = input.booking.discountCents;
-  const newPromoAdjustmentCents = input.booking.promoAdjustmentCents;
+  // #4317 review round 3: this plan keeps the stored promotion rather than
+  // re-deciding it, but never lets it exceed what is left to discount - the cap
+  // the promotion engine puts on every door that re-decides one. A $350 code on
+  // a stay cut to $100 takes $100. When the cap bites, the promotion's records
+  // no longer add up to the stored figure, so the save and the quote re-decide
+  // it through the engine over this plan's nights (`promotionCappedAtNewTotal`,
+  // `inProgressPlanGuestNightRates`), the re-deciding doors' own pattern.
+  const newPromoAdjustmentCents = Math.max(
+    input.booking.promoAdjustmentCents,
+    -newTotalPriceCents,
+  );
+  const promotionCappedAtNewTotal =
+    newPromoAdjustmentCents !== input.booking.promoAdjustmentCents;
+  const newDiscountCents = promotionCappedAtNewTotal
+    ? bookingDiscountCents({ promoAdjustmentCents: newPromoAdjustmentCents })
+    : input.booking.discountCents;
   const newFinalPriceCents = bookingFinalPriceCents({
     totalPriceCents: newTotalPriceCents,
     promoAdjustmentCents: newPromoAdjustmentCents,
@@ -1348,6 +1365,7 @@ export function buildInProgressGuestRangePlan(
       newTotalPriceCents,
       newDiscountCents,
       newPromoAdjustmentCents,
+      promotionCappedAtNewTotal,
       newFinalPriceCents,
       priceDiffCents,
       futureExistingDeltaCents,

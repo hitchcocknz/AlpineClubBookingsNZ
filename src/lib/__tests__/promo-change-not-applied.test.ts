@@ -644,6 +644,23 @@ describe("applyPromoCodeChanges reports whether the promotion engine ran (#3179)
     expect(result.promoRemoved).toBe(false);
   });
 
+  it("re-decides an in-progress plan that capped its promotion at the new total (#4317 round 3)", async () => {
+    // The capped figure is not what the promotion's records say, so the save
+    // re-runs the engine over the plan's nights, as every re-deciding door does.
+    const result = await applyPromoCodeChanges(
+      tx as never,
+      baseArgs({
+        inProgressPlan: {
+          newDiscountCents: 1_500,
+          newPromoAdjustmentCents: -1_500,
+          promotionCappedAtNewTotal: true,
+        },
+      }) as never,
+    );
+
+    expect(result.promoEngineRan).toBe(true);
+  });
+
   it("reports that it DID run on an ordinary edit — the CONTROL", async () => {
     // Without this the flag could be hard-wired to `false` and every assertion
     // above would still pass, while every ordinary edit started warning members

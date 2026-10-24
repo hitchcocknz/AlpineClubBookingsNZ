@@ -76,16 +76,38 @@ describe("editFinancialReviewGuestsRemovedSinceRaised", () => {
     ).toEqual([]);
   });
 
-  it("finds the shortened guest once a removal has taken them off", () => {
+  it("finds the shortened guest once a removal has taken them off, with their place and stored total", () => {
+    // A's nights MOVED, so the review's money is A's, and A's removal credited
+    // A's stored $300 already.
     expect(
       editFinancialReviewGuestsRemovedSinceRaised(read(SHORTENING), new Set(["guest-b"])),
-    ).toEqual(["guest-a"]);
+    ).toEqual([{ bookingGuestId: "guest-a", strandIndex: 0, strandCount: 2, guestTotalCents: 30_000 }]);
   });
 
-  it("finds an untouched guest the review names, removed since", () => {
+  it("does NOT flag an untouched guest the review merely carries (review round 3)", () => {
+    // B moved no nights: none of the review's money is B's, so B's removal can
+    // credit nothing twice, and a warning would steer the officer away from the
+    // money owed for A.
     expect(
       editFinancialReviewGuestsRemovedSinceRaised(read(SHORTENING), new Set(["guest-a"])),
-    ).toEqual(["guest-b"]);
+    ).toEqual([]);
+  });
+
+  it("does NOT flag a pre-#3498 one-strand row about an untouched guest, removed since", () => {
+    const untouchedOneStrand = {
+      ...SHORTENING,
+      occurrence: {
+        bookingId: "booking-1",
+        bookingGuestId: "guest-b",
+        cause: "NO_STORED_NIGHT_PRICES",
+        surrenderedNightDates: [],
+        addedNightDates: [],
+        storedEvidence: { guestTotalCents: 20_000, nightPrices: [] },
+      },
+    };
+    expect(
+      editFinancialReviewGuestsRemovedSinceRaised(read(untouchedOneStrand), new Set(["guest-a"])),
+    ).toEqual([]);
   });
 
   it("does not count the guest a parked removal itself took off", () => {
@@ -127,27 +149,29 @@ describe("the queue payload's reviewGuestRemovedSinceRaised", () => {
     },
   };
 
-  it("is true on an open review whose shortened guest has since been removed", () => {
-    expect(toOpenManualRefundTaskPayload(row, null, []).reviewGuestRemovedSinceRaised).toBe(true);
+  it("names the shortened guest, removed since, by place and stored total - never by id", () => {
+    expect(toOpenManualRefundTaskPayload(row, null, []).reviewGuestsRemovedSinceRaised).toEqual([
+      { strandIndex: 0, strandCount: 2, guestTotalCents: 30_000 },
+    ]);
   });
 
-  it("is false while the guests are all still on the booking", () => {
+  it("is empty while the guests are all still on the booking", () => {
     const stillThere = { ...row, booking: { ...row.booking, guests: [{ id: "guest-a" }, { id: "guest-b" }] } };
-    expect(toOpenManualRefundTaskPayload(stillThere, null, []).reviewGuestRemovedSinceRaised).toBe(false);
+    expect(toOpenManualRefundTaskPayload(stillThere, null, []).reviewGuestsRemovedSinceRaised).toEqual([]);
   });
 
-  it("is false where the booking's guests were not read, and on a hand-back", () => {
+  it("is empty where the booking's guests were not read, and on a hand-back", () => {
     const bookingWithoutGuests: Omit<typeof row.booking, "guests"> & { guests?: undefined } = {
       ...row.booking,
       guests: undefined,
     };
     expect(
       toOpenManualRefundTaskPayload({ ...row, booking: bookingWithoutGuests }, null, [])
-        .reviewGuestRemovedSinceRaised,
-    ).toBe(false);
+        .reviewGuestsRemovedSinceRaised,
+    ).toEqual([]);
     expect(
       toOpenManualRefundTaskPayload({ ...row, kind: "CANCELLED_BOOKING_HAND_BACK" }, null, [])
-        .reviewGuestRemovedSinceRaised,
-    ).toBe(false);
+        .reviewGuestsRemovedSinceRaised,
+    ).toEqual([]);
   });
 });

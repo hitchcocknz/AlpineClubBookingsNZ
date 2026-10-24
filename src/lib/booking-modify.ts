@@ -36,6 +36,7 @@ export {
   GUEST_MEMBER_LINK_WHOLE_LODGE_ONLY_MESSAGE,
   loadActiveSeasonRates,
   editedGuestPricingLocks,
+  inProgressPlanGuestNightRates,
   PAID_NAME_TYPO_ONLY_MESSAGE,
   prepareGuestPlan,
   rateSnapshotUpdateForRepricedGuest,

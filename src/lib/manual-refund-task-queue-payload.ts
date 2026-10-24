@@ -60,7 +60,7 @@ export const OPEN_TASK_BOOKING_PAYMENT_SELECT = {
   payment: {
     select: { id: true, status: true, amountCents: true, refundedAmountCents: true, source: true },
   },
-  // #4317: the guests as they stand, ids only, for `reviewGuestRemovedSinceRaised`.
+  // #4317: the guests as they stand, ids only, for `reviewGuestsRemovedSinceRaised`.
   guests: { select: { id: true } },
 } as const;
 
@@ -115,7 +115,7 @@ export type OpenManualRefundTaskRow = {
     deletedAt: Date | null;
     /**
      * #4317: the booking's guests as they stand, for
-     * `reviewGuestRemovedSinceRaised`. Optional so a caller that does not read
+     * `reviewGuestsRemovedSinceRaised`. Optional so a caller that does not read
      * them gets no warning rather than a false one.
      */
     guests?: ReadonlyArray<{ id: string }>;
@@ -239,11 +239,17 @@ export type OpenManualRefundTaskPayload = {
   reviewEvidence: EditFinancialReviewEvidence | null;
   reviewEvidenceUnreadable: boolean;
   /**
-   * #4317 (owner decision on #4302): a guest this review names was removed from
-   * the booking after the review was raised, and already credited — the settle
-   * screen warns that settling would credit those nights again.
+   * #4317 (owner decision on #4302): the guests whose nights this review's edit
+   * moved and who were removed from the booking after it was raised, already
+   * credited. Named by their place among the item's strands (the evidence
+   * block's "Guest N of M") and stored total; no id crosses the wire. Empty on
+   * a hand-back, and where the booking's guests were not read.
    */
-  reviewGuestRemovedSinceRaised: boolean;
+  reviewGuestsRemovedSinceRaised: Array<{
+    strandIndex: number;
+    strandCount: number;
+    guestTotalCents: number | null;
+  }>;
   /**
    * #3191: the nights whose stored price is blank, and the two totals the
    * officer's figures have to reconcile against. EMPTY when there is nothing
@@ -372,14 +378,13 @@ export function toOpenManualRefundTaskPayload(
       settling the review would credit those nights again. Only on a review
       whose booking guests were read; never on a hand-back.
     */
-    reviewGuestRemovedSinceRaised:
-      task.kind === "EDIT_FINANCIAL_REVIEW" &&
-      reviewContext !== null &&
-      task.booking.guests !== undefined &&
-      editFinancialReviewGuestsRemovedSinceRaised(
-        reviewContext,
-        new Set(task.booking.guests.map((guest) => guest.id)),
-      ).length > 0,
+    reviewGuestsRemovedSinceRaised:
+      task.kind === "EDIT_FINANCIAL_REVIEW" && reviewContext !== null && task.booking.guests !== undefined
+        ? editFinancialReviewGuestsRemovedSinceRaised(
+            reviewContext,
+            new Set(task.booking.guests.map((guest) => guest.id)),
+          ).map(({ strandIndex, strandCount, guestTotalCents }) => ({ strandIndex, strandCount, guestTotalCents }))
+        : [],
     unpricedNights,
   };
 }

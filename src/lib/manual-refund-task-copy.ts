@@ -252,13 +252,26 @@ export function completionSummary(shape: CompletionSettlementShape): string {
 }
 
 /**
- * #4317 (owner decision on #4302): the officer's warning on an OPEN edit review
- * whose guest was removed from the booking after the review was raised
- * (`editFinancialReviewGuestsRemovedSinceRaised`). The removal already credited
- * that guest's stored total; settling would credit the reviewed nights again.
+ * #4317 (owner decision on #4302; review round 3 wording): the officer's
+ * warning on an OPEN edit review one of whose MOVED guests was removed from the
+ * booking after the review was raised (`editFinancialReviewGuestsRemovedSinceRaised`).
+ * The removal already credited that guest's own stored total, so settling the
+ * review could credit the same nights again - but the review may still hold
+ * money owed for another guest, so it asks for a check rather than a dismissal.
+ *
+ * The guest is named the way the settle card's evidence block names it - its
+ * ordinal on a several-guest item, and its stored total - because the payload
+ * carries no guest id and the guest's row is gone.
  */
-export const REVIEW_GUEST_REMOVED_SINCE_RAISED_WARNING =
-  "This guest was removed from the booking after this review was raised, and their stored total was already credited. Settling this review would credit those nights again. Dismiss it, or leave it for the clean-up.";
+export function reviewGuestRemovedSinceRaisedWarning(
+  guest: { ordinal: string | null; guestTotalCents: number | null },
+  format: ClubFormat,
+): string {
+  const who = guest.ordinal ?? "This review's guest";
+  const stored =
+    guest.guestTotalCents !== null ? `, stored at ${formatCents(guest.guestTotalCents, format)},` : "";
+  return `${who}${stored} was removed from the booking after this review was raised. Check Xero and the booking before settling: this guest's own stored total was already credited when they were removed, so settling could credit those nights a second time.`;
+}
 
 /**
  * #3191: the second half of the receipt, when the officer also said what the
