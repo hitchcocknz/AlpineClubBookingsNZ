@@ -1730,19 +1730,24 @@ capture's next arrival re-alerts while it stands, and the payments cron's
 first in one read-only `RepeatableRead` snapshot. It waits while a card refund
 operation that may take from this capture is in flight (its own row or intent,
 a plan with a slice of it, or no plan yet); any other operation, such as an
-additional-payment charge, never holds it back. It clears silently a capture
-whose card no longer holds money, a booking gone, or a capture the superseded
-or duplicate-capture machinery owns. Who else holds money is read the way an
+additional-payment charge, never holds it back. It is moot, and clears
+silently, for a capture whose card no longer holds money, a booking gone, or a
+capture the superseded or duplicate-capture machinery owns. Who else holds money is read the way an
 admin is told (`readOtherSettledCaptureWhere`'s `readTellingWhere`, the Xero
 conflict's reading), by the settle's alert and the drain alike, so a capture
 behind a dead cancel, or one whose duplicate-capture refund Stripe failed later
 with nothing owing it again, is named. That reading counts PRIMARY rows by
 ledger status, so "no other payment" is worded as none the app counts as
 settling the booking. A booking cancelled since is told as
-`new-capture-closed`, naming the cancellation's recorded refund: a card refund
-as its recovery row stands (refunded only once it SUCCEEDED; planned but not
-sent while on its way or dead; closed as paid another way), beside a card
-refund shortfall's bank and check parts. Another payment holding money is told
+`new-capture-closed`, naming the cancellation's recorded refund, its card
+refund read in that snapshot as the booking page reads it
+(`readCancelledCardRefund`): refunded only once its row SUCCEEDED and no
+refund it made that Stripe failed later is owed again; planned but not sent
+while it or such a refund is on its way or dead; closed as paid another way.
+An organiser-card child's is its debt to the group organiser's card
+(`readOrganiserChildCancelledCardRefund`; a refund failed later reopens it),
+and is said so. A card refund shortfall's bank and check parts are said as
+their hand-back tasks stand: owed, paid, or closed. Another payment holding money is told
 as `new-capture-later-payment`. Every alert shows what the card still holds: its
 amount less the card refunds recorded against it (`sumRecordedRefundsForCapture`),
 since a refund as account credit is placed on the capture's ledger row while

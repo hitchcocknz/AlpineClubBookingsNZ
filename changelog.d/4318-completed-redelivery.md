@@ -24,7 +24,9 @@
   claiming that day's alert. That later alert says if the booking was
   cancelled since (naming the cancellation's refund, which may have been
   made as account credit or by hand, and saying a card refund was sent only
-  once it was) or another payment now holds money too, and every alert names
+  once it was and not after the card company turned it back, a refund to the
+  group organiser's card as such, and a part already paid back by bank
+  transfer as paid) or another payment now holds money too, and every alert names
   a payment the app no longer counts that still holds money and shows what
   the card payment still holds.
   One case stays quiet: a saved-card charge whose charging request stopped or
