@@ -400,12 +400,16 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       expect(await allocationLinks()).toEqual([]);
     });
 
-    it("MUTATION (round 4, review 1): A reads the live note's row, then the void and B's recount, then A claims - A recounts the void", async () => {
-      // A $200 bank transfer recorded at $50, with a live $100 per-refund note
-      // beside the $50 one: A's recount reads the note as live and owes $150.
-      const kase: Case = "bank-transfer per-refund";
+    /**
+     * A's reconcile paused inside its recount - after its row read, before its
+     * claim - while the void and B's whole reconcile run, then released. The
+     * payment starts at $50 with a live $100 note beside the $50 one, so A's
+     * recount reads the note as live and owes $150; B's finds $50 right and
+     * writes nothing.
+     */
+    async function voidBetweenReadAndClaim(kase: Case, paymentId: string) {
       await seed(kase);
-      await prisma.payment.update({ where: { id: BT }, data: { refundedAmountCents: 5_000 } });
+      await prisma.payment.update({ where: { id: paymentId }, data: { refundedAmountCents: 5_000 } });
       let current = reading("AUTHORISED", EARLY);
       const floor = await import("@/lib/xero-inbound/credit-note-bank-transfer-floor");
       const original = floor.floorBankTransferRefundedTotal;
@@ -413,7 +417,7 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       const gate = new Promise<void>((resolve) => (release = resolve));
       let reached!: () => void;
       const atClaim = new Promise<void>((resolve) => (reached = resolve));
-      // A pauses inside its recount: after its row read, before its claim.
+      // Every recount floors a bank transfer just before its claim (a no-op for a card).
       const spy = vi.spyOn(floor, "floorBankTransferRefundedTotal").mockImplementationOnce(async (...args: Parameters<typeof original>) => {
         reached();
         await gate;
@@ -421,27 +425,41 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       });
       const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
       try {
-        await withFakeXero(async () => ({ body: { creditNotes: [current] } }), async () => {
+        return await withFakeXero(async () => ({ body: { creditNotes: [current] } }), async () => {
           const a = reconcileXeroCreditNote(NOTE);
           void a.catch(() => undefined);
           try {
             await Promise.race([atClaim, a.then(() => { throw new Error("A finished before its claim"); })]);
-            // The void, then B's recount: the note counts nothing and $50 is right, so B writes nothing.
             current = reading("VOIDED", LATE);
             await reconcileXeroCreditNote(NOTE);
-            expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+            expect(await refunded(paymentId)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
           } finally {
             release();
           }
-          await a;
+          const result = await a;
+          expect(await state(kase)).toMatchObject({ active: false, status: "VOIDED" });
+          // F3: A wrote, so its audit says so, though the recount put the figure back.
+          expect(result.updatedRefundedPayments).toBe(1);
+          return result;
         });
       } finally {
         spy.mockRestore();
       }
+    }
+
+    it("MUTATION (round 4, review 1): A reads the live note's row, then the void and B's recount, then A claims - A recounts the void", async () => {
+      await voidBetweenReadAndClaim("bank-transfer per-refund", BT);
       // A's claim saw no Payment change (the void moves none). Before the
       // re-read after its claim, it left $150 against a VOIDED note.
-      expect(await state(kase)).toMatchObject({ active: false, status: "VOIDED" });
       expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("MUTATION (round 5, F1): on a card payment A's own $150 is undone before the recount, which could never lower it", async () => {
+      await voidBetweenReadAndClaim("Stripe per-delta", CARD);
+      // `INV-ADDPAY-021`: a card recount never lowers the ledger, so only
+      // undoing A's own write (while the row still holds exactly it) gets
+      // back to the $50 Stripe refunded.
+      expect(await refunded(CARD)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
     });
 
     it("MUTATION (review 2): a stale reading kept under a newer LIVE snapshot still records its allocations and refund payments", async () => {

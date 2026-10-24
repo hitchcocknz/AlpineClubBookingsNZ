@@ -5719,9 +5719,13 @@ pins the schedule A's link write, then B's void and B's recount, then A's
 recount: A counts the void and leaves the total B lowered. A void can also
 commit between A's row read and its claim, after B's recount found nothing to
 change; the void moves no Payment row, so A's claim succeeds. A then re-reads
-the row it counted and, voided since, recounts the payment. That re-read adds
-no lock: a void committing after it runs its own recount, which reads the
-payment after A's claim. The suite pins that schedule too. A stale reading's
+the row it counted and, if it no longer counts, undoes its own write (guarded on
+the row still holding exactly it) and recounts the payment. That re-read adds no
+lock. The inbound void runs its own recount, which reads the payment after A's
+claim, so a void committing after the re-read is covered. The Stripe status
+recorder runs no recount, and a card ledger is raise-only, which is why A undoes
+its own write instead of leaving the recount to lower it. The suite pins that
+schedule on a bank transfer and on a card payment. A stale reading's
 allocations and refund payments are skipped only where the row, in either
 refund-note role, is VOIDED/DELETED when they are written.
 

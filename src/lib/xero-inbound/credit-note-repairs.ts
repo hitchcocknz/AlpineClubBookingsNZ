@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { type AccountCreditAllocationRepairResult, type AccountCreditAllocationTarget, type RefundedPaymentBusinessStateRepairResult } from "./types";
 import { buildBookingAppliedCreditDescription, getAmountCentsFromAllocationMetadata, getCreditNoteAmountCents, getCreditNoteIdFromAllocationMetadata, getJsonRecord, getNextRefundedPaymentStatus, getRefundContributionCentsFromCreditNoteMetadata } from "./amounts";
-import { isIncludedRefundCreditNoteStatus, isRefundCreditNoteLinkCancelledInXero, readRefundNoteRowsByPayment } from "@/lib/xero-refund-note-status";
+import { isIncludedRefundCreditNoteStatus, readRefundNoteRowsByPayment } from "@/lib/xero-refund-note-status";
 import { findActiveXeroObjectLinks } from "./object-links";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 import { floorBankTransferRefundedTotal } from "./credit-note-bank-transfer-floor";
@@ -177,12 +177,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       booking: { select: { organiserSettled: true } },
     },
   });
-  if (payments.length === 0) {
-    return {
-      matchedPayments: 0,
-      updatedPayments: 0,
-    };
-  }
+  if (payments.length === 0) return { matchedPayments: 0, updatedPayments: 0 };
 
   // #4215 (`INV-PAY-118`): requests' paid-back cash, read AFTER the payment rows, so one completed in between loses the claim
   // below. #4288: the note's own refund-note row too, but its void moves no Payment: `repairOne` re-reads it after its claim.
@@ -377,7 +372,7 @@ export async function repairRefundedPaymentBusinessState(input: {
   const format = await getClubFormat();
 
   type RepairedPayment = (typeof payments)[number];
-  const repairOne = async (payment: RepairedPayment): Promise<"updated" | "unchanged" | "lost" | "voided"> => {
+  const repairOne = async (payment: RepairedPayment): Promise<"updated" | "unchanged" | "lost" | "recount"> => {
     const directRefundTotalCents = Array.from(
       directRefundCentsByPaymentId.get(payment.id)?.values() ?? []
     ).reduce((sum, amountCents) => sum + amountCents, 0);
@@ -497,9 +492,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       updates.status = nextStatus;
     }
 
-    if (Object.keys(updates).length === 0) {
-      return "unchanged";
-    }
+    if (Object.keys(updates).length === 0) return "unchanged";
 
     // #3979: a claim on the row as read, so a concurrent writer is never
     // overwritten with a figure derived from the row before it wrote. The
@@ -517,22 +510,25 @@ export async function repairRefundedPaymentBusinessState(input: {
       data: updates,
     });
     if (written.count !== 1) return "lost";
-    // #4288: the counted note voided since the read above: recount this payment (a later void's own recount reads after this claim).
-    const now = currentNoteRows.get(payment.id)?.active && includesCurrentCreditNoteContribution(payment.id) ? (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], prisma)).get(payment.id) : undefined;
-    return now && isRefundCreditNoteLinkCancelledInXero(now.metadata) ? "voided" : "updated";
+    // #4288: the counted note's row no longer counts (voided or deactivated since the read above; a later void's own recount
+    // reads after this claim): undo this write while the row still holds exactly it - a card floor never lowers - then recount.
+    const now = currentNoteRows.has(payment.id) && includesCurrentCreditNoteContribution(payment.id) ? (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], prisma)).get(payment.id) : undefined;
+    if (!now || includesCurrentCreditNoteContribution(payment.id, now)) return "updated";
+    await prisma.payment.updateMany({ where: { id: payment.id, refundedAmountCents: effectiveRefundedTotalCents, status: updates.status ?? payment.status }, data: { refundedAmountCents: payment.refundedAmountCents, status: payment.status } });
+    return "recount";
   };
 
   const lostPaymentIds: string[] = [];
-  let voidedSinceRead = false; // #4288: always recounted - a voided row is never counted again, so this ends.
+  let recountSinceRead = false; // #4288: always recounted - a row read as not counting is never counted again, so this ends.
   for (const payment of payments) {
     const outcome = await repairOne(payment);
-    if (outcome === "updated") updatedPayments += 1;
-    if (outcome === "lost" || outcome === "voided") lostPaymentIds.push(payment.id);
-    voidedSinceRead ||= outcome === "voided";
+    if (outcome === "updated" || outcome === "recount") updatedPayments += 1; // a "recount" wrote too
+    if (outcome === "lost" || outcome === "recount") lostPaymentIds.push(payment.id);
+    recountSinceRead ||= outcome === "recount";
   }
 
   if (lostPaymentIds.length > 0) {
-    if (input.retryPaymentIds && !voidedSinceRead) {
+    if (input.retryPaymentIds && !recountSinceRead) {
       logger.warn(
         { creditNoteId: input.creditNoteId, paymentIds: lostPaymentIds },
         "Refunded-payment repair lost its claim twice to a concurrent writer; the next sync recomputes it (#3979)"

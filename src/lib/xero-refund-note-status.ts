@@ -125,8 +125,9 @@ async function readRefundNoteLinks(
   only?: { xeroObjectId?: string; role?: (typeof REFUND_NOTE_LINK_ROLES)[number] },
 ) {
   return (await db.xeroObjectLink.findMany({
-    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, ...only, localId },
-    select: { localId: true, xeroObjectId: true, metadata: true, active: true },
+    // Only defined keys: an undefined `role` would drop the role filter, not keep the default.
+    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, role: only?.role ?? REFUND_CREDIT_NOTE_LINK_WHERE.role, ...(only?.xeroObjectId !== undefined ? { xeroObjectId: only.xeroObjectId } : {}), localId },
+    select: { localId: true, xeroObjectId: true, xeroObjectNumber: true, metadata: true, active: true },
   })) ?? [];
 }
 
@@ -442,10 +443,7 @@ export async function keepStoredRefundNoteVoid<L extends {
 
 /** The payment's refund-request note links (`INV-PAY-118`), any request's, active or not. */
 async function readRefundRequestNoteLinks(paymentId: string, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
-  return (await db.xeroObjectLink.findMany({
-    where: { localModel: "Payment", localId: paymentId, xeroObjectType: "CREDIT_NOTE", role: REFUND_REQUEST_CREDIT_NOTE_ROLE },
-    select: { xeroObjectId: true, xeroObjectNumber: true, active: true, metadata: true },
-  })) ?? [];
+  return readRefundNoteLinks(paymentId, db, { role: REFUND_REQUEST_CREDIT_NOTE_ROLE });
 }
 
 /**

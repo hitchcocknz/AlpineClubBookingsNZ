@@ -71,7 +71,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
 
   const existingRefundPaymentIds = new Set(
     relatedLinks
-      .filter((link) => link.localModel === "Payment" && link.role === "REFUND_CREDIT_NOTE")
+      .filter((link) => isRefundNoteLinkOf(link))
       .map((link) => link.localId)
   );
   const existingAccountCreditPaymentIds = new Set(
@@ -244,10 +244,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       .filter(
         (payment) =>
           !creditNoteLinks.some(
-            (link) =>
-              link.localModel === "Payment" &&
-              link.localId === payment.id &&
-              link.role === "REFUND_CREDIT_NOTE"
+            (link) => link.localId === payment.id && isRefundNoteLinkOf(link)
           )
       )
       .map(
@@ -385,7 +382,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       }
 
       return refundPaymentSourceLinks
-        .filter((link) => link.role === "REFUND_CREDIT_NOTE")
+        .filter((link) => isRefundNoteLinkOf(link))
         .map(
           (link) =>
             ({

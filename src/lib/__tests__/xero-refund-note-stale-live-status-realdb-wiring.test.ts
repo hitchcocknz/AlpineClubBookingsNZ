@@ -35,6 +35,7 @@ describe("the stale live refund-note status proof stays wired into CI (#4288)", 
     expect(suite).toContain("MUTATION (refund payments): a stale reconcile writes no refund-payment link from its older reading's payments");
     expect(suite).toContain("MUTATION (allocations): a stale reconcile writes no allocation link from its older reading's allocations");
     expect(suite).toContain("MUTATION (round 4, review 1): A reads the live note's row, then the void and B's recount, then A claims - A recounts the void");
+    expect(suite).toContain("MUTATION (round 5, F1): on a card payment A's own $150 is undone before the recount, which could never lower it");
     expect(suite).toContain("pg_blocking_pids");
     expect(suite).toContain('assertSafeRaceDbUrl(RACE_DB_URL, "Stale live refund-note status")');
     expect(suite.indexOf("assertSafeRaceDbUrl(RACE_DB_URL")).toBeLessThan(suite.indexOf('await import("@/lib/prisma")'));
