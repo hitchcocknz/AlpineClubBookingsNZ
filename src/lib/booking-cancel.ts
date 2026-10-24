@@ -2,6 +2,7 @@ import { prisma } from "./prisma";
 import { cancelPaymentIntentIfCancellableWithResult, cancelSetupIntentIfCancellable } from "./stripe";
 import { isPaymentIntentCancelConfirmed } from "@/lib/card-intent-retirement";
 import {
+  cancelSupersededAdditionalIntentsNow,
   failOutstandingAdditionalAskInClaim,
   hasOutstandingAdditionalPaymentIntent,
 } from "@/lib/booking-payment-cleanup";
@@ -1129,6 +1130,19 @@ async function performBookingCancellation(
       if (creditLedgerMemberId) {
         await lockMemberCreditLedger(creditLedgerMemberId, tx);
       }
+      // #4316 (`INV-ADDPAY-044`): the Payment row fourth, as the paid claim
+      // takes it, and the additional ask read under it. An edit's after-commit
+      // mint writes its ask's row under this same lock, so either this claim
+      // reads that ask here and retires it, or it committed first and the
+      // minter's re-read sees CANCELLED. A fully REFUNDED payment reads
+      // captured to the minter yet lands in this branch.
+      if (fresh.payment) await lockPaymentForRefundedTotal(tx, fresh.payment.id);
+      const askMirror = fresh.payment
+        ? await tx.payment.findUnique({
+            where: { id: fresh.payment.id },
+            select: { id: true, additionalPaymentIntentId: true, additionalPaymentStatus: true },
+          })
+        : null;
 
       if (
         fresh.payment &&
@@ -1144,20 +1158,16 @@ async function performBookingCancellation(
         ? await paymentHasCaptureEvidence({ ...fresh, payment: fresh.payment }, tx)
         : false;
 
-      const paymentUpdateData: {
-        status?: "FAILED";
-        additionalPaymentStatus?: string;
-      } = {};
-      if (!freshPaymentCaptured) {
-        paymentUpdateData.status = "FAILED";
-      }
-      if (hasOutstandingAdditionalPaymentIntent(fresh.payment)) {
-        paymentUpdateData.additionalPaymentStatus = "FAILED";
-      }
-      if (fresh.payment && Object.keys(paymentUpdateData).length > 0) {
+      // #4316: the outstanding ask is retired by the paid claim's own routine
+      // (mirror and row FAILED, a durable CANCEL_PAYMENT_INTENT), first, so the
+      // never-captured FAILED flip below lands after its ledger reconcile.
+      const additionalCancellation = askMirror
+        ? await failOutstandingAdditionalAskInClaim(tx, { bookingId, payment: askMirror })
+        : null;
+      if (fresh.payment && !freshPaymentCaptured) {
         await tx.payment.update({
           where: { id: fresh.payment.id },
-          data: paymentUpdateData,
+          data: { status: "FAILED" },
         });
       }
       // Status-guarded release (#1881): claim only while still in the
@@ -1273,6 +1283,7 @@ async function performBookingCancellation(
         claimed: true as const,
         fresh,
         freshPaymentCaptured,
+        additionalCancellation,
         creditRestoredCents,
         xeroAllocatedAppliedCreditCents,
         partPaymentReviewTaskRaised,
@@ -1301,11 +1312,17 @@ async function performBookingCancellation(
     const {
       fresh,
       freshPaymentCaptured,
+      additionalCancellation,
       creditRestoredCents,
       xeroAllocatedAppliedCreditCents,
       partPaymentReviewTaskRaised,
       creditLedger,
     } = claim;
+    // #4316: an ask the outer read missed is cancelled at Stripe now; the
+    // queued row is the guarantee.
+    if (additionalCancellation && fresh.payment) {
+      await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId: fresh.payment.id, queued: [additionalCancellation] });
+    }
 
     if (creditRestoredCents > 0) {
       logger.info(

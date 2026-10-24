@@ -372,6 +372,8 @@ describe("cancelBooking credit refunds", () => {
     mocks.txPaymentFindUnique.mockImplementation(
       lockedPaymentReReadDouble(mocks.txBookingFindUnique),
     );
+    // #4316: the immediate run of a queued intent cancellation answers like the real one.
+    mocks.runPaymentRecoveryOperationNow.mockResolvedValue("succeeded");
     // The cancel service uses two $transaction shapes: the callback form for
     // the paid single-flight critical section (#1160) and the array form for
     // the pre-payment branches. Support both.
@@ -1560,10 +1562,19 @@ describe("cancelBooking credit refunds", () => {
     );
 
     expect(result.status).toBe(200);
+    // #4316: the ask is read and retired under the Payment row lock, as the
+    // paid claim retires one: mirror FAILED and a durable cancellation queued.
+    expect(mocks.txPaymentFindUnique).toHaveBeenCalledWith({
+      where: { id: "payment_addl" },
+      select: { id: true, additionalPaymentIntentId: true, additionalPaymentStatus: true },
+    });
     expect(mocks.paymentUpdate).toHaveBeenCalledWith({
       where: { id: "payment_addl" },
       data: { additionalPaymentStatus: "FAILED" },
     });
+    expect(mocks.enqueuePaymentIntentCancellationRecovery).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_addl_extra", paymentId: "payment_addl" }),
+    );
     // Only the outstanding additional intent is cancelled at Stripe; the
     // captured primary is left alone.
     expect(mocks.cancelPaymentIntentIfCancellableWithResult).toHaveBeenCalledTimes(1);
