@@ -31,7 +31,6 @@
 import type { Prisma } from "@prisma/client";
 
 import { bookingDiscountCents } from "@/lib/booking-final-price";
-import { calendarDateOfDateOnlyInstant } from "@/lib/club-time";
 import logger from "@/lib/logger";
 import { apportionCents } from "@/lib/night-price-runs";
 import { compareOrdinal } from "@/lib/ordinal-order";
@@ -39,6 +38,7 @@ import { isBeneficialPromoAllocation } from "@/lib/promo-usage-counts";
 import {
   deriveNightAdjustmentState,
   memberBenefitAllocations,
+  nightKey,
   type CappedCarryScaler,
   type CarriedRowHeld,
 } from "@/lib/night-adjustment-write";
@@ -286,8 +286,7 @@ function codesOverAHeldPrice(rows: CarriedRowHeld[], amounts: Array<number | nul
     if (cents === null || cents === undefined) return;
     add(`guest|${row.bookingGuestId}`, row.guestHeldCents, cents, row.promoRedemptionId);
     if (row.stayDate) {
-      const night = calendarDateOfDateOnlyInstant(row.stayDate);
-      add(`night|${row.bookingGuestId}|${night}`, row.heldPriceCents, cents, row.promoRedemptionId);
+      add(`night|${nightKey(row.bookingGuestId, row.stayDate)}`, row.heldPriceCents, cents, row.promoRedemptionId);
     }
   });
   const involved = new Set<string>();

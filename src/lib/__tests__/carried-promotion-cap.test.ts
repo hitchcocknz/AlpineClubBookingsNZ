@@ -368,6 +368,41 @@ describe("scaleCappedCarriedRows: the one rule-derived amount (#4317, owner deci
         }
       });
 
+      it("ROUND 9 CASCADE: clearing a raise on one pass tips a night over on the next", () => {
+        // N1 ($100) for G1 holds A's raise +$50 beside B -$70 and C -$70: a net
+        // -$90, in bounds. A also sits on G2, which is over with D (+$10 and
+        // -$120 against $100). Pass 1 clears A and D, which leaves N1 at -$140;
+        // pass 2 must then clear B and C.
+        const rows = [
+          at(N1, 5_000, "a", { bookingGuestId: "g1", guestHeldCents: 30_000 }),
+          at(N1, -7_000, "b", { bookingGuestId: "g1", guestHeldCents: 30_000 }),
+          at(N1, -7_000, "c", { bookingGuestId: "g1", guestHeldCents: 30_000 }),
+          at(N2, 1_000, "a", { bookingGuestId: "g2", guestHeldCents: 10_000 }),
+          row(null, -12_000, { promoRedemptionId: "d", bookingGuestId: "g2", guestHeldCents: 10_000, heldPriceCents: 10_000 }),
+        ];
+        const codes = [
+          recorded(6_000, [["booker", 6_000]], "a"),
+          recorded(-7_000, [["booker", -7_000]], "b"),
+          recorded(-7_000, [["booker", -7_000]], "c"),
+          recorded(-12_000, [["booker", -12_000]], "d"),
+        ];
+        expect(scaleCappedCarriedRows(rows, codes)).toEqual([null, null, null, null, null]);
+      });
+
+      it("ROUND 9: one night of two guests is two nights - each -$60 on its own $100 stands", () => {
+        const rows = [
+          at(N1, -6_000, "x", { bookingGuestId: "g1", guestHeldCents: 20_000 }),
+          at(N1, -6_000, "y", { bookingGuestId: "g2", guestHeldCents: 20_000 }),
+        ];
+        const codes = [recorded(-6_000, [["booker", -6_000]], "x"), recorded(-6_000, [["booker", -6_000]], "y")];
+        expect(scaleCappedCarriedRows(rows, codes)).toEqual([-6_000, -6_000]);
+      });
+
+      it("ROUND 9: a row kept as it was on a night whose price is NOT KNOWN is not measured against it", () => {
+        const rows = [row(N1, -5_000, { heldPriceCents: null, guestHeldCents: 20_000 })];
+        expect(scaleCappedCarriedRows(rows, [recorded(-5_000, [["booker", -5_000]])])).toEqual([-5_000]);
+      });
+
       it("F3: a guest held below zero ends the pass instead of looping, and leaves other codes standing", () => {
         const rows = [
           // A NOT KNOWN amount: this code writes none, so G1 has no row left.

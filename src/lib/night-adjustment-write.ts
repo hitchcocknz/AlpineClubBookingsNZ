@@ -88,7 +88,7 @@ function refuse(message: string): never {
  * club-time kernel (INV-CONFIG-002, INV-DATE-019), never projected through a
  * zone and never formatted by hand.
  */
-function nightKey(bookingGuestId: string, stayDate: Date): string {
+export function nightKey(bookingGuestId: string, stayDate: Date): string {
   return `${bookingGuestId}|${calendarDateOfDateOnlyInstant(stayDate)}`;
 }
 
