@@ -3759,7 +3759,8 @@ change's card capture kept, nothing parked on its intent, primary invoice
       change from its stamp or a review charge's reason, else the booking's)
       after who records it is read again there (another recorder by now ->
       SUCCEEDED, stood down; the target moved -> busy; no change known and a
-      paid invoice on the booking naming no capture -> refused) ->
+      paid invoice on the booking naming no capture, or a change's invoice
+      payment linked in Xero -> refused) ->
       Xero payment (or an earlier run's, found by
       reference) -> SUCCEEDED, ADDITIONAL_CAPTURE_PAYMENT link; cash left over
       -> officer alerted; a refund note named another invoice -> flagged

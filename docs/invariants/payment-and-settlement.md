@@ -1610,8 +1610,7 @@ release).
   it (`readCaptureRecorder`).
 - **No stamp.** A review charge's change is read from its reason
   (`captureChangeId`). One with neither decides under the booking's key, which
-  a paying supplementary enqueue there takes first, and refuses beside a paid
-  invoice naming no capture.
+  a paying invoice there naming no capture takes first, and refuses beside one.
 - **Once.** Queued per capture under the per-anchor supplementary-invoice lock;
   never on an internet-banking or cancelled booking (whose kept capture goes
   unrecorded here).

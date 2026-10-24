@@ -1298,7 +1298,10 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // and then on its anchor - the one fixed order, booking -> change; no holder
   // of a change's key takes a booking's. Round 8: the late-capture re-queue's
   // revive asks the same receipt check under its anchor lock and revives
-  // unpaid where it holds. No new raw site, no new key.
+  // unpaid where it holds. Round 9: that booking-first key is taken only for
+  // an invoice naming no capture, and an officer's inline Retry of a change's
+  // invoice re-asks under the change's key alone, in its own short
+  // transaction, before its Xero call. No new raw site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,

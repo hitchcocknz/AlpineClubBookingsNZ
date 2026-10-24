@@ -1467,10 +1467,12 @@ recorded, by its receipt (its Xero payment linked, the operation running, or its
 payment already decided); a receipt that has decided nothing yet then records the
 payment against that unpaid invoice. That holds for an officer's review charge
 too (its change is read from the charge), and for an older capture whose change
-the app never recorded, any of whose receipts makes every such invoice on the
-booking go unpaid. A receipt for such an older capture refuses, telling the
-treasurer, where a paid invoice on the booking names no card payment: check in
-Xero whether that invoice already records it, then record by hand or resolve.
+the app never recorded, any of whose receipts makes an invoice on the booking
+that names no card payment go unpaid (one naming its own payment is left as
+it is). A receipt for such an older capture refuses, telling the treasurer,
+where a paid invoice on the booking names no card payment, or a change's
+invoice has a Stripe payment recorded in Xero: check in Xero whether that
+invoice already records it, then record by hand or resolve.
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe
 gave up on and which was then closed as **Paid another way** before Xero had

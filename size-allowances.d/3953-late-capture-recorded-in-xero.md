@@ -8,7 +8,7 @@ wires it in, at the one place that question is already answered for every
 other queue type.
 
 file: src/lib/stripe-webhook-service.ts
-lines: 1777
+lines: 1776
 reason: the charge-refunded handler is the one place a Stripe refund of a
   single capture queues its refund note, so it alone can name the invoice that
   capture's own receipt paid; one read through the receipt-link leaf and the
@@ -48,8 +48,11 @@ reason: the outbox dispatch chain routes every queue type to its worker, and
   decides under - one read and one lock call.
 
 file: src/lib/xero-operation-retry.ts
-lines: 2076
+lines: 2079
 reason: the retry module decides, per queue type, whether a row may be
   retried and sends outbox-run rows back on their own row; the receipt joins
   that same-row requeue (its stored payment kept) in the two places every
-  other outbox-run type is answered.
+  other outbox-run type is answered. Round 9: the inline replay of a change's
+  supplementary invoice is the one place an officer's Retry decides whether
+  it records a payment, so it asks once more, under the change's anchor lock,
+  whether a capture's receipt now records it - one import and one call.
