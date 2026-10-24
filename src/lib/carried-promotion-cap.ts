@@ -87,10 +87,6 @@ export function scaleCarriedRedemptions(
 ): ScaledRedemption[] | null {
   const storedSum = redemptions.reduce((sum, redemption) => sum + redemption.priceAdjustmentCents, 0);
   if (redemptions.length === 0 || storedSum === 0 || storedSum !== storedPromoAdjustmentCents) return null;
-  const memberless = redemptions.some((redemption) =>
-    redemption.allocations.some((allocation) => allocation.memberId === null),
-  );
-  if (memberless) return null;
   const figures = apportionCents(
     cappedPromoAdjustmentCents,
     redemptions.map((redemption) => redemption.priceAdjustmentCents),
@@ -117,7 +113,9 @@ export function scaleCarriedRedemptions(
       })),
     };
   });
-  // Every allocation row the redemptions carry must survive the writer.
+  // Every allocation row the redemptions carry must survive the writer: one
+  // naming no member is not among `members` (the writer does not rewrite it),
+  // and one with no benefit left is dropped by it (INV-MONEY-005).
   const allSurvive = scaled.every(
     (entry, index) =>
       entry.allocations.length === redemptions[index]!.allocations.length &&
