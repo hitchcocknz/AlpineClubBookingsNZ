@@ -20,10 +20,12 @@ const mocks = vi.hoisted(() => ({
   paymentUpdateMany: vi.fn(),
   paymentFindUnique: vi.fn(),
   manualRefundTaskFindMany: vi.fn(),
+  transaction: vi.fn(),
 }));
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
+    $transaction: mocks.transaction,
     payment: {
       findMany: mocks.paymentFindMany,
       findUnique: mocks.paymentFindUnique,
@@ -57,9 +59,8 @@ vi.mock("@/lib/xero-error-alert", () => ({
   notifyXeroSyncError: mocks.notifyXeroSyncError,
 }));
 
-vi.mock("@/lib/logger", () => ({
-  default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() },
-}));
+const logger = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() }));
+vi.mock("@/lib/logger", () => ({ default: logger }));
 
 import { repairRefundedPaymentBusinessState } from "@/lib/xero-inbound/credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "@/lib/xero-inbound/modification-note-refunds";
@@ -756,5 +757,89 @@ describe("a part payment recognised at cancel is cash-sized, never a stored-figu
         allocationTargets: [{ invoiceId: "inv-1", amountCents: 10_000 }],
       }),
     ).toEqual(new Map());
+  });
+});
+
+describe("#4288: the claim and the re-read of the note's own row, under the Payment row lock", () => {
+  const NOTE_ROW = (status: string, active = status !== "VOIDED") => ({ localId: "pay-1", xeroObjectId: "cn-current", active, metadata: { status, total: 100 } });
+  /** The recount's reads: the note's own refund-note row live on the payment, no other link. */
+  const linkReads = (where: { xeroObjectId?: string; role?: string }) =>
+    where.xeroObjectId === "cn-current" && where.role === "REFUND_CREDIT_NOTE" ? [NOTE_ROW("AUTHORISED")] : [];
+  /** The transaction's client: the row re-read under the lock answers `rowNow`. */
+  function lockedTx(rowNow: () => unknown[], findFirst: () => unknown = () => ({ id: "pay-1" })) {
+    const tx = {
+      $executeRaw: vi.fn(async () => 1),
+      xeroObjectLink: { findMany: vi.fn(async () => rowNow()) },
+      payment: { findFirst: vi.fn(async () => findFirst()), updateMany: mocks.paymentUpdateMany },
+    };
+    return tx;
+  }
+  const repair = () =>
+    repairRefundedPaymentBusinessState({
+      creditNoteId: "cn-current",
+      creditNote: { status: "AUTHORISED", total: 100, appliedAmount: null, remainingCredit: null } as never,
+      directPaymentIds: ["pay-1"],
+      modificationRefundAmountsByPaymentId: new Map(),
+    });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.paymentUpdate.mockResolvedValue({});
+    mocks.notifyXeroSyncError.mockResolvedValue(undefined);
+    mocks.xeroObjectLinkFindMany.mockImplementation(async ({ where }: { where: { xeroObjectId?: string; role?: string } }) => linkReads(where));
+  });
+
+  it("MUTATION (bounded): a note that stops counting under the lock on every pass is retried once, then left to the next sync", async () => {
+    mocks.paymentFindMany.mockResolvedValue([payment({ refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+    let passes = 0;
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
+      passes += 1;
+      // An unbounded retry would never stop: fail it here, not by overflowing the stack.
+      if (passes > 5) throw new Error("the recount retried without bound");
+      return callback(lockedTx(() => [NOTE_ROW("VOIDED")]));
+    });
+
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0 });
+    expect(passes).toBe(2);
+    // Nothing is written on a pass whose note stopped counting.
+    expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ paymentIds: ["pay-1"] }), expect.stringContaining("next sync recomputes it"));
+  });
+
+  it("MUTATION (claim): the claim is taken under the lock after the re-read, never without it", async () => {
+    mocks.paymentFindMany.mockResolvedValue([payment({ refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+    const order: string[] = [];
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
+      const tx = lockedTx(() => { order.push("re-read"); return [NOTE_ROW("AUTHORISED")]; });
+      tx.$executeRaw.mockImplementation(async () => { order.push("lock"); return 1; });
+      mocks.paymentUpdateMany.mockImplementationOnce(async () => { order.push("claim"); return { count: 1 }; });
+      return callback(tx);
+    });
+
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 1 });
+    expect(order).toEqual(["lock", "re-read", "claim"]);
+  });
+
+  it("an officer's card refund landing between the reads and the claim is never lowered: the claim is lost and the retry only raises", async () => {
+    // A read $50; an officer refunds by card and the aggregates write $175 before A's claim.
+    mocks.paymentFindMany
+      .mockResolvedValueOnce([payment({ refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })])
+      .mockResolvedValue([payment({ refundedAmountCents: 17_500, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+    let voided = false;
+    mocks.paymentUpdateMany.mockImplementation(async ({ where }: { where: { refundedAmountCents: number } }) => ({ count: where.refundedAmountCents === 17_500 ? 1 : 0 }));
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
+      // The first pass finds the note live; the retry finds it voided meanwhile.
+      const voidedNow = voided;
+      voided = true;
+      return callback(lockedTx(() => [NOTE_ROW(voidedNow ? "VOIDED" : "AUTHORISED")]));
+    });
+
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0 });
+    // First pass: its $100 claim is on the $50 it read, so the officer's $175 loses it. Second: nothing is written.
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(1);
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ refundedAmountCents: 5000 }) }));
+    expect(mocks.transaction).toHaveBeenCalledTimes(2);
+    // The retry's Xero-derived $100 is below the card ledger's $175: kept and alerted, never written lower.
+    expect(mocks.notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({ errorType: "refund-ledger-divergence" }));
   });
 });

@@ -5636,6 +5636,14 @@ describe("processStoredXeroInboundEvents", () => {
         status: "SUCCEEDED",
       },
     ]);
+    // #4288: the payment holds the note's refund-note row, so the recount decides under its Payment row lock.
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $executeRaw: vi.fn(async () => 1),
+        xeroObjectLink: { findMany: mocks.linkFindMany },
+        payment: { findFirst: vi.fn(async () => ({ id: "pay_void_1" })), updateMany: mocks.paymentUpdateMany },
+      }),
+    );
     const accountingApi = {
       getCreditNote: vi.fn().mockResolvedValue({
         body: {

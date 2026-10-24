@@ -1,9 +1,10 @@
 import { APPLIED_CREDIT_ALLOCATION_ROLE } from "@/lib/xero-applied-credit-link-roles";
 import { type CreditNote as XeroCreditNote } from "xero-node";
-import { CreditType, PaymentSource, PaymentStatus } from "@prisma/client";
+import { CreditType, PaymentSource, PaymentStatus, type Prisma } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
 import { prisma } from "@/lib/prisma";
+import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import logger from "@/lib/logger";
 import { type AccountCreditAllocationRepairResult, type AccountCreditAllocationTarget, type RefundedPaymentBusinessStateRepairResult } from "./types";
 import { buildBookingAppliedCreditDescription, getAmountCentsFromAllocationMetadata, getCreditNoteAmountCents, getCreditNoteIdFromAllocationMetadata, getJsonRecord, getNextRefundedPaymentStatus, getRefundContributionCentsFromCreditNoteMetadata } from "./amounts";
@@ -492,43 +493,38 @@ export async function repairRefundedPaymentBusinessState(input: {
       updates.status = nextStatus;
     }
 
-    if (Object.keys(updates).length === 0) return "unchanged";
-
     // #3979: a claim on the row as read, so a concurrent writer is never
     // overwritten with a figure derived from the row before it wrote. The
     // inbound settle touches the payment at every transition, even when it
     // keeps the stored figure and leaves status and refunded total alone, so
     // `updatedAt` is what catches it.
-    const written = await prisma.payment.updateMany({
-      where: {
-        id: payment.id,
-        status: payment.status,
-        refundedAmountCents: payment.refundedAmountCents,
-        amountCents: payment.amountCents,
-        updatedAt: payment.updatedAt,
-      },
-      data: updates,
-    });
-    if (written.count !== 1) return "lost";
-    // #4288: the counted note's row no longer counts (voided or deactivated since the read above; a later void's own recount
-    // reads after this claim): undo this write while the row still holds exactly it - a card floor never lowers - then recount.
-    const now = currentNoteRows.has(payment.id) && includesCurrentCreditNoteContribution(payment.id) ? (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], prisma)).get(payment.id) : undefined;
-    if (!now || includesCurrentCreditNoteContribution(payment.id, now)) return "updated";
-    await prisma.payment.updateMany({ where: { id: payment.id, refundedAmountCents: effectiveRefundedTotalCents, status: updates.status ?? payment.status }, data: { refundedAmountCents: payment.refundedAmountCents, status: payment.status } });
-    return "recount";
+    const asRead = { id: payment.id, status: payment.status, refundedAmountCents: payment.refundedAmountCents, amountCents: payment.amountCents, updatedAt: payment.updatedAt };
+    // #4288: with the note's own refund-note row on this payment, decide under the Payment row lock - a void moves no Payment
+    // row, so the claim alone cannot see one - re-reading that row there (a plain read; no provider call, no other lock). It
+    // no longer counting writes nothing ("recount"); an unchanged verdict also checks the row as read, so a recount that
+    // waited on this lock sees the write it waited for. Every outcome is then some serial order of the claim and the void.
+    const decide = async (db: Pick<Prisma.TransactionClient, "$executeRaw" | "payment" | "xeroObjectLink">) => {
+      if (currentNoteRows.has(payment.id)) {
+        await lockPaymentForRefundedTotal(db, payment.id);
+        const now = (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], db)).get(payment.id);
+        if (includesCurrentCreditNoteContribution(payment.id) && !(now && includesCurrentCreditNoteContribution(payment.id, now))) return "recount" as const;
+        if (Object.keys(updates).length === 0) return (await db.payment.findFirst({ where: asRead, select: { id: true } })) ? ("unchanged" as const) : ("lost" as const);
+      } else if (Object.keys(updates).length === 0) return "unchanged" as const;
+      return (await db.payment.updateMany({ where: asRead, data: updates })).count === 1 ? ("updated" as const) : ("lost" as const);
+    };
+    return currentNoteRows.has(payment.id) ? prisma.$transaction((tx) => decide(tx)) : decide(prisma);
   };
 
   const lostPaymentIds: string[] = [];
-  let recountSinceRead = false; // #4288: always recounted - a row read as not counting is never counted again, so this ends.
   for (const payment of payments) {
     const outcome = await repairOne(payment);
-    if (outcome === "updated" || outcome === "recount") updatedPayments += 1; // a "recount" wrote too
+    if (outcome === "updated") updatedPayments += 1; // #4288: a "recount" wrote nothing; its retry counts its own write
     if (outcome === "lost" || outcome === "recount") lostPaymentIds.push(payment.id);
-    recountSinceRead ||= outcome === "recount";
   }
 
+  // One retry at most, for a lost claim or (#4288) a counted note that no longer counts; a second is left to the next sync.
   if (lostPaymentIds.length > 0) {
-    if (input.retryPaymentIds && !recountSinceRead) {
+    if (input.retryPaymentIds) {
       logger.warn(
         { creditNoteId: input.creditNoteId, paymentIds: lostPaymentIds },
         "Refunded-payment repair lost its claim twice to a concurrent writer; the next sync recomputes it (#3979)"

@@ -442,8 +442,8 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
           }
           const result = await a;
           expect(await state(kase)).toMatchObject(inWindow ? { active: false } : { active: false, status: "VOIDED" });
-          // F3: A wrote, so its audit says so, though the recount put the figure back.
-          expect(result.updatedRefundedPayments).toBe(1);
+          // Round 6: A's locked re-read found the note no longer counting, so A wrote nothing.
+          expect(result.updatedRefundedPayments).toBe(0);
           return result;
         });
       } finally {
@@ -466,12 +466,82 @@ function reading(status: string, updatedAt: string, payments: Array<Record<strin
       expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
     });
 
-    it("MUTATION (round 5, F1): on a card payment A's own $150 is undone before the recount, which could never lower it", async () => {
+    it("MUTATION (round 6): on a card payment A writes nothing when the void commits before its locked re-read", async () => {
       await voidBetweenReadAndClaim("Stripe per-delta", CARD);
-      // `INV-ADDPAY-021`: a card recount never lowers the ledger, so only
-      // undoing A's own write (while the row still holds exactly it) gets
-      // back to the $50 Stripe refunded.
+      // `INV-ADDPAY-021`: a card recount never lowers the ledger, so a $150
+      // written here would stand. A re-reads the note under the Payment lock
+      // and writes nothing.
       expect(await refunded(CARD)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    /**
+     * Round 6: A's recount paused INSIDE its locked transaction - after it
+     * re-read the note as live, before it commits its claim - while the void's
+     * link write commits (it takes no Payment row) and the void's own recount
+     * B queues on A's Payment row lock. The serial order is "A, then the
+     * void, then B".
+     */
+    async function voidAfterLockedReRead(kase: Case, paymentId: string) {
+      await seed(kase);
+      await prisma.payment.update({ where: { id: paymentId }, data: { refundedAmountCents: 5_000 } });
+      let current = reading("AUTHORISED", EARLY);
+      const status = await import("@/lib/xero-refund-note-status");
+      const original = status.readRefundNoteRowsByPayment;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached!: (pid: number) => void;
+      const atReRead = new Promise<number>((resolve) => (reached = resolve));
+      let gated = false;
+      const spy = vi.spyOn(status, "readRefundNoteRowsByPayment").mockImplementation(async (...args: Parameters<typeof original>) => {
+        const rows = await original(...args);
+        // The re-read on a transaction client (not the module client): A's, once.
+        if (!gated && args[2] !== prisma) {
+          gated = true;
+          const [{ pid }] = await (args[2] as unknown as typeof prisma).$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS "pid"`;
+          reached(pid);
+          await gate;
+        }
+        return rows;
+      });
+      const alerts = await import("@/lib/xero-error-alert");
+      const { reconcileXeroCreditNote } = await import("@/lib/xero-inbound/credit-note");
+      try {
+        return await withFakeXero(async () => ({ body: { creditNotes: [current] } }), async () => {
+          const a = reconcileXeroCreditNote(NOTE);
+          void a.catch(() => undefined);
+          let b: Promise<Awaited<ReturnType<typeof reconcileXeroCreditNote>>> | null = null;
+          try {
+            const pid = await Promise.race([atReRead, a.then(() => { throw new Error("A finished before its locked re-read"); })]);
+            current = reading("VOIDED", LATE);
+            b = reconcileXeroCreditNote(NOTE);
+            void b.catch(() => undefined);
+            // B's link write commits; its recount then waits on A's Payment row lock.
+            await Promise.race([b, waitForBlockedBy(pid)]);
+          } finally {
+            release();
+          }
+          const results = { a: await a, b: await b! };
+          expect(await state(kase)).toMatchObject({ active: false, status: "VOIDED" });
+          return { ...results, alerted: vi.mocked(alerts.notifyXeroSyncError).mock.calls.map(([call]) => call.errorType) };
+        });
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it("MUTATION (round 6): a void committing after A's locked re-read is A, then the void, then B - on a bank transfer B lowers it back", async () => {
+      const { a, b } = await voidAfterLockedReRead("bank-transfer per-refund", BT);
+      expect(a.updatedRefundedPayments).toBe(1);
+      expect(b.updatedRefundedPayments).toBe(1);
+      expect(await refunded(BT)).toEqual({ refundedAmountCents: 5_000, status: "PARTIALLY_REFUNDED" });
+    });
+
+    it("round 6 stated limit: on a card the same order leaves A's raise standing, raise-only, and alerts", async () => {
+      const { a, alerted } = await voidAfterLockedReRead("Stripe per-delta", CARD);
+      expect(a.updatedRefundedPayments).toBe(1);
+      // `INV-ADDPAY-021`, F5 #1353: B never lowers a card ledger; it raises the divergence alert.
+      expect(await refunded(CARD)).toEqual({ refundedAmountCents: 15_000, status: "PARTIALLY_REFUNDED" });
+      expect(alerted).toContain("refund-ledger-divergence");
     });
 
     it("MUTATION (review 2): a stale reading kept under a newer LIVE snapshot still records its allocations and refund payments", async () => {
