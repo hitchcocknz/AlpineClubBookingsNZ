@@ -11,7 +11,7 @@ import { type XeroAuditLocalLink } from "./types";
 import { repairAccountCreditAllocationBusinessState, repairRefundedPaymentBusinessState, resolveAccountCreditPaymentsFromMemberCredits, resolveAppliedCreditPaymentsFromLocalProvenance } from "./credit-note-repairs";
 import { resolveModificationRefundAmountsByPaymentId } from "./modification-note-refunds";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
-import { isIncludedRefundCreditNoteStatus, mayRecordAsCanonicalRefundNote } from "@/lib/xero-refund-note-status";
+import { isIncludedRefundCreditNoteStatus, mayRecordAsCanonicalRefundNote, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
 
 /** #4291: the audit source naming a recount reached only through a voided mirror. */
 const VOIDED_MIRROR_RECOUNT_AUDIT_SOURCE = "xero-inbound-credit-note-voided-mirror-recount";
@@ -92,12 +92,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
           xeroObjectId: creditNote.creditNoteID!,
           xeroObjectNumber: creditNote.creditNoteNumber ?? null,
           role: link.role,
-          metadata: {
-            status: creditNote.status ?? null,
-            total: creditNote.total ?? null,
-            appliedAmount: creditNote.appliedAmount ?? null,
-            remainingCredit: creditNote.remainingCredit ?? null,
-          },
+          metadata: xeroCreditNoteSnapshotMetadata(creditNote), // #4288: stamped with its UpdatedDateUTC
           // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
           // instead of destroying the per-delta covering inputs.
           mergeMetadata: true,
@@ -114,12 +109,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
             xeroObjectId: creditNote.creditNoteID!,
             xeroObjectNumber: creditNote.creditNoteNumber ?? null,
             role: "REFUND_CREDIT_NOTE",
-            metadata: {
-              status: creditNote.status ?? null,
-              total: creditNote.total ?? null,
-              appliedAmount: creditNote.appliedAmount ?? null,
-              remainingCredit: creditNote.remainingCredit ?? null,
-            },
+            metadata: xeroCreditNoteSnapshotMetadata(creditNote),
             // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
             // instead of destroying the per-delta covering inputs.
             mergeMetadata: true,
@@ -136,12 +126,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
             xeroObjectId: creditNote.creditNoteID!,
             xeroObjectNumber: creditNote.creditNoteNumber ?? null,
             role: "ACCOUNT_CREDIT_NOTE",
-            metadata: {
-              status: creditNote.status ?? null,
-              total: creditNote.total ?? null,
-              appliedAmount: creditNote.appliedAmount ?? null,
-              remainingCredit: creditNote.remainingCredit ?? null,
-            },
+            metadata: xeroCreditNoteSnapshotMetadata(creditNote),
             // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
             // instead of destroying the per-delta covering inputs.
             mergeMetadata: true,
@@ -274,12 +259,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
             xeroObjectId: creditNote.creditNoteID!,
             xeroObjectNumber: creditNote.creditNoteNumber ?? null,
             role: "REFUND_CREDIT_NOTE",
-            metadata: {
-              status: creditNote.status ?? null,
-              total: creditNote.total ?? null,
-              appliedAmount: creditNote.appliedAmount ?? null,
-              remainingCredit: creditNote.remainingCredit ?? null,
-            },
+            metadata: xeroCreditNoteSnapshotMetadata(creditNote),
             // F4 (#1354): merge over the outbound {amountCents, watermarkCents}
             // instead of destroying the per-delta covering inputs.
             mergeMetadata: true,

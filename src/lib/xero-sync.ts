@@ -9,7 +9,6 @@ import {
   perDeltaRefundNoteIds,
   neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
-  readRefundCreditNoteLinkStatus,
 } from "./xero-refund-note-status";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
@@ -858,12 +857,14 @@ async function upsertXeroObjectLinkWithClient(
       select: { xeroRefundCreditNoteId: true },
     });
     if (payment?.xeroRefundCreditNoteId === normalizedLink.xeroObjectId) {
-      // INV-LOCK-001, INV-LOCK-002: a statusless retry can hold this link while
-      // a Payment-first enqueue waits for it. Never wait back on that Payment.
-      // SKIP LOCKED still returns a row this transaction already holds. When
-      // busy, commit the inactive mirror; the #4161 heal can release its pointer.
-      // Explicit inbound voids keep their existing protocol (#4200).
-      if (readRefundCreditNoteLinkStatus(link.metadata) === null) {
+      // INV-LOCK-001, INV-LOCK-002: a write whose void was kept from the stored
+      // row - one naming no status (#4223) or an older live one (#4288) - can
+      // hold this link while a Payment-first enqueue waits for it. Never wait
+      // back on that Payment. SKIP LOCKED still returns a row this transaction
+      // already holds. When busy, commit the inactive mirror; the #4161 heal
+      // can release its pointer. A caller that itself names VOIDED/DELETED
+      // keeps its existing waiting order (#4200).
+      if (!isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
         const available = await client.$executeRaw`
           SELECT 1 FROM "Payment" WHERE "id" = ${normalizedLink.localId}
           FOR NO KEY UPDATE SKIP LOCKED`;

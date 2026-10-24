@@ -597,12 +597,131 @@ describe("upsertXeroObjectLink", () => {
       expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txLinkFindUnique.mock.invocationCallOrder[0]!);
     });
 
-    it("a write naming a status is judged on it, without reading the stored row", async () => {
+    it("#4288: a write naming a status re-reads the stored row under its own row lock too", async () => {
       await writeRequestNote("AUTHORISED");
-      // #4223: it still takes its own row first, as every refund-note link write does.
+      // #4223: it takes its own row first, as every refund-note link write does.
       expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(1);
-      // One read only: the metadata merge's. The stored row is not judged.
-      expect(mocks.txLinkFindUnique).toHaveBeenCalledTimes(1);
+      // #4288: the stored row is judged (then read again by the metadata merge),
+      // and only after the lock.
+      expect(mocks.txLinkFindUnique).toHaveBeenCalledTimes(2);
+      expect(mocks.txExecuteRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.txLinkFindUnique.mock.invocationCallOrder[0]!);
+    });
+  });
+
+  describe("#4288: an older live reading never revives a stored void (INV-ADDPAY-041)", () => {
+    const STORED_VOID = {
+      amountCents: 20000, watermarkCents: 20000, status: "VOIDED", total: 200, appliedAmount: 0, remainingCredit: 0,
+      providerUpdatedAt: "2026-06-30T12:00:00.000Z",
+    };
+    /** What the inbound reconcile, the status recorder or a hand-made answer read from Xero before the void. */
+    const OLDER_LIVE = { status: "AUTHORISED", total: 200, appliedAmount: 0, remainingCredit: 200, providerUpdatedAt: "2026-06-30T11:00:00.000Z" };
+    const SKIP_LOCKED_SQL = 'SELECT 1 FROM "Payment" WHERE "id" = ? FOR NO KEY UPDATE SKIP LOCKED';
+    const sqlOf = (call: unknown[]) => (call[0] as TemplateStringsArray).join("?").replace(/\s+/g, " ").trim();
+    const write = (role: string, extra: Record<string, unknown> = {}) =>
+      upsertXeroObjectLink({
+        localModel: "Payment", localId: "payment_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_voided", role,
+        metadata: OLDER_LIVE, mergeMetadata: true, ...extra,
+      });
+
+    it("MUTATION (bank-transfer canonical): kept inactive with the whole stored snapshot, no sibling retired, the pointer released without waiting", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_voided" });
+
+      await write("REFUND_CREDIT_NOTE");
+
+      const [call] = mocks.txLinkUpsert.mock.calls[0] as [{ create: { active: boolean }; update: { active: boolean; metadata: Record<string, unknown> } }];
+      // Before #4288 the live status was written over the void, active, and its siblings retired.
+      expect(call.update.active).toBe(false);
+      expect(call.create.active).toBe(false);
+      expect(call.update.metadata).toEqual(STORED_VOID);
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+      // MUTATION (pointer): the kept void never waits on a Payment a Payment-first writer may hold.
+      expect(sqlOf(mocks.txExecuteRaw.mock.calls[1]!)).toBe(SKIP_LOCKED_SQL);
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({
+        where: { id: "payment_1", xeroRefundCreditNoteId: "cn_voided" },
+        data: { xeroRefundCreditNoteId: null },
+      });
+    });
+
+    it("MUTATION (pointer): a kept void leaves the pointer to the heal when its Payment is busy", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_voided" });
+      mocks.txExecuteRaw.mockResolvedValueOnce(1).mockResolvedValueOnce(0);
+
+      await write("REFUND_CREDIT_NOTE");
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }));
+      expect(mocks.txPaymentUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("a caller that itself names VOIDED keeps its waiting order (#4200): no SKIP LOCKED", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: { status: "AUTHORISED" }, active: true });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: "cn_voided" });
+
+      await write("REFUND_CREDIT_NOTE", { metadata: { ...STORED_VOID } });
+
+      expect(mocks.txExecuteRaw).toHaveBeenCalledTimes(1);
+      expect(mocks.txPaymentUpdateMany).toHaveBeenCalledWith({ where: { id: "payment_1", xeroRefundCreditNoteId: "cn_voided" }, data: { xeroRefundCreditNoteId: null } });
+    });
+
+    it.each([
+      ["a Stripe per-delta note", "REFUND_CREDIT_NOTE", { source: "STRIPE", xeroRefundCreditNoteId: null }],
+      ["a bank-transfer per-refund note", "REFUND_CREDIT_NOTE", { source: "INTERNET_BANKING", xeroRefundCreditNoteId: null }],
+      ["a refund request's own note", "REFUND_REQUEST_CREDIT_NOTE", { source: "INTERNET_BANKING", xeroRefundCreditNoteId: null }],
+    ])("MUTATION: %s stays inactive with its stored snapshot", async (_label, role, payment) => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: { ...STORED_VOID, perDelta: true }, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue(payment);
+
+      await write(role);
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: { ...STORED_VOID, perDelta: true } }) }),
+      );
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION: the status recorder's write, which passes the activity it read before its fetch, stays inactive", async () => {
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: STORED_VOID, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "STRIPE", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE", { active: true });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: STORED_VOID }) }));
+    });
+
+    it("MUTATION (fallback): with no timestamp on either side a stored void still wins", async () => {
+      const { providerUpdatedAt: _stored, ...legacyVoid } = STORED_VOID;
+      const { providerUpdatedAt: _incoming, ...unstampedLive } = OLDER_LIVE;
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: legacyVoid, active: false });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE", { metadata: unstampedLive });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: false, metadata: legacyVoid }) }));
+      expect(mocks.txLinkUpdateMany).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION (order): an older live reading keeps a newer stored live snapshot - its status, figures and activity", async () => {
+      const storedPaid = { amountCents: 20000, status: "PAID", total: 200, appliedAmount: 200, remainingCredit: 0, providerUpdatedAt: "2026-06-30T12:00:00.000Z" };
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: storedPaid, active: true });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "STRIPE", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE");
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(expect.objectContaining({ update: expect.objectContaining({ active: true, metadata: storedPaid }) }));
+    });
+
+    it("a newer live reading over a stored live snapshot is applied: AUTHORISED to PAID is ordinary", async () => {
+      const storedAuthorised = { amountCents: 20000, ...OLDER_LIVE };
+      const newerPaid = { status: "PAID", total: 200, appliedAmount: 200, remainingCredit: 0, providerUpdatedAt: "2026-06-30T13:00:00.000Z" };
+      mocks.txLinkFindUnique.mockResolvedValue({ metadata: storedAuthorised, active: true });
+      mocks.txPaymentFindUnique.mockResolvedValue({ source: "STRIPE", xeroRefundCreditNoteId: null });
+
+      await write("REFUND_CREDIT_NOTE", { metadata: newerPaid });
+
+      expect(mocks.txLinkUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({ update: expect.objectContaining({ active: true, metadata: { ...storedAuthorised, ...newerPaid } }) }),
+      );
     });
   });
 
