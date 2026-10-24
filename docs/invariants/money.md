@@ -345,17 +345,19 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   in-progress extension, an admin date shift) carries the recorded rows across
   by guest and stay date byte for byte, and where it cannot, leaves the
   booking's rows absent rather than guess. **The one exception** (owner
-  decision 24 Oct 2026 on #4302; #4317): an in-progress edit that caps its
-  carried promotion at the new total scales the stored rows left on the stay,
-  per redemption and beneficiary, in proportion to their stored amounts,
+  decision 24 Oct 2026 on #4302; #4317): an in-progress edit capping its
+  carried promotion at the new total scales the rows left on the stay, per
+  redemption and beneficiary, in proportion to their stored amounts,
   leftover cents on the earliest night, to the capped allocations
-  (`scaleCappedCarriedRows`, written by `restoreBookingNightAdjustments`). It
-  writes no row for a code, which then reads not known (the build-up and Xero
-  promotion lines falling back to the aggregate), where an amount is NOT KNOWN, an allocation has no row left, a beneficiary's rows mix
-  signs, a scaled row would take more than its night's price (a guest row, its
-  guest's total) or raise a night further, or across codes a night or
-  guest would lose more than it is held at (every code on it); and none at all
-  where the redemptions could not be scaled (`capCarriedPromotionRecords`). A member merge that drops a
+  (`scaleCappedCarriedRows`, via `restoreBookingNightAdjustments`). It writes
+  no row for a code, which reads not known (build-up and Xero promotion lines
+  fall back to the aggregate), where an amount is NOT KNOWN, an allocation
+  lost every row, a beneficiary's rows mix signs, a scaled row would take more
+  than its night's price (a guest row, its guest's total) or raise a night
+  further, or across codes a guest's night or a guest would lose more than it
+  is held at (every code on it; an unpriced night is not measured); and none
+  where the redemptions could not be scaled (`capCarriedPromotionRecords`).
+  A member merge that drops a
   duplicate's colliding allocation deletes that duplicate's rows on the same
   redemption in the same step, so each surviving allocation still matches its
   rows per beneficiary — but the redemption total still carries the dropped

@@ -271,7 +271,9 @@ export const scaleCappedCarriedRows: CappedCarryScaler = (rows, redemptions) => 
  * Every code with a row on a guest, or on one of a guest's nights, whose rows
  * across every code take off more than it is held at: the guest's held total,
  * the night's held price (#4317 review rounds 7 and 8). Only rows still written
- * count, so a guest or night with none left is never over.
+ * count, so a guest or night with none left is never over; a night whose price
+ * is NOT KNOWN is not measured. Nights are keyed by guest and calendar day, the
+ * writer's own `nightKey`.
  */
 function codesOverAHeldPrice(rows: CarriedRowHeld[], amounts: Array<number | null>): Set<string> {
   const held = new Map<string, { takenCents: number; heldCents: number | null; codes: Set<string> }>();
