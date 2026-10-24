@@ -1295,7 +1295,7 @@ describe("#2262 — the reversal (direction unpaid)", () => {
         expect(mocks.paymentTransactionFindFirst).toHaveBeenCalledWith({
           where: { paymentId: "payment-1", kind: PaymentTransactionKind.ADDITIONAL, source: PaymentSource.STRIPE, withdrawnAt: null },
           orderBy: [{ createdAt: "desc" }, { insertionSeq: "desc" }],
-          select: { stripePaymentIntentId: true, amountCents: true },
+          select: { stripePaymentIntentId: true, amountCents: true, status: true },
         });
         expect(enqueuedIntents()).toEqual([]);
         expect(readScope()).toMatchObject({ paymentIntentId: { in: ["pi_ask"] } });
@@ -1366,6 +1366,13 @@ describe("#2262 — the reversal (direction unpaid)", () => {
         ],
         ["with no card ask at all", () => cardLedger([])],
         [
+          "when the newest card ask's intent is no longer open (FAILED: declined, or cancelled at Stripe)",
+          () =>
+            cardLedger([
+              { id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000, status: PaymentStatus.FAILED },
+            ]),
+        ],
+        [
           "when the extra was not put back (a writer settled it since)",
           () => {
             cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
@@ -1385,6 +1392,21 @@ describe("#2262 — the reversal (direction unpaid)", () => {
           expect(stampWrites()).toEqual([]);
           expect(pointerWrites()).toEqual([]);
           expect(auditMetadata()).toMatchObject({ restoredAdditionalPaymentIntentId: null });
+        });
+      }
+
+      for (const pointer of [null, "pi_ask"] as const) {
+        it(`MUTATION (F1): an ask whose cancellation the settle adopted stays cancelled, so the pointer is not put back to it (pointer ${pointer ?? "null"})`, async () => {
+          primeReversal({ payment: { additionalPaymentIntentId: pointer } });
+          cardLedger([{ id: "txn-ask", kind: PaymentTransactionKind.ADDITIONAL, stripePaymentIntentId: "pi_ask", amountCents: 3000 }]);
+          settleAudit({ ...RESTORED_EXTRA, adoptedCancelPaymentIntentIds: ["pi_ask"] });
+
+          await reverse();
+
+          expect(withdrawReads()).toEqual([]);
+          expect(stampWrites()).toEqual([]);
+          expect(pointerWrites()).toEqual([]);
+          expect(auditMetadata()).toMatchObject({ stillCancelledPaymentIntentIds: ["pi_ask"], restoredAdditionalPaymentIntentId: null });
         });
       }
 

@@ -28,7 +28,7 @@ import {
   PAYMENT_RECOVERY_EXHAUSTED_WHERE,
   rearmedPaymentRecoveryOperationData,
 } from "@/lib/payment-recovery-constants";
-import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import { isOpenIntentTransactionStatus, OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { buildPaymentIntentCancelRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
 import {
@@ -351,16 +351,28 @@ export async function withdrawManualSettlementIntentCancellations(
     });
     if (deleted.count === 1) withdrawn.push(operation);
   }
-  return { withdrawn, stillCancelledIntentIds, rearmed, liveAdditionalAsk: liveAsk };
+  // The pointer is never put back to an ask that stays cancelled (the settle
+  // adopted its cancellation): the member would be shown a door that is closing.
+  const liveAdditionalAsk = liveAsk !== null && !stillCancelledIntentIds.includes(liveAsk) ? liveAsk : null;
+  return { withdrawn, stillCancelledIntentIds, rearmed, liveAdditionalAsk };
 }
 
 /**
  * The live ask a covering settle's mirror rebuild hid (#4320): the newest card
  * ADDITIONAL row an officer has not withdrawn, when it asks exactly the extra
  * the reversal restored (`isAdditionalAmountUncollected` read that figure off
- * this ask before the settle). Any other answer is no live ask, so every card
- * ADDITIONAL intent stays cancelled: an older ask, or one at another figure,
- * was superseded before the settle.
+ * this ask before the settle) and its intent is still open
+ * (`OPEN_INTENT_TRANSACTION_STATUS_LIST`). Any other answer is no live ask, so
+ * every card ADDITIONAL intent stays cancelled: an older ask, or one at another
+ * figure, was superseded before the settle.
+ *
+ * OPEN ONLY. A FAILED row is a declined card or an intent cancelled at Stripe
+ * (the settle's own best-effort cancel lands as FAILED too), and the ledger
+ * cannot tell the two apart. Restoring a cancelled one hands the member a door
+ * that no longer opens. Leaving a declined one unrestored fails safe: the extra
+ * still reads owed, and an officer can ask again. It is also the set the
+ * reversal treats as payable, so a restored ask always has its cancellation
+ * withdrawn.
  */
 async function readRestoredAdditionalAsk(
   tx: Prisma.TransactionClient,
@@ -370,9 +382,11 @@ async function readRestoredAdditionalAsk(
   const latest = await tx.paymentTransaction.findFirst({
     where: { paymentId, kind: PaymentTransactionKind.ADDITIONAL, source: PaymentSource.STRIPE, withdrawnAt: null },
     orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
-    select: { stripePaymentIntentId: true, amountCents: true },
+    select: { stripePaymentIntentId: true, amountCents: true, status: true },
   });
-  return latest?.amountCents === restoredAdditionalAmountCents ? latest.stripePaymentIntentId : null;
+  return latest?.amountCents === restoredAdditionalAmountCents && isOpenIntentTransactionStatus(latest.status)
+    ? latest.stripePaymentIntentId
+    : null;
 }
 
 /**
