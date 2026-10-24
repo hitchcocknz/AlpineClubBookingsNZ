@@ -690,8 +690,10 @@ describe("upsertXeroObjectLink", () => {
     });
 
     it("MUTATION (fallback): with no timestamp on either side a stored void still wins", async () => {
-      const { providerUpdatedAt: _stored, ...legacyVoid } = STORED_VOID;
-      const { providerUpdatedAt: _incoming, ...unstampedLive } = OLDER_LIVE;
+      const legacyVoid: Record<string, unknown> = { ...STORED_VOID };
+      delete legacyVoid.providerUpdatedAt;
+      const unstampedLive: Record<string, unknown> = { ...OLDER_LIVE };
+      delete unstampedLive.providerUpdatedAt;
       mocks.txLinkFindUnique.mockResolvedValue({ metadata: legacyVoid, active: false });
       mocks.txPaymentFindUnique.mockResolvedValue({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null });
 
