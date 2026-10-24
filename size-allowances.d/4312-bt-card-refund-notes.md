@@ -7,7 +7,7 @@ entry below is the seam into an existing flow, which belongs where that flow is.
 Two files at their budget were kept at it rather than allowed.
 
 file: src/lib/payment-recovery.ts
-lines: 3370
+lines: 3368
 reason: the refund request recovery row's marker (`notesEachRefund`, written as
   the row's Stripe key prefix by the one enqueue that writes these rows), the
   check the replay reads it back with, and the replay handing each refund it
@@ -41,6 +41,7 @@ reason: `charge.refunded` hands its delta and its newly counted refunds to
   late-capture checks for a refund newly recorded when the total did not move.
 
 file: src/lib/xero-operation-retry.ts
-lines: 2064
-reason: an operator's retry keeps a card refund's note its own
-  (`cardRefundId`), beside the other fields a retry must keep.
+lines: 2067
+reason: an operator's retry keeps a card refund's note its own (`cardRefundId`,
+  read from the payload or else the row's key, which an older worker's
+  payload rewrite keeps), beside the other fields a retry must keep.
