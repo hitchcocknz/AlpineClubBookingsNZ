@@ -2221,6 +2221,23 @@ EXCLUDES so a later genuine cancellation is not misdated by it. The reciprocal
 inbound fence records its conflict the same way, under the
 `manual_settlement_xero_conflict` discriminator.
 
+### Released-credit card request lifecycle (#4253)
+
+```text
+(release row written by the outside-spend converge)
+  -> recovery row `credit_release_ask_<releaseId>`        (sweep; off until the writer switch is on)
+  -> closed, nothing asked    (not a release / ended booking / payment not captured /
+                               organiser-settled / invoice paid in Xero / nothing owed /
+                               below the card minimum, the last with an officer alert)
+  -> ADDITIONAL row PENDING (reason credit_released_outside_app, carries any live ask)
+       -> SUCCEEDED by card  -> payment recorded on the booking's invoice (sweep, XeroObjectLink)
+       -> FAILED+withdrawn   when Xero shows the invoice PAID: card payment cancelled first,
+                               bank-cash row written in the same transaction
+       -> superseded         by a later ask that carries it (INV-PAY-098)
+```
+
+`INV-ADDPAY-045`, `INV-ADDPAY-046`.
+
 ### Manual refund task lifecycle (#2262)
 
 ```text

@@ -279,6 +279,7 @@ describe("admin cron health", () => {
       "internet-banking-hold-release",
       "xero-waiting-invoice-reaper",
       "late-capture-held-alert",
+      "credit-release-asks",
       // #4285 review: the owed new-capture alert's drain.
       "duplicate-capture-kept-alert",
     ]) {

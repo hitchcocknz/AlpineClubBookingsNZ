@@ -48,7 +48,8 @@ export type AdditionalCaptureReceiptEnqueueResult =
         | "booking-cancelled"
         | "not-a-card-booking"
         | "recorded-by-primary-invoice"
-        | "recorded-by-supplementary-invoice";
+        | "recorded-by-supplementary-invoice"
+        | "recorded-by-credit-release-sweep";
     };
 
 /** The outbox row shape, shared with the repair tool's read of it. */
@@ -117,6 +118,9 @@ export async function enqueueAdditionalCaptureReceiptOperation(
     }
     if (recorder.kind === "supplementary-invoice") {
       return { outcome: "not-eligible" as const, reason: "recorded-by-supplementary-invoice" as const };
+    }
+    if (recorder.kind === "credit-release-sweep") {
+      return { outcome: "not-eligible" as const, reason: "recorded-by-credit-release-sweep" as const };
     }
     const operation = await startXeroSyncOperation({
       ...ADDITIONAL_CAPTURE_RECEIPT_OPERATION,
