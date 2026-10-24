@@ -696,7 +696,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     expect(closed).not.toContain("neither payment");
     // #4285 review F2: the figure is what the CARD payment still holds; a credit or by-hand refund never touches it.
     expect(closed).toContain("the amount shown is what this card payment still holds after any card refund taken from it");
-    expect(closed).toContain("A refund made as account credit or by hand never touches it");
+    expect(closed).toContain("A refund made as account credit or by hand never touches this card payment, so part of what it holds may already have been refunded another way.");
     expect(closed).toContain("Check the cancellation's refund in the booking's history");
     expect(closed).toContain("Still held by this payment: ");
     expect(closed).not.toContain("Payment kept:");
