@@ -350,13 +350,12 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   per redemption and beneficiary, in proportion to their stored amounts,
   leftover cents on the earliest night, to the capped allocations
   (`scaleCappedCarriedRows`, written by `restoreBookingNightAdjustments`). It
-  writes no row for a code, whose build-up then reads not known (and while any
-  code does, the booking's build-up and Xero promotion lines fall back to the
-  aggregate), where an amount is NOT KNOWN, an allocation has no row left, a
-  beneficiary's rows mix signs, a scaled row would take more than its night's
-  price or raise a night further, or a guest across every code would lose more
-  than its held total (each code on that guest); and none at all where the
-  redemptions could not be scaled (`capCarriedPromotionRecords`). A member merge that drops a
+  writes no row for a code, which then reads not known (the build-up and Xero
+  promotion lines falling back to the aggregate), where an amount is NOT KNOWN, an allocation has no row left, a beneficiary's rows mix
+  signs, a scaled row would take more than its night's price (a guest row, its
+  guest's total) or raise a night further, or across codes a night or
+  guest would lose more than it is held at (every code on it); and none at all
+  where the redemptions could not be scaled (`capCarriedPromotionRecords`). A member merge that drops a
   duplicate's colliding allocation deletes that duplicate's rows on the same
   redemption in the same step, so each surviving allocation still matches its
   rows per beneficiary — but the redemption total still carries the dropped
