@@ -1269,7 +1269,7 @@ it was).
   is not issued, and an officer is told. A retired row is re-queued from
   **that row**, the largest ask per change, under
   `lockSupplementaryInvoiceAnchor`, once - unpaid where the capture's own
-  receipt records it (`INV-PAY-138`); it alerts once where another invoice
+  receipt records it (`INV-PAY-139`); it alerts once where another invoice
   is linked or queued. One for the same request (its sent payload keeps
   `paymentIntentId`) covers it, stamped `STALE_WAITING_PAYMENT_COVERED`.
 - Pinned by `xero-operation-outbox.test.ts`, `additional-payment-chase.test.ts`,
@@ -1586,7 +1586,7 @@ refunded total it corrects).
   the primary left, else unpaid. Otherwise, or for an overcharge, one Xero
   Operations task; never an automatic credit note.
 - **Limits.** A card capture of the anchor's own ask is recorded against the
-  gap invoice by its own receipt (`INV-PAY-138`). The other link writers store no figures: an edit
+  gap invoice by its own receipt (`INV-PAY-139`). The other link writers store no figures: an edit
   just before them is unmeasured, and a create finding one's link hands any
   gap to the treasurer. The credit election changes no price. No payment row,
   no claim.
@@ -1595,7 +1595,7 @@ refunded total it corrects).
   `xero-primary-invoice-fee-gap.test.ts` and
   `booking-primary-invoice-claim.test.ts`.
 
-## INV-PAY-138
+## INV-PAY-139
 
 **Related: `INV-PAY-136`** (gap invoice), **`INV-PAY-104`** (late-success
 release).

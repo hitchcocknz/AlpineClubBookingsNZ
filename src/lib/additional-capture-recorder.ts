@@ -1,5 +1,5 @@
 /**
- * #3953 review round 1 (`INV-PAY-138`): ONE RECORDER PER CAPTURE.
+ * #3953 review round 1 (`INV-PAY-139`): ONE RECORDER PER CAPTURE.
  *
  * Four writers can record a booking's Stripe cash against a Xero invoice: the
  * primary invoice's create, the #3980 gap invoice (paid from the cash the

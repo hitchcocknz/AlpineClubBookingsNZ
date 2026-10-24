@@ -1443,7 +1443,7 @@ every record-by-hand finding, it keeps appearing after the refund is recorded
 by hand, and that is expected: the app cannot see what is recorded by hand in
 Xero, and the tool has no way to acknowledge a finding (#3924 round 12).
 
-**Card payment not recorded in Xero** (#3953, `INV-PAY-138`). A booking change
+**Card payment not recorded in Xero** (#3953, `INV-PAY-139`). A booking change
 whose extra the member paid by card after the booking's Xero invoice was raised,
 when no supplementary invoice waited on that payment, is recorded by its own
 receipt (`ADDITIONAL_CAPTURE_RECEIPT` in Xero Operations). A capture missed

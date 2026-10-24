@@ -181,7 +181,7 @@ function summarizeQueuedPayload(
       };
 
     case "ADDITIONAL_CAPTURE_RECEIPT": {
-      // #3953 (`INV-PAY-138`): a booking change's card payment recorded against the invoice that bills it.
+      // #3953 (`INV-PAY-139`): a booking change's card payment recorded against the invoice that bills it.
       const plan = asRecord(req.plan);
       facts
         .add("Booking", shortId(req.bookingId))

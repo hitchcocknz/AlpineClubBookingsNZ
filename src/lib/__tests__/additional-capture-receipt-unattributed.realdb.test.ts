@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof for #3953 review round 7 (`INV-PAY-138`): A CAPTURE
+ * Real-PostgreSQL proof for #3953 review round 7 (`INV-PAY-139`): A CAPTURE
  * WHOSE LEDGER ROW CARRIES NO CHANGE STAMP still has one recorder.
  *
  * Two such captures reach the supplementary-invoice enqueue with a request

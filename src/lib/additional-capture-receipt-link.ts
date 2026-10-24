@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-138`): where a booking change's card capture was recorded in
+ * #3953 (`INV-PAY-139`): where a booking change's card capture was recorded in
  * Xero by its own receipt (`additional-capture-xero-receipt.ts`) - the link
  * its Xero payment writes on the capture's `PaymentTransaction`, naming the
  * invoice it paid. A leaf, so the refund paths read it without the worker's

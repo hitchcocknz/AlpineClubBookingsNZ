@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof for #3953 (`INV-PAY-138`; owner plan, 21 Oct 2026: "it
+ * Real-PostgreSQL proof for #3953 (`INV-PAY-139`; owner plan, 21 Oct 2026: "it
  * runs once"): a booking change's card capture that no supplementary invoice
  * waited on gets ONE receipt operation, whoever sees the capture first.
  *

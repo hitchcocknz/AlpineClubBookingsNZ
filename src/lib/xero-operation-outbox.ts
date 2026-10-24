@@ -1460,7 +1460,7 @@ interface XeroSupplementaryInvoiceEnqueueOptions {
   paymentIntentId?: string | null;
   waitForConfirmedAdditionalPayment?: boolean;
   recordPayment?: boolean;
-  /** #3953 (`INV-PAY-138`): a #3980 gap invoice, and the captures its own payment takes (none when unpaid). */
+  /** #3953 (`INV-PAY-139`): a #3980 gap invoice, and the captures its own payment takes (none when unpaid). */
   primaryInvoiceGap?: { coveredCaptures: ReadonlyArray<{ paymentIntentId: string; cents: number }> };
 }
 

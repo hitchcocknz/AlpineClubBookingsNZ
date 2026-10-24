@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-138`): the queued payload of the operation that records a
+ * #3953 (`INV-PAY-139`): the queued payload of the operation that records a
  * booking change's card capture against the Xero invoice that bills it, when
  * no supplementary invoice was waiting on that capture. A leaf - it imports
  * nothing of the outbox - so the outbox's payload parser and the worker

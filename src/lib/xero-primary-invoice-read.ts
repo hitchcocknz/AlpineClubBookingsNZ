@@ -18,7 +18,7 @@
  * is one that landed while the create was in flight, which is what the
  * treasurer's task describes (review M5).
  *
- * #3953 (`INV-PAY-138`): and the card captures the payment's cash figure holds,
+ * #3953 (`INV-PAY-139`): and the card captures the payment's cash figure holds,
  * oldest first with their net cash (`capturesAtBuild`). The link's save keeps
  * those the cash it recorded covers (`paymentIntentIdsRecordedAtLink`); every
  * other change capture is recorded by its own receipt.

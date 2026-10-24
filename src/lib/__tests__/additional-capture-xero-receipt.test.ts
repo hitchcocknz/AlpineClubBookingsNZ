@@ -1,5 +1,5 @@
 /**
- * #3953 (`INV-PAY-138`): a booking change's card capture that nothing else
+ * #3953 (`INV-PAY-139`): a booking change's card capture that nothing else
  * records is recorded against the Xero invoice that bills it - the gap invoice
  * where the capture's change is one it bills for, otherwise the primary -
  * capped at what Xero shows due, once, by one recorder, and refused with an

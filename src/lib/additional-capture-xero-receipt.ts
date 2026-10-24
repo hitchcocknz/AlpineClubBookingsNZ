@@ -1,6 +1,6 @@
 /**
  * A BOOKING CHANGE'S CARD CAPTURE IS RECORDED AGAINST THE XERO INVOICE THAT
- * BILLS IT (#3953, `INV-PAY-138`; owner decision and plan, 21 Oct 2026: "check,
+ * BILLS IT (#3953, `INV-PAY-139`; owner decision and plan, 21 Oct 2026: "check,
  * then bill and pay").
  *
  * A change made while the booking's primary invoice did not yet exist queues no

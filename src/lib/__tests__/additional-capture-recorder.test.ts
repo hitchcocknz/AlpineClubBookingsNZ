@@ -1,5 +1,5 @@
 /**
- * #3953 review round 1 (`INV-PAY-138`): one recorder per capture. The primary
+ * #3953 review round 1 (`INV-PAY-139`): one recorder per capture. The primary
  * invoice's create, the #3980 gap invoice, a change's own supplementary
  * invoice and a capture's own receipt each know which captures they record,
  * and every other writer stands down for those.
