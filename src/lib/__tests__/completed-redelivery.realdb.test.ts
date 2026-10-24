@@ -818,7 +818,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
       const reading = await readOtherSettledCaptureWhere(prisma, { bookingId: BOOKING_ID, paymentId: PAYMENT_ID, paymentIntentId: OTHER });
       expect(reading.supersededOwned).toContain(SETTLING);
       expect(await prisma.paymentTransaction.count({ where: reading.where })).toBe(0);
-      expect(await prisma.paymentTransaction.count({ where: reading.tellingWhere })).toBe(1);
+      expect(await prisma.paymentTransaction.count({ where: await reading.readTellingWhere() })).toBe(1);
 
       const logged = await spyOnLoggedErrors();
       const { drainOwedNewCaptureAlerts } = await import("@/lib/duplicate-capture-kept-alert-drain");

@@ -31,9 +31,10 @@ export function adminDuplicateCaptureKeptTemplate(data: {
   bookingId: string;
   reason: DuplicateCaptureKeptReason;
   /**
-   * What the kept card capture still holds (#4285 review): its amount less card
-   * refunds taken from it. The settle's capture has none (refund history never
-   * reaches the guard); the owed alert's drain nets them.
+   * What the kept card capture still holds (#4285 review): its amount less the
+   * card refunds recorded against it (`sumRecordedRefundsForCapture`), read by
+   * the settle and the owed alert's drain alike - never its ledger refunded
+   * figure, which account credit also fills.
    */
   amountCents: number;
   paymentIntentId: string;

@@ -662,7 +662,7 @@ describe("#2320 review — senders supply the composed notes their defaults rend
       CLUB_FORMAT_TEST,
     );
     const alone = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
-    expect(alone).toContain("no other payment on it still holds money");
+    expect(alone).toContain("the app counts no other payment on it as settling it");
     expect(alone).toContain("whether this payment now pays for the booking or is a duplicate");
     expect(alone).not.toContain("a cash or bank payment");
     // #4211 review: never "refund the other one" when there is no other one.
@@ -676,7 +676,9 @@ describe("#2320 review — senders supply the composed notes their defaults rend
       CLUB_FORMAT_TEST,
     );
     const stray = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
-    expect(stray).toContain("A new card payment was recorded on this booking after it was already paid, and no other card or bank payment on it holds money");
+    expect(stray).toContain("A new card payment was recorded on this booking after it was already paid, and the app counts no other payment on it as settling it");
+    // #4285 review 7 F5: never "no other card or bank payment holds money", which the ledger reading cannot prove.
+    expect(stray).not.toContain("card or bank payment on it hold");
     expect(stray).toContain("the booking was paid some other way");
     expect(stray).not.toContain("no record of which payment settled");
     // Only one payment: no "neither payment" Stripe check (#4285 review).
@@ -714,6 +716,31 @@ describe("#2320 review — senders supply the composed notes their defaults rend
       "The cancellation's record shows it refunded $100.00 as account credit.",
     );
 
+    // #4285 review 7 F1: a card refund is said as its row stands - never "refunded to card" before it was sent -
+    // and a card refund shortfall's parts beside it.
+    for (const [card, said] of [
+      [{ amount: "$60.00", standing: "not-sent" }, "a card refund of $60.00 was planned but has not been sent in full, $30.00 is owed back by bank transfer and $10.00 is for the club to check before paying it back."],
+      [{ amount: "$60.00", standing: "sent" }, "it refunded $60.00 to card, $30.00 is owed back by bank transfer and $10.00 is for the club to check before paying it back."],
+    ] as const) {
+      mocks.sendUnmuteableAdminAlert.mockClear();
+      await sendAdminDuplicateCaptureKeptAlert(
+        { ...alert, reason: "new-capture-closed", otherPaymentIntentId: null, otherHoldsMoney: false, cancellationRefund: { method: "card", card, byBank: "$30.00", toCheck: "$10.00" } },
+        CLUB_FORMAT_TEST,
+      );
+      expect(renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData())).toContain(`The cancellation's record shows ${said}`);
+    }
+
+    // #4285 review 7 F2: the settle's new-capture alert beside a payment the app no longer counts (a dead cancel's capture) names it.
+    mocks.sendUnmuteableAdminAlert.mockClear();
+    await sendAdminDuplicateCaptureKeptAlert(
+      { ...alert, reason: "new-capture", otherPaymentIntentId: "pi_dead_cancel", otherHoldsMoney: true },
+      CLUB_FORMAT_TEST,
+    );
+    const strayBeside = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
+    expect(strayBeside).toContain("Card payment pi_dead_cancel on it also holds money, so one or both of them may be extra.");
+    expect(strayBeside).not.toContain("so this payment may be extra");
+    expect(strayBeside).toContain("refund by hand any the booking does not need");
+
     // #4285 review F3: the same owed alert once a later payment holds money too.
     mocks.sendUnmuteableAdminAlert.mockClear();
     await sendAdminDuplicateCaptureKeptAlert(
@@ -723,7 +750,8 @@ describe("#2320 review — senders supply the composed notes their defaults rend
     const later = renderDefaultBody("admin-duplicate-capture-kept", capturedUnmuteableTemplateData());
     // #4285 review F5: the same two causes as new-capture, and the other payment holds money NOW.
     expect(later).toContain("the booking was paid some other way (with account credit, at a zero total, or by a group organiser), or its earlier payment was refunded");
-    expect(later).toContain("Card payment pi_later on it now also holds money");
+    expect(later).toContain("Card payment pi_later on it also holds money");
+    expect(later).toContain("while the app counted no other payment on it as settling it");
     expect(later).not.toContain("recorded on it since");
     // #4285 review F6: either or both may be extra.
     expect(later).toContain("refund by hand any the booking does not need — both, if it was paid another way.");

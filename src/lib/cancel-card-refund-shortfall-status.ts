@@ -1,4 +1,4 @@
-import { PaymentRecoveryOperationStatus } from "@prisma/client";
+import { PaymentRecoveryOperationStatus, type Prisma } from "@prisma/client";
 
 import {
   CANCEL_CARD_SHORTFALL_KEY_PREFIX,
@@ -49,11 +49,15 @@ export interface CancelledCardRefund {
  * #4125: where one card refund recovery row stands. Closed `SUCCEEDED` is made,
  * unless its close is a "Paid another way" record (`closeKeysOf`); a row the
  * runner will still send is on its way (`isPaymentRecoveryOperationInFlight`);
- * any other is dead - stalled until the club acts.
+ * any other is dead - stalled until the club acts. #4285 review: also read
+ * inside the kept-capture alert drain's snapshot, through its `store`.
  */
-async function cardRefundRowState(row: CardRefundRow): Promise<{ state: CardRefundState; record?: CloseRecord }> {
+export async function cardRefundRowState(
+  row: CardRefundRow,
+  store: Pick<Prisma.TransactionClient, "manualRefundTask"> = prisma,
+): Promise<{ state: CardRefundState; record?: CloseRecord }> {
   if (row.status === PaymentRecoveryOperationStatus.SUCCEEDED) {
-    const record = await prisma.manualRefundTask.findFirst({
+    const record = await store.manualRefundTask.findFirst({
       where: { occurrenceKey: { in: closeKeysOf(row.id) } },
       select: { amountCents: true, raisedAmountCents: true },
     });
