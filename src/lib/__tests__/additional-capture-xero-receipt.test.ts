@@ -216,9 +216,17 @@ beforeEach(() => {
     return {};
   });
   mocks.updateManyOperation.mockResolvedValue({ count: 1 });
-  // Round 4: the planning gate runs on a transaction of its own.
+  // Round 4: the planning gate runs on a transaction of its own; round 6: so
+  // does storing the decision, and switching another invoice unpaid.
   mocks.transaction.mockImplementation(async (fn: (client: unknown) => unknown) =>
-    fn({ xeroSyncOperation: { findFirst: mocks.findFirstOperation, updateMany: mocks.updateManyOperation } }),
+    fn({
+      xeroSyncOperation: {
+        findFirst: mocks.findFirstOperation,
+        findUnique: mocks.findUniqueOperation,
+        update: mocks.updateOperation,
+        updateMany: mocks.updateManyOperation,
+      },
+    }),
   );
 });
 
@@ -637,6 +645,44 @@ describe("recordAdditionalCaptureReceipt", () => {
       expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
     });
 
+    it("MUTATION round 6 (item 2): switches an invoice that has not sent yet to raise unpaid, under its anchor lock, and says so", async () => {
+      invoices[GAP] = { amountDue: 0, payments: [{ paymentID: "xero_payment_first", reference: "Stripe pi_change" }] };
+      mocks.readCaptureRecorder.mockResolvedValue({ kind: "supplementary-invoice", operationId: "op_repair_invoice" });
+      const repairRow = { status: "PENDING", localModel: "BookingModification", localId: "mod_change", requestPayload: { recordPayment: true, paymentIntentId: "pi_change" } };
+      mocks.findUniqueOperation.mockImplementation(async ({ where }: { where: { id: string } }) =>
+        where.id === "op_repair_invoice" ? repairRow : { requestPayload: { ...PAYLOAD, plan } },
+      );
+      const seam = providers();
+
+      await expect(run(seam)).resolves.toBe("xero_payment_first");
+
+      expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(expect.anything(), "mod_change");
+      expect(mocks.updateManyOperation).toHaveBeenCalledWith({
+        where: { id: "op_repair_invoice", status: "PENDING" },
+        data: { requestPayload: { recordPayment: false, paymentIntentId: "pi_change" } },
+      });
+      expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ errorMessage: expect.stringContaining("now set to be raised unpaid") }),
+      );
+    });
+
+    it("leaves an invoice already in Xero as it is, and tells an officer to check for the second recording", async () => {
+      invoices[GAP] = { amountDue: 0, payments: [{ paymentID: "xero_payment_first", reference: "Stripe pi_change" }] };
+      mocks.readCaptureRecorder.mockResolvedValue({ kind: "supplementary-invoice", operationId: "op_repair_invoice" });
+      mocks.findUniqueOperation.mockImplementation(async ({ where }: { where: { id: string } }) =>
+        where.id === "op_repair_invoice"
+          ? { status: "SUCCEEDED", localModel: "BookingModification", localId: "mod_change", requestPayload: {} }
+          : { requestPayload: { ...PAYLOAD, plan } },
+      );
+
+      await run();
+
+      expect(mocks.updateManyOperation).not.toHaveBeenCalledWith(expect.objectContaining({ where: { id: "op_repair_invoice", status: "SUCCEEDED" } }));
+      expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ errorMessage: expect.stringContaining("another document now records it too") }),
+      );
+    });
+
     it("MUTATION round 5 (item 1): a stored decision, then an UNPAID invoice the repair tool raised naming the capture, then the retry - records it once, as decided", async () => {
       // What `readCaptureRecorder` answers for an unpaid invoice naming the intent: the receipt still records it.
       mocks.findUniqueOperation.mockResolvedValue({ requestPayload: { ...PAYLOAD, plan: { ...plan, target: "PRIMARY_INVOICE", invoiceId: PRIMARY } } });
@@ -688,6 +734,41 @@ describe("recordAdditionalCaptureReceipt", () => {
 
       expectRefused("figures-changed");
       expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("storing the decision under the change's anchor lock (round 6, 1b)", () => {
+    it("stores it in a transaction under the capture's change's lock, after reading who records it again there", async () => {
+      await run();
+      expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(expect.anything(), "mod_change");
+      expect(mocks.readCaptureRecorder).toHaveBeenCalledTimes(2);
+      expect(mocks.readCaptureRecorder.mock.calls[1]![1]).toBeDefined();
+      const lockCalls = mocks.lockSupplementaryInvoiceAnchor.mock.invocationCallOrder;
+      expect(lockCalls[lockCalls.length - 1]).toBeLessThan(mocks.readCaptureRecorder.mock.invocationCallOrder[1]!);
+      expect(mocks.readCaptureRecorder.mock.invocationCallOrder[1]).toBeLessThan(mocks.updateOperation.mock.invocationCallOrder[0]!);
+    });
+
+    it("MUTATION: stands down, storing nothing and sending nothing, where an invoice for the change came to record it meanwhile", async () => {
+      mocks.readCaptureRecorder
+        .mockResolvedValueOnce(receiptRecorder())
+        .mockResolvedValueOnce({ kind: "supplementary-invoice", operationId: "op_repair_invoice" });
+      const seam = providers();
+
+      await expect(run(seam)).resolves.toBeNull();
+
+      expect(mocks.updateOperation).not.toHaveBeenCalled();
+      expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
+        "op_receipt",
+        expect.objectContaining({ status: "SUCCEEDED", responsePayload: expect.objectContaining({ skipped: "recorded-by-supplementary-invoice" }) }),
+      );
+    });
+
+    it("decides again on the next run where the invoice it belongs to changed meanwhile", async () => {
+      mocks.readCaptureRecorder.mockResolvedValueOnce(receiptRecorder()).mockResolvedValueOnce(gapTarget());
+      const seam = providers();
+      await expectWait(seam);
+      expect(mocks.updateOperation).not.toHaveBeenCalled();
     });
   });
 

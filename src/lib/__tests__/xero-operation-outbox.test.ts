@@ -58,6 +58,7 @@ const mocks = vi.hoisted(() => ({
   createXeroKeptLateCaptureInvoice: vi.fn(),
   recordAdditionalCaptureReceipt: vi.fn(),
   enqueueAdditionalCaptureReceiptOperation: vi.fn(),
+  anchorCaptureHasReceipt: vi.fn(),
   createXeroMembershipCancellationCreditNote: vi.fn(),
   syncXeroMembershipCancellationContact: vi.fn(),
   isXeroConnected: vi.fn().mockResolvedValue(false),
@@ -251,6 +252,10 @@ vi.mock("@/lib/xero-kept-late-capture-invoice", () => ({
 }));
 vi.mock("@/lib/additional-capture-receipt-enqueue", () => ({
   enqueueAdditionalCaptureReceiptOperation: mocks.enqueueAdditionalCaptureReceiptOperation,
+}));
+// #3953 round 6: no capture of the anchor has a receipt unless a case says so.
+vi.mock("@/lib/additional-capture-receipt-link", () => ({
+  anchorCaptureHasReceipt: (...args: unknown[]) => mocks.anchorCaptureHasReceipt(...args),
 }));
 vi.mock("@/lib/additional-capture-xero-receipt", () => ({
   recordAdditionalCaptureReceipt: mocks.recordAdditionalCaptureReceipt,
@@ -849,6 +854,43 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
         },
       })
     );
+  });
+
+  it("#3953 round 6 (1a): raises the change's invoice UNPAID, decided under its anchor lock, where a capture of it already has a receipt recording it", async () => {
+    mocks.anchorCaptureHasReceipt.mockResolvedValueOnce(true);
+    await enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: "booking_1", priceDiffCents: 2500, changeFeeCents: 500, bookingModificationId: "mod_1" },
+      { createdByMemberId: "admin_1", paymentIntentId: "pi_change" },
+    );
+    expect(mocks.anchorCaptureHasReceipt).toHaveBeenCalledWith(expect.anything(), {
+      bookingModificationId: "mod_1",
+      paymentIntentId: "pi_change",
+    });
+    expect(mocks.executeRaw.mock.invocationCallOrder[0]).toBeLessThan(mocks.anchorCaptureHasReceipt.mock.invocationCallOrder[0]);
+    expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(
+      expect.objectContaining({ requestPayload: expect.objectContaining({ recordPayment: false }) }),
+    );
+  });
+
+  it("#3953 round 6 (1a): a #3980 gap invoice decides its own cash; an unpaid ask is never asked", async () => {
+    mocks.anchorCaptureHasReceipt.mockResolvedValue(true);
+    try {
+      await enqueueXeroSupplementaryInvoiceOperation(
+        { bookingId: "booking_1", priceDiffCents: 2500, changeFeeCents: 500, bookingModificationId: "mod_gap" },
+        { recordPayment: true, primaryInvoiceGap: { coveredCaptures: [] } },
+      );
+      expect(mocks.startXeroSyncOperation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ requestPayload: expect.objectContaining({ recordPayment: true, primaryInvoiceGap: true }) }),
+      );
+      mocks.anchorCaptureHasReceipt.mockClear();
+      await enqueueXeroSupplementaryInvoiceOperation(
+        { bookingId: "booking_1", priceDiffCents: 2500, changeFeeCents: 500, bookingModificationId: "mod_unpaid" },
+        { recordPayment: false },
+      );
+      expect(mocks.anchorCaptureHasReceipt).not.toHaveBeenCalled();
+    } finally {
+      mocks.anchorCaptureHasReceipt.mockResolvedValue(false);
+    }
   });
 
   // #1356 (F16): mixed-sign components stay signed through the queue so the

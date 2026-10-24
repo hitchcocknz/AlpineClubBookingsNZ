@@ -77,7 +77,12 @@ import {
   sanitizeForJson,
 } from "@/lib/xero-sync";
 import { readCaptureRecorder } from "@/lib/additional-capture-recorder";
-import { ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE, passPlanningGate, waitFor } from "@/lib/additional-capture-receipt-gate";
+import {
+  ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE,
+  passPlanningGate,
+  switchUnsentRecorderUnpaid,
+  waitFor,
+} from "@/lib/additional-capture-receipt-gate";
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import {
   readAdditionalCaptureReceiptPayload,
@@ -493,16 +498,38 @@ export async function recordAdditionalCaptureReceipt(
     const date =
       (await providers.readStripeCaptureDocumentDate(paymentIntentId, zone)) ?? xeroDocumentDateForClubToday(zone);
     const plan: AdditionalCaptureReceiptPlan = { ...chosen, capturedCents, date };
-    // Stored BEFORE the Xero call: a retry sends this, and never decides again.
-    await prisma.xeroSyncOperation.update({
-      where: { id: operationId },
-      data: { requestPayload: sanitizeForJson({ ...(asRecord(row?.requestPayload) ?? {}), plan }) },
+    // Stored BEFORE the Xero call: a retry sends this, and never decides
+    // again. Round 6 (1b): stored under the change's anchor lock - the lock a
+    // supplementary invoice for the change is queued under, which reads this
+    // stored decision there (`anchorCaptureHasReceipt`) - after reading who
+    // records the capture again under it, so an invoice for the change and
+    // this decision never both record it. Its own transaction, holding no
+    // other key; no Xero call under it.
+    const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
+    const stored = await prisma.$transaction(async (tx) => {
+      await lockSupplementaryInvoiceAnchor(tx, transaction.bookingModificationId ?? bookingId);
+      const now = await readCaptureRecorder(
+        { bookingId, primaryInvoiceId, paymentIntentId, bookingModificationId: transaction.bookingModificationId },
+        tx,
+      );
+      if (now.kind !== "receipt") return now.kind;
+      const nowInvoiceId = now.target ? (now.target.link?.active ? now.target.link.xeroObjectId : null) : primaryInvoiceId;
+      if (nowInvoiceId !== plan.invoiceId) return "target-moved" as const;
+      await tx.xeroSyncOperation.update({
+        where: { id: operationId },
+        data: { requestPayload: sanitizeForJson({ ...(asRecord(row?.requestPayload) ?? {}), plan }) },
+      });
+      return "stored" as const;
     });
+    if (stored === "target-moved") {
+      throw waitFor("The invoice this card payment belongs to changed while it was being decided; it is decided again on the next run");
+    }
+    if (stored !== "stored") return standDown("SUCCEEDED", `recorded-by-${stored}`, { decidedAgainUnderLock: true });
     return plan;
   }
 
   /** Another writer that now records this capture (`readCaptureRecorder`), or null where its receipt still does. */
-  async function recorderNowElsewhere(): Promise<string | null> {
+  async function recorderNowElsewhere(): Promise<{ kind: string; operationId: string | null } | null> {
     const capture = await prisma.paymentTransaction.findUnique({
       where: { id: paymentTransactionId },
       select: { bookingModificationId: true, payment: { select: { xeroInvoiceId: true } } },
@@ -515,7 +542,28 @@ export async function recordAdditionalCaptureReceipt(
       paymentIntentId,
       bookingModificationId: capture.bookingModificationId,
     });
-    return recorder.kind === "receipt" ? null : recorder.kind;
+    if (recorder.kind === "receipt") return null;
+    return { kind: recorder.kind, operationId: recorder.kind === "supplementary-invoice" ? recorder.operationId : null };
+  }
+
+  /**
+   * Round 6 (item 2): this receipt's own payment is in Xero and another
+   * supplementary invoice would record the same capture. Where that invoice
+   * has not sent - PENDING, WAITING_PAYMENT, or FAILED with no active link -
+   * it is switched to raise UNPAID, under its anchor's lock and guarded on the
+   * status read, so the capture is recorded once; the officer is told which.
+   * One already in Xero (or being sent) is left, and the officer is told to
+   * check for the second recording.
+   */
+  async function settleOtherRecorder(other: { kind: string; operationId: string | null }, invoiceId: string): Promise<void> {
+    const switched = other.operationId ? await switchUnsentRecorderUnpaid(other.operationId) : false;
+    await alertOfficer(
+      paymentIntentId,
+      operationId,
+      switched
+        ? `This card payment was recorded in Xero against invoice ${invoiceId} by its own receipt, and another supplementary invoice not yet sent (outbox operation ${other.operationId}) would have recorded it too; that invoice is now set to be raised unpaid, so the payment is recorded once. Check the invoice when it is raised.`
+        : `This card payment was recorded in Xero against invoice ${invoiceId} by its own receipt, and another document now records it too (${other.kind}${other.operationId ? `, outbox operation ${other.operationId}` : ""}). Check Xero shows it once, and correct it by hand if not.`,
+    );
   }
 
   async function sendPlannedPayment(plan: AdditionalCaptureReceiptPlan, fromStore: boolean): Promise<string | null> {
@@ -531,20 +579,14 @@ export async function recordAdditionalCaptureReceipt(
       const recorded = findRecordedPayment(read, reference);
       if (recorded?.paymentID) {
         await finishRecorded({ paymentId: recorded.paymentID, plan, recoveredExisting: true });
-        if (otherRecorder) {
-          await alertOfficer(
-            paymentIntentId,
-            operationId,
-            `This card payment was recorded in Xero against invoice ${plan.invoiceId} by its own receipt, and another document now records it too (${otherRecorder}). Check Xero shows it once, and correct it by hand if not.`,
-          );
-        }
+        if (otherRecorder) await settleOtherRecorder(otherRecorder, plan.invoiceId);
         return recorded.paymentID;
       }
       // Round 4 (1b): a NEW payment is never sent past another document that
       // has since come to record the same capture - a repair-raised invoice
       // for the change that records it, say. Not a silent stand-down: an
       // officer checks.
-      if (otherRecorder) return refuse("recorded-elsewhere", { plan, recorder: otherRecorder });
+      if (otherRecorder) return refuse("recorded-elsewhere", { plan, recorder: otherRecorder.kind, recorderOperationId: otherRecorder.operationId });
       // Review round 1 (I): the primary's room still leaves its applied credit room.
       const roomCents =
         plan.target === "PRIMARY_INVOICE"

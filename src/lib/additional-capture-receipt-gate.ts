@@ -9,6 +9,8 @@ import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-o
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
 import { liveRunningXeroOperationFilter } from "@/lib/xero-stale-operations";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
+import { asRecord } from "@/lib/xero-json";
+import { sanitizeForJson } from "@/lib/xero-sync";
 
 /** The `lastErrorCode` a receipt carries while it waits (busy) and goes back to PENDING. */
 export const ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE = "ADDITIONAL_CAPTURE_RECEIPT_WAITING";
@@ -102,4 +104,43 @@ export function outboxScanSpacesWaitingReceipts(now: Date) {
       { updatedAt: { lte: new Date(now.getTime() - ADDITIONAL_CAPTURE_RECEIPT_RECHECK_MS) } },
     ],
   };
+}
+
+/**
+ * #3953 review round 6 (item 2): a receipt whose own payment is in Xero found
+ * another supplementary invoice that would record the same capture. Where that
+ * invoice has not sent - PENDING, WAITING_PAYMENT, or FAILED with no active
+ * `SUPPLEMENTARY_INVOICE` link - it is switched to raise UNPAID, under its
+ * anchor's lock and guarded on the status read there, so the capture is
+ * recorded once. Returns whether it was switched; one in Xero, or being sent,
+ * is left (the caller tells an officer either way). Its own transaction,
+ * holding no other key; no Xero call.
+ */
+export async function switchUnsentRecorderUnpaid(supplementaryOperationId: string): Promise<boolean> {
+  const row = await prisma.xeroSyncOperation.findUnique({
+    where: { id: supplementaryOperationId },
+    select: { status: true, localModel: true, localId: true },
+  });
+  if (!row?.localModel || !row.localId || !["PENDING", "WAITING_PAYMENT", "FAILED"].includes(row.status)) return false;
+  const { localModel, localId } = row;
+  const linked = await prisma.xeroObjectLink.findFirst({
+    where: { localModel, localId, xeroObjectType: "INVOICE", role: "SUPPLEMENTARY_INVOICE", active: true },
+    select: { id: true },
+  });
+  if (linked) return false;
+  // Imported here: the outbox dispatches to the receipt's worker.
+  const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
+  return prisma.$transaction(async (tx) => {
+    await lockSupplementaryInvoiceAnchor(tx, localId);
+    const current = await tx.xeroSyncOperation.findUnique({
+      where: { id: supplementaryOperationId },
+      select: { status: true, requestPayload: true },
+    });
+    if (!current || current.status !== row.status) return false;
+    const result = await tx.xeroSyncOperation.updateMany({
+      where: { id: supplementaryOperationId, status: current.status },
+      data: { requestPayload: sanitizeForJson({ ...(asRecord(current.requestPayload) ?? {}), recordPayment: false }) },
+    });
+    return result.count === 1;
+  });
 }

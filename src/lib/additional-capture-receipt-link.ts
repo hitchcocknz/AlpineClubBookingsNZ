@@ -55,3 +55,48 @@ export async function findAdditionalCaptureReceiptInvoiceId(
   const planned = asRecord(asRecord(pending?.requestPayload)?.plan)?.invoiceId;
   return typeof planned === "string" && planned.length > 0 ? planned : null;
 }
+
+/**
+ * #3953 review round 6 (item 1a): WHETHER A CAPTURE THIS SUPPLEMENTARY INVOICE
+ * WOULD RECORD ALREADY HAS A RECEIPT RECORDING IT - its payment linked, its row
+ * RUNNING, or a decision stored on it. The supplementary enqueue asks this
+ * under the anchor's lock, and raises the invoice unpaid where it is so, so
+ * one capture never has two recorders whatever a repair sweep's snapshot said.
+ * The captures are those of the change (`bookingModificationId`) and the one
+ * the invoice names (`paymentIntentId`).
+ */
+export async function anchorCaptureHasReceipt(
+  store: Pick<Prisma.TransactionClient, "paymentTransaction" | "xeroObjectLink" | "xeroSyncOperation">,
+  input: { bookingModificationId: string | null; paymentIntentId: string | null },
+): Promise<boolean> {
+  const arms = [
+    ...(input.bookingModificationId ? [{ bookingModificationId: input.bookingModificationId }] : []),
+    ...(input.paymentIntentId ? [{ stripePaymentIntentId: input.paymentIntentId }] : []),
+  ];
+  if (arms.length === 0) return false;
+  const captures = await store.paymentTransaction.findMany({
+    where: { kind: "ADDITIONAL", OR: arms },
+    select: { id: true },
+  });
+  const ids = captures.map((capture) => capture.id);
+  if (ids.length === 0) return false;
+  const [linked, receipts] = await Promise.all([
+    store.xeroObjectLink.findFirst({
+      where: { localModel: "PaymentTransaction", localId: { in: ids }, role: ADDITIONAL_CAPTURE_PAYMENT_ROLE, active: true },
+      select: { id: true },
+    }),
+    store.xeroSyncOperation.findMany({
+      where: {
+        localModel: "PaymentTransaction",
+        localId: { in: ids },
+        queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
+        status: { not: "CANCELLED" },
+      },
+      select: { status: true, requestPayload: true },
+    }),
+  ]);
+  return (
+    linked !== null ||
+    receipts.some((receipt) => receipt.status === "RUNNING" || asRecord(receipt.requestPayload)?.plan != null)
+  );
+}

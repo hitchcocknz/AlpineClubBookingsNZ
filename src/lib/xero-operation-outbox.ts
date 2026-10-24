@@ -70,6 +70,7 @@ import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-i
 import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
 import { outboxScanSpacesWaitingReceipts } from "@/lib/additional-capture-receipt-gate";
 import { primaryInvoiceGapPayload } from "@/lib/additional-capture-receipt-payload";
+import { anchorCaptureHasReceipt } from "@/lib/additional-capture-receipt-link";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
 import {
@@ -1706,6 +1707,8 @@ async function enqueueSupplementaryInvoiceForAnchor(
       };
     }
 
+    // #3953 round 6: a capture its own receipt records (or is recording) is never recorded again here; a gap invoice decides its own cash.
+    const recordPayment = (options?.recordPayment ?? true) && (Boolean(options?.primaryInvoiceGap) || !(await anchorCaptureHasReceipt(tx, { bookingModificationId: localModel === "BookingModification" ? localId : null, paymentIntentId: options?.paymentIntentId ?? null })));
     const queuedOperation = await startXeroSyncOperation({
       direction: "OUTBOUND",
       entityType: "INVOICE",
@@ -1721,7 +1724,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
         priceDiffCents,
         changeFeeCents,
         bookingModificationId: bookingModificationId ?? null,
-        recordPayment: options?.recordPayment ?? true,
+        recordPayment,
         paymentIntentId: options?.paymentIntentId ?? null,
         waitForConfirmedAdditionalPayment:
           options?.waitForConfirmedAdditionalPayment ?? false,
