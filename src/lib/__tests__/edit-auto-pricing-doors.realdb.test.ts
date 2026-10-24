@@ -257,10 +257,11 @@ async function batch(input: Record<string, unknown>) {
  * still valid, the per-night (or per-guest) rows, and the confirmation's
  * PROMOTION line beside its night lines.
  */
-type SeedCode =
+type SeedCode = (
   | { type: "FIXED_AMOUNT"; valueCents: number }
   | { type: "PERCENTAGE"; percentOff: number }
-  | { type: "FREE_NIGHTS"; freeNightsPerIndividual: number };
+  | { type: "FREE_NIGHTS"; freeNightsPerIndividual: number }
+) & { maxGuestsPerBooking?: number };
 
 async function seedPromotion(
   code: SeedCode,
@@ -269,9 +270,12 @@ async function seedPromotion(
   return seedPromotions([{ id: PROMO_CODE_ID, code, validUntil: options.validUntil }], options.pricedOn);
 }
 
-/** Several codes, in their application order, each optionally on its own guests. */
+/**
+ * Several codes, in their application order: a later code covers only the
+ * nights no earlier code claimed (INV-MONEY-038/039), as the engine decides.
+ */
 async function seedPromotions(
-  codes: Array<{ id: string; code: SeedCode; validUntil?: string; guestIds?: string[] }>,
+  codes: Array<{ id: string; code: SeedCode; validUntil?: string }>,
   pricedOn: string,
 ): Promise<number> {
   for (const [order, entry] of codes.entries()) {
@@ -283,7 +287,7 @@ async function seedPromotions(
         ...(entry.validUntil ? { validUntil: D(entry.validUntil) } : {}),
       },
     });
-    const redemption = await prisma.promoRedemption.create({
+    await prisma.promoRedemption.create({
       data: {
         promoCodeId: entry.id,
         bookingId: BOOKING_ID,
@@ -292,11 +296,6 @@ async function seedPromotions(
         applicationOrder: order,
       },
     });
-    for (const bookingGuestId of entry.guestIds ?? []) {
-      await prisma.promoRedemptionGuestTarget.create({
-        data: { promoRedemptionId: redemption.id, bookingId: BOOKING_ID, bookingGuestId },
-      });
-    }
   }
   const promoAdjustmentCents = await prisma.$transaction(async (tx) => {
     const stored = await tx.booking.findUniqueOrThrow({
@@ -854,7 +853,7 @@ async function removeGuest(guestId: string) {
 
     describe("batch in progress, two codes stacked on one booking, capped (#4317 review round 6)", () => {
       // Two guests from 1 July, eight $50 nights each: $800. The frozen day is
-      // 1 July, so the stay is cut to the night already slept: $100 is left.
+      // 1 July, so the stay is cut to that night: $100 is left.
       const EIGHT = ["07-01", "07-02", "07-03", "07-04", "07-05", "07-06", "07-07", "07-08"].map((day) => ({
         day: `2026-${day}`,
         cents: RATE,
@@ -862,28 +861,33 @@ async function removeGuest(guestId: string) {
 
       const STACKED = [
         {
-          name: "two free-nights codes, one per guest: each keeps its row on the night left, and the booking reconciles",
-          // Each code frees its guest's first two nights: -$100 + -$100.
-          second: { type: "FREE_NIGHTS" as const, freeNightsPerIndividual: 2 },
-          // Capped at -$100, shared in proportion: -$50 each, which the row
-          // each code holds on 1 July already carries.
+          name: "a 50% code for one guest beside a 50% code for the other: each is scaled on its own night, and the booking reconciles",
+          // The first takes half of one guest's eight nights (-$200); the
+          // second, half of the other's, which the first did not claim (-$200).
+          codes: [
+            { type: "PERCENTAGE" as const, percentOff: 50, maxGuestsPerBooking: 1 },
+            { type: "PERCENTAGE" as const, percentOff: 50 },
+          ],
+          // Capped at -$100, shared in proportion: -$50 each. Each code's one
+          // row left (-$25 on 1 July) is scaled to -$50: a whole $50 night.
           figures: [-5_000, -5_000],
-          rows: [
-            [GUEST_A, "2026-07-01", -5_000],
-            [GUEST_B, "2026-07-01", -5_000],
-          ] as Array<[string, string, number]>,
+          rowsByCode: [[-5_000], [-5_000]],
           reconciliation: { state: "RECONCILED", reasons: [] },
         },
         {
-          name: "a free-nights code beside a 50% code: the first is scaled on its own night, the second cannot be and writes none",
-          // -$100 for guest A's first two nights; 50% of guest B's eight: -$200.
-          second: { type: "PERCENTAGE" as const, percentOff: 50 },
-          // Capped at -$100: -$33.33 and -$66.66, the leftover cent on the first code.
-          figures: [-3_334, -6_666],
-          // A's -$50 row scales to -$33.34. B's -$25 row would have to take
-          // -$66.66 off a $50 night, so B writes no row (its build-up is not
-          // known) while A's stands, with its own Xero line (INV-MONEY-040).
-          rows: [[GUEST_A, "2026-07-01", -3_334]] as Array<[string, string, number]>,
+          name: "two free-nights codes: the first is scaled on the night left; the second freed only later nights, so it writes none",
+          // The first frees both guests' first two nights (-$200); the second,
+          // the next two, which the first did not claim (-$200).
+          codes: [
+            { type: "FREE_NIGHTS" as const, freeNightsPerIndividual: 2 },
+            { type: "FREE_NIGHTS" as const, freeNightsPerIndividual: 2 },
+          ],
+          // Capped at -$100: -$50 each. The first code's two rows on 1 July
+          // (-$50 each) scale to -$25; the second's rows were all on nights given
+          // back, so it has nothing to scale from: its build-up is not known
+          // while the first's stands, with its own Xero line (INV-MONEY-040).
+          figures: [-5_000, -5_000],
+          rowsByCode: [[-2_500, -2_500], []],
           reconciliation: { state: "UNRECONCILED", reasons: ["PROMO_BUILD_UP_NOT_KNOWN"] },
         },
       ];
@@ -900,8 +904,8 @@ async function removeGuest(guestId: string) {
         });
         const storedPromo = await seedPromotions(
           [
-            { id: PROMO_CODE_ID, code: { type: "FREE_NIGHTS", freeNightsPerIndividual: 2 }, guestIds: [GUEST_A] },
-            { id: SECOND_CODE_ID, code: scenario.second, guestIds: [GUEST_B] },
+            { id: PROMO_CODE_ID, code: scenario.codes[0]! },
+            { id: SECOND_CODE_ID, code: scenario.codes[1]! },
           ],
           "2026-06-15",
         );
@@ -938,17 +942,17 @@ async function removeGuest(guestId: string) {
 
         const rows = await prisma.bookingGuestNightAdjustment.findMany({
           where: { bookingId: BOOKING_ID },
-          include: { bookingGuestNight: { select: { stayDate: true, bookingGuestId: true } } },
+          include: { bookingGuestNight: { select: { stayDate: true } } },
         });
+        // Every row left sits on 1 July, the night kept.
+        expect(new Set(rows.map((row) => row.bookingGuestNight?.stayDate.toISOString().slice(0, 10)))).toEqual(
+          new Set(rows.length > 0 ? ["2026-07-01"] : []),
+        );
         expect(
-          rows
-            .map((row): [string, string, number] => [
-              row.bookingGuestNight!.bookingGuestId,
-              row.bookingGuestNight!.stayDate.toISOString().slice(0, 10),
-              row.amountCents ?? Number.NaN,
-            ])
-            .sort(([a], [b]) => a.localeCompare(b)),
-        ).toEqual(scenario.rows);
+          redemptions.map((redemption) =>
+            rows.filter((row) => row.promoRedemptionId === redemption.id).map((row) => row.amountCents),
+          ),
+        ).toEqual(scenario.rowsByCode);
         // The first code's rows reconcile to its own records either way.
         const first = redemptions[0]!;
         expect(
