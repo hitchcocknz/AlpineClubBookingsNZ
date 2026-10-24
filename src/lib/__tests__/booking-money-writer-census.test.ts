@@ -74,7 +74,8 @@ const REVIEWED_WRITERS = [
   "src/lib/group-cancel.ts|booking|opaquePayload||1",
   "src/lib/internet-banking-payment-cron.ts|booking|opaquePayload||1",
   "src/lib/member-guest-consent-service.ts|bookingGuest|opaquePayload||1",
-  "src/lib/night-adjustment-write.ts|bookingGuestNightAdjustment|createMany,deleteMany,opaquePayload|amountCents|4",
+  // #4317 review round 4: +1, the capped in-progress carry clears the rows when the ones left do not reconcile (no amount written).
+  "src/lib/night-adjustment-write.ts|bookingGuestNightAdjustment|createMany,deleteMany,opaquePayload|amountCents|5",
   "src/lib/payment-reconciliation.ts|booking|opaquePayload||1",
   "src/lib/promo.ts|promoRedemption|create,delete,update|discountCents,priceAdjustmentCents|3",
   "src/lib/promo.ts|promoRedemptionAllocation|deleteMany,opaquePayload||4",
