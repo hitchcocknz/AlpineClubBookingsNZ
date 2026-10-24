@@ -36,7 +36,13 @@
 import { Role, type PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { raceSession } from "@/lib/__tests__/support/race-session-double";
+
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+
+// The quote route reads the session through `@/lib/auth`: the harness's one
+// shared double, set per call on `raceSession` and put back to signed out.
+vi.mock("@/lib/auth", async () => (await import("./support/race-session-double")).raceAuthDouble());
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -80,7 +86,6 @@ let clubTimeServer: typeof import("@/lib/club-time/server");
 let clubTimeKernel: typeof import("@/lib/club-time");
 let nightAdjustments: typeof import("@/lib/night-adjustment-write");
 let reconciliationStore: typeof import("@/lib/booking-money-reconciliation-store");
-let authModule: typeof import("@/lib/auth");
 let quoteRoute: typeof import("@/app/api/bookings/[id]/modify-quote/route");
 const pendingXeroWork: Promise<unknown>[] = [];
 let restoreXeroQueue: (() => void) | undefined;
@@ -370,8 +375,7 @@ async function seedPromotions(
 /** What `POST /api/bookings/[id]/modify-quote` answers the officer, through the real route. */
 async function quote(body: Record<string, unknown>) {
   const { NextRequest } = await import("next/server");
-  const session = { user: { id: OFFICER_ID, role: "ADMIN", accessRoles: ["ADMIN"], canLogin: true } };
-  const signedIn = vi.spyOn(authModule, "auth").mockResolvedValue(session as never);
+  raceSession.current = { user: { id: OFFICER_ID, role: "ADMIN", accessRoles: ["ADMIN"], canLogin: true } };
   try {
     const response = await quoteRoute.POST(
       new NextRequest(`http://localhost/api/bookings/${BOOKING_ID}/modify-quote`, {
@@ -392,7 +396,7 @@ async function quote(body: Record<string, unknown>) {
       changeFeeCents: number;
     };
   } finally {
-    signedIn.mockRestore();
+    raceSession.current = null;
   }
 }
 
@@ -427,16 +431,6 @@ async function removeGuest(guestId: string) {
       clubTimeKernel = await import("@/lib/club-time");
       nightAdjustments = await import("@/lib/night-adjustment-write");
       reconciliationStore = await import("@/lib/booking-money-reconciliation-store");
-      // The quote route reads the session through `@/lib/auth`, spied on per
-      // call. Under the harness that module is the election suite's mock; run
-      // alone, the real one cannot load under Vitest (next-auth's `next/server`),
-      // so a mock of the same shape stands in before the route is first imported.
-      try {
-        authModule = await import("@/lib/auth");
-      } catch {
-        vi.doMock("@/lib/auth", () => ({ auth: async () => null }));
-        authModule = await import("@/lib/auth");
-      }
       quoteRoute = await import("@/app/api/bookings/[id]/modify-quote/route");
       const xeroQueue = await import("@/lib/xero-booking-edit-settlement");
       const queue = xeroQueue.queueXeroBookingEditSettlement;
