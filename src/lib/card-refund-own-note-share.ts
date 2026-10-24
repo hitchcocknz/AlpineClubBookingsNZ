@@ -92,14 +92,18 @@ export async function cardRefundNoteKey(
  * `INV-SSOT`: the key tag read back, built from `cardRefundNoteKeyTag`'s own
  * spelling - what it puts either side of the refund id - so the format has one
  * source. The id is what lies between the two, never crossing the closing part.
+ * Built on first use, never at import, so a module that mocks the tag's home
+ * can still import this one.
  */
-const CARD_REFUND_KEY_TAG_PATTERN = (() => {
+let keyTagPatternCache: RegExp | null = null;
+function cardRefundKeyTagPattern(): RegExp {
+  if (keyTagPatternCache) return keyTagPatternCache;
   const marker = "\u0000";
   const [before, after] = cardRefundNoteKeyTag(marker).split(marker);
   if (!before || !after) throw new Error("cardRefundNoteKeyTag must put text either side of the refund id");
   const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`${escape(before)}((?:(?!${escape(after)}).)+)${escape(after)}`);
-})();
+  return (keyTagPatternCache = new RegExp(`${escape(before)}((?:(?!${escape(after)}).)+)${escape(after)}`));
+}
 
 /**
  * The card refund a refund-note row answers, or null: its payload's
@@ -108,7 +112,7 @@ const CARD_REFUND_KEY_TAG_PATTERN = (() => {
  * which a previous release's worker keeps when it rewrites the payload.
  */
 export function cardRefundIdOfNoteRow(row: { requestPayload: unknown; correlationKey?: string | null }): string | null {
-  return parsePaymentCreditNoteRetryInput(row)?.cardRefundId ?? CARD_REFUND_KEY_TAG_PATTERN.exec(row.correlationKey ?? "")?.[1] ?? null;
+  return parsePaymentCreditNoteRetryInput(row)?.cardRefundId ?? cardRefundKeyTagPattern().exec(row.correlationKey ?? "")?.[1] ?? null;
 }
 
 export interface CardRefundNoteShare {
