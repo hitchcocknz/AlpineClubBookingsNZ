@@ -1724,24 +1724,23 @@ _Legacy: settles tasks raised before #4317._
 
 - **A card refund on a bank transfer gets its own Xero note, keyed and sized
   on its `PaymentRefund` row** (#4312, owner decision 24 Oct 2026). On an
-  `INTERNET_BANKING` payment its note names the refund (`cardRefundId`, its
-  `stripeRefundId`) and answers its amount less its own notes
-  (`readCardRefundNoteShare`), never the canonical note (`INV-ADDPAY-020`).
-  One key for row and Xero (`cardRefundNoteKey`): two writers asking collide
-  on one row; a `perDelta` link.
-- **Three writers ask, each where it first knows the refund.** A refund
-  request's approval, for each refund its attempt made, and its recovery
-  replay for those it makes, whatever its outcome (`replayNotingEachRefund`,
-  `INV-PAY-118`). `charge.refunded`, for a refund it first records that no app
-  door made (`cardRefundDoorOf`). A late capture's note splits its ask
-  (`planLateCaptureCardNotes`).
-- **A re-send answers with the failed refund's note** (#4104). Which refund
-  answers a failure is the owed figure's attribution
-  (`cardRefundResendsByRefund`), made no earlier than the failure; it is sized
-  less the own notes of the failures it answers, a failed re-send's included
-  (`readFailedRefundsAnsweredBy`). It is noted on its own record only when one
-  of them was: every replay and `charge.refunded` ask that one rule
-  (`answersOwnNotedFailure`).
+  `INTERNET_BANKING` payment its note names the refund (`cardRefundId`) and
+  answers its amount less its own notes (`readCardRefundNoteShare`), never the
+  canonical note (`INV-ADDPAY-020`). One key for row and Xero
+  (`cardRefundNoteKey`), so two writers collide on one row; a `perDelta` link.
+  The invoice it credits is read from the refund (`queueCardRefundOwnNotes`).
+- **Each writer asks where it first knows the refund.** A refund request's
+  approval and replay, for each refund made, on any outcome
+  (`replayNotingEachRefund`, `INV-PAY-118`); any other replay, for its
+  re-sends and late-capture refunds; `charge.refunded`, for a refund it first
+  records, by its metadata (`cardRefundDoorOf`); a late capture's note, per
+  refund (`planLateCaptureCardNotes`).
+- **A re-send is paired with its failures only by the replay's record**
+  (#4104). The replay marks the slice it sent for a failed refund with the
+  refund it made (`madeRefundId`); that refund is sized less the failures' own
+  notes, a chain followed through marks (`cardRefundFailuresAnsweredBy`). A
+  refund no slice is marked with - a dashboard refund - is noted in full. A
+  re-send never enters the canonical delta.
 - **Never for a historical refund.** Only a refund Stripe made since the
   marker migration finished qualifies (`madeSinceCardRefundNoteCutover`);
   none if the marker never finished, when the approval takes the one note. An
@@ -1750,5 +1749,5 @@ _Legacy: settles tasks raised before #4317._
   the hand-back cash reader (`INV-ADDPAY-043`) never does. A voided one is
   never undone as a bank refund (`card-refund`, `INV-ADDPAY-042`).
 - **No lock.** Enqueued outside transactions; no new advisory key.
-  Pinned by `xero-bt-card-refund-notes` (realdb), `card-refund-own-note-share`
-  and `xero-bt-recount-handbacks`.
+  Pinned by `xero-bt-card-refund-notes` (realdb), `card-refund-resend-answer`,
+  `card-refund-own-note-share` and `xero-bt-recount-handbacks`.

@@ -2126,11 +2126,15 @@ writers asking for one refund at once collide on one row.
   its own sync is the first to record (`newlyCountedRefundIds`; such a refund
   also runs the late-capture checks when the refunded total did not move), sorted by the
   Stripe metadata every app door stamps (`cardRefundDoorOf`): a refund with
-  none - made in the Stripe dashboard - gets its own note here; a refund
-  request's is left to its approval; one sent again for a refund Stripe failed
-  later that had a note of its own goes to its own record too (below); any
-  other door's stays in the delta, queued as before, which converges on that
-  door's own note.
+  none - made in the Stripe dashboard - gets its own note here, in full; a
+  refund request's is left to its approval or replay; one the recovery replay
+  sent again for a refund Stripe failed later never enters the delta (below);
+  any other door's stays in the delta, queued as before, which converges on
+  that door's own note.
+- **Any other recovery replay** (`queueAnsweringRefundNotes`) asks for each
+  refund it makes of a late capture - handed to the capture's note, as
+  `charge.refunded` hands it - and each re-send the rule below notes on its
+  own record.
 - **A late capture's note** (`noteLateCaptureRefunds`) keeps its one ask per
   capture and splits it (`planLateCaptureCardNotes`): each refund made since the
   cutover is asked for on its own record, naming the capture, oldest first; the
@@ -2140,30 +2144,38 @@ writers asking for one refund at once collide on one row.
 
 **A refund sent again for one Stripe failed later (#4104).** The failed
 refund keeps the note it took while it counted, and #4104 meant that note to
-answer the money once it goes back. So a refund sent again for it is sized less
-the failed refund's own notes (`readFailedRefundsAnsweredBy`, in
-`readCardRefundNoteShare`): normally it raises nothing.
+answer the money once it goes back. So the refund the recovery replay sends in
+its place is sized less the failed refund's own notes
+(`readFailedRefundsAnsweredBy`, in `readCardRefundNoteShare`): normally it
+raises nothing.
 
-- **Which refund answers a failure** is the owed figure's own attribution
-  (`cardRefundResendsByRefund` over `attributeRecordedRefunds`, one source): a
-  slice marked made takes its own refund first; every other refund goes to the
-  newest row whose window takes it, by Stripe's time, and answers that slice's
-  failures - a row of its own's key (`card_refund_failed_later_<refund>`), a
-  re-planned slice's `failedRefundIds`. One test is the pairing's alone: such a
-  slice takes only a refund Stripe made no earlier than the ledger saw its
-  latest failure (the failed row's `updatedAt`, an app-clock time, floored to
-  Stripe's second), so a dashboard refund made before the failure and recorded
-  after it is never the answer. A row closed as "Paid another way" answers none,
-  its close being sized against the card note already.
-- **A re-send Stripe failed too passes on what it answered**, read as the
-  payment stood when it failed, so a later refund answering it is covered by
-  the first failure's note, each failure counted once.
-- **One rule for whether it is noted on its own record**: it answers a failure
-  that was (`answersOwnNotedFailure`). Every recovery replay (other than a
-  refund request's, which notes each refund) and `charge.refunded` ask it, so
-  whichever records the refund first reaches the same answer. Otherwise it stays
-  with the canonical delta; an own-noted one is kept off it, since that note is
-  sized on the payment's whole gap and would take another refund's share.
+- **Which refund answers a failure is the replay's own record, and nothing
+  else.** The replay sends a slice for the failures it owes
+  (`cardRefundSliceFailedRefundIds`: a row of its own's key,
+  `card_refund_failed_later_<refund>`, or a re-planned slice's
+  `failedRefundIds`) and, once Stripe answers, marks that slice with the
+  refund Stripe made (`madeRefundId`, `refundPlanOrRetryRefusals` - on success
+  as already beside a refusal, fenced on the attempt it holds). That refund
+  answers the slice's failures (`cardRefundFailuresAnsweredBy`). No charge,
+  amount or time is read: a refund no slice is marked with - one made in the
+  Stripe dashboard, whenever - answers nothing and is noted in full. So a
+  dashboard refund made while the row still waits, and the replay's re-send
+  after it, are two refunds with two notes' worth of credit: $80 in Xero for
+  $80 refunded (the member was paid twice, #4359).
+- **A re-send Stripe failed too passes on what it answered.** The slice marked
+  with it lists its own failures, which join the next re-send's answer; a slice
+  re-planned while its row is open lists the failed re-send beside the earlier
+  failures instead. Each failure is listed on one slice, so its note answers
+  one refund.
+- **One rule, both writers.** A re-send is noted on its own record when one of
+  its failures was (`ownNoted`); when none was, their fold in the canonical
+  note answers it and it is noted nowhere. It never enters the canonical delta,
+  whose payment-wide gap would hand it another refund's share. The replay asks
+  once it has marked the slice; `charge.refunded` asks the same rule for a
+  marked one, and leaves one it records before the mark - Stripe's answer
+  reached the webhook first - to the replay, which marks and asks when its
+  retry reads the same refund back under the same key. A failed-later row's
+  refund says so in its metadata (`CARD_REFUND_FAILED_LATER_REASON`).
 
 Late captures keep their capture's sizing.
 
@@ -2225,18 +2237,20 @@ Stated limits:
   job during the switch - gets no note: this release's approval left the note to
   the refund, and the previous release's replay raises none. The #4230 deploy
   note's query lists the payment for a note by hand.
-- **Which refund answers a failure is read by charge, amount and time**: neither
-  the refund row nor Stripe's metadata names it. A refund of the same amount on
-  the same charge that Stripe made after the failure and before the re-send (one
-  made in the Stripe dashboard) is read as the answer, and the re-send as
-  answering nothing - the member was paid twice. That re-send gets a note only
-  if `charge.refunded` records it first (the canonical delta); recorded by the
-  replay, it is not credited in Xero. The failed row's `updatedAt` is the app's
-  clock and Stripe's is its own, compared in whole seconds.
+- **A dashboard refund that settles a row Stripe gave up on is noted in
+  full.** A re-send that failed too is owed by a row raised dead
+  (`raised-dead`), which is never sent again; the treasurer is told to pay the
+  member another way and close it as "Paid another way", whose note is sized
+  against the failed refund's card note. A refund made in the Stripe dashboard
+  instead is linked to nothing the app made, so it gets its own note and the
+  failed refund's note still stands: Xero credits that amount twice until an
+  officer voids one. #4359 tracks refunds the owed figure takes from an
+  unexpected source.
 - **A voided failure note is not asked again.** When Xero voids the note of a
-  refund Stripe failed later, the re-send it answered was never noted, and
-  nothing asks for it: Stuck States lists the void (`card-refund`) and its copy
-  tells the officer to raise that re-send's note by hand.
+  refund Stripe failed later, the re-send it answered was sized less it, and
+  nothing asks for the difference: Stuck States lists the void (`card-refund`)
+  and its copy tells the officer to check whether the re-send has a note of its
+  own for its full amount, and raise what is missing by hand.
 - **A crash after Stripe answered and before the note was queued** loses the
   note, as it always did; the #4162 floor's alert and the deploy note find it.
 

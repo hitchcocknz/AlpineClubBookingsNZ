@@ -9,9 +9,10 @@
   dashboard; and a refund of a card payment captured after the booking was
   cancelled. A card payment taken twice by mistake, and refunded, still gets
   no note: Xero never received it. If Stripe fails one of these refunds days
-  later and the app sends it again, the failed refund's note covers the new
-  one - even when that one fails too and the treasurer refunds it in the
-  Stripe dashboard - so Xero is not credited twice. If Xero voids one of these notes, it is
+  later and the app sends it again, the failed refund's note covers the
+  refund the app sends in its place - even when that one fails too and the
+  app sends it once more - so Xero is not credited twice. A refund made in
+  the Stripe dashboard always gets a note for its full amount. If Xero voids one of these notes, it is
   listed on Stuck States for a person and never mistaken for a bank refund
   to take back.
 
