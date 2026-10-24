@@ -142,7 +142,8 @@ describe("a card refund's own note row is found by its payload or by its key (#4
   it("the key names the refund in the part the row finder and the reader match", async () => {
     const key = await cardRefundNoteKey("payment-1", "re_1AbC", 0, noLinks);
     expect(key).toContain(cardRefundNoteKeyTag("re_1AbC"));
-    expect(cardRefundNoteRowsWhere("payment-1", "re_1AbC").OR).toContainEqual({ correlationKey: { contains: cardRefundNoteKeyTag("re_1AbC") } });
+    // Matched literally (`INV-SSOT-006`): the id's `_` is no LIKE wildcard.
+    expect(cardRefundNoteRowsWhere("payment-1", "re_1AbC").OR).toContainEqual({ correlationKey: { contains: cardRefundNoteKeyTag("re\\_1AbC") } });
     // A previous release's worker rewrites the payload without the field: the key still answers.
     expect(cardRefundIdOfNoteRow({ requestPayload: { creditNotes: [], allocation: { amount: 12 } }, correlationKey: key })).toBe("re_1AbC");
   });

@@ -12,6 +12,7 @@ import { BANK_REFUND_VOID_FOLLOW_UP_TASK_WHERE, isBankRefundVoidFollowUpTask } f
 import { BANK_REFUND_VOID_FOLLOW_UP_CONTEXT_KEY } from "@/lib/bank-refund-void-follow-up-copy";
 import { sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
 import { sumCoveredRefundCreditNoteCents } from "@/lib/xero-sync";
+import { exactContains } from "@/lib/prisma-exact-prefix";
 
 /**
  * #3924 round 4 (money review, M1 and M3; `INV-PAY-122`): THE BANK CASH A
@@ -282,12 +283,13 @@ export function paidAnotherWayCloseNoteRowsWhere(paymentId: string, closeId: str
  * on a bank transfer - every refund-note create naming the refund, in any
  * status: by its payload (`cardRefundId`), or by its key
  * (`:card-refund:<id>:`, `cardRefundNoteKey`), which a previous release's
- * worker keeps when it rewrites the payload without the field.
+ * worker keeps when it rewrites the payload without the field - matched
+ * literally (`exactContains`, `INV-SSOT-006`): a refund id holds a `_`.
  */
 export function cardRefundNoteRowsWhere(paymentId: string, stripeRefundId: string) {
   return {
     ...ownRecordRefundNoteRowsBase(paymentId),
-    OR: [{ requestPayload: { path: ["cardRefundId"], equals: stripeRefundId } }, { correlationKey: { contains: cardRefundNoteKeyTag(stripeRefundId) } }],
+    OR: [{ requestPayload: { path: ["cardRefundId"], equals: stripeRefundId } }, { correlationKey: exactContains(cardRefundNoteKeyTag(stripeRefundId)) }],
   } satisfies Prisma.XeroSyncOperationWhereInput;
 }
 
