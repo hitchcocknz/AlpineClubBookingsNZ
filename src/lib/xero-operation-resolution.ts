@@ -61,9 +61,9 @@ export function resolutionLabel(reason: string | null | undefined): string {
  * - an untouched "all" becomes "ACTIVE" on the way into Failed (a choice the
  *   officer already made is kept);
  * - the "ACTIVE" default is undone on the way out of Failed;
- * - a failure-state filter never stays under a status other than Failed or
- *   "all", where the route (which lists FAILED rows for any failure-state
- *   filter) would show failed rows beneath the wrong status.
+ * - choosing a status other than Failed or "all" clears a failure-state filter,
+ *   because the route lists FAILED rows for any failure-state filter and would
+ *   show failed rows beneath the wrong status.
  */
 export function failureStateAfterStatusChange({
   previousStatus,

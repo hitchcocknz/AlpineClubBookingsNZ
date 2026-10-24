@@ -235,6 +235,7 @@ export function OperationsPanel({
     setOperationTypeFilter("all")
     setFailureStateFilter("all")
     setResourceIdFilter("")
+    setRevealedHiddenCount(null)
     setCreatedFrom("")
     setCreatedTo("")
     setPage(1)

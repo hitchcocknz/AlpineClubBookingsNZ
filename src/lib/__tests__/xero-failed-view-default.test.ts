@@ -35,7 +35,7 @@ describe("failureStateAfterStatusChange (#4220)", () => {
     ).toBe("REPAIRED")
   })
 
-  it("never leaves a failure-state filter under a status other than Failed or All", () => {
+  it("clears a failure-state filter when a status other than Failed or All is chosen", () => {
     for (const failureState of ["ACTIVE", "REPAIRED", "SUPERSEDED"]) {
       for (const previousStatus of ["all", "FAILED"]) {
         expect(

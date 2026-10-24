@@ -138,7 +138,7 @@ describe("Xero operations panel: the Failed view means active failures", () => {
     await waitFor(() => expect(select("Failure").value).toBe("REPAIRED"))
   })
 
-  it("never leaves a Failure filter under another status", async () => {
+  it("clears a Failure filter when another status is chosen", async () => {
     mocks.search.current = "section=operations&opFailureState=REPAIRED"
     renderPanel()
     await waitFor(() => expect(select("Failure").value).toBe("REPAIRED"))
@@ -177,6 +177,18 @@ describe("Xero operations panel: the Failed view means active failures", () => {
     const region = screen.getByText(/Showing all failures, including 11/).closest('[role="status"]')
     expect(region).not.toBeNull()
     expect(document.activeElement).toBe(region)
+  })
+
+  it("drops the revealed message when the dataset is reset", async () => {
+    mocks.search.current = "section=operations&opStatus=FAILED&opFailureState=ACTIVE"
+    mocks.fetchJson.mockResolvedValue({ data: [], total: 0, hiddenFailedCount: 4 })
+    renderPanel()
+    fireEvent.click(await screen.findByRole("button", { name: "Show them" }))
+    await screen.findByText(/Showing all failures, including 4/)
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }))
+
+    await waitFor(() => expect(screen.queryByText(/Showing all failures/)).toBeNull())
   })
 
   it("shows no hidden line while the Failure filter is not Active only", async () => {
