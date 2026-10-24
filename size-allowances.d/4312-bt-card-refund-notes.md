@@ -7,11 +7,13 @@ entry below is the seam into an existing flow, which belongs where that flow is.
 Two files at their budget were kept at it rather than allowed.
 
 file: src/lib/payment-recovery.ts
-lines: 3368
+lines: 3384
 reason: the refund request recovery row's marker (`notesEachRefund`, written as
   the row's Stripe key prefix by the one enqueue that writes these rows), the
   check the replay reads it back with, and the replay handing each refund it
-  makes to `replayNotingEachRefund`. The replay's refunds are only known inside
+  makes to `replayNotingEachRefund` - and, for a failed-later row whose failed
+  refund had its own note, the ask for its refund's note (#4104, review round
+  5). The replay's refunds are only known inside
   its own refund callback, and the marker belongs beside the enqueue that
   writes it.
 
@@ -35,7 +37,7 @@ reason: the one card refund ledger writer reports which refunds it newly
   first to record. The count is made in that loop and nowhere else.
 
 file: src/lib/stripe-webhook-service.ts
-lines: 1776
+lines: 1775
 reason: `charge.refunded` hands its delta and its newly counted refunds to
   `queueWebhookCardRefundNotes` instead of the one enqueue call, and runs its
   late-capture checks for a refund newly recorded when the total did not move.
