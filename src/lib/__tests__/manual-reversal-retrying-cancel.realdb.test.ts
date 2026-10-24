@@ -14,9 +14,12 @@
  * The cases below also pin the cases a remembered list cannot see: an edit on
  * the PAID booking sharing the settle's cancel row, a settle recorded before
  * #4320, and a capture whose hand-off lands while the reversal is running.
- * An ADDITIONAL intent's case is pinned in the unit suite only: an edit on a
- * cash-paid booking asks no card top-up, so no real writer reaches one on a
- * booking a reversal accepts.
+ * A cancellation the runner gave up on, on an intent the reversal condemns, is
+ * re-armed and cancels once Stripe is back. An ADDITIONAL intent's cases (the
+ * live ask a covering settle's mirror rebuild hid among them) are pinned in the
+ * unit suite only: an edit on a cash-paid booking asks no card top-up, and no
+ * real writer presents the extra's coverage question on a settle that can
+ * complete (`INV-PAY-058`), so none reaches one on a booking a reversal accepts.
  *
  * EVERY STEP IS THE REAL CODE: the pay step is the `create-payment-intent`
  * route, the confirm is the `confirm-payment` route, mark-paid and its reversal
@@ -623,6 +626,31 @@ async function money() {
     await drainRecovery();
     expect(stripe.refunds).toEqual([expect.objectContaining({ paymentIntentId: oldPrice, amountCents: PRICE_CENTS })]);
     expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
+  });
+
+  it("MUTATION: a condemned intent's cancellation the runner gave up on during the outage is re-armed by the reversal and cancels once Stripe is back", async () => {
+    const oldPrice = await mintOnPayStep();
+    stripe.down = true;
+    await markPaid();
+    await addGuest("Later");
+    // The outage outlasts every retry: the shared cancel row is dead.
+    for (let attempt = 0; attempt < 6; attempt += 1) await runCancelWorker(oldPrice);
+    const dead = await cancelRow(oldPrice);
+    expect(dead).toMatchObject({ status: PaymentRecoveryOperationStatus.FAILED, nextRetryAt: null, attempts: 5 });
+
+    await reverse();
+    expect(await cancelRow(oldPrice)).toMatchObject({ id: dead!.id, status: PaymentRecoveryOperationStatus.PENDING, attempts: 0, nextRetryAt: expect.any(Date) });
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { action: "booking-payment.manual-payment.mark-unpaid", targetId: BOOKING_ID },
+      select: { metadata: true },
+    });
+    expect(audit.metadata).toMatchObject({ stillCancelledPaymentIntentIds: [oldPrice], rearmedRecoveryOperationIds: [dead!.id] });
+
+    stripe.down = false;
+    await drainRecovery();
+    expect(stripe.intents.get(oldPrice)!.status).toBe("canceled");
+    expect(await money()).toMatchObject({ status: "PAYMENT_PENDING", heldCents: 0 });
+    expect(stripe.refunds).toEqual([]);
   });
 
   it("MUTATION: a settle recorded before #4320 (no adopted list): the reversal still keeps an edit's stale intent cancelled", async () => {
