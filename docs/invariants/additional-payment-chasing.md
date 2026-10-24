@@ -1686,3 +1686,29 @@ decision and would need its own owner decision.
   Pinned by `xero-bt-per-refund-notes` (realdb), `bank-hand-back-refund-note`,
   `card-refund-paid-another-way-cash`, `manual-refund-task`,
   `payment-lock-before-rebuild` and `xero-bt-recount-handbacks`.
+
+### INV-ADDPAY-044
+
+- **An edit's after-commit mint never leaves a live ask on a booking that has
+  ended** (#4316, the cancelled-booking case of `INV-ADDPAY-023`). The edit
+  doors decide to ask the card under `lock(1)`, but
+  `createModificationAdditionalPaymentIntent` mints after their commit, and
+  the paid cancel's claim retires only the intent it reads on the `Payment`
+  mirror. Two re-reads of the booking close the gap, against
+  `ADDITIONAL_ASK_RETIRED_BOOKING_STATUSES` (CANCELLED, BUMPED):
+  - **Before the provider call:** an ended booking is asked nothing and owes
+    nothing - no intent, no row, no recovery.
+  - **After the new row is written:** a cancel that committed in between could
+    not see the intent, so the minter retires it with the claim's own routine,
+    `failOutstandingAdditionalAskInClaim`, under the `Payment` row lock - the
+    mirror and the row FAILED and a durable `CANCEL_PAYMENT_INTENT` queued,
+    then run now. The row write takes that lock too, so the two writers cannot
+    both miss: the cancel that held it first is seen by the re-read, and one
+    that took it after reads the new intent and retires it itself.
+- **The door is told the ask is retired, with no intent id.** No secret is
+  offered and no figure named as due; the Xero leg raises no supplementary
+  invoice; a review charge takes its cancelled path (`INV-PAY-112`).
+- **No new advisory key.** A failed retirement is logged with the intent, and
+  still offers no secret.
+  Pinned by `ended-booking-ask-mint-guard` and `ended-booking-ask-mint-race`
+  (realdb).

@@ -2317,8 +2317,8 @@ _Split from `INV-PAY-068` (#3213, PR #3309). "The kind" below is
   - **One card question** (#3947): chooser and mint both ask
     `canAskCardForReviewCharge` ([INV-PAY-069]), so a card route is always
     minted for. A booking cancelled since the commit is asked nothing (#4272);
-    its shortfall, net of refunds, is recorded once. A cancellation mid-call is
-    missed.
+    its shortfall, net of refunds, is recorded once. One mid-call is now
+    caught ([INV-ADDPAY-044]).
   - **Stated limits**, ordering and interleavings:
     [`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md).
   - Home: `edit-financial-review-charge-raise-claim.ts`,
