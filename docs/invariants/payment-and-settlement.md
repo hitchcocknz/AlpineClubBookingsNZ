@@ -1571,14 +1571,14 @@ late-success release).
   from the link save before the gap check or from the late-success release.
   The gap invoice pays itself only from cash no receipt or supplementary
   invoice records, and names what it took. A receipt stands down where the
-  primary, a supplementary invoice naming or wholly covering the capture, or
+  primary, a paying supplementary invoice naming or wholly covering it, or
   the change's own paid invoice records it (`readCaptureRecorder`).
 - **Once.** Queued per capture under the per-anchor supplementary-invoice lock;
   never on a cancelled or internet-banking booking.
-- **Where.** The gap invoice if it bills the capture's change, else the
-  change's own invoice raised unpaid, else the primary, less applied credit
-  still to allocate. The capture, less what another writer took, capped at
-  that room; any rest goes to an officer.
+- **Where.** The gap invoice billing its change, else an unpaid invoice naming
+  it or the change's own, else the primary less credit still to allocate: the
+  capture, less what another writer took, capped at that room; any rest goes
+  to an officer.
 - **Never twice.** One receipt plans per booking, past a stamp under its
   anchor lock, never during a live create; an earlier payment is found by
   reference; a decision is stored before Xero is called, and a retry sends it

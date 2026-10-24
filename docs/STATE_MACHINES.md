@@ -3707,7 +3707,8 @@ change's card capture kept, nothing parked on its intent, primary invoice
       -> officer alerted; a refund note named another invoice -> flagged
     not captured, Xero unreadable, nothing due, gap invoice not in Xero, the
       invoice's own payment still owed, a retry's room gone, or a stored
-      decision another document now records -> FAILED, code
+      decision another document now records with no payment of its own in
+      Xero under the reference (one there is linked, officer told) -> FAILED, code
       ADDITIONAL_CAPTURE_RECEIPT_REFUSED, officer alerted; Retry re-runs it on
       the same row, any stored decision unchanged
     Xero write error -> FAILED (decision kept); Retry sends the same payment
