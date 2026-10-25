@@ -82,8 +82,13 @@ const OWNER = "@thatskiff33";
  * (`bank-refund-void-*.ts`) and the allocation unwind
  * (`refund-allocation-unwind.ts`): 256 of 1420, 18.03%, so the ceiling moves
  * to 18.5%.
+ * And 25 Oct 2026 (#4320, owner decision
+ * https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4320#issuecomment-6391295547):
+ * the reversal's intent hygiene (`manual-settlement-intent-hygiene.ts`), owned
+ * by the existing `*settlement*` glob: 274 of 1477, 18.55%, so the ceiling
+ * moves to 19%.
  */
-const MAX_OWNED_SRC_LIB_SHARE = 0.185;
+const MAX_OWNED_SRC_LIB_SHARE = 0.19;
 
 /**
  * Outside `src/lib`, a share of one directory bounds nothing, so every pattern
