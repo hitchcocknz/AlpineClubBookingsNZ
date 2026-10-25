@@ -29,12 +29,14 @@ import { readKeptChangeCaptureEvidence } from "@/lib/late-capture-kept-xero";
 import {
   decideLateCapture,
   keptChangeCaptureRoute,
+  keptLateCaptureInvoiceAsked,
   type KeptChangeCaptureEvidence,
   type KeptChangeCaptureRoute,
 } from "@/lib/late-capture-kept-xero-rules";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import {
   xeroOperationSelect,
+  type BookingClassificationContext,
   type BookingXeroRepairAction,
   type MutableFinding,
   type XeroOperationRecord,
@@ -369,11 +371,15 @@ export async function loadKeptChangeCaptureEvidence(
   return byBooking;
 }
 
-const UNKNOWN_CHANGE_SUMMARY =
-  "A late card payment a treasurer kept on this cancelled booking names no booking change, so which Xero invoice bills it cannot be told, and Xero does not record it. Check Xero, record the payment by hand against the invoice that bills it, or raise one, then mark it done.";
+/** The tool cannot acknowledge a finding, so one an officer answers by hand in Xero comes back (review D-F1). */
+const RAISED_AGAIN = "This tool cannot mark it done, so this finding is raised again on every run after you record it.";
 
-const NOT_A_CARD_BOOKING_SUMMARY =
-  "A late card payment a treasurer kept on this cancelled booking is not recorded in Xero, and the booking was paid by internet banking, so the app records no card payment against its invoice. Record it by hand in Xero.";
+const UNKNOWN_CHANGE_SUMMARY = `A late card payment a treasurer kept on this cancelled booking names no booking change, so which Xero invoice bills it cannot be told, and Xero does not record it. Check Xero and record the payment by hand against the invoice that bills it, or raise one. ${RAISED_AGAIN}`;
+
+const NOT_A_CARD_BOOKING_SUMMARY = `A late card payment a treasurer kept on this cancelled booking is not recorded in Xero, and the booking was paid by internet banking, so the app records no card payment against its invoice. Record it by hand in Xero. ${RAISED_AGAIN}`;
+
+const PRIMARY_INVOICE_ID_NOT_SYNCED_SUMMARY =
+  "A late card payment a treasurer kept for a booking change on this cancelled booking is not recorded in Xero, and the booking's payment does not hold its Xero invoice's id although that invoice is linked, so which document records the payment cannot be read yet. Nothing records it until the id is synced (this tool's SYNC_PAYMENT_PRIMARY_INVOICE_FIELD action); after that a later pass lists the payment with the document that will record it, and --apply records it.";
 
 const KEPT_REFUSED_SUMMARY =
   "A late card payment a treasurer kept on this cancelled booking could not be recorded against the Xero invoice that bills it. Its Xero operation says why; record it by hand in Xero and mark the operation resolved, or fix the cause and retry it.";
@@ -395,13 +401,13 @@ export function addKeptChangeCaptureFinding({
   findings: MutableFinding[];
   actionMap: Map<string, BookingXeroRepairAction>;
   booking: { id: string };
-  payment: { id: string; source: string | null };
+  payment: { id: string; source: string | null; xeroInvoiceId: string | null };
   transaction: { stripePaymentIntentId: string | null; status: PaymentStatus; amountCents: number };
   kept: { taskId: string };
   found: KeptChangeCaptureRepairEvidence | undefined;
 }): void {
   const paymentIntentId = transaction.stripePaymentIntentId;
-  if (!found || !paymentIntentId || found.route === "change-invoice") return;
+  if (!paymentIntentId || found?.route === "change-invoice") return;
   const { recordCents } = decideLateCapture({
     taskStatus: "DISMISSED",
     bookingStatus: "CANCELLED",
@@ -413,12 +419,12 @@ export function addKeptChangeCaptureFinding({
     paymentId: payment.id,
     manualRefundTaskId: kept.taskId,
     paymentIntentId,
-    bookingModificationId: found.evidence.changeId,
+    bookingModificationId: found?.evidence.changeId ?? null,
     capturedCents: recordCents,
     recordedBy:
-      found.route === "kept-invoice"
+      found?.route === "kept-invoice"
         ? "KEPT_LATE_CAPTURE_INVOICE"
-        : found.route === "receipt"
+        : found?.route === "receipt"
           ? "ADDITIONAL_CAPTURE_RECEIPT"
           : null,
   };
@@ -433,10 +439,13 @@ export function addKeptChangeCaptureFinding({
       actionKeys: [action.key],
     });
   };
-  if (found.route === "change-unknown") return manualReview(UNKNOWN_CHANGE_SUMMARY);
-
-  // Its receipt, whichever route the evidence reads now, is its record.
+  // Review D-F3: the booking counts as invoiced by its active link, but the
+  // loader reads the payment's invoice id, so it has no evidence to give.
+  if (!found) return payment.xeroInvoiceId ? undefined : manualReview(PRIMARY_INVOICE_ID_NOT_SYNCED_SUMMARY);
+  // Its receipt, whichever route the evidence reads now, is its record; and
+  // (review M-F1) another writer's, the #4253 sweep's included, is too.
   if (found.receiptLinked || found.recordedElsewhere) return;
+  if (found.route === "change-unknown") return manualReview(UNKNOWN_CHANGE_SUMMARY);
   if (found.receiptOperations.some((operation) => operation.status !== "CANCELLED")) {
     const blocking = getBlockingOperation(found.receiptOperations, "PAYMENT", "CREATE", {
       payloadQueueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
@@ -485,6 +494,27 @@ export function addKeptChangeCaptureFinding({
     details,
     actionKeys: [action.key],
   });
+}
+
+/**
+ * #4324 (`INV-PAY-141`): whether a kept late capture of this change - on a
+ * cancelled booking, the only place one is kept - is recorded by its
+ * kept-capture invoice: one asked for on its approval task, or one this pass
+ * queues (the evidence routes it there, the change's own invoices withdrawn).
+ * That invoice bills the change's money as well as recording it, so a
+ * supplementary invoice for the change would count it twice - as income on
+ * both, or as a receivable left open for ever - and the repair tool raises none.
+ */
+export function keptInvoiceBillsChange(
+  context: Pick<BookingClassificationContext, "keptLateCaptures" | "keptChangeCaptures">,
+  modificationId: string,
+): boolean {
+  for (const [paymentIntentId, found] of context.keptChangeCaptures ?? []) {
+    if (found.evidence.changeId !== modificationId) continue;
+    const kept = context.keptLateCaptures.get(paymentIntentId);
+    if (found.route === "kept-invoice" || (kept !== undefined && keptLateCaptureInvoiceAsked(kept.operations))) return true;
+  }
+  return false;
 }
 
 /**

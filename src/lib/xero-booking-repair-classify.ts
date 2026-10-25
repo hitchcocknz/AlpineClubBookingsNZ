@@ -89,7 +89,7 @@ import {
 } from "@/lib/xero-booking-repair-side-notes";
 import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
 import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
-import { addKeptChangeCaptureFinding, addUnrecordedAdditionalCaptureFindings } from "./xero-booking-repair-additional-capture";
+import { addKeptChangeCaptureFinding, addUnrecordedAdditionalCaptureFindings, keptInvoiceBillsChange } from "./xero-booking-repair-additional-capture";
 import { addRefundRequestNoteNotQueuedFindings, paidBackRefundRequestCents } from "./xero-booking-repair-request-notes";
 import { isRecordedBookingInvoicePayment } from "@/lib/xero-inbound/object-links";
 import { PART_PAYMENT_RECOGNISED_REASON } from "@/lib/part-payment-recognition-reason";
@@ -607,6 +607,8 @@ export function classifyBookingContext(
             },
             actionKeys: [action.key],
           });
+        } else if (!blockingOperation && keptInvoiceBillsChange(context, modification.id)) {
+          // #4324 (`INV-PAY-141`): a kept late capture's own invoice bills and records this change; never a second invoice.
         } else if (!blockingOperation && primaryInvoiceEditTimingRefusal) {
           /**
            * REPORTED, NEVER APPLIED, AND NEVER SILENTLY SKIPPED (#3199).
