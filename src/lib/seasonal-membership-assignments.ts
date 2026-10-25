@@ -89,8 +89,19 @@ const membershipTypeSelect = {
   sortOrder: true,
 } satisfies Prisma.MembershipTypeSelect;
 
+// Subscription-category decoupling: the independent billing axis, resolved
+// alongside membershipType but never affecting it (booking rights/rate stay
+// governed by membershipType alone).
+const subscriptionCategorySelect = {
+  id: true,
+  key: true,
+  name: true,
+  isActive: true,
+} satisfies Prisma.SubscriptionCategorySelect;
+
 const assignmentInclude = {
   membershipType: { select: membershipTypeSelect },
+  subscriptionCategory: { select: subscriptionCategorySelect },
 } satisfies Prisma.SeasonalMembershipAssignmentInclude;
 
 const assignmentWithMemberInclude = {
@@ -136,16 +147,25 @@ type MembershipTypeSummary = {
   sortOrder: number;
 };
 
+type SubscriptionCategorySummary = {
+  id: string;
+  key: string;
+  name: string;
+  isActive: boolean;
+};
+
 type SeasonalAssignmentWithType = {
   id: string;
   memberId: string;
   seasonYear: number;
   membershipTypeId: string;
+  subscriptionCategoryId: string | null;
   applyFrom: Date | null;
   assignedByMemberId: string | null;
   createdAt: Date;
   updatedAt: Date;
   membershipType: MembershipTypeSummary;
+  subscriptionCategory: SubscriptionCategorySummary | null;
 };
 
 type BookingPreviewRecord = {
@@ -197,6 +217,12 @@ type SeasonalMembershipChangePreview = {
   behaviorChanged: boolean;
   bookingBehaviorChanged: boolean;
   subscriptionBehaviorChanged: boolean;
+  // Subscription-category decoupling: an independent billing axis, resolved
+  // and changed-checked alongside membershipType but with ZERO effect on
+  // booking rights/rate — those stay governed by membershipType above. Null
+  // means "Individual" (today's unchanged per-type billing).
+  newSubscriptionCategory: ReturnType<typeof serializeSubscriptionCategorySummary> | null;
+  subscriptionCategoryChanged: boolean;
   // #2106: age tier this change resolves to for the member (org/type force,
   // manual-N/A, or DOB-derived). Carried inside the HMAC token so a
   // tier-relevant drift between preview and save is stale-detected.
@@ -272,6 +298,15 @@ function serializeMembershipTypeSummary(type: MembershipTypeSummary) {
   };
 }
 
+function serializeSubscriptionCategorySummary(category: SubscriptionCategorySummary) {
+  return {
+    id: category.id,
+    key: category.key,
+    name: category.name,
+    isActive: category.isActive,
+  };
+}
+
 export function serializeSeasonalMembershipAssignment(
   assignment: SeasonalAssignmentWithType,
 ) {
@@ -280,6 +315,9 @@ export function serializeSeasonalMembershipAssignment(
     memberId: assignment.memberId,
     seasonYear: assignment.seasonYear,
     membershipTypeId: assignment.membershipTypeId,
+    // Subscription-category decoupling: the independent billing axis. Null
+    // means "Individual" — today's unchanged per-type billing.
+    subscriptionCategoryId: assignment.subscriptionCategoryId,
     applyFrom: assignment.applyFrom
       ? formatDateOnly(assignment.applyFrom)
       : null,
@@ -287,6 +325,9 @@ export function serializeSeasonalMembershipAssignment(
     createdAt: assignment.createdAt.toISOString(),
     updatedAt: assignment.updatedAt.toISOString(),
     membershipType: serializeMembershipTypeSummary(assignment.membershipType),
+    subscriptionCategory: assignment.subscriptionCategory
+      ? serializeSubscriptionCategorySummary(assignment.subscriptionCategory)
+      : null,
   };
 }
 
@@ -407,6 +448,14 @@ function previewTokenPayload(preview: Omit<SeasonalMembershipChangePreview, "pre
     behaviorChanged: preview.behaviorChanged,
     bookingBehaviorChanged: preview.bookingBehaviorChanged,
     subscriptionBehaviorChanged: preview.subscriptionBehaviorChanged,
+    // Subscription-category decoupling: bind both the previous and the
+    // resolved category into the token, same reasoning as the membership-type
+    // id above — a category change (or drift) between preview and save must
+    // invalidate the stale token rather than silently save the old value.
+    previousSubscriptionCategoryId:
+      preview.previousAssignment?.subscriptionCategoryId ?? null,
+    newSubscriptionCategoryId: preview.newSubscriptionCategory?.id ?? null,
+    subscriptionCategoryChanged: preview.subscriptionCategoryChanged,
   };
 }
 
@@ -436,6 +485,11 @@ export async function getSeasonalMembershipChangePreview(params: {
   memberId: string;
   seasonYear: number;
   membershipTypeId: string;
+  // Subscription-category decoupling: the independent billing axis. Null/
+  // undefined means "Individual" — today's unchanged per-type billing, with
+  // ZERO effect on booking rights/rate (those stay governed by
+  // membershipTypeId above, resolved and validated completely independently).
+  subscriptionCategoryId?: string | null;
   applyFrom?: string | null;
   /**
    * The club's TODAY, as the UTC-midnight instant a `@db.Date` round-trips
@@ -482,7 +536,8 @@ export async function getSeasonalMembershipChangePreview(params: {
     return jsonResult({ error: normalizedApplyFrom.error }, { status: 400 });
   }
 
-  const [member, newMembershipType, previousAssignment] = await Promise.all([
+  const newSubscriptionCategoryId = params.subscriptionCategoryId ?? null;
+  const [member, newMembershipType, previousAssignment, newSubscriptionCategory] = await Promise.all([
     db.member.findUnique({
       where: { id: params.memberId },
       select: {
@@ -510,6 +565,15 @@ export async function getSeasonalMembershipChangePreview(params: {
       },
       include: assignmentInclude,
     }),
+    // Subscription-category decoupling: resolved and validated completely
+    // independently of membershipType — a category member's booking rights
+    // are decided solely by membershipType above, never by this lookup.
+    newSubscriptionCategoryId
+      ? db.subscriptionCategory.findUnique({
+          where: { id: newSubscriptionCategoryId },
+          select: subscriptionCategorySelect,
+        })
+      : Promise.resolve(null),
   ]);
 
   if (!member) {
@@ -523,6 +587,17 @@ export async function getSeasonalMembershipChangePreview(params: {
   if (!newMembershipType.isActive) {
     return jsonResult(
       { error: "Archived membership types cannot be newly assigned" },
+      { status: 409 },
+    );
+  }
+
+  if (newSubscriptionCategoryId && !newSubscriptionCategory) {
+    return jsonResult({ error: "Subscription category not found" }, { status: 404 });
+  }
+
+  if (newSubscriptionCategory && !newSubscriptionCategory.isActive) {
+    return jsonResult(
+      { error: "Archived subscription categories cannot be newly assigned" },
       { status: 409 },
     );
   }
@@ -665,6 +740,11 @@ export async function getSeasonalMembershipChangePreview(params: {
     ? previousMembershipType.subscriptionBehavior !==
       newMembershipType.subscriptionBehavior
     : true;
+  // Subscription-category decoupling: changed-checked independently of the
+  // membershipType comparisons above — a category edit never implies, and is
+  // never implied by, a type edit.
+  const subscriptionCategoryChanged =
+    (previousAssignment?.subscriptionCategoryId ?? null) !== newSubscriptionCategoryId;
 
   const previewWithoutToken: Omit<
     SeasonalMembershipChangePreview,
@@ -685,6 +765,10 @@ export async function getSeasonalMembershipChangePreview(params: {
     behaviorChanged: bookingBehaviorChanged || subscriptionBehaviorChanged,
     bookingBehaviorChanged,
     subscriptionBehaviorChanged,
+    newSubscriptionCategory: newSubscriptionCategory
+      ? serializeSubscriptionCategorySummary(newSubscriptionCategory)
+      : null,
+    subscriptionCategoryChanged,
     currentAgeTier,
     resultingAgeTier,
     ageTierChanged: resultingAgeTier !== currentAgeTier,
@@ -730,6 +814,8 @@ export async function saveSeasonalMembershipAssignment(params: {
   memberId: string;
   seasonYear: number;
   membershipTypeId: string;
+  // Subscription-category decoupling: see getSeasonalMembershipChangePreview.
+  subscriptionCategoryId?: string | null;
   applyFrom?: string | null;
   adminMemberId: string;
   reason: string;
@@ -771,6 +857,7 @@ export async function saveSeasonalMembershipAssignment(params: {
     memberId: params.memberId,
     seasonYear: params.seasonYear,
     membershipTypeId: params.membershipTypeId,
+    subscriptionCategoryId: params.subscriptionCategoryId,
     applyFrom: params.applyFrom,
     now: clubTodayDateOnly,
     clubCurrentSeasonYear: clubSeasonYear(clubZone),
@@ -800,7 +887,8 @@ export async function saveSeasonalMembershipAssignment(params: {
 
   const assignmentUnchanged =
     preview.previousAssignment?.membershipTypeId === params.membershipTypeId &&
-    (preview.previousAssignment.applyFrom ?? null) === preview.applyFrom;
+    (preview.previousAssignment.applyFrom ?? null) === preview.applyFrom &&
+    !preview.subscriptionCategoryChanged;
   const tierChanged = preview.ageTierChanged;
   const flipsToNotApplicable =
     preview.resultingAgeTier === "NOT_APPLICABLE" &&
@@ -874,6 +962,7 @@ export async function saveSeasonalMembershipAssignment(params: {
         },
         update: {
           membershipTypeId: params.membershipTypeId,
+          subscriptionCategoryId: params.subscriptionCategoryId ?? null,
           applyFrom: nextApplyFromDate,
           assignedByMemberId: params.adminMemberId,
           source,
@@ -882,6 +971,7 @@ export async function saveSeasonalMembershipAssignment(params: {
           memberId: params.memberId,
           seasonYear: params.seasonYear,
           membershipTypeId: params.membershipTypeId,
+          subscriptionCategoryId: params.subscriptionCategoryId ?? null,
           applyFrom: nextApplyFromDate,
           assignedByMemberId: params.adminMemberId,
           source,
@@ -947,6 +1037,11 @@ export async function saveSeasonalMembershipAssignment(params: {
           adminReason: reason,
           previousMembershipType: preview.previousAssignment?.membershipType,
           newMembershipType: preview.newMembershipType,
+          // Subscription-category decoupling: surfaced alongside the
+          // membership-type fields but changed/audited independently.
+          previousSubscriptionCategory: preview.previousAssignment?.subscriptionCategory ?? null,
+          newSubscriptionCategory: preview.newSubscriptionCategory,
+          subscriptionCategoryChanged: preview.subscriptionCategoryChanged,
           previousApplyFrom: preview.previousAssignment?.applyFrom ?? null,
           newApplyFrom: preview.applyFrom,
           affectedCounts: preview.affectedCounts,
@@ -1379,6 +1474,11 @@ export async function rollForwardSeasonalMembershipAssignments(params: {
     memberId: assignment.memberId,
     seasonYear: params.toSeasonYear,
     membershipTypeId: assignment.membershipTypeId,
+    // Subscription-category decoupling: carried forward alongside
+    // membershipTypeId — without this, a category assignment would silently
+    // revert to Individual every season rollover, which is not a notion of
+    // "unchanged" admins should have to notice and manually repair.
+    subscriptionCategoryId: assignment.subscriptionCategoryId,
     applyFrom: null,
     assignedByMemberId: params.adminMemberId,
   }));

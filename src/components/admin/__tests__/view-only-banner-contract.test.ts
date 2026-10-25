@@ -387,8 +387,13 @@ const FIGURES = {
    * MEASURED by re-running this census.
    * 377 -> 378 (#4162): the stuck-states page's "Record the answer" on a voided
    * bank refund note. MEASURED by re-running this census.
+   * 378 -> 383 (subscription-category decoupling): the new Subscription
+   * Categories admin page's five controls (New, Edit, Archive/Reactivate,
+   * Delete, and the create/edit dialog's Save), all `describeReason={false}`
+   * under the page's own `AdminViewOnlySectionBanner`. MEASURED by re-running
+   * this census.
    */
-  callSites: 378,
+  callSites: 383,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -442,8 +447,11 @@ const FIGURES = {
    * on the composed tree.
    * 321 -> 322 (#4098): "Close: already paid", under the billing panel's banner.
    * 322 -> 323 (#4162): "Record the answer", under the voided bank refund notes panel's banner.
+   * 323 -> 328 (subscription-category decoupling): the Subscription Categories
+   * page's five controls, all under its own banner. MEASURED by re-running
+   * this census.
    */
-  optOuts: 323,
+  optOuts: 328,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -531,8 +539,11 @@ const FIGURES = {
    * subscription billing panel's own banner. MEASURED by re-running this census.
    * 286 -> 287 (#4162): "Record the answer" sits beside the voided bank refund
    * notes panel's own banner. MEASURED by re-running this census.
+   * 287 -> 292 (subscription-category decoupling): the Subscription Categories
+   * page's five controls sit in the same file as the page's own
+   * `AdminViewOnlySectionBanner`. MEASURED by re-running this census.
    */
-  staticOptOuts: 287,
+  staticOptOuts: 292,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -621,8 +632,11 @@ const FIGURES = {
    * finance inside a support page, so it states its own area's reason.
    * 99 -> 100 (#4162): the stuck-states page's voided bank refund notes panel,
    * finance-gated inside a support page for the same reason.
+   * 100 -> 101 (subscription-category decoupling): the new Subscription
+   * Categories admin page heads itself with one banner, above its five
+   * controls.
    */
-  bannerComponents: 100,
+  bannerComponents: 101,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

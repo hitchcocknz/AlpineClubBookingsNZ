@@ -769,6 +769,25 @@ check the others.
   charge. A later family member produces a visible exception; neither coverage
   mutation nor a second invoice is allowed.
 
+## INV-MONEY-041
+
+- Subscription category is a second, independent billing axis (`INV-LIFE-094`),
+  resolved before and separately from `MembershipType`'s own fee. A
+  `SubscriptionCategoryFee` has no `billingBasis` choice at all — every category
+  fee bills as one flat charge per set of family members sharing it (collapsing
+  to a charge of one with no partner), the exact `INV-MONEY-014` uniqueness
+  rule extended onto `(subscriptionCategoryId, familyGroupId, seasonYear)`
+  instead of `(membershipTypeId, familyGroupId, seasonYear)` — enforced by a
+  sibling raw-SQL partial unique index, not a modification of the existing one.
+  A `MembershipSubscriptionCharge` bills on exactly one axis: `membershipTypeId`
+  and `subscriptionCategoryId` are mutually exclusive (DB CHECK
+  `num_nonnulls(...) = 1`), and `MembershipSubscriptionChargeCoverage` records
+  each covered member's OWN `membershipTypeId`/Name for audit, since a category
+  charge can cover members of different membership types. Booking rights/rate
+  and subscription lockout are unaffected either way — `MembershipType`
+  continues to decide both, and the lockout settlement resolver never reads a
+  category.
+
 ## INV-MONEY-015
 
 - Membership approval remains authoritative when billing setup is incomplete:

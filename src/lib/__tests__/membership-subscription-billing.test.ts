@@ -33,12 +33,15 @@ const mocks = vi.hoisted(() => ({
   audit: vi.fn(),
   enqueueChargeOperation: vi.fn(),
   effectiveFee: vi.fn(),
+  // Subscription-category decoupling: the category-axis fee resolver.
+  effectiveCategoryFee: vi.fn(),
   familyMode: vi.fn(),
   mapping: vi.fn(),
 }));
 
 vi.mock("@/lib/authoritative-fees", () => ({
   getEffectiveMembershipAnnualFee: mocks.effectiveFee,
+  getEffectiveSubscriptionCategoryFee: mocks.effectiveCategoryFee,
   getFamilyBillingMode: mocks.familyMode,
 }));
 // Keep getResolvedAccountMapping mocked (billing relies on the mock), but expose
@@ -224,6 +227,10 @@ describe("membership subscription billing", () => {
     mocks.familyMarkers.findMany.mockResolvedValue([]);
     mocks.feeComponents.findMany.mockResolvedValue([]);
     mocks.effectiveFee.mockResolvedValue(fee());
+    // Subscription-category decoupling: no category fee by default — every
+    // existing test's members have no subscriptionCategory on their
+    // assignment, so this resolver is never even reached by them.
+    mocks.effectiveCategoryFee.mockResolvedValue(null);
     mocks.familyMode.mockResolvedValue("BILL_FAMILY_VIA_BILLING_MEMBER");
     mocks.mapping.mockResolvedValue({ code: "203", itemCode: "SUB", codeExplicitlyConfigured: true });
     mocks.clubTimeSettings.findUnique.mockResolvedValue(null);
@@ -1007,7 +1014,10 @@ describe("membership subscription billing", () => {
     ]);
     const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
     expect(preview.entries).toHaveLength(0);
-    expect(preview.exceptions.map((row) => row.code)).toEqual(["INVALID_FAMILY_RECIPIENT", "MISSING_FAMILY_RECIPIENT"]);
+    // Order is by fingerprint digest, not insertion order; the fingerprint
+    // shape widened (subscription-category decoupling) to fold in
+    // subscriptionCategoryId, which moved this pair's relative order.
+    expect(preview.exceptions.map((row) => row.code)).toEqual(["MISSING_FAMILY_RECIPIENT", "INVALID_FAMILY_RECIPIENT"]);
   });
 
   it("surfaces a per-family fee as a config exception under individual billing without touching the recipient path", async () => {
@@ -2324,6 +2334,188 @@ describe("membership subscription billing", () => {
       expect(preview.exceptions.map((r) => r.code)).toEqual(["MISSING_FEE_SCHEDULE"]);
       expect(preview.exceptions[0].message).toContain("YOUTH");
       expect(preview.exceptions[0].message).not.toContain("CHILD");
+    });
+  });
+
+  // Subscription-category decoupling: an independent billing axis, resolved
+  // when a member's SeasonalMembershipAssignment carries a subscriptionCategory.
+  // Every scenario below keeps membershipType set to the default "Full" type
+  // (REQUIRED, PER_MEMBER) specifically to prove the category branch overrides
+  // it rather than merely applying when the type would do nothing anyway.
+  describe("subscription category billing", () => {
+    function categoryFee(overrides: Record<string, unknown> = {}) {
+      return {
+        id: "cat-fee-1",
+        amountCents: 20_000,
+        prorationRule: "NONE",
+        effectiveFrom: new Date("2026-04-01T00:00:00.000Z"),
+        effectiveTo: null,
+        ...overrides,
+      };
+    }
+
+    function categoryMember(id: string, categoryOverrides: Record<string, unknown> = {}, memberOverrides: Record<string, unknown> = {}) {
+      return member(id, {
+        seasonalMembershipAssignments: [{
+          membershipType: { id: "type-1", key: "FULL", name: "Full", subscriptionBehavior: "REQUIRED", annualFees: [fee()] },
+          subscriptionCategory: { id: "cat-1", key: "couple", name: "Couple", isActive: true, ...categoryOverrides },
+        }],
+        ...memberOverrides,
+      });
+    }
+
+    beforeEach(() => {
+      mocks.effectiveCategoryFee.mockResolvedValue(categoryFee());
+    });
+
+    it("bills a solo category member alone, at the category rate, with no family group", async () => {
+      mocks.members.findMany.mockResolvedValue([categoryMember("solo")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0]).toMatchObject({
+        key: "2026:category:cat-1:member:solo",
+        membershipTypeId: null,
+        membershipTypeKey: null,
+        membershipTypeName: null,
+        membershipAnnualFeeId: null,
+        subscriptionCategoryId: "cat-1",
+        subscriptionCategoryKey: "couple",
+        subscriptionCategoryName: "Couple",
+        subscriptionCategoryFeeId: "cat-fee-1",
+        billingBasis: "PER_FAMILY",
+        familyGroupId: null,
+        chargedAmountCents: 20_000,
+      });
+      expect(preview.entries[0].coveredMembers).toEqual([
+        { id: "solo", name: "First-solo Member", membershipTypeId: "type-1", membershipTypeName: "Full" },
+      ]);
+    });
+
+    it("merges two members of the SAME membership type sharing a category and family into one flat charge", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("a", {}, { familyGroupMemberships: [familyMembership()] }),
+        categoryMember("b", {}, { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].key).toBe("2026:category:cat-1:family:family-1");
+      expect(preview.entries[0].familyGroupId).toBe("family-1");
+      expect(preview.entries[0].chargedAmountCents).toBe(20_000);
+      expect(preview.entries[0].recipient.id).toBe("billing-1");
+      expect(preview.entries[0].coveredMembers.map((c) => c.id).sort()).toEqual(["a", "b"]);
+    });
+
+    it("merges two members of DIFFERENT membership types sharing a category into one charge, recording each member's own type for audit", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("senior", {}, { familyGroupMemberships: [familyMembership()] }),
+        categoryMember("life", {}, {
+          familyGroupMemberships: [familyMembership()],
+          seasonalMembershipAssignments: [{
+            membershipType: { id: "type-2", key: "LIFE", name: "Life Member", subscriptionBehavior: "NOT_REQUIRED", annualFees: [] },
+            subscriptionCategory: { id: "cat-1", key: "couple", name: "Couple", isActive: true },
+          }],
+        }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      const covered = preview.entries[0].coveredMembers;
+      expect(covered.find((c) => c.id === "senior")).toMatchObject({ membershipTypeId: "type-1", membershipTypeName: "Full" });
+      expect(covered.find((c) => c.id === "life")).toMatchObject({ membershipTypeId: "type-2", membershipTypeName: "Life Member" });
+      // Both bill once, together, at the flat category rate — not per-type.
+      expect(preview.entries[0].chargedAmountCents).toBe(20_000);
+    });
+
+    it("overrides the member's own membership type behaviour (NOT_REQUIRED here) — category billing takes priority", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("overridden", {}, {
+          seasonalMembershipAssignments: [{
+            membershipType: { id: "type-2", key: "LIFE", name: "Life Member", subscriptionBehavior: "NOT_REQUIRED", annualFees: [] },
+            subscriptionCategory: { id: "cat-1", key: "couple", name: "Couple", isActive: true },
+          }],
+        }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].chargedAmountCents).toBe(20_000);
+    });
+
+    it("an inactive category is treated as no category — falls through to the member's own type unchanged", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("inactive-cat", { isActive: false }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].membershipTypeId).toBe("type-1");
+      expect(preview.entries[0].subscriptionCategoryId).toBeFalsy();
+      expect(mocks.effectiveCategoryFee).not.toHaveBeenCalled();
+    });
+
+    it("raises MISSING_CATEGORY_FEE_SCHEDULE when no SubscriptionCategoryFee is effective", async () => {
+      mocks.effectiveCategoryFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValue([categoryMember("no-fee")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["MISSING_CATEGORY_FEE_SCHEDULE"]);
+      expect(preview.exceptions[0].subscriptionCategoryId).toBe("cat-1");
+      expect(preview.exceptions[0].membershipTypeId).toBeNull();
+    });
+
+    it("reuses AMBIGUOUS_FAMILY for a category member in more than one family", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("multi-family", {}, {
+          familyGroupMemberships: [familyMembership(), familyMembershipFor("family-2")],
+        }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["AMBIGUOUS_FAMILY"]);
+    });
+
+    it("solo category billing (kind NONE) is NOT an error, unlike the type axis's MISSING_FAMILY for a PER_FAMILY type", async () => {
+      // No familyGroupMemberships at all — resolveBillingFamilyMembership
+      // returns NONE. The type axis would raise MISSING_FAMILY for a
+      // PER_FAMILY-billed member in this shape; the category axis bills them
+      // alone instead, by design (see the branch's own comment).
+      mocks.members.findMany.mockResolvedValue([categoryMember("alone", {}, { familyGroupMemberships: [] })]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions).toEqual([]);
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].familyGroupId).toBeNull();
+    });
+
+    it("mirrors PER_FAMILY_FEE_IN_INDIVIDUAL_MODE under the club's individual billing mode", async () => {
+      mocks.familyMode.mockResolvedValue("BILL_MEMBERS_INDIVIDUALLY");
+      mocks.members.findMany.mockResolvedValue([categoryMember("solo-indiv")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["PER_FAMILY_FEE_IN_INDIVIDUAL_MODE"]);
+      expect(mocks.effectiveCategoryFee).not.toHaveBeenCalled();
+    });
+
+    it("raises FAMILY_ALREADY_BILLED for a late joiner into an already-LIVE category/family charge", async () => {
+      mocks.charges.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        where.subscriptionCategoryId
+          ? [{ id: "existing-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1" }]
+          : []);
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("late-joiner", {}, { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["FAMILY_ALREADY_BILLED"]);
+      expect(preview.exceptions[0].context).toMatchObject({ existingChargeId: "existing-category-charge" });
+    });
+
+    it("existing type-axis tests are unaffected: a member with no subscriptionCategory on their assignment takes the unmodified type path", async () => {
+      mocks.members.findMany.mockResolvedValue([member("unchanged")]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].membershipTypeId).toBe("type-1");
+      expect(mocks.effectiveCategoryFee).not.toHaveBeenCalled();
     });
   });
 });

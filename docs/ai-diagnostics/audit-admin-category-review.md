@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  507
+row-producing sites:  510
 uncategorised:        0
-category values: admin 108, booking 108, xero 39, family 35, payment 60,
+category values: admin 111, booking 108, xero 39, family 35, payment 60,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -846,6 +846,15 @@ a capacity race's card charge corrected to its refund rows before its hand-back
 undo of a voided bank-transfer refund note, and `.void-answered`, a person's
 answer to one the undo could not match - both the payment's figures, filed
 `payment` for the people who reconcile it.
+
+The subscription-category decoupling work then added three (`admin` 108 -> 111,
+507 -> 510, RE-MEASURED with `pnpm run audit:census`): the new Subscription
+Categories admin CRUD route's create/update/delete writers
+(`SUBSCRIPTION_CATEGORY_CREATED`/`_UPDATED`/`_ARCHIVED`/`_REACTIVATED`/`_DELETED`),
+each via `buildStructuredAuditLogCreateArgs` + `tx.auditLog.create`. `admin` for
+the same reason Membership Types' equivalent writers are — ordinary
+admin-configuration changes to a billing-category schedule, no member data —
+and the route mirrors the Membership Types route one-for-one.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a

@@ -672,7 +672,13 @@ export const AUDIT_CENSUS_TOTALS = {
   // undo of a voided bank-transfer refund note) and `.void-answered` (a person's
   // answer on Stuck States), both awaited on their transaction under `payment`.
   // RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 507,
+  // 507 -> 510 (subscription-category decoupling): the new Subscription
+  // Categories admin CRUD route's create/update/delete writers
+  // (SUBSCRIPTION_CATEGORY_CREATED/_UPDATED/_ARCHIVED/_REACTIVATED/_DELETED),
+  // each via `buildStructuredAuditLogCreateArgs` + `tx.auditLog.create` under
+  // `admin`, mirroring the pre-existing Membership Types route one-for-one.
+  // RE-MEASURED with `pnpm run audit:census`.
+  writeSites: 510,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -913,7 +919,11 @@ export const AUDIT_CENSUS_TOTALS = {
     // 76 -> 77 (#3566): the AI spend rate CLEAR, in the club-format route's
     // transaction beside the writer above, in the same form.
     // 77 -> 75 (#52): the two removed other-lodges writers above.
-    "auditLog.create": { total: 75, uncategorised: 0 },
+    // 75 -> 78 (subscription-category decoupling): the three new Subscription
+    // Categories route writers (create/update/delete), the same
+    // `tx.auditLog.create` + `buildStructuredAuditLogCreateArgs` form as the
+    // Membership Types route they mirror.
+    "auditLog.create": { total: 78, uncategorised: 0 },
   },
   /**
    * Literal category values written, and by how many sites. The three `membership`
@@ -1230,7 +1240,13 @@ export const AUDIT_CENSUS_TOTALS = {
     // gone with their handlers; `OTHER_LODGE_UPDATED` stays, still `admin`.
     // 110/107 -> 108 (hand sync of `main` f1ecdb5ff into epic #3789): #3819's
     // one and #52's two removals are disjoint. RE-MEASURED on the composed tree.
-    admin: 108,
+    // 108 -> 111 (subscription-category decoupling): the new Subscription
+    // Categories admin CRUD route's three writers (create/update/delete),
+    // `admin` for the same reason Membership Types' equivalent writers are —
+    // ordinary admin-configuration changes, no member data. `admin` is
+    // readable with `support:view` alone, so the derived weakest-gate total
+    // moves 137 -> 140.
+    admin: 111,
     // 16 -> 19 (#2581 child 2): `member.password-reset-sent` and
     // `member.setup-invite-sent` (decision 3 — the affected domain is the
     // CREDENTIAL, not the mailing), plus the `member.bulk-set-role` branch

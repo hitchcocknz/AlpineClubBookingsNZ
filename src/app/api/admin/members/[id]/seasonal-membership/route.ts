@@ -12,6 +12,9 @@ const saveSchema = z
   .object({
     seasonYear: z.number().int().min(2020).max(2040),
     membershipTypeId: z.string().min(1),
+    // Subscription-category decoupling: the independent billing axis. Null/
+    // omitted means "Individual" — unchanged per-type billing.
+    subscriptionCategoryId: z.string().min(1).nullable().optional(),
     applyFrom: z
       .string()
       .regex(/^\d{4}-\d{2}-\d{2}$/)
@@ -59,6 +62,7 @@ export async function PATCH(
     adminMemberId: guard.session.user.id,
     seasonYear: parsedBody.data.seasonYear,
     membershipTypeId: parsedBody.data.membershipTypeId,
+    subscriptionCategoryId: parsedBody.data.subscriptionCategoryId ?? null,
     applyFrom: parsedBody.data.applyFrom ?? null,
     reason: parsedBody.data.reason,
     previewToken: parsedBody.data.previewToken,
