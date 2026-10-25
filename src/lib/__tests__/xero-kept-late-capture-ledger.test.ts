@@ -25,7 +25,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  *    settled from the Stripe account - the caps `xero-booking-invoice.test.ts`
  *    pins;
  *  - the change payment's supplementary invoice (case e2): a WAITING one naming
- *    the capture is released as the gross ask paid from Stripe, which
+ *    the capture, or one the reaper retired `STALE_WAITING_PAYMENT` (re-queued
+ *    from that row), is released as the gross ask paid from Stripe, which
  *    `xero-supplementary-invoices.test.ts` pins. #4324: with none waiting the
  *    model releases NOTHING, as the real release then answers `none-queued`
  *    on a cancelled booking - it used to invent a paid invoice, which hid
@@ -304,12 +305,11 @@ vi.mock("@/lib/stripe", () => ({
     return { created: 1781053200, latest_charge: { created: 1781053200 } };
   },
 }));
-vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
-  RETIRED_CODES_ANSWERING_CAPTURE: [
-    "STALE_WAITING_PAYMENT",
-    "STALE_WAITING_PAYMENT_CAPTURED",
-    "STALE_WAITING_PAYMENT_COVERED",
-  ],
+vi.mock("@/lib/xero-supplementary-invoice-late-capture", async (importOriginal) => ({
+  // The REAL retired codes the keep's evidence reads (#4324).
+  RETIRED_CODES_ANSWERING_CAPTURE: (
+    (await importOriginal()) as typeof import("@/lib/xero-supplementary-invoice-late-capture")
+  ).RETIRED_CODES_ANSWERING_CAPTURE,
   // The approval task decides (`decideLateCapture`'s task arm), as every late capture here has one.
   lateCaptureRefundState: async ({ paymentIntentId }: { paymentIntentId: string }) => {
     const task = h.table("manualRefundTask").find((r) => r.lateCaptureApprovalIntentId === paymentIntentId);
@@ -318,12 +318,13 @@ vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
   // MODEL of the change's supplementary invoice (case e2): see the docblock.
   releaseXeroSupplementaryInvoiceForCapturedPaymentIntent: async (paymentIntentId: string) => {
     const capture = h.table("paymentTransaction").find((r) => r.stripePaymentIntentId === paymentIntentId)!;
+    // A waiting one is released; one the reaper retired (`STALE_WAITING_PAYMENT`) is re-queued from that row.
     const waiting = h
       .table("xeroSyncOperation")
       .find(
         (r) =>
           r.queueType === "SUPPLEMENTARY_INVOICE" &&
-          r.status === "WAITING_PAYMENT" &&
+          (r.status === "WAITING_PAYMENT" || (r.status === "CANCELLED" && r.lastErrorCode === "STALE_WAITING_PAYMENT")) &&
           (r.requestPayload as { paymentIntentId?: string }).paymentIntentId === paymentIntentId,
       );
     if (!waiting) return { released: 0, queueOperationIds: [], outcome: "none-queued" };
@@ -391,7 +392,12 @@ function seed(options: {
   cents?: number;
   taskRaisedAt?: Date;
   /** #4324: the booking change the capture pays for, and what Xero shows of it. */
-  change?: { settledAgainstPrimary?: boolean; invoice?: "waiting" | "withdrawn" };
+  change?: {
+    settledAgainstPrimary?: boolean;
+    invoice?: "waiting" | "withdrawn" | "retired";
+    /** #4324: the reaper's stamp on a `retired` invoice naming this capture. */
+    retiredCode?: string;
+  };
 }) {
   const cents = options.cents ?? 24000;
   const bookingRow = { id: BOOKING, status: "CANCELLED", member: MEMBER, organisation: null, memberId: "m1" };
@@ -439,14 +445,19 @@ function seed(options: {
         localModel: "BookingModification",
         localId: CHANGE,
         status: change.invoice === "waiting" ? "WAITING_PAYMENT" : "CANCELLED",
-        lastErrorCode: change.invoice === "waiting" ? null : "WITHDRAWN_BY_OFFICER",
+        lastErrorCode:
+          change.invoice === "waiting"
+            ? null
+            : change.invoice === "retired"
+              ? (change.retiredCode ?? "STALE_WAITING_PAYMENT")
+              : "WITHDRAWN_BY_OFFICER",
         manuallyResolvedAt: null,
         requestPayload: {
           queueType: "SUPPLEMENTARY_INVOICE",
           bookingId: BOOKING,
           bookingModificationId: CHANGE,
-          // A withdrawn ask names an intent since superseded; the waiting one names this capture.
-          paymentIntentId: change.invoice === "waiting" ? INTENT : "pi_superseded",
+          // A withdrawn ask names an intent since superseded; a waiting or retired one names this capture.
+          paymentIntentId: change.invoice === "withdrawn" ? "pi_superseded" : INTENT,
         },
       });
     }
@@ -760,6 +771,36 @@ describe("a kept late capture is counted once in Xero", () => {
     expect(books()).toEqual({ income: 2000, stripe: 2000, receivable: 0 });
     expect(books().stripe).toBe(realStripe());
   });
+
+  /**
+   * #4324 (`INV-PAY-141`): a change invoice the reaper RETIRED still answers
+   * the capture it names (`RETIRED_CODES_ANSWERING_CAPTURE`), though every row
+   * the change has is CANCELLED - so the keep leaves it to the late-success
+   * release and never raises the kept-capture invoice or a receipt beside it.
+   */
+  const keptRows = (queueType: string) => h.table("xeroSyncOperation").filter((r) => r.queueType === queueType);
+  it("MUTATION (e2) a change invoice retired STALE_WAITING_PAYMENT is re-queued by the release and records the capture once", async () => {
+    seed({ kind: "ADDITIONAL", cents: 2500, primaryInvoice: { cents: 30000 }, change: { invoice: "retired" } });
+    await keep();
+    await runOutbox();
+    expect(books()).toEqual({ income: 2500, stripe: 2500, receivable: 0 });
+    expect(keptRows("KEPT_LATE_CAPTURE_INVOICE")).toHaveLength(0);
+    expect(keptRows("ADDITIONAL_CAPTURE_RECEIPT")).toHaveLength(0);
+    expect(keptRows("SUPPLEMENTARY_INVOICE")).toEqual([expect.objectContaining({ status: "SUCCEEDED" })]);
+  });
+
+  for (const retiredCode of ["STALE_WAITING_PAYMENT_CAPTURED", "STALE_WAITING_PAYMENT_COVERED"]) {
+    it(`MUTATION (e2) a change invoice retired ${retiredCode} is left to the release: no kept invoice and no receipt beside it`, async () => {
+      seed({ kind: "ADDITIONAL", cents: 2500, primaryInvoice: { cents: 30000 }, change: { invoice: "retired", retiredCode } });
+      await keep();
+      await runOutbox();
+      expect(keptRows("KEPT_LATE_CAPTURE_INVOICE")).toHaveLength(0);
+      expect(keptRows("ADDITIONAL_CAPTURE_RECEIPT")).toHaveLength(0);
+      expect(keptRows("SUPPLEMENTARY_INVOICE")).toEqual([
+        expect.objectContaining({ status: "CANCELLED", lastErrorCode: retiredCode }),
+      ]);
+    });
+  }
 
   for (const primaryInvoice of [null, { cents: 30000 }]) {
     const label = primaryInvoice ? "(f, b) cleared invoice" : "(f, a) no invoice";

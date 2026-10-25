@@ -31,12 +31,11 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
     mocks.kickQueuedXeroOutboxOperationsIfConnected(...a),
   lockSupplementaryInvoiceAnchor: (...a: unknown[]) => mocks.lockSupplementaryInvoiceAnchor(...a),
 }));
-vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
-  RETIRED_CODES_ANSWERING_CAPTURE: [
-    "STALE_WAITING_PAYMENT",
-    "STALE_WAITING_PAYMENT_CAPTURED",
-    "STALE_WAITING_PAYMENT_COVERED",
-  ],
+// The REAL retired codes: a copy here would let the constant drift unseen.
+vi.mock("@/lib/xero-supplementary-invoice-late-capture", async (importOriginal) => ({
+  RETIRED_CODES_ANSWERING_CAPTURE: (
+    (await importOriginal()) as typeof import("@/lib/xero-supplementary-invoice-late-capture")
+  ).RETIRED_CODES_ANSWERING_CAPTURE,
   releaseXeroSupplementaryInvoiceForCapturedPaymentIntent: (...a: unknown[]) =>
     mocks.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(...a),
 }));
@@ -398,6 +397,16 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
       expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
     });
+
+    for (const code of ["STALE_WAITING_PAYMENT", "STALE_WAITING_PAYMENT_CAPTURED", "STALE_WAITING_PAYMENT_COVERED"]) {
+      it(`MUTATION: a change invoice the reaper retired (${code}) still answers it, though every change row is CANCELLED - never a kept invoice`, async () => {
+        const retired = { status: "CANCELLED", lastErrorCode: code, requestPayload: {} };
+        mocks.operationFindMany.mockResolvedValueOnce([retired]).mockResolvedValueOnce([retired]);
+        await expect(plan()).resolves.toEqual({ kind: "change-payment", paymentIntentId: "pi_late" });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+        expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
+      });
+    }
 
     it("MUTATION e3: queues its receipt on the caller's transaction where the primary bills the change, under the change's anchor after the task row", async () => {
       mocks.modificationFindUnique.mockResolvedValue({
