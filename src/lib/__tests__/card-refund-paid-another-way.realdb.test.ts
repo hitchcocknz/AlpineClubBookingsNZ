@@ -354,6 +354,52 @@ const LOCK_POLL_TIMEOUT_MS = 5_000;
       expect(approvedAppealRefundedCents(REFUND_CENTS, outcome ?? {})).toBe(paidCents);
     });
 
+    it("#4312 F2: a re-send's mark committed between the close's owed read and its claim fails the claim - a 409, nothing recorded", async () => {
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let holderPid = 0;
+      let wrote!: () => void;
+      const markWritten = new Promise<void>((resolve) => {
+        wrote = resolve;
+      });
+      // The mark (`pairResendRecordedFirst`, `markResentSlices`): one write of the row's plan, no lock. Held open, so
+      // the close reads the plan before it, and its claim queues behind the row and re-checks after it commits.
+      const mark = lockHolderClient.$transaction(
+        async (tx) => {
+          const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS pid`;
+          holderPid = pid;
+          await tx.paymentRecoveryOperation.update({
+            where: { id: OPERATION_ID },
+            data: { allocationPlan: [{ paymentTransactionId: TRANSACTION_ID, amountCents: REFUND_CENTS, madeRefundId: "re_race_4312_resend" }] },
+          });
+          wrote();
+          await released;
+        },
+        { timeout: 15_000 },
+      );
+      await markWritten;
+
+      const closing = close();
+      await waitForBlockedBy(holderPid);
+      release();
+      await mark;
+      const refused = await closing.then(
+        () => null,
+        (error: unknown) => error,
+      );
+      expect(refused).toBeInstanceOf(CardRefundPaidAnotherWayError);
+      expect(refused).toMatchObject({ status: 409, message: expect.stringContaining("changed while you were closing it") });
+
+      const operation = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: OPERATION_ID } });
+      expect(operation.status).toBe("FAILED");
+      expect(operation.allocationPlan).toEqual([{ paymentTransactionId: TRANSACTION_ID, amountCents: REFUND_CENTS, madeRefundId: "re_race_4312_resend" }]);
+      expect((await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID } })).refundedAmountCents).toBe(0);
+      expect(await prisma.manualRefundTask.count({ where: { bookingId: BOOKING_ID } })).toBe(0);
+      expect(await prisma.auditLog.count({ where: { entityId: OPERATION_ID } })).toBe(0);
+    });
+
     it("C1: a card refund recorded while the close waits for the payment row is read by the close, which refuses - the member is not paid twice", async () => {
       let release!: () => void;
       const released = new Promise<void>((resolve) => {
