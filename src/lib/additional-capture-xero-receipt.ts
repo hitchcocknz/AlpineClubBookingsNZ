@@ -40,17 +40,10 @@
  * WAITS while the gap invoice is still being sent. Where the primary cannot
  * take the capture and no gap invoice exists, #3980's own check
  * (`recheckPrimaryInvoiceWorthGap`) raises one, never a second, and the
- * receipt waits for it. A capture on a booking since cancelled, or paid by
- * internet banking, is closed unsent.
- *
- * #4324 (`INV-PAY-141`): save a late capture on a cancelled booking that a
- * treasurer KEPT (its approval task DISMISSED), whose change the primary
- * invoice bills - queued by the keep's decision. It records as any receipt
- * does, capped at the invoice's room, with no gap check (nothing new is billed
- * on a cancelled booking); the task is read again under the change's lock
- * where the decision is stored, so an approval after a reopen stands it down;
- * and once recorded, any refund of it is credited back and a paid-another-way
- * close's waiting note queued, as the kept-capture invoice's worker does.
+ * receipt waits for it. A capture on a booking since cancelled - save one a
+ * treasurer KEPT, whose change the primary bills (#4324, `INV-PAY-141`,
+ * `kept-late-capture-change-receipt.ts`) - or paid by internet banking, is
+ * closed unsent.
  *
  * NEVER TWICE. One row per capture, queued under the per-anchor
  * supplementary-invoice lock; the payment link returns early; an earlier run's
@@ -60,8 +53,7 @@
  *
  * No provider call is made under a lock or inside a transaction (`INV-LOCK-004`).
  */
-import type { Invoice } from "xero-node";
-import { PaymentSource, type Prisma } from "@prisma/client";
+import { PaymentSource } from "@prisma/client";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
@@ -73,7 +65,6 @@ import { xeroDocumentDateForClubToday } from "@/lib/xero-provider-dates";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
-import { readXeroInvoiceOperationOutcome } from "@/lib/xero-booking-invoice-outcome";
 import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { asRecord } from "@/lib/xero-json";
@@ -97,6 +88,8 @@ import {
   bookingHasPaidUnnamedSupplementary,
   captureChangeId,
 } from "@/lib/additional-capture-receipt-link";
+import { answerKeptLateCaptureRefunds, hasLateCaptureApprovalTask, lateCaptureStillKept } from "@/lib/kept-late-capture-change-receipt";
+import { amountDueOn, findRecordedPayment, ownPaymentPending, type InvoiceRead } from "@/lib/additional-capture-receipt-invoice-read";
 import {
   readAdditionalCaptureReceiptPayload,
   type AdditionalCaptureReceiptPlan,
@@ -218,8 +211,6 @@ async function alertOfficer(paymentIntentId: string, operationId: string, messag
   }
 }
 
-type InvoiceRead = { status: string; amountDueCents: number; invoice: Invoice };
-
 async function readInvoice(
   providers: AdditionalCaptureReceiptProviders,
   client: { xero: Awaited<ReturnType<typeof getAuthenticatedXeroClient>>["xero"]; tenantId: string },
@@ -240,37 +231,6 @@ async function readInvoice(
   const amountDueCents = providerAmountToCents(invoice?.amountDue);
   if (!invoice || amountDueCents === null) return null;
   return { status: String(invoice.status ?? ""), amountDueCents, invoice };
-}
-
-/** An earlier run's payment of this capture on the invoice, found by its reference. */
-function findRecordedPayment(read: InvoiceRead | null, reference: string) {
-  return (
-    (read?.invoice.payments ?? []).find(
-      (payment) =>
-        Boolean(payment.paymentID) &&
-        payment.reference === reference &&
-        String(payment.status ?? "").toUpperCase() !== "DELETED",
-    ) ?? null
-  );
-}
-
-function amountDueOn(read: InvoiceRead | null): number {
-  return read && read.status === "AUTHORISED" ? Math.max(0, read.amountDueCents) : 0;
-}
-
-/**
- * Whether a create's row says its own Stripe payment failed and is still owed
- * (PARTIAL, payment fault) - never one an officer resolved in Xero
- * (`INV-INT-025`), whose payment was recorded by hand.
- */
-function ownPaymentPending(
-  operation: { status: string; responsePayload: unknown; manuallyResolvedAt: Date | null } | null,
-): boolean {
-  return (
-    operation?.status === "PARTIAL" &&
-    operation.manuallyResolvedAt === null &&
-    readXeroInvoiceOperationOutcome(operation.responsePayload)?.paymentFailed === true
-  );
 }
 
 /**
@@ -712,47 +672,5 @@ export async function recordAdditionalCaptureReceipt(
       operationId,
       `This card payment was refunded before its Xero receipt was recorded against supplementary invoice ${receiptInvoiceId}, and its refund credit note (outbox operation ${naming.map((note) => note.id).join(", ")}) names the booking's own invoice instead. The amounts balance; check the note's reference in Xero.`,
     );
-  }
-}
-
-/** #4324: whether a #3639 approval task owns this capture - a late capture on a cancelled booking. */
-async function hasLateCaptureApprovalTask(paymentIntentId: string): Promise<boolean> {
-  const task = await prisma.manualRefundTask.findUnique({
-    where: { lateCaptureApprovalIntentId: paymentIntentId },
-    select: { id: true },
-  });
-  return task !== null;
-}
-
-/** #4324: under the change's anchor lock, whether the capture's approval task still keeps it. */
-async function lateCaptureStillKept(
-  tx: Pick<Prisma.TransactionClient, "manualRefundTask">,
-  paymentIntentId: string,
-): Promise<boolean> {
-  const task = await tx.manualRefundTask.findUnique({
-    where: { lateCaptureApprovalIntentId: paymentIntentId },
-    select: { status: true },
-  });
-  return task?.status === "DISMISSED";
-}
-
-/**
- * #4324: once a kept late capture's receipt is in Xero, any refund of it
- * already taken gets its note (`creditBackLateCaptureRefunds`), and a close of
- * its approved refund as paid another way gets its waiting bank note
- * (`queueWaitingPaidAnotherWayNote`), as the kept-capture invoice's worker
- * does. Each is a no-op for a capture no approval task owns. Never throws: the
- * payment is recorded, and the nightly credit check retries the note step.
- */
-async function answerKeptLateCaptureRefunds(paymentIntentId: string): Promise<void> {
-  if (!(await hasLateCaptureApprovalTask(paymentIntentId))) return;
-  // Imported here: those modules reach the outbox, which dispatches to this worker.
-  const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
-  await creditBackLateCaptureRefunds(paymentIntentId);
-  try {
-    const { queueWaitingPaidAnotherWayNote } = await import("@/lib/paid-another-way-receipt-note");
-    await queueWaitingPaidAnotherWayNote(paymentIntentId);
-  } catch (err) {
-    logger.error({ err, paymentIntentId }, "Failed to queue a paid-another-way close's note after a kept capture's receipt; the nightly credit check retries it");
   }
 }

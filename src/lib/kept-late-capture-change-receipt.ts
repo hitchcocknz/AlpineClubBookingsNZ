@@ -1,0 +1,119 @@
+/**
+ * #4324 (owner decision 25 Oct 2026; `INV-PAY-141`): A KEPT CHANGE CAPTURE'S
+ * OWN RECEIPT on a cancelled booking. Where a treasurer keeps a late card
+ * payment for a booking change whose primary invoice bills that change, the
+ * keep's decision (`planKeptLateCaptureXeroRecord`) queues the capture's own
+ * receipt (`INV-PAY-139`, `additional-capture-xero-receipt.ts`), a payment on
+ * that invoice capped at what Xero shows due. These are the receipt's
+ * kept-capture rules, read by its worker and the approval's settlement:
+ *
+ *  - the worker records a capture on a cancelled booking only where a #3639
+ *    approval task owns it ({@link hasLateCaptureApprovalTask}) and, read again
+ *    under the change's anchor lock where its decision is stored, still keeps
+ *    it ({@link lateCaptureStillKept}); it raises no #3980 gap invoice there;
+ *  - once recorded, any refund of it already taken is credited back and a
+ *    paid-another-way close's waiting note queued
+ *    ({@link answerKeptLateCaptureRefunds}), as the kept-capture invoice's
+ *    worker does;
+ *  - an approval after a reopen withdraws a receipt that has decided nothing
+ *    yet ({@link withdrawUndecidedKeptCaptureReceipt}).
+ *
+ * A leaf: the outbox dispatches to the receipt's worker and the kept-capture
+ * invoice's, both of which import this, so it reaches the outbox only lazily.
+ */
+import type { Prisma } from "@prisma/client";
+import logger from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
+import { asRecord } from "@/lib/xero-json";
+import { captureChangeId } from "@/lib/additional-capture-receipt-link";
+import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
+
+/** Whether a #3639 approval task owns this capture - a late capture on a cancelled booking. */
+export async function hasLateCaptureApprovalTask(paymentIntentId: string): Promise<boolean> {
+  const task = await prisma.manualRefundTask.findUnique({
+    where: { lateCaptureApprovalIntentId: paymentIntentId },
+    select: { id: true },
+  });
+  return task !== null;
+}
+
+/** Under the change's anchor lock: whether the capture's approval task still keeps it. */
+export async function lateCaptureStillKept(
+  tx: Pick<Prisma.TransactionClient, "manualRefundTask">,
+  paymentIntentId: string,
+): Promise<boolean> {
+  const task = await tx.manualRefundTask.findUnique({
+    where: { lateCaptureApprovalIntentId: paymentIntentId },
+    select: { status: true },
+  });
+  return task?.status === "DISMISSED";
+}
+
+/**
+ * Once a kept capture's receipt is in Xero: any refund of it already taken
+ * gets its note (`creditBackLateCaptureRefunds`), and a close of its approved
+ * refund as paid another way gets its waiting bank note
+ * (`queueWaitingPaidAnotherWayNote`). Each is a no-op for a capture no
+ * approval task owns. Never throws: the payment is recorded, and the nightly
+ * credit check retries the note step.
+ */
+export async function answerKeptLateCaptureRefunds(paymentIntentId: string): Promise<void> {
+  if (!(await hasLateCaptureApprovalTask(paymentIntentId))) return;
+  // Imported here: those modules reach the outbox, which dispatches to the receipt's worker.
+  const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
+  await creditBackLateCaptureRefunds(paymentIntentId);
+  try {
+    const { queueWaitingPaidAnotherWayNote } = await import("@/lib/paid-another-way-receipt-note");
+    await queueWaitingPaidAnotherWayNote(paymentIntentId);
+  } catch (err) {
+    logger.error(
+      { err, paymentIntentId },
+      "Failed to queue a paid-another-way close's note after a kept capture's receipt; the nightly credit check retries it",
+    );
+  }
+}
+
+/**
+ * THE APPROVAL'S WITHDRAWAL (`settleKeptLateCaptureRecordOnApproval`, inside
+ * the approval's claim, which holds the task row): the capture's receipt where
+ * it has decided nothing yet - PENDING, or FAILED before it stored its
+ * decision, never resolved in Xero - under the change's anchor lock (else the
+ * booking's), after the task row: the one order. One that stored its decision
+ * may already be in Xero, so it stands, its worker sends it and the refund
+ * note answers it; a RUNNING one that has not stored it reads the task again
+ * under that lock and stands down.
+ */
+export async function withdrawUndecidedKeptCaptureReceipt(
+  db: Prisma.TransactionClient,
+  params: { manualRefundTaskId: string; paymentIntentId: string },
+  stamp: { lastErrorCode: string; lastErrorMessage: string },
+): Promise<void> {
+  const { paymentIntentId } = params;
+  const [capture, task] = await Promise.all([
+    db.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: paymentIntentId },
+      select: { bookingModificationId: true, reason: true },
+    }),
+    db.manualRefundTask.findUnique({ where: { id: params.manualRefundTaskId }, select: { bookingId: true } }),
+  ]);
+  if (!capture || !task) return;
+  // Imported here: the outbox dispatches to the workers that import this.
+  const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
+  await lockSupplementaryInvoiceAnchor(db, captureChangeId(capture) ?? task.bookingId);
+  const rows = await db.xeroSyncOperation.findMany({
+    where: {
+      queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
+      status: { in: ["PENDING", "FAILED"] },
+      manuallyResolvedAt: null,
+      requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
+    },
+    select: { id: true, status: true, requestPayload: true },
+  });
+  for (const row of rows) {
+    if (asRecord(row.requestPayload)?.plan != null) continue;
+    await db.xeroSyncOperation.updateMany({
+      where: { id: row.id, status: row.status, manuallyResolvedAt: null },
+      data: { status: "CANCELLED", completedAt: new Date(), ...stamp },
+    });
+  }
+}

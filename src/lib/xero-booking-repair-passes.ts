@@ -19,8 +19,7 @@ import { LATE_CAPTURE_REPAIR_REFUND_METADATA_REASON } from "@/lib/payment-recove
 import type { RepairDependencies } from "./xero-booking-repair-deps";
 import { describeRefusedRepairedLateCaptureRefund, describeRepairedLateCaptureRefund, madeRepairRefunds } from "@/lib/late-capture-repair-result-message";
 import { createCountMap } from "./xero-booking-repair-utils";
-import { applyAdditionalCaptureReceiptAction } from "./xero-booking-repair-additional-capture";
-import { applyKeptChangeCaptureRecordAction } from "./xero-booking-repair-kept-change-capture";
+import { applyAdditionalCaptureReceiptAction, applyKeptChangeCaptureRecordAction } from "./xero-booking-repair-additional-capture";
 import { formatCents } from "@/lib/utils";
 import type { ClubFormat } from "@/lib/club-format";
 import { readModificationNoteWording } from "@/lib/xero-refund-method";

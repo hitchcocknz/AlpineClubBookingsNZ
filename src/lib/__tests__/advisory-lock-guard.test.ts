@@ -1302,6 +1302,13 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // an invoice naming no capture, and an officer's inline Retry of a change's
   // invoice re-asks under the change's key alone, in its own short
   // transaction, before its Xero call. No new raw site, no new key.
+  // #4324 (`INV-PAY-141`): the keep's decision for a kept change capture
+  // (`planKeptLateCaptureXeroRecord`) takes it on the change (else the
+  // booking) AFTER the approval task's row - the dismissal's claim, or the
+  // repair tool's own `lockKeptLateCaptureTask` - and as its last lock; the
+  // approval's withdrawal of an undecided receipt takes it the same way, after
+  // the approval's claim; and the receipt's plan store reads the task again
+  // under it. Task row -> anchor, never the reverse. No new raw site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,
@@ -1379,6 +1386,8 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // worker's send-time decision lock the #3639 approval task's row
   // (`SELECT 1 … FOR UPDATE`), the row the dismissal, reopen and approval
   // claims write. No advisory key; the dismissal's claim already holds the row.
+  // #4324: the keep's decision (`planKeptLateCaptureXeroRecord`, dismissal and
+  // repair) takes it first and the change's supplementary-invoice anchor after.
   // See docs/CONCURRENCY_AND_LOCKING.md -> "Kept late-capture task row".
   "src/lib/xero-kept-late-capture-invoice.ts": 1,
   // Member-photo upload (POST) and remove (DELETE) each lock the member row

@@ -8,8 +8,7 @@ import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement
 import type { PaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-note";
 import type { PaidBackRefundRequest } from "@/lib/xero-inbound/refund-request-paid-back";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
-import type { AdditionalCaptureReceiptEvidence } from "./xero-booking-repair-additional-capture";
-import type { KeptChangeCaptureRepairEvidence } from "./xero-booking-repair-kept-change-capture";
+import type { AdditionalCaptureReceiptEvidence, KeptChangeCaptureRepairEvidence } from "./xero-booking-repair-additional-capture";
 
 export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "MISSING_PRIMARY_INVOICE",

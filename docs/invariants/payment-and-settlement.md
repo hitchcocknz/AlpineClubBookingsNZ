@@ -886,8 +886,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   the club day of the Stripe charge (`stripe-capture-date.ts`), stored on the
   row before the send. Keeping is dismissing the #3639 task; one pure
   `decideLateCapture` (`late-capture-kept-xero-rules.ts`) answers everywhere.
-- **Which document**: a change payment on an invoiced booking keeps its
-  supplementary invoice, also charge-dated; anything else gets a
+- **Which document**: a change payment on an invoiced booking goes by its
+  change's evidence (`INV-PAY-141`); anything else gets a
   `KEPT_LATE_CAPTURE_INVOICE` anchored on the task, touching neither the
   booking's invoice nor its clearing note.
 - **Refunds** are the ordinary refund note, owed only once the APP recorded
@@ -1615,8 +1615,8 @@ release).
   (`captureChangeId`). One with neither decides under the booking's key, which
   a paying invoice there naming no capture takes first, and refuses beside one.
 - **Once.** Queued per capture under the per-anchor supplementary-invoice lock;
-  never on an internet-banking or cancelled booking (whose kept capture goes
-  unrecorded here).
+  never on an internet-banking or cancelled booking, save a kept capture
+  (`INV-PAY-141`).
 - **Where.** The gap invoice billing its change, else an unpaid invoice naming
   it or the change's own, else the primary less unallocated credit: the
   capture net of other writers, capped at the room; the rest to an officer.
@@ -1634,6 +1634,37 @@ release).
   `additional-capture-receipt.realdb.test.ts`,
   `additional-capture-receipt-unattributed.realdb.test.ts` and
   `xero-booking-repair.test.ts`.
+
+## INV-PAY-141
+
+**Related: `INV-PAY-110`** (kept late captures) **and `INV-PAY-139`** (the
+change capture's receipt).
+
+- **A kept change capture on a cancelled, invoiced booking is recorded by the
+  document the evidence names** (#4324; owner, 25 Oct 2026, amending one case
+  of `INV-PAY-110`). A paid cancel leaves the primary standing, so a second
+  invoice for a change it bills would count the income twice.
+- **One decision** (`keptChangeCaptureRoute`), taken once by the keep, and
+  by the repair tool, under the approval task's row then the change's anchor
+  lock, after finding the capture's receipt or kept invoice first:
+  - a change invoice naming the capture, live or reaper-retired: the
+    late-success release (`INV-PAY-104`);
+  - the change settled against the primary, has no supplementary invoice,
+    or a live one: its receipt, capped at the invoice's AmountDue;
+  - its every supplementary invoice withdrawn: the kept-capture invoice;
+  - no change readable: nothing, and the repair tool names it.
+- **One recorder.** `readCaptureRecorder` and `anchorCaptureHasReceipt` count
+  a kept-capture invoice; a replayed release finds the receipt; the receipt
+  verdict (`readLateCaptureXeroReceipt`) counts it, so refunds get notes. No
+  gap invoice is raised on a cancelled booking.
+- **Reopen.** Its worker re-reads the task under the anchor before storing a
+  decision; an approval withdraws an undecided receipt, and one already
+  decided sends and is noted.
+- **Repair.** `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`, listed by the dry
+  run, recorded automatically by `--apply`.
+- Pinned by `xero-kept-late-capture-ledger.test.ts` (e3, e4),
+  `late-capture-kept-xero.test.ts`, `additional-capture-xero-receipt.test.ts`,
+  `kept-change-capture-record.realdb.test.ts` and `xero-booking-repair.test.ts`.
 
 ## INV-PAY-031
 
