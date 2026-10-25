@@ -336,6 +336,13 @@ import "./cancel-card-refund-event.realdb.test";
 // failed-later writer and "paid another way" close. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4166-` fixtures.
 import "./cancel-card-refund-failed-later.realdb.test";
+// #4359 reuses it to prove the recovery runner reads the refunds Stripe holds
+// before a card refund send: a dashboard refund since the debt arose holds the
+// row (nothing sent, attempts spent, audited), while none, another app door's,
+// one made before the debt arose, or a failed read (retried) sends nothing
+// twice. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
+// own `race-4359-` fixtures.
+import "./card-refund-resend-stripe-check.realdb.test";
 // #4147 reuses it to prove the booking-ledger census reads a capacity race's
 // cancel by its own refund rows: through the REAL capacity race, back-post and
 // recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post
