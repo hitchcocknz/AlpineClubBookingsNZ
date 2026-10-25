@@ -1224,6 +1224,25 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     }
   });
 
+  it("#4357: a refused charge's alert names the booking's worth, change fee included", async () => {
+    const booking = makeBooking();
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { id: "txn_superseded", status: "SUCCEEDED", amountCents: 12500, refundedAmountCents: 0, paymentMethodId: "pm_1", stripePaymentIntentId: "pi_superseded", reference: null, reason: null, createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    supersededDoor.owned.add("pi_superseded");
+    try {
+      const res = await POST(makeRequest(), { params });
+      expect(res.status).toBe(409);
+      expect(mocks.sendPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 12500, paymentIntentId: "pi_superseded" }),
+        CLUB_FORMAT_TEST,
+      );
+    } finally {
+      supersededDoor.owned.clear();
+    }
+  });
+
   it("moves a no-card (request-origin) booking to payment-owed without charging or capacity gate", async () => {
     mocks.bookingFindUnique.mockResolvedValue(makeBooking({ payment: null }));
 

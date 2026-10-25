@@ -947,6 +947,25 @@ describe("POST /api/payments/charge-saved-method", () => {
     }
   });
 
+  it("#4357: a refused charge's alert names the booking's worth, change fee included", async () => {
+    const withFee = makeBooking();
+    primeBooking({ ...withFee, payment: { ...withFee.payment, changeFeeCents: 2500 } });
+    mockPaymentTransactionFindMany.mockResolvedValue([
+      { id: "txn_superseded", status: "SUCCEEDED", amountCents: 15000, refundedAmountCents: 0, paymentMethodId: "pm_123", stripePaymentIntentId: "pi_superseded", reference: null, reason: null },
+    ]);
+    supersededDoor.owned.add("pi_superseded");
+    try {
+      const response = await POST(makeRequest());
+      expect(response.status).toBe(409);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 15000, paymentIntentId: "pi_superseded" }),
+        CLUB_FORMAT_TEST,
+      );
+    } finally {
+      supersededDoor.owned.clear();
+    }
+  });
+
   it("refuses (400) a card written by a one-off checkout — no SetupIntent — and never calls Stripe (#3269)", async () => {
     mockBookingFindUnique.mockResolvedValue(
       makeBooking({
