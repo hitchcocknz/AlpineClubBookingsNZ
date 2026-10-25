@@ -1,10 +1,13 @@
 # Issue #4055 — Local-Build Image Name Reproduction, 25 October 2026
 
+**Audience:** Developer, Agent.
+
 **Issue:** [#4055](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4055)
 · **Base:** `main @ 948358190` · **Status:** point-in-time evidence; the issue
 holds the live status.
 
-**Verdict: the claimed defect does not reproduce.** With no `COMPOSE_PROJECT_NAME`
+**Verdict: the claimed `tacbookings`-fallback defect does not reproduce.** For
+the five directory names listed under Results, with no `COMPOSE_PROJECT_NAME`
 anywhere, Compose and the engine name the same `:local` images. The literal
 `tacbookings` fallback in `docker-compose.yml` is never selected, because
 Compose supplies its resolved project name for interpolation. This confirms the
@@ -77,8 +80,10 @@ execution, then run
 per directory, Compose version and service, and exits non-zero on any mismatch
 or render failure. The 25 October run exited 1: 40 matching lines, 24 mismatching
 (all from the adjacent cases), and 16 render refusals from the two older releases.
-The harness pins both inputs to the recorded base and runs Compose with an empty
-environment apart from `PATH`, a synthetic `HOME`, and the placeholder password.
+The harness pins both inputs to the recorded base, disables Git's on-demand
+object fetching, and runs Compose with an empty environment apart from `PATH`,
+a synthetic `HOME`, and the placeholder password. The pinned objects must
+already be available locally, and Git must support `--no-lazy-fetch`.
 This prevents caller secrets and Compose settings from affecting the render; it
 is not a sandbox for untrusted executables. Inspect the pinned function before
 running the harness; `eval` executes that repository code.
@@ -88,10 +93,14 @@ running the harness; `eval` executes that repository code.
 # Offline reproduction harness for issue #4055. No daemon, no builds, no containers.
 # Usage: repro-4055.sh <repo-checkout> <compose-binary>...
 set -euo pipefail
+if [ "$#" -lt 2 ]; then
+  printf 'Usage: %s <repo-checkout> <compose-binary>...\n' "$0" >&2
+  exit 2
+fi
 REPO="$1"; shift
 REV=9483581902dbb086ffc5b4d67f45ae8110f1761c
 # Pull the engine's real function out of the tracked script, verbatim.
-FUNC="$(git --no-replace-objects -C "$REPO" show "$REV:scripts/run-production-blue-green-deploy.sh" | sed -n '/^get_service_image_ref() {/,/^}/p')"
+FUNC="$(git --no-lazy-fetch --no-replace-objects -C "$REPO" show "$REV:scripts/run-production-blue-green-deploy.sh" | sed -n '/^get_service_image_ref() {/,/^}/p')"
 [ -n "$FUNC" ] || { echo "get_service_image_ref not found" >&2; exit 2; }
 CRON_SERVICE=app BLUE_SERVICE=app_blue GREEN_SERVICE=app_green MIGRATE_SERVICE=migrate
 docker() { return 0; }   # stub: only `docker image inspect` is called by the function
@@ -108,7 +117,7 @@ for dc in "$@"; do
   for spec in "${DIRS[@]}"; do
     d="${spec%%|*}"; envname=""; [ "$spec" = "$d" ] || envname="${spec#*|}"
     dir="$ROOT/$(basename "$dc")/${envname:+envfile-}$d"; mkdir -p "$dir"; d="$(basename "$dir")"
-    git --no-replace-objects -C "$REPO" show "$REV:docker-compose.yml" > "$dir/docker-compose.yml"
+    git --no-lazy-fetch --no-replace-objects -C "$REPO" show "$REV:docker-compose.yml" > "$dir/docker-compose.yml"
     [ -z "$envname" ] || printf 'COMPOSE_PROJECT_NAME=%s\n' "$envname" > "$dir/.env"
     # Compose's view: render the real file with no exported project name.
     # The file's only `:?` variable is DB_PASSWORD; a placeholder lets it render.
