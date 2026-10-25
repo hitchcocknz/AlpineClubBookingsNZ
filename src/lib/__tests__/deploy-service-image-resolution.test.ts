@@ -30,6 +30,13 @@ docker() {
   fi
   return 93
 }
+awk() {
+  if [ "$PARSER_EXIT" != 0 ]; then
+    printf '%s' "$EXPECTED_IMAGE"
+    return "$PARSER_EXIT"
+  fi
+  command awk "$@"
+}
 # Deliberately call in a conditional: set -e alone cannot enforce refusals here.
 if image="$(get_service_image_ref "$SERVICE")"; then
   printf '%s' "$image"
@@ -73,6 +80,7 @@ services:
     MIGRATE_IMAGE: "",
     COMPOSE_EXIT: "0",
     INSPECT_EXIT: "0",
+    PARSER_EXIT: "0",
     ...options.env,
   }), { cwd, encoding: "utf8", timeout: 10_000 });
   expect(result.error).toBeUndefined();
@@ -145,5 +153,12 @@ describe("deploy service image resolution (#4393)", () => {
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("Unable to inspect image: resolved-app:local");
     expect(result.stdout).toBe("");
+  });
+
+  it("refuses a failed parser even when it printed a plausible image", () => {
+    const result = lookup({ env: { PARSER_EXIT: "7" } });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.calls).not.toContain("image inspect");
   });
 });
