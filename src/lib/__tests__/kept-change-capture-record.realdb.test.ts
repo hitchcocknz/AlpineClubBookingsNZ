@@ -820,11 +820,16 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
         expect(plan).toMatchObject({ kind: "kept-invoice-queued" });
       });
       const gap = runGapCheck();
-      // The gap check bills this change too, so it waits on the change's key.
-      expect(await untilQueuedBehind(holder.pid)).toBe(1);
-      holder.release();
-      await holder.done;
+      let queuedBehind = 0;
+      try {
+        // The gap check bills this change too, so it waits on the change's key.
+        queuedBehind = await untilQueuedBehind(holder.pid);
+      } finally {
+        holder.release();
+        await holder.done;
+      }
       const result = await gap;
+      expect(queuedBehind).toBe(1);
 
       expect(result).toMatchObject({ gapCents: 16_000, queueOperationId: null });
       expect(result.reviewOperationId).toBeTruthy();
