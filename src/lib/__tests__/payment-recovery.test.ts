@@ -194,6 +194,13 @@ vi.mock("@/lib/stripe", () => ({
 }));
 const mockFindRecentPaymentIntentByMetadata = vi.fn();
 
+// #4359: the runner's pre-send Stripe check, proven in `card-refund-resend-stripe-check.test.ts`; here, what the runner does with its answer.
+const mockCheckStripeBeforeCardRefundSend = vi.fn();
+vi.mock("@/lib/card-refund-resend-stripe-check", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/card-refund-resend-stripe-check")),
+  checkStripeBeforeCardRefundSend: (...args: unknown[]) => mockCheckStripeBeforeCardRefundSend(...args),
+}));
+
 vi.mock("@/lib/group-cancel", () => ({
   executeGroupSettlementRefundPlan: (...args: unknown[]) =>
     mockExecuteGroupSettlementRefundPlan(...args),
@@ -2336,6 +2343,123 @@ describe("payment recovery worker", () => {
   // returns normally from `refundPaymentTransactions`. The row must stay owed,
   // and its retry must not replay the refused key - Stripe answers a repeated
   // key with the original refusal for 24 hours.
+  describe("#4359: the runner reads Stripe before a card refund send, and holds the row past a dashboard refund", () => {
+    const slice = { paymentTransactionId: "txn-1", amountCents: 4000 };
+    function queueOperation(overrides: Record<string, unknown> = {}) {
+      const operation = makeOperation({
+        id: "recovery-held",
+        type: PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION,
+        paymentTransactionId: null,
+        idempotencyKey: "card_refund_failed_later_re_failed",
+        stripeKeyPrefix: "card_refund_failed_later_re_failed",
+        amountCents: 4000,
+        allocationPlan: [slice],
+        attempts: 1,
+        ...overrides,
+      });
+      mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
+      mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
+        Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
+      );
+      return operation;
+    }
+    async function heldError() {
+      const { CardRefundResendHeldError } = await import("@/lib/card-refund-resend-stripe-check");
+      return new CardRefundResendHeldError(
+        4000,
+        [{ slice, refund: { id: "re_dash", amount: 4000, status: "succeeded", created: 1_800_000_000, metadata: {} }, debtAroseAtSeconds: 1_799_999_000 }],
+        ["pi_original"],
+        CLUB_FORMAT_TEST,
+      );
+    }
+    const failureWrites = () =>
+      mockPaymentRecoveryUpdateMany.mock.calls
+        .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+        .filter((args) => args.data?.status === PaymentRecoveryOperationStatus.FAILED);
+    const heldAudits = () =>
+      mockCreateAuditLog.mock.calls.filter(([args]) => (args as { action?: string }).action === "booking-payment.card-refund.resend-held");
+
+    it("checks the plan before any Stripe refund call", async () => {
+      const operation = queueOperation();
+      mockCheckStripeBeforeCardRefundSend.mockResolvedValueOnce(undefined);
+      mockRefundPaymentTransactions.mockResolvedValue({ refunds: [{ paymentIntentId: "pi_original", refundId: "re_resent", amountCents: 4000, status: "succeeded", slice }], totalRefundedAmountCents: 4000 });
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockCheckStripeBeforeCardRefundSend).toHaveBeenCalledWith({ operation: expect.objectContaining({ id: operation.id }), plan: [slice], format: CLUB_FORMAT_TEST });
+      expect(mockCheckStripeBeforeCardRefundSend.mock.invocationCallOrder[0]).toBeLessThan(mockRefundPaymentTransactions.mock.invocationCallOrder[0]!);
+    });
+
+    it("MUTATION (hold): held - nothing sent; FAILED at once, attempts spent, on its own claim; the officers told in their own words; audited once", async () => {
+      queueOperation();
+      mockCheckStripeBeforeCardRefundSend.mockRejectedValueOnce(await heldError());
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ processed: 1, failed: 1, retried: 0, succeeded: 0 });
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+      expect(failureWrites()).toHaveLength(1);
+      // Compare-and-set on the attempt this worker holds (`fromAttempts`, a live claim).
+      expect(failureWrites()[0]!.where).toMatchObject({ id: "recovery-held", attempts: 1, processingStartedAt: { not: null } });
+      expect(failureWrites()[0]!.data).toEqual({
+        status: PaymentRecoveryOperationStatus.FAILED,
+        lastError: expect.stringMatching(/^CARD_REFUND_RESEND_HELD: .*re_dash/),
+        processingStartedAt: null,
+        nextRetryAt: null,
+        attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS,
+      });
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledTimes(1);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 4000, errorMessage: (await heldError()).alertMessage }),
+        CLUB_FORMAT_TEST,
+      );
+      expect(heldAudits()).toHaveLength(1);
+      expect(heldAudits()[0]![0]).toMatchObject({ entityId: "recovery-held", category: "payment" });
+    });
+
+    it("a hold whose write lost its claim (a reaper took the row) audits and alerts nothing", async () => {
+      queueOperation();
+      mockCheckStripeBeforeCardRefundSend.mockRejectedValueOnce(await heldError());
+      mockPaymentRecoveryUpdateMany.mockImplementation(async (args: { data?: { status?: string } }) => ({
+        count: args.data?.status === PaymentRecoveryOperationStatus.FAILED ? 0 : 1,
+      }));
+
+      await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      expect(heldAudits()).toEqual([]);
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it("a Stripe read that fails sends nothing and retries on the backoff, silently", async () => {
+      queueOperation();
+      mockCheckStripeBeforeCardRefundSend.mockRejectedValueOnce(new Error("Could not read the refunds Stripe holds on pi_original before sending this card refund, so nothing was sent; it is retried (#4359): Request timed out"));
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ processed: 1, failed: 0, retried: 1 });
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      expect(failureWrites()[0]!.data).toMatchObject({ nextRetryAt: expect.any(Date), lastError: expect.stringContaining("nothing was sent") });
+      expect(failureWrites()[0]!.data).not.toHaveProperty("attempts");
+      expect(heldAudits()).toEqual([]);
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+    });
+
+    it("the superseded-payment refund is checked before it asks Stripe too", async () => {
+      queueOperation({ id: "recovery-held", type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, idempotencyKey: "superseded_refund_pi_old", paymentTransactionId: "txn-1", allocationPlan: null });
+      mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-1", amountCents: 4000, refundedAmountCents: 0, status: "SUCCEEDED" });
+      mockCheckStripeBeforeCardRefundSend.mockRejectedValueOnce(await heldError());
+
+      const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ failed: 1 });
+      expect(mockCheckStripeBeforeCardRefundSend).toHaveBeenCalledWith(expect.objectContaining({ plan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }] }));
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+      expect(heldAudits()).toHaveLength(1);
+    });
+  });
+
   describe("#4083: a refund Stripe refused is still owed and is retried under a fresh key", () => {
     const refusedRefund = (slice: Record<string, unknown>, status: string) => ({
       paymentIntentId: "pi_original",
