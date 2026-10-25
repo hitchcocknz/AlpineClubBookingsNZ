@@ -4039,7 +4039,7 @@ PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
 PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
                        held, each refused slice on its next key, then retried; INV-PAY-128)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
-PROCESSING -> FAILED  (held before any send, #4359, INV-PAY-142: Stripe holds a
+PROCESSING -> FAILED  (held before any send, #4359, INV-PAY-140: Stripe holds a
                        refund made outside the app on a slice's intent since
                        its debt arose - DEAD at once, nothing sent, lastError
                        CARD_REFUND_RESEND_HELD, alerted and audited once; a
@@ -4112,7 +4112,7 @@ a throw; each retry's key moves past the refusals Stripe holds on the intent
 for that refund, so it asks afresh.
 
 Before any card refund it sends, the runner reads the refunds Stripe holds on
-each slice's intent (#4359, `INV-PAY-142`): one bounded read per intent, after
+each slice's intent (#4359, `INV-PAY-140`): one bounded read per intent, after
 its claim and outside any transaction. It records every refund the app has not
 seen through what `charge.refunded` does (the one ledger writer and the Xero
 notes for what it newly recorded), then sends nothing when a refund Stripe

@@ -1641,7 +1641,7 @@ release).
   `additional-capture-receipt-unattributed.realdb.test.ts` and
   `xero-booking-repair.test.ts`.
 
-## INV-PAY-142
+## INV-PAY-140
 
 **Related: `INV-PAY-128`** (a refused or failed-later refund stays owed),
 **`INV-PAY-056`** (the one terminal transition).

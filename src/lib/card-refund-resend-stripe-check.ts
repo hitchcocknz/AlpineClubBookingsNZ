@@ -1,5 +1,5 @@
 /**
- * #4359 (#4361 wave 1, design D; `INV-PAY-142`): THE RECOVERY RUNNER READS
+ * #4359 (#4361 wave 1, design D; `INV-PAY-140`): THE RECOVERY RUNNER READS
  * STRIPE BEFORE IT SENDS A CARD REFUND, AND SENDS NOTHING WHEN A REFUND MADE
  * OUTSIDE THE APP MAY ALREADY HAVE PAID IT.
  *
@@ -152,6 +152,8 @@ export function dashboardRefundsHoldingSend(
  */
 export class CardRefundResendHeldError extends Error {
   readonly alertMessage: string;
+  /** The audit row's summary, its amount formatted as the club reads it. */
+  readonly auditSummary: string;
   constructor(
     readonly heldCents: number,
     readonly holds: ReadonlyArray<CardRefundSendHold>,
@@ -166,6 +168,7 @@ export class CardRefundResendHeldError extends Error {
     this.name = "CardRefundResendHeldError";
     const owed = formatCents(heldCents, format);
     const madeOutside = formatCents(refunds.reduce((sum, refund) => sum + refund.amount, 0), format);
+    this.auditSummary = `A card refund of ${owed} was not sent again: Stripe holds a refund made outside the app on that payment since it became owed`;
     this.alertMessage = `Stripe holds a card refund of ${madeOutside} made outside the app, in the Stripe dashboard (${ids}), on this payment since this card refund of ${owed} became owed. The app has not sent ${owed} again, so the member is not paid twice. Check the payment in the Stripe dashboard: if that refund paid this back, nothing more is owed, so do not pay the member again. If it did not, pay the member with "Paid another way" and ${CLOSE_IT_WHERE}, not with another Stripe dashboard refund.`;
   }
 }
@@ -183,7 +186,7 @@ export async function auditCardRefundResendHeld(
     category: "payment",
     severity: "important",
     outcome: "failure",
-    summary: `A card refund of ${held.heldCents} cents was not sent again: Stripe holds a refund made outside the app on that payment since it became owed`,
+    summary: held.auditSummary,
     metadata: {
       paymentId: operation.paymentId,
       heldCents: held.heldCents,

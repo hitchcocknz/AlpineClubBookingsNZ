@@ -2229,7 +2229,7 @@ raises nothing.
   dashboard refund made while the row still waits, since its debt arose, now
   holds the replay: the runner reads Stripe before it sends, records the
   dashboard refund (and its note, as `charge.refunded` would) and sends nothing
-  (#4359, `INV-PAY-142`). The failed refund's note still stands beside the
+  (#4359, `INV-PAY-140`). The failed refund's note still stands beside the
   dashboard refund's until stage 2 of #4361.
 - **A re-send Stripe failed too passes on what it answered.** The slice marked
   with it lists its own failures, which join the next re-send's answer; a slice

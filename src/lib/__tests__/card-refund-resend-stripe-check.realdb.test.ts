@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof of #4359 (#4361 wave 1, design D; `INV-PAY-142`): the
+ * Real-PostgreSQL proof of #4359 (#4361 wave 1, design D; `INV-PAY-140`): the
  * recovery runner reads the refunds Stripe holds before it sends a card
  * refund, and sends nothing past a refund made outside the app since the debt
  * arose.

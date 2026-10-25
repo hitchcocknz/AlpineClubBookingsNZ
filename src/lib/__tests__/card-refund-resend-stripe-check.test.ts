@@ -1,4 +1,4 @@
-// #4359 (#4361 wave 1, design D; `INV-PAY-142`): the recovery runner reads the
+// #4359 (#4361 wave 1, design D; `INV-PAY-140`): the recovery runner reads the
 // refunds Stripe holds before it sends a card refund, records the ones the app
 // has not seen, and holds the row past a refund made outside the app since the
 // debt arose. The decision is pure and proven here case by case; the runner's
@@ -268,7 +268,7 @@ describe("the hold's audit row", () => {
   });
 });
 
-describe("every runner card refund send is checked first (census, `INV-PAY-142`)", () => {
+describe("every runner card refund send is checked first (census, `INV-PAY-140`)", () => {
   it("each `refundPlanOrRetryRefusals` call is the runner's, and follows the check in the same function", async () => {
     const { readFileSync } = await import("node:fs");
     const { execSync } = await import("node:child_process");

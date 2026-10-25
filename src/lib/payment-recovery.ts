@@ -1539,7 +1539,7 @@ async function failPaymentRecoveryOperation(
   error: unknown,
   format: ClubFormat,
 ) {
-  // #4359 (`INV-PAY-142`): a card refund held for a dashboard refund ends at once, as a failure no retry fixes does.
+  // #4359 (`INV-PAY-140`): a card refund held for a dashboard refund ends at once, as a failure no retry fixes does.
   const held = error instanceof CardRefundResendHeldError ? error : null;
   const cause = held ? held.message : await unretryableRecoveryCause(operation, error);
   const terminal = cause !== null || operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
@@ -1893,7 +1893,7 @@ async function processRefundSupersededPaymentOperation(
   // refusal moves to a one-slice plan on a fresh key, which later attempts send.
   const persistedPlan = parseRefundAllocationPlan(operation.allocationPlan);
   const plan = persistedPlan ?? [{ paymentTransactionId: refreshedTransaction.id, amountCents: outstandingCents }];
-  await checkStripeBeforeCardRefundSend({ operation, plan, format }); // #4359 (`INV-PAY-142`): nothing is sent past a dashboard refund
+  await checkStripeBeforeCardRefundSend({ operation, plan, format }); // #4359 (`INV-PAY-140`): nothing is sent past a dashboard refund
   await refundPlanOrRetryRefusals({
     operation,
     plan,
@@ -2144,7 +2144,7 @@ async function processBookingModificationRefundOperation(
   // own record (the slice marked made with it) - `charge.refunded`'s rule for the same refund (`queueAnsweringRefundNotes`).
   const notesEachRefund = refundRequestRecoveryNotesEachRefund(operation);
   const notes = { paymentId: operation.paymentId, operationId: operation.id, notesEachRefund, plan };
-  await checkStripeBeforeCardRefundSend({ operation, plan, format }); // #4359 (`INV-PAY-142`): nothing is sent past a dashboard refund
+  await checkStripeBeforeCardRefundSend({ operation, plan, format }); // #4359 (`INV-PAY-140`): nothing is sent past a dashboard refund
   const refundId = await replayNotingEachRefund(notes, (send) => refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) =>
     send(() => refundPaymentTransactions({
       format,
