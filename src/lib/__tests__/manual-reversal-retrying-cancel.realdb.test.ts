@@ -16,7 +16,10 @@
  * #4320, and a capture whose hand-off lands while the reversal is running.
  * A cancellation the runner will not finish (given up, or on its last attempt
  * while the reversal runs), on an intent the reversal condemns or the settle
- * adopted, is re-armed and cancels once Stripe is back. An ADDITIONAL intent's
+ * adopted, is re-armed and cancels once Stripe is back. Once the mark-paid's
+ * cancel has landed, the pay step after the reversal refuses card before
+ * reaching Stripe, so the first intent's `_initial` key is never replayed
+ * (#4348). An ADDITIONAL intent's
  * cases (the live ask a covering settle's mirror rebuild hid, and the cash row
  * the reversal stamps so the mirror reads that ask once paid, #4355) are pinned
  * in the unit suites only: an edit on a cash-paid booking asks no card top-up,
@@ -95,6 +98,8 @@ const stripe = {
   byKey: new Map<string, string>(),
   refunds: [] as Array<{ id: string; paymentIntentId: string; amountCents: number }>,
   sequence: 0,
+  /** Every create call, a key replay included. */
+  createCalls: 0,
   /** While true, every cancel throws, as a Stripe outage would. */
   down: false,
 };
@@ -193,6 +198,7 @@ async function seed(): Promise<void> {
 function installStripe(): void {
   stripeRaceHooks.customer = async () => ({ id: "cus_race_4320", object: "customer", metadata: {} });
   stripeRaceHooks.create = async (args) => {
+    stripe.createCalls += 1;
     const known = args.idempotencyKey ? stripe.byKey.get(args.idempotencyKey) : undefined;
     if (known) return { ...stripe.intents.get(known)! };
     stripe.sequence += 1;
@@ -463,6 +469,7 @@ async function money() {
     stripe.intents.clear();
     stripe.byKey.clear();
     stripe.refunds = [];
+    stripe.createCalls = 0;
     stripe.down = false;
     installStripe();
     raceSession.current = { user: { id: OWNER_ID, role: "USER", accessRoles: [], canLogin: true } };
@@ -565,6 +572,25 @@ async function money() {
     await drainRecovery();
     expect(stripe.refunds).toEqual([]);
     expect(await money()).toMatchObject({ status: "PAID", heldCents: PRICE_CENTS });
+  });
+
+  it("#4348: the mark-paid's cancel landed before the reversal: the pay step refuses card before minting, so no key is reused and the cancelled intent's secret never returns", async () => {
+    const cancelled = await mintOnPayStep();
+    await markPaid();
+    expect(await runCancelWorker(cancelled)).toBe("succeeded");
+    expect(stripe.intents.get(cancelled)!.status).toBe("canceled");
+    expect((await reverse()).bookingStatus).toBe("PAYMENT_PENDING");
+
+    // The reversal leaves the payment on internet banking, so the pay step stops
+    // before Stripe: the pointer is null, and a mint here would reuse the first
+    // intent's `_initial` key, which Stripe answers with the cancelled intent for 24 hours.
+    const createCallsBefore = stripe.createCalls;
+    const again = await payStep();
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe("SWITCHED_TO_INTERNET_BANKING");
+    expect(again.body).not.toHaveProperty("clientSecret");
+    expect(stripe.createCalls).toBe(createCallsBefore);
+    expect((await prisma.payment.findUniqueOrThrow({ where: { bookingId: BOOKING_ID } })).stripePaymentIntentId).toBeNull();
   });
 
   it("an edit's cancel the mark-paid found waiting (FAILED, retrying) outlives the reversal: the superseded intent is still cancelled", async () => {
