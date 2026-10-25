@@ -1118,6 +1118,22 @@ function answerRefundsAsStripeWould() {
         expect(await readers()).toMatchObject({ refundedCents: 2_000, rowsCents: 2_000 });
       });
 
+      it("#4359: the runner is the first to see the dashboard refund - it records it and queues its note, and charge.refunded after it queues nothing", async () => {
+        const { failedNoteId, rowId } = await failedRequestRefundOwedByItsOwnRow(`${P}-failed-later-e2`, { withDashboard: false });
+        const dashboard = refundInDashboard(2_000);
+        const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+        expect(await runPaymentRecoveryOperationNow(rowId, CLUB_FORMAT_TEST)).toBe("failed");
+        // The runner's read recorded it through what charge.refunded does: its own note, in full, is queued.
+        const [first, dashboardNote, ...rest] = await noteRows();
+        expect(rest).toEqual([]);
+        expect(first!.id).toBe(failedNoteId);
+        expect(dashboardNote).toMatchObject({ cardRefundId: dashboard, cents: 2_000 });
+        // The webhook that follows finds nothing new: no second note, and none lost.
+        await deliverChargeRefunded();
+        expect((await noteRows()).map((note) => note.id)).toEqual([failedNoteId, dashboardNote!.id]);
+        expect(await readers()).toMatchObject({ refundedCents: 2_000, rowsCents: 2_000 });
+      });
+
       it("MUTATION (f, #4359): a dashboard refund made while the refund was still pending, before Stripe failed it, does not hold the re-send", async () => {
         await paid();
         const request = await requestRefund(`${P}-failed-later-f`, 2_000);
