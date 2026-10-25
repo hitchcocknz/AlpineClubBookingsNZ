@@ -170,6 +170,9 @@ describe("xero cron runner", () => {
     expect(recordCronRun).not.toHaveBeenCalledWith(
       expect.objectContaining({ status: "SKIPPED" })
     );
+    for (const [input] of recordCronRun.mock.calls) {
+      expect(input.resultSummary).not.toHaveProperty("warning");
+    }
   });
 
   it("warns, not green, when a Xero cooldown refused outbox rows before any call (#4375)", async () => {
@@ -199,6 +202,48 @@ describe("xero cron runner", () => {
         jobName: "xero-outbox",
         status: "SUCCESS",
         resultSummary: expect.objectContaining({ warning }),
+      })
+    );
+  });
+
+  it("warns when outbox or replay rows failed, and names both reasons together (#4375)", async () => {
+    const recordCronRun = vi.fn();
+
+    const result = await runXeroCronTaskList(["outbox", "retries"], {
+      taskLabel: "xero-queue",
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => true),
+      tasks: {
+        processQueuedXeroOutboxOperations: vi.fn(async () => ({
+          found: 3,
+          processed: 3,
+          succeeded: 0,
+          failed: 1,
+          skipped: 2,
+          cooldownDeferred: 1,
+        })),
+        processQueuedXeroOperationRetries: vi.fn(async () => ({
+          found: 2,
+          processed: 2,
+          succeeded: 0,
+          failed: 2,
+          skipped: 0,
+        })),
+      },
+    });
+
+    expect(result.queuedOutboxOperations).toMatchObject({
+      warning:
+        "Xero refused 1 operation(s) before any call (outage cooldown, daily limit or environment check); they stay queued and run once it clears. 1 operation(s) failed; see Xero Operations.",
+    });
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-operation-replay",
+        status: "SUCCESS",
+        resultSummary: expect.objectContaining({
+          warning: "2 operation(s) failed; see Xero Operations.",
+        }),
       })
     );
   });

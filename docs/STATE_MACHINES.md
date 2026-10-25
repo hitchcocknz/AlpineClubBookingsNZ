@@ -3967,6 +3967,7 @@ credit-sync pass already ran this interval (skipped: true)                     -
 credit-note mirror with nothing to read (skipped: true)                        -> SKIPPED
 batch worked, some rows passed over (skipped: <count>)                        -> SUCCESS
 outbox rows refused before any call (cooldownDeferred > 0)                    -> SUCCESS + warning
+outbox or replay rows failed (failed > 0)                                     -> SUCCESS + warning
 heal or void follow-up with a failed note                                      -> FAILURE
 ```
 
@@ -3975,7 +3976,8 @@ batch: a lost claim, a row resolved in Xero or marked not replayable, a note
 waiting for another note. That run succeeded, so cron health stays green. A row
 the outage cooldown, the daily limit or the environment check refused before any
 call is counted there too, but it means Xero is unusable: the outbox counts it
-as `cooldownDeferred` and the run carries a `warning`, shown amber. To verify:
+as `cooldownDeferred` and the run carries a `warning`, shown amber. A failed
+row warns the same way and points at Xero Operations. To verify:
 `xero-cron-runner.test.ts`, `xero-outbox-fail-fast.test.ts`.
 
 ### Alpine Central Server version pause (#49)

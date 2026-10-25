@@ -142,7 +142,7 @@ function tasksForSelection(
 // read. The outbox and replay tasks report a numeric `skipped` count of rows
 // passed over after working their batch (a lost claim, a row resolved or not
 // replayable, a note waiting its turn); that run SUCCEEDED (#4375). A pre-call
-// refusal is the exception: see `withOutboxCooldownWarning`.
+// refusal or a failed row still warns: see `withQueueRunWarning`.
 function cronStatusForResult(result: unknown): CronJobRunStatus {
   return result &&
     typeof result === "object" &&
@@ -151,18 +151,23 @@ function cronStatusForResult(result: unknown): CronJobRunStatus {
     : "SUCCESS";
 }
 
-// #4375: rows refused before any call (outage cooldown, daily limit,
-// environment check) are counted in `skipped`, but they mean Xero is unusable,
-// so the run carries a warning (#3663) and cron health shows it, not green.
-function withOutboxCooldownWarning<T extends { cooldownDeferred?: number }>(
+// #4375: the outbox and replay tasks are SUCCESS once they work their batch,
+// so what an officer must still see rides on the #3663 `warning`: rows Xero
+// refused before any call (outage cooldown, daily limit, environment check;
+// they stay queued) and rows that failed (they wait for a retry or an officer).
+function withQueueRunWarning<T extends { failed: number; cooldownDeferred?: number }>(
   result: T
 ): T & { warning?: string } {
   const deferred = result.cooldownDeferred ?? 0;
-  if (deferred === 0) return result;
-  return {
-    ...result,
-    warning: `Xero refused ${deferred} operation(s) before any call (outage cooldown, daily limit or environment check); they stay queued and run once it clears.`,
-  };
+  const reasons = [
+    deferred > 0
+      ? `Xero refused ${deferred} operation(s) before any call (outage cooldown, daily limit or environment check); they stay queued and run once it clears.`
+      : null,
+    result.failed > 0
+      ? `${result.failed} operation(s) failed; see Xero Operations.`
+      : null,
+  ].filter((reason): reason is string => reason !== null);
+  return reasons.length === 0 ? result : { ...result, warning: reasons.join(" ") };
 }
 
 function resultSummaryFor(result: unknown) {
@@ -330,7 +335,7 @@ export async function runXeroCronTaskList(
           recordCronRun,
           work: async () =>
             connected
-              ? withOutboxCooldownWarning(
+              ? withQueueRunWarning(
                   await (taskDependencies.processQueuedXeroOutboxOperations ??
                     processQueuedXeroOutboxOperations)()
                 )
@@ -342,8 +347,10 @@ export async function runXeroCronTaskList(
           recordCronRun,
           work: async () =>
             connected
-              ? await (taskDependencies.processQueuedXeroOperationRetries ??
-                  processQueuedXeroOperationRetries)(undefined, format)
+              ? withQueueRunWarning(
+                  await (taskDependencies.processQueuedXeroOperationRetries ??
+                    processQueuedXeroOperationRetries)(undefined, format)
+                )
               : { skipped: true, reason: "Xero not connected" },
         });
       } else if (task === "inbound") {
