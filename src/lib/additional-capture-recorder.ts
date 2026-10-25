@@ -27,6 +27,7 @@
  * before it plans, and the repair tool before it reports anything.
  */
 import type { Prisma } from "@prisma/client";
+import { readCreditReleaseCaptureShare } from "@/lib/credit-release-capture-share";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
@@ -72,6 +73,8 @@ export type ReceiptTarget = {
 export type CaptureRecorder =
   /** The primary invoice's create recorded it in its own payment. */
   | { kind: "primary-invoice" }
+  /** The credit-release sweep records all of it (or holds it for an officer): #4253, `INV-ADDPAY-046`. */
+  | { kind: "credit-release-sweep" }
   /** A supplementary invoice records it: one naming the intent, covering all of it, or the change's own paid one. */
   | { kind: "supplementary-invoice"; operationId: string | null }
   /** #4324: the kept-capture invoice a treasurer's keep queued for it records it. */
@@ -108,7 +111,36 @@ function recordsPayment(requestPayload: Prisma.JsonValue | null): boolean {
   return asRecord(requestPayload)?.recordPayment !== false;
 }
 
+/**
+ * The recorder of a capture, with the credit-release sweep's share taken out
+ * (#4253, `INV-ADDPAY-046`): the money of a credit-release request inside the
+ * capture is recorded by the sweep against the booking's own invoice, so the
+ * receipt records only the rest, and stands down where the sweep has all of it.
+ */
 export async function readCaptureRecorder(
+  input: {
+    bookingId: string;
+    primaryInvoiceId: string;
+    paymentIntentId: string;
+    bookingModificationId: string | null;
+  },
+  store: RecorderStore = prisma,
+): Promise<CaptureRecorder> {
+  const base = await readBaseCaptureRecorder(input, store);
+  if (base.kind !== "receipt") return base;
+  const share = await readCreditReleaseCaptureShare(input.paymentIntentId, store);
+  if (share.held) return { kind: "credit-release-sweep" };
+  if (share.ownCents <= 0) return base;
+  const capture = await store.paymentTransaction.findUnique({
+    where: { stripePaymentIntentId: input.paymentIntentId },
+    select: { amountCents: true },
+  });
+  const alreadyRecordedCents = base.alreadyRecordedCents + share.ownCents;
+  if (alreadyRecordedCents >= (capture?.amountCents ?? 0)) return { kind: "credit-release-sweep" };
+  return { ...base, alreadyRecordedCents };
+}
+
+async function readBaseCaptureRecorder(
   input: {
     bookingId: string;
     primaryInvoiceId: string;

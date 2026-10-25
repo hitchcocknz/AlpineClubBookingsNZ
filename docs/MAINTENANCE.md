@@ -112,7 +112,7 @@ CI also runs independent static and container checks:
   version-coupling pins (`next` with `eslint-config-next`, `react` with
   `react-dom`, `@prisma/client` with `@prisma/adapter-pg`) and every other exact
   pin Dependabot steps forward each release. Thirteen direct dependencies are
-  exact-pinned today and only one of them is a hold; the difference is whether
+  exact-pinned today and none of them is a hold; the difference is whether
   anything is being held back, not whether the range has a caret.
 - Use test or demo credentials for Stripe, Xero, SES, and Sentry in local and
   CI environments.
@@ -214,9 +214,10 @@ altogether.
 ### The override register
 
 Every row below was verified by removing that entry and re-resolving (#2863),
-and re-checked for #3673 against the ranges the installed parents declare. Three
-bind today: `postcss` (`next` pins 8.5.23 exactly), the `nodemailer` pair
-(`next-auth`'s optional peer stops at `^8`) and `mysql2` (`prisma` pins 3.15.3).
+and re-checked for #3673 against the ranges the installed parents declare. Two
+bind today: `postcss` (`next` pins 8.5.23 exactly) and the `nodemailer` pair
+(`next-auth`'s optional peer stops at `^8`). The `mysql2` override retired in
+#4363, once `prisma` 7.10.1 pinned mysql2 3.24.4.
 `eslint-plugin-react-hooks` is a deliberate hold that is currently non-binding.
 `browserslist` is a security floor its parents' ranges do not guarantee
 (webpack accepts `^4.28.1`); it is non-binding under highest-version resolution
@@ -245,7 +246,6 @@ than the last install. Scope an override to its parent (`parent>name`) instead.
 | `next-auth>nodemailer` and `@auth/core>nodemailer` (`catalog:`) | **Resolution.** `next-auth@5.0.0-beta.32` declares `peerOptional nodemailer@"^7.0.7 \|\| ^8.0.5"`, which conflicts with this repository's own `nodemailer` range (the workspace `catalog:`); under npm the override was what stopped `npm install` failing with `ERESOLVE`, and under pnpm it keeps both packages' optional peer on that one copy instead of a peer-mismatch resolution. Added in `8f366a08c` (#1182). | `next-auth` widens its peer range to admit the catalog's nodemailer range (currently `^10.0.10`), on both `next-auth` and `@auth/core`. |
 | `eslint-plugin-react-hooks` | **Compatibility hold**, not security — `b1989558f` introduced it as "hold eslint-plugin-react-hooks at 7.0.1", and it has since been stepped forward to 7.1.1. Currently non-binding: natural resolution lands on 7.1.1 with or without it. | The hold is reviewed and lifted on purpose. |
 | `browserslist` (`^4.28.7`) | **Security.** Two high advisories against `browserslist <= 4.28.6` — unbounded memory growth with no cache eviction (GHSA-c83g-rgw3-j3cx), and an uncaught crash / prototype write via untrusted `browserslist-stats.json` (GHSA-73wf-gq98-2v4g). Transitive only; nothing declares it directly. A **range**, not a pin, so it keeps floating with future patches. | every package that depends on browserslist (today `webpack` `^4.28.1`, `@babel/helper-compilation-targets` `^4.24.0`, and `update-browserslist-db`'s peer `>= 4.21.0`) *requires* 4.28.7 or later, meaning the lowest version its range accepts is 4.28.7 or higher (e.g. `^4.28.7`). A range that only *includes* 4.28.7 does not count, and `pnpm audit` cannot show this because highest-version resolution clears the advisory with or without the override. |
-| `mysql2` (`^3.22.0`) | **Security, on a driver this application never loads.** `mysql2 < 3.22.0` carries an auth-plugin downgrade to `mysql_clear_password` that leaks plaintext credentials (GHSA-3f6p-5ww8-9rcr). It arrives transitively through `prisma`, and this product's datasource is `provider = "postgresql"` — nothing in `src/` imports it, so the advisory is not reachable here. It is overridden rather than accepted because `pnpm audit --audit-level=high` is a required check and cannot express "unreachable", and because the only remedy npm offered was `--force`, which **downgrades Prisma** and is a far larger change than the one it avoids. A **range**, not a pin. | `prisma` requires mysql2 3.22.0 or later. |
 | `ajv>fast-uri` (`^3.1.9`) | **Security, in build tooling only.** `fast-uri < 3.1.9` carries four advisories (GHSA-w74x-v6f9-j3xg, GHSA-xhq7-xmqj-769h, GHSA-wjr9-j795-jxcr, GHSA-333x-w4r6-6crp). It arrives only through `ajv@8` under Prisma's dev tooling (`prisma > @prisma/dev > @prisma/streams-local`), which the running application never loads. `ajv@8.20.0` accepts any `fast-uri@^3.0.1`, so the pin does not conflict with its range; remove it when the resolved version is at least 3.1.9 without it (#4326). |
 
 ### The direct-dependency hold register
@@ -278,7 +278,7 @@ Two rules, both learned the expensive way:
 
 | hold | why it exists | retires when |
 | --- | --- | --- |
-| `@sentry/nextjs` (`10.70.0`, exact) | **Compatibility**, not security. `@sentry/server-utils@10.72.0` removed `@apm-js-collab/code-transformer-bundler-plugins`, `@apm-js-collab/tracing-hooks` and `meriyah` from its dependencies, but the code it ships still loads the first of those. Importing it throws `TypeError: The URL must be of scheme file` from `orchestrion/bundler/webpack.js`, which kills six test files at import time and fails a seventh. Nothing in this repository is at fault and there is no local workaround worth carrying, so the version is held instead (#3313, #3304). | Sentry ships a release whose `@sentry/server-utils` loads only what it declares. Verify by pinning that version in a scratch copy and running the suites named in #3313, not by reading the changelog. |
+| _none_ | No package is held today. The `@sentry/nextjs` hold (`10.70.0`, #3313) retired in #3419, which moved to 10.74.0 after Sentry shipped a `@sentry/server-utils` that loads only what it declares. | — |
 
 ### Checking whether an override still earns its place
 

@@ -118,7 +118,7 @@ describe("readCaptureRecorder (B, C)", () => {
       ),
     },
     xeroObjectLink: { findFirst: vi.fn() },
-    paymentTransaction: { findUnique: vi.fn() },
+    paymentTransaction: { findUnique: vi.fn(), findMany: vi.fn() },
     bookingModification: {},
     manualRefundTask: {},
   };
@@ -134,13 +134,54 @@ describe("readCaptureRecorder (B, C)", () => {
     vi.clearAllMocks();
     found = { naming: null, covering: null, own: null };
     store.xeroObjectLink.findFirst.mockResolvedValue(null);
-    store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 8_000 });
+    store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 8_000, paymentId: "pay_1" });
+    store.paymentTransaction.findMany.mockResolvedValue([]);
     mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValue(figures);
     mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(null);
   });
 
   it("is the receipt where nothing else records the capture", async () => {
     await expect(read()).resolves.toEqual({ kind: "receipt", figures, gap: null, target: null, alreadyRecordedCents: 0 });
+  });
+
+  describe("a capture that collected credit-release money (#4253)", () => {
+    const ledgerRow = (over: Record<string, unknown>) => ({
+      id: "row",
+      source: "STRIPE",
+      status: "PENDING",
+      reason: "credit_released_outside_app",
+      amountCents: 4_000,
+      carriedAskCents: 0,
+      withdrawnAt: null,
+      stripePaymentIntentId: "pi_release",
+      ...over,
+    });
+
+    it("stands down where the sweep records all of it", async () => {
+      store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 4_000, paymentId: "pay_1" });
+      store.paymentTransaction.findMany.mockResolvedValue([ledgerRow({ id: "r1", status: "SUCCEEDED" })]);
+      await expect(readCaptureRecorder({ ...input, paymentIntentId: "pi_release", bookingModificationId: null }, store as never)).resolves.toEqual({
+        kind: "credit-release-sweep",
+      });
+    });
+
+    it("records only the rest of a capture it shares with an edit's own money", async () => {
+      store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 6_500, paymentId: "pay_1" });
+      store.paymentTransaction.findMany.mockResolvedValue([
+        ledgerRow({ id: "r1", status: "PENDING" }),
+        ledgerRow({ id: "r2", reason: "edit_price_increase", amountCents: 6_500, carriedAskCents: 4_000, status: "SUCCEEDED", stripePaymentIntentId: "pi_edit" }),
+      ]);
+      const recorder = await readCaptureRecorder({ ...input, paymentIntentId: "pi_edit", bookingModificationId: null }, store as never);
+      expect(recorder).toMatchObject({ kind: "receipt", alreadyRecordedCents: 4_000 });
+    });
+
+    it("stands down for a capture the sweep holds for an officer", async () => {
+      store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 4_000, paymentId: "pay_1" });
+      store.paymentTransaction.findMany.mockResolvedValue([ledgerRow({ id: "r1", status: "PARTIALLY_REFUNDED" })]);
+      await expect(readCaptureRecorder({ ...input, paymentIntentId: "pi_release", bookingModificationId: null }, store as never)).resolves.toEqual({
+        kind: "credit-release-sweep",
+      });
+    });
   });
 
   it("MUTATION round 4 (item 4): is the supplementary invoice naming the intent, read first and on its own, whatever a gap covers", async () => {

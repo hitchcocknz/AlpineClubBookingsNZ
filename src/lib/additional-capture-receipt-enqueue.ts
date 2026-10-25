@@ -56,6 +56,7 @@ export type AdditionalCaptureReceiptEnqueueResult =
         | "not-a-card-booking"
         | "recorded-by-primary-invoice"
         | "recorded-by-supplementary-invoice"
+        | "recorded-by-credit-release-sweep"
         | "recorded-by-kept-late-capture-invoice";
     };
 

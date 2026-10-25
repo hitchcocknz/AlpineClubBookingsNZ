@@ -99,6 +99,11 @@ import "./credit-only-card-allocation.realdb.test";
 // with spies for its own describe only, so it cannot replace the suite above's.
 // Its describe stays skipped unless the shared race flag is set.
 import "./credit-note-spent-outside-app.realdb.test";
+// #4270 proves the inbound mirror of a credit note spent or un-spent in Xero: the free part
+// written down and a reversed spend restored, the member's credit lock taken and the global
+// one not, and agreement with the #4219 converge in either order and at once. Its describe
+// stays skipped unless the shared race flag is set.
+import "./credit-note-outside-spend-mirror.realdb.test";
 // #2595 reuses the same guarded disposable PostgreSQL to prove that a member
 // merge cannot leave two people sharing a double bed with no confirmed
 // partnership, driving the real `executeMemberMerge` and the real
@@ -406,6 +411,13 @@ import "./xero-refund-request-note-void.realdb.test";
 // the void's row and re-reads it. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1;
 // it owns and cleans its own `race-4223-` fixtures.
 import "./xero-canonical-refund-note-void-race.realdb.test";
+// #4288 reuses it to prove an older live Xero reading of a refund note - the
+// inbound reconcile's, the Stripe status recorder's, or a reconcile's write for
+// a per-refund or request note - never revives a mirror a later write recorded
+// VOIDED, and that between two live readings the older keeps the newer.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4288-` fixtures.
+import "./xero-refund-note-stale-live-status.realdb.test";
 // #4215 reuses it to prove the inbound repair of a bank-transfer payment's
 // canonical refund note keeps the cash a refund request paid back through the
 // real completion - queued, raised or voided, and with the canonical note
@@ -414,8 +426,8 @@ import "./xero-canonical-refund-note-void-race.realdb.test";
 import "./xero-bt-repair-request-cash.realdb.test";
 // #4230 reuses it to pin the bank-transfer recount: a group organiser's
 // hand-back moves no payment's total; the recount never writes the charge rows
-// the #4162 floor keeps; a later refund absorbed into the canonical note (#4287)
-// is kept by the floor and alerted; which void states reach that alert; and the
+// the #4162 floor keeps; a later refund noted on its own record (#4287, #4312),
+// and one folded before them, kept by the floor and alerted; which void states reach that alert; and the
 // deploy note's read-only query.
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4230-` fixtures.
@@ -429,6 +441,15 @@ import "./xero-bt-recount-handbacks.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4287-` fixtures.
 import "./xero-bt-per-refund-notes.realdb.test";
+// #4312 reuses it to prove a card refund on a bank transfer gets its own Xero
+// note, keyed on its PaymentRefund row: through the refund request's real
+// approval route and its recovery replay, the `charge.refunded` webhook and a
+// late capture's note, the outbox worker and inbound reconcile (a fake Xero
+// transport), the readers and the #4162 floor; never for a refund made before
+// the cutover; one row for two writers racing; a voided card note never undone
+// as a bank refund. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and
+// cleans its own `race-4312-` fixtures.
+import "./xero-bt-card-refund-notes.realdb.test";
 // #4098 reuses it to prove closing a subscription charge as already paid: two
 // closes at once close it once (one audit row, each voidGeneration bumped
 // once), and a manual reversal committing while the close waits for the
@@ -535,6 +556,13 @@ import "./xero-voided-note-recount.realdb.test";
 // Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
 // `race-4300-` fixtures.
 import "./superseded-intent-card-doors.realdb.test";
+// #4320 reuses it to prove a manual mark-paid's reversal withdraws the
+// cancellations the mark-paid queued, one Stripe's outage left FAILED and
+// retrying included, so the member's capture of the intent it made payable
+// again settles the booking; and leaves an edit's earlier cancellation to do
+// its job. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
+// own `race-4320-` fixtures.
+import "./manual-reversal-retrying-cancel.realdb.test";
 // #4316 reuses it to prove an edit's after-commit mint never leaves a live ask
 // on a booking cancelled in the gap: the REAL cancelBooking before the mint,
 // between the provider call and the row write, and queued on the Payment row

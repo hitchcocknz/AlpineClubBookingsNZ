@@ -393,6 +393,7 @@ export async function recordAdditionalCaptureReceipt(
     if (recorder.kind === "supplementary-invoice" || recorder.kind === "kept-late-capture-invoice") {
       return standDown("SUCCEEDED", `recorded-by-${recorder.kind}`, { operationId: recorder.operationId });
     }
+    if (recorder.kind === "credit-release-sweep") return standDown("SUCCEEDED", "recorded-by-credit-release-sweep");
     const { gap, target: supplementary, alreadyRecordedCents } = recorder;
     // Only the part no other writer recorded: the primary's payment, or the
     // gap invoice's, may have taken some of it (round 3, F2).

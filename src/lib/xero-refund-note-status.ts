@@ -9,6 +9,7 @@ import type { Prisma } from "@prisma/client";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
 import { readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import { xeroInstant } from "@/lib/xero-provider-dates";
 
 /**
  * True when a Xero credit-note status still contributes to refund coverage.
@@ -102,11 +103,31 @@ export const REFUND_CREDIT_NOTE_LINK_WHERE = {
   role: "REFUND_CREDIT_NOTE",
 } as const satisfies Prisma.XeroObjectLinkWhereInput;
 
-/** The refund-note links of one payment (or several), active or not: the one fetch every reader below shares. */
-async function readRefundNoteLinks(localId: string | { in: string[] }, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
+/** #4288: the two roles of a payment's refund-note links - its own notes, and a refund request's (`INV-PAY-118`). */
+export const REFUND_NOTE_LINK_ROLES = [REFUND_CREDIT_NOTE_LINK_WHERE.role, REFUND_REQUEST_CREDIT_NOTE_ROLE] as const;
+
+/** #4288: `REFUND_CREDIT_NOTE_LINK_WHERE` as a predicate on a link (for `role`, either refund-note role; its own by default). */
+export function isRefundNoteLinkOf(
+  link: { localModel: string; xeroObjectType: string; role: string },
+  role: (typeof REFUND_NOTE_LINK_ROLES)[number] = REFUND_CREDIT_NOTE_LINK_WHERE.role,
+): boolean {
+  return link.localModel === REFUND_CREDIT_NOTE_LINK_WHERE.localModel && link.xeroObjectType === REFUND_CREDIT_NOTE_LINK_WHERE.xeroObjectType && link.role === role;
+}
+
+/**
+ * The refund-note links of one payment (or several), active or not: the one
+ * fetch every reader below shares. #4288: optionally of one note only, and of
+ * a refund request's role instead of the payment's own.
+ */
+async function readRefundNoteLinks(
+  localId: string | { in: string[] },
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+  only?: { xeroObjectId?: string; role?: (typeof REFUND_NOTE_LINK_ROLES)[number] },
+) {
   return (await db.xeroObjectLink.findMany({
-    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, localId },
-    select: { localId: true, xeroObjectId: true, metadata: true, active: true },
+    // Only defined keys: an undefined `role` would drop the role filter, not keep the default.
+    where: { ...REFUND_CREDIT_NOTE_LINK_WHERE, role: only?.role ?? REFUND_CREDIT_NOTE_LINK_WHERE.role, ...(only?.xeroObjectId !== undefined ? { xeroObjectId: only.xeroObjectId } : {}), localId },
+    select: { localId: true, xeroObjectId: true, xeroObjectNumber: true, metadata: true, active: true },
   })) ?? [];
 }
 
@@ -228,17 +249,154 @@ export async function isRetryOfVoidedRefundRequestNote(
 }
 
 /**
- * #4195, #4223 (`INV-ADDPAY-041`): THE ONE RULE FOR A REFUND-NOTE LINK WRITE
- * RACING AN INBOUND VOID, for both roles - the payment's own notes
+ * #4288 (owner decision 24 Oct 2026): the link-metadata key holding the Xero
+ * `UpdatedDateUTC` of the snapshot whose status the link records, as an ISO
+ * instant, or null when Xero sent none.
+ */
+export const REFUND_NOTE_SNAPSHOT_AT_KEY = "providerUpdatedAt";
+
+/** The parts of a Xero credit note a link records as its snapshot. */
+export interface XeroCreditNoteSnapshotSource {
+  status?: unknown;
+  total?: unknown;
+  appliedAmount?: unknown;
+  remainingCredit?: unknown;
+  updatedDateUTC?: unknown;
+}
+
+/**
+ * #4288: THE ONE SHAPE OF A XERO CREDIT-NOTE SNAPSHOT ON A LINK. Every writer
+ * that records a status it read from Xero spreads this, so the status always
+ * travels with the `UpdatedDateUTC` it was read at (`judgeRefundNoteWrite`
+ * orders snapshots by it). `refund-note-snapshot-stamp-census.test.ts` fails a
+ * credit-note link literal that names a status any other way.
+ */
+export function xeroCreditNoteSnapshotMetadata(note: XeroCreditNoteSnapshotSource) {
+  return {
+    status: note.status ?? null,
+    total: note.total ?? null,
+    appliedAmount: note.appliedAmount ?? null,
+    remainingCredit: note.remainingCredit ?? null,
+    [REFUND_NOTE_SNAPSHOT_AT_KEY]: xeroInstant(note.updatedDateUTC)?.toISOString() ?? null,
+  };
+}
+
+/** #4288: the Xero `UpdatedDateUTC` a link's recorded snapshot was read at, or null (legacy rows, status-less writers). */
+export function readRefundNoteSnapshotAt(metadata: unknown): Date | null {
+  return xeroInstant(asRecord(metadata)?.[REFUND_NOTE_SNAPSHOT_AT_KEY]);
+}
+
+/**
+ * What a refund-note link write does with the row it locked: write as asked;
+ * keep the stored VOIDED/DELETED status under a write that names none (#4223);
+ * or (#4288), because the write's own snapshot is stale, keep the stored
+ * status, stamp and figures; the canonical rule (active flag, sibling
+ * retirement) still applies.
+ */
+export type RefundNoteWriteVerdict = "apply" | "keep-stored-status" | "keep-stored-snapshot";
+
+/**
+ * #4223, #4288 (`INV-ADDPAY-041`, owner decision 24 Oct 2026): THE ONE ORDER
+ * OF TWO WRITES TO ONE REFUND-NOTE LINK, judged on the row as stored under its
+ * lock. Pure. In Xero a void is terminal - a note is never un-voided, and
+ * re-crediting always raises a new note - so:
+ * - a write naming no status keeps a stored void's status (#4223);
+ * - a write naming VOIDED/DELETED is always applied;
+ * - a live status never overwrites a stored VOIDED/DELETED, whatever either
+ *   side's timestamp - with no timestamp on either side this is the decision's
+ *   fallback, and with both it is the provider contract above;
+ * - between two live snapshots, one whose `UpdatedDateUTC` is OLDER than the
+ *   stored one's is not applied. Equal timestamps are the same snapshot and
+ *   apply; a missing timestamp on either side applies.
+ */
+export function judgeRefundNoteWrite(incoming: unknown, stored: unknown): RefundNoteWriteVerdict {
+  const storedStatus = readRefundCreditNoteLinkStatus(stored);
+  if (storedStatus === null) return "apply";
+  const storedVoid = !isIncludedRefundCreditNoteStatus(storedStatus);
+  const incomingStatus = readRefundCreditNoteLinkStatus(incoming);
+  if (incomingStatus === null) return storedVoid ? "keep-stored-status" : "apply";
+  if (!isIncludedRefundCreditNoteStatus(incomingStatus)) return "apply";
+  if (storedVoid) return "keep-stored-snapshot";
+  const incomingAt = readRefundNoteSnapshotAt(incoming);
+  const storedAt = readRefundNoteSnapshotAt(stored);
+  return incomingAt !== null && storedAt !== null && incomingAt.getTime() < storedAt.getTime() ? "keep-stored-snapshot" : "apply";
+}
+
+/**
+ * #4288: one note's refund-note row (by default the payment's own role) on each
+ * of these payments, active or not, read NOW on the caller's client. A writer
+ * that acts on a Xero reading after its link write - the inbound recount, its
+ * allocation and refund-payment links - reads this at the point it acts, so a
+ * void or a newer snapshot that committed since its own link write is what it
+ * acts on, never a verdict it remembered from that write.
+ */
+export async function readRefundNoteRowsByPayment(
+  creditNoteId: string,
+  paymentIds: readonly string[],
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+  role: (typeof REFUND_NOTE_LINK_ROLES)[number] = REFUND_CREDIT_NOTE_LINK_WHERE.role,
+): Promise<Map<string, { active: boolean; metadata: unknown }>> {
+  if (paymentIds.length === 0) return new Map();
+  const rows = await readRefundNoteLinks({ in: [...new Set(paymentIds)] }, db, { xeroObjectId: creditNoteId, role });
+  return new Map(rows.map((row) => [row.localId, { active: row.active, metadata: row.metadata }]));
+}
+
+/**
+ * #4288: these links, less every one a payment holds through a refund-note row
+ * (either role) for this note that is VOIDED/DELETED now, read fresh on the
+ * caller's client. A live reading's allocation and refund-payment links are
+ * written through this, so a void that won is never given them; any other
+ * link passes untouched.
+ */
+export async function withoutVoidedRefundNoteLinks<L extends { localModel: string; localId: string; xeroObjectType: string; role: string }>(
+  creditNoteId: string,
+  links: readonly L[],
+  db: Pick<Prisma.TransactionClient, "xeroObjectLink">,
+): Promise<L[]> {
+  const voided = new Set<string>();
+  for (const role of REFUND_NOTE_LINK_ROLES) {
+    const rows = await readRefundNoteRowsByPayment(creditNoteId, links.filter((link) => isRefundNoteLinkOf(link, role)).map((link) => link.localId), db, role);
+    for (const [paymentId, row] of rows) if (isRefundCreditNoteLinkCancelledInXero(row.metadata)) voided.add(`${paymentId}:${role}`);
+  }
+  return links.filter((link) => !(REFUND_NOTE_LINK_ROLES.some((role) => isRefundNoteLinkOf(link, role)) && voided.has(`${link.localId}:${link.role}`)));
+}
+
+/**
+ * #4288: a Xero reading of a refund note as its link write JUDGED it, read from
+ * the row that write returned. The link funnel either applies the reading (its
+ * status and `UpdatedDateUTC` are then the row's) or, when `judgeRefundNoteWrite`
+ * keeps the stored snapshot, leaves the row as it was - and it keeps one only
+ * when the row's status or timestamp differs from the reading's. So `stale` is
+ * exactly "the reading was not applied" - in that write's own transaction,
+ * where a writer whose keys must land with its reading (the hand-made note
+ * answer) refuses on it. A writer that acts LATER, outside that transaction
+ * (the inbound recount, its allocation and refund-payment links), reads the
+ * row afresh instead (`readRefundNoteRowsByPayment`). `reading` is the
+ * builder's shape (`xeroCreditNoteSnapshotMetadata`), which always carries the
+ * timestamp's key, so an applied reading always overwrites the row's.
+ */
+export function judgedRefundNoteReading(reading: unknown, written: { metadata: unknown }) {
+  const row = asRecord(written.metadata);
+  const stale =
+    readRefundCreditNoteLinkStatus(row) !== readRefundCreditNoteLinkStatus(reading) ||
+    readRefundNoteSnapshotAt(row)?.getTime() !== readRefundNoteSnapshotAt(reading)?.getTime();
+  return { stale };
+}
+
+/**
+ * #4195, #4223, #4288 (`INV-ADDPAY-041`): THE ONE RULE FOR A REFUND-NOTE LINK
+ * WRITE RACING ANOTHER, for both roles - the payment's own notes
  * (`REFUND_CREDIT_NOTE`, its one canonical note among them) and a refund
  * request's (`REFUND_REQUEST_CREDIT_NOTE`). Every such write first ensures an
  * inactive identity row, then locks it in the write's transaction, so the link
  * funnel takes that row before any sibling note's row or the Payment row, on
- * every write. A write that names no Xero status (a retry's, a completion's,
- * a repair's) then re-reads the row under that lock, so a void that committed
- * while it waited is kept: inactive, its status on the row, where the funnel's void rules read it
- * (no sibling retired, a pointer naming it released without waiting on a
- * busy Payment). A write that names a status is judged on it.
+ * every write. It then re-reads the row under that lock and applies
+ * `judgeRefundNoteWrite`: a void that committed while it waited is kept,
+ * whether the write names no status (a retry's, a completion's, a repair's) or
+ * an older live one (an inbound reconcile, the status recorder, a hand-made
+ * note answer, each read from Xero outside any transaction): inactive, its
+ * status on the row, where the funnel's void rules read it (no sibling
+ * retired, a pointer naming it released without waiting on a busy Payment).
  */
 export async function keepStoredRefundNoteVoid<L extends {
   localModel: string; localId: string; xeroObjectType: string; xeroObjectId: string; role: string; metadata?: unknown; active?: boolean; mergeMetadata?: boolean;
@@ -260,24 +418,32 @@ export async function keepStoredRefundNoteVoid<L extends {
     WHERE "localModel" = ${link.localModel} AND "localId" = ${link.localId} AND "xeroObjectType" = ${link.xeroObjectType}
       AND "xeroObjectId" = ${link.xeroObjectId} AND "role" = ${link.role}
     FOR UPDATE`;
-  if (readRefundCreditNoteLinkStatus(link.metadata) !== null) return link;
   const stored = await client.xeroObjectLink.findUnique({
     where: { localModel_localId_xeroObjectType_xeroObjectId_role: { localModel: link.localModel, localId: link.localId, xeroObjectType: link.xeroObjectType, xeroObjectId: link.xeroObjectId, role: link.role } },
-    select: { metadata: true },
+    select: { metadata: true, active: true },
   });
-  const status = readRefundCreditNoteLinkStatus(stored?.metadata);
-  if (status === null || isIncludedRefundCreditNoteStatus(status)) return link;
-  // Preserve the stored figures and provenance even when the retry has some
-  // metadata of its own. Its keys and the kept status merge over the locked row.
-  return { ...link, active: false, metadata: { ...asRecord(link.metadata), status }, mergeMetadata: true };
+  const verdict = judgeRefundNoteWrite(link.metadata, stored?.metadata);
+  if (verdict === "apply") return link;
+  if (verdict === "keep-stored-status") {
+    // Preserve the stored figures and provenance even when the retry has some
+    // metadata of its own. Its keys and the kept status merge over the locked row.
+    return { ...link, active: false, metadata: { ...asRecord(link.metadata), status: readRefundCreditNoteLinkStatus(stored?.metadata) }, mergeMetadata: true };
+  }
+  // #4288: a stale snapshot writes nothing of its own: merging the stored
+  // metadata over itself keeps the stored status, stamp and figures, and a
+  // stored void stays inactive. The canonical rule (active flag, sibling
+  // retirement) still applies to a stored live snapshot.
+  return {
+    ...link,
+    active: isRefundCreditNoteLinkCancelledInXero(stored?.metadata) ? false : stored?.active,
+    metadata: asRecord(stored?.metadata) ?? {},
+    mergeMetadata: true,
+  };
 }
 
 /** The payment's refund-request note links (`INV-PAY-118`), any request's, active or not. */
 async function readRefundRequestNoteLinks(paymentId: string, db: Pick<Prisma.TransactionClient, "xeroObjectLink">) {
-  return (await db.xeroObjectLink.findMany({
-    where: { localModel: "Payment", localId: paymentId, xeroObjectType: "CREDIT_NOTE", role: REFUND_REQUEST_CREDIT_NOTE_ROLE },
-    select: { xeroObjectId: true, xeroObjectNumber: true, active: true, metadata: true },
-  })) ?? [];
+  return readRefundNoteLinks(paymentId, db, { role: REFUND_REQUEST_CREDIT_NOTE_ROLE });
 }
 
 /**
@@ -325,7 +491,7 @@ export async function readRefundNoteRaisingRow(
   return db.xeroSyncOperation.findFirst({
     where: { entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: paymentId, xeroObjectId: creditNoteId },
     orderBy: { createdAt: "asc" },
-    select: { id: true, requestPayload: true },
+    select: { id: true, requestPayload: true, correlationKey: true },
   });
 }
 
