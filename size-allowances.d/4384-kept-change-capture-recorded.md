@@ -24,9 +24,12 @@ reason: the kept-capture loop already decides, per kept late capture, whether
   twin, `keptInvoiceBillsChange`, lives in the repair module).
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3382
+lines: 3392
 reason: the supplementary enqueue's anchor-locked decision gains one gate (a
   comment and a call): a change whose kept late capture's own invoice bills it
   gets no second invoice. It must run inside that decision, after the anchor
   lock and the link and queued checks, so it cannot move out of the function;
-  the helper it calls lives in `additional-capture-receipt-link.ts`.
+  the helper it calls lives in `additional-capture-receipt-link.ts`. 4384-R2:
+  a gap invoice's option names every change it bills, and the decision takes
+  each one's key, sorted, and asks the gate of each - the same lock-and-check,
+  so it stays in the function that holds the lock.

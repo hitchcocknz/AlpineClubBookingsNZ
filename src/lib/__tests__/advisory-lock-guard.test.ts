@@ -1328,6 +1328,9 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // unlocked read finds the capture no longer kept, decides again in a short
   // transaction under it before any Xero call - in every case its plan store
   // reads the task again under it and closes the row there if no longer kept.
+  // 4384-R2: a #3980 gap invoice's enqueue takes it on every change its
+  // amount bills, sorted, never the booking's, before asking whether a kept
+  // capture's own invoice bills any of them. Same site, no new key.
   // Task row -> anchor, never the reverse. No new raw site, no new key.
 };
 

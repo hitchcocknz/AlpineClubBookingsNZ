@@ -60,6 +60,8 @@ const PAYMENT_ID = "race-4324-payment";
 const PRIMARY_TX_ID = "race-4324-primary-capture";
 const CHANGE_TX_ID = "race-4324-change-capture";
 const MODIFICATION_ID = "race-4324-modification";
+/** 4384-R2: a second marked edit that raced the primary, made after the first - the gap's first anchor. */
+const FIRST_ANCHOR_ID = "race-4324-modification-first";
 const TASK_ID = "race-4324-approval-task";
 const PRIMARY_INTENT = "pi_race_4324_primary";
 const CHANGE_INTENT = "pi_race_4324_change";
@@ -79,13 +81,15 @@ let worker: typeof import("@/lib/additional-capture-xero-receipt");
 let claim: typeof import("@/lib/xero-operation-claim");
 let withdraw: typeof import("@/lib/additional-payment-withdraw");
 let paidAnotherWay: typeof import("@/lib/card-refund-paid-another-way");
+let gapCheck: typeof import("@/lib/xero-primary-invoice-fee-gap");
+let invoiceKey: typeof import("@/lib/xero-booking-invoice-key");
 
 async function clean(): Promise<void> {
   await prisma.auditLog.deleteMany({ where: { OR: [{ entityId: REFUND_OPERATION_ID }, { targetId: BOOKING_ID }] } });
   await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.paymentRecoveryOperation.deleteMany({ where: { id: REFUND_OPERATION_ID } });
   await prisma.xeroSyncOperation.deleteMany({
-    where: { localId: { in: [CHANGE_TX_ID, PRIMARY_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID, TASK_ID] } },
+    where: { localId: { in: [CHANGE_TX_ID, PRIMARY_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID, FIRST_ANCHOR_ID, TASK_ID] } },
   });
   await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
@@ -296,6 +300,8 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     claim = await import("@/lib/xero-operation-claim");
     withdraw = await import("@/lib/additional-payment-withdraw");
     paidAnotherWay = await import("@/lib/card-refund-paid-another-way");
+    gapCheck = await import("@/lib/xero-primary-invoice-fee-gap");
+    invoiceKey = await import("@/lib/xero-booking-invoice-key");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -735,5 +741,110 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     expect(await receiptRows()).toEqual([
       expect.objectContaining({ status: "CANCELLED", lastErrorCode: "KEPT_LATE_CAPTURE_WITHDRAWN" }),
     ]);
+  });
+
+  /**
+   * 4384-R2 (Codex re-review, `INV-PAY-140`): two marked +$80 edits raced a
+   * $220 primary invoice built before either, so its $160 gap invoice bills
+   * both, anchored on the newer. The primary's link is saved (its figures
+   * stored on its create row) and its gap check has not run yet. The kept
+   * capture pays for the OLDER edit - the gap's second anchor.
+   */
+  describe("4384-R2: a kept capture on the gap's second anchor, and the gap check", () => {
+    const figures = {
+      xeroInvoiceId: INVOICE_ID,
+      billedChangeFeeCents: 0,
+      billedTotalCents: 22_000,
+      recordedChangeFeeCentsAtLink: 0,
+      primaryInvoiceCashCents: 22_000,
+      worth: { atBuildCents: 22_000, builtTotalCents: 22_000, atLinkCents: 38_000, markedModificationIdsAtBuild: [] },
+      paymentIntentIdsRecordedAtLink: [PRIMARY_INTENT],
+    };
+    let createId = "";
+    beforeEach(async () => {
+      await seed("OPEN");
+      const older = await prisma.bookingModification.findUniqueOrThrow({ where: { id: MODIFICATION_ID }, select: { createdAt: true } });
+      await prisma.bookingModification.create({
+        data: {
+          id: FIRST_ANCHOR_ID,
+          bookingId: BOOKING_ID,
+          memberId: OWNER_ID,
+          modificationType: "GUEST_ADD",
+          previousData: {},
+          newData: { primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true } },
+          priceDiffCents: 8_000,
+          // Newer than the capture's change, so the gap anchors on it first (newest first).
+          createdAt: new Date(older.createdAt.getTime() + 60_000),
+        },
+      });
+      const key = invoiceKey.buildXeroBookingInvoiceCorrelationKey(BOOKING_ID);
+      const create = await prisma.xeroSyncOperation.create({
+        data: {
+          direction: "OUTBOUND",
+          entityType: "INVOICE",
+          operationType: "CREATE",
+          localModel: "Payment",
+          localId: PAYMENT_ID,
+          status: "SUCCEEDED",
+          correlationKey: key,
+          idempotencyKey: key,
+          xeroObjectId: INVOICE_ID,
+          requestPayload: { primaryInvoiceBilledFee: figures },
+        },
+      });
+      createId = create.id;
+    });
+    const runGapCheck = () => gapCheck.queuePrimaryInvoiceWorthGap({ bookingId: BOOKING_ID, atLink: figures, figuresOperationId: createId });
+    const gapRows = () =>
+      prisma.xeroSyncOperation.findMany({
+        where: { localModel: "BookingModification", localId: FIRST_ANCHOR_ID, queueType: "SUPPLEMENTARY_INVOICE" },
+        select: { id: true, status: true, requestPayload: true },
+      });
+    const keptRows = () =>
+      prisma.xeroSyncOperation.findMany({
+        where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE", status: { not: "CANCELLED" } },
+        select: { id: true },
+      });
+
+    it("MUTATION: the keep holds the second anchor with its kept invoice undecided - the gap check queues behind it, then is refused, and the treasurer's task names the change", { timeout: 30_000 }, async () => {
+      const holder = await holdLock(async (tx) => {
+        await tx.manualRefundTask.updateMany({ where: { id: TASK_ID, status: "OPEN" }, data: { status: "DISMISSED", completedAt: new Date(), note: "kept (race proof)" } });
+        const plan = await keep.planKeptLateCaptureXeroRecord({
+          manualRefundTaskId: TASK_ID,
+          bookingId: BOOKING_ID,
+          paymentIntentId: CHANGE_INTENT,
+          clubZone: ZONE as never,
+          store: tx,
+        });
+        // No gap invoice yet, and the primary missed the change: billed nowhere.
+        expect(plan).toMatchObject({ kind: "kept-invoice-queued" });
+      });
+      const gap = runGapCheck();
+      // The gap check bills this change too, so it waits on the change's key.
+      expect(await untilQueuedBehind(holder.pid)).toBe(1);
+      holder.release();
+      await holder.done;
+      const result = await gap;
+
+      expect(result).toMatchObject({ gapCents: 16_000, queueOperationId: null });
+      expect(result.reviewOperationId).toBeTruthy();
+      // One document bills the kept $80: the kept-capture invoice. No gap invoice beside it.
+      expect(await keptRows()).toHaveLength(1);
+      expect(await gapRows()).toEqual([]);
+      expect(await receiptRows()).toEqual([]);
+      const review = await prisma.xeroSyncOperation.findUnique({ where: { id: result.reviewOperationId! }, select: { requestPayload: true } });
+      expect(JSON.stringify(review?.requestPayload)).toContain(MODIFICATION_ID);
+    });
+
+    it("the reverse order: the gap invoice is queued first, so the keep finds it billing the change and records the capture's receipt on it - no kept invoice", { timeout: 30_000 }, async () => {
+      const result = await runGapCheck();
+      expect(result).toMatchObject({ gapCents: 16_000 });
+      expect(await gapRows()).toHaveLength(1);
+
+      await expect(dismiss()).resolves.toMatchObject({ kind: "receipt-queued" });
+      expect(await keptRows()).toEqual([]);
+      expect(await receiptRows()).toHaveLength(1);
+      expect(await gapRows()).toHaveLength(1);
+    });
   });
 });

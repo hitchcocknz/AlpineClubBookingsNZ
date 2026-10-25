@@ -822,6 +822,29 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
     expect(mocks.keptInvoiceBillsChangeCapture).toHaveBeenCalledWith(expect.anything(), "mod_1");
   });
 
+  it("MUTATION #4324 (4384-R2): a gap invoice takes the key of every change it bills, sorted, and is refused where a kept capture's invoice bills ANY of them", async () => {
+    mocks.keptInvoiceBillsChangeCapture.mockImplementation(async (_tx: unknown, id: string) => id === "mod_a_second");
+    await expect(
+      enqueueXeroSupplementaryInvoiceOperation(
+        { bookingId: "booking_1", priceDiffCents: 16000, changeFeeCents: 0, bookingModificationId: "mod_b_first" },
+        { recordPayment: false, primaryInvoiceGap: { coveredCaptures: [], billedChangeIds: ["mod_b_first", "mod_a_second"] } },
+      ),
+    ).resolves.toMatchObject({ queueOperationId: null, outcome: "none", refusedBy: "kept-late-capture-invoice", keptBilledChangeId: "mod_a_second" });
+    expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+    // Every anchor's key, sorted - the one order - before the read.
+    const locks = mocks.executeRaw.mock.calls.map((call) => (call as unknown[]).slice(1).join("|"));
+    expect(locks).toEqual([expect.stringContaining("mod_a_second"), expect.stringContaining("mod_b_first")]);
+    expect(mocks.executeRaw.mock.invocationCallOrder[1]).toBeLessThan(mocks.keptInvoiceBillsChangeCapture.mock.invocationCallOrder[0]!);
+    mocks.keptInvoiceBillsChangeCapture.mockReset();
+  });
+
+  it("4384-R2 control: an ordinary change invoice takes its own key alone", async () => {
+    mocks.executeRaw.mockClear();
+    await enqueueXeroSupplementaryInvoiceOperation({ bookingId: "booking_1", priceDiffCents: 8000, changeFeeCents: 0, bookingModificationId: "mod_1" });
+    expect(mocks.executeRaw).toHaveBeenCalledTimes(1);
+    expect(mocks.keptInvoiceBillsChangeCapture).toHaveBeenCalledTimes(1);
+  });
+
   it("creates a pending Xero sync operation for supplementary invoices", async () => {
     await expect(
       enqueueXeroSupplementaryInvoiceOperation(
