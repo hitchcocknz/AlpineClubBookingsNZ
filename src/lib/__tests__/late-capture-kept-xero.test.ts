@@ -527,6 +527,60 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       });
     });
 
+    describe("MUTATION review MF2 (round 3, `INV-SSOT`): the kept invoice is sized by the one reading of who records the capture (`readCaptureRecorder`)", () => {
+      const withdrawn = () =>
+        mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }]);
+      /** Answers `readCaptureRecorder`'s reads: a kept-capture invoice naming the intent, or a gap invoice covering part of it. */
+      const recorderRows = (rows: { kept?: boolean; gapCoveredCents?: number }) =>
+        mocks.operationFindFirst.mockImplementation(async ({ where }: { where?: Record<string, any> } = {}) => {
+          if (where?.queueType === "KEPT_LATE_CAPTURE_INVOICE" && rows.kept) return { id: "op_kept_other" };
+          if (where?.requestPayload?.path?.[0] === "coveredPaymentIntentIds" && rows.gapCoveredCents !== undefined) {
+            return {
+              id: "op_gap",
+              requestPayload: { coveredPaymentIntentIds: ["pi_late"], coveredCaptureCents: { pi_late: rows.gapCoveredCents } },
+            };
+          }
+          return null;
+        });
+
+      it("a gap invoice's payment took part of it: the kept invoice records only the rest", async () => {
+        withdrawn();
+        recorderRows({ gapCoveredCents: 2000 });
+        await expect(plan()).resolves.toEqual({ kind: "kept-invoice-queued", queueOperationId: "op_kept" });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledWith(
+          expect.objectContaining({ capturedCents: 6000, paymentIntentId: "pi_late" }),
+        );
+      });
+
+      it("the gap's part and the sweep's share together: one figure, never either twice", async () => {
+        withdrawn();
+        recorderRows({ gapCoveredCents: 2000 });
+        mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 1000, held: false });
+        await plan();
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledWith(expect.objectContaining({ capturedCents: 5000 }));
+      });
+
+      it("another kept-capture invoice already records it: nothing more", async () => {
+        withdrawn();
+        recorderRows({ kept: true });
+        await expect(plan()).resolves.toEqual({ kind: "none" });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+      });
+
+      it("without the primary invoice's id (an active link only): the sweep's share and a kept invoice naming it are what is read", async () => {
+        mocks.paymentFindUnique.mockResolvedValue({ xeroInvoiceId: null });
+        mocks.linkFindMany.mockResolvedValue([{ role: "PRIMARY_INVOICE", xeroObjectType: "INVOICE", active: true }]);
+        withdrawn();
+        mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 5000, held: false });
+        await expect(plan()).resolves.toEqual({ kind: "kept-invoice-queued", queueOperationId: "op_kept" });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledWith(expect.objectContaining({ capturedCents: 3000 }));
+        withdrawn();
+        recorderRows({ kept: true });
+        await expect(plan()).resolves.toEqual({ kind: "none" });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledTimes(1);
+      });
+    });
+
     it("review D-F3: a receipt refused for no primary invoice id is logged as an error, not a warning", async () => {
       mocks.modificationFindUnique.mockResolvedValue({
         newData: { primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true } },

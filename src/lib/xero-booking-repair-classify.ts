@@ -607,7 +607,7 @@ export function classifyBookingContext(
             },
             actionKeys: [action.key],
           });
-        } else if (!blockingOperation && keptInvoiceBillsChange(context, modification.id)) {
+        } else if (!blockingOperation && keptInvoiceBillsChange(context, modification.id, capturedPaymentTransactions)) {
           // #4324 (`INV-PAY-141`): a kept late capture's own invoice bills and records this change; never a second invoice.
         } else if (!blockingOperation && primaryInvoiceEditTimingRefusal) {
           /**

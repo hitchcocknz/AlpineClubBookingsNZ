@@ -11,7 +11,12 @@ import { unsettledRefundNoteRows } from "@/lib/xero-refund-note-unsettled";
 import { modificationNoteWording, readModificationNoteWording } from "@/lib/xero-refund-method";
 import { buildEditFinancialReviewChargeReason, buildLateCaptureApprovalRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
-import { addKeptChangeCaptureFinding, type KeptChangeCaptureRepairEvidence } from "@/lib/xero-booking-repair-additional-capture";
+import {
+  addKeptChangeCaptureFinding,
+  keptInvoiceBillsChange,
+  type KeptChangeCaptureRepairEvidence,
+} from "@/lib/xero-booking-repair-additional-capture";
+import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
 
 function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
@@ -4490,7 +4495,14 @@ describe("runBookingXeroRepair", () => {
         keptBooking({ xeroInvoiceId: "inv_primary", source: "STRIPE" }, { kind: "ADDITIONAL", amountCents: 8000, bookingModificationId: "mod_change", ...capture });
       const runChange = async (
         booking: ReturnType<typeof makeBooking>,
-        options: { operations?: unknown[]; links?: unknown[]; marked?: boolean; apply?: boolean } = {},
+        options: {
+          operations?: unknown[];
+          links?: unknown[];
+          marked?: boolean;
+          apply?: boolean;
+          /** The #4253 sweep's $30 credit-release ask before the capture: carried into it (its share), or not (held). */
+          sweep?: "share" | "held";
+        } = {},
       ) => {
         const deps = createDependencies({
           bookings: [booking],
@@ -4503,6 +4515,19 @@ describe("runBookingXeroRepair", () => {
             { id: "task_kept", bookingId: booking.id, lateCaptureApprovalIntentId: "pi_kept", status: "DISMISSED", createdAt: RAISED_AT },
           ],
         });
+        if (options.sweep) {
+          const transactions = deps.prisma.paymentTransaction as unknown as Record<string, ReturnType<typeof vi.fn>>;
+          const ledger = [
+            { id: "ask_credit_release", source: "STRIPE", status: "PENDING", reason: CREDIT_RELEASE_ASK_REASON, amountCents: 3000, carriedAskCents: 0, withdrawnAt: null, stripePaymentIntentId: null },
+            { id: "txn_primary", source: "STRIPE", status: "SUCCEEDED", reason: null, amountCents: 8000, carriedAskCents: options.sweep === "share" ? 3000 : 0, withdrawnAt: null, stripePaymentIntentId: "pi_kept" },
+          ];
+          transactions.findUnique.mockImplementation(async ({ where }: any) =>
+            where?.stripePaymentIntentId === "pi_kept" ? { paymentId: "payment_1", amountCents: 8000 } : null,
+          );
+          transactions.findMany.mockImplementation(async ({ where }: any) =>
+            where?.paymentId === "payment_1" && where?.kind === "ADDITIONAL" ? ledger : [],
+          );
+        }
         const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: options.apply ?? false, dependencies: deps, scope: { all: true } });
         return { bookingReport: report.passes[0].bookings[0], deps };
       };
@@ -4605,6 +4630,8 @@ describe("runBookingXeroRepair", () => {
           receiptOperations: [],
           receiptLinked: false,
           recordedElsewhere,
+          alreadyRecordedCents: 0,
+          primaryInvoiceIdSynced: true,
         });
 
         it("MUTATION: no change can be read from it, but the sweep records it: no finding", () => {
@@ -4640,7 +4667,48 @@ describe("runBookingXeroRepair", () => {
           safeToAutoApply: false,
           summary: expect.stringContaining("SYNC_PAYMENT_PRIMARY_INVOICE_FIELD"),
         });
+        // Review DF3 (round 3): it says it cannot tell yet, never that the payment is unrecorded.
+        expect(String((changeFinding(bookingReport) as unknown as { summary: string }).summary)).toContain(
+          "cannot tell yet whether Xero records it until the booking's primary invoice id is synced",
+        );
+        expect(String((changeFinding(bookingReport) as unknown as { summary: string }).summary)).not.toContain("is not recorded in Xero");
         expect(bookingReport.actions.some((a) => a.type === "QUEUE_KEPT_LATE_CAPTURE_RECORD")).toBe(false);
+
+        // MUTATION review DF3: what can be read without the id records it - no finding.
+        const held = await runChange(unsynced, { links: [primaryInvoiceLink], sweep: "held" });
+        expect(changeFinding(held.bookingReport)).toBeUndefined();
+        const keptRow = { ...keptOperation("PENDING"), localId: "task_other", requestPayload: { ...keptOperation("PENDING").requestPayload, paymentIntentId: "pi_kept" } };
+        const keptElsewhere = await runChange(unsynced, { links: [primaryInvoiceLink], operations: [keptRow] });
+        expect(changeFinding(keptElsewhere.bookingReport)).toBeUndefined();
+        const receiptLink = { ...primaryInvoiceLink, id: "link_receipt", localModel: "PaymentTransaction", localId: "txn_primary", xeroObjectType: "PAYMENT", role: "ADDITIONAL_CAPTURE_PAYMENT" };
+        const receipted = await runChange(unsynced, { links: [primaryInvoiceLink, receiptLink] });
+        expect(changeFinding(receipted.bookingReport)).toBeUndefined();
+      });
+
+      describe("review MF2 (round 3): the dry run lists the figure --apply records", () => {
+        it("MUTATION kept-invoice route: the kept invoice is sized net of the sweep's share", async () => {
+          const { bookingReport } = await runChange(changeBooking(), {
+            marked: false,
+            operations: [changeOperation("CANCELLED", "WITHDRAWN_BY_OFFICER", "pi_superseded")],
+            sweep: "share",
+          });
+          expect(changeFinding(bookingReport)).toMatchObject({
+            details: expect.objectContaining({ recordedBy: "KEPT_LATE_CAPTURE_INVOICE", capturedCents: 8000, alreadyRecordedCents: 3000, recordsCents: 5000 }),
+          });
+        });
+
+        it("MUTATION receipt route: the gross capture, what is already recorded, and the AmountDue cap", async () => {
+          const { bookingReport } = await runChange(changeBooking(), { sweep: "share" });
+          expect(changeFinding(bookingReport)).toMatchObject({
+            details: expect.objectContaining({
+              recordedBy: "ADDITIONAL_CAPTURE_RECEIPT",
+              capturedCents: 8000,
+              alreadyRecordedCents: 3000,
+              recordsCents: 5000,
+              recordsNote: expect.stringContaining("what Xero shows due"),
+            }),
+          });
+        });
       });
 
       describe("item 11 (`INV-PAY-141`): a change whose kept capture its kept-capture invoice records gets no supplementary invoice", () => {
@@ -4675,6 +4743,37 @@ describe("runBookingXeroRepair", () => {
           const keptRow = { ...keptOperation("PENDING"), requestPayload: { ...keptOperation("PENDING").requestPayload, capturedCents: 8000 } };
           const { bookingReport } = await runChange(pricedChange(), { marked: false, operations: [withdrawnAsk(), keptRow] });
           expect(bookingReport.findings.some((finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE")).toBe(false);
+        });
+
+        it("MUTATION review I11 (round 3): routed to the kept invoice but held by the sweep, so no kept invoice is raised - the change's own missing invoice is still reported", async () => {
+          const { bookingReport } = await runChange(pricedChange(), { marked: false, operations: [withdrawnAsk()], sweep: "held" });
+          expect(bookingReport.actions.some((a) => a.type === "QUEUE_KEPT_LATE_CAPTURE_RECORD")).toBe(false);
+          expect(bookingReport.findings.some((finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE")).toBe(true);
+        });
+
+        it("review I11: one predicate - a kept invoice bills the change only where it is asked for, or this pass raises it", () => {
+          const found = (over: Partial<KeptChangeCaptureRepairEvidence> = {}): KeptChangeCaptureRepairEvidence => ({
+            evidence: { answeredByChangeInvoice: false, changeId: "mod_change", settledAgainstPrimary: false, changeInvoices: "withdrawn" },
+            route: "kept-invoice",
+            receiptOperations: [],
+            receiptLinked: false,
+            recordedElsewhere: false,
+            alreadyRecordedCents: 0,
+            primaryInvoiceIdSynced: true,
+            ...over,
+          });
+          const context = (entry: KeptChangeCaptureRepairEvidence, operations: unknown[] = []) => ({
+            keptLateCaptures: new Map([["pi_kept", { taskId: "task_kept", raisedAt: RAISED_AT, operations: operations as never }]]),
+            keptChangeCaptures: new Map([["pi_kept", entry]]),
+          });
+          const captures = [{ stripePaymentIntentId: "pi_kept", status: "SUCCEEDED" as const, amountCents: 8000 }];
+          expect(keptInvoiceBillsChange(context(found()), "mod_change", captures)).toBe(true);
+          expect(keptInvoiceBillsChange(context(found({ recordedElsewhere: true })), "mod_change", captures)).toBe(false);
+          expect(keptInvoiceBillsChange(context(found({ alreadyRecordedCents: 8000 })), "mod_change", captures)).toBe(false);
+          expect(keptInvoiceBillsChange(context(found({ primaryInvoiceIdSynced: false })), "mod_change", captures)).toBe(false);
+          expect(keptInvoiceBillsChange(context(found({ route: "receipt" })), "mod_change", captures)).toBe(false);
+          expect(keptInvoiceBillsChange(context(found({ recordedElsewhere: true }), [keptOperation("PENDING")]), "mod_change", captures)).toBe(true);
+          expect(keptInvoiceBillsChange(context(found()), "mod_other", captures)).toBe(false);
         });
 
         it("control: the same change with its capture not kept still gets its supplementary invoice", async () => {

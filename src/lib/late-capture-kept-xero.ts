@@ -22,7 +22,11 @@ import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-recei
 import { captureChangeId } from "@/lib/additional-capture-receipt-link";
 import { readCreditReleaseCaptureShare } from "@/lib/credit-release-capture-share";
 import { recordedPrimaryInvoiceSettlement } from "@/lib/booking-primary-invoice-claim";
-import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import {
+  XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+  XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
+} from "@/lib/xero-operation-outbox-payload";
+import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
 import {
   decideLateCapture,
   bookingHasPrimaryXeroInvoice,
@@ -124,6 +128,44 @@ export async function readKeptChangeCaptureEvidence(
 }
 
 /**
+ * #4324 review M-F2 (`INV-SSOT`): HOW MUCH OF A KEPT CHANGE CAPTURE ANOTHER
+ * WRITER RECORDS - cents, or `all` where another document records all of it or
+ * the #4253 sweep holds it (`INV-ADDPAY-046`). The one reading
+ * (`readCaptureRecorder`) where the payment holds its primary invoice's id;
+ * without it (drift beside an active link) what can be read without one: a
+ * kept-capture invoice naming the intent, and the sweep's share. Read by the
+ * keep's kept-invoice and change-unknown routes, and by the repair tool's
+ * finding, so its dry run lists the figure the apply records.
+ */
+export async function readKeptCaptureRecordedElsewhere(
+  store: RecorderStore,
+  input: { bookingId: string; primaryInvoiceId: string | null; paymentIntentId: string; changeId: string | null },
+): Promise<number | "all"> {
+  const { paymentIntentId } = input;
+  if (input.primaryInvoiceId) {
+    const recorder = await readCaptureRecorder(
+      { bookingId: input.bookingId, primaryInvoiceId: input.primaryInvoiceId, paymentIntentId, bookingModificationId: input.changeId },
+      store,
+    );
+    return recorder.kind === "receipt" ? recorder.alreadyRecordedCents : "all";
+  }
+  const [kept, share, capture] = await Promise.all([
+    store.xeroSyncOperation.findFirst({
+      where: {
+        queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+        status: { not: "CANCELLED" },
+        requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
+      },
+      select: { id: true },
+    }),
+    readCreditReleaseCaptureShare(paymentIntentId, store),
+    store.paymentTransaction.findUnique({ where: { stripePaymentIntentId: paymentIntentId }, select: { amountCents: true } }),
+  ]);
+  if (kept || share.held || (share.ownCents > 0 && share.ownCents >= (capture?.amountCents ?? 0))) return "all";
+  return share.ownCents;
+}
+
+/**
  * THE IN-TRANSACTION HALF of a keep, the one decision of which document
  * records a kept capture. Run by `resolveManualRefundTask` after its
  * status-fenced DISMISSED claim won, on the claim's own transaction (which
@@ -221,14 +263,18 @@ export async function planKeptLateCaptureXeroRecord(params: {
   if (route === "change-invoice") return { kind: "change-payment", paymentIntentId: params.paymentIntentId };
   const logged = { paymentIntentId: params.paymentIntentId, manualRefundTaskId: params.manualRefundTaskId };
   if (route === "kept-invoice" || route === "change-unknown") {
-    // The #4253 credit-release sweep records its share of the capture on the
-    // primary, or holds the capture for an officer (`INV-ADDPAY-046`).
-    const share = await readCreditReleaseCaptureShare(params.paymentIntentId, store);
-    if (share.held || share.ownCents >= decision.recordCents) {
-      logger.info({ ...logged, share }, "A kept late card payment is recorded, or held for an officer, by the credit-release sweep; nothing more was queued");
+    // Review M-F2: another writer's part of the capture, by the one reading.
+    const elsewhere = await readKeptCaptureRecordedElsewhere(store, {
+      bookingId: params.bookingId,
+      primaryInvoiceId: payment?.xeroInvoiceId ?? null,
+      paymentIntentId: params.paymentIntentId,
+      changeId,
+    });
+    if (elsewhere === "all" || elsewhere >= decision.recordCents) {
+      logger.info({ ...logged, elsewhere }, "A kept late card payment is recorded by another Xero document, or held for an officer by the credit-release sweep; nothing more was queued");
       return { kind: "none" };
     }
-    if (route === "kept-invoice") return queueKeptInvoice(decision.recordCents - share.ownCents);
+    if (route === "kept-invoice") return queueKeptInvoice(decision.recordCents - elsewhere);
     logger.error(
       logged,
       "A kept late card payment names no booking change, so which Xero invoice bills it cannot be told; nothing was queued, and the booking-vs-Xero repair tool names it",
