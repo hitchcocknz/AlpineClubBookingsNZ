@@ -30,6 +30,7 @@ interface Pending {
 function reorderingServer() {
   const pending: Pending[] = [];
   const sent: string[] = [];
+  const keepalive: boolean[] = [];
   let row: string | null = null;
   let failNext = false;
 
@@ -43,6 +44,7 @@ function reorderingServer() {
       }
       const body = JSON.parse(String(init?.body)) as Pending["body"];
       sent.push(body.currentStepId);
+      keepalive.push(init?.keepalive === true);
       return new Promise<Response>((resolve, reject) => {
         pending.push({
           body,
@@ -59,6 +61,7 @@ function reorderingServer() {
   return {
     fetchMock,
     sent,
+    keepalive,
     get row() {
       return row;
     },
@@ -159,6 +162,44 @@ describe("useWizardCursor write ordering (#4014)", () => {
 
     expect(server.sent).toEqual(["credentials", "connect"]);
     expect(server.row).toBe("connect");
+  });
+
+  it("sends a waiting write as it leaves the page, so the newest position is not lost", async () => {
+    const { result } = await loadedCursor();
+
+    // Continue onto Connect, then straight off to OAuth: the page goes away
+    // while "credentials" is still in flight and "connect" is waiting for it.
+    act(() => {
+      result.current.persist("credentials", []);
+      result.current.persist("connect", []);
+    });
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+
+    // Sent at once, as a request that outlives the page; the in-flight write
+    // keeps its ordinary lifetime.
+    expect(server.sent).toEqual(["credentials", "connect"]);
+    expect(server.keepalive).toEqual([false, true]);
+
+    // Nothing is left waiting, so the earlier write settling sends nothing more.
+    // (The stored row is not asserted: a real browser aborts the in-flight
+    // request when the document goes away, which this server does not model.)
+    await server.drain();
+    expect(server.sent).toEqual(["credentials", "connect"]);
+  });
+
+  it("sends nothing extra on leaving when no write is waiting", async () => {
+    const { result } = await loadedCursor();
+
+    act(() => result.current.persist("connect", []));
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await server.drain();
+
+    expect(server.sent).toEqual(["connect"]);
+    expect(server.keepalive).toEqual([false]);
   });
 
   it("sends a write at once when nothing is in flight", async () => {

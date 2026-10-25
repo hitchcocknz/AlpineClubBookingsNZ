@@ -63,16 +63,23 @@ export function useWizardCursor(wizardId: string): WizardCursor {
   const writeInFlight = useRef(false);
   const queuedWrite = useRef<CursorWrite | null>(null);
 
+  const postWrite = useCallback(
+    (write: CursorWrite, keepalive: boolean) =>
+      fetch(ENDPOINT, {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wizardId, ...write }),
+      }),
+    [wizardId],
+  );
+
   const sendWrite = useCallback(
     (first: CursorWrite) => {
       const send = (write: CursorWrite) => {
         writeInFlight.current = true;
-        void fetch(ENDPOINT, {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ wizardId, ...write }),
-        })
+        void postWrite(write, false)
           .catch(() => {
             // Best-effort persistence; the in-memory cursor still drives the flow.
           })
@@ -88,8 +95,26 @@ export function useWizardCursor(wizardId: string): WizardCursor {
       };
       send(first);
     },
-    [wizardId],
+    [postWrite],
   );
+
+  // Leaving the page with a write still waiting (the Connect step hands the
+  // whole page to the OAuth round-trip): the write in flight will never settle
+  // in this document to release it, so send the waiting one now, as a
+  // keepalive request that outlives the page. Without this the newest position
+  // would be lost and the wizard would resume one step behind.
+  useEffect(() => {
+    const flushOnLeave = () => {
+      const waiting = queuedWrite.current;
+      if (!waiting) return;
+      queuedWrite.current = null;
+      void postWrite(waiting, true).catch(() => {
+        // Best-effort, as every cursor write is.
+      });
+    };
+    window.addEventListener("pagehide", flushOnLeave);
+    return () => window.removeEventListener("pagehide", flushOnLeave);
+  }, [postWrite]);
 
   useEffect(() => {
     let active = true;
