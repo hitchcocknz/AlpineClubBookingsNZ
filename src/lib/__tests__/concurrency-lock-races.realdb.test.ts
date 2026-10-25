@@ -564,6 +564,14 @@ import "./manual-reversal-retrying-cancel.realdb.test";
 // failed mint, bumped before it runs and cancelled mid-mint. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4316-` fixtures.
 import "./ended-booking-ask-mint-race.realdb.test";
+// #3403 (`INV-PAY-070`) reuses it to prove a superseded card change's waiting
+// Xero invoice follows the request that carries its balance: released with
+// that request's capture, each invoice for its own amount, retired when it is
+// never paid; and the move forced on the anchor's key against a price
+// reduction's retire and the repair pass's enqueue, in both orders. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3403-`
+// fixtures.
+import "./superseded-ask-invoice-carry.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
