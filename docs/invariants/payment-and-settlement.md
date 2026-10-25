@@ -1648,19 +1648,20 @@ change capture's receipt).
 
 - **A kept change capture on a cancelled, invoiced booking is recorded by the
   document the evidence names** (#4324; owner, 25 Oct 2026, amending one case
-  of `INV-PAY-110`). A paid cancel leaves the primary standing, so a second
-  invoice for a change it bills would count the income twice.
+  of `INV-PAY-110`): a second invoice for a change the primary bills would
+  count the income twice.
 - **One decision** (`keptChangeCaptureRoute`), taken once by the keep, and
   by the repair tool, under the approval task's row then the change's anchor
   lock, after finding the capture's receipt or kept invoice first:
   - a change invoice naming the capture, live or reaper-retired: the
     late-success release (`INV-PAY-104`);
-  - the change settled against the primary, has no supplementary invoice,
-    a live one, or a #3980 gap invoice billing it
-    (`primaryInvoiceGapBillsChange`): its receipt,
-    capped at the invoice's AmountDue;
-  - its every supplementary invoice withdrawn: the kept-capture invoice,
-    less what another writer records (`readCaptureRecorder`);
+  - a #3980 gap invoice billing it (`primaryInvoiceGapBillsChange`), the
+    primary billing it (settled against it, or no supplementary invoice,
+    and not raced past it: `primaryInvoiceMissedChange`), or a live
+    supplementary invoice: its receipt, capped at the AmountDue;
+  - otherwise (every supplementary invoice withdrawn, or raced with no gap
+    billing it): the kept-capture invoice, less what another writer
+    records (`readCaptureRecorder`);
   - no change readable: nothing, and the repair tool names it.
 - **One recorder.** `readCaptureRecorder` and `anchorCaptureHasReceipt` count
   a kept-capture invoice; a replayed release finds the receipt; the receipt
@@ -1671,9 +1672,9 @@ change capture's receipt).
   kept, closes its row in that transaction; an approval takes the anchor
   first and withdraws an undecided receipt. A paid-another-way close plans
   under the task row then the anchor.
-- **Repair.** `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`, listed by the dry
-  run with the cents `--apply` records, then recorded automatically. Without
-  the primary invoice's id it says it cannot tell yet.
+- **Repair.** `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`, dry run listing the
+  cents `--apply` records, then recorded automatically; without the primary
+  invoice's id, "cannot tell yet".
 - Pinned by `xero-kept-late-capture-ledger.test.ts` (e3, e4),
   `late-capture-kept-xero.test.ts`, `additional-capture-xero-receipt.test.ts`,
   `kept-change-capture-record.realdb.test.ts` and `xero-booking-repair.test.ts`.

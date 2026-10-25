@@ -28,9 +28,10 @@ import {
 } from "@/lib/xero-operation-outbox-payload";
 import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
 import {
-  findPrimaryInvoiceGapInvoice,
   primaryInvoiceGapBillsChange,
+  primaryInvoiceMissedChange,
   readPrimaryInvoiceFeeAtLink,
+  readPrimaryInvoiceGapBilling,
   type GapAnchorStore,
 } from "@/lib/xero-primary-invoice-gap-anchors";
 import {
@@ -96,7 +97,14 @@ export async function readKeptChangeCaptureEvidence(
   );
   const { changeId } = input;
   if (changeId === null) {
-    return { answeredByChangeInvoice, changeId, settledAgainstPrimary: false, changeInvoices: "none", billedByGapInvoice: false };
+    return {
+      answeredByChangeInvoice,
+      changeId,
+      settledAgainstPrimary: false,
+      changeInvoices: "none",
+      billedByGapInvoice: false,
+      primaryMissedChange: false,
+    };
   }
   const [change, rows, link] = await Promise.all([
     store.bookingModification.findUnique({ where: { id: changeId }, select: { newData: true } }),
@@ -125,24 +133,32 @@ export async function readKeptChangeCaptureEvidence(
   const own = rows.filter((row) => asRecord(row.requestPayload)?.primaryInvoiceGap !== true);
   const changeInvoices: KeptChangeCaptureEvidence["changeInvoices"] =
     link !== null || own.some((row) => row.status !== "CANCELLED") ? "live" : own.length > 0 ? "withdrawn" : "none";
+  const gap = await readChangeGapBilling(store, { ...input, changeId });
   return {
     answeredByChangeInvoice,
     changeId,
-    settledAgainstPrimary: recordedPrimaryInvoiceSettlement(change?.newData) !== null,
+    // Codex re-review: the marker is the primary's billing only where the primary did not miss the change.
+    settledAgainstPrimary: recordedPrimaryInvoiceSettlement(change?.newData) !== null && !gap.primaryMissedChange,
     changeInvoices,
-    billedByGapInvoice: await readChangeBilledByGapInvoice(store, { ...input, changeId }),
+    billedByGapInvoice: gap.billedByGapInvoice,
+    primaryMissedChange: gap.primaryMissedChange,
   };
 }
 
-/** Review N2: the gap invoice's billing of the change, by the recorder's own reading (`primaryInvoiceGapBillsChange`). */
-async function readChangeBilledByGapInvoice(
+/** Review N2 / Codex re-review: what the gap invoice says of the change, by the recorder's own reading. */
+async function readChangeGapBilling(
   store: GapAnchorStore,
   input: { bookingId: string; primaryInvoiceId: string | null; changeId: string },
-): Promise<boolean> {
-  if (!input.primaryInvoiceId) return false;
+): Promise<{ billedByGapInvoice: boolean; primaryMissedChange: boolean }> {
+  const none = { billedByGapInvoice: false, primaryMissedChange: false };
+  if (!input.primaryInvoiceId) return none;
   const figures = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.primaryInvoiceId, store);
-  if (!figures) return false;
-  return primaryInvoiceGapBillsChange(await findPrimaryInvoiceGapInvoice(input.bookingId, figures, store), input.changeId);
+  if (!figures) return none;
+  const billing = await readPrimaryInvoiceGapBilling(input.bookingId, figures, store);
+  return {
+    billedByGapInvoice: primaryInvoiceGapBillsChange(billing.gap, input.changeId),
+    primaryMissedChange: primaryInvoiceMissedChange(billing, input.changeId),
+  };
 }
 
 /**

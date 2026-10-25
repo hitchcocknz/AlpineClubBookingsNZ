@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   formatBookingXeroRepairHumanSummary,
   runBookingXeroRepair,
@@ -17,6 +17,19 @@ import {
   type KeptChangeCaptureRepairEvidence,
 } from "@/lib/xero-booking-repair-additional-capture";
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
+import * as gapAnchors from "@/lib/xero-primary-invoice-gap-anchors";
+
+// #4324 Codex re-review: the primary invoice's stored figures and its gap
+// billing read through the real helpers, which a test may answer directly.
+vi.mock("@/lib/xero-primary-invoice-gap-anchors", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("@/lib/xero-primary-invoice-gap-anchors");
+  return {
+    ...actual,
+    readPrimaryInvoiceFeeAtLink: vi.fn(actual.readPrimaryInvoiceFeeAtLink),
+    readPrimaryInvoiceGapBilling: vi.fn(actual.readPrimaryInvoiceGapBilling),
+    findPrimaryInvoiceGapInvoice: vi.fn(actual.findPrimaryInvoiceGapInvoice),
+  };
+});
 
 function makeBooking(overrides: Record<string, unknown> = {}) {
   return {
@@ -4582,6 +4595,46 @@ describe("runBookingXeroRepair", () => {
         });
       });
 
+      describe("MUTATION Codex re-review: a MARKED edit that raced the primary, its gap invoice voided in Xero", () => {
+        const voidedGap = {
+          anchorIds: ["mod_change"],
+          operation: { id: "op_gap", status: "SUCCEEDED", requestPayload: {}, responsePayload: null, manuallyResolvedAt: null },
+          link: { id: "link_gap", xeroObjectId: "inv_gap", active: false },
+        };
+        const answerGap = (racingIds: string[]) => {
+          vi.mocked(gapAnchors.readPrimaryInvoiceFeeAtLink).mockResolvedValue({ atLink: {}, operationId: "op_primary" } as never);
+          vi.mocked(gapAnchors.readPrimaryInvoiceGapBilling).mockResolvedValue({ racingKnown: true, racingIds, gap: voidedGap } as never);
+          vi.mocked(gapAnchors.findPrimaryInvoiceGapInvoice).mockResolvedValue(voidedGap as never);
+        };
+        afterEach(async () => {
+          const actual = await vi.importActual<typeof gapAnchors>("@/lib/xero-primary-invoice-gap-anchors");
+          vi.mocked(gapAnchors.readPrimaryInvoiceFeeAtLink).mockImplementation(actual.readPrimaryInvoiceFeeAtLink);
+          vi.mocked(gapAnchors.readPrimaryInvoiceGapBilling).mockImplementation(actual.readPrimaryInvoiceGapBilling);
+          vi.mocked(gapAnchors.findPrimaryInvoiceGapInvoice).mockImplementation(actual.findPrimaryInvoiceGapInvoice);
+        });
+
+        it("the dry run lists the kept-capture invoice for the whole $80, never the refused receipt; --apply runs the keep's decision", async () => {
+          answerGap(["mod_change"]);
+          const { bookingReport } = await runChange(changeBooking());
+          expect(changeFinding(bookingReport)).toMatchObject({
+            safeToAutoApply: true,
+            details: expect.objectContaining({ recordedBy: "KEPT_LATE_CAPTURE_INVOICE", capturedCents: 8000, recordsCents: 8000 }),
+          });
+          const applied = await runChange(changeBooking(), { apply: true });
+          expect(applied.deps.planKeptLateCaptureXeroRecord).toHaveBeenCalledWith(
+            expect.objectContaining({ manualRefundTaskId: "task_kept", bookingId: "booking_1", paymentIntentId: "pi_kept" }),
+          );
+        });
+
+        it("control: the same marked edit in the primary's snapshot (the primary billed it) still lists its receipt", async () => {
+          answerGap([]);
+          const { bookingReport } = await runChange(changeBooking());
+          expect(changeFinding(bookingReport)).toMatchObject({
+            details: expect.objectContaining({ recordedBy: "ADDITIONAL_CAPTURE_RECEIPT" }),
+          });
+        });
+      });
+
       it("lists the kept-capture invoice where the change's own invoice was withdrawn, so nothing bills it", async () => {
         const { bookingReport } = await runChange(changeBooking(), {
           marked: false,
@@ -4625,7 +4678,7 @@ describe("runBookingXeroRepair", () => {
           return findings;
         };
         const unknown = (recordedElsewhere: boolean): KeptChangeCaptureRepairEvidence => ({
-          evidence: { answeredByChangeInvoice: false, changeId: null, settledAgainstPrimary: false, changeInvoices: "none", billedByGapInvoice: false },
+          evidence: { answeredByChangeInvoice: false, changeId: null, settledAgainstPrimary: false, changeInvoices: "none", billedByGapInvoice: false, primaryMissedChange: false },
           route: "change-unknown",
           receiptOperations: [],
           receiptLinked: false,
@@ -4751,7 +4804,7 @@ describe("runBookingXeroRepair", () => {
 
         it("review I11: one predicate - a kept invoice bills the change only where it is asked for, or this pass raises it", () => {
           const found = (over: Partial<KeptChangeCaptureRepairEvidence> = {}): KeptChangeCaptureRepairEvidence => ({
-            evidence: { answeredByChangeInvoice: false, changeId: "mod_change", settledAgainstPrimary: false, changeInvoices: "withdrawn", billedByGapInvoice: false },
+            evidence: { answeredByChangeInvoice: false, changeId: "mod_change", settledAgainstPrimary: false, changeInvoices: "withdrawn", billedByGapInvoice: false, primaryMissedChange: false },
             route: "kept-invoice",
             receiptOperations: [],
             receiptLinked: false,

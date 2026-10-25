@@ -221,14 +221,50 @@ export async function findPrimaryInvoiceGapInvoice(
   stored: { atLink: PrimaryInvoiceFeeAtLink; operationId: string },
   store: GapAnchorStore = prisma,
 ) {
+  return (await readPrimaryInvoiceGapBilling(bookingId, stored, store)).gap;
+}
+
+/**
+ * #4324 Codex re-review: the same reading as
+ * {@link findPrimaryInvoiceGapInvoice}, keeping the racing edits it starts
+ * from - the marked edits the primary was built WITHOUT (`racingKnown` false
+ * where the create stored no snapshot, so it cannot tell).
+ */
+export async function readPrimaryInvoiceGapBilling(
+  bookingId: string,
+  stored: { atLink: PrimaryInvoiceFeeAtLink; operationId: string },
+  store: GapAnchorStore = prisma,
+) {
+  const markedAtBuild = stored.atLink.worth?.markedModificationIdsAtBuild;
   const racing = racingMarkedEdits(
     await readMarkedPrimaryInvoiceEdits(bookingId, store),
-    stored.atLink.worth?.markedModificationIdsAtBuild,
+    markedAtBuild,
     await primaryInvoiceReplayCutoff(bookingId, stored.operationId, store),
   );
   const anchorIds = (await primaryInvoiceGapAnchors(bookingId, racing, store)).map((anchor) => anchor.id);
   const found = await readGapInvoiceOnAnchors(anchorIds, store);
-  return found.operation || found.link ? { ...found, anchorIds } : null;
+  return {
+    racingKnown: Array.isArray(markedAtBuild),
+    racingIds: racing.map((edit) => edit.id),
+    gap: found.operation || found.link ? { ...found, anchorIds } : null,
+  };
+}
+
+/**
+ * #4324 Codex re-review (`INV-PAY-140`): DID THE PRIMARY INVOICE MISS THIS
+ * MARKED CHANGE? #3980's settlement marker says the edit expected the primary
+ * to bill it; one that raced the primary's create was billed by the gap
+ * invoice instead, if at all. Read from the create's snapshot where it stored
+ * one; where it did not, a gap invoice raised on anchors naming the change
+ * (not withdrawn unsent) is the evidence.
+ */
+export function primaryInvoiceMissedChange(
+  billing: Awaited<ReturnType<typeof readPrimaryInvoiceGapBilling>>,
+  changeId: string,
+): boolean {
+  if (billing.racingKnown) return billing.racingIds.includes(changeId);
+  const { gap } = billing;
+  return Boolean(gap?.anchorIds.includes(changeId) && (gap.link !== null || gap.operation?.status !== "CANCELLED"));
 }
 
 /**
