@@ -731,6 +731,9 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-044` | An edit's after-commit mint leaves no live ask on an ended booking |
 | `INV-ADDPAY-045` | Credit released after a Xero offset is asked for once, by card |
 | `INV-ADDPAY-046` | A released-credit card payment is recorded on the booking's own invoice |
+| `INV-ADDPAY-047` | Released-credit requests: chased weekly four times, worded by cause |
+| `INV-ADDPAY-048` | Released-credit request emails can offer bank transfer payment |
+| `INV-ADDPAY-049` | Earlier credit releases are asked for in audited, switchable batches |
 
 ## Analytics And Privacy
 

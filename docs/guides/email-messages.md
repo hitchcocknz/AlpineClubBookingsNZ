@@ -425,7 +425,15 @@ Two consequences worth knowing before you edit one:
   to pay that amount by card with **Payment Needed For Your Lodge Booking**, not the
   "a change to your booking" reminder, because nothing about their stay changed. It
   needs `{{additionalAmount}}`, `{{requestedOn}}`, `{{checkIn}}` and `{{checkOut}}`
-  and says the credit was used elsewhere in the club's accounts (#4253).
+  and says the credit was used elsewhere in the club's accounts (#4253). Put
+  `{{bankTransferNote}}` on a line of its own above the Pay Now line: it prints the
+  whole bank-transfer paragraph (with the booking's invoice number as the payment
+  reference) when the club has written its bank details, and nothing otherwise, so
+  the email offers card payment only until then. Write the account details in the
+  **Bank transfer details for a payment request** booking message.
+  The member is emailed at once and then every 7 days, four times in all; if a
+  change to the booking is made while the request is unpaid, the two become one
+  request and the email says both.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

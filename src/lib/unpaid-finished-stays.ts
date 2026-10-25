@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
-import { ADDITIONAL_OWED_BOOKING_STATUSES } from "@/lib/additional-payment-chase";
+import { ADDITIONAL_OWED_BOOKING_STATUSES, CREDIT_RELEASE_CHASE_HORIZON_DAYS } from "@/lib/additional-payment-chase";
+import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
 
 /**
  * Unpaid finished stays (#1709): bookings still PAYMENT_PENDING whose
@@ -85,6 +86,30 @@ export function buildAdditionalOwedWhere(): Prisma.BookingWhereInput {
           { additionalPaymentStatus: null },
           { additionalPaymentStatus: { not: "SUCCEEDED" } },
         ],
+      },
+    },
+  };
+}
+
+/**
+ * A finished stay whose newest unpaid request is for credit used elsewhere in the club's
+ * accounts and young enough to still have reminders to send (`INV-ADDPAY-047`): the one kind
+ * of request the reminder cron keeps chasing after check-out. Narrowing only; the cron
+ * re-decides in memory with the cause read from the ledger rows.
+ */
+export function buildFinishedCreditReleaseChaseWhere(today: Date, now: Date): Prisma.BookingWhereInput {
+  return {
+    checkOut: { lte: today },
+    payment: {
+      is: {
+        transactions: {
+          some: {
+            kind: "ADDITIONAL",
+            reason: CREDIT_RELEASE_ASK_REASON,
+            withdrawnAt: null,
+            createdAt: { gte: new Date(now.getTime() - CREDIT_RELEASE_CHASE_HORIZON_DAYS * 86_400_000) },
+          },
+        },
       },
     },
   };

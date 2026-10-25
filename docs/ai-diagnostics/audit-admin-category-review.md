@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  516
+row-producing sites:  517
 uncategorised:        0
-category values: admin 108, booking 108, xero 44, family 35, payment 64,
+category values: admin 108, booking 108, xero 44, family 35, payment 65,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -848,6 +848,10 @@ the same convergence closing a concurrent attempt's failed allocation, filed
 `pnpm run audit:census`): a released-credit card request raised, one closed without
 asking and two closed because Xero shows its invoice paid (one at ask time, one by the
 sweep), filed `payment`, and the recording of its card payment in Xero, filed `xero`.
+
+#4253 release 2 then added one (`payment` 64 -> 65, 516 -> 517, MEASURED with
+`pnpm run audit:census`): `payment.credit_release_ask.backlog_batch_started`, the row each
+batch of the switchable backlog run writes, filed `payment` beside the request's own rows.
 
 #4270 then added two (`xero` 42 -> 44, 514 -> 516, MEASURED with
 `pnpm run audit:census`): `xero.credit_note.outside_spend_mirrored` and

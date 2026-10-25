@@ -1354,7 +1354,10 @@ export async function sendAdditionalPaymentReminderEmail(params: {
   format: ClubFormat,
 ) {
   const creditRelease = params.askCause === "credit-release" || params.askCause === "mixed";
-  const bankTransfer = creditRelease ? await loadBankTransferOffer(params.bankTransferInvoiceNumber) : null;
+  // Only a request that is purely the released credit offers a transfer: a merged one's amount
+  // includes the edit's own money, which is not owed on the booking's invoice a transfer would quote.
+  const bankTransfer =
+    params.askCause === "credit-release" ? await loadBankTransferOffer(params.bankTransferInvoiceNumber) : null;
   // Returns the outcome rather than swallowing it (#2350): both callers write a
   // stamp BEFORE sending, and that stamp is also the 60-minute cooldown, so a
   // withheld/suppressed/placeholder send — which returns, it does not throw —

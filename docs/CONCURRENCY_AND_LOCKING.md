@@ -5064,6 +5064,12 @@ holds no lock and reads Xero outside any transaction. A repeat is harmless
 because the Xero idempotency key is stable, and the retry cap bounds the
 operation rows a failing payment can create.
 
+The backlog batch (`runCreditReleaseBacklog`) is the same enqueue with a ceiling, one more
+read of two `XeroSyncCursor` rows and one audit write; it takes no lock and no claim, and a
+release it has taken is never taken again because the enqueue keys on the release
+(`INV-ADDPAY-049`). The reminder chase for these requests (`INV-ADDPAY-047`) changes only
+the stamp boundary of the existing guarded claim in `cron-additional-payment-reminders.ts`.
+
 Closing a request Xero shows paid (`credit-release-ask-close.ts`) is a
 settlement-money writer: it cancels the card payment at Stripe first, outside
 any lock, and leaves a succeeded or processing intent alone. It then takes the

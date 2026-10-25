@@ -4,7 +4,6 @@ import {
   ADDITIONAL_PAYMENT_FINAL_REMINDER_DAYS_BEFORE_CHECK_IN,
   ADDITIONAL_PAYMENT_REMINDER_DAYS,
   ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES,
-  CREDIT_RELEASE_CHASE_HORIZON_DAYS,
   additionalPaymentEpisodeStartedAt,
   creditReleaseStampBoundary,
   isAdditionalPaymentOwed,
@@ -30,10 +29,10 @@ import { prisma } from "@/lib/prisma";
 import {
   buildAdditionalOwedPaymentWhere,
   buildAdditionalOwedWhere,
+  buildFinishedCreditReleaseChaseWhere,
 } from "@/lib/unpaid-finished-stays";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { LEDGER_ROWS_NEWEST_FIRST } from "@/lib/payment-ledger-order";
-import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
 
 /**
  * Chase an uncollected additional payment (#2350).
@@ -155,9 +154,6 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
     return result;
   }
 
-  const horizonStart = new Date(
-    now.getTime() - CREDIT_RELEASE_CHASE_HORIZON_DAYS * 86_400_000,
-  );
   const bookings = await prisma.booking.findMany({
     where: {
       deletedAt: null,
@@ -166,26 +162,9 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
         // The stay is still ahead of (or in) the current NZ day. A finished stay
         // is the dashboard queue's business, not this job's...
         { checkOut: { gt: today } },
-        // ...except for a request for credit used elsewhere in the club's
-        // accounts (`INV-ADDPAY-047`): the member owes it after the stay too,
-        // so its four reminders run on until the last has gone or the horizon
-        // passes. Narrowed here to requests whose newest row is that kind and
-        // recent; `resolveChaseFor` re-decides in memory.
-        {
-          checkOut: { lte: today },
-          payment: {
-            is: {
-              transactions: {
-                some: {
-                  kind: "ADDITIONAL",
-                  reason: CREDIT_RELEASE_ASK_REASON,
-                  withdrawnAt: null,
-                  createdAt: { gte: horizonStart },
-                },
-              },
-            },
-          },
-        },
+        // ...except for a request for credit used elsewhere (`INV-ADDPAY-047`);
+        // `resolveChaseFor` re-decides in memory.
+        buildFinishedCreditReleaseChaseWhere(today, now),
       ],
     },
     include: CHASE_BOOKING_INCLUDE,

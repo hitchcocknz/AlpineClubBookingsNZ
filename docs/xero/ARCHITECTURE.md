@@ -3575,6 +3575,27 @@ once, by card, and Xero is told about the payment without a second invoice.
   new requests (ones already raised still finish). Only releases created after the
   row was made are asked, and once it is enabled do not roll back to the previous
   colour: it would not know these requests.
+- **Bank transfer.** The request email can offer a bank transfer beside the card
+  (`credit-release-bank-transfer.ts`). The app holds no account details: the club writes
+  them in the `paymentRequest.bankTransfer.instructions` booking message (Admin > Booking
+  messages) and the email quotes the booking's Xero invoice number as the reference. With
+  no details written, or on a request an edit was merged into (its amount is more than that
+  invoice owes), the email offers card only. Xero matching the transfer to the
+  invoice shows it paid, which the closer above turns into a closed request; a transfer
+  that leaves the invoice part-paid closes nothing and stays with the officers' queues.
+  `INV-ADDPAY-048`.
+- **Reminders and merged requests.** The member is emailed at once and then every 7 days,
+  four times in all, and the officers' queues chase after that (`INV-ADDPAY-047`). An edit
+  made while a release request is unpaid merges into one request; the card payment is
+  recorded against both invoices (the release's money by the sweep on the booking's
+  invoice, the edit's own by its supplementary invoice), with no step in Xero.
+- **Backlog.** Releases from before the writer switch are asked for in small batches by a
+  second `XeroSyncCursor` row, `scope = BACKLOG`, `metadata = {"enabled": true, "perRun": 5}`
+  (`perRun` optional, default 5, at most 25), which needs the writer on as well. Each batch
+  writes one audit row, and each release is re-checked against the ledger and the invoice
+  in Xero before anyone is asked, closing with an audit where nothing is owed
+  (`INV-ADDPAY-049`). Set the bank details first, enable the writer once the previous
+  colour has drained, then the backlog.
 
-Rules: `INV-ADDPAY-045`, `INV-ADDPAY-046`.
+Rules: `INV-ADDPAY-045`, `INV-ADDPAY-046`, `INV-ADDPAY-047`, `INV-ADDPAY-048`, `INV-ADDPAY-049`.
 
