@@ -1164,24 +1164,13 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
 }
 
 /**
- * #4359 (`INV-SSOT`): what `charge.refunded` does with the refunds Stripe holds
- * on one charge - records them through the one ledger writer and queues the
- * Xero notes for what it newly recorded. Also how the recovery runner records a
- * refund it read before a send that the app has not seen (`record`, only those:
- * the rest of the charge still decides the notes), so the webhook that follows
- * records nothing new and its note is never lost.
+ * #4359 (`INV-SSOT`): what `charge.refunded` does with the refunds Stripe holds on one charge - records them through
+ * the one ledger writer and queues the Xero notes for what it newly recorded. The recovery runner records the refunds
+ * it read before a send that the app has not seen this way (`record`), so the webhook after it finds nothing new.
  */
-export async function recordChargeRefunds({
-  paymentIntentId,
-  chargeId,
-  amountRefundedCents,
-  refunds,
-  record = refunds,
-}: {
-  paymentIntentId: string;
-  chargeId: string;
-  amountRefundedCents: number;
-  refunds: Stripe.Refund[];
+export async function recordChargeRefunds({ paymentIntentId, chargeId, amountRefundedCents, refunds, record = refunds }: {
+  paymentIntentId: string; chargeId: string; amountRefundedCents: number; refunds: Stripe.Refund[];
+  /** Only these are recorded; every refund on the charge still decides the notes. */
   record?: Stripe.Refund[];
 }) {
   const refundSync = await syncRefundsFromStripeCharge({
