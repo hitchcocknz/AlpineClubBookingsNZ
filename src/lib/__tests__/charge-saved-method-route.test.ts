@@ -437,8 +437,7 @@ describe("POST /api/payments/charge-saved-method", () => {
   });
 
   it("#4357: charges the booking's worth - its price plus a change fee recorded on its payment - as the cron does", async () => {
-    const withFee = makeBooking();
-    primeBooking({ ...withFee, payment: { ...withFee.payment, changeFeeCents: 2500 } });
+    primeBooking(makeBooking({ payment: { ...makeBooking().payment, changeFeeCents: 2500 } }));
     mockChargePaymentMethod.mockResolvedValue({ id: "pi_worth_1", status: "succeeded", amount: 15000 });
 
     const response = await POST(makeRequest());
@@ -948,8 +947,7 @@ describe("POST /api/payments/charge-saved-method", () => {
   });
 
   it("#4357: a refused charge's alert names the booking's worth, change fee included", async () => {
-    const withFee = makeBooking();
-    primeBooking({ ...withFee, payment: { ...withFee.payment, changeFeeCents: 2500 } });
+    primeBooking(makeBooking({ payment: { ...makeBooking().payment, changeFeeCents: 2500 } }));
     mockPaymentTransactionFindMany.mockResolvedValue([
       { id: "txn_superseded", status: "SUCCEEDED", amountCents: 15000, refundedAmountCents: 0, paymentMethodId: "pm_123", stripePaymentIntentId: "pi_superseded", reference: null, reason: null },
     ]);
