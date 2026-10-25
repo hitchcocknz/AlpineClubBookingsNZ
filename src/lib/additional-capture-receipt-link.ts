@@ -289,6 +289,7 @@ export async function keptInvoiceBillsChangeCapture(
       stripePaymentIntentId: { not: null },
       OR: [{ bookingModificationId }, { reason: buildEditFinancialReviewChargeReason(bookingModificationId) }],
     },
+    orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: { stripePaymentIntentId: true },
   });
   return keptInvoiceNamesCapture(
