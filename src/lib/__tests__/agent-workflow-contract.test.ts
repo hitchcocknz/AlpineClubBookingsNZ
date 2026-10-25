@@ -36,20 +36,26 @@ function oversizedInstructionChains(sizes: ReadonlyMap<string, number>): string[
 }
 
 /**
- * Clauses that make a number of review lenses or reviewers mandatory. A clause
- * is flagged when a count sits before "lens(es)", "reviewer(s)" or "reviews"
- * (up to three words between) and a mandatory word ("must", "gets", "use"…)
- * comes before the count. A negation before the count ("No task requires two
- * reviewers") or a past-tense marker anywhere in the clause ("formerly got
- * three lenses") clears it, so the docs may still state the rule that was
- * removed. A tripwire, not a parser: it reads clauses split at . ; ! ? and —.
+ * Clauses that make a number of review lenses or reviewers mandatory. Each
+ * count before "lens(es)", "reviewer(s)" or "reviews" (up to three words
+ * between) is judged only by the phrase that governs it: the words back to the
+ * nearest comma or conjunction ("and", "but", "after", "when"…), and forward
+ * to the next one. It is flagged when that phrase carries a mandatory word
+ * ("must", "gets", "use"…), ends in a label or table cell, or says "is/are
+ * required" after the count, unless the same phrase is permissive ("may
+ * use"), negated ("No task requires") or past ("formerly got"). So an
+ * unrelated "must not edit" or "the old rule was removed" earlier in the
+ * sentence neither clears nor triggers it. A tripwire, not a parser: clauses
+ * split at . ; ! ? and —.
  */
 function fixedLensCounts(text: string): string[] {
   const countedNoun =
-    /\b(?:one|two|three|four|five|a single|a second|a third|\d+)[\s-]+(?:[\w-]+\s+){0,3}?(?:lens(?:es)?|reviewers?|reviews|review agents?)\b/i;
+    /\b(?:one|two|three|four|five|a single|a second|a third|\d+)[\s-]+(?:[\w-]+\s+){0,3}?(?:lens(?:es)?|reviewers?|reviews|review agents?)\b/gi;
+  const boundary = /,|\b(?:and|but|or|while|when|after|before|then|unless|if|so)\b/i;
   const mandatory =
     /\b(?:must|shall|always|gets?|requires?|required|needs?|uses?|runs?|dispatch(?:es)?|at least|minimum(?: of)?|mandatory|compulsory)\b|[:|]\s*$/i;
   const requiredAfter = /^\s*(?:are|is)\s+(?:required|mandatory|compulsory|needed)\b/i;
+  const permissive = /\b(?:may|might|can|could|optionally)\b/i;
   const negation = /\b(?:no|not|never|nor|without|none|zero|neither)\b|n't\b/i;
   const historical = /\b(?:formerly|previously|used to|was|were|removed|retired|replaced|earlier|old)\b/i;
   return text
@@ -58,11 +64,12 @@ function fixedLensCounts(text: string): string[] {
     .filter((clause) => {
       // "never fewer than two" sets a floor, so it reads as "at least two".
       const normalised = clause.replace(/\b(?:never|no|not)\s+(?:fewer|less)\s+than\b/gi, "at least");
-      const match = countedNoun.exec(normalised);
-      if (!match || historical.test(normalised)) return false;
-      const before = normalised.slice(0, match.index);
-      const after = normalised.slice(match.index + match[0].length);
-      return (mandatory.test(before) || requiredAfter.test(after)) && !negation.test(before);
+      return [...normalised.matchAll(countedNoun)].some((match) => {
+        const governing = normalised.slice(0, match.index).split(boundary).pop() ?? "";
+        const following = normalised.slice(match.index + match[0].length).split(boundary)[0] ?? "";
+        if (permissive.test(governing) || negation.test(governing) || historical.test(governing)) return false;
+        return mandatory.test(governing) || requiredAfter.test(following);
+      });
     })
     .map((clause) => clause.trim());
 }
@@ -213,6 +220,11 @@ describe("repository agent workflow contract", () => {
       "Two lenses are required for schema work",
       "Auth work requires two additional lenses",
       "Run never fewer than two lenses on money work",
+      // The delta review of #4379 (CP1-R1): history and negation elsewhere in
+      // the sentence must not hide a requirement.
+      "After the old rule was removed, critical work must use three reviewers",
+      "Reviewers must not edit files and must use two lenses",
+      "If a PR touches money, it must use two reviewers",
     ]) {
       expect(fixedLensCounts(mandatoryCount), mandatoryCount).toEqual([mandatoryCount.split(";")[0]]);
     }
@@ -227,6 +239,9 @@ describe("repository agent workflow contract", () => {
       "`INV-SSOT` is in one review's brief on every PR",
       "found independently by two lenses",
       "zero further lenses is allowed when justified",
+      // CP1-R1: permission is not a requirement.
+      "A lane may use two reviewers when useful",
+      "Critical work could use three lenses if the change is subtle",
     ]) {
       expect(fixedLensCounts(notMandatory), notMandatory).toEqual([]);
     }
