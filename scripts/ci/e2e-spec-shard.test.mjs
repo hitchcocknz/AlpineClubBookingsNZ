@@ -1,6 +1,15 @@
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { chromiumSpecFiles, exactSpecPatterns, parseE2eShard, specsForShard } from "./e2e-spec-shard.mjs";
+import {
+  NOT_CHROMIUM_DIR,
+  PLAYWRIGHT_TEST_FILE,
+  chromiumSpecFiles,
+  parseE2eShard,
+  shardTestMatch,
+  specsForShard,
+} from "./e2e-spec-shard.mjs";
 
 const root = path.resolve(import.meta.dirname, "..", "..");
 
@@ -25,10 +34,28 @@ describe("E2E spec shards (#4397)", () => {
     }
   });
 
-  it("matches each chosen file exactly, never a file whose name merely contains it", () => {
-    const [pattern] = exactSpecPatterns(["waitlist.spec.ts"]);
-    expect(pattern.test("/repo/e2e/waitlist.spec.ts")).toBe(true);
-    expect(pattern.test("/repo/e2e/admin-waitlist.spec.ts")).toBe(false);
-    expect(pattern.test("/repo/e2e/waitlistXspec.ts")).toBe(false);
+  it("anchors each shard's patterns to the absolute test dir, and refuses a shard with no files", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "e2e-shard-"));
+    mkdirSync(path.join(dir, "sub"));
+    mkdirSync(path.join(dir, "pre-setup"));
+    for (const file of ["waitlist.spec.ts", "admin-waitlist.spec.ts", "sub/waitlist.spec.ts", "pre-setup/gate.spec.ts", "notes.ts"]) {
+      writeFileSync(path.join(dir, file), "");
+    }
+    expect(chromiumSpecFiles(dir)).toEqual(["admin-waitlist.spec.ts", "sub/waitlist.spec.ts", "waitlist.spec.ts"]);
+    const patterns = shardTestMatch(dir, { index: 1, total: 1 });
+    const root = path.resolve(dir).split(path.sep).join("/");
+    const matches = (file) => patterns.some((pattern) => pattern.test(`${root}/${file}`));
+    expect(matches("waitlist.spec.ts")).toBe(true);
+    expect(matches("sub/waitlist.spec.ts")).toBe(true);
+    expect(patterns.filter((pattern) => pattern.test(`${root}/sub/waitlist.spec.ts`))).toHaveLength(1);
+    expect(matches("pre-setup/gate.spec.ts")).toBe(false);
+    expect(() => shardTestMatch(path.join(dir, "sub"), { index: 2, total: 2 })).toThrow(/found no spec files/);
+  });
+
+  it("keeps Playwright's default test-file shapes, and ignores its two other projects' dirs by absolute or relative path", () => {
+    for (const file of ["a.spec.ts", "a.test.ts", "a.spec.tsx", "a.spec.mjs", "a.test.js"]) expect(PLAYWRIGHT_TEST_FILE.test(file)).toBe(true);
+    for (const file of ["auth.setup.ts", "helpers/x.ts", "a.spec.ts.snap"]) expect(PLAYWRIGHT_TEST_FILE.test(file)).toBe(false);
+    for (const file of ["pre-setup/a.spec.ts", "/home/runner/repo/e2e/multi-lodge/b.spec.ts"]) expect(NOT_CHROMIUM_DIR.test(file)).toBe(true);
+    for (const file of ["booking.spec.ts", "/home/runner/repo/e2e/not-multi-lodge-x.spec.ts"]) expect(NOT_CHROMIUM_DIR.test(file)).toBe(false);
   });
 });

@@ -104,9 +104,6 @@ seed_database() {
 
   echo "==> Enabling the modules the E2E journeys need"
   DATABASE_URL="$HOST_DATABASE_URL" pnpm exec tsx e2e/setup/enable-e2e-modules.ts
-
-  echo "==> Seeding Stripe test-mode credentials into the encrypted store (#2082; no-op unless test keys are set)"
-  DATABASE_URL="$HOST_DATABASE_URL" pnpm exec tsx --conditions=react-server e2e/setup/seed-stripe-credentials.ts
 }
 
 prepare() {
@@ -117,6 +114,13 @@ prepare() {
     reset_database
     seed_database
   fi
+
+  # Never part of `seed_database`, so never inside a CI snapshot: the dump is
+  # a public-repo artifact, and the store's key derives from the env file's
+  # committed AUTH_SECRET (#4397). Seeded here, on each stack, from the job's
+  # own secrets.
+  echo "==> Seeding Stripe test-mode credentials into the encrypted store (#2082; no-op unless test keys are set)"
+  DATABASE_URL="$HOST_DATABASE_URL" pnpm exec tsx --conditions=react-server e2e/setup/seed-stripe-credentials.ts
 
   # Multi-lodge project only (E2E_MULTI_LODGE=1): provision a second active
   # lodge and enable the multiLodge module. Skipped by default, so the default
@@ -163,9 +167,12 @@ restore_snapshot() {
     echo "E2E_DB_SNAPSHOT=$dump: the dump or its fixture date is missing." >&2
     exit 1
   fi
-  # The snapshot's day, never today's: its seeded fixtures are aligned to it.
+  # The snapshot's day, never today's: its seeded fixtures are aligned to it,
+  # and the seeds still to run here (the second lodge) must align to it too.
   mkdir -p .artifacts
   cp "$dump.fixture-date" "$FIXTURE_DATE_FILE"
+  IFS= read -r E2E_FIXTURE_TODAY_NZ < "$FIXTURE_DATE_FILE"
+  export E2E_FIXTURE_TODAY_NZ
   reset_database
   echo "==> Restoring the seeded database from $dump"
   compose exec -T postgres pg_restore -U tac -d tacbookings --no-owner --exit-on-error < "$dump"

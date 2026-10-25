@@ -1,6 +1,8 @@
 import { readdirSync } from "node:fs";
 import path from "node:path";
 
+import { escapeRegex } from "./escape-regex.mjs";
+
 // #4397: which `chromium` spec files one E2E shard runs. Playwright's own
 // `--shard` cannot split this suite: `pre-setup` depends on `chromium`, which
 // depends on `setup`, and a sharded run keeps a dependency chain whole, so
@@ -21,11 +23,25 @@ export function parseE2eShard(value) {
   return { index: Number(match[1]), total: Number(match[2]) };
 }
 
-/** The spec files (relative to the test dir, `/`-separated) the default `chromium` project owns. */
+/**
+ * Playwright's own default `testMatch`: what a project picks up when the
+ * config names no pattern, which is how `chromium` is declared. One
+ * definition, so a file Playwright would run is never missing from every
+ * shard.
+ */
+export const PLAYWRIGHT_TEST_FILE = /\.(?:spec|test)\.[cm]?[jt]sx?$/;
+/**
+ * Directories the `chromium` project ignores (its `testIgnore`). Unanchored at
+ * the start on purpose: Playwright tests it against ABSOLUTE paths, and this
+ * module against paths relative to the test directory.
+ */
+export const NOT_CHROMIUM_DIR = /(?:^|\/)(?:multi-lodge|pre-setup)\//;
+
+/** The test files (relative to `testDir`, `/`-separated) the default `chromium` project owns. */
 export function chromiumSpecFiles(testDir) {
   return readdirSync(testDir, { recursive: true })
     .map((entry) => String(entry).split(path.sep).join("/"))
-    .filter((file) => file.endsWith(".spec.ts") && !/^(multi-lodge|pre-setup)\//.test(file))
+    .filter((file) => PLAYWRIGHT_TEST_FILE.test(file) && !NOT_CHROMIUM_DIR.test(file))
     .sort();
 }
 
@@ -33,7 +49,14 @@ export function specsForShard(files, { index, total }) {
   return [...files].sort().filter((_, position) => position % total === index - 1);
 }
 
-/** Exact-path patterns for a project's `testMatch`. */
-export function exactSpecPatterns(files) {
-  return files.map((file) => new RegExp(`(^|/)${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`));
+/**
+ * `testMatch` patterns for one shard's files, anchored to the absolute test
+ * directory, so a same-named file in a subdirectory is never matched too.
+ * Refuses an empty slice: a shard that matched nothing would pass vacuously.
+ */
+export function shardTestMatch(testDir, shard) {
+  const root = path.resolve(testDir).split(path.sep).join("/");
+  const files = specsForShard(chromiumSpecFiles(testDir), shard);
+  if (files.length === 0) throw new Error(`E2E_SHARD=${shard.index}/${shard.total} found no spec files under ${root}`);
+  return files.map((file) => new RegExp(`^${escapeRegex(`${root}/${file}`)}$`));
 }

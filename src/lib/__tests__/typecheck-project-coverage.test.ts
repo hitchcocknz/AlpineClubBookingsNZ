@@ -71,6 +71,10 @@ const JAVASCRIPT_VITEST_TESTS = [
   "scripts/ci/check-website-prerender-manifest.test.mjs",
   "scripts/ci/check-website-render-modes.test.mjs",
   "scripts/ci/check-workflow-suite-checkout-depth.test.mjs",
+  // #4397: the E2E scope and shard helpers run under bare node in CI, so
+  // their suites stay JavaScript under the same convention.
+  "scripts/ci/e2e-scope.test.mjs",
+  "scripts/ci/e2e-spec-shard.test.mjs",
   // #3721: the suite of the `.mjs` hand-sync description tool, which runs
   // before any install alongside the renderer it extends.
   "scripts/ci/epic-sync-body.test.mjs",

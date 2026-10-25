@@ -2,17 +2,21 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 
+import { gitDiffChangedFiles, parseNameStatus } from "./pr-body.mjs";
+
 // #4397: whether a pull request can change what the browser suite exercises.
 // 23 of 100 merged PRs touched only docs, unit tests or agent notes, and each
 // waited ~29 minutes for an E2E verdict their diff could not move. The E2E
-// jobs run this as a STEP and skip their heavy steps when it says "not
-// needed", so every required check still reports a real pass or failure
-// (CONTRIBUTING.md -> "Branch protection": never a job-level `if:`).
+// jobs run this as a STEP and skip their heavy steps only when it writes
+// `needed=false` (a missing or garbled answer runs the suite), so every
+// required check still reports a real pass or failure (CONTRIBUTING.md ->
+// "Branch protection": never a job-level `if:`).
 //
 // An allowlist, never a denylist: a path joins only when it cannot reach the
-// app image, the seeded database or a spec. Anything unmatched - src/, e2e/,
-// prisma/, scripts/, workflows, package files, config - runs the suite.
-// Every failure to classify answers "needed".
+// app image, the seeded database or a spec. Anything unmatched - the rest of
+// src/, e2e/, prisma/ (a README in a migration folder included), scripts/,
+// workflows, package files, config - runs the suite. Every failure to
+// classify answers "needed".
 const NOT_EXERCISED_BY_E2E = [
   /^docs\//,
   /^changelog\.d\//,
@@ -25,8 +29,8 @@ const NOT_EXERCISED_BY_E2E = [
   /^\.github\/pull_request_template\.md$/,
   /^\.gitleaks\.toml$/,
   /^\.gitleaksignore$/,
-  // Markdown anywhere except inside the E2E tree, whose README sits beside specs.
-  /^(?!e2e\/)[^/]+(?:\/[^/]+)*\.md$/,
+  // Markdown at the repository root only (AGENTS.md, CONTRIBUTING.md, ...).
+  /^[^/]+\.md$/,
   // Unit tests and their fixtures: never loaded by the app or by Playwright.
   /^src\/(?:.+\/)?__tests__\//,
   /^src\/.+\.test\.tsx?$/,
@@ -44,11 +48,18 @@ export function e2eNeeded(files) {
   return { needed: false, reason: `all ${files.length} changed file(s) are docs, unit tests or agent notes` };
 }
 
-/** The pull request's own change: the merge commit GitHub tests, against its first parent (the base tip). */
-export function pullRequestChangedFiles(run = (args) => execFileSync("git", args, { encoding: "utf8" })) {
+/**
+ * The pull request's own change: the merge commit GitHub tests, against its
+ * first parent (the base tip), read with the repository's one changed-file
+ * reader (`pr-body.mjs`; a rename counts as both of its paths).
+ */
+export function pullRequestChangedFiles({
+  run = (args) => execFileSync("git", args, { encoding: "utf8" }),
+  diff = () => gitDiffChangedFiles("HEAD^1", "HEAD"),
+} = {}) {
   const parents = run(["rev-list", "--parents", "-n", "1", "HEAD"]).trim().split(/\s+/);
   if (parents.length !== 3) throw new Error(`HEAD is not a two-parent merge commit (${parents.length - 1} parent(s))`);
-  return run(["diff", "--name-only", "--no-renames", "HEAD^1", "HEAD"]).split("\n").map((line) => line.trim()).filter(Boolean);
+  return parseNameStatus(diff()).map((record) => record.path);
 }
 
 export function decide(eventName, listFiles = pullRequestChangedFiles) {

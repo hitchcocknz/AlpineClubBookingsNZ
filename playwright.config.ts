@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { chromiumSpecFiles, exactSpecPatterns, parseE2eShard, specsForShard } from "./scripts/ci/e2e-spec-shard.mjs";
+import { NOT_CHROMIUM_DIR, parseE2eShard, shardTestMatch } from "./scripts/ci/e2e-spec-shard.mjs";
 
 // Browser E2E suite for the Critical journeys in docs/END_TO_END_TEST_MATRIX.md.
 // It drives the staging Docker Compose stack (docker-compose.staging.yml) seeded
@@ -42,7 +42,7 @@ const excludedSpecs = (process.env.E2E_EXCLUDE_SPECS ?? "")
 // and still with nothing after it. Unset (a laptop, the rollover proof, the
 // multi-lodge job), the projects below are unchanged.
 const shard = parseE2eShard(process.env.E2E_SHARD);
-const shardSpecs = shard ? exactSpecPatterns(specsForShard(chromiumSpecFiles("./e2e"), shard)) : null;
+const shardSpecs = shard ? shardTestMatch("./e2e", shard) : null;
 const includePreSetup = !shard || shard.index === 1;
 
 export default defineConfig({
@@ -87,7 +87,7 @@ export default defineConfig({
       // public site for their duration, so they run in their own project after
       // everything else (#2420).
       ...(shardSpecs ? { testMatch: shardSpecs } : {}),
-      testIgnore: [/(multi-lodge|pre-setup)\//, ...excludedSpecs],
+      testIgnore: [NOT_CHROMIUM_DIR, ...excludedSpecs],
     },
     // The pre-setup gate on the wire (#2420). Runs LAST — `dependencies` on the
     // main project — because it un-completes site-style setup, which makes every

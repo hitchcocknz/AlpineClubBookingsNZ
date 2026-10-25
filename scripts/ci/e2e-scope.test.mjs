@@ -1,3 +1,8 @@
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
 import { decide, e2eNeeded, pullRequestChangedFiles } from "./e2e-scope.mjs";
 
 describe("e2e-scope: which pull requests the browser suite can skip (#4397)", () => {
@@ -31,6 +36,8 @@ describe("e2e-scope: which pull requests the browser suite can skip (#4397)", ()
     [["vitest.setup.ts"]],
     [["src/lib/__tests__helpers.ts"]],
     [["public/robots.txt"]],
+    [["prisma/migrations/20261026000000_x/README.md"]],
+    [["src/lib/help/README.md"]],
   ])("runs the suite for a change that can reach it: %j", (files) => {
     expect(e2eNeeded(files).needed).toBe(true);
   });
@@ -46,14 +53,23 @@ describe("e2e-scope: which pull requests the browser suite can skip (#4397)", ()
     expect(decide("pull_request", () => { throw new Error("shallow clone"); }).needed).toBe(true);
   });
 
-  it("diffs the merge commit against its base parent, and refuses a non-merge HEAD", () => {
-    const calls = [];
-    const files = pullRequestChangedFiles((args) => {
-      calls.push(args.join(" "));
-      return args[0] === "rev-list" ? "merge base head\n" : "docs/a.md\nsrc/b.ts\n";
+  it("reads a merge commit's change with the shared reader, a rename as both paths, and refuses a non-merge HEAD", () => {
+    const files = pullRequestChangedFiles({
+      run: () => "merge base head\n",
+      diff: () => "M\tdocs/a.md\nR100\tsrc/old.ts\tdocs/new.md\n",
     });
-    expect(files).toEqual(["docs/a.md", "src/b.ts"]);
-    expect(calls[1]).toBe("diff --name-only --no-renames HEAD^1 HEAD");
-    expect(() => pullRequestChangedFiles(() => "only-one-commit parent\n")).toThrow(/two-parent merge/);
+    expect(files).toEqual(["docs/a.md", "src/old.ts", "docs/new.md"]);
+    expect(e2eNeeded(files).needed).toBe(true);
+    expect(() => pullRequestChangedFiles({ run: () => "only-one-commit parent\n", diff: () => "" })).toThrow(/two-parent merge/);
+  });
+
+  it("the CLI writes needed=true to GITHUB_OUTPUT on a push", () => {
+    const output = path.join(mkdtempSync(path.join(tmpdir(), "e2e-scope-")), "out");
+    const result = spawnSync(process.execPath, [path.join(import.meta.dirname, "e2e-scope.mjs")], {
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_OUTPUT: output },
+    });
+    expect(result.status).toBe(0);
+    expect(readFileSync(output, "utf8")).toBe("needed=true\n");
   });
 });

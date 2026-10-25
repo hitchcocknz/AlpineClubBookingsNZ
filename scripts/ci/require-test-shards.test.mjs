@@ -220,3 +220,69 @@ describe("Vitest shard partition on the actual repository", () => {
     }
   });
 });
+
+// #4397: e2e.yml's two required checks are gates over runner jobs, pinned the
+// way `verify` is above. A change that lets one go green without its runners
+// passing must fail here, not on a merged pull request.
+describe("e2e.yml's required gates and their runners", () => {
+  const e2e = parseWorkflowYaml(readFileSync(path.join(root, ".github", "workflows", "e2e.yml"), "utf8"));
+  const e2eText = readFileSync(path.join(root, ".github", "workflows", "e2e.yml"), "utf8");
+  const runner = e2e.jobs["e2e-runner"];
+  const entries = runner.strategy.matrix.include;
+  const gates = [
+    { id: "playwright", name: "Playwright E2E", label: "E2E shard" },
+    { id: "multi-lodge", name: "E2E multi-lodge", label: "E2E multi-lodge run" },
+  ];
+
+  it.each(gates)("$name keeps its required name, has no needs/if, and gates exactly its matrix entries", ({ id, name, label }) => {
+    const gate = e2e.jobs[id];
+    expect(gate.name).toBe(name);
+    expect(gate.needs).toBeUndefined();
+    expect(gate.if).toBeUndefined();
+    expect(gate["continue-on-error"]).toBeUndefined();
+    expect(gate.permissions.actions).toBe("read");
+    const gateStep = gate.steps.find((step) => step.run?.startsWith("node scripts/ci/require-test-shards.mjs"));
+    expect(gateStep?.if).toBeUndefined();
+    expect(gateStep?.["continue-on-error"]).toBeUndefined();
+    const options = parseShardGateArgs(gateStep.run.replace("node scripts/ci/require-test-shards.mjs", "").match(/"[^"]*"|\S+/g).map((arg) => arg.replace(/^"|"$/g, "")));
+    expect(options.label).toBe(label);
+    const mine = entries.filter((entry) => entry.name.startsWith(`${label} (`));
+    expect(mine).toHaveLength(options.count);
+    expect(mine.map((entry) => entry.name)).toEqual(Array.from({ length: options.count }, (_, i) => `${label} (${i + 1}/${options.count})`));
+    // The gate outwaits the slowest chain it depends on (image, then a runner).
+    expect(options.maxWaitMs / 60_000).toBeGreaterThanOrEqual(Number(e2e.jobs["e2e-image"]["timeout-minutes"]) + Number(runner["timeout-minutes"]));
+    expect(Number(gate["timeout-minutes"])).toBeGreaterThan(options.maxWaitMs / 60_000);
+  });
+
+  it("runs every matrix entry as its own runner, each shard on its own slice", () => {
+    expect(runner.name).toBe("${{ matrix.name }}");
+    expect(runner.if).toBeUndefined();
+    expect(runner.strategy["fail-fast"]).toBe("false");
+    expect(runner.env.E2E_SHARD).toBe("${{ matrix.shard }}");
+    for (const entry of entries.filter((item) => item.name.startsWith("E2E shard ("))) {
+      expect(entry.name).toBe(`E2E shard (${entry.shard})`);
+      expect(entry.multi_lodge).toBe("");
+    }
+    const multiLodge = entries.filter((item) => item.multi_lodge === "1");
+    expect(multiLodge).toEqual([expect.objectContaining({ name: "E2E multi-lodge run (1/1)", shard: "", playwright_args: "--project=multi-lodge" })]);
+  });
+
+  it("skips heavy steps only on an explicit needed=false, never on a missing answer", () => {
+    expect(e2eText).not.toMatch(/outputs\.needed == 'true'/);
+    for (const job of Object.values(e2e.jobs)) {
+      for (const step of job.steps) {
+        if (step.if?.includes("steps.scope")) expect(step.if).toMatch(/steps\.scope\.outputs\.needed != 'false'/);
+      }
+    }
+  });
+
+  it("keeps every secret out of the seeded-database artifact", () => {
+    const dbJob = e2eText.slice(e2eText.indexOf("\n  e2e-db:"), e2eText.indexOf("\n  e2e-runner:"));
+    expect(dbJob).toContain("bash scripts/e2e-stack.sh snapshot");
+    expect(dbJob).not.toMatch(/secrets\./);
+    const stack = readFileSync(path.join(root, "scripts", "e2e-stack.sh"), "utf8");
+    const seedDatabase = stack.slice(stack.indexOf("seed_database() {"), stack.indexOf("\n}\n", stack.indexOf("seed_database() {")));
+    expect(seedDatabase).not.toMatch(/seed-stripe-credentials|STRIPE/);
+    expect(stack.slice(stack.indexOf("prepare() {"))).toContain("e2e/setup/seed-stripe-credentials.ts");
+  });
+});

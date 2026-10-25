@@ -1,5 +1,6 @@
 import { pathToFileURL } from "node:url";
 
+import { escapeRegex } from "./escape-regex.mjs";
 import {
   fetchLivePrBody,
   gitDiffChangedFiles,
@@ -38,9 +39,6 @@ export function isConcurrencySensitivePath(file) {
   return !TEST_FILE.test(file) && SENSITIVE_PATH.test(file);
 }
 
-function escapeRegex(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 
 // Match a required field bullet whose value sits on the SAME line as its label.
 // Horizontal-whitespace classes (`[^\S\r\n]`) keep `\s` from swallowing the

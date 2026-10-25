@@ -406,9 +406,9 @@ A run used to take ~29 minutes: each of the two E2E jobs built the app image
 | Job | What it does |
 | --- | --- |
 | `E2E app image` | builds the image once and uploads it (`docker save`, zstd) as a run artifact |
-| `E2E seeded database` | in parallel: migrates, runs every single-lodge seed and dumps the result with its club day (`scripts/e2e-stack.sh snapshot`) |
-| `E2E shard (i/3)` | loads the image, restores the dump (`E2E_DB_SNAPSHOT`), runs a third of the `chromium` spec files (`E2E_SHARD=i/3`) |
-| `E2E multi-lodge run (1/1)` | the same, plus the second-lodge seed, running the `multi-lodge` project |
+| `E2E seeded database` | in parallel: migrates, runs the single-lodge seeds and dumps the result with its club day (`scripts/e2e-stack.sh snapshot`). It holds **no secrets**: the dump is downloadable from a public repository, so Stripe test credentials are seeded on each runner after the restore |
+| `E2E shard (i/3)` | one `e2e-runner` matrix entry each: loads the image, restores the dump (`E2E_DB_SNAPSHOT`, which also sets the snapshot's club day), runs a third of the `chromium` spec files (`E2E_SHARD=i/3`) |
+| `E2E multi-lodge run (1/1)` | the same matrix job, plus the second-lodge seed, running the `multi-lodge` project |
 | `Playwright E2E`, `E2E multi-lodge` | the **required checks**: each waits for its runner jobs in the same run attempt and fails if any is missing, skipped, cancelled or failed (`scripts/ci/require-test-shards.mjs`, the gate `verify` uses for the unit shards) |
 
 Each shard has its own stack and database, so `workers: 1` still means nothing
@@ -429,6 +429,10 @@ still reports a real result (`CONTRIBUTING.md` → "Branch protection").
 
 Locally nothing changes: `pnpm run test:e2e` prepares, seeds and runs the whole
 suite on one stack. To reproduce one CI shard, set `E2E_SHARD=2/3` on the run.
+
+**Re-run all jobs, not just the failed ones.** A partial re-run reuses the
+first attempt's seeded database and its club day, and its artifacts expire
+after a day; a fresh run reseeds for today.
 
 Note on scope: `main` is branch-protected and `Playwright E2E` is one of the
 required status checks, so a red E2E run hard-blocks a (non-admin) merge.
@@ -454,7 +458,7 @@ advisory in #1623 and promoted to blocking in #1655 (the #1315 precedent) after
 its observation window — the one observed flake class was root-caused and fixed
 test-side in #1650, and the job's first functional run caught a real product
 bug (#1628). A red run blocks a (non-admin) merge exactly like `Playwright
-E2E`; check the job log and the `playwright-report-multi-lodge` artifact when
+E2E`; check the `E2E multi-lodge run (1/1)` log and its `playwright-report-<run>-multi-lodge` artifact when
 it goes red. It stays a separate job so the second-lodge seed never reaches
 the single-lodge stack the main suite asserts on.
 

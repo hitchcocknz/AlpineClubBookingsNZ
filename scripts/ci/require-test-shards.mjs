@@ -1,23 +1,22 @@
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
+import { escapeRegex } from "./escape-regex.mjs";
+
 // #3431: this is the sole required-check bridge for an independent matrix.
 // `verify` runs it bare for the unit-test shards; `e2e.yml`'s required jobs
 // run it with `--label`/`--count` for theirs (#4397). The workflow contract
-// tests check that these names match each matrix.
+// tests (require-test-shards.test.mjs) check that these names match each
+// matrix in both workflows.
 export const EXPECTED_SHARD_COUNT = 4;
 export const DEFAULT_SHARD_LABEL = "Test shard";
 const POLL_INTERVAL_MS = 15_000;
 const MAX_WAIT_MS = 45 * 60_000;
 
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label = DEFAULT_SHARD_LABEL) {
   if (!Array.isArray(jobs)) throw new Error("GitHub returned no jobs array");
   const found = new Map();
-  const pattern = new RegExp(`^${escapeRegExp(label)} \\(([1-9]\\d*)\\/([1-9]\\d*)\\)$`);
+  const pattern = new RegExp(`^${escapeRegex(label)} \\(([1-9]\\d*)\\/([1-9]\\d*)\\)$`);
   for (const job of jobs) {
     if (typeof job?.name !== "string" || !job.name.startsWith(`${label} (`)) continue;
     const match = pattern.exec(job.name);
