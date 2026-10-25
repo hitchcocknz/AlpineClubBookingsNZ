@@ -124,11 +124,17 @@ test.describe("member booking-detail help widget", () => {
 
       // The BookingHelpExtras leaf re-surfaces the dialog's four blocks; the
       // refund-schedule block is present for a captured-payment booking.
+      // Matched by its heading: while the booking is still cancellable the
+      // member guide's "Cancelling and refunds" text names the schedule too,
+      // and a substring match then finds two elements. This spec only passed
+      // before because booking-cancel-refund.spec.ts, earlier in the one-worker
+      // order, had already cancelled the booking; sharded CI runs it on its
+      // own database (#4397).
       await expect(
-        panel(page).getByText("Cancellation refund schedule"),
+        panel(page).getByRole("heading", { name: "Cancellation refund schedule" }),
       ).toBeVisible();
       // The status glossary block survives too.
-      await expect(panel(page).getByText("Booking statuses")).toBeVisible();
+      await expect(panel(page).getByRole("heading", { name: "Booking statuses" })).toBeVisible();
     } finally {
       await context.close();
     }
