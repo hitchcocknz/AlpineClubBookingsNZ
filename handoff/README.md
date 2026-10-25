@@ -23,8 +23,7 @@ this handoff commit:
     git fetch <alp-97 remote> alp-97
     git push origin 9900d8adb:refs/heads/sekreton/tokoroa-alpine-club-incorporated/alp-22
 
-Or apply `pr-4388-review-fixes.patch` (diff `2f1327ecc..9900d8adb`, which also
-carries main's 35 newer commits) — the fast-forward is cleaner.
+Or apply `pr-4388-review-fixes.patch` (the F1-F6 delta only, `97c33ce64..9900d8adb`; checked with `git apply --check` on `2f1327ecc`) and merge main into alp-22 yourself.
 
 ## PR body (Step 4)
 
