@@ -87,8 +87,7 @@ second ask for the same money. Not recorded means not raised.
   own reasons.
 - **A refused replay adopts an unrecorded, unpaid intent that matches this
   ask** (`mintOrdinaryAskIntent`): this booking, an additional ask by this
-  door's reason, never one under the runner's (so a row whose key names no door
-  never adopts) (#4079), this amount and currency, on
+  door's reason, never the runner's (no-door rows never adopt) (#4079), this amount and currency, on
   no ledger row, created from five minutes before the recovery row to 60
   seconds after it, which also bounds the scan. It fails closed (retry, then
   alert, `INV-MOD-003`) when none or several match, the scan stopped at its
