@@ -526,8 +526,10 @@ async function moveRefusedSlices(
  * key, or another attempt that read the same answer and marked it first - fails
  * the write: the plan there is the record then, and a re-planned slice is
  * marked by the replay that sends it next (or, on a dead row, paid by the
- * treasurer). Never a status, and no lock: one guarded single-row write, as the
- * failed-later re-plan's own (`INV-LOCK-001`).
+ * treasurer). Never a status, and no lock: one guarded single-row write
+ * (`INV-LOCK-001`). Taking no `Payment` row, it is ordered against "Paid
+ * another way"'s owed read by that close's claim, which carries the plan it
+ * read (`onPlanWhere`): a mark in between fails the close, never the mark.
  */
 async function markResentSlices(
   operation: Pick<PaymentRecoveryOperation, "id" | "idempotencyKey">,

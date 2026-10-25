@@ -2324,9 +2324,14 @@ Stated limits:
   still mid-attempt; when that attempt's answer is lost (a timeout, a crash the
   reaper finds) and its retries are spent, no writer reads the refund again,
   and no refund row stores the slice's key or Stripe metadata to pair it from.
-  So too a re-send that several dead rows' slices could each be (the webhook
-  logs it). The #4162 floor's alert and the #4230 deploy note find the refund
-  with no note, for a note by hand.
+  So too a re-send that several dead rows' slices could each be, and one that
+  a live row's slice and a dead row's could each be: it is left to the live
+  row's replay, which marks its slice with the refund it makes itself, so when
+  it was the dead row's it is marked by nobody (the webhook logs both). It is
+  usually money-neutral in Xero: the failed refund's own note already answers
+  it. Where it is not - the failure's note was partial or voided - it surfaces
+  only when a note on that payment next changes in Xero. #4361's stage 3
+  (exact answers) closes it.
 - **A voided failure note is not asked again.** When Xero voids the note of a
   refund Stripe failed later, the re-send it answered was sized less it, and
   nothing asks for the difference: Stuck States lists the void (`card-refund`)
