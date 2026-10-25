@@ -1,6 +1,6 @@
 "use client";
 
-import { memberCardFallbackParts, type AdditionalAskCause } from "@/lib/additional-ask-cause";
+import { memberCardFallbackParts, memberCardLeadParts, type AdditionalAskCause } from "@/lib/additional-ask-cause";
 import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -187,10 +187,9 @@ export function AdditionalPaymentCard({
               // response arrives - a placeholder from a second source is exactly
               // the disagreement this change exists to remove.
               <p className="text-sm text-warning-11 mb-4">
-                A recent booking modification means{" "}
-                <strong>{formatCents(askAmountCents, format)}</strong> is still owing on
-                this booking. Please complete payment to finalise the
-                modification.
+                {memberCardLeadParts(askCause).lead}
+                <strong>{formatCents(askAmountCents, format)}</strong>
+                {memberCardLeadParts(askCause).trail}
               </p>
             ) : (
               error && (

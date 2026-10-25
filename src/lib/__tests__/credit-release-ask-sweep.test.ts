@@ -200,9 +200,22 @@ describe("the backlog (#4253 release 2, D4)", () => {
     expect(mocks.audit).toHaveBeenCalledTimes(1);
     expect(mocks.audit).toHaveBeenCalledWith(
       expect.objectContaining({
-        action: "payment.credit_release_ask.backlog_batch_started",
+        action: "payment.credit_release_ask.backlog_batch_taken",
         metadata: expect.objectContaining({ releaseIds: ["rel-1", "rel-2"], perRun: 2 }),
       }),
+    );
+  });
+
+  it("still names the releases already queued when the enqueue fails part-way", async () => {
+    switches({ metadata: { enabled: true } });
+    mocks.prisma.memberCredit.findMany.mockResolvedValue([
+      { id: "rel-1", amountCents: 4000, appliedToBookingId: "bk-1" },
+      { id: "rel-2", amountCents: 3000, appliedToBookingId: "bk-2" },
+    ]);
+    mocks.enqueue.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("db down"));
+    await expect(runCreditReleaseBacklog()).rejects.toThrow("db down");
+    expect(mocks.audit).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: expect.objectContaining({ releaseIds: ["rel-1"] }) }),
     );
   });
 

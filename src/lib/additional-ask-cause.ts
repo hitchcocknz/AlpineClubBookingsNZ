@@ -50,6 +50,22 @@ export function additionalAskCause(rowsNewestFirst: readonly AdditionalAskCauseR
   return release ? "credit-release" : "edit";
 }
 
+/**
+ * The invoice number a bank transfer may quote for this request, or null where none may be
+ * offered (`INV-ADDPAY-049`). A transfer is only closed by the closer when the request is purely
+ * the released credit AND carried nothing (`credit-release-ask-close.ts`): one that merged an edit
+ * asks for more than the booking's invoice owes, and one that carried an earlier release would be
+ * paid by transfer and never closed, with the member then chased and able to pay twice.
+ */
+export function bankTransferInvoiceFor(
+  rowsNewestFirst: readonly AdditionalAskCauseRow[],
+  invoiceNumber: string | null | undefined,
+): string | null {
+  const [newest] = rowsNewestFirst;
+  if (!newest || newest.carriedAskCents > 0 || additionalAskCause(rowsNewestFirst) !== "credit-release") return null;
+  return invoiceNumber ?? null;
+}
+
 const USED_ELSEWHERE = "account credit applied to this booking was used elsewhere in the club's accounts";
 
 /** The sentence an unpaid-request line on the booking timeline uses (owner-approved cause phrase). */
@@ -64,6 +80,28 @@ export function timelinePaidDetail(cause: AdditionalAskCause): string {
   if (cause === "credit-release") return "Account credit applied to this booking was used elsewhere in the club's accounts and the payment requested for it succeeded.";
   if (cause === "mixed") return `A booking change increased the total, and ${USED_ELSEWHERE}. The payment requested for both succeeded.`;
   return "A booking change increased the total and the extra payment succeeded.";
+}
+
+/**
+ * The timeline lines for the OUTCOME of an extra payment (captured, failed). They are read from
+ * audit rows that do not carry the cause, and the booking's current cause may not be the one the
+ * payment answered, so a request that is not purely a change gets wording that is true of any.
+ */
+export function timelineCapturedDetail(cause: AdditionalAskCause): string {
+  return cause === "edit"
+    ? "Extra payment for a booking change was captured successfully."
+    : "The extra payment requested for this booking was captured successfully.";
+}
+
+export function timelineFailedDetail(cause: AdditionalAskCause, latest = false): string {
+  if (cause === "edit") {
+    return latest
+      ? "The latest extra payment required by a booking change failed."
+      : "The extra payment required by a booking change failed.";
+  }
+  return latest
+    ? "The latest extra payment requested for this booking failed."
+    : "The extra payment requested for this booking failed.";
 }
 
 /**
@@ -97,6 +135,15 @@ export function memberCardFallbackParts(cause: AdditionalAskCause): { lead: stri
 export function memberCardFallbackSentence(cause: AdditionalAskCause, amount: string): string {
   const { lead, trail } = memberCardFallbackParts(cause);
   return `${lead}${amount}${trail}`;
+}
+
+/**
+ * The paragraph above the member's payment form, in the two pieces either side of the amount.
+ */
+export function memberCardLeadParts(cause: AdditionalAskCause): { lead: string; trail: string } {
+  if (cause === "credit-release") return { lead: "Account credit applied to your booking was used elsewhere in the club's accounts, so ", trail: " is still owing on this booking. Please complete payment below." };
+  if (cause === "mixed") return { lead: "A recent booking change, and account credit applied to your booking that was used elsewhere in the club's accounts, mean ", trail: " is still owing on this booking. Please complete payment below." };
+  return { lead: "A recent booking modification means ", trail: " is still owing on this booking. Please complete payment to finalise the modification." };
 }
 
 /** The pre-arrival reminder's outstanding-amount note; `amount` is already formatted. */

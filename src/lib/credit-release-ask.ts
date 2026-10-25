@@ -222,7 +222,7 @@ export async function processCreditReleaseAskOperation(
   }
 
   // An unpaid EDIT request may have its own supplementary invoice, which a release request
-  // superseding it could not pay (release 2 merges them). Wait for it to be paid or withdrawn.
+  // superseding it could not pay (an edit made after the release merges instead, `INV-ADDPAY-048`). Wait for it to be paid or withdrawn.
   if (outstandingAdditionalAskCents(payment) > 0 && payment.additionalPaymentIntentId) {
     const live = await prisma.paymentTransaction.findUnique({
       where: { stripePaymentIntentId: payment.additionalPaymentIntentId },

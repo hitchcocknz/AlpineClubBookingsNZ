@@ -850,7 +850,7 @@ asking and two closed because Xero shows its invoice paid (one at ask time, one 
 sweep), filed `payment`, and the recording of its card payment in Xero, filed `xero`.
 
 #4253 release 2 then added one (`payment` 64 -> 65, 516 -> 517, MEASURED with
-`pnpm run audit:census`): `payment.credit_release_ask.backlog_batch_started`, the row each
+`pnpm run audit:census`): `payment.credit_release_ask.backlog_batch_taken`, the row each
 batch of the switchable backlog run writes, filed `payment` beside the request's own rows.
 
 #4270 then added two (`xero` 42 -> 44, 514 -> 516, MEASURED with

@@ -687,7 +687,7 @@ Prefix `INV-ADDPAY`.
 | --- | --- |
 | `INV-ADDPAY-001` | Who is owed an additional payment: booking status and amount together |
 | `INV-ADDPAY-023` | A retired obligation is uncollectable; a superseded intent is cancelled at mint |
-| `INV-ADDPAY-024` | At most two reminders per obligation, and the chase stops at check-out |
+| `INV-ADDPAY-024` | Two reminders per edit obligation; the chase stops at check-out |
 | `INV-ADDPAY-025` | Nothing before the cron cutover is chased; read failures send nothing |
 | `INV-ADDPAY-026` | Guarded stamps claim before each send, fenced to the current episode |
 | `INV-ADDPAY-027` | One clock: manual and automatic sends share stamps and cooldown |

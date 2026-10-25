@@ -1,4 +1,4 @@
-import { ASK_CAUSE_ROWS, additionalAskCause } from "@/lib/additional-ask-cause";
+import { ASK_CAUSE_ROWS, additionalAskCause, bankTransferInvoiceFor } from "@/lib/additional-ask-cause";
 import {
   ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES,
   additionalPaymentEpisodeStartedAt,
@@ -327,7 +327,7 @@ export async function resendAdditionalPaymentEmail(params: {
       requestedOn: episodeStartedAt,
       lodgeId: booking.lodgeId,
       askCause: additionalAskCause(payment.transactions),
-      bankTransferInvoiceNumber: payment.xeroInvoiceNumber,
+      bankTransferInvoiceNumber: bankTransferInvoiceFor(payment.transactions, payment.xeroInvoiceNumber),
     }, format);
   } catch (err) {
     await restoreStamps("transport_error");
@@ -399,7 +399,7 @@ export async function resendAdditionalPaymentEmail(params: {
     outcome: "success",
     summary: "Additional payment request re-sent to the member",
     details:
-      "Admin re-sent the email asking the member to pay the extra amount a booking change added. Nothing about the booking or the amount owed was changed.",
+      "Admin re-sent the email asking the member to pay the extra amount owing on the booking. Nothing about the booking or the amount owed was changed.",
     metadata: {
       additionalAmountCents: payment.additionalAmountCents,
       additionalPaymentStatus: payment.additionalPaymentStatus,

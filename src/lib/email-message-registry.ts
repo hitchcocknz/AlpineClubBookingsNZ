@@ -1124,9 +1124,9 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   },
   "credit-released-payment-request": {
     triggerSummary:
-      "Account credit applied to a booking was used elsewhere in the club's accounts, so part of the booking is unpaid again and a card payment was requested",
+      "Account credit applied to a booking was used elsewhere in the club's accounts, so part of the booking is unpaid again and a card payment was requested (with the club's bank-transfer details too, once it has written them)",
     frequency:
-      "Sent when the payment request is raised, then repeated on the booking's additional-payment reminder schedule until the money arrives or the stay ends, plus any manual re-send an admin triggers from the booking page",
+      "Sent when the payment request is raised, then every 7 days, four emails in all (it carries on after the stay has ended), plus any manual re-send an admin triggers from the booking page. After the fourth only the admin queues chase it",
   },
   "booking-policy-exception-approved": {
     triggerSummary:

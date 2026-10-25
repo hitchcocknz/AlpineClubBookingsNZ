@@ -1820,7 +1820,8 @@ _Legacy: settles tasks raised before #4317._
   re-send counts as that week's. The guarded claim uses the same boundary
   (`creditReleaseStampBoundary`). After the fourth the officers' own queues are
   the only chaser, and it does not stop at check-out; requests older than
-  `CREDIT_RELEASE_CHASE_HORIZON_DAYS` are left to those queues.
+  `CREDIT_RELEASE_CHASE_HORIZON_DAYS` are left to those queues once the stay
+  has ended.
 - **Why it is raised is read, never guessed.** `additionalAskCause` reads the
   newest ADDITIONAL ledger rows (the newest row plus each older row it carried):
   `edit`, `credit-release`, or `mixed`. The booking timeline, the officer panel,
@@ -1840,8 +1841,9 @@ _Legacy: settles tasks raised before #4317._
   writes its account details in the `paymentRequest.bankTransfer.instructions`
   booking message (the app stores no account details); the email adds them with
   the booking's Xero invoice number as the payment reference. With no details,
-  no invoice number, or a request an edit was merged into (whose amount is more
-  than the invoice owes), the email stays card-only.
+  no invoice number, a request an edit was merged into (more than the invoice
+  owes) or one that carried an earlier release (the closer does not close it),
+  the email stays card-only.
 - **Paid by transfer closes the request.** Xero matching the transfer to the
   invoice shows it paid, and the closer ends the request
   [INV-ADDPAY-046]. A transfer that leaves the invoice part-paid, or that Xero

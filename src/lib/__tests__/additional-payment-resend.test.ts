@@ -116,7 +116,8 @@ describe("resendAdditionalPaymentEmail", () => {
       requestedOn: RAISED_AT,
       lodgeId: "lodge-1",
       askCause: "edit",
-      bankTransferInvoiceNumber: "INV-0001",
+      // An ordinary change is never offered a bank transfer.
+      bankTransferInvoiceNumber: null,
     }, CLUB_FORMAT_TEST);
     // Writes the SAME stamp the automatic day-three nudge writes, which is what
     // stops the two arriving one after the other.

@@ -11,7 +11,7 @@ import {
   resolveCreditReleaseChase,
   type AdditionalPaymentReminderKind,
 } from "@/lib/additional-payment-chase";
-import { ASK_CAUSE_ROWS, additionalAskCause } from "@/lib/additional-ask-cause";
+import { ASK_CAUSE_ROWS, additionalAskCause, bankTransferInvoiceFor } from "@/lib/additional-ask-cause";
 import { bookingOwner } from "@/lib/booking-owner";
 import { readBookingNoEmails } from "@/lib/booking-email-suppression";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";
@@ -278,7 +278,10 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
         requestedOn: episodeStartedAt,
         lodgeId: booking.lodgeId,
         askCause: additionalAskCause(booking.payment?.transactions ?? []),
-        bankTransferInvoiceNumber: booking.payment?.xeroInvoiceNumber ?? null,
+        bankTransferInvoiceNumber: bankTransferInvoiceFor(
+          booking.payment?.transactions ?? [],
+          booking.payment?.xeroInvoiceNumber,
+        ),
       }, format);
 
       if (outcome.status !== "sent") {

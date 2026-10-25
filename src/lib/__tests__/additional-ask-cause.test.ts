@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   additionalAskCause,
+  bankTransferInvoiceFor,
+  memberCardLeadParts,
+  timelineCapturedDetail,
+  timelineFailedDetail,
   memberCardFallbackParts,
   memberCardFallbackSentence,
   officerPanelParts,
@@ -110,5 +114,46 @@ describe("the shared sentences", () => {
       expect(officerPanelSentence(cause, "$1.00")).toBe(`${officer.lead}$1.00${officer.trail}`);
       expect(memberCardFallbackSentence(cause, "$1.00")).toBe(`${member.lead}$1.00${member.trail}`);
     }
+  });
+});
+
+describe("bankTransferInvoiceFor (INV-ADDPAY-049)", () => {
+  it("offers the invoice for a request that is only the released credit and carried nothing", () => {
+    expect(bankTransferInvoiceFor([release()], "INV-1")).toBe("INV-1");
+  });
+
+  it("offers nothing for an ordinary change, a merged request, or one that carried an earlier release", () => {
+    expect(bankTransferInvoiceFor([edit()], "INV-1")).toBeNull();
+    expect(bankTransferInvoiceFor([edit(4_000), release()], "INV-1")).toBeNull();
+    expect(bankTransferInvoiceFor([release(2_000), release()], "INV-1")).toBeNull();
+    expect(bankTransferInvoiceFor([], "INV-1")).toBeNull();
+  });
+
+  it("offers nothing without an invoice number", () => {
+    expect(bankTransferInvoiceFor([release()], null)).toBeNull();
+    expect(bankTransferInvoiceFor([release()], undefined)).toBeNull();
+  });
+});
+
+describe("the payment-outcome and pay-form sentences", () => {
+  it("keep the ordinary change wording exactly", () => {
+    expect(timelineCapturedDetail("edit")).toBe("Extra payment for a booking change was captured successfully.");
+    expect(timelineFailedDetail("edit")).toBe("The extra payment required by a booking change failed.");
+    expect(timelineFailedDetail("edit", true)).toBe("The latest extra payment required by a booking change failed.");
+    const lead = memberCardLeadParts("edit");
+    expect(`${lead.lead}$1.00${lead.trail}`).toBe(
+      "A recent booking modification means $1.00 is still owing on this booking. Please complete payment to finalise the modification.",
+    );
+  });
+
+  it("never blame a booking change when the request is not purely one", () => {
+    for (const cause of ["credit-release", "mixed"] as const) {
+      expect(timelineCapturedDetail(cause)).not.toMatch(/booking change/);
+      expect(timelineFailedDetail(cause)).not.toMatch(/booking change/);
+      expect(timelineFailedDetail(cause, true)).not.toMatch(/booking change/);
+    }
+    expect(memberCardLeadParts("credit-release").lead).toMatch(/used elsewhere in the club's accounts/);
+    expect(memberCardLeadParts("credit-release").trail).not.toMatch(/modification/);
+    expect(memberCardLeadParts("mixed").lead).toMatch(/used elsewhere in the club's accounts/);
   });
 });

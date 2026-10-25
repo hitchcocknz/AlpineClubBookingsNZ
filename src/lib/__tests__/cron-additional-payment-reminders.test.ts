@@ -294,7 +294,8 @@ describe("sendAdditionalPaymentReminders", () => {
       requestedOn: EPISODE_STARTED_AT,
       lodgeId: "lodge-1",
       askCause: "edit",
-      bankTransferInvoiceNumber: "INV-0001",
+      // An ordinary change is never offered a bank transfer.
+      bankTransferInvoiceNumber: null,
     }, CLUB_FORMAT_TEST);
     expect(result.initialSentBookingIds).toEqual(["booking-1"]);
     expect(result.finalSentBookingIds).toEqual([]);

@@ -713,7 +713,8 @@ positive delta -> additional payment or supplementary Xero invoice
   FAILED by the minter - the door's, the recovery runner's or a currency
   re-issue's - #4316, INV-ADDPAY-044)
 uncollected additional payment -> reminder at +3 days, reminder 2 days before
-  check-in, admin re-send on demand; stops at check-out (never auto-cancelled)
+  check-in, admin re-send on demand; stops at check-out (never auto-cancelled);
+  a credit-release request is instead chased weekly, four times, past check-out (INV-ADDPAY-048)
 uncollected review-raised request -> WITHDRAWN by a finance officer (#3528)
 negative delta -> first cancels or shrinks an unpaid price ask (#3954), then
   Stripe refund or source-linked member credit for what is left

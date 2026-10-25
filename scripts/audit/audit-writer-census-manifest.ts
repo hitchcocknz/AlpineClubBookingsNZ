@@ -684,7 +684,7 @@ export const AUDIT_CENSUS_TOTALS = {
   // 514 -> 516 (#4270): `xero.credit_note.outside_spend_mirrored` and `.outside_spend_restored`, the
   // inbound credit-note mirror's rows, awaited `createAuditLog` inside its own transaction, under `xero`.
   // RE-MEASURED with `pnpm run audit:census`.
-  // 516 -> 517 (#4253 release 2): `payment.credit_release_ask.backlog_batch_started`, the audit row of
+  // 516 -> 517 (#4253 release 2): `payment.credit_release_ask.backlog_batch_taken`, the audit row of
   // each batch the switchable backlog run takes up, an awaited `createAuditLog` under `payment`.
   // RE-MEASURED with `pnpm run audit:census`.
   writeSites: 517,

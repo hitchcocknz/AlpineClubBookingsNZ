@@ -192,20 +192,26 @@ export async function runCreditReleaseBacklog(): Promise<number> {
   const perRun = await creditReleaseBacklogPerRun();
   if (!perRun) return 0;
   const releaseIds: string[] = [];
-  const enqueued = await enqueueCreditReleaseAsks({
-    limit: perRun,
-    before: writerSince,
-    onEnqueued: (id) => releaseIds.push(id),
-  });
-  if (enqueued > 0) {
-    await createAuditLog({
-      action: "payment.credit_release_ask.backlog_batch_started",
-      category: "payment",
-      severity: "important",
-      outcome: "success",
-      summary: "A batch of earlier credit releases was taken up for a re-check and, where still owed, a card payment request",
-      metadata: { releaseIds, perRun, before: writerSince.toISOString() },
+  let enqueued = 0;
+  try {
+    enqueued = await enqueueCreditReleaseAsks({
+      limit: perRun,
+      before: writerSince,
+      onEnqueued: (id) => releaseIds.push(id),
     });
+  } finally {
+    // Names whatever was taken, even when the enqueue failed part-way: a release already queued is
+    // never taken again, so its only batch row is this one.
+    if (releaseIds.length > 0) {
+      await createAuditLog({
+        action: "payment.credit_release_ask.backlog_batch_taken",
+        category: "payment",
+        severity: "important",
+        outcome: "success",
+        summary: "A batch of earlier credit releases was taken up for a re-check and, where still owed, a card payment request",
+        metadata: { releaseIds, perRun, before: writerSince.toISOString() },
+      });
+    }
   }
   return enqueued;
 }

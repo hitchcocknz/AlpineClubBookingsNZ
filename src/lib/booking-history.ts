@@ -1,4 +1,4 @@
-import { timelinePaidDetail, timelinePendingDetail, type AdditionalAskCause } from "@/lib/additional-ask-cause";
+import { timelineCapturedDetail, timelineFailedDetail, timelinePaidDetail, timelinePendingDetail, type AdditionalAskCause } from "@/lib/additional-ask-cause";
 import { additionalPaymentEpisodeStartedAt } from "@/lib/additional-payment-chase";
 import {
   MODIFICATION_LABELS,
@@ -278,7 +278,7 @@ export function buildBookingHistoryItems({
           occurredAt: auditLog.createdAt,
           category: "Payment",
           title: "Additional payment successful",
-          detail: "Extra payment for a booking change was captured successfully.",
+          detail: timelineCapturedDetail(payment?.askCause ?? "edit"),
           amountDisplay: amountCents != null ? formatCents(amountCents, format) : null,
           tone: "success",
         });
@@ -328,7 +328,7 @@ export function buildBookingHistoryItems({
           category: "Payment",
           title: "Additional payment failed",
           detail:
-            errorMessage ?? "The extra payment required by a booking change failed.",
+            errorMessage ?? timelineFailedDetail(payment?.askCause ?? "edit"),
           amountDisplay: amountCents != null ? formatCents(amountCents, format) : null,
           tone: "danger",
         });
@@ -655,7 +655,7 @@ export function buildBookingHistoryItems({
       occurredAt: payment.updatedAt,
       category: "Payment",
       title: "Additional payment failed",
-      detail: "The latest extra payment required by a booking change failed.",
+      detail: timelineFailedDetail(payment.askCause ?? "edit", true),
       amountDisplay: formatCents(payment.additionalAmountCents, format),
       tone: "danger",
     });
