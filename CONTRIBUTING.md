@@ -97,8 +97,15 @@ is a reviewed edit there), `nodeLinker`, `verifyDepsBeforeRun` and
 (`@prisma/engines`, `esbuild`, `prisma`, `unrs-resolver`) are
 approved at one exact version each. Dependabot groups them, and the packages
 that pull them in, into their own `install-scripts` PR, so the ordinary
-minor-and-patch group is not held up. When a bump fails the install with
-`ERR_PNPM_IGNORED_BUILDS <name>@<version>`:
+minor-and-patch group is not held up. That works only because every other npm
+group lists each `install-scripts` pattern under `exclude-patterns`: Dependabot
+scores group matches rather than taking the first, so group order alone let
+them slip into the catch-all (#4364). `verify` runs
+`node scripts/ci/check-allow-builds.mjs` before the install; it fails when the
+two lists differ, and when an approval no longer matches the version
+`pnpm-lock.yaml` resolves, naming the package and both versions. When that
+check, or the install itself with `ERR_PNPM_IGNORED_BUILDS <name>@<version>`,
+fails on a bump:
 
 1. Read what that version's install script does (its `package.json`
    `scripts.preinstall`/`install`/`postinstall`, and the file it runs).

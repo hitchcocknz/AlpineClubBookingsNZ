@@ -100,6 +100,12 @@ CI also runs independent static and container checks:
 - Keep `pnpm-lock.yaml` committed. It is the only lockfile; CI refuses a
   `package-lock.json` (#3673).
 - Prefer small dependency update PRs with explicit validation results.
+- A package that runs an install script is approved in `pnpm-workspace.yaml`
+  `allowBuilds` at one exact version, and Dependabot bumps it in its own
+  `install-scripts` group. `verify` checks both before the install
+  (`scripts/ci/check-allow-builds.mjs`, #4364); a failure there is re-approved
+  as [`CONTRIBUTING.md` → "Package manager: pnpm"](../CONTRIBUTING.md#package-manager-pnpm)
+  describes.
 - Keep the `overrides` block in `pnpm-workspace.yaml` to the minimum that is still
   load-bearing, and retire an entry as soon as the upstream dependency graph no
   longer needs it. The register below — not the workspace file, whose comments
