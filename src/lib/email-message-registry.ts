@@ -1626,6 +1626,9 @@ export function sampleValue(token: string): string {
   // send builds it, so the preview reads as a member reads it instead of
   // printing the token's own name mid-paragraph. Empty on a live send when
   // nothing is owed. The amount reconciles with the sample below.
+  if (token === "bankTransferNote") {
+    return "You can also pay by bank transfer. Use the payment reference INV-1234.\nAccount name: Sample Club\nAccount number: 00-0000-0000000-00\n\n";
+  }
   if (token === "outstandingAdditionalNote") {
     return "There is still $123.45 to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.";
   }
@@ -2079,6 +2082,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // the pre-arrival reminder; empty when nothing is owed, so the body never
   // carries a dangling claim (the {{doorCodeNote}} convention).
   "outstandingAdditionalNote",
+  // #4253 release 2: the bank-transfer offer on a request for credit used elsewhere, composed
+  // whole by the sender and empty until the club writes its bank details (card-only until then).
+  "bankTransferNote",
   // #3672: the organiser's booking detail page, for the mid-stay joiner alert.
   "organiserBookingUrl",
   "organiserName",

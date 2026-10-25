@@ -1,3 +1,4 @@
+import { timelinePaidDetail, timelinePendingDetail, type AdditionalAskCause } from "@/lib/additional-ask-cause";
 import { additionalPaymentEpisodeStartedAt } from "@/lib/additional-payment-chase";
 import {
   MODIFICATION_LABELS,
@@ -38,6 +39,8 @@ interface BookingHistoryPayment {
    * fall back to the payment's own creation, which is stable.
    */
   latestAdditionalTransactionCreatedAt?: Date | null;
+  /** Why the current request exists (#4253); absent reads as a booking change. */
+  askCause?: AdditionalAskCause;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -595,7 +598,7 @@ export function buildBookingHistoryItems({
       occurredAt: payment.updatedAt,
       category: "Payment",
       title: "Additional payment recorded",
-      detail: "A booking change increased the total and the extra payment succeeded.",
+      detail: timelinePaidDetail(payment.askCause ?? "edit"),
       amountDisplay: formatCents(payment.additionalAmountCents, format),
       tone: "success",
     });
@@ -635,8 +638,7 @@ export function buildBookingHistoryItems({
       }),
       category: "Payment",
       title: "Additional payment requested",
-      detail:
-        "A booking change increased the total. This extra amount has not been paid yet.",
+      detail: timelinePendingDetail(payment.askCause ?? "edit"),
       amountDisplay: formatCents(payment.additionalAmountCents, format),
       tone: "warning",
     });

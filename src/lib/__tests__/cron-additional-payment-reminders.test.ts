@@ -71,7 +71,8 @@ function booking(overrides: Record<string, unknown> = {}) {
     additionalFinalReminderSentAt: null,
     createdAt: new Date("2026-09-01T00:00:00.000Z"),
     // Raised 10 days ago, so the day-3 nudge is overdue.
-    transactions: [{ createdAt: new Date("2026-10-01T00:00:00.000Z") }],
+    transactions: [{ createdAt: new Date("2026-10-01T00:00:00.000Z"), reason: null, carriedAskCents: 0, withdrawnAt: null }],
+    xeroInvoiceNumber: "INV-0001",
     ...((overrides.payment as Record<string, unknown>) ?? {}),
   };
   return {
@@ -95,6 +96,11 @@ const EPISODE_STARTED_AT = new Date("2026-10-01T00:00:00.000Z");
  * date the way production will: as a `CronJobRun` row.
  */
 const FIRST_RUN_AT = new Date("2026-08-01T00:00:00.000Z");
+
+/** A credit-release request's newest ledger row, as the reminder query selects it. */
+function creditReleaseRow(createdAt: Date) {
+  return { createdAt, reason: CREDIT_RELEASE_ASK_REASON, carriedAskCents: 0, withdrawnAt: null };
+}
 
 describe("sendAdditionalPaymentReminders", () => {
   beforeEach(() => {
@@ -129,16 +135,116 @@ describe("sendAdditionalPaymentReminders", () => {
     // Raised an hour ago: an ordinary extra would wait three days.
     const raised = new Date("2026-10-10T21:00:00.000Z");
     mockPrisma.booking.findMany.mockResolvedValue([
-      booking({ payment: { transactions: [{ createdAt: raised, reason: CREDIT_RELEASE_ASK_REASON }] } }),
+      booking({ payment: { transactions: [creditReleaseRow(raised)] } }),
     ]);
 
     const result = await sendAdditionalPaymentReminders();
 
     expect(result.initialSentBookingIds).toEqual(["booking-1"]);
     expect(mockSendAdditionalPaymentReminderEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ requestedOn: raised, askReason: CREDIT_RELEASE_ASK_REASON }),
+      expect.objectContaining({
+        requestedOn: raised,
+        askCause: "credit-release",
+        bankTransferInvoiceNumber: "INV-0001",
+      }),
       CLUB_FORMAT_TEST,
     );
+  });
+
+  describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-047)", () => {
+    const DAY = 86_400_000;
+    const sentFor = async (rows: Record<string, unknown>[], stamp: Date | null, overrides: Record<string, unknown> = {}) => {
+      mockPrisma.booking.findMany.mockResolvedValue([
+        booking({ ...overrides, payment: { transactions: rows, additionalReminderSentAt: stamp } }),
+      ]);
+      return sendAdditionalPaymentReminders();
+    };
+
+    it("sends the second email a week after the first", async () => {
+      const raised = new Date(NOW.getTime() - 8 * DAY);
+      const first = new Date(raised.getTime() + 3_600_000);
+      const result = await sentFor([creditReleaseRow(raised)], first);
+      expect(result.initialSentBookingIds).toEqual(["booking-1"]);
+    });
+
+    it("sends nothing between the weekly emails", async () => {
+      const raised = new Date(NOW.getTime() - 9 * DAY);
+      const second = new Date(NOW.getTime() - 2 * DAY);
+      const result = await sentFor([creditReleaseRow(raised)], second);
+      expect(result.initialSentBookingIds).toEqual([]);
+      expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    });
+
+    it("claims against the start of the current week, not the start of the request", async () => {
+      const raised = new Date(NOW.getTime() - 15 * DAY);
+      await sentFor([creditReleaseRow(raised)], new Date(raised.getTime() + 8 * DAY));
+      const claim = mockPrisma.payment.updateMany.mock.calls[0][0];
+      const boundary = new Date(raised.getTime() + 14 * DAY);
+      expect(JSON.stringify(claim.where)).toContain(JSON.stringify({ additionalReminderSentAt: { lt: boundary } }));
+    });
+
+    it("stops after the fourth email", async () => {
+      const raised = new Date(NOW.getTime() - 40 * DAY);
+      const fourth = new Date(raised.getTime() + 21 * DAY + 3_600_000);
+      const result = await sentFor([creditReleaseRow(raised)], fourth);
+      expect(result.initialSentBookingIds).toEqual([]);
+    });
+
+    it("goes on after the stay has ended, which the ordinary chase does not", async () => {
+      const raised = new Date(NOW.getTime() - 8 * DAY);
+      const result = await sentFor(
+        [creditReleaseRow(raised)],
+        new Date(raised.getTime() + 3_600_000),
+        { checkIn: new Date("2026-10-01T00:00:00.000Z"), checkOut: new Date("2026-10-03T00:00:00.000Z") },
+      );
+      expect(result.initialSentBookingIds).toEqual(["booking-1"]);
+    });
+
+    it("never sends the ordinary last-chance email for a credit-release request", async () => {
+      const raised = new Date(NOW.getTime() - 2 * DAY);
+      const result = await sentFor(
+        [creditReleaseRow(raised)],
+        new Date(raised.getTime() + 3_600_000),
+        { checkIn: new Date("2026-10-12T00:00:00.000Z"), checkOut: new Date("2026-10-14T00:00:00.000Z") },
+      );
+      expect(result.finalSentBookingIds).toEqual([]);
+      expect(result.initialSentBookingIds).toEqual([]);
+    });
+
+    it("keeps the ordinary chase and the mixed wording for a request that also carries an edit", async () => {
+      const edit = new Date(NOW.getTime() - 1 * DAY);
+      const rows = [
+        { createdAt: edit, reason: null, carriedAskCents: 4_000, withdrawnAt: null },
+        creditReleaseRow(new Date(NOW.getTime() - 5 * DAY)),
+      ];
+      const early = await sentFor(rows, null);
+      expect(early.initialSentBookingIds).toEqual([]);
+      const late = await sentFor(
+        [{ ...rows[0], createdAt: new Date(NOW.getTime() - 4 * DAY) }, rows[1]],
+        null,
+      );
+      expect(late.initialSentBookingIds).toEqual(["booking-1"]);
+      expect(mockSendAdditionalPaymentReminderEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ askCause: "mixed" }),
+        CLUB_FORMAT_TEST,
+      );
+    });
+
+    it("reads finished stays too, for requests young enough to still have reminders", async () => {
+      await sendAdditionalPaymentReminders();
+      const where = mockPrisma.booking.findMany.mock.calls[0][0].where;
+      expect(where.OR).toHaveLength(2);
+      expect(where.OR[1]).toMatchObject({
+        checkOut: { lte: TODAY },
+        payment: {
+          is: {
+            transactions: {
+              some: { kind: "ADDITIONAL", reason: CREDIT_RELEASE_ASK_REASON, withdrawnAt: null },
+            },
+          },
+        },
+      });
+    });
   });
 
   it("still waits three days before the first email about an ordinary extra", async () => {
@@ -159,7 +265,7 @@ describe("sendAdditionalPaymentReminders", () => {
     const args = mockPrisma.booking.findMany.mock.calls[0][0];
     expect(args.where).toMatchObject({
       deletedAt: null,
-      checkOut: { gt: TODAY },
+      OR: [{ checkOut: { gt: TODAY } }, expect.objectContaining({ checkOut: { lte: TODAY } })],
       status: { in: ["CONFIRMED", "PAID", "COMPLETED"] },
       payment: {
         is: {
@@ -187,7 +293,8 @@ describe("sendAdditionalPaymentReminders", () => {
       checkOut: new Date("2026-11-03T00:00:00.000Z"),
       requestedOn: EPISODE_STARTED_AT,
       lodgeId: "lodge-1",
-      askReason: null,
+      askCause: "edit",
+      bankTransferInvoiceNumber: "INV-0001",
     }, CLUB_FORMAT_TEST);
     expect(result.initialSentBookingIds).toEqual(["booking-1"]);
     expect(result.finalSentBookingIds).toEqual([]);

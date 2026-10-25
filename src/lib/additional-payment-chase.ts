@@ -44,6 +44,26 @@ export function additionalPaymentFirstReminderDelayDays(askReason: string | null
 }
 
 /**
+ * The repeating chase for a request for credit used elsewhere in the club's
+ * accounts (`INV-ADDPAY-047`): one email at once, then one every 7 days, four in
+ * all, and after the fourth the officers' own queues (the unsettled-stays
+ * dashboard card, the sidebar badge, the bookings-list filter) are the only
+ * chaser. It is a separate rule from the two-email edit chase beside it
+ * (`INV-ADDPAY-024`), which a request for a change the member made keeps.
+ */
+export const CREDIT_RELEASE_REMINDER_INTERVAL_DAYS = 7;
+export const CREDIT_RELEASE_REMINDER_COUNT = 4;
+
+/**
+ * How long after a credit-release request a stay that has already finished is
+ * still looked at for its remaining reminders: the whole cadence plus a fortnight
+ * of slack for a paused cron or an unreachable address. Past it only the
+ * officers' queues chase.
+ */
+export const CREDIT_RELEASE_CHASE_HORIZON_DAYS =
+  (CREDIT_RELEASE_REMINDER_COUNT - 1) * CREDIT_RELEASE_REMINDER_INTERVAL_DAYS + 14;
+
+/**
  * Days before check-in for the last-chance reminder. Deliberately inside the
  * pre-arrival reminder's own 3-day window so the two land close together and a
  * member who is about to travel is told once, clearly, that money is still owing.
@@ -518,6 +538,77 @@ export function resolveAdditionalPaymentChase(
     return "initial";
   }
 
+  return null;
+}
+
+export interface CreditReleaseChaseInput {
+  now: Date;
+  episodeStartedAt: Date;
+  reminderSentAt: Date | null;
+  chaseStartsAt: Date;
+  finalReminderSentAt?: Date | null;
+}
+
+/**
+ * Which of the four reminders the request has reached: 0 on the day it was raised,
+ * then one more every 7 days, never past the last.
+ */
+export function creditReleaseReminderSlot(params: {
+  now: Date;
+  episodeStartedAt: Date;
+}): number {
+  const elapsedDays = Math.floor(
+    (params.now.getTime() - params.episodeStartedAt.getTime()) / MS_PER_DAY,
+  );
+  return Math.min(
+    CREDIT_RELEASE_REMINDER_COUNT - 1,
+    Math.max(0, Math.floor(elapsedDays / CREDIT_RELEASE_REMINDER_INTERVAL_DAYS)),
+  );
+}
+
+/**
+ * The instant a stamp must be older than for the current slot's reminder to be
+ * due. Read by the pure test below AND by the guarded claim, so the two cannot
+ * disagree about what "already reminded for this slot" means.
+ */
+export function creditReleaseStampBoundary(params: {
+  now: Date;
+  episodeStartedAt: Date;
+}): Date {
+  return new Date(
+    params.episodeStartedAt.getTime() +
+      creditReleaseReminderSlot(params) * CREDIT_RELEASE_REMINDER_INTERVAL_DAYS * MS_PER_DAY,
+  );
+}
+
+/**
+ * The repeating chase for a credit-release request (`INV-ADDPAY-047`): due when
+ * no reminder at all has gone out since the request was raised, or the last one
+ * is older than the start of the slot the request is in. Stateless over the one
+ * existing stamp, so a missed run sends ONE catch-up (never one per missed week),
+ * a manual re-send counts as that slot's reminder, and once the fourth slot's
+ * reminder is out nothing more is sent. Unlike the edit chase it does not stop at
+ * check-out: the member still owes the money after the stay, and the officers'
+ * queues only take over once the four have gone. The first-deploy guard and the
+ * re-send cooldown apply exactly as they do to the edit chase.
+ */
+export function resolveCreditReleaseChase(
+  input: CreditReleaseChaseInput,
+): "initial" | null {
+  if (input.episodeStartedAt.getTime() < input.chaseStartsAt.getTime()) return null;
+  if (
+    isWithinAdditionalPaymentResendCooldown({
+      now: input.now,
+      reminderSentAt: input.reminderSentAt,
+      finalReminderSentAt: input.finalReminderSentAt ?? null,
+    })
+  ) {
+    return null;
+  }
+  const boundary = creditReleaseStampBoundary(input);
+  if (input.reminderSentAt == null || input.reminderSentAt.getTime() < boundary.getTime()) {
+    return "initial";
+  }
   return null;
 }
 

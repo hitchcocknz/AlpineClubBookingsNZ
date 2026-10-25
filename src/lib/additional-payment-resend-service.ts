@@ -1,3 +1,4 @@
+import { ASK_CAUSE_ROWS, additionalAskCause } from "@/lib/additional-ask-cause";
 import {
   ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES,
   additionalPaymentEpisodeStartedAt,
@@ -102,11 +103,12 @@ export async function resendAdditionalPaymentEmail(params: {
           additionalReminderSentAt: true,
           additionalFinalReminderSentAt: true,
           createdAt: true,
+          xeroInvoiceNumber: true,
           transactions: {
             where: { kind: "ADDITIONAL" },
-            select: { createdAt: true, reason: true },
+            select: { createdAt: true, reason: true, carriedAskCents: true, withdrawnAt: true },
             orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
-            take: 1,
+            take: ASK_CAUSE_ROWS,
           },
         },
       },
@@ -324,7 +326,8 @@ export async function resendAdditionalPaymentEmail(params: {
       checkOut: booking.checkOut,
       requestedOn: episodeStartedAt,
       lodgeId: booking.lodgeId,
-      askReason: payment.transactions[0]?.reason ?? null,
+      askCause: additionalAskCause(payment.transactions),
+      bankTransferInvoiceNumber: payment.xeroInvoiceNumber,
     }, format);
   } catch (err) {
     await restoreStamps("transport_error");

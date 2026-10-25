@@ -64,7 +64,8 @@ function booking(overrides: Record<string, unknown> = {}) {
             additionalReminderSentAt: null,
             additionalFinalReminderSentAt: null,
             createdAt: new Date("2026-09-01T00:00:00.000Z"),
-            transactions: [{ createdAt: RAISED_AT }],
+            xeroInvoiceNumber: "INV-0001",
+            transactions: [{ createdAt: RAISED_AT, reason: null, carriedAskCents: 0, withdrawnAt: null }],
             ...((overrides.payment as Record<string, unknown>) ?? {}),
           },
   };
@@ -114,7 +115,8 @@ describe("resendAdditionalPaymentEmail", () => {
       checkOut: new Date("2026-11-03T00:00:00.000Z"),
       requestedOn: RAISED_AT,
       lodgeId: "lodge-1",
-      askReason: null,
+      askCause: "edit",
+      bankTransferInvoiceNumber: "INV-0001",
     }, CLUB_FORMAT_TEST);
     // Writes the SAME stamp the automatic day-three nudge writes, which is what
     // stops the two arriving one after the other.

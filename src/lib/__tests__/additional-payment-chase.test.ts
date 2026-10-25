@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ADDITIONAL_PAYMENT_REMINDER_DAYS,
+  CREDIT_RELEASE_REMINDER_COUNT,
+  CREDIT_RELEASE_REMINDER_INTERVAL_DAYS,
+  creditReleaseReminderSlot,
+  creditReleaseStampBoundary,
+  resolveCreditReleaseChase,
   additionalPaymentFirstReminderDelayDays,
   ADDITIONAL_OWED_BOOKING_STATUSES,
   ADDITIONAL_PAYABLE_BOOKING_STATUSES,
@@ -361,5 +366,74 @@ describe("resolveAdditionalPaymentChase", () => {
     expect(chase({ now: later, today, reminderSentAt: manualSendAt })).toBe(
       "final",
     );
+  });
+});
+
+describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-047)", () => {
+  const DAY = 86_400_000;
+  const start = new Date("2026-07-01T00:00:00Z");
+  const at = (days: number, hours = 0) => new Date(start.getTime() + days * DAY + hours * 3_600_000);
+  const chaseStartsAt = new Date("2026-01-01T00:00:00Z");
+  const due = (now: Date, reminderSentAt: Date | null) =>
+    resolveCreditReleaseChase({ now, episodeStartedAt: start, reminderSentAt, chaseStartsAt });
+
+  it("is four reminders a week apart", () => {
+    expect(CREDIT_RELEASE_REMINDER_COUNT).toBe(4);
+    expect(CREDIT_RELEASE_REMINDER_INTERVAL_DAYS).toBe(7);
+  });
+
+  it("sends the first at once, then one a week", () => {
+    expect(due(at(0, 1), null)).toBe("initial");
+    expect(due(at(3), at(0, 1))).toBeNull();
+    expect(due(at(7), at(0, 1))).toBe("initial");
+    expect(due(at(10), at(7, 1))).toBeNull();
+    expect(due(at(14), at(7, 1))).toBe("initial");
+    expect(due(at(21), at(14, 1))).toBe("initial");
+  });
+
+  it("stops after the fourth, and leaves the rest to the officers' queues", () => {
+    expect(due(at(21, 2), at(21, 1))).toBeNull();
+    expect(due(at(60), at(21, 1))).toBeNull();
+    expect(due(at(400), at(22))).toBeNull();
+  });
+
+  it("sends ONE catch-up, not one for every missed week", () => {
+    expect(due(at(15), at(0, 1))).toBe("initial");
+    expect(due(at(15, 3), at(15, 1))).toBeNull();
+  });
+
+  it("counts a manual re-send as that week's reminder", () => {
+    expect(due(at(8), at(7, 20))).toBeNull();
+    expect(due(at(14), at(7, 20))).toBe("initial");
+  });
+
+  it("does not treat a stamp from an earlier request as a reminder for this one", () => {
+    expect(due(at(0, 2), new Date(start.getTime() - DAY))).toBe("initial");
+  });
+
+  it("holds back an obligation older than the first-deploy cutover, and inside the re-send cooldown", () => {
+    expect(
+      resolveCreditReleaseChase({
+        now: at(0, 1),
+        episodeStartedAt: start,
+        reminderSentAt: null,
+        chaseStartsAt: new Date(start.getTime() + DAY),
+      }),
+    ).toBeNull();
+    expect(due(at(7, 0.5), at(6, 23.9))).toBeNull();
+  });
+
+  it("is not stopped by the stay ending", () => {
+    // The pure rule takes no check-out at all: the edit chase's stop (`checkOut <= today`) is not part of it.
+    expect(due(at(14), null)).toBe("initial");
+  });
+
+  it("names the slot and the stamp boundary the claim shares", () => {
+    expect(creditReleaseReminderSlot({ now: at(0), episodeStartedAt: start })).toBe(0);
+    expect(creditReleaseReminderSlot({ now: at(6.9), episodeStartedAt: start })).toBe(0);
+    expect(creditReleaseReminderSlot({ now: at(7), episodeStartedAt: start })).toBe(1);
+    expect(creditReleaseReminderSlot({ now: at(200), episodeStartedAt: start })).toBe(3);
+    expect(creditReleaseStampBoundary({ now: at(15), episodeStartedAt: start })).toEqual(at(14));
+    expect(creditReleaseStampBoundary({ now: at(2), episodeStartedAt: start })).toEqual(start);
   });
 });

@@ -79,6 +79,14 @@ const RENDER_SURFACES: Array<{
     readsMessageMap: true,
   },
   {
+    file: "src/lib/credit-release-bank-transfer.ts",
+    what: "the bank-transfer details on a request for credit used elsewhere (#4253): a server-side email part",
+    // Club-level text: the request is about the booking's invoice, not a lodge, so the club
+    // default stands in for the lodge token.
+    lodgePass: null,
+    readsMessageMap: true,
+  },
+  {
     file: "src/app/api/admin/booking-messages/preview/route.ts",
     what: "the admin preview",
     // Sample data by design: there is no booking to read a lodge from.
