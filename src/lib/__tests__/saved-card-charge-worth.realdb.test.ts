@@ -155,8 +155,8 @@ async function json(response: Response) {
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }
 
-async function expectSettledAtWorth(asked: number[]): Promise<void> {
-  expect(asked).toEqual([WORTH_CENTS]);
+async function expectSettledAtWorth(asked: number[], worthCents = WORTH_CENTS): Promise<void> {
+  expect(asked).toEqual([worthCents]);
   const booking = await prisma.booking.findUniqueOrThrow({
     where: { id: BOOKING_ID },
     select: { status: true, payment: { select: { status: true, amountCents: true, creditAppliedCents: true, changeFeeCents: true } } },
@@ -164,7 +164,7 @@ async function expectSettledAtWorth(asked: number[]): Promise<void> {
   expect(booking.status).toBe("PAID");
   expect(booking.payment).toMatchObject({
     status: "SUCCEEDED",
-    amountCents: WORTH_CENTS,
+    amountCents: worthCents,
     creditAppliedCents: 0,
     changeFeeCents: CHANGE_FEE_CENTS,
   });
@@ -172,7 +172,7 @@ async function expectSettledAtWorth(asked: number[]): Promise<void> {
     where: { paymentId: PAYMENT_ID, status: "SUCCEEDED" },
     select: { amountCents: true },
   });
-  expect(captures).toEqual([{ amountCents: WORTH_CENTS }]);
+  expect(captures).toEqual([{ amountCents: worthCents }]);
 }
 
 (RUN ? describe : describe.skip)(
@@ -261,6 +261,27 @@ async function expectSettledAtWorth(asked: number[]): Promise<void> {
       expect(response.status, JSON.stringify(response.body)).toBe(200);
       expect(response.body).toMatchObject({ status: "PAID", charged: true });
       await expectSettledAtWorth(asked);
+    });
+
+    it("a $0 price carrying a recorded change fee is charged the fee by the officer's route, never confirmed at no charge", async () => {
+      // An edit that recorded a fee and left the price at $0 (a promo on the new dates).
+      await prisma.bookingGuestNight.updateMany({ where: { bookingGuest: { bookingId: BOOKING_ID } }, data: { priceCents: 0 } });
+      await prisma.bookingGuest.updateMany({ where: { bookingId: BOOKING_ID }, data: { priceCents: 0 } });
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { totalPriceCents: 0, finalPriceCents: 0 } });
+      const asked = stripeChargesAsAsked();
+      const response = await json(
+        await confirmGuestsRoute.POST(
+          new Request(`http://localhost/api/admin/bookings/${BOOKING_ID}/confirm-pending-guests`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ notifyMember: false }),
+          }) as never,
+          { params: Promise.resolve({ id: BOOKING_ID }) },
+        ),
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ status: "PAID", charged: true });
+      await expectSettledAtWorth(asked, CHANGE_FEE_CENTS);
     });
   },
 );

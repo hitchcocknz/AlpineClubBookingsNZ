@@ -623,7 +623,7 @@ export function bookingWorthCents(input: {
  * #3750 (#3955 review F2, `INV-PAY-119`): what a booking's saved card is
  * charged - its worth, read from the booking and its payment row. The one
  * figure all three saved-card doors charge (#4357): the confirm-pending cron,
- * the member's charge-saved-method route and the officer's
+ * the charge-saved-method route (cron or admin) and the officer's
  * confirm-pending-guests route. Like the bare price it replaced, applied credit
  * is not netted here (the settle admits a full-worth capture and gives back
  * any credit it leaves spent, #3864).

@@ -214,7 +214,10 @@ export async function POST(
     // PENDING -> PAID (a capacity-holding status) inside that lock. The lodgeId
     // comes from the pre-lock booking snapshot; a booking never changes lodge,
     // so the lock key is stable.
-    if (booking.finalPriceCents === 0) {
+    // #4357 (`INV-PAY-119`): "nothing to charge" is decided on the booking's
+    // worth, the figure the charge branch charges - a change fee recorded on a
+    // $0 booking's payment is still owed - and re-checked under the locks.
+    if (savedCardChargeCents(booking) === 0) {
       const zeroResult = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         // Two-tier protocol (#1881): this branch CLAIMS capacity (PENDING -> a
@@ -232,10 +235,16 @@ export async function POST(
         // capacity-holding status (same-booking TOCTOU).
         const locked = await tx.booking.findUnique({
           where: { id: bookingId },
-          include: { guests: { include: { nights: true } } },
+          include: { guests: { include: { nights: true } }, payment: true },
         });
         if (!locked || locked.status !== BookingStatus.PENDING) {
           return { error: "Booking is no longer pending" as const, status: 409 };
+        }
+        if (savedCardChargeCents(locked) !== 0) {
+          return {
+            error: "This booking's amount changed while you were confirming it - refresh and try again." as const,
+            status: 409,
+          };
         }
 
         const { available, nightDetails } = await checkCapacityForGuestRanges(
@@ -334,7 +343,7 @@ export async function POST(
           booking.checkIn,
           booking.checkOut,
           booking.guests.length,
-          booking.finalPriceCents,
+          savedCardChargeCents(booking),
           format,
           promoEmailOptions
         ).catch((err) =>
@@ -918,7 +927,7 @@ export async function POST(
         booking.checkIn,
         booking.checkOut,
         booking.guests.length,
-        booking.finalPriceCents,
+        claim.amountCents,
         format,
         promoEmailOptions
       ).catch((err) =>

@@ -406,7 +406,8 @@ async function sendConfirmationEmail(booking: PendingBooking, format: ClubFormat
       booking.checkIn,
       booking.checkOut,
       booking.guests.length,
-      booking.finalPriceCents,
+      // #4357 (`INV-PAY-119`): confirmation emails quote worth, what was charged.
+      savedCardChargeCents(booking),
       format,
       bookingPromoEmailOptions(booking)
     );
@@ -591,7 +592,9 @@ async function resolveHoldWindowUnderLock(
     }
 
     // Zero-dollar booking: skip Stripe, just confirm with a SUCCEEDED Payment.
-    if (booking.finalPriceCents === 0) {
+    // #4357 (`INV-PAY-119`): decided on worth, the figure the charge branch
+    // charges - a change fee recorded on a $0 booking's payment is still owed.
+    if (savedCardChargeCents(booking) === 0) {
       const claimed = await tx.booking.updateMany({
         where: { id: booking.id, status: BookingStatus.PENDING },
         data: {

@@ -65,8 +65,8 @@ const PAY_STEPS = [
   "src/lib/payment-link-intent.ts",
   "src/lib/cron-confirm-pending.ts",
   "src/lib/group-settlement-invoice-binding.ts",
-  // #4357: the member's and the officer's saved-card doors, which charge what
-  // the cron does.
+  // #4357: the charge-saved-method route and the officer's confirm-pending-guests
+  // route, which charge what the cron does.
   "src/app/api/payments/charge-saved-method/route.ts",
   "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts",
   // #3955 round 3: the public pay page's amount, which its intent charges.
@@ -285,12 +285,11 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     expect(offenders, "INV-PAY-119: size it through bookingAmountOwedCents / bookingWorthCents").toEqual([]);
   });
 
-  // #3991: the narrative quotes "$X is due" from what it is handed, so every
-  // file that resolves one reads the one home, and none hands it the bare price.
-  // #4357 (`INV-PAY-119`): the cron charged worth while the member's and the
-  // officer's doors charged the bare price, so a change fee recorded on an
-  // unpaid booking was left off - and the capture, which admits only worth,
-  // refused or stranded it. Each door sizes its attempt from the one figure.
+  // #4357 (`INV-PAY-119`): the cron charged worth while the charge-saved-method
+  // route and the officer's confirm-pending-guests route charged the bare price,
+  // so a change fee recorded on an unpaid booking was left off - and the settle,
+  // which admits only worth, refused it. Each door sizes its attempt from the
+  // one figure, imported from its one home (a local copy fails here).
   it("every saved-card door charges the one figure, savedCardChargeCents (#4357)", () => {
     const doors = sourceFiles(path.join(REPO, "src")).filter(
       (file) => file !== ATTEMPT_WRITER_HOME && /\bbeginSavedCardChargeAttempt\(/.test(read(file)),
@@ -301,13 +300,25 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     for (const file of SAVED_CARD_DOORS) {
       const text = read(file);
       expect(text, `${file} charges savedCardChargeCents`).toMatch(/\bsavedCardChargeCents\(/);
-      expect(text, `${file} defines its own figure`).not.toMatch(/\bfunction\s+savedCardChargeCents\b/);
+      expect(text, `${file} imports the figure from its one home`).toMatch(
+        /import\s*\{[^}]*\bsavedCardChargeCents\b[^}]*\}\s*from\s*"@\/lib\/booking-payment-state"/,
+      );
+      expect(text, `${file} defines its own figure`).not.toMatch(
+        /\b(?:function|const|let|var)\s+savedCardChargeCents\b/,
+      );
       expect(PAY_STEPS, file).toContain(file);
     }
+    // The officer's confirm dialog quotes - and decides "no charge" on - the
+    // same figure the route charges.
+    const section = read("src/app/(authenticated)/bookings/[id]/_components/booking-admin-tools-section.tsx");
+    expect(section).toMatch(/savedCardChargeCents=\{savedCardChargeCents\(booking\)\}/);
+    expect(read("src/components/admin/confirm-pending-guests-button.tsx")).not.toMatch(/\bfinalPriceCents\b/);
     expect(savedCardChargeCents({ finalPriceCents: 10_000, payment: { changeFeeCents: 2_500 } })).toBe(12_500);
     expect(savedCardChargeCents({ finalPriceCents: 10_000, payment: null })).toBe(10_000);
   });
 
+  // #3991: the narrative quotes "$X is due" from what it is handed, so every
+  // file that resolves one reads the one home, and none hands it the bare price.
   it("every source file that resolves a booking narrative reads the amount owed there", () => {
     const callers = sourceFiles(path.join(REPO, "src")).filter((file) =>
       /\bresolveBookingNarrative\(/.test(read(file)) && file !== "src/lib/booking-narrative.ts",
