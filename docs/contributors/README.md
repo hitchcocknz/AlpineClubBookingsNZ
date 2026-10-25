@@ -156,6 +156,9 @@ method, scope and finish line for each.
   guide for agent lanes, including the worktree runtime and dependency
   preflight (Windows and Linux/WSL), and lane-owned Docker teardown with the report-only
   `pnpm run stale-containers` debris check.
+- [`../agents/COORDINATION.md`](../agents/COORDINATION.md) — on-demand
+  coordination: where work state lives, when a coordinator runs, reservations
+  that never time out, handoffs, choosing review lenses, asking the owner.
 - [`../agents/ISSUE_WORKFLOW.md`](../agents/ISSUE_WORKFLOW.md) — issue
   contracts: the human-first issue-body order, reading the whole thread,
   claiming, recording a decision, the ready comment, and what never goes in a

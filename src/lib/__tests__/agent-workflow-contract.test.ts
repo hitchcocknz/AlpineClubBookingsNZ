@@ -1,8 +1,46 @@
+import { execFileSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { posix, resolve } from "node:path";
 
 function readRepoFile(path: string): string {
   return readFileSync(resolve(process.cwd(), path), "utf8");
+}
+
+// Codex's default `project_doc_max_bytes`. `.codex/config.toml` raises it, but
+// only for a trusted project, so the default is the budget every launch gets.
+const CODEX_DEFAULT_BUDGET = 32_768;
+const INSTRUCTION_FILE = /(?:^|\/)AGENTS(?:\.override)?\.md$/;
+
+/**
+ * Each directory holding an instruction file, with the combined bytes Codex
+ * loads when started there: one file per directory from the root down, an
+ * `AGENTS.override.md` taking its directory's place. Returns the chains over
+ * the default budget as `"<dir>: <bytes> bytes"` (the root is `""`).
+ */
+function oversizedInstructionChains(sizes: ReadonlyMap<string, number>): string[] {
+  const perDirectory = new Map<string, number>();
+  for (const [path, bytes] of sizes) {
+    const dir = posix.dirname(path) === "." ? "" : posix.dirname(path);
+    if (path.endsWith("AGENTS.override.md") || !perDirectory.has(dir)) perDirectory.set(dir, bytes);
+  }
+  const oversized: string[] = [];
+  for (const dir of perDirectory.keys()) {
+    const ancestors = dir === "" ? [""] : ["", ...dir.split("/").map((_, i, parts) => parts.slice(0, i + 1).join("/"))];
+    const total = ancestors.reduce((sum, ancestor) => sum + (perDirectory.get(ancestor) ?? 0), 0);
+    if (total > CODEX_DEFAULT_BUDGET) oversized.push(`${dir}: ${total} bytes`);
+  }
+  return oversized;
+}
+
+/** Phrases that set a fixed number of review lenses or reviewers. */
+function fixedLensCounts(text: string): string[] {
+  const count = String.raw`(?:one|two|three|four|five|\d+)`;
+  const pattern = new RegExp(
+    String.raw`\b(?:gets?|requires?|needs?|at least|minimum of|dispatch(?:es)?)\s+(?:at least\s+)?${count}\s+(?:distinct\s+|independent\s+|review\s+)*(?:lens(?:es)?|reviewers?)\b` +
+      String.raw`|\b${count}\s+distinct\s+lenses\b`,
+    "gi",
+  );
+  return [...text.replace(/\s+/g, " ").matchAll(pattern)].map((match) => match[0]);
 }
 
 describe("repository agent workflow contract", () => {
@@ -43,6 +81,91 @@ describe("repository agent workflow contract", () => {
     expect(agents).toContain("/context");
     // The full invariant index is looked up, not read in full every session.
     expect(agents).toMatch(/grep -n "INV-[A-Z]+-\d{3}" docs\/DOMAIN_INVARIANTS\.md/);
+  });
+
+  /*
+    #3905 decision 4: the root's ceiling alone does not prove Codex reads every
+    rule. Codex concatenates one instruction file per directory from the repo
+    root down to where it starts (AGENTS.override.md replacing AGENTS.md in the
+    same directory) and stops at the combined budget, so a nested file under a
+    root near the ceiling is silently truncated. Every chain must fit.
+  */
+  it("keeps every combined Codex instruction chain within the default budget", () => {
+    const tracked = execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" }).split("\0");
+    const sizes = new Map(
+      tracked
+        .filter((path) => INSTRUCTION_FILE.test(path))
+        .map((path) => [path, Buffer.byteLength(readRepoFile(path), "utf8")] as const),
+    );
+    expect(sizes.has("AGENTS.md")).toBe(true);
+    expect(oversizedInstructionChains(sizes)).toEqual([]);
+  });
+
+  it("measures instruction chains the way Codex loads them", () => {
+    // Positive: a root alone at the ceiling fits; a nested file fits beside a small root.
+    expect(oversizedInstructionChains(new Map([["AGENTS.md", CODEX_DEFAULT_BUDGET]]))).toEqual([]);
+    expect(
+      oversizedInstructionChains(new Map([["AGENTS.md", 24_000], ["docs/AGENTS.md", 8_000]])),
+    ).toEqual([]);
+    // Negative: the root fits on its own but the nested chain does not.
+    expect(
+      oversizedInstructionChains(new Map([["AGENTS.md", 30_000], ["src/lib/AGENTS.md", 3_000]])),
+    ).toEqual(["src/lib: 33000 bytes"]);
+    // An override replaces its directory's AGENTS.md rather than adding to it…
+    expect(
+      oversizedInstructionChains(
+        new Map([["AGENTS.md", 30_000], ["AGENTS.override.md", 2_000], ["src/AGENTS.md", 2_000]]),
+      ),
+    ).toEqual([]);
+    // …but an oversized override is still caught.
+    expect(oversizedInstructionChains(new Map([["AGENTS.override.md", 40_000]]))).toEqual([": 40000 bytes"]);
+  });
+
+  /*
+    #3905 CP1: coordination is on demand. State lives on GitHub and in git, no
+    model-powered supervisor runs between tasks, and a reservation never times
+    out into someone else's hands. Reviewer counts are the lane's choice (owner
+    decision 3): no fixed count may come back into the core or the guides.
+  */
+  it("keeps coordination on demand, reservations held and lens counts discretionary", () => {
+    const agents = readRepoFile("AGENTS.md").replace(/\s+/g, " ");
+    const coordination = readRepoFile("docs/agents/COORDINATION.md").replace(/\s+/g, " ");
+    expect(agents).toContain("no model-powered supervisor runs between tasks");
+    expect(agents).toContain("Reservations hold until released.");
+    expect(agents).toContain("Never take over, push to, reset or rebase another lane's branch or worktree");
+    expect(agents).toContain("Unknown occupancy is not a free slot.");
+    expect(agents).toContain("no fixed count (owner decision, #3905)");
+    expect(agents).toContain("an issue never grows on its own");
+    expect(coordination).toContain("never runs as a recurring loop, a scheduled wakeup or a standing supervisor");
+    expect(coordination).toContain("not a `thatskiff33` comment");
+
+    const routingRow = readRepoFile("AGENTS.md")
+      .split("\n")
+      .find((line) => line.startsWith("| Coordinating lanes"));
+    expect(routingRow).toContain("(docs/agents/COORDINATION.md)");
+
+    for (const path of [
+      "AGENTS.md",
+      "docs/agents/COORDINATION.md",
+      "docs/agents/SUBAGENT_GUIDE.md",
+      "docs/agents/ISSUE_WORKFLOW.md",
+      "docs/agents/EPIC_PLAYBOOK.md",
+      "docs/agents/CODEX_WORKFLOW.md",
+    ]) {
+      expect(fixedLensCounts(readRepoFile(path)), path).toEqual([]);
+    }
+  });
+
+  it("recognises a fixed reviewer count however it is worded", () => {
+    // The wording CP1 removed, and close variants, are caught…
+    expect(fixedLensCounts("Critical work gets three distinct lenses; standard work two")).not.toEqual([]);
+    expect(fixedLensCounts("docs-only work gets one lens")).not.toEqual([]);
+    expect(fixedLensCounts("dispatch at least 2 review lenses")).not.toEqual([]);
+    expect(fixedLensCounts("requires two reviewers")).not.toEqual([]);
+    // …while describing discretion, or one lens's brief, is not.
+    expect(fixedLensCounts("picks how many further lenses, and which")).toEqual([]);
+    expect(fixedLensCounts("`INV-SSOT` is in one review's brief on every PR")).toEqual([]);
+    expect(fixedLensCounts("found independently by two lenses")).toEqual([]);
   });
 
   it("keeps the safety-critical rules in the always-read core", () => {

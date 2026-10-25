@@ -17,8 +17,9 @@ do not clash.
 - UI/UX adversarial review
 - Test coverage and drift adversarial review
 - **Single source of truth check — on every reviewed pull request** (#3126).
-  `AGENTS.md` is the authority for review counts: this check goes into one
-  lens's brief on every PR, and becomes a lens of its own only for a
+  `AGENTS.md` is the authority for how lenses are chosen (no fixed count;
+  [`COORDINATION.md`](COORDINATION.md#reviews-choosing-lenses)): this check
+  goes into one review's brief on every PR, and becomes a lens of its own only for a
   substantial new abstraction, rule or refactor. It is never skipped, because
   the defect it looks for is invisible to a reviewer checking a diff against
   its brief: the copy that already exists elsewhere in the tree. The rules are
