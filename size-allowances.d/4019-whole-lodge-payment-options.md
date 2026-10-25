@@ -34,7 +34,7 @@ reason: one optional field on the request type, current module eligibility
   the #2263 controls already live in their own file beside it.
 
 file: src/lib/email/booking.ts
-lines: 1812
+lines: 1827
 reason: the pay-online shape is a type swap and a spread at the two places
   the sender composes the payment-due note; the composer itself lives in
   email-payment-due-note.ts (moved there whole from email-message-notes.ts,
