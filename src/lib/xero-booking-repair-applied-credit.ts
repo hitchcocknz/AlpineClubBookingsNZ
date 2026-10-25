@@ -11,6 +11,7 @@ import type {
 } from "./xero-booking-repair-types";
 import { getBlockingOperation, isStuckOperation } from "./xero-booking-repair-object-resolution";
 import { addAction, addFinding, addResolvedInXeroFinding, buildRetryAction } from "./xero-booking-repair-findings";
+import { addCreditNoteSpentOutsideFindings } from "./xero-booking-repair-credit-note-spent";
 
 /**
  * A retry action, auto-applied only where Xero did not refuse the operation
@@ -111,6 +112,16 @@ export function addUnallocatedCardAppliedCreditFindings(
     details,
     actionKeys: [action.key],
   });
+}
+
+/** Every applied-credit finding about a booking, in one call for the classifier (which is over its size budget). */
+export function addAppliedCreditFindings(
+  findings: MutableFinding[],
+  actionMap: Map<string, BookingXeroRepairAction>,
+  context: BookingClassificationContext,
+): void {
+  addUnallocatedCardAppliedCreditFindings(findings, actionMap, context);
+  addCreditNoteSpentOutsideFindings(findings, context); // #4220
 }
 
 /**

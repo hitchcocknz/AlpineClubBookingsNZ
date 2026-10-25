@@ -9,7 +9,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import { syncBookingLedgerCredits } from "@/lib/booking-ledger-credit-sync";
-import { RESTORED_CREDIT_PREFIX, bookingAppliedCreditWhere } from "@/lib/member-credit-booking-rows";
+import { RESTORED_CREDIT_PREFIX, bookingAppliedCreditWhere, memberCreditBalanceCents } from "@/lib/member-credit-booking-rows";
 import { createAuditLog } from "./audit";
 import { recordBookingEvent } from "./booking-events";
 import { isPrismaUniqueConstraintError } from "./prisma-errors";
@@ -118,12 +118,7 @@ export async function getMemberCreditBalance(
   memberId: string,
   tx?: Prisma.TransactionClient
 ): Promise<number> {
-  const db = tx || prisma;
-  const result = await db.memberCredit.aggregate({
-    where: { memberId },
-    _sum: { amountCents: true },
-  });
-  return result._sum.amountCents ?? 0;
+  return memberCreditBalanceCents(tx || prisma, memberId);
 }
 
 /**

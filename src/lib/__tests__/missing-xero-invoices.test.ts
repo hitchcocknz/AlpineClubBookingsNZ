@@ -31,6 +31,12 @@ const mocks = vi.hoisted(() => ({
   cronFindFirst: vi.fn(),
   paymentFindMany: vi.fn(),
   findResolvedBookingInvoiceCreate: vi.fn(),
+  findCreditNotesSpentOutsideApp: vi.fn(),
+}));
+
+// #4220: the credit-note early warning has its own suites; here only that the summary counts what it finds.
+vi.mock("@/lib/xero-credit-note-spent-outside-flag", () => ({
+  findCreditNotesSpentOutsideApp: mocks.findCreditNotesSpentOutsideApp,
 }));
 
 vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
@@ -122,6 +128,7 @@ beforeEach(() => {
   mocks.cronFindFirst.mockResolvedValue(null);
   mocks.paymentFindMany.mockResolvedValue([]);
   mocks.findResolvedBookingInvoiceCreate.mockResolvedValue(null);
+  mocks.findCreditNotesSpentOutsideApp.mockResolvedValue([]);
 });
 
 describe("getMissingXeroInvoiceBookings reads the #3001 evidence rule (#3467)", () => {
@@ -246,6 +253,18 @@ describe("the club-wide count moves with the same rule", () => {
 
     // Two of three candidates are missing; the stamped one is not counted.
     expect(snapshot.missingInvoices).toEqual({ count: 2 });
+  });
+
+  it("getXeroAdminHealthSnapshot().creditNotesSpentOutsideApp.count is the early warning's count (#4220)", async () => {
+    mocks.bookingFindMany.mockResolvedValue([]);
+    mocks.findCreditNotesSpentOutsideApp.mockResolvedValue([{ creditNoteId: "note-1" }, { creditNoteId: "note-2" }]);
+
+    const snapshot = await getXeroAdminHealthSnapshot();
+
+    expect(snapshot.creditNotesSpentOutsideApp).toEqual({ count: 2 });
+    // The whole club, not one booking: no booking filter is passed.
+    expect(mocks.findCreditNotesSpentOutsideApp).toHaveBeenCalledWith(expect.anything());
+    expect(mocks.findCreditNotesSpentOutsideApp.mock.calls.at(-1)).toHaveLength(1);
   });
 
   it("the stuck-state dashboard and the finance health count both read that field", () => {

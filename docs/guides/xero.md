@@ -298,6 +298,14 @@ Operators can switch the writes off with no deploy
 ([how](../xero/ARCHITECTURE.md#the-inbound-credit-note-mirror-4270)); while off, the log
 says what it would have done.
 
+**Early warning.** Credit a booking has already been given is not written down. If
+Xero shows that credit used elsewhere, the **Credit used in Xero** card on the Xero
+health page counts the notes affected (Review when above zero), and the booking repair
+check lists "credit note spent in Xero outside the app" against each booking involved.
+It changes nothing and sends nothing: look at the note in Xero, and either undo the use
+or let the booking's allocation be refused and corrected by itself. It shows up once
+Xero's change has reached the app, and clears the same way.
+
 ### Manage auto-grouping (Xero member grouping)
 
 1. **Xero member grouping** (`/admin/xero/member-grouping`, also linked from the

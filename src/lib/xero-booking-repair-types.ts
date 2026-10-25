@@ -9,6 +9,7 @@ import type { PaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-
 import type { PaidBackRefundRequest } from "@/lib/xero-inbound/refund-request-paid-back";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import type { AdditionalCaptureReceiptEvidence } from "./xero-booking-repair-additional-capture";
+import type { CreditNoteSpentOutsideApp } from "./xero-credit-note-spent-outside-flag";
 
 export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "MISSING_PRIMARY_INVOICE",
@@ -71,6 +72,9 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   // #4231 (`INV-PAY-118`): a refund request paid back before the booking had
   // an invoice, whose own note was therefore never queued. Queues it.
   "REFUND_REQUEST_NOTE_NOT_QUEUED",
+  // #4220: a credit note drawn onto this booking was spent in Xero on something
+  // the app has no record of. Report-only, read from stored evidence, no Xero call.
+  "APPLIED_CREDIT_NOTE_CONSUMED_EXTERNALLY",
 ] as const;
 
 export type XeroBookingRepairFindingCode =
@@ -641,6 +645,11 @@ export interface BookingClassificationContext {
    * the invoice that mint raises is deferred, not missing.
    */
   openAdditionalIntentRecoveryModificationIds: Set<string>;
+  /**
+   * #4220: credit notes drawn onto this booking that Xero shows spent outside the
+   * app (`findCreditNotesSpentOutsideApp`). Absent or empty: none.
+   */
+  creditNotesSpentOutsideApp?: CreditNoteSpentOutsideApp[];
 }
 
 export interface MutableFinding {

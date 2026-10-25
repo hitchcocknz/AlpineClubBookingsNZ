@@ -3537,6 +3537,40 @@ Oct 2026).
   adjustment: it is a spendable credit with no note, so a fresh Xero note would be
   raised for it while the original still holds the credit.
 
+## The early warning for credit spent in Xero (#4220)
+
+The mirror writes down only the **free** part of a lot. Credit already drawn onto a
+booking is left to the converge, which acts only when Xero refuses that booking's
+allocation. The early warning tells an officer before that happens (owner decision,
+24 Oct 2026): a booking whose backing note has less credit left in Xero than the app
+still counts as drawn onto it. It is report-only: no ledger row, no Xero write, no
+stored flag, no email, and no Xero call when asked.
+
+- **Evidence kept at ingest.** `reconcileXeroCreditNote` stores a summary of what Xero
+  sent about the note's spend under one key, `spendEvidence`, in the metadata of the
+  note's non-refund `CREDIT_NOTE` links (`xero-credit-note-spend-evidence.ts`): status,
+  total, remaining credit, the allocation and payment lists, the note's change time and
+  when it was read. It is a raw reading, not a verdict, and is written only when the
+  note funds a credit lot. It goes through the existing link upsert, so it merges over
+  the outbound figures a link already carries.
+- **Verdict derived on every ask** (`xero-credit-note-spent-outside-flag.ts`), from
+  the database only, through the mirror's own comparator (`xero-credit-note-outside-spend.ts`
+  and `planOutsideSpendMirror`): the note must be active, its list must be explained
+  (`spendIsExplained`), and at least two minutes old, then `outsideSpendCents` less what
+  is already written down is planned. What the plan leaves as `leftForAllocationCents` is
+  flagged. A missing, malformed, inactive, unexplained or unsettled reading, a note
+  shared by several lots, or a note with no active link flags nothing.
+- **Where it shows.** The booking repair pass reports `APPLIED_CREDIT_NOTE_CONSUMED_EXTERNALLY`
+  (warning, never auto-applied, no action) on each booking holding a slice of a
+  flagged lot, and the Xero health summary shows a "Credit used in Xero" count of
+  flagged notes.
+- **Lag.** The reading is as fresh as the note's last webhook or cursor-sync
+  reconcile, so a spend shows up when Xero's change reaches the app (Xero's read-after-write
+  lag adds to that), and a reversal clears the same way. The mirror sweep reads Xero but
+  does not refresh the stored reading. A note with no active link has nowhere to keep it.
+- **Locks.** None. Nothing is held across a provider call; the only write is one more
+  key in a link's metadata, through the same upsert the reconcile already made.
+
 ## Card payment for credit released after an outside spend (#4253)
 
 After a credit note is found spent outside the app (previous section), the booking's

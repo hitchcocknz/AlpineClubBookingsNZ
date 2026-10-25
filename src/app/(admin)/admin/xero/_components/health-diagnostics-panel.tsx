@@ -359,6 +359,12 @@ export function HealthAndDiagnosticsPanels({
                 onClick={() => scrollToSection("contactLinkMismatches")}
               />
               <HealthStatCard
+                label="Credit used in Xero"
+                value={health.creditNotesSpentOutsideApp.count}
+                subtitle="Credit notes spent in Xero outside the app while a booking still draws on them. Run the booking repair check to see which bookings."
+                badge={health.creditNotesSpentOutsideApp.count > 0 ? <ToneChip tone="warning" icon={AlertTriangle}>Review</ToneChip> : <ToneChip tone="success" icon={CheckCircle2}>Clear</ToneChip>}
+              />
+              <HealthStatCard
                 label="API budget"
                 value={health.apiBudget.usagePercent != null ? `${Math.round(health.apiBudget.usagePercent * 100)}%` : "Unknown"}
                 subtitle={health.apiBudget.totalCalls != null ? `${health.apiBudget.totalCalls} calls today, ${health.apiBudget.failedCalls ?? 0} failed` : "Usage snapshot not available yet."}

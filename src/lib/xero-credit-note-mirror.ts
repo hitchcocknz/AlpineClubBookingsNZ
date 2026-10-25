@@ -43,7 +43,6 @@ import { CreditType } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
 import { createAuditLog } from "./audit";
-import { exactProviderAmountToCents } from "@/lib/money-provider-amount";
 import { getMemberCreditBalance, lockMemberCreditLedger } from "./member-credit";
 import { findAppliedCreditDeallocationFence } from "./xero-applied-credit-operation-serialization";
 import {
@@ -52,12 +51,14 @@ import {
 } from "./xero-operation-outbox-payload";
 import { findFundingLotsForNote } from "./xero-applied-credit-slice-lookup";
 import {
+  ACTIVE_NOTE_STATUSES,
+  CREDIT_NOTE_MIRROR_SETTLE_MS,
+  creditNoteMirrorEvidenceFrom,
   outsideSpendCents,
   spendIsExplained,
-  xeroAllocationsOf,
-  xeroPaymentsOf,
+  type CreditNoteMirrorEvidence,
+  type XeroCreditNoteLike,
 } from "./xero-credit-note-outside-spend";
-import type { XeroNoteAllocation, XeroNotePayment } from "./xero-credit-note-spent-outside-app";
 import { planOutsideSpendMirror } from "./xero-credit-note-mirror-plan";
 import {
   CREDIT_NOTE_MIRROR_RESTORE_DESCRIPTION,
@@ -66,8 +67,8 @@ import {
   writtenDownCentsByCreditNote,
 } from "./xero-credit-note-write-down";
 
-/** A note changed more recently than this is left for a later look (owner decision, 24 Oct 2026). */
-export const CREDIT_NOTE_MIRROR_SETTLE_MS = 2 * 60 * 1000;
+// Defined with the comparator (`xero-credit-note-outside-spend.ts`) so the early warning needs no database client to share them.
+export { CREDIT_NOTE_MIRROR_SETTLE_MS };
 
 /** `CronJobRun.jobName` of the backstop sweep, and the `XeroSyncCursor` rows the mirror keeps. */
 export const CREDIT_NOTE_MIRROR_JOB_NAME = "xero-credit-note-outside-spend-mirror";
@@ -78,50 +79,8 @@ const RECHECK_SCOPE_PREFIX = "RECHECK:";
 export const CREDIT_NOTE_MIRROR_MIRRORED_ACTION = "xero.credit_note.outside_spend_mirrored";
 export const CREDIT_NOTE_MIRROR_RESTORED_ACTION = "xero.credit_note.outside_spend_restored";
 
-/** What a read of one Xero credit note brings, in exact cents. */
-export interface CreditNoteMirrorEvidence {
-  creditNoteId: string;
-  status: string | null;
-  totalCents: number | null;
-  remainingCents: number | null;
-  allocations: XeroNoteAllocation[];
-  payments: XeroNotePayment[];
-  /** Xero's `UpdatedDateUTC`, or null when it is missing or unreadable (which defers). */
-  updatedAt: Date | null;
-}
-
-export interface XeroCreditNoteLike {
-  creditNoteID?: string | null;
-  status?: unknown;
-  total?: unknown;
-  remainingCredit?: unknown;
-  updatedDateUTC?: unknown;
-  allocations?: Parameters<typeof xeroAllocationsOf>[0];
-  payments?: Parameters<typeof xeroPaymentsOf>[0];
-}
-
-function readInstant(value: unknown): Date | null {
-  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = new Date(value);
-    return Number.isNaN(parsed.getTime()) ? null : parsed;
-  }
-  return null;
-}
-
-/** The mirror's evidence from a `getCreditNote` body; the caller's own read, never a second one. */
-export function creditNoteMirrorEvidenceFrom(note: XeroCreditNoteLike): CreditNoteMirrorEvidence | null {
-  if (!note.creditNoteID) return null;
-  return {
-    creditNoteId: note.creditNoteID,
-    status: typeof note.status === "string" ? note.status.trim().toUpperCase() : null,
-    totalCents: exactProviderAmountToCents(note.total),
-    remainingCents: exactProviderAmountToCents(note.remainingCredit),
-    allocations: xeroAllocationsOf(note.allocations),
-    payments: xeroPaymentsOf(note.payments),
-    updatedAt: readInstant(note.updatedDateUTC),
-  };
-}
+export { creditNoteMirrorEvidenceFrom };
+export type { CreditNoteMirrorEvidence, XeroCreditNoteLike };
 
 export type CreditNoteMirrorRefusal =
   | "no-funding-lot"
@@ -200,8 +159,6 @@ export async function clearCreditNoteMirrorRecheck(db: typeof prisma, creditNote
     where: { resourceType: CREDIT_NOTE_MIRROR_CURSOR_RESOURCE, scope: `${RECHECK_SCOPE_PREFIX}${creditNoteId}` },
   });
 }
-
-const ACTIVE_NOTE_STATUSES = ["AUTHORISED", "PAID"];
 
 export async function mirrorCreditNoteOutsideSpend(
   evidence: CreditNoteMirrorEvidence,

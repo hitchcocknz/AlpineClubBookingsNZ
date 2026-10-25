@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   memberCreditAggregate: vi.fn(),
   memberCreditCreate: vi.fn(),
   memberCreditFindMany: vi.fn(),
+  // #4220: does the note fund a credit lot (the early warning keeps its spend reading only then).
+  memberCreditFindFirst: vi.fn(),
   // #3792: the late capacity cancel's restore of the booking's applied credit.
   memberCreditCreateMany: vi.fn(),
   // #3792: the inbound sync's restore-row read.
@@ -150,6 +152,7 @@ vi.mock("@/lib/prisma", () => ({
       aggregate: mocks.memberCreditAggregate,
       create: mocks.memberCreditCreate,
       findMany: mocks.memberCreditFindMany,
+      findFirst: mocks.memberCreditFindFirst,
       update: mocks.memberCreditUpdate,
       updateMany: mocks.memberCreditUpdateMany,
     },
@@ -589,6 +592,7 @@ describe("processStoredXeroInboundEvents", () => {
     });
     mocks.memberCreditCreate.mockResolvedValue({ id: "credit_1" });
     mocks.memberCreditFindMany.mockResolvedValue([]);
+    mocks.memberCreditFindFirst.mockResolvedValue(null);
     mocks.memberCreditCreateMany.mockResolvedValue({ count: 1 });
     mocks.memberCreditFindUnique.mockResolvedValue(null);
     mocks.linkFindMany.mockResolvedValue([]);
@@ -5912,6 +5916,52 @@ describe("processStoredXeroInboundEvents", () => {
         }),
       })
     );
+  });
+
+  describe("#4220: the early warning's reading is kept with the note's links", () => {
+    async function reconcileAccountCreditNote(fundsALot: boolean, linkRole: string) {
+      mocks.inboundFindMany.mockResolvedValue([
+        { id: "evt_4220", source: "webhook", eventCategory: "CREDIT_NOTE", eventType: "UPDATE", resourceId: "cn_4220", correlationKey: "corr_4220", payload: { resourceId: "cn_4220" } },
+      ]);
+      mocks.processedCreate.mockResolvedValue({ id: "processed_4220" });
+      mocks.memberCreditFindFirst.mockResolvedValue(fundsALot ? { id: "lot_4220" } : null);
+      mocks.linkFindMany.mockResolvedValueOnce([{ localModel: "Payment", localId: "pay_4220", xeroObjectType: "CREDIT_NOTE", role: linkRole }]);
+      mocks.getAuthenticatedXeroClient.mockResolvedValue({
+        xero: {
+          accountingApi: {
+            getCreditNote: vi.fn().mockResolvedValue({
+              body: { creditNotes: [{ creditNoteID: "cn_4220", creditNoteNumber: "CN-4220", status: "PAID", total: 52.5, remainingCredit: 0, updatedDateUTC: "2026-06-30T23:00:00.000Z", allocations: [{ allocationID: "al_1", invoice: { invoiceID: "inv_outside" }, amount: 52.5 }], payments: [] }] },
+            }),
+          },
+        },
+        tenantId: "tenant_1",
+      });
+      await processStoredXeroInboundEvents();
+      return mocks.upsertXeroObjectLink.mock.calls
+        .map(([link]) => link as { xeroObjectType: string; xeroObjectId: string; role: string; metadata: Record<string, unknown> })
+        .filter((link) => link.xeroObjectType === "CREDIT_NOTE" && link.xeroObjectId === "cn_4220");
+    }
+
+    it("stamps what Xero sent about the spend onto the link of a note that funds a credit lot", async () => {
+      const links = await reconcileAccountCreditNote(true, "ACCOUNT_CREDIT_NOTE");
+
+      expect(links.length).toBeGreaterThan(0);
+      expect(links[0]!.metadata).toMatchObject({
+        status: "PAID",
+        spendEvidence: { status: "PAID", totalCents: 5250, remainingCents: 0, allocations: [{ invoiceId: "inv_outside", cents: 5250 }] },
+      });
+    });
+
+    it("keeps nothing for a note that funds no lot, and nothing on a refund note's link", async () => {
+      const noLot = await reconcileAccountCreditNote(false, "ACCOUNT_CREDIT_NOTE");
+      expect(noLot.length).toBeGreaterThan(0);
+      for (const link of noLot) expect(link.metadata).not.toHaveProperty("spendEvidence");
+
+      vi.clearAllMocks();
+      const refundNote = await reconcileAccountCreditNote(true, "REFUND_CREDIT_NOTE");
+      expect(refundNote.length).toBeGreaterThan(0);
+      for (const link of refundNote) expect(link.metadata).not.toHaveProperty("spendEvidence");
+    });
   });
 
   it("repairs an admin-adjustment-minted note (no CANCELLATION_REFUND provenance) whose final allocation was deleted in Xero (#1925)", async () => {

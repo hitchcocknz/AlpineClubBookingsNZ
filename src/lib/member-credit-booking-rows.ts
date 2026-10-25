@@ -192,3 +192,16 @@ export function bookingIdOfCreditRow(credit: CreditRowLinks): string | null {
   if (credit.type === BOOKING_APPLIED_CREDIT_TYPE) return credit.appliedToBookingId;
   return (BOOKING_ISSUED_CREDIT_TYPES as readonly CreditType[]).includes(credit.type) ? credit.sourceBookingId : null;
 }
+
+/**
+ * A member's credit balance: the signed sum of every `MemberCredit` row, the one
+ * definition (`INV-SSOT`). `getMemberCreditBalance` is this with the application
+ * client; readers that must not import it (the Xero repair load, #4220) pass their own.
+ */
+export async function memberCreditBalanceCents(
+  db: Pick<Prisma.TransactionClient, "memberCredit">,
+  memberId: string,
+): Promise<number> {
+  const result = await db.memberCredit.aggregate({ where: { memberId }, _sum: { amountCents: true } });
+  return result._sum.amountCents ?? 0;
+}

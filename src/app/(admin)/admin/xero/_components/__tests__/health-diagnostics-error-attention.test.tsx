@@ -41,6 +41,7 @@ const health = {
     status: "healthy",
   },
   missingInvoices: { count: 1 },
+  creditNotesSpentOutsideApp: { count: 0 },
 }
 
 describe("Xero health action error attention (#2597)", () => {
@@ -104,5 +105,28 @@ describe("Xero health action error attention (#2597)", () => {
     expect(
       screen.getByRole("button", { name: "Trigger All Missing" }),
     ).toBeEnabled()
+  })
+
+  it("counts credit notes spent in Xero outside the app on its own card (#4220)", async () => {
+    mocks.fetchJson.mockResolvedValue({ ...health, creditNotesSpentOutsideApp: { count: 3 } })
+    render(
+      <HealthAndDiagnosticsPanels
+        connected
+        shortCode={null}
+        currentXeroPath="/admin/xero"
+        healthOpen
+        contactGroupMismatchesOpen={false}
+        contactLinkMismatchesOpen={false}
+        onToggle={vi.fn()}
+        onMessage={vi.fn()}
+        onRefreshOperations={vi.fn()}
+        refreshToken={0}
+        scrollToSection={vi.fn()}
+      />,
+    )
+
+    const card = (await screen.findByText("Credit used in Xero")).closest("div")!.parentElement!
+    expect(card).toHaveTextContent("3")
+    expect(card).toHaveTextContent("Review")
   })
 })

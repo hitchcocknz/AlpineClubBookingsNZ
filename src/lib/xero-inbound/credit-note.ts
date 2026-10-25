@@ -3,6 +3,7 @@ import { bookingOwner } from "@/lib/booking-owner";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 import { creditNoteMirrorEvidenceFrom, mirrorCreditNoteOutsideSpend } from "@/lib/xero-credit-note-mirror";
+import { creditNoteSpendEvidenceMetadata } from "@/lib/xero-credit-note-spend-evidence";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync";
@@ -84,6 +85,10 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
       .map((link) => link.localId)
   );
 
+  // #4220: what Xero sent about the note's spend, kept with its links (never a refund note's) for the early warning.
+  const spendEvidence = await creditNoteSpendEvidenceMetadata(creditNote, prisma);
+  const withSpendEvidence = (link: XeroObjectLinkInput): XeroObjectLinkInput =>
+    isRefundNoteLinkOf(link) ? link : { ...link, metadata: { ...(link.metadata as Record<string, unknown>), ...spendEvidence } };
   const creditNoteLinks = dedupeXeroObjectLinks([
     ...relatedLinks.map(
       (link) =>
@@ -137,7 +142,7 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
   ]);
 
   for (const link of creditNoteLinks) {
-    await upsertXeroObjectLink(link);
+    await upsertXeroObjectLink(withSpendEvidence(link));
   }
 
   const linkedRefundPaymentIds = creditNoteLinks

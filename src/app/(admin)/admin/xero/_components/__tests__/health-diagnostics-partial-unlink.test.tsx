@@ -46,6 +46,7 @@ const healthResponse = {
     lastCronStartedAt: null,
   },
   missingInvoices: { count: 0 },
+  creditNotesSpentOutsideApp: { count: 0 },
   contactGroupMismatches: { count: 0, cacheReady: true },
   contactLinkMismatches: { count: 0, cacheReady: true },
   apiBudget: {

@@ -87,7 +87,7 @@ import {
   scopedGiveBackNote,
   withoutScopedSideNotes,
 } from "@/lib/xero-booking-repair-side-notes";
-import { addUnallocatedCardAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
+import { addAppliedCreditFindings, waitForAppliedCreditWorkBeforeClearing } from "./xero-booking-repair-applied-credit";
 import { addKeptLateCaptureRefundByHandFinding, addLateCaptureCardRefundByHandFindings, addPaidAnotherWayReceiptFinding } from "./xero-booking-repair-paid-another-way";
 import { addUnrecordedAdditionalCaptureFindings } from "./xero-booking-repair-additional-capture";
 import { addRefundRequestNoteNotQueuedFindings, paidBackRefundRequestCents } from "./xero-booking-repair-request-notes";
@@ -1471,7 +1471,7 @@ export function classifyBookingContext(
 
   if (payment) addUnsettledRefundCreditNoteFindings(findings, actionMap, booking.id, context.paymentRefundPaymentLinks, paymentOperations, paymentLinks);
   addRefundRequestNoteNotQueuedFindings({ findings, actionMap, context }); // #4231
-  addUnallocatedCardAppliedCreditFindings(findings, actionMap, context);
+  addAppliedCreditFindings(findings, actionMap, context);
   if (payment && refundCreditNote) {
     const refundAmountCents = getCashCancellationRefundCandidateCents(booking, paidBackRefundRequestCents(context), context.modificationOperationsById);
     if (refundAmountCents !== null && refundAmountCents > 0) {

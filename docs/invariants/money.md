@@ -726,6 +726,10 @@ check the others.
   `xero.credit_note.outside_spend_mirrored` and `.outside_spend_restored`. A
   write-down never takes the member's balance below zero, and the member is not
   emailed.
+- Credit Xero shows spent that a booking still holds is only reported (#4220;
+  owner decision, 24 Oct 2026): a repair-check finding and a health count, derived on
+  every ask from the reading kept at ingest, with no ledger row, stored flag, email or
+  Xero call.
 
 ## INV-MONEY-008
 

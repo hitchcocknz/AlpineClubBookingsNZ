@@ -5046,6 +5046,19 @@ that change a lot's free balance (the allocation engine's plan, a cancel's resto
 an admin adjustment) take the member key, so the mirror's free-credit and balance
 reads under that key are exact.
 
+## The early warning for credit spent in Xero: no lock (#4220)
+
+`findCreditNotesSpentOutsideApp` (`xero-credit-note-spent-outside-flag.ts`) only reads:
+slices, lots, the note's stored spend reading, the net write-down and the balance, each a
+plain read with no transaction, no advisory key and no Xero call, so the repair pass and
+the health snapshot that call it hold nothing across a provider call. A read that races a
+mirror or a converge sees the ledger before or after it and flags or clears on the next
+ask; it can neither write nor block them. The one write it relies on is the
+`spendEvidence` key `reconcileXeroCreditNote` adds to a link's metadata through the
+existing upsert (`mergeMetadata`), the same read-modify-write as the metadata the
+reconcile already merges; two reconciles of one note write readings of the same note, and
+the later one wins. Real-PostgreSQL proof: `credit-note-spent-outside-early-warning.realdb.test.ts`.
+
 ## A request for released credit: the recovery claim, and one global-key close (#4253)
 
 The card request for credit released by `convergeCreditNoteSpentOutsideApp` is

@@ -97,3 +97,55 @@ export async function outsideSpendCents(
     payments.filter((p) => !knownPayments.has(p.paymentId)).reduce((sum, p) => sum + p.cents, 0)
   );
 }
+
+/** A note changed more recently than this is left for a later look (owner decision, 24 Oct 2026). */
+export const CREDIT_NOTE_MIRROR_SETTLE_MS = 2 * 60 * 1000;
+
+/** The statuses a credit note may have for its spend to be read; anything else is a different class of change. */
+export const ACTIVE_NOTE_STATUSES = ["AUTHORISED", "PAID"];
+
+/** What a read of one Xero credit note brings, in exact cents. */
+export interface CreditNoteMirrorEvidence {
+  creditNoteId: string;
+  status: string | null;
+  totalCents: number | null;
+  remainingCents: number | null;
+  allocations: XeroNoteAllocation[];
+  payments: XeroNotePayment[];
+  /** Xero's `UpdatedDateUTC`, or null when it is missing or unreadable (which defers). */
+  updatedAt: Date | null;
+}
+
+export interface XeroCreditNoteLike {
+  creditNoteID?: string | null;
+  status?: unknown;
+  total?: unknown;
+  remainingCredit?: unknown;
+  updatedDateUTC?: unknown;
+  allocations?: Parameters<typeof xeroAllocationsOf>[0];
+  payments?: Parameters<typeof xeroPaymentsOf>[0];
+}
+
+function readInstant(value: unknown): Date | null {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+  return null;
+}
+
+/** The mirror's evidence from a `getCreditNote` body; the caller's own read, never a second one. */
+export function creditNoteMirrorEvidenceFrom(note: XeroCreditNoteLike): CreditNoteMirrorEvidence | null {
+  if (!note.creditNoteID) return null;
+  return {
+    creditNoteId: note.creditNoteID,
+    status: typeof note.status === "string" ? note.status.trim().toUpperCase() : null,
+    totalCents: exactProviderAmountToCents(note.total),
+    remainingCents: exactProviderAmountToCents(note.remainingCredit),
+    allocations: xeroAllocationsOf(note.allocations),
+    payments: xeroPaymentsOf(note.payments),
+    updatedAt: readInstant(note.updatedDateUTC),
+  };
+}
+

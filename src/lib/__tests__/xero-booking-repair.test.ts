@@ -10,6 +10,7 @@ import { SECOND_INSTRUMENT_SETTLEMENT_CONFLICT_EVENT_KIND } from "@/lib/manual-s
 import { unsettledRefundNoteRows } from "@/lib/xero-refund-note-unsettled";
 import { modificationNoteWording, readModificationNoteWording } from "@/lib/xero-refund-method";
 import { buildEditFinancialReviewChargeReason, buildLateCaptureApprovalRefundRecoveryIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { storedSpendEvidenceFrom } from "@/lib/xero-credit-note-spend-evidence";
 import { cardRefundPaidAnotherWayOccurrenceKey } from "@/lib/manual-refund-task-settlement-rules";
 
 function makeBooking(overrides: Record<string, unknown> = {}) {
@@ -335,6 +336,13 @@ function createDependencies(state: {
   allocatedAppliedCreditByBookingId?: Record<string, number>;
   // #3836: applied credit with no Xero note stamped, per booking.
   unallocatedAppliedCreditByBookingId?: Record<string, number>;
+  // #4220: slices and lots a credit note drawn onto a booking has; the note's stored reading rides in `links`.
+  creditNoteSpend?: {
+    slices: { memberCreditId: string; appliedToBookingId: string; amountCents: number }[];
+    lots: { id: string; memberId: string; amountCents: number; xeroCreditNoteId: string }[];
+    /** The `spendEvidence` metadata the note's active link carries; none means the note was never read. */
+    evidence?: Record<string, unknown>;
+  };
 }) {
   const links = state.links ?? [];
   const operations = state.operations ?? [];
@@ -497,7 +505,12 @@ function createDependencies(state: {
         // loader's refund-note read (`refundNoteSetsForPayments`, #4231) and the refund-payment
         // read (`refundPaymentLinkWhere`). The loader's other reads name no role and get every link.
         findMany: vi.fn().mockImplementation(async ({ where }: any = {}) =>
-          typeof where?.role === "string" ? links.filter((link: any) => link.role === where.role) : links,
+          // #4220: the early warning's read of the stored spend evidence, asked for by the credit note's id and the evidence key.
+          Array.isArray(where?.metadata?.path) && where.metadata.path[0] === "spendEvidence"
+            ? (state.creditNoteSpend?.evidence
+                ? (state.creditNoteSpend.lots ?? []).map((lot) => ({ xeroObjectId: lot.xeroCreditNoteId, metadata: { spendEvidence: state.creditNoteSpend!.evidence } }))
+                : [])
+            : typeof where?.role === "string" ? links.filter((link: any) => link.role === where.role) : links,
         ),
         // #3953: the change's own supplementary invoice link (`readCaptureRecorder`).
         findFirst: vi.fn().mockImplementation(async ({ where }: any = {}) =>
@@ -560,8 +573,11 @@ function createDependencies(state: {
         }),
       },
       memberCreditNoteAllocation: {
+        findMany: vi.fn().mockImplementation(async () => state.creditNoteSpend?.slices ?? []),
         groupBy: vi.fn().mockImplementation(async ({ where }: any) =>
-          (where?.appliedToBookingId?.in ?? [])
+          where?.memberCreditId
+            ? (state.creditNoteSpend?.slices ?? []).map((slice) => ({ memberCreditId: slice.memberCreditId, _sum: { amountCents: slice.amountCents } }))
+            : (where?.appliedToBookingId?.in ?? [])
             .filter((bookingId: string) =>
               bookingId in (state.allocatedAppliedCreditByBookingId ?? {})
             )
@@ -572,6 +588,8 @@ function createDependencies(state: {
         ),
       },
       memberCredit: {
+        findMany: vi.fn().mockImplementation(async () => state.creditNoteSpend?.lots ?? []),
+        aggregate: vi.fn().mockResolvedValue({ _sum: { amountCents: 0 } }),
         groupBy: vi.fn().mockImplementation(async ({ where }: any) =>
           (where?.appliedToBookingId?.in ?? [])
             .filter((bookingId: string) => bookingId in (state.unallocatedAppliedCreditByBookingId ?? {}))
@@ -640,6 +658,7 @@ function createDependencies(state: {
         }),
       },
       payment: {
+        findMany: vi.fn().mockResolvedValue([]),
         update: vi.fn().mockImplementation(async ({ where, data }: any) => {
           const booking = state.bookings.find((item) => item.payment?.id === where.id);
           if (booking?.payment) {
@@ -2531,6 +2550,55 @@ describe("runBookingXeroRepair", () => {
     const bookingReport = report.passes[0].bookings[0];
     expect(bookingReport.actions.map((action) => action.type)).not.toContain("QUEUE_APPLIED_CREDIT_ALLOCATION");
     expect(bookingReport.actions.some((action) => action.key === `retry:${operation.id}`)).toBe(retried);
+  });
+
+  // #4220 (lane a): the early warning for a credit note spent in Xero outside the app. Report-only; the
+  // verdict is derived from the evidence kept at ingest, with no Xero call.
+  const SPENT_NOTE_ID = "note_spent";
+  const spentOutsideState = (evidenceOverrides: Record<string, unknown> = {}, lotOverrides: Record<string, unknown> = {}) => ({
+    creditNoteSpend: {
+      slices: [{ memberCreditId: "lot_1", appliedToBookingId: "booking_1", amountCents: 10000 }],
+      lots: [{ id: "lot_1", memberId: "member_1", amountCents: 10000, xeroCreditNoteId: SPENT_NOTE_ID, ...lotOverrides }],
+      evidence: storedSpendEvidenceFrom(
+        {
+          creditNoteId: SPENT_NOTE_ID, status: "AUTHORISED", totalCents: 10000, remainingCents: 0,
+          allocations: [{ invoiceId: "inv_hand_made", cents: 10000 }], payments: [], updatedAt: new Date("2026-01-01T00:00:00.000Z"),
+          ...evidenceOverrides,
+        },
+        new Date("2026-01-01T00:05:00.000Z"),
+      ),
+    },
+  });
+
+  it("MUTATION (#4220): flags credit Xero shows spent outside the app while a booking still holds it, and queues nothing", async () => {
+    const deps = createDependencies({ bookings: [makeBooking()], operations: [makePrimaryInvoiceCreateOperation()], ...spentOutsideState() });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    const bookingReport = report.passes[0].bookings[0];
+    expect(bookingReport.findings.find((finding) => finding.code === "APPLIED_CREDIT_NOTE_CONSUMED_EXTERNALLY")).toMatchObject({
+      severity: "warning",
+      safeToAutoApply: false,
+      details: { creditNoteId: SPENT_NOTE_ID, memberCreditId: "lot_1", outsideSpendCents: 10000, leftForAllocationCents: 10000 },
+    });
+    // Report-only: the finding carries no action, and applying the pass queues nothing for it.
+    expect(bookingReport.actions.filter((action) => JSON.stringify(action).includes(SPENT_NOTE_ID))).toEqual([]);
+
+    await runBookingXeroRepair(CLUB_FORMAT_TEST, { apply: true, dependencies: deps, scope: { all: true } });
+    expect(deps.enqueueXeroAppliedCreditAllocationOperation).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { shape: "the note was never read", state: { creditNoteSpend: { ...spentOutsideState().creditNoteSpend, evidence: undefined } } },
+    { shape: "the note is voided", state: spentOutsideState({ status: "VOIDED" }) },
+    { shape: "Xero's list does not account for what the note lost", state: spentOutsideState({ allocations: [] }) },
+    { shape: "the note changed under two minutes before it was read", state: spentOutsideState({ updatedAt: new Date() }) },
+  ])("MUTATION (#4220): no warning where $shape", async ({ state }) => {
+    const deps = createDependencies({ bookings: [makeBooking()], operations: [makePrimaryInvoiceCreateOperation()], ...state });
+
+    const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+
+    expect(report.passes[0].bookings[0].findings.map((finding) => finding.code)).not.toContain("APPLIED_CREDIT_NOTE_CONSUMED_EXTERNALLY");
   });
 
   it("MUTATION (#3836 M2): a failed allocation Xero REFUSED (4xx) offers its retry as a manual action only", async () => {

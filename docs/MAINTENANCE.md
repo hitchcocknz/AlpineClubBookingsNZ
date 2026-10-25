@@ -1555,6 +1555,14 @@ appearing after the refund is recorded by hand, and that is expected: recording
 a refund by hand in Xero writes no row the app can read, and the tool has no
 way to acknowledge a finding.
 
+**Credit used in Xero while a booking holds it (#4220).** The tool reports
+`APPLIED_CREDIT_NOTE_CONSUMED_EXTERNALLY` (warning, report-only, no action, never
+applied) on a booking holding a slice of a credit lot whose note Xero shows spent on
+something the app has no record of, after the inbound mirror has written down what is
+free. It reads only the spend summary kept with the note's link at ingest, so it makes
+no Xero call and writes nothing; the Xero health page counts the same notes. No reading,
+an inactive or unsettled note, or a note shared by several lots shows nothing.
+
 **Credit-paid card bookings invoiced before #3836.** A card booking paid
 entirely with account credit was invoiced at its full price, but the credit was
 never allocated against the invoice, so Xero shows the whole booking owing and
