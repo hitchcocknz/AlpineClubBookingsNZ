@@ -94,8 +94,8 @@ second ask for the same money. Not recorded means not raised.
   bound, or another in-flight recovery of the booking
   (`isPaymentRecoveryOperationInFlight`) could own the match. So a later door's
   intent is never taken; the cost is that a drifted customer can exclude the
-  runner's own earlier intent, which then fails closed. Adoption leaves the payment's
-  customer as it was. The door's own mint looks nothing up.
+  runner's own earlier intent, which then fails closed. Adoption leaves the
+  payment's customer as it was. The door's own mint looks nothing up.
 - **An edit's ask row is never written over another edit's**: the ask write
   refuses, atomically, a row naming another `bookingModificationId`, and the
   runner also refuses an adopted intent that any row holds. That refusal ends
