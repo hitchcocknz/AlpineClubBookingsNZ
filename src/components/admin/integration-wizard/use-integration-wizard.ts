@@ -27,8 +27,17 @@ export interface WizardCursor {
   persistedStepId: string | null;
   /** Acknowledged (skipped) optional step ids. */
   acknowledged: string[];
-  /** Save the cursor. Best-effort; a failure never blocks the wizard. */
+  /**
+   * Save the cursor. Best-effort; a failure never blocks the wizard. Writes go
+   * out one at a time, newest waiting write next, so they reach the server in
+   * the order they were made (#4014).
+   */
   persist: (currentStepId: string, completedStepIds: string[]) => void;
+}
+
+interface CursorWrite {
+  currentStepId: string;
+  completedStepIds: string[];
 }
 
 export function useWizardCursor(wizardId: string): WizardCursor {
@@ -37,6 +46,50 @@ export function useWizardCursor(wizardId: string): WizardCursor {
   const [acknowledged, setAcknowledged] = useState<string[]>([]);
   // Avoid a redundant POST when nothing actually changed.
   const lastSaved = useRef<string>("");
+  // At most ONE cursor write on the wire at a time, latest wins (#4014).
+  //
+  // Two independent fetches carry no ordering guarantee: the browser can hold
+  // both in its per-host socket queue (six sockets, easily saturated by the
+  // admin shell's route prefetches) and the server can commit them in either
+  // order. The stored row is last-commit-wins, so an operator who moved
+  // create-app -> credentials -> connect in quick succession could be resumed
+  // on `credentials` after the OAuth round-trip, because the OLDER write landed
+  // second — captured in E2E run 37830486574, where the "credentials" write
+  // committed after the "connect" one on both retries.
+  //
+  // So a write made while another is in flight waits, and only the newest
+  // waiting write is sent: the server then sees writes in the order the
+  // operator made them, and an older position can never overwrite a newer one.
+  const writeInFlight = useRef(false);
+  const queuedWrite = useRef<CursorWrite | null>(null);
+
+  const sendWrite = useCallback(
+    (first: CursorWrite) => {
+      const send = (write: CursorWrite) => {
+        writeInFlight.current = true;
+        void fetch(ENDPOINT, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ wizardId, ...write }),
+        })
+          .catch(() => {
+            // Best-effort persistence; the in-memory cursor still drives the flow.
+          })
+          .finally(() => {
+            // Settled either way, so the next write may go. A failed write
+            // still releases the queue: dropping the newest position because
+            // an older one failed would be the same defect by another route.
+            writeInFlight.current = false;
+            const next = queuedWrite.current;
+            queuedWrite.current = null;
+            if (next) send(next);
+          });
+      };
+      send(first);
+    },
+    [wizardId],
+  );
 
   useEffect(() => {
     let active = true;
@@ -68,16 +121,15 @@ export function useWizardCursor(wizardId: string): WizardCursor {
       if (key === lastSaved.current) return;
       lastSaved.current = key;
       setAcknowledged(completedStepIds);
-      void fetch(ENDPOINT, {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wizardId, currentStepId, completedStepIds }),
-      }).catch(() => {
-        // Best-effort persistence; the in-memory cursor still drives the flow.
-      });
+      const write = { currentStepId, completedStepIds };
+      if (writeInFlight.current) {
+        // Replaces any write already waiting: only the newest position matters.
+        queuedWrite.current = write;
+        return;
+      }
+      sendWrite(write);
     },
-    [wizardId],
+    [sendWrite],
   );
 
   return { loaded, persistedStepId, acknowledged, persist };
