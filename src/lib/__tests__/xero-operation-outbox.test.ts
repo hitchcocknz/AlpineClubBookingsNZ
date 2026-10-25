@@ -817,7 +817,7 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
     mocks.keptInvoiceBillsChangeCapture.mockResolvedValueOnce(true);
     await expect(
       enqueueXeroSupplementaryInvoiceOperation({ bookingId: "booking_1", priceDiffCents: 8000, changeFeeCents: 0, bookingModificationId: "mod_1" }),
-    ).resolves.toMatchObject({ queueOperationId: null, outcome: "none" });
+    ).resolves.toMatchObject({ queueOperationId: null, outcome: "none", refusedBy: "kept-late-capture-invoice" });
     expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
     expect(mocks.keptInvoiceBillsChangeCapture).toHaveBeenCalledWith(expect.anything(), "mod_1");
   });

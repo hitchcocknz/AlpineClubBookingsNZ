@@ -851,6 +851,30 @@ describe("the primary invoice's worth gap (#3980)", () => {
     expect(mocks.review.mock.lastCall![0].figures).not.toHaveProperty("reductionsSettledBy");
   });
 
+  it("MUTATION #4324 (`INV-PAY-140`, item D): an anchor a kept late capture's own invoice bills is refused, and the shortfall goes to the treasurer's task naming why", async () => {
+    mocks.enqueue.mockResolvedValue({ queueOperationId: null, outcome: "none", refusedBy: "kept-late-capture-invoice" });
+    await expect(queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: increaseAtLink() })).resolves.toMatchObject({
+      gapCents: 8_000,
+      reviewOperationId: "op_review",
+      queueOperationId: null,
+    });
+    expect(mocks.review).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "UNDERBILLED",
+        gapCents: 8_000,
+        keptInvoiceBillsChange: true,
+        figures: expect.objectContaining({ keptLateCaptureInvoiceBillsModificationId: "mod_edit" }),
+      }),
+    );
+    // Any other refusal is logged as before, and raises no task.
+    mocks.review.mockClear();
+    mocks.enqueue.mockResolvedValue({ queueOperationId: null, outcome: "none" });
+    await expect(queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: increaseAtLink() })).resolves.toMatchObject({
+      reviewOperationId: null,
+    });
+    expect(mocks.review).not.toHaveBeenCalled();
+  });
+
   it("MUTATION review M3: never anchors on a $0 edit, or one with a financial review - the task instead", async () => {
     mocks.bookingModification.findMany.mockResolvedValue([marked("mod_zero", 0), marked("mod_parked", 8_000)]);
     mocks.manualRefundTask.findMany.mockResolvedValue([{ reviewContext: { bookingModificationId: "mod_parked" } }]);
