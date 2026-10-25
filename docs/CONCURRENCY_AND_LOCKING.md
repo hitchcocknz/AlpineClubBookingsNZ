@@ -185,8 +185,13 @@ every outcome but SUCCEEDED the same way (PARTIAL only off SUCCEEDED). A
 refused write answers null and raises no repeated-failure alert, so whichever
 order the two calls return in, a recorded success stands. The guard composes
 with the claim guards above: `onlyIfRunningSince` still writes onto its own
-RUNNING claim only. No advisory key, row lock or new participant. Proven
-against real PostgreSQL by `xero-shared-operation-outcome.realdb.test.ts`.
+RUNNING claim only, and no other outcome but SUCCEEDED lands on a repair's
+claim, which the PARTIAL repair (`PARTIAL_REPAIR_RUNNING`) and the FAILED
+refund-note repair (`REFUND_NOTE_REPAIR_RUNNING`) mark. A late outcome still
+lands on an unmarked RUNNING claim, such as the booking invoice replay's; that
+limit and its fix, a per-claim `startedAt` token, are #4373. No advisory key,
+row lock or new participant. Proven against real PostgreSQL by
+`xero-shared-operation-outcome.realdb.test.ts`.
 
 ### The Xero token refresh uses a row lease, shared across colours (#3454)
 

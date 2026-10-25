@@ -6,7 +6,9 @@
   same request was already being handled), whichever answer came back last was
   recorded. A task whose payment, invoice or credit note was in Xero could
   therefore show as failed on the Xero Operations page and count towards the
-  repeated-failure alert. A failure is now never recorded over a success, and a
-  part-success is never recorded over a full success; a success still replaces
-  an earlier failure, because it is Xero's answer to the same request. Nothing
-  changes in Xero, and no money moves.
+  repeated-failure alert. A failure is now never recorded over a success or a
+  part-success, and a part-success is never recorded over a full success; a
+  success still replaces an earlier failure, because it is Xero's answer to the
+  same request. A late failure also no longer lands on a part-completed task
+  while Retry is repairing it, which could leave the payment unrecorded.
+  Nothing changes in Xero, and no money moves.

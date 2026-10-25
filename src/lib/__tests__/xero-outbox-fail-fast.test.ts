@@ -81,18 +81,18 @@ const mocks = vi.hoisted(() => {
   );
 
   // The handlers' own `catch` self-fails the outbox row via this shared helper
-  // (xero-sync.ts): it writes FAILED + completedAt with no status guard. The
-  // mock reproduces that write against the store so the outbox's un-claim runs
-  // against a genuinely-FAILED row.
-  const failXeroSyncOperation = vi.fn(
-    async (operationId: string, _error?: unknown) => {
-      const row = rows.get(operationId);
-      if (row) {
-        row.status = "FAILED";
-        row.completedAt = new Date();
-      }
-    }
-  );
+  // (xero-sync.ts): it writes FAILED + completedAt over any row but one holding
+  // a recorded success, SUCCEEDED or PARTIAL, which it leaves as it is and
+  // answers null (#4356, `INV-INT-028`). The mock reproduces that write against
+  // the store so the outbox's un-claim runs against a genuinely-FAILED row.
+  const selfFail = async (operationId: string, _error?: unknown) => {
+    const row = rows.get(operationId);
+    if (!row || row.status === "SUCCEEDED" || row.status === "PARTIAL") return null;
+    row.status = "FAILED";
+    row.completedAt = new Date();
+    return { ...row };
+  };
+  const failXeroSyncOperation = vi.fn(selfFail);
 
   /**
    * #3170 fix round (F1): the worker re-reads an operation's payload AFTER it
@@ -103,12 +103,13 @@ const mocks = vi.hoisted(() => {
   const operationFindUnique = vi.fn(
     async ({ where }: { where: { id: string } }) => {
       const row = rows.get(where.id);
-      return row ? { requestPayload: row.requestPayload } : null;
+      return row ? { requestPayload: row.requestPayload, status: row.status } : null;
     }
   );
 
   return {
     rows,
+    selfFail,
     operationFindMany: vi.fn(),
     operationFindUnique,
     operationUpdateMany,
@@ -222,15 +223,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.rows.clear();
-    mocks.failXeroSyncOperation.mockImplementation(
-      async (operationId: string, _error?: unknown) => {
-        const row = mocks.rows.get(operationId);
-        if (row) {
-          row.status = "FAILED";
-          row.completedAt = new Date();
-        }
-      }
-    );
+    mocks.failXeroSyncOperation.mockImplementation(mocks.selfFail);
     mocks.chargeFindUnique.mockResolvedValue(null);
   });
 
@@ -332,6 +325,28 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
       await processQueuedXeroOutboxOperations({ limit: 1 });
 
       expect(mocks.rows.get("op_refund_1")?.status).toBe("FAILED");
+    });
+
+    // #4356 review F5: a caller sharing this row recorded its success while
+    // this run's handler was refused, so the handler's self-fail was kept off
+    // it. The un-claim then matches nothing, and that is not a failure.
+    it("MUTATION: a row another caller completed is left as it is, counted skipped, not failed", async () => {
+      const logger = (await import("@/lib/logger")).default;
+      queueOneRefundOperation();
+      mocks.createXeroCreditNote.mockImplementation(async () => {
+        const refusal = new XeroTransientOutageError(120, true);
+        Object.assign(mocks.rows.get("op_refund_1")!, { status: "SUCCEEDED", completedAt: new Date() });
+        await mocks.failXeroSyncOperation("op_refund_1", refusal);
+        throw refusal;
+      });
+
+      const result = await processQueuedXeroOutboxOperations({ limit: 1 });
+
+      expect(result).toMatchObject({ found: 1, processed: 1, succeeded: 0, failed: 0, skipped: 1 });
+      expect(mocks.rows.get("op_refund_1")?.status).toBe("SUCCEEDED");
+      expect(mocks.failXeroSyncOperation).toHaveBeenCalledTimes(1);
+      expect(logger.warn).not.toHaveBeenCalledWith(expect.anything(), expect.stringContaining("failing it"));
+      expect(logger.error).not.toHaveBeenCalled();
     });
 
     it("MEMBERSHIP_SUBSCRIPTION_INVOICE (non-self-failing handler): returns the RUNNING row", async () => {
@@ -465,13 +480,7 @@ describe("a failed subscription invoice never reopens a charge that needs no inv
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.rows.clear();
-    mocks.failXeroSyncOperation.mockImplementation(async (operationId: string) => {
-      const row = mocks.rows.get(operationId);
-      if (row) {
-        row.status = "FAILED";
-        row.completedAt = new Date();
-      }
-    });
+    mocks.failXeroSyncOperation.mockImplementation(mocks.selfFail);
     mocks.chargeUpdate.mockResolvedValue({ count: 1 });
     mocks.createXeroMembershipSubscriptionInvoice.mockRejectedValue(new Error("Xero is down"));
   });

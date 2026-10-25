@@ -27,6 +27,7 @@ import {
   startXeroSyncOperation,
   upsertXeroObjectLink,
 } from "@/lib/xero-sync";
+import { holdsRecordedXeroSuccess } from "@/lib/xero-operation-outcome-guard";
 import {
   createXeroInvoiceForBooking,
   updateXeroBookingInvoiceForBooking,
@@ -3272,6 +3273,21 @@ export async function processQueuedXeroOutboxOperations(options?: {
               queueType: payload?.queueType ?? null,
             },
             "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
+          );
+          result.skipped += 1;
+          continue;
+        }
+        // #4356: a caller sharing this row recorded a success on it, so the
+        // handler's own failure was refused (`INV-INT-028`). Nothing to return
+        // and nothing failed: that outcome stands.
+        const held = await prisma.xeroSyncOperation.findUnique({
+          where: { id: queuedOperation.id },
+          select: { status: true },
+        });
+        if (held && holdsRecordedXeroSuccess(held.status)) {
+          logger.info(
+            { queueOperationId: queuedOperation.id, queueType: payload?.queueType ?? null, heldStatus: held.status },
+            "Xero cooldown refused an outbox operation another caller had already completed; its outcome stands"
           );
           result.skipped += 1;
           continue;

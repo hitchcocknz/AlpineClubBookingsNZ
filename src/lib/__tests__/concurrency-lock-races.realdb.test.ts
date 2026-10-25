@@ -529,7 +529,8 @@ import "./xero-partial-repair-claim.realdb.test";
 // #4356 reuses it to prove two callers sharing one ACTIVE Xero operation row
 // never let a failure overwrite a recorded success: the real
 // createXeroPaymentForInvoice twice onto one row, each Xero call held on a gate,
-// in both orders, and a success replacing an earlier failure. Skipped unless
+// in both orders, a success replacing an earlier failure, and a late failure
+// kept off a PARTIAL repair's claim. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4356-` fixtures.
 import "./xero-shared-operation-outcome.realdb.test";
 // #4291 reuses it to prove a refund note Xero voided still recounts the payment

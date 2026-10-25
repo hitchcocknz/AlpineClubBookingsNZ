@@ -3721,7 +3721,14 @@ two callers on one row (the hand-off above) each record their own outcome of
   the same keyed Xero call (#4356, INV-INT-028): an outcome never replaces a
   better one. A failure, or a FAILED or CANCELLED completion, never lands on
   SUCCEEDED or PARTIAL; PARTIAL never lands on SUCCEEDED; SUCCEEDED lands on
-  any row. A refused write answers null: no link, no repeated-failure alert
+  any row. None but SUCCEEDED lands on a repair's marked RUNNING claim unless
+  written onto that claim. A refused write answers null: no link, no
+  repeated-failure alert. Limit (#4373): only claim-guarded completions lose
+  to a late outcome, and both repairs that use them are marked. A late outcome
+  still lands on any other RUNNING row: a plain FAILED retry's claim reads
+  FAILED mid-retry and a second retry may claim it; a new start can be handed
+  a claim row; the row leaves RUNNING, which the booking invoice retry's
+  settle-time fence relies on
 worker claims operation -> provider call -> success or retryable failure
 success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier
   wait's or failure's code is not shown on it (#4049); PARTIAL keeps them
@@ -3802,7 +3809,9 @@ PARTIAL invoice payment repair or refund-note repair claims PARTIAL -> RUNNING
   "Retry it once to close it", never "Repaired"
   Reset stale running reports FAILED and PARTIAL counts separately
   rows repaired before #4256 stay PARTIAL; one retry closes them
-FAILED refund-note repair claims FAILED -> RUNNING too; a throw -> FAILED
+FAILED refund-note repair claims FAILED -> RUNNING too, with code
+  REFUND_NOTE_REPAIR_RUNNING (#4356); a throw, or a stale reset of a dead run
+  -> FAILED
 mark non-replayable on FAILED/PARTIAL only, status-guarded: a retry that
   claimed the row after the officer's read -> 409, nothing written, no audit
 queued retry (REQUEUE) of an operation marked not replayable -> CANCELLED,

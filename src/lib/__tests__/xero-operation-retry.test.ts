@@ -179,7 +179,7 @@ import {
 import { CLUB_NAME } from "@/config/club-identity";
 import { PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON } from "@/lib/xero-primary-invoice-fee-at-link";
 import { PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE } from "@/lib/xero-partial-invoice-repair-amount";
-import { XERO_PARTIAL_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
+import { XERO_PARTIAL_REPAIR_RUNNING_CODE, XERO_REFUND_NOTE_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 function makeOperation(overrides: Record<string, unknown> = {}) {
@@ -3970,14 +3970,16 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
   describe("the FAILED refund-note repair claims its row too (review F3)", () => {
     const failedRefundNote = () => ({ ...partialRefundNote(), status: "FAILED" });
 
-    it("MUTATION: claims FAILED/PARTIAL before it settles, with no repair marker, and completes onto the claim", async () => {
+    // #4356: its own marker, not the PARTIAL one, so a stale reset still gives
+    // it back FAILED, and no other caller's late outcome lands on the claim.
+    it("MUTATION: claims FAILED/PARTIAL before it settles, with its own repair marker, and completes onto the claim", async () => {
       mocks.findUniqueOperation.mockResolvedValue(failedRefundNote());
       await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
 
       const claim = mocks.updateManyOperation.mock.calls[0][0];
       expect(claim).toEqual({
         where: { id: "op_123", status: { in: ["FAILED", "PARTIAL"] }, manuallyResolvedAt: null, replayable: true },
-        data: { status: "RUNNING", startedAt: expect.any(Date) },
+        data: { status: "RUNNING", startedAt: expect.any(Date), lastErrorCode: XERO_REFUND_NOTE_REPAIR_RUNNING_CODE },
       });
       expect(mocks.updateManyOperation.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.finishRefundCreditNoteSettlement.mock.invocationCallOrder[0],

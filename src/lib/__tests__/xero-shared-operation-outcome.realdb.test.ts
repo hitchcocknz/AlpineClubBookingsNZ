@@ -24,12 +24,19 @@
  * (#1881), which imports this file so CI reaches it; it owns and cleans its own
  * `race-4356-` fixtures.
  *
+ * Review F1 case (a): a PARTIAL invoice repair's claim (`runWithClaimedOriginal`,
+ * marked `PARTIAL_REPAIR_RUNNING`) is driven through the real Retry, and the
+ * other caller's late failure through the real writer its invoice create's
+ * `catch` calls, `failXeroSyncOperation(operationId, error)`. The PARTIAL row is
+ * seeded as `xero-partial-repair-claim.realdb.test.ts` seeds it.
+ *
  *   RUN_CONCURRENCY_RACE_TESTS=1 \
  *   CONCURRENCY_RACE_DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881 \
  *   pnpm exec vitest run src/lib/__tests__/xero-shared-operation-outcome.realdb.test.ts
  */
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { realElapsedMs } from "./helpers/clock";
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
 
@@ -41,6 +48,8 @@ const LOCAL_ID = "race-4356-payment";
 const INVOICE_ID = "race-4356-invoice";
 // Built, not quoted: a quoted `*Key` literal reads to gitleaks as a secret.
 const PAYMENT_KEY = ["race-4356", "invoice-payment", "v1"].join(":");
+const PARTIAL_OPERATION_ID = "race-4356-op-partial";
+const PARTIAL_INVOICE_KEY = ["race-4356", "invoice", "key"].join("-");
 
 type Deferred<T = void> = { promise: Promise<T>; resolve: (value: T) => void };
 function deferred<T = void>(): Deferred<T> {
@@ -56,6 +65,8 @@ type ScriptedCall = { started: Deferred; gate: Deferred; outcome: { paymentId: s
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let payments: typeof import("@/lib/xero-invoice-payments");
+let retry: typeof import("@/lib/xero-operation-retry");
+let sync: typeof import("@/lib/xero-sync");
 
 (RUN ? describe : describe.skip)(
   "#4356: callers sharing one ACTIVE Xero operation row never overwrite a success with a failure - real PostgreSQL",
@@ -140,6 +151,8 @@ let payments: typeof import("@/lib/xero-invoice-payments");
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       payments = await import("@/lib/xero-invoice-payments");
+      retry = await import("@/lib/xero-operation-retry");
+      sync = await import("@/lib/xero-sync");
       await clearFixtures();
     });
 
@@ -221,6 +234,65 @@ let payments: typeof import("@/lib/xero-invoice-payments");
       expect(await countedFailures()).toBe(0);
       const link = await prisma.xeroObjectLink.findFirst({ where: { localId: LOCAL_ID, xeroObjectType: "PAYMENT" } });
       expect(link?.xeroObjectId).toBe("race-4356-xero-payment-l");
+    });
+
+    // Review F1 case (a). Before the marker guard the late failure landed on
+    // the repair's claim and replaced its payload, the repair's give-back then
+    // lost, and the next retry took the FAILED invoice create path, which finds
+    // the invoice already there and closes the row with no payment recorded.
+    it("MUTATION: a late failure never lands on a PARTIAL repair's claim, so the repair gives the row back PARTIAL and the next retry pays", async () => {
+      const partialPayload = {
+        invoice: { invoices: [{ invoiceID: INVOICE_ID, total: 45.67 }] },
+        payment: null,
+        paymentError: { message: "Xero 503 on the payment write" },
+        paymentSkipped: false,
+      };
+      await prisma.xeroSyncOperation.create({
+        data: {
+          id: PARTIAL_OPERATION_ID,
+          direction: "OUTBOUND",
+          entityType: "INVOICE",
+          operationType: "CREATE",
+          localModel: "Payment",
+          localId: LOCAL_ID,
+          status: "PARTIAL",
+          idempotencyKey: PARTIAL_INVOICE_KEY,
+          correlationKey: PARTIAL_INVOICE_KEY,
+          responsePayload: partialPayload,
+          xeroObjectType: "INVOICE",
+          xeroObjectId: INVOICE_ID,
+          xeroObjectNumber: "INV-4356",
+          completedAt: new Date(),
+        },
+      });
+      const repairCall = scripted({ error: "Xero 503 again" });
+      script = [repairCall, scripted({ paymentId: "race-4356-xero-payment-repaired" })];
+      const repair = retry.retryXeroSyncOperation(PARTIAL_OPERATION_ID, CLUB_FORMAT_TEST);
+      void repair.catch(() => undefined);
+      await waitFor(repairCall.started.promise, "the repair's Xero call");
+      const readPartial = () => prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: PARTIAL_OPERATION_ID } });
+      expect(await readPartial()).toMatchObject({ status: "RUNNING", lastErrorCode: "PARTIAL_REPAIR_RUNNING" });
+
+      // L's late failure, as its invoice create's catch writes it.
+      await expect(
+        sync.failXeroSyncOperation(PARTIAL_OPERATION_ID, new Error("Xero 409: a request with this key is in progress")),
+      ).resolves.toBeNull();
+      expect(await readPartial()).toMatchObject({ status: "RUNNING", lastErrorCode: "PARTIAL_REPAIR_RUNNING" });
+      expect(repeatedFailureAlert).not.toHaveBeenCalled();
+
+      repairCall.gate.resolve();
+      await expect(repair).rejects.toThrow("Xero 503 again");
+      const givenBack = await readPartial();
+      expect(givenBack).toMatchObject({ status: "PARTIAL", lastErrorMessage: "Xero 503 again" });
+      expect(givenBack.responsePayload).toEqual(partialPayload);
+
+      script[1]!.gate.resolve();
+      await expect(retry.retryXeroSyncOperation(PARTIAL_OPERATION_ID, CLUB_FORMAT_TEST)).resolves.toEqual({
+        message: "Repaired Xero booking invoice payment recording.",
+      });
+      const repaired = await readPartial();
+      expect(repaired.status).toBe("SUCCEEDED");
+      expect(repaired.responsePayload).toMatchObject({ payment: { paymentID: "race-4356-xero-payment-repaired" } });
     });
   },
 );
