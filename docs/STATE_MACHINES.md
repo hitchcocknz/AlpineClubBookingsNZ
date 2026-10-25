@@ -4039,6 +4039,11 @@ PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
 PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
                        held, each refused slice on its next key, then retried; INV-PAY-128)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
+PROCESSING -> FAILED  (held before any send, #4359, INV-PAY-142: Stripe holds a
+                       refund made outside the app on a slice's intent since
+                       its debt arose - DEAD at once, nothing sent, lastError
+                       CARD_REFUND_RESEND_HELD, alerted and audited once; a
+                       Stripe read that fails sends nothing and is retried)
 (none) -> PENDING     (a refund Stripe accepted, then failed: a new row per
                        Stripe refund, card_refund_failed_later_<refund>, under
                        the Payment row lock; INV-PAY-128)
@@ -4105,6 +4110,21 @@ so it asks afresh. The legacy group settlement refund (plans frozen before
 #3653) and the superseded group intent's webhook refund fail on a refusal as on
 a throw; each retry's key moves past the refusals Stripe holds on the intent
 for that refund, so it asks afresh.
+
+Before any card refund it sends, the runner reads the refunds Stripe holds on
+each slice's intent (#4359, `INV-PAY-142`): one bounded read per intent, after
+its claim and outside any transaction. It records every refund the app has not
+seen through what `charge.refunded` does (the one ledger writer and the Xero
+notes for what it newly recorded), then sends nothing when a refund Stripe
+counts there carries no app metadata (a Stripe dashboard refund) and was made
+at or after the slice's debt arose - when Stripe failed the refund a
+failed-later slice is sent for, when Stripe refused a refused slice's refusal,
+else when the row was raised. The row is ended at once through the one terminal
+transition, fenced on its own claim: `FAILED`, attempts spent, `lastError`
+coded `CARD_REFUND_RESEND_HELD`; the officers are told to check Stripe before
+"Paid another way", and the hold is audited. A read that fails sends nothing
+and fails the attempt for the backoff. A dashboard refund Stripe makes between
+the read and the send is not seen (the sub-second race #4361's stage 3 closes).
 
 A refund Stripe accepted (`pending`) and failed later is owed again (#4104,
 `INV-PAY-128`), by one row. The one writer of a charge's refund rows

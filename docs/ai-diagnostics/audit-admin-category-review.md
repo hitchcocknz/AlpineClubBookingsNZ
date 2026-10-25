@@ -584,9 +584,9 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  516
+row-producing sites:  517
 uncategorised:        0
-category values: admin 108, booking 108, xero 44, family 35, payment 64,
+category values: admin 108, booking 108, xero 44, family 35, payment 65,
                  lodge 66, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
@@ -853,6 +853,12 @@ sweep), filed `payment`, and the recording of its card payment in Xero, filed `x
 `pnpm run audit:census`): `xero.credit_note.outside_spend_mirrored` and
 `xero.credit_note.outside_spend_restored`, the inbound credit-note mirror's rows, filed
 `xero` beside the converge's.
+
+#4359 then added one more (`payment` 64 -> 65, 516 -> 517, MEASURED with
+`pnpm run audit:census`): `booking-payment.card-refund.resend-held`, a card refund
+the recovery runner did not send because Stripe holds a refund made outside the app
+since it became owed, filed `payment` beside the paid-another-way close the same
+people read.
 
 #4154 then added one more (`payment` 57 -> 58, 504 -> 505, MEASURED with
 `pnpm run audit:census`): `booking-payment.capacity-race.refunded-total-corrected`,

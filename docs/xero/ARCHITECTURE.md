@@ -2225,10 +2225,12 @@ raises nothing.
   the plan and wins. That refund
   answers the slice's failures (`cardRefundFailuresAnsweredBy`). No charge,
   amount or time is read: a refund no slice is marked with - one made in the
-  Stripe dashboard, whenever - answers nothing and is noted in full. So a
-  dashboard refund made while the row still waits, and the replay's re-send
-  after it, are two refunds with two notes' worth of credit: $80 in Xero for
-  $80 refunded (the member was paid twice, #4359).
+  Stripe dashboard, whenever - answers nothing and is noted in full. A
+  dashboard refund made while the row still waits, since its debt arose, now
+  holds the replay: the runner reads Stripe before it sends, records the
+  dashboard refund (and its note, as `charge.refunded` would) and sends nothing
+  (#4359, `INV-PAY-142`). The failed refund's note still stands beside the
+  dashboard refund's until stage 2 of #4361.
 - **A re-send Stripe failed too passes on what it answered.** The slice marked
   with it lists its own failures, which join the next re-send's answer; a slice
   re-planned while its row is open lists the failed re-send beside the earlier
@@ -2318,7 +2320,8 @@ Stated limits:
   instead is linked to nothing the app made, so it gets its own note and the
   failed refund's note still stands: Xero credits that amount twice until an
   officer voids one (owner decision, 25 Oct 2026). #4361 plans the automated
-  design for this family of cases, #4359 included.
+  design for this family of cases; its first stage (#4359) holds the replay
+  past such a dashboard refund, so the member is not paid twice.
 - **A re-send whose final attempt loses its answer after `charge.refunded`
   left it to that attempt is noted by nobody.** The webhook defers to a row
   still mid-attempt; when that attempt's answer is lost (a timeout, a crash the

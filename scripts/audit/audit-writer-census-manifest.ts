@@ -684,7 +684,10 @@ export const AUDIT_CENSUS_TOTALS = {
   // 514 -> 516 (#4270): `xero.credit_note.outside_spend_mirrored` and `.outside_spend_restored`, the
   // inbound credit-note mirror's rows, awaited `createAuditLog` inside its own transaction, under `xero`.
   // RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 516,
+  // 516 -> 517 (#4359): `booking-payment.card-refund.resend-held`, a card refund the recovery runner held
+  // because Stripe holds a refund made outside the app since its debt arose, awaited `createAuditLog`
+  // after the hold's own write, under `payment`. RE-MEASURED with `pnpm run audit:census`.
+  writeSites: 517,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -894,7 +897,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 148 -> 149 (#4338): its close of a concurrent attempt's failed allocation, in the same transaction.
     // 149 -> 154 (#4253): the released-credit request's five rows, above.
     // 154 -> 156 (#4270): the credit-note mirror's two rows, in its transaction.
-    createAuditLog: { total: 156, uncategorised: 0 },
+    // 156 -> 157 (#4359): the runner's hold of a card refund past a dashboard refund, after its write.
+    createAuditLog: { total: 157, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1100,7 +1104,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // answered by a person - the payment's figures, read by the same people.
     // 60 -> 64 (#4253): a released-credit request raised, not raised, and closed because Xero shows
     // the invoice paid (at ask time and by the sweep) - the payment's figures, read by the same people.
-    payment: 64,
+    // 64 -> 65 (#4359): a card refund the runner held past a dashboard refund - read by the people who reconcile it.
+    payment: 65,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

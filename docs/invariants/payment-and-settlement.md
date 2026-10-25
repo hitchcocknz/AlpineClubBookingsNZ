@@ -1641,6 +1641,40 @@ release).
   `additional-capture-receipt-unattributed.realdb.test.ts` and
   `xero-booking-repair.test.ts`.
 
+## INV-PAY-142
+
+**Related: `INV-PAY-128`** (a refused or failed-later refund stays owed),
+**`INV-PAY-056`** (the one terminal transition).
+
+- **The recovery runner never sends a card refund past a refund made outside
+  the app since the debt arose** (#4359; #4361 wave 1, design D).
+  - **Read first.** After its claim and before any Stripe refund call, outside
+    any transaction, one bounded read per slice intent
+    (`listRefundsForPaymentIntent`, no retries). A failed read sends nothing;
+    the attempt retries on the backoff.
+  - **Record what the app has not seen**, through what `charge.refunded` does
+    (`recordChargeRefunds`: the one ledger writer, then the Xero notes for
+    what it newly recorded), so no note is lost. A known refund's status is
+    left to the webhook and the cron read-back.
+  - **Hold.** A refund Stripe counts with no app metadata (`cardRefundDoorOf`:
+    `outside-app`), made at or after the slice's debt arose, in Stripe's whole
+    seconds (`cardRefundDebtAroseAtSeconds`): when Stripe failed a
+    failed-later slice's refund (its failure's balance transaction), when it
+    refused a refused slice's, else when the row was raised. Any amount. The
+    whole row sends nothing.
+  - **Held is dead at once**: `CardRefundResendHeldError` through
+    `failPaymentRecoveryOperation`, fenced on the attempt held - attempts
+    spent, `lastError` coded `CARD_REFUND_RESEND_HELD` (Stuck States reads it
+    as "Stripe may have refunded"), the officers told to check Stripe before
+    "Paid another way", audited once.
+  - **Every runner send is checked**: the edit, cancellation, refund request,
+    failed-later and superseded-payment replays (a census pins the call sites).
+  - **Stated limit**: a dashboard refund Stripe makes between the read and the
+    send is not seen.
+  - Proven by `card-refund-resend-stripe-check.test.ts`,
+    `payment-recovery.test.ts`, `card-refund-resend-stripe-check.realdb.test.ts`
+    and `xero-bt-card-refund-notes.realdb.test.ts`.
+
 ## INV-PAY-031
 
 - An organiser-pays group settlement applies only when the payment matches the

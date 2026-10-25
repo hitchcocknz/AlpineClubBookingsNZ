@@ -117,6 +117,23 @@ the card note covers, Xero credits more than went back; the Xero reconciliation
 report lists it as refund coverage above the refunded total, for you to correct
 in Xero.
 
+**A refund held because of a Stripe dashboard refund** (#4359). Before the app
+sends any card refund it still owes - most often one Stripe failed later - it
+reads the refunds Stripe holds on that payment. If someone has refunded the
+payment in the Stripe dashboard since that refund became owed, the app sends
+nothing, so the member is not paid twice. It stops retrying at once, emails the
+officers, and records the hold in the [audit log](audit-log.md) under
+**Payment**. The row's last error starts `CARD_REFUND_RESEND_HELD` and names
+the dashboard refund, and the row says **Stripe may have refunded: check the
+Stripe dashboard first**. Check that refund in Stripe. If it paid this refund
+back and was for the same amount, nothing is left owed and the row leaves this
+list on its own (it still shows in **Exhausted recovery operations**). If it
+was for a different amount, the list still shows this whole refund as owed:
+work out what the member is still owed before you close it. If it was for
+something else, pay the member with **Paid another way** and close the row
+here; do not make another refund in the Stripe dashboard. If the app cannot reach Stripe to
+check, it sends nothing and tries again later, as for any other failure.
+
 A refund the app did not make for the booking - one made by hand in the Stripe
 dashboard, or an older group refund - that fails is not asked for again and is
 not counted under Refunds owed. The officers are emailed with its Stripe refund
@@ -397,6 +414,7 @@ without widening who can read the membership roll.
 | **Paid another way** says the payment "no longer holds that much to refund" | Another refund or credit on the same payment used the money since the page loaded | Reload the page and check the amount still owed |
 | **Paid another way** says the refund "changed while you were closing it", or that the amount is "more than this refund still owes" | A refund was recorded on the payment, or someone else closed it, since the page loaded. The list refreshes behind the dialog | Check the new amount still owed, and Stripe, before closing again |
 | A row says **Stripe may have refunded** | Its last retry failed with a timeout, a network or Stripe server error, Stripe saying it was already refunded, or an `idempotency_error` (Stripe already received this refund) | Check the payment's refunds in the Stripe dashboard before paying the member another way |
+| A row's last error starts `CARD_REFUND_RESEND_HELD` | Someone refunded the payment in the Stripe dashboard after this refund became owed, so the app did not send it (#4359) | Check that dashboard refund in Stripe. If it paid this back, nothing more is owed; if not, use **Paid another way**, not another dashboard refund |
 | **Paid another way** says paid back in full "must be exactly what is still owed" | What is owed changed since the page loaded | Reload the page, check the amount, and choose again |
 | The dialog says what is still owed changed, or closes and says the refund is no longer waiting | A refund was recorded, or someone else closed it, while the dialog was open | Check the new amount, or the payment, before doing anything more |
 | **Paid another way** says the late card charge's Xero record "changed while you were closing it" | An officer resolved or withdrew the charge's record in Xero while you were closing the refund | Reload the page. The dialog then says what will be recorded in Xero now |
