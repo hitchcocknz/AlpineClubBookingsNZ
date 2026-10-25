@@ -790,9 +790,10 @@ let xeroEdit: typeof import("@/lib/xero-booking-edit-settlement");
 
         await run(debt.id);
 
-        const refunds = await prisma.paymentRefund.findMany({ where: { paymentId: H.payment }, orderBy: { createdAt: "asc" } });
-        expect(refunds.map((refund) => refund.amountCents)).toEqual([5_000, 3_000]);
-        expect(refunds[1]).toMatchObject({ stripePaymentIntentId: H.pi, paymentTransactionId: null });
+        // #4284: under the frozen clock both refunds can share a createdAt, so no read order is fixed: match them by amount.
+        const refunds = await prisma.paymentRefund.findMany({ where: { paymentId: H.payment } });
+        expect(refunds.map((refund) => refund.amountCents).sort((left, right) => right - left)).toEqual([5_000, 3_000]);
+        expect(refunds.find((refund) => refund.amountCents === 3_000)).toMatchObject({ stripePaymentIntentId: H.pi, paymentTransactionId: null });
         expect(stripe.byKey.get(debt.idempotencyKey)?.metadata).toMatchObject({ reason: "organiser_child_appeal", bookingId: H.child });
         expect(await childPayment()).toMatchObject({ refundedAmountCents: 8_000, status: "PARTIALLY_REFUNDED" });
         expect((await prisma.groupBookingSettlement.findUniqueOrThrow({ where: { id: H.settlement } })).status).toBe("PARTIALLY_REFUNDED");
