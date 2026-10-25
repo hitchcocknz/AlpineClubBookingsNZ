@@ -75,11 +75,13 @@ import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import { lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
 import {
-  SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY,
   XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
   supplementaryInvoiceBilledCents,
-  supplementaryInvoiceWaitedFirstOn,
 } from "@/lib/xero-operation-outbox-payload";
+import {
+  SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY,
+  supplementaryInvoiceWaitedFirstOn,
+} from "@/lib/supplementary-invoice-parked-from";
 import { OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES } from "@/lib/xero-supplementary-invoice-statuses";
 import { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } from "@/lib/xero-supplementary-invoice-late-capture";
 

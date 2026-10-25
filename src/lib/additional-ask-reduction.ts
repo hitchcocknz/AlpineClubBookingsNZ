@@ -83,7 +83,7 @@ import {
 import { lockPaymentForRefundedTotal, reconcilePaymentAggregates } from "@/lib/payment-transactions";
 import { ADDITIONAL_ASK_RETIRED_BY_REDUCTION_XERO_ERROR_CODE } from "@/lib/unpaid-ask-offset-marker";
 import { waitingSupplementaryInvoiceOperationsWhere } from "@/lib/xero-supplementary-invoice-statuses";
-import { supplementaryInvoiceWaitedFirstOn } from "@/lib/xero-operation-outbox-payload";
+import { supplementaryInvoiceWaitedFirstOn } from "@/lib/supplementary-invoice-parked-from";
 
 /** One unpaid row of the ask a reduction is set against. */
 export type UnpaidPriceAskRow = {

@@ -573,24 +573,6 @@ export function readQueuedOutboxPayload(
   };
 }
 
-/** #3403: the payload key naming the intent a supplementary invoice first waited on, before a supersession moved it. */
-export const SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY = "parkedFromPaymentIntentId";
-
-/**
- * #3403 (`INV-PAY-070`): THE INTENT WHOSE ASK A WAITING SUPPLEMENTARY INVOICE'S
- * MONEY WAS FIRST ASKED ON - the one it was parked on, or, once a supersession
- * moved it onto the request carrying its balance
- * (`followSupersededAskInvoicesToCarrier`), the one it was moved from, kept
- * through later moves. A price reduction attributes a parked invoice to a row
- * of the unpaid chain by this (`retireUnpaidAskChain`), so a moved invoice
- * still reads as the superseded row's own money, not the carrier's.
- */
-export function supplementaryInvoiceWaitedFirstOn(requestPayload: unknown): string | null {
-  const payload = asRecord(requestPayload);
-  const first = readString(payload?.[SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY]);
-  return first ?? readString(payload?.paymentIntentId);
-}
-
 /**
  * WHAT A QUEUED SUPPLEMENTARY INVOICE BILLS: `priceDiffCents + changeFeeCents`,
  * the sum `createXeroSupplementaryInvoice` sends, read through the typed parser

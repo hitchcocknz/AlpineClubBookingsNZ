@@ -97,7 +97,7 @@ import {
   followSupersededAskInvoicesToCarrier,
 } from "@/lib/superseded-ask-invoice-carry";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
-import { supplementaryInvoiceWaitedFirstOn } from "@/lib/xero-operation-outbox-payload";
+import { supplementaryInvoiceWaitedFirstOn } from "@/lib/supplementary-invoice-parked-from";
 
 function ask(id: string, overrides: Partial<Row> = {}): Row {
   return {

@@ -1686,16 +1686,7 @@ async function markSupersededTransactionFailed(
   if (updated.count > 0) {
     await reconcilePaymentAggregates({ paymentId: operation.paymentId });
   }
-}
-
-/**
- * A confirmed cancel of a superseded intent, from the worker or the webhook:
- * its row FAILED, then (#3403, `INV-PAY-070`) its change's waiting Xero
- * supplementary invoice moved onto the request that carries its balance -
- * before the recovery row completes, so a crash replays both. Never throws.
- */
-async function retireSupersededAsk(operation: PaymentRecoveryOperation) {
-  await markSupersededTransactionFailed(operation);
+  // #3403 (`INV-PAY-070`): its change's waiting invoice follows the request carrying its balance, before the row completes.
   await followSupersededAskInvoicesSafely({ paymentId: operation.paymentId });
 }
 
@@ -1837,7 +1828,7 @@ async function processCancelPaymentIntentOperation(
   }
 
   if (isPaymentIntentCancelConfirmed(result)) {
-    await retireSupersededAsk(operation);
+    await markSupersededTransactionFailed(operation);
     await completePaymentRecoveryOperation(operation.id);
     return;
   }
@@ -3351,7 +3342,7 @@ export async function completeCanceledSupersededPaymentIntentRecovery({
     return false;
   }
 
-  await retireSupersededAsk(operation);
+  await markSupersededTransactionFailed(operation);
   await completePaymentRecoveryOperation(operation.id);
   return true;
 }
