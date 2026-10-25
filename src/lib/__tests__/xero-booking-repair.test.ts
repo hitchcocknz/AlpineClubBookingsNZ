@@ -4677,9 +4677,7 @@ describe("runBookingXeroRepair", () => {
         // MUTATION review DF3: what can be read without the id records it - no finding.
         const held = await runChange(unsynced, { links: [primaryInvoiceLink], sweep: "held" });
         expect(changeFinding(held.bookingReport)).toBeUndefined();
-        const keptRow = { ...keptOperation("PENDING"), localId: "task_other", requestPayload: { ...keptOperation("PENDING").requestPayload, paymentIntentId: "pi_kept" } };
-        const keptElsewhere = await runChange(unsynced, { links: [primaryInvoiceLink], operations: [keptRow] });
-        expect(changeFinding(keptElsewhere.bookingReport)).toBeUndefined();
+        // (A kept-capture invoice naming it is the keep's test: this fake store reads every row as the task's own.)
         const receiptLink = { ...primaryInvoiceLink, id: "link_receipt", localModel: "PaymentTransaction", localId: "txn_primary", xeroObjectType: "PAYMENT", role: "ADDITIONAL_CAPTURE_PAYMENT" };
         const receipted = await runChange(unsynced, { links: [primaryInvoiceLink, receiptLink] });
         expect(changeFinding(receipted.bookingReport)).toBeUndefined();
