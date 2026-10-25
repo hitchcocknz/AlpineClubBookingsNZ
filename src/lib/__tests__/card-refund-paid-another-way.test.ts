@@ -744,7 +744,7 @@ describe("closing a dead card refund as paid another way", () => {
       });
     }
 
-    it("MUTATION review C4: a change capture's kept-capture invoice is queued under its change's anchor, after the task row", async () => {
+    it("MUTATION review C4, CONC-1: a change capture's plan is read under its change's anchor, taken after the task row and held to the kept-capture invoice", async () => {
       lateCharge();
       mocks.findTransaction.mockResolvedValue({
         paymentId: "p-1",
@@ -756,7 +756,9 @@ describe("closing a dead card refund as paid another way", () => {
       });
       await close();
       const anchor = calls.indexOf("lock-anchor:mod-1");
-      expect(anchor).toBeGreaterThan(calls.lastIndexOf("lock-approval-task"));
+      expect(anchor).toBeGreaterThan(calls.indexOf("lock-approval-task"));
+      // CONC-1: before the plan reads what records the capture, so a change invoice committed first is read.
+      expect(anchor).toBeLessThan(calls.indexOf("read-receipt"));
       expect(anchor).toBeLessThan(calls.indexOf("xero-receipt"));
     });
 
@@ -771,6 +773,8 @@ describe("closing a dead card refund as paid another way", () => {
         "read-payment",
         "read-approval-task",
         "lock-approval-task",
+        // #4324 (review CONC-1): the capture's anchor is read for (a change capture only) before the receipt.
+        "read-approval-task",
         "read-receipt",
         "claim",
         "allocate",

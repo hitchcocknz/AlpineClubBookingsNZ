@@ -28,6 +28,11 @@
  *  6. (Item 11.) The keep raising the kept-capture invoice for a change whose
  *     own invoice was withdrawn, then the repair tool's supplementary enqueue
  *     for that change: no second invoice, paid or unpaid.
+ *  7. (Review CONC-1.) A treasurer's paid-another-way close of the capture's
+ *     approved refund racing the repair tool's supplementary invoice for the
+ *     change, the invoice first on the change's anchor: the close reads its
+ *     plan under that anchor, so it finds the invoice and queues no
+ *     kept-capture invoice beside it - one recorder.
  *
  * The dismissal is driven as `resolveManualRefundTask` drives it - the
  * `OPEN -> DISMISSED` guarded `updateMany`, then `planKeptLateCaptureXeroRecord`
@@ -61,6 +66,7 @@ const CHANGE_INTENT = "pi_race_4324_change";
 const INVOICE_ID = "race-4324-xero-invoice";
 const ZONE = "Pacific/Auckland";
 const LOCK_POLL_TIMEOUT_MS = 5_000;
+const REFUND_OPERATION_ID = "race-4324-approval-refund";
 
 let prisma: PrismaClient;
 let observerClient: PrismaClient;
@@ -72,12 +78,16 @@ let recorder: typeof import("@/lib/additional-capture-recorder");
 let worker: typeof import("@/lib/additional-capture-xero-receipt");
 let claim: typeof import("@/lib/xero-operation-claim");
 let withdraw: typeof import("@/lib/additional-payment-withdraw");
+let paidAnotherWay: typeof import("@/lib/card-refund-paid-another-way");
 
 async function clean(): Promise<void> {
+  await prisma.auditLog.deleteMany({ where: { OR: [{ entityId: REFUND_OPERATION_ID }, { targetId: BOOKING_ID }] } });
+  await prisma.bookingLedgerLine.deleteMany({ where: { bookingId: BOOKING_ID } });
+  await prisma.paymentRecoveryOperation.deleteMany({ where: { id: REFUND_OPERATION_ID } });
   await prisma.xeroSyncOperation.deleteMany({
     where: { localId: { in: [CHANGE_TX_ID, PRIMARY_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID, TASK_ID] } },
   });
-  await prisma.manualRefundTask.deleteMany({ where: { id: TASK_ID } });
+  await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
   await prisma.bookingModification.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.payment.deleteMany({ where: { id: PAYMENT_ID } });
@@ -89,7 +99,7 @@ async function clean(): Promise<void> {
  * edit settled against it) linked, $300 paid; the change's $80 card ask
  * captured after the cancel, its approval task open.
  */
-async function seed(taskStatus: "OPEN" | "DISMISSED" = "OPEN", options: { marked?: boolean } = {}): Promise<void> {
+async function seed(taskStatus: "OPEN" | "DISMISSED" | "COMPLETED" = "OPEN", options: { marked?: boolean } = {}): Promise<void> {
   await prisma.booking.create({
     data: {
       id: BOOKING_ID,
@@ -158,7 +168,7 @@ async function seed(taskStatus: "OPEN" | "DISMISSED" = "OPEN", options: { marked
       lateCaptureApprovalIntentId: CHANGE_INTENT,
       amountCents: 8_000,
       reason: "Late capture held for a treasurer (race proof)",
-      ...(taskStatus === "DISMISSED" ? { completedAt: new Date("2026-06-20T00:00:00.000Z"), note: "kept" } : {}),
+      ...(taskStatus !== "OPEN" ? { completedAt: new Date("2026-06-20T00:00:00.000Z"), note: taskStatus === "DISMISSED" ? "kept" : "refund approved" } : {}),
     },
   });
 }
@@ -285,6 +295,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     worker = await import("@/lib/additional-capture-xero-receipt");
     claim = await import("@/lib/xero-operation-claim");
     withdraw = await import("@/lib/additional-payment-withdraw");
+    paidAnotherWay = await import("@/lib/card-refund-paid-another-way");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -630,6 +641,88 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
         where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE", status: { not: "CANCELLED" } },
       }),
     ).toBe(1);
+  });
+
+  it("MUTATION review CONC-1: the repair tool's supplementary invoice for the change ahead of a paid-another-way close on the change's anchor - the close plans after it, so no kept-capture invoice is raised beside it", { timeout: 30_000 }, async () => {
+    // The treasurer approved refunding the $80 (task COMPLETED), Stripe gave up
+    // on the refund, and the change's own ask was withdrawn: on its own the
+    // close would queue the kept-capture invoice as the capture's receipt.
+    await seed("COMPLETED", { marked: false });
+    const withdrawnAsk = await outbox.enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: BOOKING_ID, bookingModificationId: MODIFICATION_ID, priceDiffCents: 8_000, changeFeeCents: 0 },
+      { paymentIntentId: "pi_race_4324_superseded", waitForConfirmedAdditionalPayment: true },
+    );
+    await prisma.xeroSyncOperation.updateMany({
+      where: { id: withdrawnAsk.queueOperationId!, status: "WAITING_PAYMENT" },
+      data: { status: "CANCELLED", completedAt: new Date(), lastErrorCode: withdraw.ADDITIONAL_ASK_WITHDRAWN_XERO_ERROR_CODE },
+    });
+    await prisma.paymentRecoveryOperation.create({
+      data: {
+        id: REFUND_OPERATION_ID,
+        type: "REFUND_BOOKING_MODIFICATION",
+        status: "FAILED",
+        bookingId: BOOKING_ID,
+        paymentId: PAYMENT_ID,
+        paymentIntentId: CHANGE_INTENT,
+        amountCents: 8_000,
+        allocationPlan: [{ paymentTransactionId: CHANGE_TX_ID, amountCents: 8_000 }],
+        idempotencyKey: `late_capture_approval_refund_recovery_${CHANGE_INTENT}`,
+        attempts: 5,
+        nextRetryAt: null,
+      },
+    });
+
+    // The repair tool's invoice for the change (naming the capture, as its
+    // action can) queues first on the change's anchor; the close starts once it
+    // is queued there. Under the lock the close's plan waits on that anchor too;
+    // without it the close plans at once and waits only to queue.
+    const holder = await holdLock((tx) => outbox.lockSupplementaryInvoiceAnchor(tx, MODIFICATION_ID));
+    let closeOutcome: PromiseSettledResult<Awaited<ReturnType<typeof paidAnotherWay.closeCardRefundPaidAnotherWay>>> | undefined;
+    let invoiceOutcome: PromiseSettledResult<unknown> | undefined;
+    try {
+      const invoice = outbox
+        .enqueueXeroSupplementaryInvoiceOperation(
+          { bookingId: BOOKING_ID, bookingModificationId: MODIFICATION_ID, priceDiffCents: 8_000, changeFeeCents: 0 },
+          { paymentIntentId: CHANGE_INTENT },
+        )
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+      expect(await untilQueuedBehind(holder.pid, 1)).toBe(1);
+      const closing = paidAnotherWay
+        .closeCardRefundPaidAnotherWay({
+          operationId: REFUND_OPERATION_ID,
+          amountCents: 8_000,
+          paidBack: "full",
+          expectedOwedCents: 8_000,
+          note: "Bank transfer, ref RACE-4324",
+          actingMemberId: OWNER_ID,
+        })
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+      expect(await untilQueuedBehind(holder.pid, 2)).toBe(2);
+      holder.release();
+      await holder.done;
+      [closeOutcome, invoiceOutcome] = await Promise.all([closing, invoice]);
+    } finally {
+      holder.release();
+      await holder.done.catch(() => undefined);
+    }
+
+    expect(invoiceOutcome?.status).toBe("fulfilled");
+    expect(closeOutcome).toMatchObject({ status: "fulfilled", value: { xeroQueued: "refund-note-after-receipt" } });
+    const invoices = (await supplementaryRows()).filter((row) => row.status !== "CANCELLED");
+    expect(invoices).toHaveLength(1);
+    expect((invoices[0]!.requestPayload as { recordPayment?: boolean }).recordPayment).toBe(true);
+    // INV-PAY-141 / INV-PAY-139: one recorder - the change's invoice; no kept-capture invoice beside it.
+    expect(
+      await prisma.xeroSyncOperation.count({
+        where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE", status: { not: "CANCELLED" } },
+      }),
+    ).toBe(0);
   });
 
   it("an approval with the receipt still undecided withdraws it", async () => {
