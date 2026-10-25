@@ -10,10 +10,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   REALDB_FILE_LOCK_KEY,
+  REALDB_FILE_WAIT_TIMEOUT,
   acquireRealdbFileLock,
   isRealdbTestFile,
+  serialiseRealdbFile,
   type RealdbLockClient,
 } from "./support/realdb-file-serialisation";
+import { stripComments } from "./support/strip-comments";
 
 const RACE_URL = "postgresql://postgres:postgres@127.0.0.1:55767/concurrency_race_1881";
 const REALDB_FILE = "/repo/src/lib/__tests__/xero-refund-note-void-pointer.realdb.test.ts";
@@ -21,7 +24,11 @@ const REALDB_FILE = "/repo/src/lib/__tests__/xero-refund-note-void-pointer.reald
 function fakeClient(tryResults: boolean[]) {
   const calls: Array<{ text: string; values: unknown[] }> = [];
   const events: string[] = [];
+  const errorListeners: Array<(error: Error) => void> = [];
   const client: RealdbLockClient = {
+    on(_event, listener) {
+      errorListeners.push(listener);
+    },
     async connect() {
       events.push("connect");
     },
@@ -36,7 +43,7 @@ function fakeClient(tryResults: boolean[]) {
       events.push("end");
     },
   };
-  return { client, calls, events };
+  return { client, calls, events, errorListeners };
 }
 
 describe("realdb file serialisation (#4367)", () => {
@@ -108,11 +115,61 @@ describe("realdb file serialisation (#4367)", () => {
     expect(fake.events).toEqual(["connect", "end"]);
   });
 
+  it("names a dropped lock connection at release instead of crashing the worker", async () => {
+    const fake = fakeClient([true]);
+    const release = await acquireRealdbFileLock(REALDB_FILE, RACE_URL, () => fake.client);
+    expect(fake.errorListeners).toHaveLength(1);
+    fake.errorListeners[0]?.(new Error("Connection terminated unexpectedly"));
+    await expect(release?.()).rejects.toThrow(/#4367: the realdb file lock's connection dropped/);
+    expect(fake.events).toEqual(["connect", "end"]);
+  });
+
+  it("wraps the whole file in one aroundAll with no timeout, reading the race URL and the file path", async () => {
+    let registered: ((runSuite: () => Promise<void>) => Promise<void>) | undefined;
+    let timeout: number | undefined;
+    const acquired: Array<[string | undefined, string]> = [];
+    const order: string[] = [];
+    serialiseRealdbFile({
+      aroundAll: (fn, ms) => {
+        registered = fn;
+        timeout = ms;
+      },
+      testPath: () => REALDB_FILE,
+      raceDatabaseUrl: () => RACE_URL,
+      acquire: async (testPath, url) => {
+        acquired.push([testPath, url]);
+        order.push("acquire");
+        return async () => {
+          order.push("release");
+        };
+      },
+    });
+    expect(timeout).toBe(REALDB_FILE_WAIT_TIMEOUT);
+    expect(REALDB_FILE_WAIT_TIMEOUT).toBe(0);
+
+    // A failing file (e.g. a root afterAll guard throwing) still releases.
+    await expect(
+      registered?.(async () => {
+        order.push("suite");
+        throw new Error("outbox guard");
+      }),
+    ).rejects.toThrow("outbox guard");
+    expect(acquired).toEqual([[REALDB_FILE, RACE_URL]]);
+    expect(order).toEqual(["acquire", "suite", "release"]);
+  });
+
+  it("reads the race URL from CONCURRENCY_RACE_DATABASE_URL by default", () => {
+    const source = stripComments(
+      readFileSync(path.join(process.cwd(), "src/lib/__tests__/support/realdb-file-serialisation.ts"), "utf8"),
+    );
+    expect(source).toContain('raceDatabaseUrl: () => process.env.CONCURRENCY_RACE_DATABASE_URL ?? ""');
+    expect(source).toContain("testPath: () => expect.getState().testPath");
+  });
+
   it("is registered by vitest.setup.ts whenever the race env is on", () => {
-    // Anchored at a line start, so a `//`-commented copy cannot satisfy it.
-    const setup = readFileSync(path.join(process.cwd(), "vitest.setup.ts"), "utf8");
+    const setup = stripComments(readFileSync(path.join(process.cwd(), "vitest.setup.ts"), "utf8"));
     expect(setup).toMatch(
-      /^if \(process\.env\.RUN_CONCURRENCY_RACE_TESTS === "1"\) \{\s*const \{ serialiseRealdbFile \} = await import\(\s*"\.\/src\/lib\/__tests__\/support\/realdb-file-serialisation"\s*\);\s*serialiseRealdbFile\(\);\s*\}/m,
+      /if \(process\.env\.RUN_CONCURRENCY_RACE_TESTS === "1"\) \{\s*const \{ serialiseRealdbFile \} = await import\(\s*"\.\/src\/lib\/__tests__\/support\/realdb-file-serialisation"\s*\);\s*serialiseRealdbFile\(\);\s*\}/,
     );
   });
 });

@@ -1514,13 +1514,18 @@ processor and the ownership guard see other files' rows, and some cases scan
 whole tables. The first local run of the 27 Xero and refund files in parallel
 failed 6 tests in 2 files.
 
-When `RUN_CONCURRENCY_RACE_TESTS=1`, `vitest.setup.ts` now makes each realdb
-file hold one session advisory lock, `(4367, 1)`, for its whole life, so the
-files run one at a time whatever the worker count. The same 27 files then
-passed twice in a row. The lock lives in
-`src/lib/__tests__/support/realdb-file-serialisation.ts`. A waiting file polls
-`pg_try_advisory_lock` instead of blocking, because several suites' barriers
-count ungranted advisory rows in `pg_locks`. Expect a batch of realdb files to
+When `RUN_CONCURRENCY_RACE_TESTS=1` and `CONCURRENCY_RACE_DATABASE_URL` is
+set, `vitest.setup.ts` makes each realdb file hold one session advisory lock,
+`(4367, 1)`, from its first hook to its last test. The files then run one at a
+time whatever the worker count; importing and collecting them still overlap.
+The same 27 files then passed twice in a row. The lock lives in
+`src/lib/__tests__/support/realdb-file-serialisation.ts`. One `aroundAll`
+holds it, so a root `afterAll` that throws still releases it, and the wait has
+no hook timeout. A waiting file polls `pg_try_advisory_lock` instead of
+blocking, because several suites' barriers count ungranted advisory rows in
+`pg_locks`. Realdb files on another database, such as
+`data-migration-verification`, take the race lock too when the race env is
+on. Expect a batch of realdb files to
 take as long as running them one after another. Inside one file the old rules
 still apply: a suite owns its own fixtures and queued work.
 

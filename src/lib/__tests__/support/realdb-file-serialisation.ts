@@ -14,6 +14,10 @@
  * when the race env is on: a realdb file holds one session advisory lock for
  * its whole life, so a second file waits for the first to finish. The lock is
  * released when the connection ends, so a killed run leaves nothing stale.
+ * It is held by one `aroundAll`, so a root `afterAll` that throws (the
+ * harness's env and outbox guards do, by design) cannot skip the release. It
+ * covers the file's hooks and tests, not its import and collection, and it is
+ * taken only when `CONCURRENCY_RACE_DATABASE_URL` is set.
  *
  * Two choices keep it invisible to the suites' own `pg_locks` barriers:
  * - the key is the two-int form `(4367, 1)` (`objsubid = 2`), which no suite
@@ -23,7 +27,7 @@
  *   `ib-capacity-cancel-credit-restore` count any ungranted advisory row.
  */
 import { Client } from "pg";
-import { afterAll, beforeAll, expect } from "vitest";
+import { aroundAll, expect } from "vitest";
 
 import { assertSafeRaceDbUrl } from "./race-db-url";
 
@@ -31,9 +35,9 @@ export const REALDB_FILE_LOCK_KEY = [4367, 1] as const;
 
 const REALDB_FILE_PATTERN = /\.realdb\.test\.tsx?$/;
 const POLL_MS = 250;
-// A queued file may wait for every file ahead of it; the run, not this hook,
-// bounds the wait.
-const WAIT_TIMEOUT_MS = 60 * 60 * 1000;
+// A queued file may wait for every file ahead of it, and polling does not
+// serve files in arrival order, so the wait has no hook timeout: 0 is none.
+export const REALDB_FILE_WAIT_TIMEOUT = 0;
 
 export function isRealdbTestFile(testPath: string | undefined): boolean {
   return testPath !== undefined && REALDB_FILE_PATTERN.test(testPath);
@@ -47,6 +51,7 @@ export interface RealdbLockClient {
     values: unknown[],
   ): Promise<{ rows: R[] }>;
   end(): Promise<unknown>;
+  on(event: "error", listener: (error: Error) => void): unknown;
 }
 
 /**
@@ -65,6 +70,12 @@ export async function acquireRealdbFileLock(
   if (url === "") return null;
   assertSafeRaceDbUrl(url, "Realdb file serialisation");
   const client = connect(url);
+  // The connection idles for the whole file. Without a listener, a dropped
+  // backend is an unhandled 'error' event that crashes the worker unnamed.
+  let lost: Error | undefined;
+  client.on("error", (error) => {
+    lost = error;
+  });
   await client.connect();
   try {
     for (;;) {
@@ -81,6 +92,11 @@ export async function acquireRealdbFileLock(
   }
   return async () => {
     try {
+      if (lost !== undefined) {
+        throw new Error(
+          `#4367: the realdb file lock's connection dropped mid-file (${lost.message}); the file may have run beside another.`,
+        );
+      }
       await client.query("SELECT pg_advisory_unlock($1, $2)", [...REALDB_FILE_LOCK_KEY]);
     } finally {
       await client.end();
@@ -88,20 +104,30 @@ export async function acquireRealdbFileLock(
   };
 }
 
-export function serialiseRealdbFile(): void {
-  let release: (() => Promise<void>) | null = null;
+export interface RealdbFileSerialisationDeps {
+  aroundAll: (
+    fn: (runSuite: () => Promise<void>) => Promise<void>,
+    timeout: number,
+  ) => void;
+  testPath: () => string | undefined;
+  raceDatabaseUrl: () => string;
+  acquire: typeof acquireRealdbFileLock;
+}
 
-  beforeAll(async () => {
-    release = await acquireRealdbFileLock(
-      expect.getState().testPath,
-      process.env.CONCURRENCY_RACE_DATABASE_URL ?? "",
-    );
-  }, WAIT_TIMEOUT_MS);
+const defaultDeps: RealdbFileSerialisationDeps = {
+  aroundAll: (fn, timeout) => aroundAll(fn, timeout),
+  testPath: () => expect.getState().testPath,
+  raceDatabaseUrl: () => process.env.CONCURRENCY_RACE_DATABASE_URL ?? "",
+  acquire: acquireRealdbFileLock,
+};
 
-  // hooks: "stack" runs this after the file's own teardown.
-  afterAll(async () => {
-    const held = release;
-    release = null;
-    await held?.();
-  });
+export function serialiseRealdbFile(deps: RealdbFileSerialisationDeps = defaultDeps): void {
+  deps.aroundAll(async (runSuite) => {
+    const release = await deps.acquire(deps.testPath(), deps.raceDatabaseUrl());
+    try {
+      await runSuite();
+    } finally {
+      await release?.();
+    }
+  }, REALDB_FILE_WAIT_TIMEOUT);
 }
