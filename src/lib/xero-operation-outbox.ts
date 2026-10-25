@@ -72,7 +72,7 @@ import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-i
 import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
 import { outboxScanSpacesWaitingReceipts } from "@/lib/additional-capture-receipt-gate";
 import { primaryInvoiceGapPayload } from "@/lib/additional-capture-receipt-payload";
-import { anchorCaptureHasReceipt, bookingHasUnattributedCaptures } from "@/lib/additional-capture-receipt-link";
+import { anchorCaptureHasReceipt, bookingHasUnattributedCaptures, keptInvoiceBillsChangeCapture } from "@/lib/additional-capture-receipt-link";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
 import {
@@ -1734,6 +1734,8 @@ async function enqueueSupplementaryInvoiceForAnchor(
       };
     }
 
+    // #4324 (`INV-PAY-141`): a change its kept late capture's own invoice bills gets no second invoice, paid or unpaid.
+    if (localModel === "BookingModification" && (await keptInvoiceBillsChangeCapture(tx, localId))) return { queueOperationId: null, outcome: "none" as XeroSupplementaryInvoiceEnqueueOutcome, message: "A kept late card payment's own Xero invoice already bills this booking change." };
     // #3953 round 6: a capture its own receipt records (or is recording) is never recorded again here; a gap invoice decides its own cash.
     const recordPayment = (options?.recordPayment ?? true) && (Boolean(options?.primaryInvoiceGap) || !(await anchorCaptureHasReceipt(tx, { bookingId, bookingModificationId: localModel === "BookingModification" ? localId : null, paymentIntentId: options?.paymentIntentId ?? null })));
     const queuedOperation = await startXeroSyncOperation({

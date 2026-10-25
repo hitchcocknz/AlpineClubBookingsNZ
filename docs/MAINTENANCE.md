@@ -1495,9 +1495,13 @@ entered by hand in Xero would then be recorded twice. So:
 1. **List them first.** Run the dry run, `pnpm run xero:booking-repair
    --dry-run` (or with `--from`/`--to` for a window), and read every
    `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO` finding with its booking, payment
-   intent, amount and `recordedBy`. If the treasurer already recorded any of
-   them by hand in Xero, do not run a blanket apply: apply the rest one booking
-   at a time (`--booking <bookingId> --apply`), leaving those bookings out.
+   intent, amount and `recordedBy`. Ask the treasurer whether any of them
+   was already recorded by hand in Xero. Leaving such a booking out of an
+   apply only postpones it: the finding stays auto-apply, the tool cannot mark
+   it handled, and any later blanket `--apply`, run for any reason, records
+   it. The real ways out are to (a) delete the hand-entered payment in Xero
+   before applying, so the app's record is the only one, or (b) apply, then
+   check Xero and reverse whichever entry is the duplicate.
 2. **Then apply.** `pnpm run xero:booking-repair --apply` runs each finding's
    `QUEUE_KEPT_LATE_CAPTURE_RECORD`. Each one runs the keep's own decision
    again under the approval task's row lock and the change's lock, finds the
@@ -1508,9 +1512,18 @@ entered by hand in Xero would then be recorded twice. So:
 
 A payment whose ledger row names no booking change, or one on a booking paid
 by internet banking, is reported `manual_review` and never applied: record it
-by hand in Xero. One whose change invoice already answers it is the late
+by hand in Xero. The tool cannot acknowledge a finding, so these come back on
+every run after you have recorded them; that is expected, not a sign the hand
+entry failed. A payment another writer already records (the credit-release
+sweep, say) raises no finding. One on a booking whose payment row lacks its
+Xero invoice id while the invoice link exists is reported `manual_review`
+until that id is synced (`SYNC_PAYMENT_PRIMARY_INVOICE_FIELD`); a later pass
+then lists it as above. One whose change invoice already answers it is the late
 payment release's, and raises no finding here; a receipt that failed is offered
 for retry, and one the worker refused is reported for an officer, as above.
+Where the kept-payment invoice records a change's payment, the tool raises no
+supplementary invoice for that change: the kept-payment invoice already bills
+it.
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe
 gave up on and which was then closed as **Paid another way** before Xero had

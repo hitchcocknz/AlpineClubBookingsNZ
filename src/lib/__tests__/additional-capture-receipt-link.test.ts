@@ -4,6 +4,7 @@ import {
   bookingHasPaidUnnamedSupplementary,
   bookingHasUnattributedCaptures,
   captureChangeId,
+  keptInvoiceBillsChangeCapture,
 } from "@/lib/additional-capture-receipt-link";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 
@@ -189,6 +190,22 @@ describe("anchorCaptureHasReceipt", () => {
       },
       select: { queueType: true },
     });
+  });
+
+  it("MUTATION #4324 item 11: a change is billed by a live kept-capture invoice naming one of its captures, read by its stamp or review reason", async () => {
+    const captures = [{ id: "tx_1", stripePaymentIntentId: "pi_kept" }];
+    const db = store({ captures, kept: [{ queueType: "KEPT_LATE_CAPTURE_INVOICE" }] });
+    await expect(keptInvoiceBillsChangeCapture(db as never, "mod_1")).resolves.toBe(true);
+    expect(db.paymentTransaction.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          kind: "ADDITIONAL",
+          OR: [{ bookingModificationId: "mod_1" }, { reason: buildEditFinancialReviewChargeReason("mod_1") }],
+        }),
+      }),
+    );
+    await expect(keptInvoiceBillsChangeCapture(store({ captures }) as never, "mod_1")).resolves.toBe(false);
+    await expect(keptInvoiceBillsChangeCapture(store({ kept: [{ queueType: "KEPT_LATE_CAPTURE_INVOICE" }] }) as never, "mod_1")).resolves.toBe(false);
   });
 
   it("counts a RUNNING row or a stored plan, never a PENDING row with no plan", async () => {

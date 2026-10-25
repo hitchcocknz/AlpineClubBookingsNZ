@@ -21,6 +21,13 @@
  *  4. An approval after a reopen, committed while the receipt's worker is
  *     between its claim and its locked decision: the worker reads the task
  *     again under the anchor lock and stands down - no payment reaches Xero.
+ *  5. (Review C1.) A re-keep after a reopen racing the receipt's worker, the
+ *     worker first on the change's anchor while the re-keep's claim is still
+ *     uncommitted: the worker closes its row in the transaction that read
+ *     "not kept", so the re-keep queues a fresh receipt - one live recorder.
+ *  6. (Item 11.) The keep raising the kept-capture invoice for a change whose
+ *     own invoice was withdrawn, then the repair tool's supplementary enqueue
+ *     for that change: no second invoice, paid or unpaid.
  *
  * The dismissal is driven as `resolveManualRefundTask` drives it - the
  * `OPEN -> DISMISSED` guarded `updateMany`, then `planKeptLateCaptureXeroRecord`
@@ -528,6 +535,101 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     );
     expect(paid).toEqual([]);
     expect((await receiptRows())[0]).toMatchObject({ status: "CANCELLED" });
+  });
+
+  it("MUTATION review C1: a re-keep racing the receipt's worker after a reopen ends with exactly one live recorder", { timeout: 30_000 }, async () => {
+    await seed("OPEN");
+    await dismiss();
+    const [row] = await receiptRows();
+    // Reopened (DISMISSED -> OPEN), and the outbox claims the undecided receipt.
+    await prisma.manualRefundTask.update({ where: { id: TASK_ID }, data: { status: "OPEN", completedAt: null } });
+    const claimed = await claim.claimXeroSyncOperationToRunning(row!.id, {
+      direction: "OUTBOUND",
+      entityType: "PAYMENT",
+      operationType: "CREATE",
+      localModel: { in: ["PaymentTransaction"] },
+    });
+    expect(claimed).toBeTruthy();
+
+    // The worker queues first on the change's anchor, then the re-keep (its
+    // OPEN -> DISMISSED claim uncommitted behind it). Released, the worker
+    // reads the task as OPEN - the re-keep has not committed - and decides.
+    const holder = await holdLock((tx) => outbox.lockSupplementaryInvoiceAnchor(tx, MODIFICATION_ID));
+    const paid: unknown[] = [];
+    let workerOutcome: PromiseSettledResult<string | null> | undefined;
+    let keepOutcome: PromiseSettledResult<Awaited<ReturnType<typeof dismiss>>> | undefined;
+    try {
+      const work = worker
+        .recordAdditionalCaptureReceipt(
+          { syncOperationId: row!.id },
+          {
+            getAuthenticatedXeroClient: async () => {
+              throw new Error("no Xero call for a capture no longer kept");
+            },
+            callXeroApi: ((call: () => Promise<unknown>) => call()) as never,
+            createXeroPaymentForInvoice: async (input) => {
+              paid.push(input);
+              return "xero_payment_unreachable";
+            },
+            readStripeCaptureDocumentDate: async () => "2026-06-20",
+          },
+        )
+        .then(
+          (value) => ({ status: "fulfilled" as const, value }),
+          (reason: unknown) => ({ status: "rejected" as const, reason }),
+        );
+      expect(await untilQueuedBehind(holder.pid, 1)).toBe(1);
+      const reKeep = dismiss().then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+      expect(await untilQueuedBehind(holder.pid, 2)).toBe(2);
+      holder.release();
+      await holder.done;
+      [workerOutcome, keepOutcome] = await Promise.all([work, reKeep]);
+    } finally {
+      holder.release();
+      await holder.done.catch(() => undefined);
+    }
+
+    expect(workerOutcome).toEqual({ status: "fulfilled", value: null });
+    expect(paid).toEqual([]);
+    const rows = await receiptRows();
+    const live = rows.filter((candidate) => candidate.status !== "CANCELLED");
+    // INV-PAY-141: the re-kept capture has one live recorder - a fresh receipt,
+    // never the row the worker closed.
+    expect(rows.find((candidate) => candidate.id === row!.id)).toMatchObject({ status: "CANCELLED" });
+    expect(live).toHaveLength(1);
+    expect(live[0]!.id).not.toBe(row!.id);
+    expect(keepOutcome).toEqual({ status: "fulfilled", value: { kind: "receipt-queued", queueOperationId: live[0]!.id } });
+  });
+
+  it("MUTATION item 11: the keep's kept-capture invoice for a withdrawn change, then the repair tool's supplementary enqueue: no second invoice", { timeout: 30_000 }, async () => {
+    await seed("OPEN", { marked: false });
+    const withdrawnAsk = await outbox.enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: BOOKING_ID, bookingModificationId: MODIFICATION_ID, priceDiffCents: 8_000, changeFeeCents: 0 },
+      { paymentIntentId: "pi_race_4324_superseded", waitForConfirmedAdditionalPayment: true },
+    );
+    await prisma.xeroSyncOperation.updateMany({
+      where: { id: withdrawnAsk.queueOperationId!, status: "WAITING_PAYMENT" },
+      data: { status: "CANCELLED", completedAt: new Date(), lastErrorCode: withdraw.ADDITIONAL_ASK_WITHDRAWN_XERO_ERROR_CODE },
+    });
+    await expect(dismiss()).resolves.toMatchObject({ kind: "kept-invoice-queued" });
+
+    const reRaise = await outbox.enqueueXeroSupplementaryInvoiceOperation({
+      bookingId: BOOKING_ID,
+      bookingModificationId: MODIFICATION_ID,
+      priceDiffCents: 8_000,
+      changeFeeCents: 0,
+    });
+    expect(reRaise).toMatchObject({ queueOperationId: null, outcome: "none" });
+    // INV-PAY-141: the kept-capture invoice bills and records the $80; nothing else does.
+    expect((await supplementaryRows()).filter((row) => row.status !== "CANCELLED")).toEqual([]);
+    expect(
+      await prisma.xeroSyncOperation.count({
+        where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE", status: { not: "CANCELLED" } },
+      }),
+    ).toBe(1);
   });
 
   it("an approval with the receipt still undecided withdraws it", async () => {

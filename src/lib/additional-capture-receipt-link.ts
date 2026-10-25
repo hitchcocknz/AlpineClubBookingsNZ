@@ -243,22 +243,56 @@ export async function anchorCaptureHasReceipt(
       },
       select: { status: true, requestPayload: true },
     }),
-    intents.length === 0
-      ? []
-      : store.xeroSyncOperation.findMany({
-          where: {
-            queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
-            status: { not: "CANCELLED" },
-            OR: intents.map((intent) => ({ requestPayload: { path: ["paymentIntentId"], equals: intent } })),
-          },
-          select: { queueType: true },
-        }),
+    keptInvoiceNamesCapture(store, intents),
   ]);
   return (
     linked !== null ||
-    kept.some((row) => row.queueType === XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE) ||
+    kept ||
     receipts.some(
       (receipt) => (!options?.decidedOnly && receipt.status === "RUNNING") || asRecord(receipt.requestPayload)?.plan != null,
     )
+  );
+}
+
+/** #4324: whether a live kept-capture invoice (`KEPT_LATE_CAPTURE_INVOICE`, any status but CANCELLED) names one of these captures. */
+async function keptInvoiceNamesCapture(
+  store: Pick<Prisma.TransactionClient, "xeroSyncOperation">,
+  intents: readonly string[],
+): Promise<boolean> {
+  if (intents.length === 0) return false;
+  const kept = await store.xeroSyncOperation.findMany({
+    where: {
+      queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+      status: { not: "CANCELLED" },
+      OR: intents.map((intent) => ({ requestPayload: { path: ["paymentIntentId"], equals: intent } })),
+    },
+    select: { queueType: true },
+  });
+  return kept.some((row) => row.queueType === XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE);
+}
+
+/**
+ * #4324 (`INV-PAY-141`): WHETHER A KEPT-CAPTURE INVOICE BILLS THIS CHANGE - a
+ * live one naming a capture of the change, which a treasurer's keep queued
+ * under the change's anchor lock where nothing else billed it. It records the
+ * change's money as income and its receipt both, so the supplementary enqueue
+ * raises no new invoice for the change, paid or unpaid: either would count
+ * that money twice (income on both, or a receivable left open for ever).
+ */
+export async function keptInvoiceBillsChangeCapture(
+  store: Pick<Prisma.TransactionClient, "paymentTransaction" | "xeroSyncOperation">,
+  bookingModificationId: string,
+): Promise<boolean> {
+  const captures = await store.paymentTransaction.findMany({
+    where: {
+      kind: "ADDITIONAL",
+      stripePaymentIntentId: { not: null },
+      OR: [{ bookingModificationId }, { reason: buildEditFinancialReviewChargeReason(bookingModificationId) }],
+    },
+    select: { stripePaymentIntentId: true },
+  });
+  return keptInvoiceNamesCapture(
+    store,
+    captures.flatMap((capture) => (capture.stripePaymentIntentId ? [capture.stripePaymentIntentId] : [])),
   );
 }

@@ -88,7 +88,13 @@ import {
   bookingHasPaidUnnamedSupplementary,
   captureChangeId,
 } from "@/lib/additional-capture-receipt-link";
-import { answerKeptLateCaptureRefunds, hasLateCaptureApprovalTask, lateCaptureStillKept } from "@/lib/kept-late-capture-change-receipt";
+import {
+  answerKeptLateCaptureRefunds,
+  closeKeptReceiptNotKept,
+  hasLateCaptureApprovalTask,
+  keptReceiptStillKeptElseClosed,
+  lateCaptureStillKept,
+} from "@/lib/kept-late-capture-change-receipt";
 import { amountDueOn, findRecordedPayment, ownPaymentPending, type InvoiceRead } from "@/lib/additional-capture-receipt-invoice-read";
 import {
   readAdditionalCaptureReceiptPayload,
@@ -378,7 +384,10 @@ export async function recordAdditionalCaptureReceipt(
     // reaches the outbox, which dispatches to this worker.
     const { lateCaptureRefundState } = await import("@/lib/xero-supplementary-invoice-late-capture");
     const refundState = await lateCaptureRefundState({ paymentIntentId, bookingStatus: payment.booking.status });
-    if (refundState !== "kept") return standDown("CANCELLED", "capture-not-kept", { refundState });
+    if (refundState !== "kept" && !cancelled) return standDown("CANCELLED", "capture-not-kept", { refundState });
+    // #4324 (review C1): on a cancelled booking its approval task decides, read again and closed under the anchor.
+    const anchorId = captureChangeId(transaction) ?? bookingId;
+    if (refundState !== "kept" && !(await keptReceiptStillKeptElseClosed({ operationId, anchorId, paymentIntentId }, { refundState }))) return null;
 
     // Review round 1: one recorder per capture.
     const recorder = await readCaptureRecorder({
@@ -493,8 +502,11 @@ export async function recordAdditionalCaptureReceipt(
       const changeId = captureChangeId(transaction);
       await lockSupplementaryInvoiceAnchor(tx, changeId ?? bookingId);
       // #4324: a kept capture is still kept, read under the lock the approval
-      // withdraws an undecided receipt under.
-      if (cancelled && !(await lateCaptureStillKept(tx, paymentIntentId))) return "not-kept" as const;
+      // withdraws an undecided receipt under, and closed there if not (C1).
+      if (cancelled && !(await lateCaptureStillKept(tx, paymentIntentId))) {
+        await closeKeptReceiptNotKept(tx, operationId, {});
+        return "not-kept" as const;
+      }
       const now = await readCaptureRecorder({ bookingId, primaryInvoiceId, paymentIntentId, bookingModificationId: changeId }, tx);
       if (now.kind !== "receipt") return now.kind;
       // Round 7: a capture no change can be read from decides under the
@@ -511,7 +523,7 @@ export async function recordAdditionalCaptureReceipt(
       return "stored" as const;
     });
     if (stored === "change-unknown") return refuse("change-unknown");
-    if (stored === "not-kept") return standDown("CANCELLED", "capture-not-kept", { decidedAgainUnderLock: true });
+    if (stored === "not-kept") return null;
     if (stored === "target-moved") {
       throw waitFor("The invoice this card payment belongs to changed while it was being decided; it is decided again on the next run");
     }

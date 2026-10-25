@@ -60,6 +60,7 @@ const mocks = vi.hoisted(() => ({
   enqueueAdditionalCaptureReceiptOperation: vi.fn(),
   anchorCaptureHasReceipt: vi.fn(),
   bookingHasUnattributedCaptures: vi.fn(),
+  keptInvoiceBillsChangeCapture: vi.fn(),
   createXeroMembershipCancellationCreditNote: vi.fn(),
   syncXeroMembershipCancellationContact: vi.fn(),
   isXeroConnected: vi.fn().mockResolvedValue(false),
@@ -258,6 +259,8 @@ vi.mock("@/lib/additional-capture-receipt-enqueue", () => ({
 vi.mock("@/lib/additional-capture-receipt-link", () => ({
   anchorCaptureHasReceipt: (...args: unknown[]) => mocks.anchorCaptureHasReceipt(...args),
   bookingHasUnattributedCaptures: async (...args: unknown[]) => (await mocks.bookingHasUnattributedCaptures(...args)) ?? false,
+  // #4324: no change is billed by a kept-capture invoice unless a case says so.
+  keptInvoiceBillsChangeCapture: async (...args: unknown[]) => (await mocks.keptInvoiceBillsChangeCapture(...args)) ?? false,
 }));
 vi.mock("@/lib/additional-capture-xero-receipt", () => ({
   recordAdditionalCaptureReceipt: mocks.recordAdditionalCaptureReceipt,
@@ -808,6 +811,15 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
     });
     mocks.findFirstOperation.mockResolvedValue(null);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_supplementary_1" });
+  });
+
+  it("MUTATION #4324 item 11 (INV-PAY-141): raises no invoice, paid or unpaid, for a change a kept-capture invoice bills", async () => {
+    mocks.keptInvoiceBillsChangeCapture.mockResolvedValueOnce(true);
+    await expect(
+      enqueueXeroSupplementaryInvoiceOperation({ bookingId: "booking_1", priceDiffCents: 8000, changeFeeCents: 0, bookingModificationId: "mod_1" }),
+    ).resolves.toMatchObject({ queueOperationId: null, outcome: "none" });
+    expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+    expect(mocks.keptInvoiceBillsChangeCapture).toHaveBeenCalledWith(expect.anything(), "mod_1");
   });
 
   it("creates a pending Xero sync operation for supplementary invoices", async () => {

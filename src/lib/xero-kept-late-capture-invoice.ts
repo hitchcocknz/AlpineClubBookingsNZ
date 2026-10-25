@@ -87,7 +87,7 @@ import {
   XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
   readQueuedOutboxPayload,
 } from "@/lib/xero-operation-outbox-payload";
-import { withdrawUndecidedKeptCaptureReceipt } from "@/lib/kept-late-capture-change-receipt";
+import { lockKeptCaptureAnchor, withdrawUndecidedKeptCaptureReceipt } from "@/lib/kept-late-capture-change-receipt";
 
 /** Stamped on a row withdrawn because the task stopped keeping the money. */
 export const KEPT_LATE_CAPTURE_WITHDRAWN_ERROR_CODE = "KEPT_LATE_CAPTURE_WITHDRAWN";
@@ -287,7 +287,9 @@ export async function enqueueXeroKeptLateCaptureInvoiceOperation(params: {
  *    repair tool asks (`KEPT_LATE_CAPTURE_REFUND_RECORD_BY_HAND`, #4039).
  * The change's released supplementary invoice for the same capture, still
  * PENDING, is withdrawn too, and (#4324) the capture's own receipt where it
- * has decided nothing yet (`withdrawUndecidedKeptCaptureReceipt`).
+ * has decided nothing yet (`withdrawUndecidedKeptCaptureReceipt`), all under
+ * the capture's anchor taken first (`lockKeptCaptureAnchor`): task row ->
+ * anchor -> row writes, the order every anchor holder keeps.
  */
 export async function settleKeptLateCaptureRecordOnApproval(params: {
   manualRefundTaskId: string;
@@ -295,6 +297,8 @@ export async function settleKeptLateCaptureRecordOnApproval(params: {
   store: Prisma.TransactionClient;
 }): Promise<void> {
   const db = params.store;
+  // Review C2: task row (the claim) -> anchor -> the row writes below.
+  await lockKeptCaptureAnchor(db, params);
   const invoiceLink = await db.xeroObjectLink.count({
     where: {
       localModel: "ManualRefundTask",

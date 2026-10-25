@@ -20,6 +20,7 @@ import {
   lockKeptLateCaptureTask,
 } from "@/lib/xero-kept-late-capture-invoice";
 import { keptReceiptHeldForOfficer } from "@/lib/kept-late-capture-receipt-rows";
+import { lockKeptCaptureAnchor } from "@/lib/kept-late-capture-change-receipt";
 import { paidAnotherWayReceiptRetryInstruction } from "@/lib/paid-another-way-receipt-retry-wording";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 import { xeroDocumentDateFromInstant } from "@/lib/xero-provider-dates";
@@ -378,6 +379,11 @@ export async function queuePaidAnotherWayXero(
     if (plan.receiptHeldForOfficer) return "receipt-held-for-officer";
     return plan.receiptFailed ? "refund-note-after-failed-receipt" : "refund-note-after-receipt";
   }
+  // #4324 (review C4): a change capture's kept-capture invoice is queued under
+  // its change's anchor, after the task row, as the keep queues it - so the
+  // supplementary enqueue's check for it (`anchorCaptureHasReceipt`) sees it.
+  await lockKeptLateCaptureTask(tx, plan.receipt.manualRefundTaskId);
+  await lockKeptCaptureAnchor(tx, plan.receipt, { additionalOnly: true });
   const queued = await enqueueXeroKeptLateCaptureInvoiceOperation({
     manualRefundTaskId: plan.receipt.manualRefundTaskId,
     bookingId: close.bookingId,

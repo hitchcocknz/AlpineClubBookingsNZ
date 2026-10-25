@@ -439,6 +439,14 @@ describe("settleKeptLateCaptureRecordOnApproval", () => {
       expect(mocks.lockAnchor.mock.invocationCallOrder[0]).toBeLessThan(mocks.operationFindMany.mock.invocationCallOrder[0]!);
     });
 
+    it("MUTATION review C2: takes the capture's anchor before its first outbox write - task row -> anchor -> row writes", async () => {
+      mocks.operationFindMany.mockResolvedValue([receipt("PENDING")]);
+      await settle();
+      const firstWrite = mocks.operationUpdateMany.mock.invocationCallOrder[0]!;
+      expect(mocks.lockAnchor.mock.invocationCallOrder[0]).toBeLessThan(firstWrite);
+      expect(mocks.lockAnchor).toHaveBeenNthCalledWith(1, db, "mod_change");
+    });
+
     it("MUTATION: leaves one that stored its decision - it may already be in Xero, and the refund note answers it", async () => {
       mocks.operationFindMany.mockResolvedValue([receipt("FAILED", { plan: { invoiceId: "inv_primary", amountCents: 8000 } })]);
       await settle();
