@@ -30,6 +30,8 @@ const mocks = vi.hoisted(() => ({
   deferAlertCooldown: vi.fn(),
   releaseAlertCooldown: vi.fn(),
   getPaymentIntent: vi.fn(),
+  // #3403: the reaper's backstop move; its own module is tested on its own.
+  followSupersededAskInvoicesSafely: vi.fn(),
   updateManyOperation: vi.fn(),
   updateOperation: vi.fn(),
   startXeroSyncOperation: vi.fn(),
@@ -269,6 +271,9 @@ vi.mock("@/lib/xero-token-store", () => ({
 
 // #3641: the reaper asks Stripe, through the pay door, whether a declined ask
 // was cancelled at the provider (locally a cancel and a decline are both FAILED).
+vi.mock("@/lib/superseded-ask-invoice-carry", () => ({
+  followSupersededAskInvoicesSafely: mocks.followSupersededAskInvoicesSafely,
+}));
 vi.mock("@/lib/stripe", () => ({
   getPaymentIntent: mocks.getPaymentIntent,
 }));
@@ -3788,6 +3793,9 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
     mocks.updateManyOperation.mockResolvedValue({ count: 1 });
     mocks.findUniquePayment.mockReset();
     mocks.findUniquePayment.mockResolvedValue(null);
+    mocks.followSupersededAskInvoicesSafely.mockReset();
+    mocks.followSupersededAskInvoicesSafely.mockResolvedValue(null);
+    mocks.findFirstOperation.mockReset();
     mocks.getPaymentIntent.mockReset();
     mocks.getPaymentIntent.mockResolvedValue({ status: "requires_payment_method" });
     mocks.countOperations.mockResolvedValue(0);
@@ -3812,7 +3820,7 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
       expect.objectContaining({ where: { additionalPaymentIntentId: "pi_superseded" } }),
     );
     expect(retireCall()?.[0]).toEqual({
-      where: { id: { in: ["op_waiting_1"] }, status: "WAITING_PAYMENT" },
+      where: { id: { in: ["op_waiting_1"] }, status: "WAITING_PAYMENT", requestPayload: { path: ["paymentIntentId"], equals: "pi_superseded" } },
       data: expect.objectContaining({
         status: "CANCELLED",
         lastErrorCode: "STALE_WAITING_PAYMENT",
@@ -3822,6 +3830,74 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
       reaped: 1,
       released: 0,
       queueOperationIds: ["op_waiting_1"],
+    });
+  });
+
+  describe("a superseded change's invoice follows the request that carries its balance (#3403)", () => {
+    const supersededAsk = () => {
+      waiting = [waitingOp("op_superseded_ask", "pi_superseded")];
+      mocks.findFirstPaymentTransaction.mockResolvedValue({ ...transaction("FAILED", 48), paymentId: "pay_1" });
+    };
+
+    it("MOVES it, never retires it, when a later request carries it", async () => {
+      supersededAsk();
+      mocks.followSupersededAskInvoicesSafely.mockResolvedValue({ moved: 1 });
+      mocks.findFirstOperation.mockResolvedValue(null);
+
+      const result = await reapStaleWaitingPaymentXeroOutboxOperations();
+
+      expect(mocks.followSupersededAskInvoicesSafely).toHaveBeenCalledWith({ paymentId: "pay_1" });
+      // Re-read on the intent it was judged on: gone from it, so it was moved.
+      expect(mocks.findFirstOperation).toHaveBeenCalledWith({
+        where: {
+          id: "op_superseded_ask",
+          status: "WAITING_PAYMENT",
+          requestPayload: { path: ["paymentIntentId"], equals: "pi_superseded" },
+        },
+        select: { id: true },
+      });
+      expect(retireCall()).toBeUndefined();
+      expect(result.reaped).toBe(0);
+    });
+
+    it("retires it when nothing carries it, as before", async () => {
+      supersededAsk();
+      mocks.followSupersededAskInvoicesSafely.mockResolvedValue({ moved: 0 });
+
+      const result = await reapStaleWaitingPaymentXeroOutboxOperations();
+
+      expect(mocks.followSupersededAskInvoicesSafely).toHaveBeenCalledWith({ paymentId: "pay_1" });
+      expect(mocks.findFirstOperation).not.toHaveBeenCalled();
+      expect(result.reaped).toBe(1);
+    });
+
+    it("retires it when the move left THIS row waiting on the dead intent", async () => {
+      supersededAsk();
+      mocks.followSupersededAskInvoicesSafely.mockResolvedValue({ moved: 1 });
+      mocks.findFirstOperation.mockResolvedValue({ id: "op_superseded_ask" });
+
+      const result = await reapStaleWaitingPaymentXeroOutboxOperations();
+
+      expect(result.reaped).toBe(1);
+    });
+
+    it("never retires a row moved after its verdict: the reap is guarded on the intent it judged", async () => {
+      supersededAsk();
+      // The cancel step moves it between the verdict and the reap: the guarded
+      // write matches nothing.
+      mocks.updateManyOperation.mockResolvedValue({ count: 0 });
+
+      const result = await reapStaleWaitingPaymentXeroOutboxOperations();
+
+      expect(retireCall()?.[0]).toEqual({
+        where: {
+          id: { in: ["op_superseded_ask"] },
+          status: "WAITING_PAYMENT",
+          requestPayload: { path: ["paymentIntentId"], equals: "pi_superseded" },
+        },
+        data: expect.objectContaining({ lastErrorCode: "STALE_WAITING_PAYMENT" }),
+      });
+      expect(result.reaped).toBe(0);
     });
   });
 
@@ -3923,7 +3999,11 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
 
       expect(mocks.getPaymentIntent).not.toHaveBeenCalled();
       expect(retireCall()?.[0]).toEqual({
-        where: { id: { in: ["op_aged", "op_failed"] }, status: "WAITING_PAYMENT" },
+        where: {
+          id: { in: ["op_aged", "op_failed"] },
+          status: "WAITING_PAYMENT",
+          requestPayload: { path: ["paymentIntentId"], equals: "pi_gone" },
+        },
         data: expect.objectContaining({ lastErrorCode: "STALE_WAITING_PAYMENT" }),
       });
       expect(result.reaped).toBe(2);
@@ -4055,7 +4135,7 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
       ),
     ).toBe(false);
     expect(retireCall()?.[0]).toEqual({
-      where: { id: { in: ["op_cancelled_booking"] }, status: "WAITING_PAYMENT" },
+      where: { id: { in: ["op_cancelled_booking"] }, status: "WAITING_PAYMENT", requestPayload: { path: ["paymentIntentId"], equals: "pi_stale_tab" } },
       data: expect.objectContaining({ lastErrorCode: "STALE_WAITING_PAYMENT" }),
     });
     expect(result).toEqual({

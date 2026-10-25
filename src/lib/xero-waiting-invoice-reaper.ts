@@ -321,8 +321,10 @@ async function decideWaitingOperation(params: {
   // the cancel step and the minter, which move it at supersession - and only
   // an invoice still waiting on this intent after that is retired.
   if (!payment) {
-    if (!transaction) return "retire";
-    await followSupersededAskInvoicesSafely({ paymentId: transaction.paymentId });
+    const carried = transaction
+      ? await followSupersededAskInvoicesSafely({ paymentId: transaction.paymentId })
+      : null;
+    if (!carried || carried.moved === 0) return "retire";
     const stillHere = await prisma.xeroSyncOperation.findFirst({
       where: {
         id: params.operationId,
