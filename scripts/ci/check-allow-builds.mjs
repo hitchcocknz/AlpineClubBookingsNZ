@@ -18,7 +18,7 @@
  * dependency to the first group that matches, as its documentation says: the
  * updater scores every match (dependabot-core `PatternSpecificityCalculator`),
  * and a group with no `patterns` outscores a wildcard such as `@sentry/*`. So
- * in every npm update entry with groups, every other group's `exclude-patterns`
+ * in every update entry with groups for the npm ecosystem, every other group's `exclude-patterns`
  * must be exactly the `install-scripts` patterns, and every approved package
  * must match one of those patterns.
  *
