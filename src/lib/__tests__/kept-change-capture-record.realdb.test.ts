@@ -803,8 +803,10 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     const keptRows = () =>
       prisma.xeroSyncOperation.findMany({
         where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE", status: { not: "CANCELLED" } },
-        select: { id: true },
+        select: { id: true, requestPayload: true },
       });
+    const reviewRows = () =>
+      prisma.xeroSyncOperation.findMany({ where: { localModel: "Booking", localId: BOOKING_ID }, select: { id: true } });
 
     it("MUTATION: the keep holds the second anchor with its kept invoice undecided - the gap check queues behind it, then is refused, and the treasurer's task names the change", { timeout: 30_000 }, async () => {
       const holder = await holdLock(async (tx) => {
@@ -833,23 +835,47 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
 
       expect(result).toMatchObject({ gapCents: 16_000, queueOperationId: null });
       expect(result.reviewOperationId).toBeTruthy();
-      // One document bills the kept $80: the kept-capture invoice. No gap invoice beside it.
-      expect(await keptRows()).toHaveLength(1);
+      // One document bills the kept $80 - the kept-capture invoice, for exactly 8000 - and no gap invoice on either anchor.
+      const keptInvoices = await keptRows();
+      expect(keptInvoices).toHaveLength(1);
+      expect(keptInvoices[0]!.requestPayload).toMatchObject({ paymentIntentId: CHANGE_INTENT, capturedCents: 8_000 });
       expect(await gapRows()).toEqual([]);
+      expect(await supplementaryRows()).toEqual([]);
       expect(await receiptRows()).toEqual([]);
       const review = await prisma.xeroSyncOperation.findUnique({ where: { id: result.reviewOperationId! }, select: { requestPayload: true } });
       expect(JSON.stringify(review?.requestPayload)).toContain(MODIFICATION_ID);
+
+      // Retries: the gap check replayed (the create's replay) is refused again on one deduplicated task; the keep's repair replay finds its kept invoice.
+      const again = await runGapCheck();
+      expect(again).toMatchObject({ queueOperationId: null, reviewOperationId: result.reviewOperationId });
+      await expect(repairRecord()).resolves.toMatchObject({ kind: "kept-invoice-queued", queueOperationId: keptInvoices[0]!.id });
+      expect(await keptRows()).toHaveLength(1);
+      expect(await gapRows()).toEqual([]);
+      expect(await reviewRows()).toHaveLength(1);
     });
 
     it("the reverse order: the gap invoice is queued first, so the keep finds it billing the change and records the capture's receipt on it - no kept invoice", { timeout: 30_000 }, async () => {
       const result = await runGapCheck();
       expect(result).toMatchObject({ gapCents: 16_000 });
-      expect(await gapRows()).toHaveLength(1);
+      // The gap invoice bills both racing edits' 160.00, on the first anchor; nothing on the capture's own change.
+      const gaps = await gapRows();
+      expect(gaps).toHaveLength(1);
+      expect(gaps[0]!.requestPayload).toMatchObject({ primaryInvoiceGap: true, priceDiffCents: 16_000, changeFeeCents: 0, bookingModificationId: FIRST_ANCHOR_ID });
+      expect(await supplementaryRows()).toEqual([]);
 
-      await expect(dismiss()).resolves.toMatchObject({ kind: "receipt-queued" });
+      const plan = await dismiss();
+      expect(plan).toMatchObject({ kind: "receipt-queued" });
       expect(await keptRows()).toEqual([]);
-      expect(await receiptRows()).toHaveLength(1);
+      const receipts = await receiptRows();
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]!.requestPayload).toMatchObject({ paymentIntentId: CHANGE_INTENT });
+
+      // Retries: the gap check replayed finds its own invoice; the keep's repair replay finds the receipt. Still one of each.
+      await expect(runGapCheck()).resolves.toMatchObject({ gapCents: 16_000 });
+      await expect(repairRecord()).resolves.toMatchObject({ kind: "receipt-queued", queueOperationId: receipts[0]!.id });
       expect(await gapRows()).toHaveLength(1);
+      expect(await receiptRows()).toHaveLength(1);
+      expect(await keptRows()).toEqual([]);
     });
   });
 });
