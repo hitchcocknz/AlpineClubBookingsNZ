@@ -323,7 +323,9 @@ doubt.
 
 ## Claiming, and talking between lanes
 
-`AGENTS.md` tells you to post a CLAIM comment using the repository convention.
+`AGENTS.md` → "Orchestration Model" tells the lane to post a CLAIM comment
+when it starts, using the repository convention; check it held as
+[`COORDINATION.md`](COORDINATION.md#checking-a-claim-held) describes.
 This section is that convention for every agent interface.
 
 Every agent in this repository authenticates to GitHub as the **same account**,

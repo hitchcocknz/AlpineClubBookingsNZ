@@ -51,6 +51,48 @@ taking lane posts its own `CLAIM:`. An assignment written by an agent carries no
 authority beyond the owner decisions it cites, read at source (`AGENTS.md` →
 "Pre-authorisation and attributability").
 
+### Checking a claim held
+
+Two lanes can both see an issue as free and claim it within minutes. A claim
+is not held until it has been checked:
+
+1. Before claiming, read the thread (`pnpm run issue <n>`), any ownership
+   board, and open PRs for the issue (`gh pr list --search "<n>"`).
+2. Post the `CLAIM:`, then read the thread and PR list again before creating
+   a worktree or writing code.
+3. If another lane's `CLAIM:`, assignment or PR for the issue appears, the
+   earlier one on GitHub holds. A later claimant posts a `LANE-SYNC:` that it
+   withdrew and stops; it pushes nothing and opens no PR.
+4. If both lanes already have commits, or the order is unclear, both stop
+   writing. Each posts a `LANE-SYNC:` with its head SHA and asks the owner who
+   continues. Neither merges the other's work or deletes its own while waiting.
+
+Re-run step 2 before the first push as well, which catches a claim posted
+while you were building.
+
+## Parallel work
+
+This is the initial operating baseline for managed agent lanes. It is
+adjustable, not a permanent fleet-wide limit (#3905). The owner may set a
+higher or lower level for a period, an issue or a host, weighing how
+independent the work is, machine capacity, test load and review capacity.
+Record that decision on the issue it covers.
+
+- **Two** substantial managed implementation tasks at once.
+- **One more UX task** only when its behaviour, schema and components are
+  independent of both, and review capacity remains.
+- **One writer per shared financial invariant**, at any level.
+- **One expensive development or test job per physical host** — a full suite,
+  E2E, a build, a large typecheck. Check what else runs on the host first,
+  and wait or use CI rather than contend.
+- **Unknown occupancy is not a free slot.** Count a reservation you cannot
+  account for as taken.
+
+These limits are for managed agents only. Human contributors keep their
+normal rights and are not bound by them ([CONTRIBUTING.md](../../CONTRIBUTING.md)).
+A lane over the baseline does not stop someone else's work: it waits, or asks
+the owner. None of this creates a coordinator or a review-count rule.
+
 ## Reservations, stale sessions and conflicts
 
 A claim, a board reservation or an unpublished worktree is its holder's until
@@ -75,6 +117,27 @@ is done, the next step, open findings and any stated limits. Long-running
 implementors also keep a checkpoint outside the worktree, so a killed session
 leaves its state readable. Whoever resumes — the same lane or one the owner
 assigns — starts from that checkpoint and the thread, not from a summary.
+
+### When the pre-push checks cannot pass
+
+The pre-push checks (`AGENTS.md` → "Per-issue pipeline") are not skipped to
+save work. Never use `--no-verify`, a skipped check or a push of known-broken
+work to rescue it. Preserve it this way instead:
+
+1. Commit it locally on the lane's own branch, with a commit message naming
+   the failing check. Never stash it (the stash is shared across worktrees),
+   reset it or delete the worktree.
+2. Update the private checkpoint outside the worktree with the failing
+   command, the error and the next step.
+3. Post a `LANE-SYNC:` on the issue: the local head SHA, that it is unpushed,
+   the failing check and why. Name no local path, host or account (the repo is
+   public).
+4. If the cause is environmental (a missing service, host contention, a known
+   flake), say so and stop. If it is in the change, fix it or escalate under
+   the circuit-breaker rule.
+
+The reservation holds while the work is unpushed (#2216). Only the holder, or
+a lane the owner assigns, resumes it.
 
 ## Staying bounded
 
@@ -114,13 +177,15 @@ the same whatever the lens count.
 ## Asking the owner
 
 The owner does not read blueprints, and is never handed a document to read
-(owner rule, 24 Oct 2026). Engineering detail is the agent's to settle. For
-High/Critical work, the agent works out the invariants, counterpart writers,
-data and rollback, validation and stop conditions, and keeps them in the issue
-for reviewers.
+(owner rule, 24 Oct 2026). Engineering detail is the agent's to settle.
+Low/Medium work needs a concise plan. For High/Critical work, the agent works
+out the invariants, counterpart writers, data and rollback, validation and
+stop conditions, and keeps them in the issue for reviewers.
 
-Only a genuine business or authorisation question goes to the owner, as a
-decision pop-up or a series of them:
+Only a genuine business or authorisation question, or a blocker the lane
+cannot resolve, goes to the owner. That includes a contradiction between the
+issue and the code, a tripped circuit breaker, being stuck at `xhigh`, and a
+material scope change. Ask it as a decision pop-up or a series of them:
 
 - plain English;
 - the full detail needed to decide;
@@ -140,8 +205,9 @@ Record what the owner decided exactly as it was given:
 - **Direct instruction in a session:** name it as one, for example `START
   RECORD — <scope>, <date> (owner, direct instruction in the <lane> session)`.
   Say that it is agent-recorded and not a `thatskiff33` comment. It authorises
-  the session it was given in. A later session acts on it only as far as
-  `AGENTS.md` → "Pre-authorisation and attributability" allows.
+  only the session it was given in. A later session cannot act on it. Only a
+  `DECIDED` pop-up record or a `thatskiff33` comment carries forward, so ask
+  the owner to post one when work will outlast the session.
 
 A record never claims to be the owner's GitHub approval, and never quotes
 approval wording. Before you adopt a delegated decision, re-read the thread for

@@ -157,7 +157,7 @@ half-way on pnpm's junctions and FOLLOWS a junction, deleting its target (#3673)
 ```powershell
 pnpm run worktree:remove C:\path\to\exact-worktree                     # merged into origin/main
 pnpm run worktree:remove C:\path\to\exact-worktree --base origin/epic/1  # an epic child
-pnpm run worktree:remove C:\path\to\exact-worktree --allow-unmerged      # an abandoned lane
+pnpm run worktree:remove C:\path\to\exact-worktree --allow-unmerged      # your own abandoned lane
 pnpm run worktree:remove C:\path\to\exact-worktree --forget-missing      # its folder is really gone
 ```
 

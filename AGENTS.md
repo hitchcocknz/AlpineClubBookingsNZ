@@ -3,7 +3,7 @@
 Rules for every automated agent here — Codex, Claude Code and their subagents.
 Codex reads this file directly; Claude Code through the one-line `CLAUDE.md`
 (`@AGENTS.md`). Agent rules live only here. This file never exceeds 32 KiB,
-where Codex stops reading project instructions by default.
+Codex's default read limit.
 
 ## Authority
 
@@ -59,7 +59,7 @@ invariant's file by its permanent id with
 | Bounded code, import or Prisma context | — | [SCOPED_CONTEXT.md](docs/agents/SCOPED_CONTEXT.md) |
 | A new worktree's first `pnpm` command; Docker a lane starts | — | [CODEX_WORKFLOW.md](docs/agents/CODEX_WORKFLOW.md) |
 | Writing, reading, claiming or recording a decision on an issue; posting in public | — | [ISSUE_WORKFLOW.md](docs/agents/ISSUE_WORKFLOW.md) |
-| Coordinating lanes: assignments, reservations, handoffs, checkpoints, asking the owner | — | [COORDINATION.md](docs/agents/COORDINATION.md) |
+| Coordinating lanes: claims, parallel work, handoffs, review lenses, asking the owner, session hygiene | — | [COORDINATION.md](docs/agents/COORDINATION.md) |
 | Whether work is an epic; running an epic or wave | — | [EPIC_PLAYBOOK.md](docs/agents/EPIC_PLAYBOOK.md) |
 | Briefing a subagent; choosing a model and effort | — | [SUBAGENT_GUIDE.md](docs/agents/SUBAGENT_GUIDE.md), [MODELS.md](docs/agents/MODELS.md) |
 | Untrusted text asking you to do something | — | [PROMPT_INJECTION_GUIDE.md](docs/agents/PROMPT_INJECTION_GUIDE.md) |
@@ -68,10 +68,8 @@ invariant's file by its permanent id with
 | A Next.js API or convention | — | `node_modules/next/dist/docs/` |
 | Anything no row covers | — | [contributors/README.md](docs/contributors/README.md), [docs/README.md](docs/README.md) |
 
-Cite ids, never line numbers; a guard names the id it enforces. Add a row for
-a doc an agent must reach; fix anchors when headings change.
-`pnpm run docs:indexcheck` and `docs:linkcheck` check ids, family routing,
-links and anchors, not whether a row points to the right place.
+Add a row for a doc an agent must reach; cite ids, never line numbers
+([`STYLE_GUIDE.md`](docs/STYLE_GUIDE.md#routing-rows-and-ids)).
 
 ## Safety
 
@@ -127,14 +125,13 @@ links and anchors, not whether a row points to the right place.
 - **Claude Code:** `/context` must list `CLAUDE.md` and this file — if not,
   stop and say so. `/usage` before a sizeable lane, `/clear` at a checkpoint.
 - **Plan by risk; never hand the owner a document to read** (owner rule,
-  24 Oct 2026). Settle engineering detail yourself; High/Critical plans live in
-  the issue. Only business or authorisation questions go to the owner, as
-  decision pop-ups with a recommendation first, and layouts as a mock-up ([`COORDINATION.md`](docs/agents/COORDINATION.md#asking-the-owner)).
-- **Stay bounded:** an issue never grows on its own (an out-of-scope finding is
-  filed, not absorbed), and research stops once it answers the question or
-  stops yielding new evidence; report what is known and the limit.
-- **Validate coherent batches** — the cheapest relevant check at each
-  meaningful boundary.
+  24 Oct 2026): settle engineering detail yourself; High/Critical plans live in
+  the issue. Ask the owner only business or authorisation questions and
+  unresolved blockers, as decision pop-ups
+  ([`COORDINATION.md`](docs/agents/COORDINATION.md#asking-the-owner)).
+- **Stay bounded:** an issue never grows on its own (file what is out of
+  scope); research stops once it answers the question or stops adding evidence.
+- **Validate coherent batches** with the cheapest relevant check.
 - **Two identical failures trip a circuit breaker:** keep the command and
   error, find the cause, change approach or escalate.
 
@@ -145,16 +142,16 @@ credit writer, webhook or cron, read the locking guide and classify every
 mutation. Cite `INV-LOCK-001` (tier), `INV-LOCK-002` (order, single mint of the
 per-lodge key) and `INV-LOCK-003` (register the site), not this aid:
 
-- lifecycle and settlement-money transitions that must exclude
+- global-cohort lifecycle and settlement-money transitions that must exclude
   cancel/capture/refund/hold-release use global `pg_advisory_xact_lock(1)`;
   capacity-only claims join only if the guide's writer matrix says so;
 - capacity uses `acquireLodgeCapacityLock` for the immutable lodge key;
 - member-night and credit-ledger-only invariants use their per-member helpers,
   same-family keys sorted; a writer that also changes booking status or
   settlement money takes both applicable tiers;
-- acquire global -> lodge -> member, re-read mutable state after locking, and
-  claim with a status-guarded `updateMany` before any side effect; a lost
-  claim runs no side effect.
+- when tiers compose, acquire global -> lodge -> member, re-read mutable state
+  after locking, and claim with a status-guarded `updateMany` before any side
+  effect; a lost claim runs no side effect.
 
 Before editing, inspect open PRs and the last 10 merged PRs touching the
 subsystem, reconcile their locks, transactions, state machines and outbox
@@ -170,39 +167,41 @@ state, and no model-powered supervisor runs between tasks. A coordinator session
 only for a bounded decision, assignment or integration, records the result on
 the issue and stops ([`COORDINATION.md`](docs/agents/COORDINATION.md)).
 
-- **Lane** (the session holding an issue's claim) owns its
-  claim, worktree, branch, GitHub writes, PR, CI and merge gate. Small edits
-  itself; bulk implementation delegated.
-- **Reservations hold until released.** A claim or board reservation is its
-  holder's until the holder releases it or the owner reassigns it; silence,
-  age, an empty remote or a stopped session never frees it. Never take over,
-  push to, reset or rebase another lane's branch or worktree — post a
-  `LANE-SYNC` or ask the owner. Unknown occupancy is not a free slot.
+- **Lane** (the session that posted an issue's `CLAIM:`; its main session is
+  the orchestrator) owns its claim, worktree, branch, GitHub writes, PR, CI
+  and merge gate.
+- **Reservations hold until released** by the holder or reassigned by the
+  owner; silence, age, an empty remote or a stopped session never frees one.
+  Never take over, push to, reset or rebase another lane's branch or worktree
+  — post a `LANE-SYNC` or ask the owner. Unknown occupancy is not a free slot.
 - **Implementors** (subagents): one issue in its worktree; commit locally;
   never push, touch GitHub or run the full suite.
 - **Reviewers** (read-only) refute each finding against the code and report
-  survivors with `file:line` and a failure scenario. The lane reviews its own diff and picks how many further lenses,
-  and which, from risk, complexity, uncertainty and what validation proves —
-  none when justified; no fixed count (owner decision, #3905). `INV-SSOT` is
-  in one review's brief on every PR. A review approves the commit it read: the
-  ready comment names each lens, why, and its head SHA.
+  survivors with `file:line` and a failure scenario. The lane reviews its own
+  diff and picks how many further lenses, and which, from risk, complexity,
+  uncertainty and what validation proves — none when justified; no fixed
+  count (owner decision, #3905). Money, schema, auth, provider, capacity and
+  membership work usually justifies independent lenses (`COORDINATION.md`).
+  `INV-SSOT` is in one review's brief on every PR. A review approves the
+  commit it read: the ready comment names each lens, why, and its head SHA.
 - **Fixes:** the lane triages (rejections reasoned in the PR) and always runs
   the targeted verify-fix — touched and adjacent suites, mutation tests for new
   guards, a re-read of changed hunks. A security blocker's fix gets its lens
   re-run over the fix only. A fix report's "not verified" list is resolved or
   stated as a limit, not queued.
-- **Delegate** only independent, sizeable work, never a re-check of verified
-  work.
-- **Briefs** come from the issue thread read this session with
+- **Delegate** only independent, sizeable work, never a few tool calls' work
+  (do it yourself) or a re-check of verified work.
+- **Briefs** come from the owner's decision read verbatim this session with
   `pnpm run issue <n>`, never memory or the title, and say the issue wins
   where they disagree (#2400; [`SUBAGENT_GUIDE.md`](docs/agents/SUBAGENT_GUIDE.md)).
 - **Worktrees:** each lane has a physical, isolated `node_modules`, never a
   junction or symlink; the lane installs, never `pnpm dlx`/`npx`
   ([`CODEX_WORKFLOW.md`](docs/agents/CODEX_WORKFLOW.md)).
-- **Parallel lanes** only where code surfaces don't clash, with one writer per
-  shared financial invariant; check open PRs and claims first. Long-running
-  implementors keep a checkpoint outside the worktree and commit coherent
-  stages; a stopping lane posts a `LANE-SYNC` checkpoint. Epics and waves:
+- **Parallel lanes** only where code surfaces don't clash, one writer per
+  shared financial invariant, within the baseline in
+  [`COORDINATION.md`](docs/agents/COORDINATION.md#parallel-work). Long-running
+  implementors keep an outside checkpoint and commit coherent stages; a
+  stopping lane posts a `LANE-SYNC` checkpoint. Epics and waves:
   [`EPIC_PLAYBOOK.md`](docs/agents/EPIC_PLAYBOOK.md).
 
 ### Model selection
@@ -217,9 +216,9 @@ the issue and stops ([`COORDINATION.md`](docs/agents/COORDINATION.md)).
 - `xhigh` remains the ceiling — never use `max`, on any lane. Still
   stuck at `xhigh`: change approach, escalate as `MODELS.md` allows, or ask the owner.
 - State the model explicitly when you dispatch a subagent, and the effort, with
-  one line of why; unstated, both inherit. Report substitutions; never
-  silently fall back to a more expensive model. Model choice never changes
-  scope, validation or approvals.
+  one line of why; unstated, the role file's default applies (`MODELS.md`).
+  Report substitutions; never silently fall back to a more expensive model.
+  Model choice never changes scope, validation or approvals.
 - Current models and defaults live in [`MODELS.md`](docs/agents/MODELS.md);
   this file names none.
 - An empty, truncated or refused result (`stop_reason: "refusal"` can arrive on
@@ -268,8 +267,9 @@ implement → review → fix → verify-fix → validate → PR → CI-green →
    origin main` or `--base <ref>` (an epic child: its branch).
 2. **CI green on the exact head SHA** — every required check present and
    passing on the current head; an empty failure list is not a pass (#2641).
-   Pre-existing failures, knip carve-outs, required checks and protection:
-   [`CONTRIBUTING.md`](CONTRIBUTING.md#branch-protection).
+   Pre-existing failures, required checks and protection:
+   [`CONTRIBUTING.md`](CONTRIBUTING.md#branch-protection); knip carve-outs: its
+   [knip gate](CONTRIBUTING.md#dead-code-gate-knip).
 3. **Merge gate (owner decision, 7 Oct 2026, #3959).** An agent merges any PR,
    at any risk level, once it is complete; every required check is green on
    its exact head; it is reviewed as "Orchestration Model" requires for its
@@ -278,12 +278,14 @@ implement → review → fix → verify-fix → validate → PR → CI-green →
    ready comment above, no residual open). Fix anything unclean first; never
    merge around it. No owner Approve or approval comment is needed. A genuine
    open owner *decision* (`needs-decision`, an unanswered option list) still
-   waits for the owner, and production operations stay owner-only. Epic children merge into their `epic/**` branch on the same
-   terms ([`EPIC_PLAYBOOK.md`](docs/agents/EPIC_PLAYBOOK.md)).
+   waits for the owner, and production operations stay owner-only. Epic
+   children merge into their `epic/**` branch on the same terms
+   ([`EPIC_PLAYBOOK.md`](docs/agents/EPIC_PLAYBOOK.md)).
 4. **Merge** with a merge commit; once eligible and waiting only on CI, arm
    `gh pr merge <n> --auto --merge`. The linked issue closes only then.
 5. **Close out** the issue in plain English — what shipped, the PR, findings
-   and fixes, follow-ups by number. Every follow-up named is filed before merge.
+   and fixes, follow-ups by number — whoever merged. Every follow-up named is
+   filed before merge.
 6. **Clean up:** delete the branch, tear down the lane's Docker
    (`pnpm run stale-containers`), confirm `main` push CI stays green.
 

@@ -9,6 +9,9 @@ function readRepoFile(path: string): string {
 // Codex's default `project_doc_max_bytes`. `.codex/config.toml` raises it, but
 // only for a trusted project, so the default is the budget every launch gets.
 const CODEX_DEFAULT_BUDGET = 32_768;
+// #3905 decision 4: the root starts at or under 24 KiB, leaving the rest of
+// the budget for nested files. Raising it to the ceiling is an owner call.
+const ROOT_INITIAL_TARGET = 24_576;
 const INSTRUCTION_FILE = /(?:^|\/)AGENTS(?:\.override)?\.md$/;
 
 /**
@@ -32,15 +35,36 @@ function oversizedInstructionChains(sizes: ReadonlyMap<string, number>): string[
   return oversized;
 }
 
-/** Phrases that set a fixed number of review lenses or reviewers. */
+/**
+ * Clauses that make a number of review lenses or reviewers mandatory. A clause
+ * is flagged when a count sits before "lens(es)", "reviewer(s)" or "reviews"
+ * (up to three words between) and a mandatory word ("must", "gets", "use"…)
+ * comes before the count. A negation before the count ("No task requires two
+ * reviewers") or a past-tense marker anywhere in the clause ("formerly got
+ * three lenses") clears it, so the docs may still state the rule that was
+ * removed. A tripwire, not a parser: it reads clauses split at . ; ! ? and —.
+ */
 function fixedLensCounts(text: string): string[] {
-  const count = String.raw`(?:one|two|three|four|five|\d+)`;
-  const pattern = new RegExp(
-    String.raw`\b(?:gets?|requires?|needs?|at least|minimum of|dispatch(?:es)?)\s+(?:at least\s+)?${count}\s+(?:distinct\s+|independent\s+|review\s+)*(?:lens(?:es)?|reviewers?)\b` +
-      String.raw`|\b${count}\s+distinct\s+lenses\b`,
-    "gi",
-  );
-  return [...text.replace(/\s+/g, " ").matchAll(pattern)].map((match) => match[0]);
+  const countedNoun =
+    /\b(?:one|two|three|four|five|a single|a second|a third|\d+)[\s-]+(?:[\w-]+\s+){0,3}?(?:lens(?:es)?|reviewers?|reviews|review agents?)\b/i;
+  const mandatory =
+    /\b(?:must|shall|always|gets?|requires?|required|needs?|uses?|runs?|dispatch(?:es)?|at least|minimum(?: of)?|mandatory|compulsory)\b|[:|]\s*$/i;
+  const requiredAfter = /^\s*(?:are|is)\s+(?:required|mandatory|compulsory|needed)\b/i;
+  const negation = /\b(?:no|not|never|nor|without|none|zero|neither)\b|n't\b/i;
+  const historical = /\b(?:formerly|previously|used to|was|were|removed|retired|replaced|earlier|old)\b/i;
+  return text
+    .replace(/\s+/g, " ")
+    .split(/[.;!?]\s|\s—\s/)
+    .filter((clause) => {
+      // "never fewer than two" sets a floor, so it reads as "at least two".
+      const normalised = clause.replace(/\b(?:never|no|not)\s+(?:fewer|less)\s+than\b/gi, "at least");
+      const match = countedNoun.exec(normalised);
+      if (!match || historical.test(normalised)) return false;
+      const before = normalised.slice(0, match.index);
+      const after = normalised.slice(match.index + match[0].length);
+      return (mandatory.test(before) || requiredAfter.test(after)) && !negation.test(before);
+    })
+    .map((clause) => clause.trim());
 }
 
 describe("repository agent workflow contract", () => {
@@ -72,9 +96,14 @@ describe("repository agent workflow contract", () => {
     const bytes = Buffer.byteLength(readRepoFile("AGENTS.md"), "utf8");
     expect(
       bytes,
-      `AGENTS.md is ${bytes} bytes; Codex reads only the first 32,768 by default. ` +
+      `AGENTS.md is ${bytes} bytes; Codex reads only the first ${CODEX_DEFAULT_BUDGET} by default. ` +
         "Move detail to a routed document instead of growing the core.",
-    ).toBeLessThanOrEqual(32_768);
+    ).toBeLessThanOrEqual(CODEX_DEFAULT_BUDGET);
+    expect(
+      bytes,
+      `AGENTS.md is ${bytes} bytes, over the ${ROOT_INITIAL_TARGET}-byte starting size (#3905 decision 4). ` +
+        "Move detail to a routed document instead of growing the core.",
+    ).toBeLessThanOrEqual(ROOT_INITIAL_TARGET);
 
     const agents = readRepoFile("AGENTS.md");
     // A session can see whether the import worked; the core tells it to look.
@@ -117,8 +146,12 @@ describe("repository agent workflow contract", () => {
         new Map([["AGENTS.md", 30_000], ["AGENTS.override.md", 2_000], ["src/AGENTS.md", 2_000]]),
       ),
     ).toEqual([]);
-    // …but an oversized override is still caught.
+    // …but an oversized override is still caught, even beside a small AGENTS.md
+    // (which would pass if the override were ignored).
     expect(oversizedInstructionChains(new Map([["AGENTS.override.md", 40_000]]))).toEqual([": 40000 bytes"]);
+    expect(
+      oversizedInstructionChains(new Map([["AGENTS.md", 2_000], ["AGENTS.override.md", 40_000]])),
+    ).toEqual([": 40000 bytes"]);
   });
 
   /*
@@ -131,7 +164,7 @@ describe("repository agent workflow contract", () => {
     const agents = readRepoFile("AGENTS.md").replace(/\s+/g, " ");
     const coordination = readRepoFile("docs/agents/COORDINATION.md").replace(/\s+/g, " ");
     expect(agents).toContain("no model-powered supervisor runs between tasks");
-    expect(agents).toContain("Reservations hold until released.");
+    expect(agents).toContain("Reservations hold until released");
     expect(agents).toContain("Never take over, push to, reset or rebase another lane's branch or worktree");
     expect(agents).toContain("Unknown occupancy is not a free slot.");
     expect(agents).toContain("no fixed count (owner decision, #3905)");
@@ -144,28 +177,59 @@ describe("repository agent workflow contract", () => {
       .find((line) => line.startsWith("| Coordinating lanes"));
     expect(routingRow).toContain("(docs/agents/COORDINATION.md)");
 
+    // Every agent guide, the reviewer roles and the PR template: the places a
+    // fixed count would come back.
+    const agentDocs = execFileSync("git", ["ls-files", "-z", "docs/agents/**.md"], { encoding: "utf8" })
+      .split("\0")
+      .filter(Boolean);
+    expect(agentDocs).toContain("docs/agents/COORDINATION.md");
     for (const path of [
       "AGENTS.md",
-      "docs/agents/COORDINATION.md",
-      "docs/agents/SUBAGENT_GUIDE.md",
-      "docs/agents/ISSUE_WORKFLOW.md",
-      "docs/agents/EPIC_PLAYBOOK.md",
-      "docs/agents/CODEX_WORKFLOW.md",
+      ...agentDocs,
+      ".claude/agents/reviewer.md",
+      ".codex/agents/reviewer.toml",
+      ".github/pull_request_template.md",
     ]) {
       expect(fixedLensCounts(readRepoFile(path)), path).toEqual([]);
     }
   });
 
   it("recognises a fixed reviewer count however it is worded", () => {
-    // The wording CP1 removed, and close variants, are caught…
-    expect(fixedLensCounts("Critical work gets three distinct lenses; standard work two")).not.toEqual([]);
-    expect(fixedLensCounts("docs-only work gets one lens")).not.toEqual([]);
-    expect(fixedLensCounts("dispatch at least 2 review lenses")).not.toEqual([]);
-    expect(fixedLensCounts("requires two reviewers")).not.toEqual([]);
-    // …while describing discretion, or one lens's brief, is not.
-    expect(fixedLensCounts("picks how many further lenses, and which")).toEqual([]);
-    expect(fixedLensCounts("`INV-SSOT` is in one review's brief on every PR")).toEqual([]);
-    expect(fixedLensCounts("found independently by two lenses")).toEqual([]);
+    // The wording CP1 removed, close variants, and the two the independent
+    // review of #4379 showed the first detector missed, are caught…
+    for (const mandatoryCount of [
+      "Critical work gets three distinct lenses; standard work two",
+      "docs-only work gets one lens",
+      "dispatch at least 2 review lenses",
+      "requires two reviewers",
+      "Use two reviewers for every PR",
+      "Critical work must have three review lenses",
+      "Every money PR needs at least two independent reviews",
+      "Always run a single reviewer on docs work",
+      "Critical work must have three lenses, not two",
+      "Critical work: three lenses",
+      "| Critical | 3 lenses |",
+      "Money work gets a three-lens review",
+      "Two lenses are required for schema work",
+      "Auth work requires two additional lenses",
+      "Run never fewer than two lenses on money work",
+    ]) {
+      expect(fixedLensCounts(mandatoryCount), mandatoryCount).toEqual([mandatoryCount.split(";")[0]]);
+    }
+    // …while negations, discretion, history and one lens's brief are not.
+    for (const notMandatory of [
+      "No task requires two reviewers",
+      "There is no rule that work must get three lenses",
+      "A lane never needs two reviewers by default",
+      "Critical work formerly got three distinct lenses; that rule was removed",
+      "The old rule required three lenses for critical work",
+      "picks how many further lenses, and which",
+      "`INV-SSOT` is in one review's brief on every PR",
+      "found independently by two lenses",
+      "zero further lenses is allowed when justified",
+    ]) {
+      expect(fixedLensCounts(notMandatory), notMandatory).toEqual([]);
+    }
   });
 
   it("keeps the safety-critical rules in the always-read core", () => {

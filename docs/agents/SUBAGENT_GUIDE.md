@@ -49,9 +49,10 @@ do not clash.
 - Subagents must read `AGENTS.md` and the relevant domain docs.
 - Briefs should name the smallest relevant files or section from the local
   [`agent:context` artifact](SCOPED_CONTEXT.md), not attach a repository dump.
-  State the model and reasoning effort in every launch — an unstated model
-  inherits the orchestrator's — and choose them as `AGENTS.md` → "Model
-  selection" and [`MODELS.md`](MODELS.md) describe. The role definitions in
+  State the model and reasoning effort in every launch — unstated, the role
+  file's default applies, or the orchestrator's where the role sets none
+  ([`MODELS.md`](MODELS.md#setting-model-and-effort)) — and choose them as
+  `AGENTS.md` → "Model selection" and `MODELS.md` describe. The role definitions in
   `.claude/agents/` and `.codex/agents/` (`implementor`, `reviewer`,
   `explorer`) carry sensible defaults. When briefing an implementor, include the "Briefing an
   implementor" lines below verbatim.
