@@ -154,11 +154,11 @@ describe("dependabotGroupProblems", () => {
   });
 
   it("fails one missing exclusion by name", () => {
-    const dependabotText = DEPENDABOT.replace(
-      /(exclude-patterns:\n {10}- "prisma"\n) {10}- "@prisma\/\*"\n/,
-      "$1",
-    );
-    expect(dependabotText).not.toBe(DEPENDABOT);
+    // The second listing of the pattern is the one under `exclude-patterns`.
+    const line = '          - "@prisma/' + '*"\n';
+    const at = DEPENDABOT.lastIndexOf(line);
+    expect(at).toBeGreaterThan(DEPENDABOT.indexOf("exclude-patterns:"));
+    const dependabotText = DEPENDABOT.slice(0, at) + DEPENDABOT.slice(at + line.length);
     expect(dependabotGroupProblems({ dependabotText, workspaceText: WORKSPACE })).toEqual([
       expect.stringContaining('group `npm-minor-and-patch` does not exclude "@prisma/*"'),
     ]);
