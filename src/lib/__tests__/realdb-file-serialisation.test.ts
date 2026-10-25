@@ -14,7 +14,6 @@ import {
   isRealdbTestFile,
   type RealdbLockClient,
 } from "./support/realdb-file-serialisation";
-import { stripComments } from "./support/strip-comments";
 
 const RACE_URL = "postgresql://postgres:postgres@127.0.0.1:55767/concurrency_race_1881";
 const REALDB_FILE = "/repo/src/lib/__tests__/xero-refund-note-void-pointer.realdb.test.ts";
@@ -110,9 +109,10 @@ describe("realdb file serialisation (#4367)", () => {
   });
 
   it("is registered by vitest.setup.ts whenever the race env is on", () => {
-    const setup = stripComments(readFileSync(path.join(process.cwd(), "vitest.setup.ts"), "utf8"));
+    // Anchored at a line start, so a `//`-commented copy cannot satisfy it.
+    const setup = readFileSync(path.join(process.cwd(), "vitest.setup.ts"), "utf8");
     expect(setup).toMatch(
-      /if \(process\.env\.RUN_CONCURRENCY_RACE_TESTS === "1"\) \{\s*const \{ serialiseRealdbFile \} = await import\(\s*"\.\/src\/lib\/__tests__\/support\/realdb-file-serialisation"\s*\);\s*serialiseRealdbFile\(\);\s*\}/,
+      /^if \(process\.env\.RUN_CONCURRENCY_RACE_TESTS === "1"\) \{\s*const \{ serialiseRealdbFile \} = await import\(\s*"\.\/src\/lib\/__tests__\/support\/realdb-file-serialisation"\s*\);\s*serialiseRealdbFile\(\);\s*\}/m,
     );
   });
 });
