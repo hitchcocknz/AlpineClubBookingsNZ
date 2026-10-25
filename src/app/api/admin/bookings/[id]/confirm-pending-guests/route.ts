@@ -307,9 +307,7 @@ export async function POST(
           cause: "SYSTEM_CHANGE",
           actorMemberId: session.user.id,
         });
-        // #4399: written inside the claim's lock(1), as the cron writes its own,
-        // so an edit recording a change fee (which takes lock(1)) cannot land
-        // between the PAID claim and this row and be left uncollected.
+        // #4399: under the claim's lock(1), as the cron writes it, so no fee-recording edit lands in between.
         await tx.payment.upsert({
           where: { bookingId },
           create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
