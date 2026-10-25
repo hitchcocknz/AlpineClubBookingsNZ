@@ -98,6 +98,9 @@ const OWNER = "@thatskiff33";
  * which sets the ceiling at 19%): the reversal's intent hygiene
  * (`manual-settlement-intent-hygiene.ts`), owned by the existing
  * `*settlement*` glob, so the ceiling moves to 19%.
+ * And 25 Oct 2026 (#4312, under that same 19% decision): the bank-transfer card
+ * refund note modules (`card-refund-own-note*.ts`, `card-refund-resend-answer.ts`),
+ * owned by the existing `*refund*` glob, fit under it.
  */
 const MAX_OWNED_SRC_LIB_SHARE = 0.19;
 

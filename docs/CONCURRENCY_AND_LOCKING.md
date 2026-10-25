@@ -4055,6 +4055,27 @@ the pre-#4217 code). Now:
   taken the `Payment` row, on the same transaction, and relies on that lock:
   a second completion on the payment reads the first's committed note row, so
   two hand-backs never both take the canonical route. It adds no key.
+- A card refund's own Xero note on a bank transfer (#4312, `INV-ADDPAY-047`)
+  takes no lock and needs none: its writers queue it after the refund's ledger
+  write has committed under the `Payment` row (`recordStripeRefundsAgainstTransaction`,
+  whose order is unchanged; it only reports which refunds it newly counted), and
+  never write the `Payment` row. Two writers asking for one refund at once
+  build one key (`cardRefundNoteKey`) and collide on the outbox's partial
+  unique index on an active correlation key, so one row stands. It adds no key.
+  The mark that pairs a re-send with its failures (`madeRefundId`, round 8) is
+  one compare-and-set on the recovery row's `allocationPlan`, no lock: the
+  runner's (`markResentSlices`) on the plan its attempt sent from, and
+  `charge.refunded`'s on a dead row (`pairResendRecordedFirst`) on the plan,
+  status and attempts it read. Any plan written in between (a re-plan, a
+  refusal's move, the other mark) fails it; a refusal's move stays fenced on
+  the holder's attempt. Unlike the failed-later re-plan (#4104), a mark never
+  takes the `Payment` row, so that lock does not order it against "Paid
+  another way"'s owed read. The close's claim carries the plan it read that
+  figure from (`onPlanWhere`): a mark landing between the read and the claim
+  fails the claim with its "changed while you were closing it" 409. A
+  `charge.refunded` mark that loses to the claim reads the row again and marks
+  the closed row's slice on its plan alone, as the runner's does
+  (`markClosedRowAfterLostWrite`); any other lost write is logged.
 - The waiting ask's recovery row comes after the `Payment` row too (#4217
   review). A reduction that gives credit back has written the `Payment` row
   before its retire closes the recovery; the runner's claim hold

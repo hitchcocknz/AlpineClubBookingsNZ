@@ -1,3 +1,4 @@
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import { PaymentSource, Prisma } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
@@ -541,7 +542,7 @@ export async function startXeroSyncOperation(
       if (!isPrismaUniqueConstraintError(error) || !input.correlationKey || db !== prisma) throw error;
       const { correlationKey } = input;
       const existing = await db.xeroSyncOperation.findFirst({
-        where: { correlationKey, status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] } },
+        where: { correlationKey, status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] } },
         orderBy: { createdAt: "desc" },
       });
       if (existing) return existing;

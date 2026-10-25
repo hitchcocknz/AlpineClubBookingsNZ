@@ -2223,8 +2223,10 @@ in one transaction under the `Payment` row, which the reversal holds from its
 first makes the reversal refuse, and a reversal that commits first leaves the
 hand-off nothing to claim, so the capture settles the booking. A worker that
 claimed a row before the reversal may still reach Stripe's cancel after it
-commits: the member's open tab then fails, and the pay step mints a fresh
-intent. No money moves.
+commits: the member's open tab then fails. The pay step does not mint a fresh
+intent: the reversal leaves the payment on internet banking, so both card doors
+refuse before reaching Stripe (#4348), and the member pays by bank transfer. No
+money moves.
 
 The FAILED row is why #4320 exists: a mark-paid's cancel that met a Stripe
 outage waits FAILED to retry, and while the reversal deleted only
@@ -3978,6 +3980,27 @@ failure -> run/failure visible and retryable where business-critical
 
 To verify: which cron jobs record `CronJobRun`, exact statuses, stale queue
 health thresholds, and skipped-module reporting.
+
+### Xero cron run status: SKIPPED means no work (#4375)
+
+```text
+module off / Xero not connected / membership refresh env off -> skipped: true -> SKIPPED
+credit-sync pass already ran this interval (skipped: true)                     -> SKIPPED
+credit-note mirror with nothing to read (skipped: true)                        -> SKIPPED
+batch worked, some rows passed over (skipped: <count>)                        -> SUCCESS
+outbox rows refused before any call (cooldownDeferred > 0)                    -> SUCCESS + warning
+outbox or replay rows failed (failed > 0)                                     -> SUCCESS + warning
+heal or void follow-up with a failed note                                      -> FAILURE
+```
+
+A queue task's numeric `skipped` count is rows it passed over after working its
+batch: a lost claim, a row resolved in Xero or marked not replayable, a note
+waiting for another note. That run succeeded, so cron health stays green. A row
+the outage cooldown, the daily limit or the environment check refused before any
+call is counted there too, but it means Xero is unusable: the outbox counts it
+as `cooldownDeferred` and the run carries a `warning`, shown amber. A failed
+row warns the same way and points at Xero Operations. To verify:
+`xero-cron-runner.test.ts`, `xero-outbox-fail-fast.test.ts`.
 
 ### Alpine Central Server version pause (#49)
 

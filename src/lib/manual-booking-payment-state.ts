@@ -1,3 +1,4 @@
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import "server-only";
 
 import { BookingStatus, PaymentSource } from "@prisma/client";
@@ -116,7 +117,7 @@ export async function getBookingManualPaymentState(
             operationType: "CREATE",
             localModel: "Payment",
             localId: payment.id,
-            status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT", "SUCCEEDED"] },
+            status: { in: [...XERO_ACTIVE_OPERATION_STATUSES, "SUCCEEDED"] },
           },
           select: { id: true },
         }),

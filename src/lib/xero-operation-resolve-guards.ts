@@ -1,6 +1,7 @@
 // #3635 (`INV-INT-025`, orchestrator decision 3): what the "resolved in Xero"
 // route must check before its mark may stand. Kept out of the route so the
 // route stays a thin handler and the reads have one home.
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { buildXeroOperationRequeueCorrelationKey } from "@/lib/xero-operation-queue";
@@ -66,7 +67,7 @@ export async function findQueuedLiveCopy(
       correlationKey: operation.correlationKey,
       entityType: operation.entityType,
       operationType: operation.operationType,
-      status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] },
+      status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] },
     },
     select: { id: true },
   });
