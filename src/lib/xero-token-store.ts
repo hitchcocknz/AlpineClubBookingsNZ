@@ -11,7 +11,6 @@
  * — see "Where things live" below.
  */
 
-import { createHash } from "crypto";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import {
@@ -28,7 +27,6 @@ import {
   readIntegrationCredentialRow,
   setIntegrationCredentialInTransaction,
   withCredentialTransaction,
-  type CredentialResolution,
 } from "@/lib/integration-credentials";
 import { XERO_PROVIDER } from "@/lib/xero-config";
 import {
@@ -40,6 +38,11 @@ import { invalidateXeroOrganisationCaches } from "@/lib/xero-organisation-cache-
 import { XERO_TOKEN_ROW_ORDER } from "@/lib/xero-token-row-order";
 import { getAuthSecretWithSource, isAuthSecretStrongEnough } from "@/lib/integration-crypto";
 import { XeroTokenDecryptError } from "@/lib/xero-token-errors";
+import {
+  freshRowMirror,
+  serializeStoredTokenSet,
+  usableTokenSet,
+} from "@/lib/xero-token-set";
 
 // Every caller already finds these here.
 export {
@@ -158,17 +161,6 @@ export const XERO_OAUTH_TOKEN_KEY = "token-set";
  */
 const RETIRED_XERO_TOKEN_KEY = "token_key";
 
-/** What the store row's encrypted value holds. Never logged, never audited. */
-interface StoredXeroTokenSet {
-  v: 1;
-  accessToken: string;
-  refreshToken: string;
-  expiresAt: string;
-  tenantId: string | null;
-  /** The `XeroToken` row's fingerprint, for the previous release (rule 3). */
-  mirror?: string;
-}
-
 type XeroTokenDb = Pick<
   Prisma.TransactionClient,
   "xeroToken" | "xeroConnection" | "integrationCredential"
@@ -178,61 +170,6 @@ type XeroTokenDb = Pick<
 export interface XeroTokenWriteContext {
   actor: CredentialActor;
   request?: CredentialRequestContext;
-}
-
-/**
- * The previous release's fingerprint of a `XeroToken` row this release created:
- * SHA-256 over `id:accessToken:refreshToken`, the two ciphertext columns being
- * the database's '' default. Non-secret, and stored only inside the encrypted
- * store value.
- */
-function freshRowMirror(rowId: string): string {
-  return createHash("sha256").update(`${rowId}::`, "utf8").digest("hex");
-}
-
-function serializeStoredTokenSet(
-  tokens: TokenData,
-  tenantId: string | null,
-  mirror: string,
-): string {
-  const value: StoredXeroTokenSet = {
-    v: 1,
-    accessToken: tokens.accessToken,
-    refreshToken: tokens.refreshToken,
-    expiresAt: tokens.expiresAt.toISOString(),
-    tenantId,
-    mirror,
-  };
-  return JSON.stringify(value);
-}
-
-/** Parse the store value, or `null` when it is not a token set. */
-function parseStoredTokenSet(value: string): StoredXeroTokenSet | null {
-  try {
-    const parsed = JSON.parse(value) as Partial<StoredXeroTokenSet> | null;
-    if (
-      parsed === null ||
-      typeof parsed !== "object" ||
-      parsed.v !== 1 ||
-      typeof parsed.accessToken !== "string" ||
-      typeof parsed.refreshToken !== "string" ||
-      typeof parsed.expiresAt !== "string" ||
-      Number.isNaN(Date.parse(parsed.expiresAt)) ||
-      (parsed.tenantId !== null && typeof parsed.tenantId !== "string") ||
-      (parsed.mirror !== undefined && typeof parsed.mirror !== "string")
-    ) {
-      return null;
-    }
-    return parsed as StoredXeroTokenSet;
-  } catch {
-    // Never echo the value: it holds the tokens.
-    return null;
-  }
-}
-
-/** The usable token set in a store resolution, or `null`. */
-function usableTokenSet(stored: CredentialResolution): StoredXeroTokenSet | null {
-  return stored.status === "configured" ? parseStoredTokenSet(stored.value) : null;
 }
 
 function laterOf(a: Date | null, b: Date | null): Date | null {
