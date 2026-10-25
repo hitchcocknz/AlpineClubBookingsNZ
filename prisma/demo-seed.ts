@@ -31,13 +31,18 @@ import {
 } from "../src/lib/member-access-role-writes";
 import { backfillCurrentSeasonMembershipAssignments } from "../src/lib/membership-types";
 import { must } from "../src/lib/indexed-access";
+import { addDaysDateOnly } from "../src/lib/date-only";
 import { getDefaultLodgeId } from "../src/lib/lodges";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
 import { redeemPromoCode } from "../src/lib/promo";
 import { getClubFormat } from "../src/lib/club-format-settings";
+import { bankRefundVoidFollowUpOccurrenceKey } from "../src/lib/bank-refund-void-follow-up-key";
+import { bankRefundVoidFollowUpReviewContext } from "../src/lib/bank-refund-void-follow-up-copy";
 import { stripeChargeCurrency } from "../src/lib/stripe-charge-currency";
 import {
   DEMO_BOOKING_WINDOWS,
+  DEMO_SECOND_LODGE_BOOKING_WINDOWS,
+  seededBookingDates,
   DUAL_HAT_ADMIN,
   E2E_ADMIN,
   EMAIL_2FA_ENROLLEE,
@@ -56,9 +61,14 @@ import {
   ADDITIONAL_OWED_AMOUNT_CENTS,
   ADDITIONAL_OWED_BOOKING_ID,
   ADDITIONAL_OWED_WINDOW,
+  CHANGE_REQUEST_FINISHED_BOOKING_ID,
+  CHANGE_REQUEST_FINISHED_WINDOW,
+  CHANGE_REQUEST_FREE_TEXT_ID,
   PAID_PROMO_BOOKING_ID,
   UNRECONCILED_BOOKING_ID,
   UNRECONCILED_BOOKING_WINDOW,
+  BANK_REFUND_VOID_BOOKING_IDS,
+  BANK_REFUND_VOID_WINDOWS,
   LOCKED_OUT_MEMBER,
   PAID_CANCEL_BOOKING_ID,
   PAID_CANCEL_WINDOW,
@@ -188,6 +198,31 @@ async function cleanup() {
 }
 
 type MemberRec = Awaited<ReturnType<typeof prisma.member.create>>;
+
+/**
+ * A LOCKED_PERIOD request's `requestedChanges` in the shape
+ * `POST /api/bookings/[id]/change-requests` writes (#4030): the booking as it
+ * was, then what is asked of it. `original.guests` must be the booking's real
+ * guest ids, or the finished-stay executor reads the booking as changed since.
+ */
+function lockedPeriodRequestedChanges(
+  window: { checkIn: string; checkOut: string },
+  guestIds: string[],
+  requested: Record<string, unknown> & { summary: string },
+) {
+  return {
+    original: { checkIn: window.checkIn, checkOut: window.checkOut, guests: guestIds.map((id) => ({ id })) },
+    requested: {
+      checkIn: null,
+      checkOut: null,
+      addGuests: [],
+      removeGuests: [],
+      guestStayRanges: [],
+      requestedEffectiveDate: null,
+      ...requested,
+    },
+  };
+}
 
 async function makeMember(
   local: string,
@@ -520,13 +555,12 @@ async function main() {
     return prisma.booking.create({
       data: {
         memberId: member.id,
-        checkIn: d(checkIn),
-        checkOut: d(checkOut),
         status: status as never,
         totalPriceCents: total,
         finalPriceCents: total,
         lodgeId,
         ...over,
+        ...seededBookingDates(checkIn, checkOut),
       },
     });
   }
@@ -618,8 +652,6 @@ async function main() {
     data: {
       id: PAID_PROMO_BOOKING_ID,
       memberId: erin.id,
-      checkIn: d(W.erinPaid.checkIn),
-      checkOut: d(W.erinPaid.checkOut),
       status: "PAID",
       totalPriceCents: paidTotalPriceCents,
       discountCents: Math.max(0, -paidPromoAdjustmentCents),
@@ -629,6 +661,7 @@ async function main() {
         promoAdjustmentCents: paidPromoAdjustmentCents,
       }),
       lodgeId,
+      ...seededBookingDates(W.erinPaid.checkIn, W.erinPaid.checkOut),
     },
   });
   const erinGuest = await addGuest(bPaid.id, { firstName: "Erin", lastName: "Evans", ageTier: "ADULT", isMember: true, memberId: erin.id }, W.erinPaid.checkIn, W.erinPaid.checkOut, NIGHTLY);
@@ -737,8 +770,6 @@ async function main() {
     data: {
       memberId: mallory.id,
       parentBookingId: splitParent.id,
-      checkIn: d(W.mallorySplit.checkIn),
-      checkOut: d(W.mallorySplit.checkOut),
       status: "PENDING",
       hasNonMembers: true,
       cancelIfGuestsBumped: false,
@@ -746,6 +777,7 @@ async function main() {
       totalPriceCents: NIGHTLY * 2 * 2,
       finalPriceCents: NIGHTLY * 2 * 2,
       lodgeId,
+      ...seededBookingDates(W.mallorySplit.checkIn, W.mallorySplit.checkOut),
     },
   });
   await addGuest(splitChild.id, { firstName: "Gerry", lastName: "Guest", ageTier: "ADULT", isMember: false }, W.mallorySplit.checkIn, W.mallorySplit.checkOut, NIGHTLY * 2);
@@ -766,9 +798,22 @@ async function main() {
   // -------------------------------------------------------------------------
   // Change requests + refund requests (every status).
   // -------------------------------------------------------------------------
-  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "REQUESTED", requestedChanges: { addGuest: { firstName: "Extra", lastName: "Guest", ageTier: "ADULT" } }, reason: "Friend wants to join" } });
-  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "APPROVED", requestedChanges: { checkOut: relDateOnly(-36) }, reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-38)), linkedModificationId: daveMod.id } });
-  await prisma.bookingChangeRequest.create({ data: { bookingId: bCompleted.id, requestedByMemberId: heidi.id, status: "REJECTED", requestedChanges: { checkIn: relDateOnly(-46) }, adminNotes: "Past booking; cannot change.", reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-44)) } });
+  // #4030: every LOCKED_PERIOD request in the shape the request route writes and
+  // the finished-stay executor reads (`booking-change-request-stored.ts`). The
+  // first used to be `{ addGuest: {...} }`, which the executor could only report
+  // as unreadable.
+  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "REQUESTED", requestedChanges: lockedPeriodRequestedChanges(W.daveConfirmed, [daveGuest.id], { addGuests: [{ firstName: "Extra", lastName: "Guest", ageTier: "ADULT", isMember: false }], summary: "add Extra Guest" }), reason: "Friend wants to join" } });
+  await prisma.bookingChangeRequest.create({ data: { bookingId: bConfirmed.id, requestedByMemberId: dave.id, status: "APPROVED", requestedChanges: lockedPeriodRequestedChanges(W.daveConfirmed, [daveGuest.id], { checkOut: relDateOnly(-36), summary: `check-out to ${relDateOnly(-36)}` }), reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-38)), linkedModificationId: daveMod.id } });
+  await prisma.bookingChangeRequest.create({ data: { bookingId: bCompleted.id, requestedByMemberId: heidi.id, status: "REJECTED", requestedChanges: lockedPeriodRequestedChanges(W.heidiCompleted, [heidiGuest.id], { checkIn: relDateOnly(-46), summary: `check-in to ${relDateOnly(-46)}` }), adminNotes: "Past booking; cannot change.", reviewedByMemberId: admin.id, reviewedAt: d(relDateOnly(-44)) } });
+
+  // #4030 (e2e/change-request-officer-entry.spec.ts): a finished, internet-
+  // banking-paid stay with one REQUESTED free-text request — a note and an
+  // effective date, no guests — which the officer enters the guests for.
+  const crBooking = await makeBooking(heidi, "COMPLETED", CHANGE_REQUEST_FINISHED_WINDOW.checkIn, CHANGE_REQUEST_FINISHED_WINDOW.checkOut, { id: CHANGE_REQUEST_FINISHED_BOOKING_ID });
+  const crGuest = await addGuest(crBooking.id, { firstName: "Heidi", lastName: "Hill", ageTier: "ADULT", isMember: true, memberId: heidi.id }, CHANGE_REQUEST_FINISHED_WINDOW.checkIn, CHANGE_REQUEST_FINISHED_WINDOW.checkOut, NIGHTLY);
+  const crPayment = await prisma.payment.create({ data: { bookingId: crBooking.id, amountCents: crBooking.finalPriceCents, source: "INTERNET_BANKING", reference: "BANK-REF-4030", status: "SUCCEEDED", xeroInvoiceId: "e2e-change-request-invoice", xeroInvoiceNumber: "INV-4030" } });
+  await prisma.paymentTransaction.create({ data: { paymentId: crPayment.id, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: crBooking.finalPriceCents, status: "SUCCEEDED", reference: "BANK-REF-4030" } });
+  await prisma.bookingChangeRequest.create({ data: { id: CHANGE_REQUEST_FREE_TEXT_ID, bookingId: crBooking.id, requestedByMemberId: heidi.id, status: "REQUESTED", requestedChanges: lockedPeriodRequestedChanges(CHANGE_REQUEST_FINISHED_WINDOW, [crGuest.id], { requestedEffectiveDate: CHANGE_REQUEST_FINISHED_WINDOW.checkIn, summary: `effective ${CHANGE_REQUEST_FINISHED_WINDOW.checkIn}` }), reason: "Can we add our two grandchildren to the booking? They came up with us." } });
 
   await prisma.refundRequest.create({ data: { bookingId: bCancelled.id, memberId: grace.id, reason: "Hospitalised — requesting full refund", requestedAmountCents: bCancelled.finalPriceCents, status: "PENDING" } });
   await prisma.refundRequest.create({ data: { bookingId: bBumped.id, memberId: frank.id, reason: "Bumped, want cash not credit", requestedAmountCents: bBumped.finalPriceCents, status: "APPROVED", approvedAmountCents: bBumped.finalPriceCents, reviewedBy: admin.id, reviewedAt: d("2026-07-01") } });
@@ -830,7 +875,9 @@ async function main() {
     await prisma.choreAssignment.create({ data: { choreTemplateId: thirdTemplateId, bookingId: bConfirmed.id, date: d(daveConfirmedNight2), status: "SUGGESTED" } });
   }
 
-  await prisma.hutLeaderAssignment.create({ data: { memberId: dave.id, startDate: d(W.daveConfirmed.checkIn), endDate: d(W.daveConfirmed.checkOut), hutLeaderPin: "4821" } });
+  // #3817: an assignment covers NIGHTS — the last one is the night before
+  // check-out, never the check-out day (INV-DATE-002).
+  await prisma.hutLeaderAssignment.create({ data: { memberId: dave.id, startDate: d(W.daveConfirmed.checkIn), endDate: addDaysDateOnly(d(W.daveConfirmed.checkOut), -1), hutLeaderPin: "4821" } });
 
   await prisma.issueReport.create({ data: { memberId: alice.id, pageUrl: "https://demo/booking", pageTitle: "New booking", description: "Calendar didn't show August dates." } });
   await prisma.issueReport.create({ data: { memberId: bob.id, pageUrl: "https://demo/dashboard", pageTitle: "Dashboard", description: "Credit balance looked wrong (now fixed).", resolvedAt: d("2026-06-12"), resolvedById: admin.id, resolutionNote: "Cache cleared." } });
@@ -1085,11 +1132,10 @@ async function main() {
   const fillBooking = await prisma.booking.create({
     data: {
       memberId: fillOwner.id,
-      checkIn: d(WAITLIST_FULL_WINDOW.checkIn),
-      checkOut: d(WAITLIST_FULL_WINDOW.checkOut),
       status: "CONFIRMED",
       totalPriceCents: NIGHTLY * fillNights * WAITLIST_FILL_GUEST_COUNT,
       finalPriceCents: NIGHTLY * fillNights * WAITLIST_FILL_GUEST_COUNT,
+      ...seededBookingDates(WAITLIST_FULL_WINDOW.checkIn, WAITLIST_FULL_WINDOW.checkOut),
     },
   });
   for (let i = 1; i <= WAITLIST_FILL_GUEST_COUNT; i += 1) {
@@ -1118,14 +1164,13 @@ async function main() {
     data: {
       id: WAITLIST_OFFER_BOOKING_ID,
       memberId: wanda.id,
-      checkIn: d(WAITLIST_OFFER_WINDOW.checkIn),
-      checkOut: d(WAITLIST_OFFER_WINDOW.checkOut),
       status: "WAITLIST_OFFERED",
       waitlistPosition: 1,
       waitlistOfferedAt: new Date(),
       waitlistOfferExpiresAt: new Date(Date.now() + 2 * 24 * 60 * 60 * 1000),
       totalPriceCents: NIGHTLY * offerNights,
       finalPriceCents: NIGHTLY * offerNights,
+      ...seededBookingDates(WAITLIST_OFFER_WINDOW.checkIn, WAITLIST_OFFER_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1144,11 +1189,10 @@ async function main() {
     data: {
       id: IB_BOOKING_ID,
       memberId: wanda.id,
-      checkIn: d(IB_WINDOW.checkIn),
-      checkOut: d(IB_WINDOW.checkOut),
       status: "PAYMENT_PENDING",
       totalPriceCents: NIGHTLY * ibNights,
       finalPriceCents: NIGHTLY * ibNights,
+      ...seededBookingDates(IB_WINDOW.checkIn, IB_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1188,11 +1232,10 @@ async function main() {
     data: {
       id: PAID_CANCEL_BOOKING_ID,
       memberId: nadia.id,
-      checkIn: d(PAID_CANCEL_WINDOW.checkIn),
-      checkOut: d(PAID_CANCEL_WINDOW.checkOut),
       status: "PAID",
       totalPriceCents: NIGHTLY * paidCancelNights,
       finalPriceCents: NIGHTLY * paidCancelNights,
+      ...seededBookingDates(PAID_CANCEL_WINDOW.checkIn, PAID_CANCEL_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1224,11 +1267,10 @@ async function main() {
     data: {
       id: UNRECONCILED_BOOKING_ID,
       memberId: nadia.id,
-      checkIn: d(UNRECONCILED_BOOKING_WINDOW.checkIn),
-      checkOut: d(UNRECONCILED_BOOKING_WINDOW.checkOut),
       status: "CONFIRMED",
       totalPriceCents: NIGHTLY,
       finalPriceCents: NIGHTLY,
+      ...seededBookingDates(UNRECONCILED_BOOKING_WINDOW.checkIn, UNRECONCILED_BOOKING_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1245,6 +1287,64 @@ async function main() {
     NIGHTLY + 100,
   );
 
+  // #4162: three cancelled internet-banking bookings, each with a bank refund
+  // the nightly follow-up put back on Money to settle because Xero voided its
+  // credit note - the open follow-up as the follow-up writes it, its voided
+  // note's link, and the payment with nothing recorded as refunded (the undo
+  // took it out). e2e/bank-refund-void-follow-up.spec.ts answers one per attempt.
+  for (const [index, bookingId] of BANK_REFUND_VOID_BOOKING_IDS.entries()) {
+    const window = must(BANK_REFUND_VOID_WINDOWS[index], "bank refund void window");
+    await prisma.booking.create({
+      data: {
+        id: bookingId,
+        memberId: nadia.id,
+        status: "CANCELLED",
+        totalPriceCents: NIGHTLY,
+        finalPriceCents: NIGHTLY,
+        ...seededBookingDates(window.checkIn, window.checkOut),
+      },
+    });
+    const invoiceId = `${bookingId}-invoice`;
+    const payment = await prisma.payment.create({
+      data: { bookingId, amountCents: NIGHTLY, source: "INTERNET_BANKING", status: "SUCCEEDED", xeroInvoiceId: invoiceId },
+    });
+    await prisma.paymentTransaction.create({
+      data: { paymentId: payment.id, kind: "PRIMARY", source: "INTERNET_BANKING", amountCents: NIGHTLY, status: "SUCCEEDED", xeroInvoiceId: invoiceId },
+    });
+    const noteId = `${bookingId}-note`;
+    const noteNumber = `CN-E2E-${index}`;
+    await prisma.xeroObjectLink.create({
+      data: {
+        localModel: "Payment",
+        localId: payment.id,
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: noteId,
+        xeroObjectNumber: noteNumber,
+        role: "REFUND_CREDIT_NOTE",
+        active: false,
+        metadata: { amountCents: NIGHTLY, status: "VOIDED", total: NIGHTLY / 100 },
+      },
+    });
+    await prisma.manualRefundTask.create({
+      data: {
+        bookingId,
+        paymentId: payment.id,
+        kind: "CANCELLED_BOOKING_HAND_BACK",
+        amountCents: NIGHTLY,
+        raisedAmountCents: NIGHTLY,
+        occurrenceKey: bankRefundVoidFollowUpOccurrenceKey(payment.id, noteId),
+        reason: `Refund to re-confirm: Xero credit note ${noteNumber} was voided, so this bank refund is back on the list (#4162).`,
+        reviewContext: bankRefundVoidFollowUpReviewContext({
+          voidedCreditNoteId: noteId,
+          voidedCreditNoteNumber: noteNumber,
+          voidedAt: new Date().toISOString(),
+          originalTaskId: `${bookingId}-original-hand-back`,
+          reversedLineId: `${bookingId}-reversed-line`,
+        }),
+      },
+    });
+  }
+
   // Outstanding additional payment spec (#2350): a PAID booking whose price was
   // pushed up after payment, with the extra still uncollected. Seeded directly
   // (rather than raised through an admin edit) so the spec never needs Stripe:
@@ -1258,11 +1358,10 @@ async function main() {
     data: {
       id: ADDITIONAL_OWED_BOOKING_ID,
       memberId: nadia.id,
-      checkIn: d(ADDITIONAL_OWED_WINDOW.checkIn),
-      checkOut: d(ADDITIONAL_OWED_WINDOW.checkOut),
       status: "PAID",
       totalPriceCents: NIGHTLY * additionalOwedNights + ADDITIONAL_OWED_AMOUNT_CENTS,
       finalPriceCents: NIGHTLY * additionalOwedNights + ADDITIONAL_OWED_AMOUNT_CENTS,
+      ...seededBookingDates(ADDITIONAL_OWED_WINDOW.checkIn, ADDITIONAL_OWED_WINDOW.checkOut),
     },
   });
   await addGuest(
@@ -1391,20 +1490,19 @@ async function main() {
       return prisma.booking.create({
         data: {
           memberId: member.id,
-          checkIn: d(checkIn),
-          checkOut: d(checkOut),
           status: status as never,
           totalPriceCents: total,
           finalPriceCents: total,
           lodgeId: lodge2Id,
+          ...seededBookingDates(checkIn, checkOut),
         },
       });
     }
 
     // Relative future windows (issue #2117) at this demo-only second lodge.
-    const b2DraftWin = { checkIn: relDateOnly(55), checkOut: relDateOnly(57) };
-    const b2ConfirmedWin = { checkIn: relDateOnly(60), checkOut: relDateOnly(63) };
-    const b2PendingWin = { checkIn: relDateOnly(65), checkOut: relDateOnly(67) };
+    const b2DraftWin = DEMO_SECOND_LODGE_BOOKING_WINDOWS.draft;
+    const b2ConfirmedWin = DEMO_SECOND_LODGE_BOOKING_WINDOWS.confirmed;
+    const b2PendingWin = DEMO_SECOND_LODGE_BOOKING_WINDOWS.pending;
 
     const b2Draft = await makeSecondLodgeBooking(alice, "DRAFT", b2DraftWin.checkIn, b2DraftWin.checkOut);
     await addGuest(b2Draft.id, { firstName: "Alice", lastName: "Anderson", ageTier: "ADULT", isMember: true, memberId: alice.id }, b2DraftWin.checkIn, b2DraftWin.checkOut, NIGHTLY2);

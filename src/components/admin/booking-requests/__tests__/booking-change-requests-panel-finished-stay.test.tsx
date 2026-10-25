@@ -147,6 +147,8 @@ describe("change-request panel on a finished stay (#3750)", () => {
       execute: true,
       adminNotes: "We have added your niece to the stay.",
       expectedVersion: 4,
+      // #4030 review C4: what the officer was shown.
+      expectedFigures: { additionalAmountCents: 9_000, refundAmountCents: 0, accountCreditAmountCents: 0 },
     });
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(expect.stringMatching(/approved and applied to the booking/i)),

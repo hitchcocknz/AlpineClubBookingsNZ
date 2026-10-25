@@ -17,12 +17,14 @@ import { sendAdminPaymentFailureAlert } from "@/lib/email";
 import { formatCents } from "@/lib/utils";
 import logger from "@/lib/logger";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
+import { getStripePaymentMethodId, queueSupersededPaymentIntentRefundRecovery } from "@/lib/payment-recovery";
+import { supersededIntentReuseRefusal } from "@/lib/superseded-capture-ownership";
+import { isSupersededCaptureOfBooking } from "@/lib/superseded-paid-intent";
 import { attachMintedCardIntent } from "@/lib/card-intent-attach";
 import { isRefundedPaymentIntentHistory } from "@/lib/card-intent-retirement";
 import { isHostingCoverageParticipantRetry } from "@/lib/adult-member-hosting-queue-participants";
 import { queueSupersededPrimaryIntentCancellations } from "@/lib/booking-payment-cleanup";
-import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
-import { deriveBookingAppliedCreditCents } from "@/lib/member-credit";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import {
   NOT_PAYABLE_MESSAGE,
   PAYMENT_LINK_PAYABLE_BOOKING_STATUSES,
@@ -41,11 +43,13 @@ import {
 } from "@/lib/stripe";
 import { queueXeroInvoiceForPaidBooking } from "@/lib/xero-booking-invoice-queue";
 import { clubFormatValues } from "@/lib/club-format-server";
-import { chargeCurrencyRefusal, UNSUPPORTED_CHARGE_CURRENCY_MEMBER_MESSAGE } from "@/lib/stripe-charge-currency";
-import { intentCurrencyDiffers, staleIntentAction } from "@/lib/additional-intent-currency";
+import { chargeCurrencyRefusal, stripeChargeCurrency, UNSUPPORTED_CHARGE_CURRENCY_MEMBER_MESSAGE } from "@/lib/stripe-charge-currency";
+import { intentCurrencyDiffers } from "@/lib/additional-intent-currency";
+import { staleIntentAction } from "@/lib/stale-intent-action";
 import {
   PAYMENT_PROCESSING_CODE,
   PAYMENT_PROCESSING_MESSAGE,
+  SUPERSEDED_PAYMENT_PROCESSING_MESSAGE,
   SWITCHED_TO_INTERNET_BANKING_BODY,
 } from "@/lib/payment-recovery-contract";
 
@@ -54,7 +58,9 @@ export type PaymentLinkPaymentRecoveryKind =
   | "payment_received_status_unconfirmed"
   | "existing_card_status_unconfirmed"
   | "cancelled_refunded"
-  | "cancelled_refund_pending";
+  | "cancelled_refund_pending"
+  // #4300: the settle refused a capture the superseded machinery owns.
+  | "superseded_capture_refunding";
 
 /**
  * Provider-safe recovery signal for failures after Stripe reports a successful
@@ -106,7 +112,13 @@ function switchedToInternetBankingError() {
 
 export type PaymentLinkIntentResult =
   | { type: "alreadyPaid" }
-  | { type: "clientSecret"; clientSecret: string; paymentIntentId: string };
+  | {
+      type: "clientSecret";
+      clientSecret: string;
+      paymentIntentId: string;
+      /** #4300: the payer's earlier capture was superseded and is going back to the card. */
+      previousPaymentRefunding?: true;
+    };
 
 /**
  * Token-authenticated Stripe payment intent creation. Runs the SAME
@@ -119,7 +131,13 @@ export type PaymentLinkIntentResult =
  * as it does for session payments and webhooks.
  */
 export async function createPaymentIntentForPaymentLink(
-  token: string
+  token: string,
+  /**
+   * #4300: the intent the payer has just paid on this page, if any. When the
+   * booking's pointer has moved past it and it is the superseded machinery's,
+   * the fresh secret goes back with `previousPaymentRefunding`.
+   */
+  options: { paidPaymentIntentId?: string | null } = {},
 ): Promise<PaymentLinkIntentResult> {
   // The club's format (#3565), resolved once, before any transaction or
   // lock below — never per amount and never inside a transaction.
@@ -148,12 +166,11 @@ export async function createPaymentIntentForPaymentLink(
   // #3750 (#3955 review F2, `INV-PAY-119`): what the link charges is what the
   // booking owes — its price plus a change fee recorded on its payment, less
   // applied credit — read from the one home, never the bare price. Every
-  // intent comparison, mint and row below uses this one figure.
-  const owedCents = bookingAmountOwedCents({
-    finalPriceCents: booking.finalPriceCents,
-    changeFeeCents: booking.payment?.changeFeeCents ?? null,
-    appliedCreditCents: await deriveBookingAppliedCreditCents(booking.id),
-  });
+  // intent comparison, mint and row below uses this one figure, `owedCents`,
+  // the decision field by convention (#3991: the same read as the link's
+  // page). It differs from the floored `dueCents` only below zero, where the
+  // `<= 0` refusal below has already stopped.
+  const { owedCents } = await readBookingAmountOwed(booking);
 
   // Reuse or reconcile an existing PaymentIntent before creating a new one
   // (same behaviour as the session payment-intent route).
@@ -164,6 +181,13 @@ export async function createPaymentIntentForPaymentLink(
   // to the generic equal-amount/client-secret reuse arm, and so retries use a
   // Stripe idempotency key disjoint from every non-repayment generation.
   let repaySupersededIntentId: string | null = null;
+  let previousPaymentRefunding = false;
+  // #4300: the payer's just-paid intent, the pointer since moved past it, going back.
+  const paidIntentGoingBack = async (returnedIntentId: string) =>
+    !!options.paidPaymentIntentId &&
+    options.paidPaymentIntentId !== returnedIntentId &&
+    (await isSupersededCaptureOfBooking(options.paidPaymentIntentId, booking.id).catch(() => false));
+  let reuseRefusal: "mint" | "wait" | null = null;
   if (booking.payment?.stripePaymentIntentId) {
     const existingIntent = await getPaymentIntent(booking.payment.stripePaymentIntentId);
 
@@ -172,12 +196,15 @@ export async function createPaymentIntentForPaymentLink(
       // local transaction row is therefore the discriminator between a
       // captured payment that needs reconciliation and refund history that
       // must lead to a fresh repayment intent.
-      let refundedHistory: boolean;
+      let repaymentRequired: boolean;
       try {
-        refundedHistory = await isRefundedPaymentIntentHistory({
+        repaymentRequired = await isRefundedPaymentIntentHistory({
           paymentIntentId: existingIntent.id,
           paymentStatus: booking.payment.status,
         });
+        // #4300 (`INV-PAY-138`): a superseded intent's capture is repaid like refund history.
+        previousPaymentRefunding = !repaymentRequired && (await queueSupersededPaymentIntentRefundRecovery(existingIntent));
+        repaymentRequired ||= previousPaymentRefunding;
       } catch (error) {
         logger.error(
           { err: error, bookingId: booking.id },
@@ -188,7 +215,7 @@ export async function createPaymentIntentForPaymentLink(
         );
       }
 
-      if (refundedHistory) {
+      if (repaymentRequired) {
         repaySupersededIntentId = existingIntent.id;
         await queueSupersededPrimaryIntentCancellations(prisma, {
           bookingId: booking.id,
@@ -210,10 +237,7 @@ export async function createPaymentIntentForPaymentLink(
               bookingId: booking.id,
               paymentIntentId: existingIntent.id,
               amountCents: existingIntent.amount,
-              paymentMethodId:
-                typeof existingIntent.payment_method === "string"
-                  ? existingIntent.payment_method
-                  : existingIntent.payment_method?.id ?? null,
+              paymentMethodId: getStripePaymentMethodId(existingIntent),
             });
 
             if (reconciliation.outcome === "cancelled_refunded") {
@@ -223,6 +247,9 @@ export async function createPaymentIntentForPaymentLink(
               throw new PaymentLinkPaymentRecoveryError(
                 "cancelled_refund_pending",
               );
+            }
+            if (reconciliation.outcome === "superseded_capture") {
+              throw new PaymentLinkPaymentRecoveryError("superseded_capture_refunding");
             }
           }
 
@@ -266,6 +293,9 @@ export async function createPaymentIntentForPaymentLink(
           ...(intentCurrencyDiffers(existingIntent, format) ? { wrongCurrencyPaymentIntentId: existingIntent.id } : {}),
         });
       }
+    } else if (repaySupersededIntentId === null && (reuseRefusal = await supersededIntentReuseRefusal(prisma, existingIntent)) !== null) {
+      // #4300 (`INV-PAY-138`): never hand a superseded intent out again; mint fresh, or wait while it is paid.
+      if (reuseRefusal === "wait") throw new PaymentLinkError(SUPERSEDED_PAYMENT_PROCESSING_MESSAGE, 409, PAYMENT_PROCESSING_CODE);
     } else if (
       repaySupersededIntentId === null &&
       existingIntent.client_secret &&
@@ -275,6 +305,7 @@ export async function createPaymentIntentForPaymentLink(
         type: "clientSecret",
         clientSecret: existingIntent.client_secret,
         paymentIntentId: existingIntent.id,
+        ...((await paidIntentGoingBack(existingIntent.id)) ? { previousPaymentRefunding: true as const } : {}),
       };
     }
   }
@@ -440,8 +471,11 @@ export async function createPaymentIntentForPaymentLink(
       ...bookingOwnerProviderMetadata(booking),
       paymentLinkId: link.id,
     },
+    // #4300: the repay key carries the amount and currency, so a repay
+    // generation minted again at a moved price is a new intent, never
+    // Stripe's idempotency_error.
     idempotencyKey: repaySupersededIntentId
-      ? `pl_pi_${booking.id}_repay_${repaySupersededIntentId}`
+      ? `pl_pi_${booking.id}_repay_${repaySupersededIntentId}_${owedCents}_${stripeChargeCurrency(format)}`
       : `pl_pi_${booking.id}_${booking.payment?.stripePaymentIntentId ?? "initial"}`,
   });
 
@@ -482,5 +516,6 @@ export async function createPaymentIntentForPaymentLink(
     type: "clientSecret",
     clientSecret: paymentIntent.client_secret,
     paymentIntentId: paymentIntent.id,
+    ...(previousPaymentRefunding || (await paidIntentGoingBack(paymentIntent.id)) ? { previousPaymentRefunding: true as const } : {}),
   };
 }

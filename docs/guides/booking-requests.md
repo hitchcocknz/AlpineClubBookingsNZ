@@ -70,15 +70,41 @@ are listed on the booking for you to relay.
 
    ![Booking Requests, Changes tab showing a locked-period change request with separate member explanation and internal note fields](../images/admin/admin-booking-requests-changes.png)
 
-2. Read the request summary and reason. What approving does depends on whether
-   the stay has finished:
+2. Read the request summary and reason. Before sending, the member's added-guest
+   estimate checks the dates and guest nights from the whole proposed change.
+   If those nights would discard a requested check-in or check-out change, the
+   card shows the same explanation as submission instead of a price. Editing
+   the proposal refreshes that check. The estimate still prices only the guests
+   added in that card; member guests are priced when the officer approves. It
+   judges the group discount on the whole proposed party, counted on each
+   night, using the nights the request gives each guest: the booking's guests,
+   less any removed in the editor, plus the guests the editor added and the
+   card's own guests.
+
+   What approving does depends on whether the stay has finished:
    - **The stay is still running** (or not yet started): approving only
      *acknowledges* the review. Use **Open booking** to make the actual edit on
      the booking page.
    - **The stay has finished** (fully past, or completed): approving **applies**
      the request (#3750). The button reads **Approve and apply**, and the card
      says so before you click. Every part of the request is applied — guests
-     added, removed or swapped, and date or stay-range changes. Added guests are
+     added, removed or swapped, and date or stay-range changes. A request sent
+     from the booking editor's night-by-night grid names each guest's exact
+     nights, gaps included, and approving applies and prices exactly those
+     nights (#4088). A request sent with ordinary Date In and Date Out can't
+     show gaps, so a guest whose stay has gaps has their own dates sent back
+     unchanged: approving keeps the nights that guest already has, and charges
+     nothing for the gaps (#4157). Only a guest whose dates really move is put
+     on every night of their new dates. The card counts and lists the nights
+     each guest is asked for, in runs, and marks a guest whose nights would not
+     change, and one whose moved Date In and Date Out would fill gaps in their
+     stay (approving writes, and charges, every night of that range). Once a
+     request is decided, the card says what happened: a request approved since
+     this release (applied, or only acknowledged on a stay still running)
+     lists the nights the guest kept, marked as no change, and a
+     declined request shows the nights the guest held when it was sent. A request approved before
+     this release filled the gaps, so a guest with gaps whose dates were only
+     repeated is listed with the dates as asked and neither mark. Added guests are
      priced at the stay's own season rates; guests already on the booking keep
      exactly what they paid. Any extra is asked for in the usual way (card, or
      internet banking against a supplementary invoice), and the member gets the
@@ -105,13 +131,37 @@ are listed on the booking for you to relay.
      at the moment you approve, nothing is applied and you are asked to
      approve again. The member can still ask the committee to refund a fee
      through a refund request.
+   - **A request that names nobody.** A member's request has to say who or
+     what changes (#4030), but older ones were a note alone ("can we add these
+     three grandchildren"), which nothing can be applied or charged from. On a
+     finished stay such a card shows **Guests the member asked to add**: enter
+     each person the member described — name and age, or a member found by
+     email (or by name, if you can see the membership list) — with the nights
+     they stayed, inside the stay's dates. Then check the figures as below; they
+     are worked out for exactly the guests you entered, and change if you change
+     the list. Approving records the guests on the request as entered by you on
+     the member's behalf (the audit log names you and lists them), then applies
+     them exactly as if the member had named them: no change fee for adding,
+     the member guest rules, the overbooking confirmation, and the usual change
+     email with the amount due. If the approval is refused at any step, nothing
+     you entered is kept on the request. To decline instead, **Reject** with a
+     note; a rejection never carries the guests. Changing the list clears the
+     figures (and any overbooking confirmation), so check them again. A guest
+     who shares a name with one of the member's dependants is refused: if it is
+     that dependant, add them with **+ Add a member**, so they are booked as the
+     member they are; if it is a different person with the same name, this
+     entry can't add them, so leave them off and say so in your explanation.
+   - **The figures you approve are the figures charged.** **Approve and apply**
+     sends the figures you checked. If anything moved since — a season rate, a
+     payment, the lodge's capacity — nothing is applied and you are asked to
+     check the figures again.
    - **Check the figures first.** **Check the figures** works out exactly what
      approving will do — the change fee, and the refund, credit or amount due —
      without changing anything, and **Approve and apply** stays off until it
      has. Under **If the change lowers the price** the default is the way the
      booking was paid; you can choose card or account credit instead.
    - **When nothing is applied.** If the booking has changed since the member
-     asked, the season for those nights has been switched off, a guest cannot
+     asked (its dates, its guests, or a guest's nights), the season for those nights has been switched off, a guest cannot
      be booked, nothing
      is applied and the request stays pending with the reason. If the change
      moves the stay's dates on an unpaid booking whose invoice was issued in a
@@ -237,7 +287,9 @@ are listed on the booking for you to relay.
    the held beds and turn it down.
 
    After school approval, the success message confirms the booking and whether
-   teacher hut-leader assignments were created. It does not confirm email
+   teacher hut-leader assignments were created (they are, only when the
+   booking's lodge ticks **A teacher on the booking** under **Who can be hut
+   leader for school bookings**). It does not confirm email
    delivery: check invoice progress separately, and ask a support officer to
    review [Email Deliverability](email-deliverability.md). If the Xero module
    is off, arrange manual invoicing.

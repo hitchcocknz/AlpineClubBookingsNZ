@@ -11,8 +11,9 @@ the demo seed (`prisma/demo-seed.ts`).
 | Spec | Matrix row | Journey |
 | --- | --- | --- |
 | `e2e/booking-create-rate-isolation.spec.ts` | Booking-create retry isolation (#2599, Medium) | Provider-independent real-route proof: unauthenticated attempt/retry probes stop at the auth boundary only after the production `bookingCreate` limiter runs, and read-only snapshots prove each exact synthetic-IP key advanced in the shared PostgreSQL `RateLimitCounter` store rather than the in-process fallback. Run before the waitlist and whole-lodge specs on the same prepared isolated stack. |
-| `e2e/two-factor-login.spec.ts` | Global two-factor enforcement (Critical) | Forced TOTP enrollment on first login, recovery codes, protected-route gating for unverified sessions, wrong-code rejection, TOTP re-login, single-use recovery codes |
-| `e2e/two-factor-email.spec.ts` | Global two-factor enforcement — email method (Critical) | Forced **email-code** enrollment on first login (send → capture the emailed code from the mailpit SMTP capture → enroll → recovery codes), then an email-code re-login that rejects a wrong code and accepts the emailed one. The code is read back over mailpit's HTTP API (`e2e/helpers/mailpit.ts`); no live mail provider is used |
+| `e2e/two-factor-login.spec.ts` | Global two-factor enforcement (Critical) | Forced TOTP enrollment on first login, recovery codes, protected-route gating for unverified sessions, wrong-code rejection, TOTP re-login, single-use recovery codes; successful product actions must render the Payments heading or the protected **Confirm member details** dialog with its **Save and continue** or **Confirm details are correct** control (#4246) |
+| `e2e/two-factor-email.spec.ts` | Global two-factor enforcement — email method (Critical) | Forced **email-code** enrollment on first login (send → capture the emailed code from the mailpit SMTP capture → enroll → recovery codes), then an email-code re-login that rejects a wrong code and accepts the emailed one. The code is read back over mailpit's HTTP API (`e2e/helpers/mailpit.ts`); no live mail provider is used. Enrollment Continue and accepted verification must render the member dashboard |
+| `e2e/two-factor-navigation.spec.ts` | Two-factor completion navigation (#4060, High) | Dedicated `USER` + `LODGE` and actual `LODGE`-only accounts drive enrollment Continue and valid TOTP verification in a fresh context directly. Assert the protected member dashboard or lodge kiosk without corrective navigation, fixed sleeps or URL-only completion. Each attempt recreates and finally removes its own synthetic accounts through the explicit `E2E_DATABASE_URL` isolated-stack contract; shared personas are untouched |
 | `e2e/booking.spec.ts` | Create booking with capacity lock (Critical) | Member books a bed through `/book` (confirm-details gate → dates → guests → review → payment step) with the booker **pre-selected by default** (#1680); while payment is owed the booking holds **no** bed (issue #737 — only committed money reserves capacity); the same member cannot hold the same lodge night twice; the booker can also opt out (remove themselves) and continue with another guest to a priced review |
 | `e2e/adult-member-hosting.spec.ts` | Adult-member hosting enforcement and same-owner coverage (#2569, #2576; High) | Three serial journeys: the operator card saves and states the consequence and qualifying-host dimensions independently; an enforcing club refuses a booking with no qualifying adult-member cover and persists no live booking; and another booking on the same account supplies cover, after which member cancellation of that source is refused while an officer can acknowledge the exact stranded bookings and nights, give a private reason, cancel, and verify the resulting incident and audit evidence. The spec restores the shared club-wide hosting policy to **Disabled** in `afterAll` and cancels every booking it creates. |
 | `e2e/locked-out-pickup-and-pay.spec.ts` | Locked-out pick-up-and-pay (#2779, Critical) | The journey the owner ruled the `HARD_BLOCK` payment-path asymmetry exists to serve (11 Aug 2026). The club is put into **Stop them booking** with the Xero module on — both snapshotted and restored in `afterAll`, because the lockout is inert while Xero is off and the mode gates every other spec's bookings. `lyle-lockedout@demo.alpineclub.test` is refused their own booking with 403 `SUBSCRIPTION_REQUIRED`; the admin then saves a **priced** on-behalf draft for them; the member's dashboard shows it labelled "Saved for you by the club" with a **Review & pay** control, and the booking page states both the pay control and the 72-hour deletion deadline; finally `create-payment-intent` admits that same still-unpaid member and the booking moves to `PAYMENT_PENDING`; the member's own draft list carries it at the price the admin quoted. The closing card charge is Stripe-gated and skips without test-mode keys. The pay step itself runs in BOTH modes and proves the admission in both, but the response it asserts is provider-shaped: 200 with a `clientSecret` where genuine test-mode keys are configured, and — where they are not, which is every fork's CI, since GitHub never hands a fork's `pull_request` run the repository secrets (#2820) — the post-admission provider failure (500, with the booking already moved to `PAYMENT_PENDING`, because the pay transaction commits before Stripe is called). Any refusal shape still fails the test. Window base index 28 (attempts 28 / 44 / 60), asserted disjoint from every other spec by `src/lib/__tests__/e2e-stay-window-disjointness.test.ts`. |
@@ -195,7 +196,13 @@ providers, and `scripts/e2e-stack.sh` refuses to run if it sees `sk_live`/
   seasons never need manual extension. Seeded windows slide a weekday per run
   date while a stay window's Monday holds for a week, so `stayWindow` skips
   every Monday whose nights a seeded booking holds (`SEEDED_BOOKING_WINDOWS`,
-  #4002); a new seeded booking window must be added to that list. The
+  #4002); a new seeded booking window must be added to that list. Seed Booking
+  data in both seed scripts ends with `seededBookingDates(checkIn, checkOut)`,
+  which rejects a pair missing from the canonical list, including demo second-lodge
+  windows. The fixture-night census checks that final spread so inline dates,
+  renamed windows and later overrides cannot bypass it (#4004). The linked-move
+  hosting case uses `linkedMoveStayWindows` to reserve both Thursday/Friday
+  pairs against seeded nights and season gaps for every retry. The
   production first-run seed (`prisma/seed.ts`) keeps its fixed real-world season
   dates — only the demo/E2E database is relativized.
 
@@ -239,6 +246,18 @@ local `DATABASE_URL`, and no non-demo member emails), shared with the specs thro
   the email that would normally carry the link is unconfigured on staging. Both
   seeded nominators (`wanda-waitlist@`, `nadia@`) have complete, confirmed
   profiles so the onboarding modal never blocks their nomination pages.
+
+The shared `loginPersona` and `signIn` helpers wait for a visible two-factor
+challenge or the rendered authenticated layout before continuing. A destination
+URL alone can appear before a delayed `/login/verify` redirect (#4020). The
+completion signal is the navigation brand mark for member/admin/finance pages,
+or the kiosk root for lodge accounts; both render after their layout's sign-in
+gate. After completing a challenge, the helper navigates to the returned
+destination through the server gate before checking that rendered signal;
+client navigation after the cookie change can leave an empty streamed shell.
+`loginPersona` preserves scoped-role landing pages, while `signIn` also
+checks Alice's `/admin/dashboard` destination. Forced password changes, a return
+to login, and pages without either authenticated signal fail the helper.
 
 Because these fixtures (and the two-factor enrollment) mutate seeded state, the
 suite is designed to run against a **fresh** prepare each time; re-running

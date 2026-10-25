@@ -42,6 +42,7 @@ vi.mock("@/lib/xero-operation-queue", () => ({
 }));
 
 import {
+  XeroCronRunnerError,
   runXeroCronTaskList,
   runXeroCronTasks,
 } from "@/lib/xero-cron-runner";
@@ -165,5 +166,87 @@ describe("xero cron runner", () => {
         jobName: "xero-link-backfill",
       })
     );
+  });
+
+  it("records a link cleanup whose refund-note heals partly failed as FAILURE, with its summary, and fails the run (#4161)", async () => {
+    const recordCronRun = vi.fn();
+    const cleanup = { deactivatedLinks: 1, failedRefundNoteHealLinkIds: ["link_a"], deferredRefundNoteHealLinkIds: [] };
+
+    const run = runXeroCronTasks("link-cleanup", {
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => false),
+      log: { error: vi.fn() },
+      tasks: { cleanupStaleCanonicalXeroObjectLinks: vi.fn(async () => cleanup) as never },
+    });
+
+    const error = await run.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(XeroCronRunnerError);
+    expect((error as XeroCronRunnerError).payload.linkCleanup).toEqual(cleanup);
+    expect((error as XeroCronRunnerError).message).toContain("link_a");
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-link-cleanup",
+        status: "FAILURE",
+        resultSummary: cleanup,
+        error: expect.stringContaining("link_a"),
+      })
+    );
+  });
+
+  it("does not fail the run for a heal only deferred behind a credit-note create (#4161)", async () => {
+    const recordCronRun = vi.fn();
+
+    await runXeroCronTasks("link-cleanup", {
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => false),
+      tasks: {
+        cleanupStaleCanonicalXeroObjectLinks: vi.fn(async () => ({ failedRefundNoteHealLinkIds: [], deferredRefundNoteHealLinkIds: ["link_b"] })) as never,
+      },
+    });
+
+    expect(recordCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobName: "xero-link-cleanup", status: "SUCCESS", error: null }));
+  });
+  it("#4162: the 02:25 slot runs the voided bank-transfer refund notes' follow-up right after the cleanup, recorded under its own job", async () => {
+    const order: string[] = [];
+    const recordCronRun = vi.fn();
+    const result = await runXeroCronTaskList(["link-cleanup", "bank-refund-voids"], {
+      taskLabel: "link-cleanup",
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => false),
+      tasks: {
+        cleanupStaleCanonicalXeroObjectLinks: vi.fn(async () => {
+          order.push("heal");
+          return { deactivatedLinks: 0 };
+        }) as never,
+        runBankRefundVoidFollowUp: vi.fn(async () => {
+          order.push("follow-up");
+          return { mode: "report-only" as const, scanned: 2, counts: { undone: 2, spare: 0, handled: 0, deferred: 0, unmatched: 0, "awaiting-heal": 0, "not-in-scope": 0, failed: 0 }, deferredOverdue: 0, items: [] };
+        }),
+      },
+    });
+    // Local rows only: it runs whether or not Xero is connected.
+    expect(order).toEqual(["heal", "follow-up"]);
+    expect(result.bankRefundVoidFollowUp).toMatchObject({ mode: "report-only", scanned: 2 });
+    expect(recordCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobName: "xero-bank-refund-void-follow-up", status: "SUCCESS" }));
+  });
+
+  it("#4162: a note the follow-up failed on is recorded FAILURE and fails the run", async () => {
+    const recordCronRun = vi.fn();
+    const run = runXeroCronTaskList(["bank-refund-voids"], {
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => true),
+      log: { error: vi.fn() },
+      tasks: {
+        runBankRefundVoidFollowUp: vi.fn(async () => ({
+          mode: "writes" as const, scanned: 1, counts: { undone: 0, spare: 0, handled: 0, deferred: 0, unmatched: 0, "awaiting-heal": 0, "not-in-scope": 0, failed: 1 }, deferredOverdue: 0, items: [],
+        })),
+      },
+    });
+    await expect(run).rejects.toBeInstanceOf(XeroCronRunnerError);
+    expect(recordCronRun).toHaveBeenCalledWith(expect.objectContaining({ jobName: "xero-bank-refund-void-follow-up", status: "FAILURE", error: expect.stringContaining("could not be followed up") }));
   });
 });

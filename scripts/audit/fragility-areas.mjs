@@ -18,7 +18,13 @@
  * - only when none of those maps the pair anywhere: both sides touch a
  *   matching non-test source file, so the same area was fixed twice. It is a
  *   fallback because wide PRs touch many areas; as a peer rule it put the
- *   median pair in three areas.
+ *   median pair in three areas. Test files count only for an area marked
+ *   `testFiles` (the test-infrastructure area, whose subject they are);
+ *   code-history never has them, because tests are not blamed.
+ *
+ * Scopes arrive already folded by `normaliseScope` (`beds` → `bed`), so each
+ * area lists the folded form; the test suite checks every listed scope
+ * survives that folding.
  */
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -70,7 +76,7 @@ export const AREAS = [
   {
     id: "capacity",
     name: "Capacity, bed allocation, waitlist and lodge display",
-    scopes: /^(bed-allocation|beds|capacity|waitlist|roster|lodge-display|lodge)$/,
+    scopes: /^(bed-allocation|bed|capacity|waitlist|roster|lodge-display|lodge)$/,
     labels: /^area: lodge-display$/,
     files: /bed-allocation|capacity|waitlist|roster|\(lodge\)|api\/lodge|lodge-display/i,
   },
@@ -91,7 +97,7 @@ export const AREAS = [
   {
     id: "guests-hosting",
     name: "Member guests and adult-member hosting",
-    scopes: /^(hosting|member-guests|guests|guest)$/,
+    scopes: /^(hosting|member-guest|guest)$/,
     labels: /^member-guests$/,
     files: /guest|hosting|host-/i,
   },
@@ -105,7 +111,7 @@ export const AREAS = [
   {
     id: "public-site",
     name: "Public website, CMS pages and first-run setup",
-    scopes: /^(website|cms|public|setup|public-pages)$/,
+    scopes: /^(website|cms|public|setup|public-page)$/,
     labels: /^$/,
     files: /\(website\)|\(public\)\/(?!login)|setup-gate|cms|website/i,
   },
@@ -121,7 +127,9 @@ export const AREAS = [
     name: "Concurrency and locking",
     scopes: /^concurrency$/,
     labels: /^$/,
-    files: /lock/i,
+    // Whole-word `lock`/`locks`/`locking` in a path segment (`roster-lock.ts`,
+    // `advisory-lock-guard`), not `clock`, `blocker`, `relock` or `lockout`.
+    files: /(^|[-_/.])(lock(s|ing)?|concurrency)([-_/.]|$)/i,
   },
   {
     id: "ops",
@@ -133,15 +141,16 @@ export const AREAS = [
   {
     id: "tests",
     name: "Test and E2E infrastructure (flaky or wrong tests)",
-    scopes: /^(e2e|test|tests)$/,
+    scopes: /^(e2e|test)$/,
     labels: /^$/,
-    files: /^e2e\/|__tests__\/(support|helpers)\/|^playwright/i,
+    files: /^e2e\/(?!.*\.md$)|__tests__\/(support|helpers)\/|^playwright/i,
+    testFiles: true,
   },
 ];
 
-/** Non-test files a side touched that the area's file rule matches. */
+/** Files a side touched that the area's file rule matches: non-test files, plus test files for a `testFiles` area. */
 function touches(side, area) {
-  return (side.files ?? []).some((file) => !isBlameIgnoredPath(file) && area.files.test(file));
+  return (side.files ?? []).some((file) => (area.testFiles || !isBlameIgnoredPath(file)) && area.files.test(file));
 }
 
 /** Labels of every issue named on a side (its linked issues, or the issue itself). */

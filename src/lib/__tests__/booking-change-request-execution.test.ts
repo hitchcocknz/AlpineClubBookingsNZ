@@ -53,8 +53,8 @@ import {
   LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE,
   LOCKED_PERIOD_REQUEST_NOTHING_TO_APPLY_MESSAGE,
   LOCKED_PERIOD_REQUEST_UNREADABLE_MESSAGE,
-  lockedPeriodRequestToBatchInput,
 } from "@/lib/booking-change-request-execution";
+import { lockedPeriodRequestToBatchInput } from "@/lib/booking-change-request-stored";
 import type { BatchModificationPreTransaction } from "@/lib/booking-batch-modification-service";
 
 const TODAY = requireCalendarDate("2026-07-01");
@@ -127,12 +127,37 @@ const finishedBooking = {
   checkIn: new Date("2026-06-10T00:00:00.000Z"),
   checkOut: new Date("2026-06-14T00:00:00.000Z"),
   status: "COMPLETED",
-  guests: [{ id: "g2" }, { id: "g1" }],
+  // As the executor reads them under its locks: every live guest row has its
+  // range, and its night rows (#4157 reads them for a repeated range).
+  guests: ["g2", "g1"].map((id) => ({
+    id,
+    stayStart: new Date("2026-06-10T00:00:00.000Z"),
+    stayEnd: new Date("2026-06-14T00:00:00.000Z"),
+    nights: ["2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13"].map((night) => ({
+      stayDate: new Date(`${night}T00:00:00.000Z`),
+    })),
+  })),
   payment: { amountCents: 12_000, creditAppliedCents: 0 },
 };
 
-function run(overrides: Partial<Parameters<typeof approveAndExecuteLockedPeriodChangeRequest>[0]> = {}) {
+type RunParams = Parameters<typeof approveAndExecuteLockedPeriodChangeRequest>[0];
+/** The figures the mocked edit produces: what the officer's check would have shown. */
+const CHECKED_FIGURES = { additionalAmountCents: 4_500, refundAmountCents: 0, accountCreditAmountCents: 0 };
+
+/**
+ * An approval carries the figures it was shown (#4030 re-review of 72c933ffc:
+ * the executor's type requires them), so `run()` defaults them to the mocked
+ * edit's own; `run({ dryRun: true })` sends none.
+ */
+function run(
+  overrides: Partial<Omit<RunParams, "dryRun" | "expectedFigures">> & {
+    dryRun?: true;
+    expectedFigures?: RunParams["expectedFigures"];
+  } = {},
+) {
+  const { dryRun, expectedFigures, ...rest } = overrides;
   return approveAndExecuteLockedPeriodChangeRequest({
+    ...(dryRun ? { dryRun } : { expectedFigures: expectedFigures ?? CHECKED_FIGURES }),
     requestId: "cr-1",
     expectedVersion: 3,
     actorMemberId: "officer-1",
@@ -144,7 +169,7 @@ function run(overrides: Partial<Parameters<typeof approveAndExecuteLockedPeriodC
     preTransaction: PRE_TRANSACTION,
     ipAddress: "127.0.0.1",
     db,
-    ...overrides,
+    ...rest,
   });
 }
 
@@ -207,6 +232,10 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
         adminNotes: "Added the guest who stayed.",
         internalNotes: "Confirmed with the hut warden.",
         reviewedByMemberId: "officer-1",
+        // #4157: the request as the member sent it, plus the applying
+        // approval's record of kept nights — empty, but present, so the card
+        // reads this as an approval made under that rule.
+        requestedChanges: { ...storedRequest(), keptNights: [] },
       }),
     });
     expect(mocks.update).toHaveBeenCalledWith({
@@ -322,6 +351,321 @@ describe("approveAndExecuteLockedPeriodChangeRequest (#3750)", () => {
     expect(await run()).toEqual({ outcome: "notFound" });
     expect(mocks.calls).not.toContain("global-lock");
     expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("a row stored before guest ranges were recorded keeps the dates-and-ids drift check (round 7, F1)", async () => {
+    // The stored original names no ranges, so a guest's live nights are not
+    // compared: this row behaves exactly as it did before ranges were stored.
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        { id: "g2", stayStart: new Date("2026-06-11T00:00:00.000Z"), stayEnd: new Date("2026-06-12T00:00:00.000Z") },
+        { id: "g1", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-14T00:00:00.000Z") },
+      ],
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+  });
+
+  it("keeps the request pending when a guest's stored range has moved since the request (round 7, F1)", async () => {
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest(),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        { id: "g2", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-12T00:00:00.000Z") },
+        { id: "g1", stayStart: new Date("2026-06-10T00:00:00.000Z"), stayEnd: new Date("2026-06-14T00:00:00.000Z") },
+      ],
+    });
+    expect(await run()).toEqual({ outcome: "keptPending", message: LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("hands the service a grid request's night sets exactly (#4088)", async () => {
+    const nights = ["2026-06-10", "2026-06-12"];
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: storedRequest({
+            addGuests: [{ firstName: "Late", lastName: "Guest", ageTier: "CHILD", isMember: false, nights }],
+            guestStayRanges: [{ guestId: "g1", nights }],
+          }),
+        }),
+      );
+    expect(await run()).toMatchObject({ outcome: "executed" });
+    const { input } = mocks.modifyBookingBatch.mock.calls[0][0] as {
+      input: { guestStayRanges: unknown; addGuests: unknown };
+    };
+    expect(input.guestStayRanges).toEqual([{ guestId: "g1", stayStart: null, stayEnd: null, nights }]);
+    expect(input.addGuests).toEqual([expect.objectContaining({ firstName: "Late", nights })]);
+  });
+
+  it("keeps the request pending when a night inside a guest's range was trimmed since (#4088)", async () => {
+    const storedNights = ["2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13"];
+    const withNights = {
+      ...storedRequest(),
+      original: {
+        ...storedRequest().original,
+        guests: [
+          { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14", nights: storedNights },
+          { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-14", nights: storedNights },
+        ],
+      },
+    };
+    const liveGuest = (id: string, nights: string[]) => ({
+      id,
+      stayStart: new Date("2026-06-10T00:00:00.000Z"),
+      stayEnd: new Date("2026-06-14T00:00:00.000Z"),
+      nights: nights.map((night) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) })),
+    });
+    const queue = () => {
+      mocks.requestFindUnique.mockReset();
+      mocks.requestFindUnique
+        .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+        .mockResolvedValueOnce(requestRow({ requestedChanges: withNights }));
+    };
+    // 12 June came off g2 after the request was sent; the range is unmoved.
+    queue();
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [liveGuest("g1", storedNights), liveGuest("g2", ["2026-06-10", "2026-06-11", "2026-06-13"])],
+    });
+    expect(await run()).toEqual({ outcome: "keptPending", message: LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+
+    // The same nights as the request saw them: applied.
+    queue();
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [liveGuest("g1", storedNights), liveGuest("g2", storedNights)],
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+  });
+
+  it("keeps the request pending when a guest holds as many nights as the request saw, but other ones (#4088)", async () => {
+    const at = (night: string) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) });
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest(),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14", nights: ["2026-06-10", "2026-06-12", "2026-06-13"] },
+                { id: "g2" },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: [
+        {
+          id: "g1",
+          stayStart: new Date("2026-06-10T00:00:00.000Z"),
+          stayEnd: new Date("2026-06-14T00:00:00.000Z"),
+          nights: ["2026-06-10", "2026-06-11", "2026-06-13"].map(at),
+        },
+        { id: "g2" },
+      ],
+    });
+    expect(await run()).toEqual({ outcome: "keptPending", message: LOCKED_PERIOD_REQUEST_DRIFT_MESSAGE });
+    expect(mocks.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("a snapshot with a guest's range but no night rows is not drift for a sparse guest (#4088)", async () => {
+    // Stored by a route before #4088 recorded night rows: the range matches the
+    // live guest, whose own nights have a gap the snapshot never described.
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest(),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-14" },
+              ],
+            },
+          },
+        }),
+      );
+    const sparse = ["2026-06-10", "2026-06-13"].map((night) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) }));
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: ["g1", "g2"].map((id) => ({
+        id,
+        stayStart: new Date("2026-06-10T00:00:00.000Z"),
+        stayEnd: new Date("2026-06-14T00:00:00.000Z"),
+        nights: sparse,
+      })),
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+  });
+
+  it("hands the service a gapped guest's own nights where their range only repeats their dates (#4157)", async () => {
+    // Range mode: g1 holds 10 and 12 June inside a 10-13 June range and the
+    // member sent those dates back; g2's range really moves. Approving keeps
+    // g1's nights (the gap is neither filled nor charged) and re-spreads g2's.
+    const at = (night: string) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) });
+    const gapped = ["2026-06-10", "2026-06-12"];
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest({
+              guestStayRanges: [
+                { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+                { guestId: "g2", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+              ],
+            }),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: gapped },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: gapped },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: ["g1", "g2"].map((id) => ({
+        id,
+        stayStart: new Date("2026-06-10T00:00:00.000Z"),
+        stayEnd: new Date("2026-06-13T00:00:00.000Z"),
+        nights: gapped.map(at),
+      })),
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+    const { input } = mocks.modifyBookingBatch.mock.calls[0][0] as { input: { guestStayRanges: unknown } };
+    expect(input.guestStayRanges, "INV-REQ-012: the executor passes the kept nights").toEqual([
+      { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: gapped },
+      { guestId: "g2", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+    ]);
+    // The guarded claim records what was kept, for the officer's card: g1
+    // only, since g2's range moved.
+    const claim = mocks.updateMany.mock.calls[0][0] as { data: { requestedChanges: Record<string, unknown> } };
+    expect(claim.data.requestedChanges.keptNights, "INV-REQ-012: the approval records the kept nights").toEqual([
+      { guestId: "g1", nights: gapped },
+    ]);
+  });
+
+  it("records the kept nights from the live rows when the snapshot holds none (#4157)", async () => {
+    // Sent before #4088: the snapshot has g1's dates and no night rows. Under
+    // the locks g1 holds 10 and 12 June, and the claim must record those.
+    const gapped = ["2026-06-10", "2026-06-12"];
+    mocks.requestFindUnique.mockReset();
+    mocks.requestFindUnique
+      .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+      .mockResolvedValueOnce(
+        requestRow({
+          requestedChanges: {
+            ...storedRequest({
+              guestStayRanges: [{ guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" }],
+            }),
+            original: {
+              ...storedRequest().original,
+              guests: [
+                { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+                { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-13" },
+              ],
+            },
+          },
+        }),
+      );
+    mocks.bookingFindUnique.mockResolvedValue({
+      ...finishedBooking,
+      guests: ["g1", "g2"].map((id) => ({
+        id,
+        stayStart: new Date("2026-06-10T00:00:00.000Z"),
+        stayEnd: new Date("2026-06-13T00:00:00.000Z"),
+        nights: (id === "g1" ? gapped : ["2026-06-10", "2026-06-11", "2026-06-12"]).map((night) => ({
+          stayDate: new Date(`${night}T00:00:00.000Z`),
+        })),
+      })),
+    });
+    expect(await run()).toMatchObject({ outcome: "executed" });
+    const claim = mocks.updateMany.mock.calls[0][0] as { data: { requestedChanges: Record<string, unknown> } };
+    expect(claim.data.requestedChanges.keptNights, "INV-REQ-012: the record is built from the live rows").toEqual([
+      { guestId: "g1", nights: gapped },
+    ]);
+  });
+
+  it("keeps nothing for a guest whose later entry moves or sets nights after a repeat (#4157)", async () => {
+    // The request names g1 twice: their own dates, then a night set (or a
+    // moved range). The planner applies the last entry; the earlier repeat
+    // must not overwrite it with g1's held nights, nor be recorded as kept.
+    const at = (night: string) => ({ stayDate: new Date(`${night}T00:00:00.000Z`) });
+    const gapped = ["2026-06-10", "2026-06-12"];
+    const repeat = { guestId: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13" };
+    for (const later of [
+      { guestId: "g1", nights: ["2026-06-11", "2026-06-12"] },
+      { guestId: "g1", stayStart: "2026-06-11", stayEnd: "2026-06-13" },
+    ]) {
+      mocks.modifyBookingBatch.mockClear();
+      mocks.updateMany.mockClear();
+      mocks.requestFindUnique.mockReset();
+      mocks.requestFindUnique
+        .mockResolvedValueOnce({ kind: "LOCKED_PERIOD", booking: { lodgeId: "lodge-1" } })
+        .mockResolvedValueOnce(
+          requestRow({
+            requestedChanges: {
+              ...storedRequest({ guestStayRanges: [repeat, later] }),
+              original: {
+                ...storedRequest().original,
+                guests: [
+                  { id: "g1", stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: gapped },
+                  { id: "g2", stayStart: "2026-06-10", stayEnd: "2026-06-13", nights: gapped },
+                ],
+              },
+            },
+          }),
+        );
+      mocks.bookingFindUnique.mockResolvedValue({
+        ...finishedBooking,
+        guests: ["g1", "g2"].map((id) => ({
+          id,
+          stayStart: new Date("2026-06-10T00:00:00.000Z"),
+          stayEnd: new Date("2026-06-13T00:00:00.000Z"),
+          nights: gapped.map(at),
+        })),
+      });
+      expect(await run()).toMatchObject({ outcome: "executed" });
+      const { input } = mocks.modifyBookingBatch.mock.calls[0][0] as { input: { guestStayRanges: unknown } };
+      expect(input.guestStayRanges, "INV-REQ-012: only the applied entry may keep nights").toEqual([
+        { ...repeat },
+        { stayStart: null, stayEnd: null, ...later },
+      ]);
+      const claim = mocks.updateMany.mock.calls[0][0] as { data: { requestedChanges: Record<string, unknown> } };
+      expect(claim.data.requestedChanges.keptNights).toEqual([]);
+    }
   });
 
   it("keeps the request pending when the booking has moved since the request (drift)", async () => {

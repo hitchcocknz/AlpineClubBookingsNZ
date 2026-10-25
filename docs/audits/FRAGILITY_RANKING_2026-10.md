@@ -3,7 +3,9 @@
 Audience: Maintainer
 
 This is the second half of Goal 1's first move ([GOALS.md](../GOALS.md#first-move-find-where-bugs-come-back)):
-the 15 business areas the maintainer confirmed on 9 Oct 2026
+the 15 business areas confirmed by the owner
+([recorded on #4024](https://github.com/thatskiff33/AlpineClubBookingsNZ/pull/4024#issuecomment-6113045008),
+11 Oct 2026)
 ([FRAGILITY_AREAS_PROPOSAL.md](FRAGILITY_AREAS_PROPOSAL.md)), ranked by
 **bugs that came back**. Every Phase 1 sweep starts with the areas at the top.
 

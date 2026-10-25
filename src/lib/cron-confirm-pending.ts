@@ -1,12 +1,7 @@
 import { bookingWorthCents } from "@/lib/booking-payment-state";
-import {
-  BookingEventType,
-  BookingStatus,
-  PaymentSource,
-  PaymentStatus,
-  PaymentTransactionKind,
-  Prisma,
-} from "@prisma/client";
+import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
+import { BookingEventType, BookingStatus, PaymentSource, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
+import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 
 import { bookingOwner } from "@/lib/booking-owner";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
@@ -32,6 +27,7 @@ import {
   type ClubTimeZone,
 } from "@/lib/payment-link-expiry";
 import { markBookingPaymentSucceeded } from "@/lib/payment-reconciliation";
+import { settledByAnotherCapture } from "@/lib/duplicate-capture-outcome";
 import { releaseBookingPromoRedemptions } from "@/lib/promo";
 import {
   savedPaymentMethodForBooking,
@@ -45,7 +41,7 @@ import { getDefaultLodgeId } from "@/lib/lodges";
 import { cancelPaymentIntentIfCancellable } from "./stripe";
 import {
   beginSavedCardChargeAttempt,
-  SAVED_CARD_CHARGE_KEY_PREFIX,
+  NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
   SAVED_CARD_CHARGE_REASON,
   SavedCardChargeRefusedError,
   type SavedCardChargeAttempt,
@@ -73,6 +69,7 @@ import {
   sendSplitGuestPaymentLinkEmail,
   sendSplitGuestPortionCancelledEmail,
 } from "./email";
+import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import { bookingPromoEmailOptions } from "./booking-promo-email-options";
 import { getNonMemberHoldDays } from "./cancellation";
 import { processWaitlistForDates } from "./waitlist";
@@ -1107,7 +1104,7 @@ async function cancelSupersededLinkIntentsBestEffort(
         paymentId: claim.paymentId,
         kind: PaymentTransactionKind.PRIMARY,
         source: PaymentSource.STRIPE,
-        status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
+        status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
         stripePaymentIntentId: { not: null },
         amountCents: { gt: 0 },
         // Never the row this run is REPLAYING (#3267): a legacy shared-key row
@@ -1118,14 +1115,9 @@ async function cancelSupersededLinkIntentsBestEffort(
         id: { not: claim.attempt.attemptRowId },
         // Never a saved-card charge attempt row (#3267) — this cron's own,
         // the admin route's or charge-saved-method's, recognised by the key
-        // prefix on `reference` (see the ordering note above). A negated
-        // `startsWith` alone would also drop rows with a NULL reference (SQL
-        // `NOT (NULL LIKE …)` is NULL), so include them explicitly: a link
-        // intent's row carries no reference.
-        OR: [
-          { reference: null },
-          { NOT: { reference: { startsWith: SAVED_CARD_CHARGE_KEY_PREFIX } } },
-        ],
+        // prefix on `reference` (see the ordering note above); a link intent's
+        // row, with no reference, is kept.
+        ...NOT_SAVED_CARD_CHARGE_ATTEMPT_ROW_WHERE,
       },
       select: { id: true, stripePaymentIntentId: true },
     });
@@ -1506,6 +1498,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
               checkOut: resolution.booking.checkOut,
               guestCount: resolution.booking.guests.length,
               priceCents: resolution.booking.finalPriceCents,
+              amountDueCents: (await readBookingAmountOwed(resolution.booking)).dueCents,
               bookingReference: resolution.booking.id,
               expiresAt,
               lodgeId: resolution.booking.lodgeId ?? null,
@@ -1696,14 +1689,14 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
       if (paymentIntent.status === "succeeded") {
         paymentSucceeded = true;
 
-        await settleSavedCardChargeAttempt({
+        const { newlyCaptured } = await settleSavedCardChargeAttempt({
           attemptRowId: resolution.attempt.attemptRowId,
           paymentId: resolution.paymentId,
           paymentIntent,
         });
 
         const reconciliation = await markBookingPaymentSucceeded({
-          format,
+          format, recordedByCaller: newlyCaptured, // #4285 review: new money, not a replay
           bookingId: resolution.booking.id,
           paymentIntentId: paymentIntent.id,
           amountCents: paymentIntent.amount,
@@ -1727,17 +1720,22 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           continue;
         }
 
-        if (
-          reconciliation.outcome === "duplicate_capture_refunded" ||
-          reconciliation.outcome === "duplicate_capture_refund_failed"
-        ) {
+        // #4300 (`INV-PAY-138`): superseded, so going back; nothing paid, so the
+        // claim is released (beds and hold back to PENDING) for the next run.
+        if (reconciliation.outcome === "superseded_capture") {
+          await releaseChargeClaim(resolution).catch((err) => logger.error({ err, bookingId: resolution.booking.id }, "Could not release the claim of a refused superseded charge (#4300)"));
+          result.failedBookingIds.push(resolution.booking.id);
+          continue;
+        }
+
+        if (settledByAnotherCapture(reconciliation.outcome)) {
           // #1992 — the member's in-flight link intent won the race and had
           // already settled the booking; this saved-card charge was the
           // duplicate and was auto-refunded (or its refund is pending in the
-          // recovery cron). The booking IS settled, so it counts as
-          // confirmed, but the settling path already sent the confirmation
-          // email and queued the Xero invoice — repeating either here would
-          // double them up.
+          // recovery cron) or, #4211, kept for an admin to check by hand. The
+          // booking IS settled, so it counts as confirmed, but the settling
+          // path already sent the confirmation email and queued the Xero
+          // invoice — repeating either here would double them up.
           logger.warn(
             {
               bookingId: resolution.booking.id,
@@ -1745,7 +1743,9 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
               outcome: reconciliation.outcome,
               job: "confirmPendingBookings",
             },
-            "Auto-charge captured against a booking already settled by its payment link; the duplicate charge was handed to the #1992 auto-refund"
+            reconciliation.outcome === "duplicate_capture_kept"
+              ? "Auto-charge captured against a booking another payment already settled; with no usable record of which payment to keep, the charge was kept and admins were asked to check by hand"
+              : "Auto-charge captured against a booking already settled by its payment link; the duplicate charge was handed to the #1992 auto-refund"
           );
           result.confirmedBookingIds.push(resolution.booking.id);
           continue;
@@ -1885,9 +1885,10 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
     } catch (err) {
       if (err instanceof SavedCardChargeRefusedError) {
         // #3267: charging would be wrong — a captured PRIMARY row already
-        // holds this booking's money while the booking is still PENDING, or an
-        // unanswered attempt's key has outlived Stripe's replay window
-        // (`err.why`). The claim transaction rolled back (nothing was claimed,
+        // holds this booking's money while the booking is still PENDING, a
+        // superseded capture's refund has not started or has stopped (#4300;
+        // one not started is handed off just below), or an unanswered attempt's
+        // key has outlived Stripe's replay window (`err.why`). The claim transaction rolled back (nothing was claimed,
         // nothing charged); this is an anomaly a person must resolve, so it is
         // logged at error level on EVERY run — and alerted on the #1993 cadence
         // (windows 1, 2, 3, then every 7th, once each), anchored on when this
@@ -1923,6 +1924,7 @@ export async function confirmPendingBookings(): Promise<CronConfirmResult> {
           "Refused to charge a saved card (#3267)"
         );
         result.failedBookingIds.push(candidate.id);
+        await handOffSupersededCaptureAfterRefusal(err);
         if (alert) {
           sendAdminPaymentFailureAlert({
             memberName: `${bookingOwner(candidate).member.firstName} ${bookingOwner(candidate).member.lastName}`,

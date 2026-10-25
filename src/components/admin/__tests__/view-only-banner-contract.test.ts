@@ -343,9 +343,12 @@ const FIGURES = {
    * 367 -> 368 (#3407): the lodge setup wizard's new Capacity step adds its
    * Save and continue. Back and Skip are plain Buttons. MEASURED.
    *
-   * 368 -> 370 (#3416): the School Teacher Hut-Leader Assignments card adds
+   * 368 -> 369 (#3817): the hut-leaders table's per-row Custodian (lives on
+   * site) toggle. MEASURED.
+   *
+   * 369 -> 371 (#3416): the School Teacher Hut-Leader Assignments card adds
    * Edit and Save. Cancel remains a plain Button because it only discards the
-   * staged choice. MEASURED by re-running this census.
+   * staged choice. MEASURED by re-running this census on the composed tree.
    *
    * 362 -> 364 (#50): the Other lodges panel's amenities editor adds two —
    * **Add amenity** and the per-row **Remove amenity**. Both pass
@@ -361,8 +364,31 @@ const FIGURES = {
    * 370 -> 371 (#3750): the change-request card's Confirm overbooking and
    * apply, shown when an executed finished-stay approval needs the officer to
    * confirm an over-capacity past night. MEASURED.
+   *
+   * 371 -> 372 (#3372): the stuck-states page's "Paid another way" close on a
+   * card refund Stripe gave up on, and 372 -> 373 (owner 9 Oct 2026) the same
+   * page's "Resolved" on a card refund paid back twice. Each dialog's confirm
+   * is a plain Button, reachable only once its gated row button opened it.
+   * MEASURED by re-running this census.
+   *
+   * 371/371 -> 372 (sync of `main` f1ecdb5ff into epic #3789): #3817's Custodian
+   * toggle and #3750's overbooking confirm are disjoint files. MEASURED on the
+   * composed tree by re-running this census, never by adding the deltas.
+   *
+   * 372/373 -> 374 (sync of `main` 0ff7e6d46 into epic #3789, #3821): the
+   * epic's sites and #3372's two stuck-states confirms are disjoint files.
+   * MEASURED on the composed tree by re-running this census.
+   *
+   * 374 -> 375 (#3976 on `main` after #3821): Club identity's new Edit. MEASURED by re-running this census.
+   * 375 -> 376 (#4030 review S6, on top of main's #3976): the
+   * change-request panel's officer guest entry button, rendered through the
+   * panel's own view-only button. MEASURED on the composed tree after merging main at aaedc5481.
+   * 376 -> 377 (#4098): the subscription charge queue's "Close: already paid".
+   * MEASURED by re-running this census.
+   * 377 -> 378 (#4162): the stuck-states page's "Record the answer" on a voided
+   * bank refund note. MEASURED by re-running this census.
    */
-  callSites: 371,
+  callSites: 378,
   /**
    * Those that hand their explanation to a banner, by either rule.
    *
@@ -390,7 +416,8 @@ const FIGURES = {
    *
    * 311 -> 312 (#3462): so does the Xero operations panel's Mark failed.
    * 312 -> 313 (#3407): so does the setup wizard's Capacity Save and continue.
-   * 313 -> 315 (#3416): the new school-teacher policy card heads itself under
+   * 313 -> 314 (#3817): so does the hut-leaders row Custodian toggle.
+   * 314 -> 316 (#3416): the new school-teacher policy card heads itself under
    * the existing section banner, so its Edit and Save opt out.
    *
    * 308 -> 310 (#50): so do the Other lodges panel's two amenity controls,
@@ -400,8 +427,23 @@ const FIGURES = {
    * Delete) and one arrives (Edit my Lodge).
    *
    * 315 -> 316 (#3750): so does the change-request card's overbooking confirm.
+   * 316 -> 318 (#3372): the dead card refunds panel's "Paid another way" and
+   * the paid-twice list's "Resolved" each opt out under their own banner.
+   *
+   * 316/316 -> 317 (sync of `main` f1ecdb5ff into epic #3789): the two sides'
+   * new opt-outs are disjoint. MEASURED on the composed tree.
+   *
+   * 317/318 -> 319 (sync of `main` 0ff7e6d46 into epic #3789, #3821): #3372's
+   * two opt-outs are disjoint from the epic's. MEASURED on the composed tree.
+   *
+   * 319 -> 320 (#3976 on `main` after #3821): so does Club identity's Edit.
+   * 320 -> 321 (#4030 review S6, on top of main's #3976): the officer
+   * guest entry's button, under the change-request panel's banner. MEASURED
+   * on the composed tree.
+   * 321 -> 322 (#4098): "Close: already paid", under the billing panel's banner.
+   * 322 -> 323 (#4162): "Record the answer", under the voided bank refund notes panel's banner.
    */
-  optOuts: 316,
+  optOuts: 323,
   /**
    * `describeReason={false}` — needs a banner in the SAME file.
    *
@@ -461,14 +503,36 @@ const FIGURES = {
    * 278 -> 279 (#3407): the setup wizard's Capacity Save and continue sits in
    * the same file as the wizard's own banner, beside its sibling steps' static
    * opt-outs.
+   * 279 -> 280 (#3817): the hut-leaders row Custodian toggle sits in the same
+   * file as the page's own banner, beside Release bed and Change bed.
    *
-   * 279 -> 281 (#3416): the school-teacher card's Edit and Save sit in the
+   * 280 -> 282 (#3416): the school-teacher card's Edit and Save sit in the
    * same file as its section banner.
    *
    * 281 -> 282 (#3750): the overbooking confirm is rendered in the change-
    * request panel itself, beside that panel's own banner.
+   * 282 -> 284 (#3372): the dead card refunds panel's "Paid another way" and
+   * the paid-twice list's "Resolved" sit in the same file as their banners.
+   *
+   * 280/282 -> 281 (sync of `main` f1ecdb5ff into epic #3789): the epic
+   * measured 280 (its bump lines above add to 282, but the census, not the
+   * lines, is the authority) and `main`'s #3750 adds one. MEASURED on the
+   * composed tree by re-running this census, never by adding the deltas.
+   *
+   * 281/284 -> 283 (sync of `main` 0ff7e6d46 into epic #3789, #3821): `main`'s
+   * #3372 adds two to the epic's 281. MEASURED on the composed tree by
+   * re-running this census, never by adding the deltas.
+   *
+   * 283 -> 284 (#3976): Club identity's Edit opts out under the section's own banner.
+   * 284 -> 285 (#4030 review S6, on top of main's #3976): the officer
+   * guest entry's button is defined in the change-request panel, beside that
+   * panel's own banner. MEASURED on the composed tree after merging main at aaedc5481.
+   * 285 -> 286 (#4098): "Close: already paid" sits in the same file as the
+   * subscription billing panel's own banner. MEASURED by re-running this census.
+   * 286 -> 287 (#4162): "Record the answer" sits beside the voided bank refund
+   * notes panel's own banner. MEASURED by re-running this census.
    */
-  staticOptOuts: 282,
+  staticOptOuts: 287,
   /**
    * `describeReason={!ancestorRendersViewOnlyBanner}` — needs a vouch.
    *
@@ -489,9 +553,9 @@ const FIGURES = {
    * 36 -> 34 (#52): the Other lodges panel's Add/Edit/Delete go and Edit my
    * Lodge arrives, all render-site vouched by the Lodges page; 31 -> 29 there.
    */
-  vouchedOptOuts: 34,
+  vouchedOptOuts: 36,
   /** …of the vouched: proved at a parent's own JSX render site (#2168). */
-  renderSiteVouchedOptOuts: 29,
+  renderSiteVouchedOptOuts: 31,
   /** …of the vouched: proved through the wizard shell's channel (#2324). */
   shellVouchedOptOuts: 5,
   /**
@@ -552,8 +616,13 @@ const FIGURES = {
    * 97 -> 98 (#3596): the club currency and locale panel, which #3563 built
    * without one because every visitor was a Full Admin. #3596 gave it a view
    * tier. Mounted in all three of its branches (load failed, loading, loaded).
+   *
+   * 98 -> 99 (#3372): the stuck-states page's dead card refunds panel, gated on
+   * finance inside a support page, so it states its own area's reason.
+   * 99 -> 100 (#4162): the stuck-states page's voided bank refund notes panel,
+   * finance-gated inside a support page for the same reason.
    */
-  bannerComponents: 98,
+  bannerComponents: 100,
   /**
    * Admin files that render an `AdminViewOnlyNotice` and NO
    * `ViewOnlyActionButton` — the first of the three cases in which the older

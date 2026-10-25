@@ -115,7 +115,7 @@ method, scope and finish line for each.
   — the #3341 sweep of the unreviewed May–June 2026 money-path pull requests:
   the defect class, a verdict per PR, and the defects it filed.
 - [`../audits/FRAGILITY_AREAS_PROPOSAL.md`](../audits/FRAGILITY_AREAS_PROPOSAL.md)
-  — the proposed business areas for the "bugs that came back" review, with
+  — the owner-confirmed business areas for the "bugs that came back" review, with
   raw repeat counts per area and how far to trust each signal.
 - [`../audits/FRAGILITY_RANKING_2026-10.md`](../audits/FRAGILITY_RANKING_2026-10.md)
   — those areas ranked by hand-confirmed repeats, each with its chains of

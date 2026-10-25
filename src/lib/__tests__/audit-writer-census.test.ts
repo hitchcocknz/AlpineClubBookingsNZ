@@ -801,9 +801,10 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
 
     // #2765's fifteen, plus #2749's three other-lodges sites classified under
     // the same rule on arrival (INV-PRIV-013), plus #2942's member-roster
-    // name-detail writer, classified the same way for the same reason; minus
-    // the two other-lodges writers #52 removed with their handlers.
-    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(17);
+    // name-detail writer, classified the same way for the same reason, plus
+    // #3819's school hut-leader kinds writer, likewise; minus the two
+    // other-lodges writers #52 removed with their handlers.
+    expect(Object.keys(LODGE_GATED_ADMIN_CATEGORIES_2765)).toHaveLength(18);
     expect([
       ...new Set(Object.values(LODGE_GATED_ADMIN_CATEGORIES_2765)),
     ]).toEqual(["admin"]);
@@ -1002,8 +1003,8 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     ]);
     // Eight files from #2765's fifteen sites, plus #2749's other-lodges item
     // route file (its list route lost its only writer in #52), plus #2942's
-    // roster-settings route file.
-    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(10);
+    // roster-settings route file, plus #3819's school hut-leaders route file.
+    expect(files.filter((file) => gateOf(file) === "lodge")).toHaveLength(11);
     expect(files.filter((file) => gateOf(file) === "other")).toEqual([]);
 
     /*
@@ -1419,12 +1420,40 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // 369 -> 370 (#3827, composed by #3829): the guest-acceptance re-price record, unpinned
     // `booking`. RE-MEASURED with `pnpm run audit:census`.
     // 370 -> 371 (#3492, composed by #3829): the guest promo-code lookup, unpinned `privacy`.
+    // 128 -> 129 pinned (#3819): the school hut-leader kinds writer, pinned in
+    // LODGE_GATED_ADMIN_CATEGORIES_2765. RE-MEASURED with `pnpm run audit:census`.
     // 128 -> 126 pinned (#52, other-lodges central-server sync): the
     // other-lodges CREATE and DELETE writers leave the keep with their
     // handlers; the unpinned population does not move. 371 -> 372 unpinned
     // (#3750): the executed change-request approval, unpinned `booking`.
     // RE-MEASURED with `pnpm run audit:census`.
-    ).toEqual({ pinned: 126, unpinned: 372 });
+    // 372 -> 373 (#3372): the paid-another-way close, unpinned `payment`.
+    // 373 -> 374 (#3372, owner 9 Oct 2026): a paid-twice row marked Resolved, unpinned `payment`.
+    // 129/126 -> 127 pinned, 372 unpinned (hand sync of `main` f1ecdb5ff into
+    // epic #3789): #3819's +1 and #52's -2 compose. RE-MEASURED with
+    // `pnpm run audit:census` on the composed tree.
+    // 127/126 pinned, 372/374 unpinned -> 127 pinned, 374 unpinned (sync of
+    // `main` 0ff7e6d46 into epic #3789, #3821): #3819's pinned `admin` site and
+    // #3372's two unpinned `payment` sites compose. RE-MEASURED on the
+    // composed tree.
+    // 374 -> 375 (#4098): the close of an already-paid subscription charge,
+    // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
+    // 375 -> 376 (#4104 review, CL3): a failed-later card refund not re-sent,
+    // unpinned `payment`. RE-MEASURED with `pnpm run audit:census`.
+    // 127 -> 127 pinned (#4149): the two late-capture handlers' pinned refund
+    // entries became one pinned shared writer, `reportAutomaticLateCaptureRefund`,
+    // and the lost-record recovery's own entry is pinned beside it.
+    // 127 -> 128 pinned (#4170): the refunded-outside-the-app entry, pinned beside them.
+    // 376 -> 377 unpinned (#4154): a capacity race's charge corrected before its
+    // hand-back, unpinned `payment`. 128 pinned, 377 unpinned RE-MEASURED by this
+    // suite on the sync with #4149/#4170 (505 sites minus 128 pinned).
+    // 377 -> 379 unpinned (#4162): a voided bank-transfer refund note undone and
+    // one answered by a person, unpinned `payment` (507 sites minus 128 pinned).
+    // 379 -> 380 unpinned (#4219): the credit-note convergence's `xero` row, unpinned.
+    // 380 -> 381 unpinned (#4338): its close of a concurrent attempt's failed row, unpinned `xero`.
+    // 381 -> 386 unpinned (#4253): the released-credit request's five rows, all unpinned.
+    // 386 -> 388 unpinned (#4270): the credit-note mirror's two `xero` rows, unpinned.
+    ).toEqual({ pinned: 128, unpinned: 388 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {
@@ -1514,7 +1543,11 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
         "That publishes an event on a member-facing surface, or withdraws one " +
         "from it — never a side effect of a refactor. Say which way it moved and " +
         "why the row is safe for the member it is about.",
-    ).toBe(57);
+      // 57 -> 57 (#4149): two pinned `payment` refund entries became one, and
+      // the recovery's pinned `payment` entry joined them; each carries a
+      // booking id and no member, so no member sees any of them.
+      // 57 -> 58 (#4170): one more pinned `payment` entry, booking id only, no member.
+    ).toBe(58);
     expect([...new Set(hidden)].sort()).toEqual(["admin", "lodge", "xero"]);
     expect(hidden).toHaveLength(29);
   });

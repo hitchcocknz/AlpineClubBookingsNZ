@@ -35,6 +35,23 @@ const mockCancelPaymentIntentIfCancellableWithResult = vi.fn();
 const cancellationLedger = vi.hoisted(() => ({
   postCancellationLedgerLines: vi.fn<(input: unknown) => Promise<void>>(async () => {}),
 }));
+// #4300 (`INV-PAY-138`): step (b) asks whether the superseded machinery owns a
+// captured row, and where its refund stands; nothing here is superseded unless
+// a case says so (`supersededDoor.owned`, no refund started).
+const supersededDoor = vi.hoisted(() => ({ owned: new Set<string>(), handOff: vi.fn() }));
+vi.mock("@/lib/superseded-capture-ownership", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/superseded-capture-ownership")),
+  readSupersededOwnership: async () => ({
+    holdsForMember: new Set<string>(),
+    owns: async (intent: string) => supersededDoor.owned.has(intent),
+    refundState: () => "not_started",
+  }),
+}));
+vi.mock("@/lib/superseded-paid-intent", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/superseded-paid-intent")),
+  handOffSupersededCaptureAfterRefusal: supersededDoor.handOff,
+}));
+
 vi.mock("@/lib/booking-ledger-cancellation-sync", () => cancellationLedger);
 
 vi.mock("../stripe", () => ({
@@ -236,6 +253,9 @@ const mockBookingUpdate = vi.fn();
 const mockBookingUpdateMany = vi.fn();
 const mockPaymentUpdate = vi.fn();
 const mockPaymentUpsert = vi.fn();
+// #4058: the pay-link email quotes what is owed, which reads the booking's
+// applied credit (`readBookingAmountOwed`). Null sum = no credit applied.
+const mockMemberCreditAggregate = vi.fn().mockResolvedValue({ _sum: { amountCents: null } });
 // #1992: the pre-charge sweep reads in-flight PRIMARY intents off the ledger.
 // #3267: so does the attempt module inside the claim (same findMany mock, a
 // different `where`), which then CREATES the attempt row and stamps its key,
@@ -306,6 +326,9 @@ vi.mock("../prisma", () => ({
       updateMany: (...args: unknown[]) => mockPaymentUpdateMany(...args),
     },
     paymentTransaction: paymentTransactionMocks,
+    memberCredit: {
+      aggregate: (...args: unknown[]) => mockMemberCreditAggregate(...args),
+    },
     promoRedemption: {
       findMany: (...args: unknown[]) => mockPromoRedemptionFindMany(...args),
     },
@@ -332,6 +355,8 @@ vi.mock("../prisma", () => ({
         mockClubTimeSettingsFindUnique(...args),
     },
     $transaction: (...args: unknown[]) => mockPrismaTransaction(...args),
+    // #4217: the root client, so a settle without a caller's transaction opens its own.
+    $connect: vi.fn(),
   },
 }));
 
@@ -603,6 +628,7 @@ describe("Cron: Confirm Pending Bookings", () => {
     );
     mockSendSavedCardChargeFailedEmail.mockResolvedValue(undefined);
     mockClubTimeSettingsFindUnique.mockResolvedValue(null);
+    mockMemberCreditAggregate.mockResolvedValue({ _sum: { amountCents: null } });
     mockPromoRedemptionFindMany.mockResolvedValue([]);
     mockDeletePromoRedemption.mockResolvedValue(undefined);
     mockRevokePaymentLinksForBooking.mockResolvedValue(0);
@@ -2015,6 +2041,31 @@ describe("Cron: Confirm Pending Bookings", () => {
     },
   };
 
+  it("#4058: the split guest pay-link email quotes what the pay page asks, price less applied credit, not the bare price", async () => {
+    // $30 of account credit applied to the child: 120.00 - 30.00 = 90.00.
+    mockMemberCreditAggregate.mockResolvedValue({ _sum: { amountCents: -3000 } });
+    const booking = makePendingBooking("child_1", {
+      hasPaymentMethod: false,
+      parentBookingId: "parent_1",
+      parentBooking: IB_SETTLED_PARENT,
+      finalPriceCents: 12000,
+      guestCount: 2,
+    });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({
+      available: true,
+      minAvailable: 5,
+      nightDetails: [],
+    });
+
+    await confirmPendingBookings();
+
+    expect(mockSendSplitGuestPaymentLinkEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingReference: "child_1", priceCents: 12000, amountDueCents: 9000 }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
   it("emails a payment link and alerts admins for a split child whose parent paid by internet banking, never charging it (#1967)", async () => {
     const booking = makePendingBooking("child_1", {
       hasPaymentMethod: false,
@@ -2992,6 +3043,43 @@ describe("Cron: Confirm Pending Bookings", () => {
       expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
     });
 
+    it("#4211: a charge KEPT for an admin (no record of which payment settled the booking) sends no second confirmation and queues no invoice", async () => {
+      primeChargeableSplitChild();
+      mockPaymentTransactionFindMany.mockResolvedValue([
+        { id: "txn_link", stripePaymentIntentId: "pi_link_inflight" },
+      ]);
+      mockCancelPaymentIntentIfCancellable.mockResolvedValue(null);
+      mockMarkBookingPaymentSucceeded.mockResolvedValue({
+        outcome: "duplicate_capture_kept",
+        bookingId: "child_1",
+        bumpedBookingIds: [],
+      });
+
+      const result = await confirmPendingBookings();
+
+      expect(result.confirmedBookingIds).toEqual(["child_1"]);
+      expect(result.failedBookingIds).toHaveLength(0);
+      expect(mockSendConfirmedEmail).not.toHaveBeenCalled();
+      expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+    });
+
+    it("#4300: a charge the settle refuses as superseded counts as failed: no confirmation, no invoice", async () => {
+      primeChargeableSplitChild();
+      mockPaymentTransactionFindMany.mockResolvedValue([]);
+      mockMarkBookingPaymentSucceeded.mockResolvedValue({ outcome: "superseded_capture", bookingId: "child_1", bumpedBookingIds: [] });
+
+      const result = await confirmPendingBookings();
+
+      expect(result.confirmedBookingIds).toHaveLength(0);
+      expect(result.failedBookingIds).toEqual(["child_1"]);
+      expect(mockSendConfirmedEmail).not.toHaveBeenCalled();
+      expect(mockEnqueueXeroBookingInvoiceOperation).not.toHaveBeenCalled();
+      // The money is going back, so the claim is released for the next run.
+      expect(
+        mockBookingUpdateMany.mock.calls.some(([call]) => call?.where?.status === "CONFIRMED" && call?.data?.status === "PENDING"),
+      ).toBe(true);
+    });
+
     it("tolerates a cancel API error (best-effort): logged, charge proceeds, booking confirms", async () => {
       primeChargeableSplitChild();
       mockPaymentTransactionFindMany.mockResolvedValue([
@@ -3367,7 +3455,8 @@ describe("Cron: Confirm Pending Bookings", () => {
         },
       });
       expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalledWith(
-        expect.objectContaining({ paymentIntentId: "pi_admin" })
+        // #4285 review: the cron's pre-record wrote the capture just now - new money, not a replay.
+        expect.objectContaining({ paymentIntentId: "pi_admin", recordedByCaller: true })
       );
     });
 
@@ -3471,6 +3560,21 @@ describe("Cron: Confirm Pending Bookings", () => {
         }),
         CLUB_FORMAT_TEST,
       );
+    });
+
+    it("#4300: a superseded capture with no refund started refuses, charges nothing, and is handed off after the rollback", async () => {
+      mockPendingBookings([makePendingBooking("b1")]);
+      capacityAvailable();
+      primeCapturedRow(1 * HOUR);
+      supersededDoor.owned.add("pi_paid");
+      try {
+        const result = await confirmPendingBookings();
+        expect(result.failedBookingIds).toEqual(["b1"]);
+        expect(mockChargePaymentMethod).not.toHaveBeenCalled();
+        expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_paid", supersededIntentsToHandOff: ["pi_paid"] }));
+      } finally {
+        supersededDoor.owned.clear();
+      }
     });
 
     describe("the refusal alert follows the #1993 cadence, once per window, anchored on when the cron could FIRST have observed the refusal (#3267 fix round 2)", () => {

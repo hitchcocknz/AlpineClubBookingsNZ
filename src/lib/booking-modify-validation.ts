@@ -580,36 +580,6 @@ export class BookingModifyReviewJustificationRequiredError extends ApiError {
   }
 }
 
-/**
- * What the EDIT PANEL says when the quote it just asked for PARKS (#3170, epic
- * #2797).
- *
- * ## What it replaced, and why the old sentence had to go rather than stay
- *
- * There used to be a `BookingEditFinancialReviewRequiredError` here — a 409 with
- * the code `FINANCIAL_REVIEW_REQUIRED` and the sentence *"Nothing has been
- * changed yet — please contact the office."* #3031 raised it on the in-progress
- * edit path, #3032 removed it from the guest-removal path, and #3170 removed the
- * last one: an unpriceable edit now COMMITS its structural half and holds the
- * amount for a person, on every path this rule covers.
- *
- * So the class is deleted rather than kept for a caller that might come back.
- * Its sentence is now FALSE for what the system does — something HAS been
- * changed — and a member-facing refusal left lying around for a state that can
- * no longer occur is the next implementor's most likely mistake.
- *
- * ## The wording is bound by the epic
- *
- * No estimate and no `$0` (both prohibited), no "corrupt" or "invalid data"
- * terminology, and nothing that reads as the member's fault — the stored history
- * is the club's record, not theirs. It must also say that the change WILL be
- * saved, because it will. Rendered VERBATIM by the panel; never re-worded there.
- */
-export const EDIT_FINANCIAL_REVIEW_QUOTE_NOTICE =
-  "The club needs to check the amount for this change. Your change will be saved, " +
-  "and nothing will be charged or refunded until someone from the office has " +
-  "confirmed it with you.";
-
 export function assertBookingModifiable(
   booking: LoadedBookingForModify | null,
   { role, actorId }: { role: Role; actorId: string },
@@ -652,6 +622,9 @@ export async function isQuotePricedBooking(
 export const QUOTE_PRICED_EDIT_BLOCK_MESSAGE =
   "This booking keeps a negotiated booking-request price, so standard edits are disabled — they would reprice every guest at season rates. Re-price or issue a revised quote from its booking request instead.";
 
+/** #4202: the member-origin link fence's one wording, for the save, the quote and the promo box. */
+export const GUEST_MEMBER_LINK_MEMBER_WHOLE_LODGE_ONLY_MESSAGE =
+  "Linking a placeholder to a member is only available on member whole-lodge bookings.";
 /**
  * True when this booking was created from an authenticated member whole-lodge
  * request (#2263) — `requestedByMemberId` set and `exclusivityRequested` — as

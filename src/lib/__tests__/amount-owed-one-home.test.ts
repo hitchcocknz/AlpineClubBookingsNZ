@@ -14,7 +14,7 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
  * owes, and a settle that compared against the bare price would refuse the
  * payment that did collect the fee.
  *
- * Two shapes, read as text with comments stripped (#3955 review F6):
+ * Four shapes, read as text with comments stripped (#3955 review F6):
  *  - over every non-test file under `src/`, by walk: a final price less
  *    anything named for credit, under ANY name and either case
  *    (`newFinalPriceCents - clamp.appliedCreditCents`,
@@ -24,10 +24,28 @@ import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment
  *  - over every non-test file under `src/`: applied credit compared (`<`, `>`,
  *    `<=`, `>=`, either way round) with a bare final price — "does the credit
  *    cover the booking?" asked without the fee (#3955 round 5, finding 1:
- *    `appliedCreditCents + reviewGiveBacksCents < previousFinalPriceCents`).
+ *    `appliedCreditCents + reviewGiveBacksCents < previousFinalPriceCents`);
+ *  - over every non-test file under `src/`: an `amountDueCents` property set
+ *    from a bare final price. It is the field the member-facing emails that
+ *    quote what is owed take (the exception-approved email, the pay-link
+ *    emails), so a bare price there tells a member to pay less than the page
+ *    asks (#4058). `readBookingAmountOwed` is the one reader. (`priceCents`
+ *    on those emails is the booking's PRICE and stays one.)
+ *  - over every file that calls one of those senders: each `amountDueCents`
+ *    property, shorthand included, reads `readBookingAmountOwed` or is pinned
+ *    by its text with the reason it cannot owe more than the price.
+ *
+ * Every file that resolves a booking narrative reads what is owed through
+ * `readBookingAmountOwed` (`booking-amount-owed.ts`, the one read of the figure
+ * with its ledger credit, #3991), and none may hand it a bare price as
+ * `dueCents`; the booking page's figures themselves are pinned by
+ * `booking-detail-history-amount-owed.test.ts`.
  *
  * WHAT THIS CANNOT SEE: an amount spelled another way (a sum in a different
- * order, a helper of its own, a variable that holds the bare price).
+ * order, a helper of its own, a variable that holds the bare price); and a
+ * narrative caller that imports the resolver under another name
+ * (`import { resolveBookingNarrative as resolve }`), which the by-name walk
+ * below never finds.
  */
 
 const REPO = path.resolve(__dirname, "..", "..", "..");
@@ -48,8 +66,46 @@ const PAY_STEPS = [
   "src/lib/cron-confirm-pending.ts",
   "src/lib/group-settlement-invoice-binding.ts",
   // #3955 round 3: the public pay page's amount, which its intent charges.
+  // #4058: it reads `readBookingAmountOwed`, the one reader the pay-link emails
+  // share, so the page and the email agree.
   "src/lib/payment-link-context.ts",
+  // #4058: not a pay step, but the email that tells a member what to pay once an
+  // exception is approved - it must quote what the pay step will ask for.
+  "src/lib/booking-exception-approval.ts",
+  // #3991: the booking page's history narrative, which quotes the amount due,
+  // and the one read every surface here shares.
+  "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-history.ts",
+  "src/lib/booking-amount-owed.ts",
 ];
+const ONE_HOME_READ = "src/lib/booking-amount-owed.ts";
+// #3991, #4058: the surfaces that read what is owed ONLY through the one read —
+// what they quote and what they charge cannot part.
+const ONE_READ_USERS = [
+  "src/app/(authenticated)/bookings/[id]/_lib/booking-detail-history.ts",
+  "src/lib/payment-link-context.ts",
+  "src/lib/payment-link-intent.ts",
+  "src/app/api/payments/create-payment-intent/route.ts",
+  // #4058: the emails that quote what is owed, read through the same helper.
+  "src/lib/booking-exception-approval.ts",
+  "src/lib/cron-confirm-pending.ts",
+  "src/lib/payment-link-reissue.ts",
+  "src/lib/payment-link-split-guest.ts",
+];
+// The files that still compose it themselves, named in `booking-amount-owed.ts`.
+const KNOWN_COMPOSERS = [
+  "src/app/api/bookings/[id]/confirm-payment/route.ts",
+  "src/app/api/payments/switch-to-internet-banking/route.ts",
+  "src/lib/stripe-webhook-service.ts",
+  "src/lib/manual-booking-payment-state.ts",
+  "src/lib/payment-reconciliation.ts",
+  "src/lib/booking-modify-settlement.ts",
+  "src/lib/booking-date-modification-service.ts",
+  "src/lib/booking-credit-election.ts",
+  "src/lib/edit-financial-review-account-credit.ts",
+  "src/lib/policies/booking-route-decisions.ts",
+];
+// Reading the one home: the two helpers, or the one read built on them (#3991).
+const READS_ONE_HOME = /\b(?:booking(?:AmountOwed|Worth)Cents|readBookingAmountOwed)\(/;
 // A final price, then a minus, then — within the same expression — anything
 // named for credit or for what is already applied (#3955 round 3:
 // `verifiedFinalPriceCents - alreadyAppliedCents`). `[^;,{}]` keeps it inside
@@ -62,6 +118,18 @@ const CREDIT_VS_BARE_PRICE =
   /(?:[Cc]redit|[Aa]pplied)\w*[^;,{}()]{0,80}?(?<![=-])[<>]=?(?!=)\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*\+)|[\w.?!]*[Ff]inalPriceCents\s*[<>]=?(?!=)[^;,{}]{0,80}?(?:[Cc]redit|[Aa]pplied)\w*/g;
 // An intent, charge or payment amount that is a bare final price, in a pay step.
 const BARE_PRICE_AMOUNT = /\bamountCents:\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*[-+])/;
+// #3991: the narrative's figures (`amountOwed.owedCents` / `.dueCents`) set to
+// a bare price.
+const BARE_PRICE_DUE = /\b(?:owed|due)Cents:\s*[\w.?!]*[Ff]inalPriceCents\b(?!\s*[-+])/;
+
+// An email's amount-due field set from a bare final price (#4058).
+const BARE_PRICE_QUOTED = /\bamountDueCents:\s*[^,;}]*[Ff]inalPriceCents\b/g;
+// A pay-link or exception-approved email send, and the `amountDueCents` property
+// inside it, shorthand (`amountDueCents,`) included - a type position
+// (`amountDueCents: number`) and a read (`params.amountDueCents`) are not one.
+const QUOTING_SENDER =
+  /\bsend(?:BookingRequestApproved|SplitGuestPaymentLink|BookingPolicyExceptionApproved)Email\(/;
+const DUE_PROPERTY = /(?<![.\w])amountDueCents\b(?!\s*\??:\s*number\b)(?:\s*:\s*([^,;}]*))?/g;
 
 /**
  * The exact expressions allowed to stay, each pinned by its text (whitespace
@@ -94,8 +162,27 @@ const ALLOWED_COMPARISONS: Readonly<Record<string, readonly string[]>> = {
   "src/lib/policies/booking-route-decisions.ts": ["CreditCents > finalPriceCents"],
 };
 
+/**
+ * The amount-due properties on a quoting send that may read something other
+ * than `readBookingAmountOwed`, pinned by text (#4058). Both send the pay link
+ * of a booking created a moment before: its Payment row is new (no recorded
+ * change fee) and no credit election has reached it, so what it owes is its
+ * price. A held request booking is still AWAITING_REVIEW, which holds no credit.
+ */
+const ALLOWED_DUE_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
+  "src/lib/booking-request.ts": ["amountDueCents: priceCents"],
+  "src/lib/group-booking.ts": ["amountDueCents: priceCents"],
+};
+
 const matchesIn = (text: string) =>
   [...text.matchAll(BARE_PRICE_LESS_CREDIT)].map((match) => match[0].replace(/\s+/g, " "));
+const quotesIn = (text: string) =>
+  [...text.matchAll(BARE_PRICE_QUOTED)].map((match) => match[0].replace(/\s+/g, " "));
+const duePropertiesIn = (text: string) =>
+  [...text.matchAll(DUE_PROPERTY)]
+    // The floored `dueCents`, never `owedCents`, which goes negative when credit exceeds the price.
+    .filter((match) => !/readBookingAmountOwed\([^)]*\)\)\.dueCents\b/.test(match[1] ?? ""))
+    .map((match) => match[0].replace(/\s+/g, " ").trim());
 const comparisonsIn = (text: string) =>
   [...text.matchAll(CREDIT_VS_BARE_PRICE)].map((match) => match[0].replace(/\s+/g, " "));
 
@@ -123,8 +210,59 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
 
   it("every pay step reads it there", () => {
     for (const file of PAY_STEPS) {
-      expect(read(file), file).toMatch(/\bbooking(?:AmountOwed|Worth)Cents\(/);
+      expect(read(file), file).toMatch(READS_ONE_HOME);
     }
+    // The one read is itself built on the one home, with the ledger credit.
+    expect(read(ONE_HOME_READ)).toMatch(/\bbookingAmountOwedCents\(/);
+    expect(read(ONE_HOME_READ)).toMatch(/\bderiveBookingAppliedCreditCents\(/);
+  });
+
+  it("the one read's users take credit and the owed figure from it alone (#3991)", () => {
+    for (const file of ONE_READ_USERS) {
+      const text = read(file);
+      expect(text, file).toMatch(/\breadBookingAmountOwed\(/);
+      expect(text, `${file} composes its own figure`).not.toMatch(
+        /\b(?:bookingAmountOwedCents|deriveBookingAppliedCreditCents)\(/,
+      );
+    }
+  });
+
+  it("every other composer of the owed figure is a known one (#3991)", () => {
+    const composers = sourceFiles(path.join(REPO, "src"))
+      .filter((file) => /\bbookingAmountOwedCents\(/.test(read(file)))
+      .filter((file) => file !== ONE_HOME_READ && file !== "src/lib/booking-payment-state.ts");
+    expect(composers.sort(), "INV-PAY-119: read it through readBookingAmountOwed, or list it in booking-amount-owed.ts").toEqual(
+      [...KNOWN_COMPOSERS].sort(),
+    );
+    // Its docblock names exactly these — no missing one, and no extra one left
+    // behind once a composer moves to the one read (read raw: it is a comment).
+    const docblock = fs.readFileSync(path.join(REPO, ONE_HOME_READ), "utf8");
+    const paragraph = docblock.slice(
+      docblock.indexOf("NOT YET EVERY READER"),
+      docblock.indexOf("`amount-owed-one-home.test.ts` pins"),
+    );
+    const named = [...paragraph.matchAll(/`([\w./[\]-]+\.ts)`/g)].map((match) => match[1]).sort();
+    const expected = KNOWN_COMPOSERS.map((file) =>
+      file.split("/").slice(-2).join("/").replace(/^lib\//, ""),
+    ).sort();
+    expect(named, "booking-amount-owed.ts's docblock names exactly the known composers").toEqual(expected);
+  });
+
+  // #3991 review: the booking page reads ledger credit ONCE, in the history
+  // loader through `readBookingAmountOwed`; nothing else on the page derives it
+  // again — not the pay card's projection, not the edit panel's payload.
+  it("no booking-page module derives the applied credit itself", () => {
+    const pageDir = "src/app/(authenticated)/bookings/[id]";
+    const pageFiles = sourceFiles(path.join(REPO, pageDir));
+    for (const required of [
+      `${pageDir}/_lib/booking-detail-editor-data.ts`,
+      `${pageDir}/_lib/booking-detail-payment.ts`,
+      `${pageDir}/_lib/booking-detail-history.ts`,
+    ]) {
+      expect(pageFiles, `the walk reached ${required}`).toContain(required);
+    }
+    const offenders = pageFiles.filter((file) => /\bderiveBookingAppliedCreditCents\(/.test(read(file)));
+    expect(offenders, "INV-PAY-119: take history.amountOwed, the page's one read").toEqual([]);
   });
 
   it("no pay step sizes an amount at the bare price", () => {
@@ -132,6 +270,23 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
       (file) => `${file}: ${read(file).match(BARE_PRICE_AMOUNT)?.[0]}`,
     );
     expect(offenders, "INV-PAY-119: size it through bookingAmountOwedCents / bookingWorthCents").toEqual([]);
+  });
+
+  // #3991: the narrative quotes "$X is due" from what it is handed, so every
+  // file that resolves one reads the one home, and none hands it the bare price.
+  it("every source file that resolves a booking narrative reads the amount owed there", () => {
+    const callers = sourceFiles(path.join(REPO, "src")).filter((file) =>
+      /\bresolveBookingNarrative\(/.test(read(file)) && file !== "src/lib/booking-narrative.ts",
+    );
+    expect(callers.length, "the census found no narrative caller").toBeGreaterThan(0);
+    for (const file of callers) {
+      expect(read(file), `INV-PAY-119: ${file} reads it through readBookingAmountOwed`).toMatch(
+        /\breadBookingAmountOwed\(/,
+      );
+      expect(PAY_STEPS, `INV-PAY-119: add ${file} to PAY_STEPS`).toContain(file);
+    }
+    const bareDue = sourceFiles(path.join(REPO, "src")).filter((file) => BARE_PRICE_DUE.test(read(file)));
+    expect(bareDue, "INV-PAY-119: the narrative's dueCents comes from bookingAmountOwedCents").toEqual([]);
   });
 
   it("no source file subtracts credit from the bare price any more", () => {
@@ -163,6 +318,71 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
   it("every allowed comparison is still there, exactly once", () => {
     for (const [file, allowed] of Object.entries(ALLOWED_COMPARISONS)) {
       expect(comparisonsIn(read(file)).sort(), file).toEqual([...allowed].sort());
+    }
+  });
+
+  it("no source file sets an amount-due field from a bare final price (#4058)", () => {
+    const offenders = sourceFiles(path.join(REPO, "src")).flatMap((file) =>
+      quotesIn(read(file)).map((match) => `${file}: ${match}`),
+    );
+    expect(offenders, "INV-PAY-119: quote it through readBookingAmountOwed").toEqual([]);
+  });
+
+  it("every send that quotes what is owed reads it through readBookingAmountOwed (#4058)", () => {
+    const callers = sourceFiles(path.join(REPO, "src")).filter(
+      (file) => !file.startsWith("src/lib/email/") && QUOTING_SENDER.test(read(file)),
+    );
+    // The five senders of a pay link plus the exception-approved email.
+    expect(callers.sort()).toEqual([
+      "src/lib/booking-exception-approval.ts",
+      "src/lib/booking-request.ts",
+      "src/lib/cron-confirm-pending.ts",
+      "src/lib/group-booking.ts",
+      "src/lib/payment-link-reissue.ts",
+      "src/lib/payment-link-split-guest.ts",
+    ]);
+    const offenders = callers.flatMap((file) => {
+      const text = read(file);
+      expect(text, `${file} passes amountDueCents`).toMatch(/amountDueCents\b/);
+      return duePropertiesIn(text)
+        .filter((match) => !(ALLOWED_DUE_PROPERTIES[file] ?? []).includes(match))
+        .map((match) => `${file}: ${match}`);
+    });
+    expect(offenders, "INV-PAY-119: read it through readBookingAmountOwed, or pin it by text").toEqual([]);
+  });
+
+  it("every allowed amount-due property is still there, exactly once", () => {
+    for (const [file, allowed] of Object.entries(ALLOWED_DUE_PROPERTIES)) {
+      expect(duePropertiesIn(read(file)).sort(), file).toEqual([...allowed].sort());
+    }
+  });
+
+  it("catches an amount-due field set from a bare final price", () => {
+    for (const expression of [
+      "amountDueCents: settled ? 0 : booking.finalPriceCents",
+      "amountDueCents: resolution.booking.finalPriceCents",
+    ]) {
+      expect(quotesIn(expression), expression).toHaveLength(1);
+    }
+    expect(quotesIn("amountDueCents: (await readBookingAmountOwed(booking)).dueCents,")).toEqual([]);
+  });
+
+  it("catches a shorthand or locally derived amount-due property on a send", () => {
+    for (const expression of [
+      "{ priceCents, amountDueCents, bookingReference }",
+      "{ amountDueCents: priceCents, bookingReference }",
+      "{ amountDueCents: settled ? 0 : booking.finalPriceCents }",
+      "amountDueCents: (await readBookingAmountOwed(booking)).owedCents,",
+    ]) {
+      expect(duePropertiesIn(expression), expression).toHaveLength(1);
+    }
+    for (const expression of [
+      "amountDueCents: (await readBookingAmountOwed(booking)).dueCents,",
+      "amountDueCents: settled ? 0 : (await readBookingAmountOwed(booking)).dueCents,",
+      "  amountDueCents: number;",
+      "data.amountDueCents",
+    ]) {
+      expect(duePropertiesIn(expression), expression).toEqual([]);
     }
   });
 

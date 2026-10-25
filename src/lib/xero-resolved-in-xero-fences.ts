@@ -6,6 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
+import { refundNoteIdSets } from "@/lib/xero-refund-note-status";
 import { sumCoveredRefundCreditNoteCents } from "@/lib/xero-sync";
 
 type OperationReader = Pick<Prisma.TransactionClient, "xeroSyncOperation">;
@@ -39,6 +40,15 @@ function toResolved(
  * linked the moment Xero returns it) or a PARTIAL one, resolved by hand. Its
  * keys and id are still reported, so the fences still see it.
  *
+ * #4250 (`INV-INT-025`): nor does a resolved row whose note a link records
+ * VOIDED or DELETED in Xero (`refundNoteIdSets(...).cancelled`). Xero no longer
+ * holds that note, so it covers nothing - as a cancelled link counts nothing
+ * in `sumCoveredRefundCreditNoteCents` - and its amount is never read, so an
+ * unreadable one refuses nothing. Its id is still reported, but never its key:
+ * the voided refund is raised again (owner decision, 21 Oct 2026), and the
+ * re-raise's key can equal it when the note's executed watermark differs from
+ * its queued one, so a key fence would refuse the re-raise every night.
+ *
  * A resolved row whose amount cannot be read is reported in
  * `unreadableOperationIds`; callers must refuse loudly on it rather than guess.
  */
@@ -52,6 +62,8 @@ export interface ResolvedRefundCreditNoteCoverage {
 export async function readResolvedRefundCreditNoteCoverage(
   paymentId: string,
   db: CoverageReader = prisma,
+  /** #3924 round 8: only these rows - one refund's own (`sumRefundCreditNoteCoverageOfRowsCents`). */
+  rowsWhere?: Prisma.XeroSyncOperationWhereInput,
 ): Promise<ResolvedRefundCreditNoteCoverage> {
   const rows = await db.xeroSyncOperation.findMany({
     where: {
@@ -64,47 +76,47 @@ export async function readResolvedRefundCreditNoteCoverage(
       // A legacy row with no recorded queue type is read too; its payload
       // says whether it was a refund or an account-credit note.
       OR: [{ queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE }, { queueType: null }],
+      ...(rowsWhere ? { AND: [rowsWhere] } : {}),
     },
     orderBy: { createdAt: "asc" },
     select: { id: true, correlationKey: true, requestPayload: true, xeroObjectId: true },
   });
   const noteIds = [...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId ? [row.xeroObjectId] : [])))];
-  const linkedNoteIds = new Set(
-    noteIds.length > 0
-      ? (
-          await db.xeroObjectLink.findMany({
-            where: {
-              localModel: "Payment",
-              localId: paymentId,
-              xeroObjectType: "CREDIT_NOTE",
-              role: "REFUND_CREDIT_NOTE",
-              active: true,
-              xeroObjectId: { in: noteIds },
-            },
-            select: { xeroObjectId: true },
-          })
-        ).map((link) => link.xeroObjectId)
-      : [],
-  );
+  // #4250 review (concurrency F1): which notes are live and which Xero voided,
+  // from ONE read of the payment's refund-note links.
+  const links = noteIds.length > 0 ? await refundNoteIdSets(paymentId, db) : null;
   const coverage: ResolvedRefundCreditNoteCoverage = {
     coveredCents: 0,
     correlationKeys: [],
     operationIds: [],
     unreadableOperationIds: [],
   };
+  // `operationIds[i]` is the row of `correlationKeys[i]`; rows with no key reported follow.
+  const unkeyedOperationIds: string[] = [];
   for (const row of rows ?? []) {
     const recorded = parsePaymentCreditNoteRetryInput(row);
+    if (row.xeroObjectId && links?.cancelled.has(row.xeroObjectId)) {
+      if (recorded && recorded.kind !== "refund") continue;
+      // #4250 review (money P2): no key - a re-raise's key can equal it.
+      unkeyedOperationIds.push(row.id);
+      continue;
+    }
     if (!recorded) {
       coverage.unreadableOperationIds.push(row.id);
       continue;
     }
     if (recorded.kind !== "refund") continue;
-    if (!row.xeroObjectId || !linkedNoteIds.has(row.xeroObjectId)) {
+    if (!row.xeroObjectId || !links?.active.has(row.xeroObjectId)) {
       coverage.coveredCents += recorded.amountCents;
     }
-    coverage.operationIds.push(row.id);
-    if (row.correlationKey) coverage.correlationKeys.push(row.correlationKey);
+    if (row.correlationKey) {
+      coverage.operationIds.push(row.id);
+      coverage.correlationKeys.push(row.correlationKey);
+    } else {
+      unkeyedOperationIds.push(row.id);
+    }
   }
+  coverage.operationIds.push(...unkeyedOperationIds);
   return coverage;
 }
 
@@ -124,6 +136,38 @@ export async function sumRefundCreditNoteCoverageCents(
   db: Prisma.TransactionClient = prisma,
 ): Promise<number> {
   return (await sumCoveredRefundCreditNoteCents(paymentId, db)) + resolved.coveredCents;
+}
+
+/**
+ * #3924 round 8 (money review, `INV-PAY-122`): THE SAME COVERAGE, ASKED OF ONE
+ * REFUND'S OWN NOTE ROWS - the refund-note creates `rowsWhere` selects on this
+ * payment (a "Paid another way" close's, `paidAnotherWayCloseNoteRowsWhere`).
+ * Counted exactly as `sumRefundCreditNoteCoverageCents` counts the payment: the
+ * active link of each note those rows raised, plus the recorded amount of a row
+ * resolved by hand whose note has no link and was not voided in Xero (#4250).
+ * So what those notes cover here is exactly their share of the payment's coverage, never more and never less. A
+ * resolved row whose amount cannot be read covers nothing, as there.
+ */
+export async function sumRefundCreditNoteCoverageOfRowsCents(
+  paymentId: string,
+  rowsWhere: Prisma.XeroSyncOperationWhereInput,
+  db: CoverageReader = prisma,
+): Promise<number> {
+  const rows = await db.xeroSyncOperation.findMany({
+    where: {
+      direction: "OUTBOUND",
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      localModel: "Payment",
+      localId: paymentId,
+      AND: [rowsWhere],
+    },
+    select: { xeroObjectId: true },
+  });
+  const noteIds = [...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId ? [row.xeroObjectId] : [])))];
+  const linkedCents = await sumCoveredRefundCreditNoteCents(paymentId, db, noteIds);
+  const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, db, rowsWhere);
+  return linkedCents + resolved.coveredCents;
 }
 
 /**

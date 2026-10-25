@@ -50,11 +50,18 @@ export class XeroAppliedCreditOperationBusyError extends Error {
    * do next has to be able to tell the two apart.
    */
   readonly fenceStatus: string | null;
+  /**
+   * #3954 round 8: the `lastErrorCode` the outbox records as it returns the
+   * row to PENDING, where the wait is one its scan should space out
+   * (`BILLED_OFFSET_AWAITING_OWN_NOTE_CODE`); null for every other wait.
+   */
+  readonly waitCode: string | null;
 
-  constructor(message: string, fenceStatus: string | null = null) {
+  constructor(message: string, fenceStatus: string | null = null, waitCode: string | null = null) {
     super(message);
     this.name = "XeroAppliedCreditOperationBusyError";
     this.fenceStatus = fenceStatus;
+    this.waitCode = waitCode;
   }
 }
 
