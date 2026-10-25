@@ -1,5 +1,5 @@
 import { readClubModuleSettingsRecord } from "@/config/modules";
-import { XERO_TOKEN_ROW_ORDER } from "@/lib/xero-token-row-order";
+import { readXeroConnection } from "@/lib/xero-connection";
 import { prisma } from "@/lib/prisma";
 import { CLUB_TIME_SETTINGS_ID } from "@/lib/club-time-zone";
 import { resolveEnvironmentRole } from "@/lib/environment-role";
@@ -129,7 +129,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     bookingDefaults,
     groupDiscount,
     membershipCancellationSettings,
-    operationalXeroToken,
+    operationalXeroConnection,
     xeroAccountMappingCount,
     xeroFallbackMappingRows,
     xeroHutFeeItemMappingCount,
@@ -163,10 +163,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
         },
       },
     }),
-    prisma.xeroToken.findFirst({
-      orderBy: XERO_TOKEN_ROW_ORDER,
-      select: { expiresAt: true },
-    }),
+    readXeroConnection(),
     prisma.xeroAccountMapping.count({
       where: {
         OR: [{ code: { not: null } }, { itemCode: { not: null } }],
@@ -496,7 +493,7 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
   // there must not sink the whole readiness snapshot, so it fails soft to
   // "not needing re-entry" (the connect/expiry checks still gate "connected").
   let operationalXeroNeedsReentry = false;
-  if (operationalXeroToken) {
+  if (operationalXeroConnection) {
     try {
       operationalXeroNeedsReentry =
         // Over the CURRENT copy of the tokens, which since #3454 may be the
@@ -545,13 +542,13 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
       membershipCancellationSettings?.xeroArchiveContactsOnCancellation,
     ),
     operationalXeroConnected: Boolean(
-      operationalXeroToken &&
-        operationalXeroToken.expiresAt > now &&
+      operationalXeroConnection &&
+        operationalXeroConnection.expiresAt > now &&
         !operationalXeroNeedsReentry,
     ),
     operationalXeroNeedsReentry,
     operationalXeroTokenExpiresAt:
-      operationalXeroToken?.expiresAt.toISOString() ?? null,
+      operationalXeroConnection?.expiresAt.toISOString() ?? null,
     stripeSecretKeySet,
     stripePublishableKeySet,
     stripeWebhookSecretSet,
