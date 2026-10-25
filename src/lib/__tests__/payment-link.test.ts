@@ -2130,6 +2130,23 @@ describe("issueSplitGuestPaymentLink (#1967)", () => {
     expect(sendSplitGuestPaymentLinkEmail).not.toHaveBeenCalled();
   });
 
+  it("#4357: a $0 child still owing a recorded change fee gets its link; a $0 child owing nothing does not", async () => {
+    const owingFee = splitChild({
+      finalPriceCents: 0,
+      payment: { id: "pay-child", changeFeeCents: 2500, stripeCustomerId: null, stripePaymentMethodId: null, stripeSetupIntentId: null },
+    });
+    mockedBookingFindUnique
+      .mockResolvedValueOnce(owingFee as never)
+      .mockResolvedValueOnce({ status: BookingStatus.PENDING } as never);
+    mockedPaymentLinkFindFirst.mockResolvedValue(null);
+    mockedPaymentLinkCreate.mockResolvedValue({ id: "pl-1" } as never);
+
+    expect(await issueSplitGuestPaymentLink("child-1", CLUB_FORMAT_TEST)).toEqual({ outcome: "sent" });
+
+    mockedBookingFindUnique.mockResolvedValueOnce(splitChild({ finalPriceCents: 0 }) as never);
+    expect(await issueSplitGuestPaymentLink("child-1", CLUB_FORMAT_TEST)).toEqual({ outcome: "not_payable" });
+  });
+
   it("mints the link when the parent's card came from a one-off checkout (no SetupIntent): the cron will not charge it, so the link is the only settlement path (#3269)", async () => {
     // Pre-#3269 this read as "has a saved card" and refused the link, while the
     // cron's charge on the same card was refused by Stripe — nothing settled.
