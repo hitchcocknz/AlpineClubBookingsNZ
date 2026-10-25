@@ -180,7 +180,7 @@ describe("useWizardCursor write ordering (#4014)", () => {
     // Sent at once, as a request that outlives the page; the in-flight write
     // keeps its ordinary lifetime.
     expect(server.sent).toEqual(["credentials", "connect"]);
-    expect(server.keepalive).toEqual([false, true]);
+    expect(server.keepalive).toEqual([true, true]);
 
     // Nothing is left waiting, so the earlier write settling sends nothing more.
     // (The stored row is not asserted: a real browser aborts the in-flight
@@ -199,7 +199,7 @@ describe("useWizardCursor write ordering (#4014)", () => {
     await server.drain();
 
     expect(server.sent).toEqual(["connect"]);
-    expect(server.keepalive).toEqual([false]);
+    expect(server.keepalive).toEqual([true]);
   });
 
   it("sends a write at once when nothing is in flight", async () => {

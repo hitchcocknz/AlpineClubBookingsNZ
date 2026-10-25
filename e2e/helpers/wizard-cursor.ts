@@ -1,6 +1,6 @@
 import type { Page, Response } from "@playwright/test";
 
-const WIZARD_PROGRESS_PATH = "/api/admin/integrations/wizard-progress";
+export const WIZARD_PROGRESS_PATH = "/api/admin/integrations/wizard-progress";
 
 /**
  * Resolves with the response to the integration wizard's save of `stepId` as
@@ -10,7 +10,7 @@ const WIZARD_PROGRESS_PATH = "/api/admin/integrations/wizard-progress";
  *
  * A spec that leaves the page from a wizard step (the Xero Connect step's OAuth
  * round-trip) comes back to whatever step the server has stored, and the shell
- * saves that cursor fire-and-forget (#4014). Waiting here is the precondition a
+ * saves that cursor through a one-at-a-time queue (#4014). Waiting here is the precondition a
  * real operator meets by taking more than a few milliseconds to press Connect;
  * without it the post-OAuth page can read the cursor before the save of the
  * step the spec left from has landed. The caller asserts the response is OK, so

@@ -3014,13 +3014,16 @@ there is no stepper to click while the GET is in flight. It is the React turn
 after it resolves: the commit that first paints an interactive stepper, and the
 passive effect that places the cursor, are two separate steps. Its length is
 therefore main-thread scheduling rather than network latency, which is why it
-fired under contended CI load and never locally. Cursor writes go out one at a
-time, and only the newest write that waited is sent next (#4014). Two
+fired under contended CI load and never locally.
+
+**Cursor write order (#4014).** Cursor writes go out one at a time, all as
+keepalive requests, and only the newest write that waited is sent next. Two
 independent writes could reach the server in either order. The row keeps the
 last one committed, so an older step could overwrite a newer one, and the
 wizard then came back from OAuth on Credentials instead of Connect. A write
 still waiting when the page is left, as it is for OAuth, goes out at once as a
-keepalive request, so the newest position is not lost.
+keepalive request, so the newest position is not lost; the next page may still
+read the cursor before that write commits.
 
 **Mock-Xero E2E harness.** A test-only seam (`xero-mock-endpoint.ts`, gated on
 `XERO_MOCK_API_ORIGIN`) routes the consent/token/connections/organisation calls

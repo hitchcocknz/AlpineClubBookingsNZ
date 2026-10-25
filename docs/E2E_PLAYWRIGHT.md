@@ -475,7 +475,7 @@ two mechanisms below**, and in four of the five a *single* transient failure was
 turned into three by the retry policy. Neither mechanism is a "timing" problem,
 so neither is fixed by a longer timeout, an extra retry, or a `waitForTimeout`.
 The third invariant — no fixed dates — is the standing rule that stops a further
-class from joining them.
+class from joining them; invariants 4–6 were learned from later flakes.
 
 ### 1. Retries re-run against the database the failed attempt left behind
 
@@ -880,9 +880,12 @@ land in the middle of the round-trip it set off, or after it.
 - **The wizard's resume cursor.** The shell saved "credentials" and then
   "connect" as two independent writes. The browser held both behind a socket
   pool that the admin sidebar's prefetches had filled, and the server committed
-  the older one second. So the page came back on Credentials. `useWizardCursor`
-  now sends cursor writes one at a time, newest next, and sends a still-waiting
-  write as the page is left.
+  the older one second. So the page came back on Credentials; the timestamps
+  point to a socket pool the sidebar's prefetches had filled, an inference
+  rather than a reproduction. `useWizardCursor` now sends cursor writes one at a
+  time, newest next, all as keepalive requests, and sends a still-waiting write
+  as the page is left. Even so, the new page can read the cursor before that
+  last write commits, which is why the spec still waits.
 
 The trace's request timings hid both. A request's wait for a free socket is
 not part of its HAR duration. The server's own timestamps gave the real order:
@@ -892,7 +895,8 @@ Two rules follow:
 
 - **Assert on what your action changed, not on standing state.** Wait for the
   message only this save writes (`Credentials saved`) before moving on.
-- **Before leaving the page, wait for the writes the next page reads.** Both
+- **Before leaving the page, wait for the writes the next page reads** —
+  any request whose result the next page loads, not only the cursor. Both
   wizard specs await `wizardCursorSave` (`e2e/helpers/wizard-cursor.ts`)
   before pressing Connect, because the post-OAuth page resumes on the stored
   step.

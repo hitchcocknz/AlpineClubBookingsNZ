@@ -12,6 +12,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
  */
 
 const ENDPOINT = "/api/admin/integrations/wizard-progress";
+// A write that never settles would hold back every later one (#4014 review).
+const CURSOR_WRITE_TIMEOUT_MS = 10_000;
 
 interface WizardProgressResponse {
   progress?: {
@@ -63,12 +65,16 @@ export function useWizardCursor(wizardId: string): WizardCursor {
   const writeInFlight = useRef(false);
   const queuedWrite = useRef<CursorWrite | null>(null);
 
+  // Every write is keepalive (#4014 review): a write in flight when the page is
+  // left for the OAuth round-trip must still reach the server, not be
+  // cancelled with the old document. The body is tiny, far under the limit.
   const postWrite = useCallback(
-    (write: CursorWrite, keepalive: boolean) =>
+    (write: CursorWrite, signal?: AbortSignal) =>
       fetch(ENDPOINT, {
         method: "POST",
         credentials: "same-origin",
-        keepalive,
+        keepalive: true,
+        signal,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ wizardId, ...write }),
       }),
@@ -79,7 +85,7 @@ export function useWizardCursor(wizardId: string): WizardCursor {
     (first: CursorWrite) => {
       const send = (write: CursorWrite) => {
         writeInFlight.current = true;
-        void postWrite(write, false)
+        void postWrite(write, AbortSignal.timeout(CURSOR_WRITE_TIMEOUT_MS))
           .catch(() => {
             // Best-effort persistence; the in-memory cursor still drives the flow.
           })
@@ -102,13 +108,16 @@ export function useWizardCursor(wizardId: string): WizardCursor {
   // whole page to the OAuth round-trip): the write in flight will never settle
   // in this document to release it, so send the waiting one now, as a
   // keepalive request that outlives the page. Without this the newest position
-  // would be lost and the wizard would resume one step behind.
+  // would be lost and the wizard would resume one step behind. Limit: that send
+  // and the one in flight are then both on the wire, so on this path alone the
+  // server could commit them out of order; the in-flight one usually settles
+  // before the redirect completes. A bfcache restore does not re-send it.
   useEffect(() => {
     const flushOnLeave = () => {
       const waiting = queuedWrite.current;
       if (!waiting) return;
       queuedWrite.current = null;
-      void postWrite(waiting, true).catch(() => {
+      void postWrite(waiting).catch(() => {
         // Best-effort, as every cursor write is.
       });
     };
