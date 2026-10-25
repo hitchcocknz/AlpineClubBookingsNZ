@@ -185,7 +185,9 @@ export const DOOR_INTENT_CLOCK_SKEW_MS = 60 * 1000;
  * minting now, not this ask's.
  *
  * #4079: an intent under `ORDINARY_ASK_RECOVERY_REASON` is never a match. Only
- * the pre-#4036 runner sent it for a door's key, and no row of its remains; a
+ * the pre-#4036 runner sent it for a door's key, and a deployment that ran
+ * #4077 for a day has no such row left (one that upgrades straight past it ends
+ * a leftover row through the dead-recovery path); a
  * plan whose key names no door sends it now, and its earlier request was a
  * runner's, after the row - a lost-claim runner's mint or a currency
  * re-issue's, which this match cannot tell apart, so that refusal fails closed.

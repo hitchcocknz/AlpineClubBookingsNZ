@@ -3091,7 +3091,8 @@ flight (`isPaymentRecoveryOperationInFlight`, a FAILED row awaiting its retry
 included) could own the match; it never takes an intent under the runner's
 own reason (#4079), nor one Stripe created after the recovery row
 (`DOOR_INTENT_CLOCK_SKEW_MS`), since the row exists only once the door's create
-failed, and its scan reads nothing created after that bound; under its claim it re-checks
+failed, and its scan reads nothing created after that bound; under its claim it
+re-checks
 that no ledger row took the adopted intent, and it leaves the payment's customer
 as it was. Every ask write that names its edit, the door's and the runner's,
 refuses atomically a ledger row already naming another edit

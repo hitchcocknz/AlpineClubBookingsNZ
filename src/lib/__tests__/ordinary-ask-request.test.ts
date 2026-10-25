@@ -156,7 +156,7 @@ describe("isIntentForOrdinaryAskPlan (#4036)", () => {
     expect(isIntentForOrdinaryAskPlan({ ...minted, created: undefined }, plan, "nzd", ROW_AT)).toBe(false);
   });
 
-  it("MUTATION: #4079 - an intent under the runner's own reason is never adopted, before the row or after it", () => {
+  it("#4079 - an intent under the runner's own reason is never adopted, before the row or after it", () => {
     const runnerReason = { ...minted.metadata, reason: ORDINARY_ASK_RECOVERY_REASON };
     expect(isIntentForOrdinaryAskPlan({ ...minted, metadata: runnerReason }, plan, "nzd", ROW_AT)).toBe(false);
     expect(isIntentForOrdinaryAskPlan({ ...minted, created: atRow + 3_600, metadata: runnerReason }, plan, "nzd", ROW_AT)).toBe(false);

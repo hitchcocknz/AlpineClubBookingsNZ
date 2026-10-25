@@ -44,6 +44,7 @@ import {
   couldRecoveryRowOwnIntent,
   isIntentForOrdinaryAskPlan,
   latestAdoptableIntentCreatedAt,
+  ORDINARY_ASK_RECOVERY_REASON,
   type OrdinaryAskMintPlan,
 } from "@/lib/ordinary-ask-request";
 import {
@@ -145,6 +146,9 @@ async function findIntentMintedForOrdinaryAsk({
   customerId: string | undefined;
   recovery: { id: string; createdAt: Date };
 }): Promise<Stripe.PaymentIntent | null> {
+  // #4079: a plan whose key names no door sends the runner's reason, which
+  // `isIntentForOrdinaryAskPlan` never matches, so there is nothing to scan for.
+  if (plan.metadata.reason === ORDINARY_ASK_RECOVERY_REASON) return null;
   const currency = stripeChargeCurrency(format);
   const scan = await listRecentPaymentIntentsMatching({
     matches: (intent) => isIntentForOrdinaryAskPlan(intent, plan, currency, recovery.createdAt),

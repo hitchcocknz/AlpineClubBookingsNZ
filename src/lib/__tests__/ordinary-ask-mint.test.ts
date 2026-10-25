@@ -111,6 +111,24 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
     expect(mocks.listRecentPaymentIntentsMatching).not.toHaveBeenCalled();
   });
 
+  it("#4079: a refused replay whose key names no door is thrown without a lookup - no intent could match it", async () => {
+    const noDoor = planOrdinaryAskMint({
+      bookingId: BOOKING,
+      bookingModificationId: "edit_no_door",
+      stripeKey: "pi_written_earlier",
+      frozenAmountCents: 6_000,
+      amountCents: 6_000,
+    });
+    const err = refusal();
+    mocks.createPaymentIntent.mockRejectedValue(err);
+    stripeHolds(intent("pi_runner", { metadata: { bookingId: BOOKING, type: "modification_additional", reason: noDoor.metadata.reason } }));
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan: noDoor, customerId: "cus_door", recovery: RECOVERY }),
+    ).rejects.toBe(err);
+    expect(mocks.listRecentPaymentIntentsMatching).not.toHaveBeenCalled();
+  });
+
   it("any other failure is thrown as it came, without a lookup", async () => {
     const err = stripeSdkError({ type: "api_error" });
     mocks.createPaymentIntent.mockRejectedValue(err);

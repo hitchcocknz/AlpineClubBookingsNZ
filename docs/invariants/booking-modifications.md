@@ -87,14 +87,15 @@ second ask for the same money. Not recorded means not raised.
   own reasons.
 - **A refused replay adopts an unrecorded, unpaid intent that matches this
   ask** (`mintOrdinaryAskIntent`): this booking, an additional ask by this
-  door's reason, never the runner's own (#4079), this amount and currency, on
+  door's reason, never one under the runner's (so a row whose key names no door
+  never adopts) (#4079), this amount and currency, on
   no ledger row, created from five minutes before the recovery row to 60
   seconds after it, which also bounds the scan. It fails closed (retry, then
   alert, `INV-MOD-003`) when none or several match, the scan stopped at its
   bound, or another in-flight recovery of the booking
   (`isPaymentRecoveryOperationInFlight`) could own the match. So a later door's
   intent is never taken; the cost is that a drifted customer can exclude the
-  runner's own earlier intent, which then fails closed. Adoption leaves the
+  runner's earlier door-reason intent, which then fails closed. Adoption leaves the
   payment's customer as it was. The door's own mint looks nothing up.
 - **An edit's ask row is never written over another edit's**: the ask write
   refuses, atomically, a row naming another `bookingModificationId`, and the
