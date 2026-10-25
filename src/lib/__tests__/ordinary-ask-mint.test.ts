@@ -121,7 +121,7 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
     expect(mocks.listRecentPaymentIntentsMatching).not.toHaveBeenCalled();
   });
 
-  it("a refused replay adopts the one unrecorded intent the key minted, looked for from just before the recovery was written", async () => {
+  it("a refused replay adopts the one unrecorded intent the key minted, looked for from just before the recovery was written to just after", async () => {
     mocks.createPaymentIntent.mockRejectedValue(refusal());
     stripeHolds(intent("pi_other_booking", { metadata: { ...intent("x").metadata, bookingId: "bk_other" } }), intent("pi_door"));
 
@@ -137,6 +137,8 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
       expect.objectContaining({
         customerId: "cus_moved",
         createdSince: new Date(RECOVERY.createdAt.getTime() - MINTED_INTENT_LOOKBACK_MS),
+        // #4079: the scan reads nothing created after the row could have been written.
+        createdUntil: new Date(RECOVERY.createdAt.getTime() + DOOR_INTENT_CLOCK_SKEW_MS),
       }),
     );
     expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith({
@@ -161,6 +163,17 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
     mocks.createPaymentIntent.mockRejectedValue(err);
     const late = RECOVERY.createdAt.getTime() / 1000 + DOOR_INTENT_CLOCK_SKEW_MS / 1000 + 1;
     stripeHolds(intent("pi_later_door", { created: late }));
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
+    ).rejects.toBe(err);
+    expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
+  });
+
+  it("#4079: does not adopt an intent under the runner's own reason - only the pre-#4036 runner sent it for a door's key", async () => {
+    const err = refusal();
+    mocks.createPaymentIntent.mockRejectedValue(err);
+    stripeHolds(intent("pi_old_runner", { metadata: { ...intent("x").metadata, reason: "modification_additional_recovery" } }));
 
     await expect(
       mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),

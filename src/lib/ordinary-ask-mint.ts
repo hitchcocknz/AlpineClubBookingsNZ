@@ -16,9 +16,9 @@
  * exhaustion alerts an officer. It never guesses which of two intents is owed.
  *
  * #4036 review: matching by what an ask asks for can find an intent some other
- * request minted - a lost-claim runner's, a currency re-issue's, an old
- * runner's under the old reason - so adoption also fails closed when it cannot
- * be sure the match is this ask's alone:
+ * request minted - another edit's door under the same reason, say - so
+ * adoption also fails closed when it cannot be sure the match is this ask's
+ * alone:
  *
  * - the scan stopped at its bound with intents unread (`complete` false), so a
  *   second match may be among them;
@@ -27,8 +27,10 @@
  *   included) could own the match (`couldRecoveryRowOwnIntent`) - two edits
  *   must never record one intent.
  *
- * And an intent under a door's reason created after the recovery row (beyond
- * `DOOR_INTENT_CLOCK_SKEW_MS`) is never a match: it is a later door's mint.
+ * And an intent created after the recovery row (beyond
+ * `DOOR_INTENT_CLOCK_SKEW_MS`) is never a match: it is a later door's mint, a
+ * lost-claim runner's or a currency re-issue's. #4079: nor is one under the
+ * runner's own reason, and the scan reads nothing created after that bound.
  *
  * And the caller is told it adopted (`adopted`), so the runner confirms, under
  * its claim, that no ledger row took the intent meanwhile before writing its own.
@@ -41,6 +43,7 @@ import logger from "@/lib/logger";
 import {
   couldRecoveryRowOwnIntent,
   isIntentForOrdinaryAskPlan,
+  latestAdoptableIntentCreatedAt,
   type OrdinaryAskMintPlan,
 } from "@/lib/ordinary-ask-request";
 import {
@@ -146,6 +149,8 @@ async function findIntentMintedForOrdinaryAsk({
   const scan = await listRecentPaymentIntentsMatching({
     matches: (intent) => isIntentForOrdinaryAskPlan(intent, plan, currency, recovery.createdAt),
     createdSince: new Date(recovery.createdAt.getTime() - MINTED_INTENT_LOOKBACK_MS),
+    // #4079: nothing created after the row could match, so none of it is read.
+    createdUntil: latestAdoptableIntentCreatedAt(recovery.createdAt),
     customerId,
   });
   if (!scan.complete) {
