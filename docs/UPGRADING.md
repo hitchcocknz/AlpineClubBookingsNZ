@@ -119,6 +119,43 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The Xero connection moves to its own table; old connections may need one reconnect (#3806)
+
+**What changes.** Release R2 of #3806. The Xero refresh lease and the "is Xero
+connected" answer move to a new table, `XeroConnection`, which holds no secret.
+The Xero tokens are read only from the encrypted credential store, where #3454
+put them. The old `XeroToken` row is still kept current for the previous
+release, but its token columns are no longer written or read. One migration
+(`20261124010000_add_xero_connection`) creates the table, fills it from
+`XeroToken`, and adds a trigger that keeps it in step while the previous release
+can still run. It is an ordinary blue-green release: no window.
+
+**Before you deploy.** Deploy this only after a release that contains #3454 has
+fully deployed. Then check that the token store holds this connection's tokens.
+Run this read-only query against the live database:
+
+```sql
+SELECT (SELECT count(*) FROM "XeroToken") AS "connectedRows",
+       (SELECT count(*) FROM "IntegrationCredential"
+         WHERE "provider" = 'xero-oauth' AND "key" = 'token-set') AS "storedTokenSets";
+```
+
+If `connectedRows` is 1 or more and `storedTokenSets` is 0, the connection was
+made before #3454 and has not refreshed since, so this release cannot read it.
+Use any Xero feature once before you deploy (any call refreshes an expired
+token and stores it), or plan to reconnect Xero from **Admin → Xero** straight
+after the deploy. Until then Xero shows as "reconnect required" and Xero work
+pauses; nothing is lost.
+
+**After upgrading.** Nothing to do. After the first connect, disconnect or
+change of Xero client id or secret, the retired wrapped token key
+(`xero` / `token_key`) is deleted from the credential store, recorded in the
+audit log as that administrator's act.
+
+**Rolling back.** The previous release keeps working on this schema: it reads
+the same `XeroToken` row and the same credential-store tokens, and the trigger
+keeps `XeroConnection` current behind it.
+
 ### Check card cancellations left behind by earlier cash-payment reversals (#4320)
 
 **What changes.** When an officer reverses a booking recorded as paid in cash,

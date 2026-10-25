@@ -1,18 +1,29 @@
 /**
- * Real-PostgreSQL proof of the Xero token store's two fences (#3454).
+ * Real-PostgreSQL proof of the Xero token store (#3454), as #3806 R2 left it:
+ * the refresh lease and the connection on `XeroConnection`, the tokens only in
+ * the credential store, and the `XeroToken` row kept for the previous release.
  *
- * The unit suite (`xero-token-credential-store.test.ts`) proves the reconcile
- * and the audit contract against a stateful double. What a double cannot prove
- * is what PostgreSQL does with two writers at once, and that is what keeps a
- * rotating refresh token from being spent twice:
+ * The unit suite (`xero-token-credential-store.test.ts`) proves the audit
+ * contract and the rules against a stateful double. What a double cannot prove
+ * is what PostgreSQL does — with two writers at once, and with the trigger the
+ * R2 migration installs — and that is what keeps a rotating refresh token from
+ * being spent twice:
  *
  *   - two processes claiming the refresh lease AT THE SAME TIME — this code
- *     against itself, and this code against a deployed OLDER colour that
- *     claims the same `XeroToken` column with its own statement — let exactly
- *     one through, because the status-guarded `UPDATE` re-evaluates its
- *     predicate after the row lock;
- *   - a refresh whose store compare-and-set loses rolls the `XeroToken` mirror
- *     update back with it, in a real transaction.
+ *     against itself, and this code against the previous release (#3454), which
+ *     claims `XeroToken.refreshInProgressUntil` with its own statement — let
+ *     exactly one through;
+ *   - a claim takes BOTH leases or neither (#3806 D1: R2 claims both while the
+ *     #3454 code can run);
+ *   - after every R2 write the `XeroToken` row is present with its non-secret
+ *     columns current, and the #3454 code's own read takes the store copy, so
+ *     the two releases never disagree about the live refresh token;
+ *   - the #3454 code's connect, refresh and disconnect reach R2 through the
+ *     trigger;
+ *   - a refresh whose store compare-and-set loses rolls everything back.
+ *
+ * The previous release is `support/xero-3454-release.ts`: its statements, as
+ * raw SQL, because the R2 client cannot name the ciphertext columns.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -181,34 +192,61 @@ describe("Xero token race setup and teardown restore AUTH_SECRET (#4164, #4174)"
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let store: typeof import("@/lib/xero-token-store");
 let credentials: typeof import("@/lib/integration-credentials");
+let release3454: typeof import("./support/xero-3454-release");
 let StaleCredentialWriteError: (typeof import("@/lib/integration-credential-actor"))["StaleCredentialWriteError"];
 let previousAuthSecret: CapturedAuthSecret | undefined;
 
 const ADMIN = { kind: "admin", memberId: "race-3454-admin" } as const;
 const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
+const TENANT = "race-3806-tenant";
 
 (RUN ? describe : describe.skip)(
-  "Xero token store — real PostgreSQL (#3454)",
+  "Xero token store — real PostgreSQL (#3454, #3806 R2)",
   { timeout: RACE_TEST_TIMEOUT_MS },
   () => {
     async function clearTokens() {
       await prisma.xeroToken.deleteMany();
+      await prisma.xeroConnection.deleteMany();
       await prisma.integrationCredential.deleteMany({
         where: { provider: store.XERO_OAUTH_TOKEN_PROVIDER },
       });
       credentials.resetIntegrationCredentialCacheForTests();
     }
 
+    function tokens(tag: string, expiresInMs = 60_000) {
+      return {
+        accessToken: `race-3806-access-${tag}`,
+        refreshToken: `race-3806-refresh-${tag}`,
+        expiresAt: new Date(Date.now() + expiresInMs),
+        tenantId: TENANT,
+      };
+    }
+
     async function connect(tag: string) {
-      await store.saveXeroTokens(
-        {
-          accessToken: `race-3454-access-${tag}`,
-          refreshToken: `race-3454-refresh-${tag}`,
-          expiresAt: new Date(Date.now() + 60_000),
-          tenantId: "race-3454-tenant",
-        },
-        { actor: ADMIN },
-      );
+      await store.saveXeroTokens(tokens(tag), { actor: ADMIN });
+    }
+
+    async function refreshWith(tag: string) {
+      const claim = await store.claimXeroTokenRefreshLease();
+      if (!claim.claimed) throw new Error("expected the lease");
+      await store.saveXeroTokens(tokens(tag, 1_800_000), {
+        actor: REFRESH_JOB,
+        lease: claim.lease,
+      });
+    }
+
+    /** Both leases, as stored. */
+    async function leases() {
+      const [row] = await prisma.$queryRaw<{ lease: Date | null }[]>`
+        SELECT "refreshInProgressUntil" AS "lease" FROM "XeroToken"`;
+      const connection = await prisma.xeroConnection.findUnique({
+        where: { id: "default" },
+        select: { refreshInProgressUntil: true },
+      });
+      return {
+        previousRelease: row?.lease?.getTime() ?? null,
+        ours: connection?.refreshInProgressUntil?.getTime() ?? null,
+      };
     }
 
     beforeAll(async () => {
@@ -216,6 +254,7 @@ const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
       ({ prisma } = await import("@/lib/prisma"));
       store = await import("@/lib/xero-token-store");
       credentials = await import("@/lib/integration-credentials");
+      release3454 = await import("./support/xero-3454-release");
       ({ StaleCredentialWriteError } = await import("@/lib/integration-credential-actor"));
       await clearTokens();
     });
@@ -231,47 +270,218 @@ const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
           ? {
               tokens: clearTokens,
               audit: () => prisma.auditLog.deleteMany({
-                where: { entityId: `${store.XERO_OAUTH_TOKEN_PROVIDER}:${store.XERO_OAUTH_TOKEN_KEY}` },
+                where: {
+                  entityId: {
+                    in: [
+                      `${store.XERO_OAUTH_TOKEN_PROVIDER}:${store.XERO_OAUTH_TOKEN_KEY}`,
+                      "xero:token_key",
+                    ],
+                  },
+                },
               }),
             }
           : undefined,
       );
     });
 
-    it("lets exactly one of several simultaneous claims take the lease", async () => {
+    // -----------------------------------------------------------------------
+    // The dual lease (#3806 D1)
+    // -----------------------------------------------------------------------
+
+    it("lets exactly one of several simultaneous claims take the lease, and it holds BOTH halves", async () => {
       await connect("c1");
 
       const claims = await Promise.all(
         Array.from({ length: 6 }, () => store.claimXeroTokenRefreshLease()),
       );
 
-      expect(claims.filter((claim) => claim.claimed)).toHaveLength(1);
+      const winners = claims.filter((claim) => claim.claimed);
+      expect(winners).toHaveLength(1);
       // Every loser was handed the same live tokens to wait on.
       for (const claim of claims) {
-        expect(claim.tokens?.refreshToken).toBe("race-3454-refresh-c1");
+        expect(claim.tokens?.refreshToken).toBe("race-3806-refresh-c1");
+      }
+      const leaseUntil = winners[0]!.leaseUntil!.getTime();
+      expect(await leases()).toEqual({ previousRelease: leaseUntil, ours: leaseUntil });
+    });
+
+    it("lets exactly one through when the previous release claims at the same time, every time", async () => {
+      for (let round = 0; round < 8; round += 1) {
+        await clearTokens();
+        await connect(`c${round}`);
+        const now = new Date();
+        const lease = new Date(now.getTime() + 120_000);
+
+        const [oldWon, ours] = await Promise.all([
+          release3454.claim3454(prisma, now, lease),
+          store.claimXeroTokenRefreshLease({ now }),
+        ]);
+
+        expect((oldWon ? 1 : 0) + (ours.claimed ? 1 : 0), `round ${round}`).toBe(1);
+        if (oldWon) {
+          // Losing to the previous release leaves no half lease behind.
+          expect((await leases()).ours, `round ${round}`).toBeNull();
+        }
       }
     });
 
-    it("lets exactly one through when an OLDER colour claims the same lease at the same time", async () => {
+    it("loses, and takes nothing, while the previous release holds its lease", async () => {
       await connect("c1");
       const now = new Date();
-      const lease = new Date(now.getTime() + 120_000);
+      expect(await release3454.claim3454(prisma, now, new Date(now.getTime() + 120_000))).toBe(true);
 
-      // The previous release's claim, as the statement its Prisma client issues.
-      const oldColourClaim = prisma.$executeRaw`
-        UPDATE "XeroToken"
-           SET "refreshInProgressUntil" = ${lease}
-         WHERE "refreshInProgressUntil" IS NULL
-            OR "refreshInProgressUntil" <= ${now}`;
-      const [oldRows, ours] = await Promise.all([
-        oldColourClaim,
-        store.claimXeroTokenRefreshLease({ now }),
-      ]);
+      const claim = await store.claimXeroTokenRefreshLease({ now });
 
-      expect(Number(oldRows) + (ours.claimed ? 1 : 0)).toBe(1);
+      expect(claim.claimed).toBe(false);
+      // The waiter sees the previous release's lease and waits on it.
+      expect(claim.leaseUntil?.getTime()).toBe(now.getTime() + 120_000);
+      expect((await leases()).ours).toBeNull();
     });
 
-    it("rolls the mirror back when the store's compare-and-set loses, in a real transaction", async () => {
+    it("gives the previous release's half back when its own lease is held elsewhere (never half a lease)", async () => {
+      await connect("c1");
+      const now = new Date();
+      const elsewhere = new Date(now.getTime() + 120_000);
+      // A holder of the XeroConnection lease alone: the shape the release that
+      // retires XeroToken will have (R3).
+      await prisma.xeroConnection.update({
+        where: { id: "default" },
+        data: { refreshInProgressUntil: elsewhere },
+      });
+
+      const claim = await store.claimXeroTokenRefreshLease({ now });
+
+      expect(claim.claimed).toBe(false);
+      expect(await leases()).toEqual({ previousRelease: null, ours: elsewhere.getTime() });
+      // And the previous release can still take its lease: nothing was left held.
+      expect(await release3454.claim3454(prisma, now, elsewhere)).toBe(true);
+    });
+
+    it("releases both halves", async () => {
+      await connect("c1");
+      const claim = await store.claimXeroTokenRefreshLease();
+      if (!claim.claimed) throw new Error("expected the lease");
+
+      await store.releaseXeroTokenRefreshLease(claim.lease);
+
+      expect(await leases()).toEqual({ previousRelease: null, ours: null });
+    });
+
+    // -----------------------------------------------------------------------
+    // The XeroToken row stays present and the #3454 code reads the store copy
+    // -----------------------------------------------------------------------
+
+    it("a connect leaves the row the previous release needs, and that release reads the STORE copy", async () => {
+      await connect("c1");
+
+      const rows = await prisma.$queryRaw<
+        { accessToken: string; refreshToken: string; tenantId: string | null }[]
+      >`SELECT "accessToken", "refreshToken", "tenantId" FROM "XeroToken"`;
+      expect(rows).toEqual([{ accessToken: "", refreshToken: "", tenantId: TENANT }]);
+
+      const seen = await release3454.read3454(prisma);
+      expect(seen).toMatchObject({
+        source: "store",
+        refreshToken: "race-3806-refresh-c1",
+        tenantId: TENANT,
+      });
+      expect(await store.isXeroConnected()).toBe(true);
+    });
+
+    it("a refresh keeps the row current and the previous release still reads the store copy", async () => {
+      await connect("c1");
+      const before = await prisma.xeroToken.findFirstOrThrow({ select: { id: true } });
+
+      await refreshWith("r1");
+
+      const [row] = await prisma.$queryRaw<
+        { id: string; accessToken: string; expiresAt: Date; lease: Date | null }[]
+      >`SELECT "id", "accessToken", "expiresAt", "refreshInProgressUntil" AS "lease" FROM "XeroToken"`;
+      const stored = await store.loadXeroTokens();
+      expect(row).toMatchObject({ id: before.id, accessToken: "", lease: null });
+      expect(row!.expiresAt.getTime()).toBe(stored!.expiresAt.getTime());
+      expect(await release3454.read3454(prisma)).toMatchObject({
+        source: "store",
+        refreshToken: "race-3806-refresh-r1",
+      });
+      expect(await leases()).toEqual({ previousRelease: null, ours: null });
+    });
+
+    it("a reconnect over a row the previous release wrote replaces it, and that release follows", async () => {
+      await release3454.connect3454(tokens("old"), ADMIN);
+      expect((await release3454.read3454(prisma))?.source).toBe("store");
+
+      await connect("c2");
+
+      expect(await prisma.xeroToken.count()).toBe(1);
+      expect(await release3454.read3454(prisma)).toMatchObject({
+        source: "store",
+        refreshToken: "race-3806-refresh-c2",
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // The previous release's writes reach R2 through the trigger
+    // -----------------------------------------------------------------------
+
+    it("sees the previous release's first connect, refresh and disconnect", async () => {
+      await release3454.connect3454(tokens("old"), ADMIN);
+      expect(await store.isXeroConnected()).toBe(true);
+      expect((await store.loadXeroTokens())?.refreshToken).toBe("race-3806-refresh-old");
+
+      const now = new Date();
+      const lease = new Date(now.getTime() + 120_000);
+      expect(await release3454.claim3454(prisma, now, lease)).toBe(true);
+      const next = tokens("old-r1", 1_800_000);
+      await release3454.save3454(next, lease, REFRESH_JOB);
+      const connection = await prisma.xeroConnection.findUniqueOrThrow({
+        where: { id: "default" },
+      });
+      expect(connection.expiresAt.getTime()).toBe(next.expiresAt.getTime());
+      expect((await store.loadXeroTokens())?.refreshToken).toBe("race-3806-refresh-old-r1");
+
+      await release3454.disconnect3454(ADMIN);
+      expect(await store.isXeroConnected()).toBe(false);
+      expect(await store.loadXeroTokens()).toBeNull();
+    });
+
+    it("refreshes alternating between the releases never spend a rotated token", async () => {
+      // Xero's side: one live refresh token, rotated on every spend.
+      let live = "race-3806-refresh-c1";
+      let issued = 0;
+      const spend = (refreshToken: string) => {
+        if (refreshToken !== live) throw new Error(`invalid_grant: ${refreshToken} was rotated`);
+        issued += 1;
+        live = `race-3806-refresh-x${issued}`;
+        return { ...tokens(`x${issued}`, 1_800_000), refreshToken: live };
+      };
+      await connect("c1");
+
+      for (let round = 0; round < 3; round += 1) {
+        // This release.
+        const claim = await store.claimXeroTokenRefreshLease();
+        if (!claim.claimed) throw new Error("R2 lost the lease");
+        await store.saveXeroTokens(spend(claim.tokens.refreshToken), {
+          actor: REFRESH_JOB,
+          lease: claim.lease,
+        });
+        // The previous release, through its own read, claim and save.
+        const seen = await release3454.read3454(prisma);
+        const now = new Date();
+        const lease = new Date(now.getTime() + 120_000);
+        expect(await release3454.claim3454(prisma, now, lease)).toBe(true);
+        await release3454.save3454(spend(seen!.refreshToken), lease, REFRESH_JOB);
+      }
+
+      expect((await store.loadXeroTokens())?.refreshToken).toBe(live);
+      expect((await release3454.read3454(prisma))?.refreshToken).toBe(live);
+    });
+
+    // -----------------------------------------------------------------------
+    // The save's fences
+    // -----------------------------------------------------------------------
+
+    it("rolls everything back when the store's compare-and-set loses, in a real transaction", async () => {
       await connect("c1");
       const claim = await store.claimXeroTokenRefreshLease();
       if (!claim.claimed) throw new Error("expected the lease");
@@ -288,29 +498,22 @@ const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
             expect: { expect: "any" },
           }),
       );
-      const mirrorBefore = await prisma.xeroToken.findFirstOrThrow();
+      const rowBefore = await prisma.xeroToken.findFirstOrThrow();
+      const connectionBefore = await prisma.xeroConnection.findFirstOrThrow();
 
       await expect(
-        store.saveXeroTokens(
-          {
-            accessToken: "race-3454-access-refreshed",
-            refreshToken: "race-3454-refresh-refreshed",
-            expiresAt: new Date(Date.now() + 1_800_000),
-            tenantId: "race-3454-tenant",
-          },
-          {
-            actor: REFRESH_JOB,
-            lease: { claimed: claim.tokens, leaseUntil: claim.leaseUntil },
-          },
-        ),
+        store.saveXeroTokens(tokens("refreshed", 1_800_000), {
+          actor: REFRESH_JOB,
+          lease: claim.lease,
+        }),
       ).rejects.toBeInstanceOf(StaleCredentialWriteError);
 
-      const mirrorAfter = await prisma.xeroToken.findFirstOrThrow();
-      expect(mirrorAfter.accessToken).toBe(mirrorBefore.accessToken);
-      expect(mirrorAfter.refreshToken).toBe(mirrorBefore.refreshToken);
-      expect(mirrorAfter.refreshInProgressUntil?.getTime()).toBe(
-        claim.leaseUntil.getTime(),
-      );
+      expect(await prisma.xeroToken.findFirstOrThrow()).toEqual(rowBefore);
+      expect(await prisma.xeroConnection.findFirstOrThrow()).toEqual(connectionBefore);
+      expect(await leases()).toEqual({
+        previousRelease: claim.leaseUntil.getTime(),
+        ours: claim.leaseUntil.getTime(),
+      });
     });
 
     it("lets one of two simultaneous refresh saves under the same lease land, never both", async () => {
@@ -318,27 +521,48 @@ const REFRESH_JOB = { kind: "system", actor: "xero-token-refresh" } as const;
       const claim = await store.claimXeroTokenRefreshLease();
       if (!claim.claimed) throw new Error("expected the lease");
       const save = (tag: string) =>
-        store.saveXeroTokens(
-          {
-            accessToken: `race-3454-access-${tag}`,
-            refreshToken: `race-3454-refresh-${tag}`,
-            expiresAt: new Date(Date.now() + 1_800_000),
-            tenantId: "race-3454-tenant",
-          },
-          {
-            actor: REFRESH_JOB,
-            lease: { claimed: claim.tokens, leaseUntil: claim.leaseUntil },
-          },
-        );
+        store.saveXeroTokens(tokens(tag, 1_800_000), {
+          actor: REFRESH_JOB,
+          lease: claim.lease,
+        });
 
       const results = await Promise.allSettled([save("a"), save("b")]);
 
       expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
       const current = await store.loadXeroTokens();
       const winner = results[0].status === "fulfilled" ? "a" : "b";
-      expect(current?.refreshToken).toBe(`race-3454-refresh-${winner}`);
-      // Mirror and store agree: the reconcile reads the store copy.
-      expect(current?.storeVersion).not.toBeNull();
+      expect(current?.refreshToken).toBe(`race-3806-refresh-${winner}`);
+      expect((await release3454.read3454(prisma))?.refreshToken).toBe(`race-3806-refresh-${winner}`);
+    });
+
+    it("a disconnect removes every copy, and the retired token key with it", async () => {
+      await connect("c1");
+      await credentials.withCredentialTransaction(["xero"], (tx) =>
+        credentials.setIntegrationCredentialInTransaction({
+          tx,
+          provider: "xero",
+          key: "token_key",
+          value: "f".repeat(64),
+          actor: ADMIN,
+          expect: { expect: "any" },
+        }),
+      );
+
+      await store.deleteXeroTokens({ actor: ADMIN, cause: { kind: "oauth-disconnect" } });
+
+      expect(await prisma.xeroToken.count()).toBe(0);
+      expect(await prisma.xeroConnection.count()).toBe(0);
+      expect(
+        await prisma.integrationCredential.count({
+          where: {
+            OR: [
+              { provider: store.XERO_OAUTH_TOKEN_PROVIDER },
+              { provider: "xero", key: "token_key" },
+            ],
+          },
+        }),
+      ).toBe(0);
+      expect(await release3454.read3454(prisma)).toBeNull();
     });
   },
 );

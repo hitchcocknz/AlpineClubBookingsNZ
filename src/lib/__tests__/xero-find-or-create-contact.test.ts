@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const tx = {
@@ -33,11 +33,15 @@ const mocks = vi.hoisted(() => {
     // (phase 0/1) and re-reads via the tx client (phase 2). Alias the same
     // mock fns so every existing fixture serves both phases.
     member: tx.member,
-    xeroToken: {
-      findFirst: vi.fn(),
+    // #3806 R2: the token store reads the connection row and the
+    // credential-store token set; `mockXeroConnection` points both at a fixture.
+    xeroConnection: {
+      findUnique: vi.fn(),
     },
-    // #3454: the token store reads its credential-store copy too; none here,
-    // so these suites keep exercising the pre-upgrade XeroToken row.
+    // The previous release's lease, which a waiting refresh also honours.
+    xeroToken: {
+      findFirst: vi.fn(async () => null),
+    },
     integrationCredential: {
       findUnique: vi.fn(async () => null),
     },
@@ -191,19 +195,28 @@ vi.mock("@/lib/xero-config", async (importOriginal) => {
       scopes: [...actual.XERO_REQUIRED_REPORT_OAUTH_SCOPES],
       httpTimeout: 10_000,
     }),
-    getOperationalXeroEncryptionKey: vi
-      .fn()
-      .mockResolvedValue(
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      ),
   };
 });
 
 import {
-  encryptToken,
   findOrCreateXeroContact,
   resetXeroRateLimitStateForTests,
 } from "@/lib/xero";
+import {
+  connectedXeroFixture,
+  ensureStrongTestAuthSecret,
+  mockXeroConnection,
+} from "@/lib/__tests__/helpers/xero-connected-mock";
+
+// #3806 R2: a connected Xero is the connection row plus the credential-store
+// token set, encrypted under a strong test AUTH_SECRET set once for the suite.
+let restoreAuthSecret: () => void = () => {};
+beforeAll(() => {
+  restoreAuthSecret = ensureStrongTestAuthSecret();
+});
+afterAll(() => {
+  restoreAuthSecret();
+});
 import {
   declareEnvironmentRole,
   expectEnvironmentRolePremise,
@@ -246,7 +259,7 @@ describe("findOrCreateXeroContact", () => {
     mocks.tx.xeroSyncOperation.findMany.mockResolvedValue([]);
     mocks.tx.xeroSyncOperation.updateMany.mockResolvedValue({ count: 0 });
     mocks.tx.member.update.mockResolvedValue({ id: "mem_1", xeroContactId: "xero_new" });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue(null);
+    mockXeroConnection(mocks.prisma, null);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_1" });
     mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(undefined);
     mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
@@ -264,7 +277,7 @@ describe("findOrCreateXeroContact", () => {
 
     await expect(findOrCreateXeroContact("mem_1")).resolves.toBe("xero_existing");
 
-    expect(mocks.prisma.xeroToken.findFirst).not.toHaveBeenCalled();
+    expect(mocks.prisma.xeroConnection.findUnique).not.toHaveBeenCalled();
     expect(mocks.xeroClientInstance.accountingApi.getContacts).not.toHaveBeenCalled();
     expect(mocks.tx.member.update).not.toHaveBeenCalled();
     expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
@@ -286,13 +299,13 @@ describe("findOrCreateXeroContact", () => {
       email: "member@example.com",
       xeroContactId: "xero_stale",
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: await encryptToken("access"),
-      refreshToken: await encryptToken("refresh"),
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
       body: {
         contacts: [{ contactID: "xero_repaired" }],
@@ -339,13 +352,13 @@ describe("findOrCreateXeroContact", () => {
       xeroContactId: null,
       phoneNumber: null,
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: await encryptToken("access"),
-      refreshToken: await encryptToken("refresh"),
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.tx.member.update.mockResolvedValue({ id: "mem_walkin", xeroContactId: "xero_walkin" });
     mocks.xeroClientInstance.accountingApi.createContacts.mockResolvedValue({
       body: { contacts: [{ contactID: "xero_walkin" }] },
@@ -383,13 +396,13 @@ describe("findOrCreateXeroContact", () => {
       xeroContactId: null,
       phoneNumber: null,
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: await encryptToken("access"),
-      refreshToken: await encryptToken("refresh"),
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.tx.member.update.mockResolvedValue({
       id: "mem_walkin",
       xeroContactId: "xero_walkin",
@@ -433,13 +446,13 @@ describe("findOrCreateXeroContact", () => {
     };
 
     async function connectXero() {
-      mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-        id: "token_1",
-        accessToken: await encryptToken("access"),
-        refreshToken: await encryptToken("refresh"),
+      mockXeroConnection(
+        mocks.prisma,
+        connectedXeroFixture({
         expiresAt: new Date(Date.now() + 60 * 60 * 1000),
         tenantId: "tenant_1",
-      });
+        }),
+      );
     }
 
     it("repairs a walk-in placeholder owner's link instead of 409ing forever", async () => {
@@ -564,13 +577,13 @@ describe("findOrCreateXeroContact", () => {
       postalPostalCode: "4310",
       postalCountry: "NZ",
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: await encryptToken("access"),
-      refreshToken: await encryptToken("refresh"),
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.xeroClientInstance.accountingApi.getContacts
       .mockResolvedValueOnce({ body: { contacts: [] } })
       .mockResolvedValueOnce({
@@ -701,13 +714,13 @@ describe("findOrCreateXeroContact", () => {
       streetAddressLine1: "",
       postalAddressLine1: "",
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: await encryptToken("access"),
-      refreshToken: await encryptToken("refresh"),
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     // Xero answers the email search with the SCHOOL's own organisation contact.
     mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
       body: {
@@ -749,13 +762,13 @@ describe("findOrCreateXeroContact", () => {
       streetAddressLine1: "",
       postalAddressLine1: "",
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: await encryptToken("access"),
-      refreshToken: await encryptToken("refresh"),
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.xeroClientInstance.accountingApi.getContacts.mockResolvedValue({
       body: {
         contacts: [
@@ -807,7 +820,7 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
     mocks.recordProviderCreatedContactPendingLocalLink.mockResolvedValue(
       undefined,
     );
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue(null);
+    mockXeroConnection(mocks.prisma, null);
     mocks.prisma.environmentSafetySettings.findUnique.mockResolvedValue(null);
     mocks.prisma.xeroSandboxContactContainment.findUnique.mockResolvedValue(
       null,
@@ -822,13 +835,13 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
   });
 
   async function tokenRow() {
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: await encryptToken("access"),
-      refreshToken: await encryptToken("refresh"),
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
   }
 
   it("THE RESTORED DATABASE: an already-linked member's contact is contained before the id comes back", async () => {
@@ -901,7 +914,7 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
     await expectEnvironmentRolePremise("NON_PRODUCTION");
     // Deliberately NO token row: if containment authenticates for itself, it
     // cannot, and the call fails. Passing the client is the only way through.
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue(null);
+    mockXeroConnection(mocks.prisma, null);
     mocks.tx.member.findUnique.mockResolvedValue({
       id: "mem_1",
       email: "member@example.com",
@@ -926,7 +939,7 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
       mocks.xeroClientInstance.accountingApi.getContact,
     ).toHaveBeenCalledWith("tenant_1", "xero_existing");
     expect(
-      mocks.prisma.xeroToken.findFirst,
+      mocks.prisma.xeroConnection.findUnique,
       "the caller's client was supplied, so nothing here may re-authenticate",
     ).not.toHaveBeenCalled();
   });
@@ -980,7 +993,7 @@ describe("findOrCreateXeroContact contains the contact's address on a copy (INV-
       "xero_existing",
     );
 
-    expect(mocks.prisma.xeroToken.findFirst).not.toHaveBeenCalled();
+    expect(mocks.prisma.xeroConnection.findUnique).not.toHaveBeenCalled();
     expect(
       mocks.xeroClientInstance.accountingApi.getContact,
     ).not.toHaveBeenCalled();
