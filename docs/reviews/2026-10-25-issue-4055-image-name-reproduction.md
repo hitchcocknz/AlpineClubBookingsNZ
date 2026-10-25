@@ -8,7 +8,8 @@ holds the live status.
 anywhere, Compose and the engine name the same `:local` images. The literal
 `tacbookings` fallback in `docker-compose.yml` is never selected, because
 Compose supplies its resolved project name for interpolation. This confirms the
-13 October result on a newer Compose and on two older releases.
+13 October result on v5.6.1 and v2.24.7; v2.11.0 and v2.2.3 refuse to parse
+the file, so no image-name comparison is possible on those releases.
 
 Two *different* configurations do produce differing names (see
 [Adjacent cases](#adjacent-cases-outside-the-claim)). Neither is the claim, and
@@ -22,15 +23,15 @@ providers were used. No application code changed.
 
 - **Engine:** `get_service_image_ref` in
   `scripts/run-production-blue-green-deploy.sh`, extracted verbatim from the
-  tracked script and evaluated with `docker` stubbed. The function derives the
-  project name as `basename "$PROJECT_DIR"` lowercased. The engine `cd`s into
-  `PROJECT_DIR` before running Compose.
+  tracked script at the recorded base and evaluated with `docker` stubbed. The
+  function derives the project name as `basename "$PROJECT_DIR"` lowercased. The
+  engine `cd`s into `PROJECT_DIR` before running Compose.
 - **Compose:** `docker compose --profile migrate config` rendered from the
   tracked `docker-compose.yml`, copied into a synthetic directory. There was no
   `.env` and no exported `COMPOSE_PROJECT_NAME`, and `DB_PASSWORD` (the file's
   only `:?` variable) was set to a placeholder. The `image:` of `app`,
   `app_blue`, `app_green` and `migrate` was read back from the render.
-- **Compose binaries:** the official standalone releases v5.6.1 (current),
+- **Compose binaries:** the official standalone releases v5.6.1,
   v2.24.7, v2.11.0 and v2.2.3, downloaded from `github.com/docker/compose`. The
   `config` command needs no daemon.
 
@@ -69,12 +70,18 @@ exports `COMPOSE_PROJECT_NAME`.
 
 ## Re-running the check
 
-Save the harness below as `repro-4055.sh` outside the checkout, download the
-Compose binaries, then run
+Save the harness below as `repro-4055.sh` outside the checkout. Use trusted
+official Compose release binaries, verifying their published checksums before
+execution, then run
 `repro-4055.sh <checkout> /abs/path/docker-compose-v5.6.1 …`. It prints one line
 per directory, Compose version and service, and exits non-zero on any mismatch
-or render failure. The 25 October run exited 1: 40 matching lines, 24 mismatching (all from
-the adjacent cases), and 16 render refusals from the two older releases.
+or render failure. The 25 October run exited 1: 40 matching lines, 24 mismatching
+(all from the adjacent cases), and 16 render refusals from the two older releases.
+The harness pins both inputs to the recorded base and runs Compose with an empty
+environment apart from `PATH`, a synthetic `HOME`, and the placeholder password.
+This prevents caller secrets and Compose settings from affecting the render; it
+is not a sandbox for untrusted executables. Inspect the pinned function before
+running the harness; `eval` executes that repository code.
 
 ```bash
 #!/usr/bin/env bash
@@ -82,9 +89,9 @@ the adjacent cases), and 16 render refusals from the two older releases.
 # Usage: repro-4055.sh <repo-checkout> <compose-binary>...
 set -euo pipefail
 REPO="$1"; shift
-SCRIPT="$REPO/scripts/run-production-blue-green-deploy.sh"
+REV=9483581902dbb086ffc5b4d67f45ae8110f1761c
 # Pull the engine's real function out of the tracked script, verbatim.
-FUNC="$(sed -n '/^get_service_image_ref() {/,/^}/p' "$SCRIPT")"
+FUNC="$(git --no-replace-objects -C "$REPO" show "$REV:scripts/run-production-blue-green-deploy.sh" | sed -n '/^get_service_image_ref() {/,/^}/p')"
 [ -n "$FUNC" ] || { echo "get_service_image_ref not found" >&2; exit 2; }
 CRON_SERVICE=app BLUE_SERVICE=app_blue GREEN_SERVICE=app_green MIGRATE_SERVICE=migrate
 docker() { return 0; }   # stub: only `docker image inspect` is called by the function
@@ -97,17 +104,17 @@ ROOT="$(mktemp -d "${TMPDIR:-/tmp}/repro-4055-XXXXXX")"
 DIRS=(alp-21 AlpineClubBookingsNZ tacbookings club_lodge 9lodge My.Lodge "lodge two" "alp-21|otherclub")
 fail=0
 for dc in "$@"; do
-  ver="$("$dc" version --short 2>/dev/null || "$dc" version)"
+  ver="$(env -i PATH="$PATH" HOME="$ROOT" "$dc" version --short 2>/dev/null || env -i PATH="$PATH" HOME="$ROOT" "$dc" version)"
   for spec in "${DIRS[@]}"; do
     d="${spec%%|*}"; envname=""; [ "$spec" = "$d" ] || envname="${spec#*|}"
     dir="$ROOT/$(basename "$dc")/${envname:+envfile-}$d"; mkdir -p "$dir"; d="$(basename "$dir")"
-    git -C "$REPO" show HEAD:docker-compose.yml > "$dir/docker-compose.yml"
+    git --no-replace-objects -C "$REPO" show "$REV:docker-compose.yml" > "$dir/docker-compose.yml"
     [ -z "$envname" ] || printf 'COMPOSE_PROJECT_NAME=%s\n' "$envname" > "$dir/.env"
     # Compose's view: render the real file with no exported project name.
     # The file's only `:?` variable is DB_PASSWORD; a placeholder lets it render.
-    rendered="$(cd "$dir" && env -u COMPOSE_PROJECT_NAME DB_PASSWORD=placeholder "$dc" --profile migrate config 2>&1)" || {
+    rendered="$(cd "$dir" && env -i PATH="$PATH" HOME="$ROOT" DB_PASSWORD=placeholder "$dc" --profile migrate config 2>&1)" || {
       echo "[$ver] dir='$d' compose config FAILED: $(printf '%s' "$rendered" | tail -1)"; fail=1; continue; }
-    for svc in app app_blue app_green migrate; do
+    for svc in "$CRON_SERVICE" "$BLUE_SERVICE" "$GREEN_SERVICE" "$MIGRATE_SERVICE"; do
       compose_img="$(printf '%s\n' "$rendered" | awk -v s="  $svc:" '
         $0==s {in_s=1; next}
         in_s && /^  [^ ]/ {in_s=0}
