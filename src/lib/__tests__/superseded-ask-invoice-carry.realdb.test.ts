@@ -601,13 +601,18 @@ function deferred() {
 
         const release = deferred();
         const { pid, holder } = await holdAnchor(MOD_A, release.promise);
-        // A's durable cancel runs: A FAILED, then the move queues on A's anchor.
-        const cancel = drainCancels();
-        await waitForQueue(pid, 1, "the move behind the anchor holder");
-        const reduction = await reductionRetiresTheChain();
-        release.resolve();
-        await holder;
-        await cancel;
+        let reduction: Awaited<ReturnType<typeof reductionRetiresTheChain>>;
+        let cancel: Promise<void> | undefined;
+        try {
+          // A's durable cancel runs: A FAILED, then the move queues on A's anchor.
+          cancel = drainCancels();
+          await waitForQueue(pid, 1, "the move behind the anchor holder");
+          reduction = await reductionRetiresTheChain();
+        } finally {
+          release.resolve();
+          await holder;
+          await cancel;
+        }
 
         expect(reduction.retired.invoicedCents).toBe(A_CENTS + B_CENTS);
         expect(reduction.evidence.supplementaryInvoicedCents).toBe(A_CENTS + B_CENTS);
@@ -651,22 +656,24 @@ function deferred() {
 
         const release = deferred();
         const { pid, holder } = await holdAnchor(MOD_A, release.promise);
-        let repaired: Promise<unknown>;
-        let moved: Promise<unknown>;
-        if (first === "repair") {
-          repaired = repair();
-          await waitForQueue(pid, 1, "the repair behind the anchor holder");
-          moved = drainCancels();
-          await waitForQueue(pid, 2, "the move behind the repair");
-        } else {
-          moved = drainCancels();
-          await waitForQueue(pid, 1, "the move behind the anchor holder");
-          repaired = repair();
-          await waitForQueue(pid, 2, "the repair behind the move");
+        const started: Promise<unknown>[] = [];
+        try {
+          if (first === "repair") {
+            started.push(repair());
+            await waitForQueue(pid, 1, "the repair behind the anchor holder");
+            started.push(drainCancels());
+            await waitForQueue(pid, 2, "the move behind the repair");
+          } else {
+            started.push(drainCancels());
+            await waitForQueue(pid, 1, "the move behind the anchor holder");
+            started.push(repair());
+            await waitForQueue(pid, 2, "the repair behind the move");
+          }
+        } finally {
+          release.resolve();
+          await holder;
+          await Promise.all(started);
         }
-        release.resolve();
-        await holder;
-        await Promise.all([repaired, moved]);
         return { a, b };
       }
 
