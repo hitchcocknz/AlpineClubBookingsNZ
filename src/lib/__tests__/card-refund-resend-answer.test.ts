@@ -261,7 +261,7 @@ describe("a re-send charge.refunded records before its slice is marked (#4312 ro
     reread: Pick<ResendRow, "status" | "allocationPlan"> | null = null,
   ) {
     const counts = Array.isArray(written) ? [...written] : [written];
-    const updateMany = vi.fn(async (_args: unknown) => ({ count: counts.length > 1 ? counts.shift()! : counts[0]! }));
+    const updateMany = vi.fn(async (..._args: unknown[]) => ({ count: counts.length > 1 ? counts.shift()! : counts[0]! }));
     const findUnique = vi.fn(async () => reread);
     return {
       updateMany,
