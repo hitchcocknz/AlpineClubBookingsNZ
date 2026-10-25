@@ -3904,7 +3904,8 @@ late change capture KEPT on a cancelled, invoiced booking (the #3639 task
       supplementary invoice -> ADDITIONAL_CAPTURE_RECEIPT PENDING (task re-read
       DISMISSED under the lock); a replayed release finds it (already-released)
     every supplementary invoice of the change withdrawn ->
-      KEPT_LATE_CAPTURE_INVOICE PENDING
+      KEPT_LATE_CAPTURE_INVOICE PENDING, less what another writer records
+      (readCaptureRecorder); nothing where another records all of it
     no change readable -> nothing; the repair tool names it
   approval after a reopen, under the task row then the anchor: a receipt that
     stored no decision (PENDING, FAILED) -> CANCELLED, code

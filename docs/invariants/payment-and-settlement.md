@@ -1658,7 +1658,7 @@ change capture's receipt).
   - the change settled against the primary, has no supplementary invoice,
     or a live one: its receipt, capped at the invoice's AmountDue;
   - its every supplementary invoice withdrawn: the kept-capture invoice,
-    less the credit-release sweep's share;
+    less what another writer records (`readCaptureRecorder`);
   - no change readable: nothing, and the repair tool names it.
 - **One recorder.** `readCaptureRecorder` and `anchorCaptureHasReceipt` count
   a kept-capture invoice; a replayed release finds the receipt; the receipt
@@ -1667,9 +1667,11 @@ change capture's receipt).
   bills.
 - **Reopen.** Its worker re-reads the task under the anchor and, no longer
   kept, closes its row in that transaction; an approval takes the anchor
-  first and withdraws an undecided receipt.
+  first and withdraws an undecided receipt. A paid-another-way close plans
+  under the task row then the anchor.
 - **Repair.** `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`, listed by the dry
-  run, recorded automatically by `--apply`.
+  run with the cents `--apply` records, then recorded automatically. Without
+  the primary invoice's id it says it cannot tell yet.
 - Pinned by `xero-kept-late-capture-ledger.test.ts` (e3, e4),
   `late-capture-kept-xero.test.ts`, `additional-capture-xero-receipt.test.ts`,
   `kept-change-capture-record.realdb.test.ts` and `xero-booking-repair.test.ts`.

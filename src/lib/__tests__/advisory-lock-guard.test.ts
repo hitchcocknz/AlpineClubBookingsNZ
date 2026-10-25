@@ -1323,10 +1323,12 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // approval's settlement takes it the same way (`lockKeptCaptureAnchor`),
   // after the approval's claim and before its first outbox write; a
   // paid-another-way close takes it after lock(1), the Payment row and the
-  // task row, before a change capture's kept-capture invoice; and the
-  // receipt's worker reads the task again under it, before Xero and in its
-  // plan store, closing its row there when no longer kept. Task row -> anchor,
-  // never the reverse. No new raw site, no new key.
+  // task row, inside its plan, so a change capture's record is read and its
+  // kept-capture invoice queued under it; and the receipt's worker, where its
+  // unlocked read finds the capture no longer kept, decides again in a short
+  // transaction under it before any Xero call - in every case its plan store
+  // reads the task again under it and closes the row there if no longer kept.
+  // Task row -> anchor, never the reverse. No new raw site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,

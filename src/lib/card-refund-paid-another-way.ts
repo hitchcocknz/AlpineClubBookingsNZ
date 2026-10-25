@@ -141,12 +141,8 @@ import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-
  * it reads whether Xero has the charge's receipt: the receipt's worker writes
  * that receipt and queues a waiting close's note under the same row, so a close
  * either reads the receipt recorded and queues its note itself, or commits
- * first and is found by the worker. #4324 (review CONC-1): for a change
- * capture its change's supplementary-invoice anchor follows the task row
- * (`lockKeptCaptureAnchor`), so the plan is read under it and the kept-capture
- * invoice queued under it. The row's other holders take at most that anchor
- * after it, and the anchor's take nothing after it, so global, then the
- * payment row, the task row and the anchor is no cycle.
+ * first and is found by the worker. #4324 (CONC-1): a change capture's anchor
+ * follows it (`lockKeptCaptureAnchor`): global -> Payment -> task row -> anchor.
  */
 
 /** What `lastError` says on an operation closed here, for a person reading the row. Nothing parses it. */

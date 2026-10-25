@@ -1488,14 +1488,17 @@ finds the ones kept before: `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`. Its
 details say which document will record it (`recordedBy`): a payment on the
 booking's Xero invoice that bills the change, for no more than Xero shows still
 due (`ADDITIONAL_CAPTURE_RECEIPT`), or a kept-payment invoice where nothing in
-Xero bills the change (`KEPT_LATE_CAPTURE_INVOICE`). The owner decided these are
+Xero bills the change (`KEPT_LATE_CAPTURE_INVOICE`), and how much: the
+payment (`capturedCents`), the part another Xero document already records
+(`alreadyRecordedCents`), and what the apply records (`recordsCents`, which a
+receipt caps at what Xero shows due when it is sent). The owner decided these are
 recorded automatically (25 Oct 2026), accepting that one a treasurer already
 entered by hand in Xero would then be recorded twice. So:
 
 1. **List them first.** Run the dry run, `pnpm run xero:booking-repair
    --dry-run` (or with `--from`/`--to` for a window), and read every
    `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO` finding with its booking, payment
-   intent, amount and `recordedBy`. Ask the treasurer whether any of them
+   intent, amounts and `recordedBy`. Ask the treasurer whether any of them
    was already recorded by hand in Xero. Leaving such a booking out of an
    apply only postpones it: the finding stays auto-apply, the tool cannot mark
    it handled, and any later blanket `--apply`, run for any reason, records
@@ -1516,14 +1519,18 @@ by hand in Xero. The tool cannot acknowledge a finding, so these come back on
 every run after you have recorded them; that is expected, not a sign the hand
 entry failed. A payment another writer already records (the credit-release
 sweep, say) raises no finding. One on a booking whose payment row lacks its
-Xero invoice id while the invoice link exists is reported `manual_review`
-until that id is synced (`SYNC_PAYMENT_PRIMARY_INVOICE_FIELD`); a later pass
-then lists it as above. One whose change invoice already answers it is the late
+Xero invoice id while the invoice link exists is reported `manual_review`,
+saying the tool cannot tell yet whether Xero records it, until that id is
+synced (`SYNC_PAYMENT_PRIMARY_INVOICE_FIELD`) - unless its receipt, a
+kept-payment invoice or the credit-release sweep already records it, when it
+raises nothing; a later pass then lists it as above. One whose change invoice already answers it is the late
 payment release's, and raises no finding here; a receipt that failed is offered
 for retry, and one the worker refused is reported for an officer, as above.
-Where the kept-payment invoice records a change's payment, the tool raises no
-supplementary invoice for that change: the kept-payment invoice already bills
-it.
+Where the kept-payment invoice records a change's payment (one asked for, or
+one this pass raises), the tool raises no supplementary invoice for that
+change: the kept-payment invoice already bills it. Where no kept-payment
+invoice will be raised (another writer records the payment), the change's
+missing supplementary invoice is still reported.
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe
 gave up on and which was then closed as **Paid another way** before Xero had
