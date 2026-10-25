@@ -2879,10 +2879,7 @@ export interface ProcessQueuedXeroOutboxOperationsResult {
   succeeded: number;
   failed: number;
   skipped: number;
-  /** #4375: of `skipped`, rows refused before any call (outage cooldown,
-   * daily limit, environment check) and returned to PENDING. Present only
-   * when non-zero; the cron runner turns it into a health warning. */
-  cooldownDeferred?: number;
+  cooldownDeferred?: number; // #4375: of `skipped`, refused before any call; set only when non-zero
 }
 
 export async function kickQueuedXeroOutboxOperationsIfConnected(options?: {
