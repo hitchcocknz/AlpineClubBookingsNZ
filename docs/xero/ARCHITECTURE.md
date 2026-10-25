@@ -2151,7 +2151,11 @@ built as the next section describes.
 The nightly self-heal never reaches the branch: its list
 (`getRefundsMissingXeroCreditNotes`) reads card payments only (#4022). Pinned
 on real PostgreSQL by `xero-bt-per-refund-notes`, beside
-`xero-bt-recount-handbacks` and `xero-bt-card-refund-notes`.
+`xero-bt-recount-handbacks` and `xero-bt-card-refund-notes`. The routes around
+that filter - a payment whose source changes later, the other hand-back writers
+and the repair tool's queue action - were traced for #4239 and none reaches a
+card note
+([`../reviews/2026-10-25-xero-self-heal-bank-hand-back-routes.md`](../reviews/2026-10-25-xero-self-heal-bank-hand-back-routes.md)).
 
 ### A card refund on a bank transfer gets its own note (#4312)
 
