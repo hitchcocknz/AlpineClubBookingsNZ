@@ -2879,6 +2879,7 @@ export interface ProcessQueuedXeroOutboxOperationsResult {
   succeeded: number;
   failed: number;
   skipped: number;
+  cooldownDeferred?: number; // #4375: of `skipped`, refused before any call; set only when non-zero
 }
 
 export async function kickQueuedXeroOutboxOperationsIfConnected(options?: {
@@ -3300,6 +3301,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
             "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
           );
           result.skipped += 1;
+          result.cooldownDeferred = (result.cooldownDeferred ?? 0) + 1;
           continue;
         }
         // The row was in neither RUNNING nor FAILED (e.g. a concurrent worker

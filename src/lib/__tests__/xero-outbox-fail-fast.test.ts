@@ -289,6 +289,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
         succeeded: 0,
         failed: 0,
         skipped: 1,
+        cooldownDeferred: 1,
       });
       // The handler self-failed once; the outbox must NOT fail it again.
       expect(mocks.failXeroSyncOperation).toHaveBeenCalledTimes(1);
@@ -348,6 +349,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
         succeeded: 0,
         failed: 0,
         skipped: 1,
+        cooldownDeferred: 1,
       });
       expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
       // The subscription-charge exposure below the cooldown branch must NOT run
@@ -391,6 +393,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
       succeeded: 0,
       failed: 0,
       skipped: 1,
+      cooldownDeferred: 1,
     });
     const row = mocks.rows.get("op_refund_1");
     expect(row?.status).toBe("PENDING");
