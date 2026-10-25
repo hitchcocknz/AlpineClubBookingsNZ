@@ -117,6 +117,10 @@ method, scope and finish line for each.
 - [`../audits/FRAGILITY_AREAS_PROPOSAL.md`](../audits/FRAGILITY_AREAS_PROPOSAL.md)
   — the owner-confirmed business areas for the "bugs that came back" review, with
   raw repeat counts per area and how far to trust each signal.
+- [`../reviews/2026-10-25-issue-4055-image-name-reproduction.md`](../reviews/2026-10-25-issue-4055-image-name-reproduction.md)
+  — the #4055 reproduction attempt for the local-build image-name fallback: the
+  offline Compose-versus-engine comparison, its verdict, and the harness to
+  re-run it.
 
 ## Security
 
