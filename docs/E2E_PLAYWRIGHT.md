@@ -881,7 +881,8 @@ land in the middle of the round-trip it set off, or after it.
   "connect" as two independent writes. The browser held both behind a socket
   pool that the admin sidebar's prefetches had filled, and the server committed
   the older one second. So the page came back on Credentials. `useWizardCursor`
-  now sends cursor writes one at a time, newest next.
+  now sends cursor writes one at a time, newest next, and sends a still-waiting
+  write as the page is left.
 
 The trace's request timings hid both. A request's wait for a free socket is
 not part of its HAR duration. The server's own timestamps gave the real order:
