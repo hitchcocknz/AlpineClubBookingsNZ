@@ -394,8 +394,41 @@ The `two-factor` module is already enabled for the run by
 
 `.github/workflows/e2e.yml` runs the suite on PRs and pushes to `main`. It is a
 **blocking gate** — a red E2E job fails the workflow (promoted from advisory in
-#1315 after a stable green window on `main`). Check the job log and the uploaded
-`playwright-report` artifact when it goes red.
+#1315 after a stable green window on `main`). Check the failing shard's log and
+its `playwright-report-<run>-shard-<n>` artifact when it goes red.
+
+### How a run is laid out (#4397)
+
+A run used to take ~29 minutes: each of the two E2E jobs built the app image
+(~10 min), ran the demo seed (~5 min) and then the suite on one worker
+(~12 min). Now:
+
+| Job | What it does |
+| --- | --- |
+| `E2E app image` | builds the image once and uploads it (`docker save`, zstd) as a run artifact |
+| `E2E seeded database` | in parallel: migrates, runs every single-lodge seed and dumps the result with its club day (`scripts/e2e-stack.sh snapshot`) |
+| `E2E shard (i/3)` | loads the image, restores the dump (`E2E_DB_SNAPSHOT`), runs a third of the `chromium` spec files (`E2E_SHARD=i/3`) |
+| `E2E multi-lodge run (1/1)` | the same, plus the second-lodge seed, running the `multi-lodge` project |
+| `Playwright E2E`, `E2E multi-lodge` | the **required checks**: each waits for its runner jobs in the same run attempt and fails if any is missing, skipped, cancelled or failed (`scripts/ci/require-test-shards.mjs`, the gate `verify` uses for the unit shards) |
+
+Each shard has its own stack and database, so `workers: 1` still means nothing
+interleaves on a database. Every shard runs `setup`. `pre-setup` runs only in
+shard 1, after that shard's `chromium` slice. Playwright's own `--shard` is not
+used: it keeps the `setup` → `chromium` → `pre-setup` dependency chain whole,
+which put all 203 tests in shard 1. `scripts/ci/e2e-spec-shard.mjs` deals the
+sorted spec files round-robin instead, applied as the project's `testMatch`.
+**A spec must not depend on state another spec file leaves behind**: a shard
+never sees the other shards' files.
+
+**Pull requests that cannot move the suite skip it.** Every E2E job's first step
+is `scripts/ci/e2e-scope.mjs`. When every changed file is docs, a unit test or
+an agent note (an allowlist; anything else runs the suite), the heavy steps
+skip, the jobs pass, and so do the required checks. Pushes always run the suite.
+The skip is a step condition, never a job-level `if:`, so each required check
+still reports a real result (`CONTRIBUTING.md` → "Branch protection").
+
+Locally nothing changes: `pnpm run test:e2e` prepares, seeds and runs the whole
+suite on one stack. To reproduce one CI shard, set `E2E_SHARD=2/3` on the run.
 
 Note on scope: `main` is branch-protected and `Playwright E2E` is one of the
 required status checks, so a red E2E run hard-blocks a (non-admin) merge.

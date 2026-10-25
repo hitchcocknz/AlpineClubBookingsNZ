@@ -43,59 +43,46 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  playwright:
-    name: Playwright E2E
+  # #4397: one image build and one seeded database per run, shared by every
+  # runner job below, instead of each job building the image (10 min) and
+  # running the demo seed (5 min) for itself. Both run in parallel. Artifacts
+  # rather than GHCR, because a fork's pull request cannot push packages.
+  # Neither is a required check: a failure here skips the runner jobs, and the
+  # required gates below then fail closed on the skipped runners.
+  e2e-image:
+    name: E2E app image
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
-      STRIPE_TEST_PUBLISHABLE_KEY: ${{ secrets.STRIPE_TEST_PUBLISHABLE_KEY }}
-      APP_IMAGE: tacbookings-e2e-app:ci
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-
-      # The pnpm version comes from `packageManager` in package.json (#3673).
-      - name: Set up pnpm
-        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: 24
-          cache: pnpm
+          # Two commits: a pull request's merge commit and its base parent,
+          # which `e2e-scope.mjs` diffs to decide whether the suite can move.
+          fetch-depth: 2
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Deliberately BEFORE the image build and the stack prepare. The browser
-      # is a prerequisite of the run step, and finding it broken after ten
-      # minutes of building the app image wastes that whole build. Cached, so
-      # the common case is seconds. See the action for the measurement.
-      - name: Install Playwright browsers
-        uses: ./.github/actions/playwright-browsers
-
-      # One home for the stack's env file (INV-SSOT): this job, the
-      # multi-lodge job below and `e2e-rollover-proof.yml` all need the
-      # identical file, and it used to be a copied heredoc per job.
-      - name: Write staging env file
-        run: bash scripts/ci/write-e2e-staging-env.sh
+      # #4397: a STEP, never a job-level `if:` - the job still reports a real
+      # result. "not needed" only for a pull request whose every changed file
+      # is docs, unit tests or agent notes; a push always runs.
+      - name: Decide whether this change needs the browser suite
+        id: scope
+        run: node scripts/ci/e2e-scope.mjs
 
       - name: Set up Docker Buildx
+        if: steps.scope.outputs.needed == 'true'
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
 
-      # Build the app image once with the same cache scope the publish job
-      # uses, so E2E runs reuse main's layers instead of rebuilding Next.js.
-      # Six image builds across three workflows had no reclaim step, and a
-      # hosted runner's ~14 GB no longer fits this image comfortably (#3424).
-      # The script explains what it removes and why nothing it does may fail
-      # the build; it prints `df -h /` either side so the margin is readable
-      # in the log. Immediately before the build, so it also clears whatever
-      # earlier steps in this job left behind.
+      # A hosted runner's ~14 GB no longer fits this image comfortably
+      # (#3424); the script explains what it removes and why nothing it does
+      # may fail the build.
       - name: Reclaim runner disk before building
+        if: steps.scope.outputs.needed == 'true'
         run: bash scripts/ci/reclaim-runner-disk.sh
 
+      # The same cache scopes the publish job uses, so a run reuses main's
+      # layers instead of rebuilding Next.js from nothing.
       - name: Build app image
+        if: steps.scope.outputs.needed == 'true'
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
         with:
           context: .
@@ -116,120 +103,320 @@ jobs:
             type=gha,scope=alpineclubbookingsnz-e2e
           cache-to: type=gha,mode=max,scope=alpineclubbookingsnz-e2e
 
-      - name: Prepare staging stack (postgres, migrate, seed, app)
-        run: E2E_SKIP_APP_BUILD=1 bash scripts/e2e-stack.sh prepare
+      - name: Save the app image
+        if: steps.scope.outputs.needed == 'true'
+        run: |
+          mkdir -p .artifacts/e2e-image
+          docker save tacbookings-e2e-app:ci | zstd -T0 -3 -q -o .artifacts/e2e-image/app-image.tar.zst
+          ls -lh .artifacts/e2e-image
 
-      - name: Run Playwright suite
+      - name: Upload the app image
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-app-image-${{ github.run_id }}
+          path: .artifacts/e2e-image/app-image.tar.zst
+          retention-days: 1
+          compression-level: 0
+          overwrite: true
+          if-no-files-found: error
+
+  e2e-db:
+    name: E2E seeded database
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # The Stripe credentials seed stores these encrypted; with them unset
+      # (a fork) it is a no-op and the payment specs skip, as before.
+      STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+      STRIPE_TEST_PUBLISHABLE_KEY: ${{ secrets.STRIPE_TEST_PUBLISHABLE_KEY }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Two commits: a pull request's merge commit and its base parent,
+          # which `e2e-scope.mjs` diffs to decide whether the suite can move.
+          fetch-depth: 2
+
+      # #4397: a STEP, never a job-level `if:` - the job still reports a real
+      # result. "not needed" only for a pull request whose every changed file
+      # is docs, unit tests or agent notes; a push always runs.
+      - name: Decide whether this change needs the browser suite
+        id: scope
+        run: node scripts/ci/e2e-scope.mjs
+
+      # The pnpm version comes from `packageManager` in package.json (#3673).
+      - name: Set up pnpm
+        if: steps.scope.outputs.needed == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.scope.outputs.needed == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Write staging env file
+        if: steps.scope.outputs.needed == 'true'
+        run: bash scripts/ci/write-e2e-staging-env.sh
+
+      # Migrate, run every single-lodge seed, and dump the result with the club
+      # day it was seeded for. Each runner restores it in seconds.
+      - name: Seed and dump the database
+        if: steps.scope.outputs.needed == 'true'
+        run: bash scripts/e2e-stack.sh snapshot .artifacts/e2e-db/e2e-db.dump
+
+      - name: Upload the seeded database
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: e2e-seeded-db-${{ github.run_id }}
+          path: .artifacts/e2e-db/
+          retention-days: 1
+          overwrite: true
+          if-no-files-found: error
+
+      - name: Tear down stack
+        if: always() && steps.scope.outputs.needed == 'true'
+        run: bash scripts/e2e-stack.sh down
+
+  # The single-lodge suite, split across machines (#4397). Workers stay at one
+  # per shard: specs share seeded personas and assert on lodge capacity, and
+  # each shard has a database of its own.
+  e2e-shard:
+    name: E2E shard (${{ matrix.shard }}/3)
+    needs: [e2e-image, e2e-db]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+      STRIPE_TEST_PUBLISHABLE_KEY: ${{ secrets.STRIPE_TEST_PUBLISHABLE_KEY }}
+      APP_IMAGE: tacbookings-e2e-app:ci
+      # A third of the `chromium` spec files each, on its own stack and
+      # database (playwright.config.ts, scripts/ci/e2e-spec-shard.mjs).
+      E2E_SHARD: ${{ matrix.shard }}/3
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Two commits: a pull request's merge commit and its base parent,
+          # which `e2e-scope.mjs` diffs to decide whether the suite can move.
+          fetch-depth: 2
+
+      # #4397: a STEP, never a job-level `if:` - the job still reports a real
+      # result. "not needed" only for a pull request whose every changed file
+      # is docs, unit tests or agent notes; a push always runs.
+      - name: Decide whether this change needs the browser suite
+        id: scope
+        run: node scripts/ci/e2e-scope.mjs
+
+      # The pnpm version comes from `packageManager` in package.json (#3673).
+      - name: Set up pnpm
+        if: steps.scope.outputs.needed == 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
+      - name: Set up Node.js
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.scope.outputs.needed == 'true'
+        run: pnpm install --frozen-lockfile
+
+      # Deliberately BEFORE loading the image and preparing the stack: finding
+      # the browser broken afterwards wastes both. Cached, so usually seconds.
+      - name: Install Playwright browsers
+        if: steps.scope.outputs.needed == 'true'
+        uses: ./.github/actions/playwright-browsers
+
+      # One home for the stack's env file (INV-SSOT), shared by every E2E job
+      # here and `e2e-rollover-proof.yml`. Deterministic, so the seeded
+      # database restored below decrypts and signs in the same way it was made.
+      - name: Write staging env file
+        if: steps.scope.outputs.needed == 'true'
+        run: bash scripts/ci/write-e2e-staging-env.sh
+
+      - name: Reclaim runner disk before loading the image
+        if: steps.scope.outputs.needed == 'true'
+        run: bash scripts/ci/reclaim-runner-disk.sh
+
+      - name: Download the app image
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: e2e-app-image-${{ github.run_id }}
+          path: .artifacts/e2e-inputs
+
+      - name: Download the seeded database
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: e2e-seeded-db-${{ github.run_id }}
+          path: .artifacts/e2e-inputs
+
+      - name: Load the app image
+        if: steps.scope.outputs.needed == 'true'
+        run: zstd -dc .artifacts/e2e-inputs/app-image.tar.zst | docker load
+
+      - name: Prepare the stack from the seeded database
+        if: steps.scope.outputs.needed == 'true'
+        env:
+          E2E_SKIP_APP_BUILD: "1"
+          E2E_DB_SNAPSHOT: .artifacts/e2e-inputs/e2e-db.dump
+        run: bash scripts/e2e-stack.sh prepare
+
+      - name: Run Playwright
+        if: steps.scope.outputs.needed == 'true'
         run: bash scripts/e2e-stack.sh run
 
       - name: Upload Playwright report
-        if: always()
+        if: always() && steps.scope.outputs.needed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: playwright-report-${{ github.run_id }}
+          name: playwright-report-${{ github.run_id }}-shard-${{ matrix.shard }}
           path: playwright-report/
           if-no-files-found: ignore
 
       - name: Show app logs on failure
-        if: failure()
+        if: failure() && steps.scope.outputs.needed == 'true'
         run: |
           docker compose --env-file .env.staging -p tacbookings-staging \
             -f docker-compose.yml -f docker-compose.staging.yml logs app | tail -200
 
       - name: Tear down stack
-        if: always()
+        if: always() && steps.scope.outputs.needed == 'true'
         run: bash scripts/e2e-stack.sh down
 
-  # Blocking two-lodge coverage — issue #1568, promoted advisory→blocking in
-  # #1655 (precedent: #1315) after the observation window: the one observed
-  # flake class was root-caused and fixed test-side in #1650. Runs the small
-  # `multi-lodge` Playwright project against a stack seeded with a SECOND
-  # active lodge (E2E_MULTI_LODGE=1 → e2e/setup/seed-second-lodge.ts). It stays
-  # a separate job so the second-lodge seed never reaches the single-lodge
-  # stack the `playwright` job's specs assert on. Its name is one of branch
-  # protection's required status checks — a red run blocks (non-admin) merges.
-  multi-lodge:
-    name: E2E multi-lodge
+  # Required check (branch protection). It no longer runs the suite itself: it
+  # waits for all three shards in this run attempt and passes only if every
+  # one of them passed.
+  playwright:
+    name: Playwright E2E
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
-      STRIPE_TEST_PUBLISHABLE_KEY: ${{ secrets.STRIPE_TEST_PUBLISHABLE_KEY }}
-      APP_IMAGE: tacbookings-e2e-app:ci
-      # Provisions lodge B in prepare and adds the `multi-lodge` project to the
-      # Playwright config for the run step.
-      E2E_MULTI_LODGE: "1"
+    permissions:
+      contents: read
+      actions: read # poll this run attempt's own runner jobs
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
 
+      # A STEP in the required job, not a `needs:` edge: a skipped required
+      # job would satisfy branch protection. The script fails on a missing,
+      # duplicate, skipped, cancelled or failed runner and times out rather
+      # than going vacuously green (the #3431 gate, shared with `verify`).
+      - name: Require every runner job to pass
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/require-test-shards.mjs --label "E2E shard" --count 3 --max-wait-minutes 55
+
+  # Blocking two-lodge coverage - issue #1568, promoted advisory->blocking in
+  # #1655. Runs the small `multi-lodge` project against the seeded database
+  # plus a SECOND active lodge (E2E_MULTI_LODGE=1 -> seed-second-lodge.ts),
+  # on its own stack so lodge B never reaches the single-lodge shards.
+  multi-lodge-run:
+    name: E2E multi-lodge run (1/1)
+    needs: [e2e-image, e2e-db]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      STRIPE_TEST_SECRET_KEY: ${{ secrets.STRIPE_TEST_SECRET_KEY }}
+      STRIPE_TEST_PUBLISHABLE_KEY: ${{ secrets.STRIPE_TEST_PUBLISHABLE_KEY }}
+      APP_IMAGE: tacbookings-e2e-app:ci
+      # Provisions lodge B on top of the restored single-lodge database and
+      # adds the `multi-lodge` project to the Playwright config for the run.
+      E2E_MULTI_LODGE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Two commits: a pull request's merge commit and its base parent,
+          # which `e2e-scope.mjs` diffs to decide whether the suite can move.
+          fetch-depth: 2
+
+      # #4397: a STEP, never a job-level `if:` - the job still reports a real
+      # result. "not needed" only for a pull request whose every changed file
+      # is docs, unit tests or agent notes; a push always runs.
+      - name: Decide whether this change needs the browser suite
+        id: scope
+        run: node scripts/ci/e2e-scope.mjs
+
       # The pnpm version comes from `packageManager` in package.json (#3673).
       - name: Set up pnpm
+        if: steps.scope.outputs.needed == 'true'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Set up Node.js
+        if: steps.scope.outputs.needed == 'true'
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
+        if: steps.scope.outputs.needed == 'true'
         run: pnpm install --frozen-lockfile
 
-      # Deliberately BEFORE the image build and the stack prepare. The browser
-      # is a prerequisite of the run step, and finding it broken after ten
-      # minutes of building the app image wastes that whole build. Cached, so
-      # the common case is seconds. See the action for the measurement.
+      # Deliberately BEFORE loading the image and preparing the stack: finding
+      # the browser broken afterwards wastes both. Cached, so usually seconds.
       - name: Install Playwright browsers
+        if: steps.scope.outputs.needed == 'true'
         uses: ./.github/actions/playwright-browsers
 
-      # One home for the stack's env file (INV-SSOT): this job, the
-      # multi-lodge job below and `e2e-rollover-proof.yml` all need the
-      # identical file, and it used to be a copied heredoc per job.
+      # One home for the stack's env file (INV-SSOT), shared by every E2E job
+      # here and `e2e-rollover-proof.yml`. Deterministic, so the seeded
+      # database restored below decrypts and signs in the same way it was made.
       - name: Write staging env file
+        if: steps.scope.outputs.needed == 'true'
         run: bash scripts/ci/write-e2e-staging-env.sh
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
-
-      # Six image builds across three workflows had no reclaim step, and a
-      # hosted runner's ~14 GB no longer fits this image comfortably (#3424).
-      # The script explains what it removes and why nothing it does may fail
-      # the build; it prints `df -h /` either side so the margin is readable
-      # in the log. Immediately before the build, so it also clears whatever
-      # earlier steps in this job left behind.
-      - name: Reclaim runner disk before building
+      - name: Reclaim runner disk before loading the image
+        if: steps.scope.outputs.needed == 'true'
         run: bash scripts/ci/reclaim-runner-disk.sh
 
-      - name: Build app image
-        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+      - name: Download the app image
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          context: .
-          file: ./Dockerfile
-          load: true
-          push: false
-          tags: tacbookings-e2e-app:ci
-          # RELEASE_ID (#2352 D1) gives the staging stack a real per-release CSP
-          # nonce, so the static-CMS spec asserts the same nonce on two requests
-          # rather than passing on the per-process fallback. Stated here rather
-          # than inside the block below: every line of that block is passed to
-          # the builder verbatim, so a `#` comment there becomes a build arg.
-          build-args: |
-            NEXT_PUBLIC_SENTRY_DSN=
-            RELEASE_ID=${{ github.sha }}
-          cache-from: |
-            type=gha,scope=alpineclubbookingsnz-app
-            type=gha,scope=alpineclubbookingsnz-e2e
-          cache-to: type=gha,mode=max,scope=alpineclubbookingsnz-e2e
+          name: e2e-app-image-${{ github.run_id }}
+          path: .artifacts/e2e-inputs
 
-      - name: Prepare staging stack with a second lodge
-        run: E2E_SKIP_APP_BUILD=1 bash scripts/e2e-stack.sh prepare
+      - name: Download the seeded database
+        if: steps.scope.outputs.needed == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: e2e-seeded-db-${{ github.run_id }}
+          path: .artifacts/e2e-inputs
 
-      - name: Run multi-lodge Playwright project
+      - name: Load the app image
+        if: steps.scope.outputs.needed == 'true'
+        run: zstd -dc .artifacts/e2e-inputs/app-image.tar.zst | docker load
+
+      - name: Prepare the stack from the seeded database
+        if: steps.scope.outputs.needed == 'true'
+        env:
+          E2E_SKIP_APP_BUILD: "1"
+          E2E_DB_SNAPSHOT: .artifacts/e2e-inputs/e2e-db.dump
+        run: bash scripts/e2e-stack.sh prepare
+
+      - name: Run Playwright
+        if: steps.scope.outputs.needed == 'true'
         run: bash scripts/e2e-stack.sh run --project=multi-lodge
 
       - name: Upload Playwright report
-        if: always()
+        if: always() && steps.scope.outputs.needed == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: playwright-report-multi-lodge-${{ github.run_id }}
@@ -237,11 +424,32 @@ jobs:
           if-no-files-found: ignore
 
       - name: Show app logs on failure
-        if: failure()
+        if: failure() && steps.scope.outputs.needed == 'true'
         run: |
           docker compose --env-file .env.staging -p tacbookings-staging \
             -f docker-compose.yml -f docker-compose.staging.yml logs app | tail -200
 
       - name: Tear down stack
-        if: always()
+        if: always() && steps.scope.outputs.needed == 'true'
         run: bash scripts/e2e-stack.sh down
+
+  # Required check (branch protection) for the job above, gated the same way.
+  multi-lodge:
+    name: E2E multi-lodge
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read # poll this run attempt's own runner jobs
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+
+      # A STEP in the required job, not a `needs:` edge: a skipped required
+      # job would satisfy branch protection. The script fails on a missing,
+      # duplicate, skipped, cancelled or failed runner and times out rather
+      # than going vacuously green (the #3431 gate, shared with `verify`).
+      - name: Require every runner job to pass
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci/require-test-shards.mjs --label "E2E multi-lodge run" --count 1 --max-wait-minutes 55

@@ -983,8 +983,9 @@ describe("non-production targets declare themselves", () => {
     /*
       Named rather than counted, the way the neighbouring censuses name their
       inputs: a job that stops calling the writer should say WHICH job, and a new
-      one should be added here deliberately. Three callers today — `e2e.yml`'s
-      two jobs and the dispatch-only rollover proof.
+      one should be added here deliberately. Four callers today — `e2e.yml`'s
+      seeded-database job, its shard matrix and its multi-lodge runner (#4397),
+      and the dispatch-only rollover proof.
     */
     const callers = readdirSync(path.join(ROOT, ".github/workflows"))
       .filter((name) => /\.ya?ml$/.test(name))
@@ -1006,6 +1007,7 @@ describe("non-production targets declare themselves", () => {
       ".github/workflows/e2e-rollover-proof.yml #1",
       ".github/workflows/e2e.yml #1",
       ".github/workflows/e2e.yml #2",
+      ".github/workflows/e2e.yml #3",
     ]);
   });
 

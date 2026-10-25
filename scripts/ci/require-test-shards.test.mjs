@@ -8,6 +8,7 @@ import {
   EXPECTED_SHARD_COUNT,
   classifyTestShardJobs,
   getAttemptJobs,
+  parseShardGateArgs,
   requireTestShards,
 } from "./require-test-shards.mjs";
 
@@ -139,7 +140,44 @@ it("the CLI fails closed without a GitHub run identity", () => {
     env: { ...process.env, GITHUB_REPOSITORY: "", GITHUB_TOKEN: "" },
   });
   expect(result.status).toBe(1);
-  expect(result.stderr).toContain("Unit-test shard gate failed");
+  expect(result.stderr).toContain('Shard gate for "Test shard" failed');
+});
+
+// #4397: e2e.yml's required jobs reuse this gate for their own matrices.
+describe("the gate for another matrix (--label/--count)", () => {
+  const e2e = (index, status = "completed", conclusion = "success") => ({ name: `E2E shard (${index}/3)`, status, conclusion });
+
+  it("parses its arguments, defaulting to the unit-test matrix, and refuses anything else", () => {
+    expect(parseShardGateArgs([])).toEqual({ label: "Test shard", count: EXPECTED_SHARD_COUNT, maxWaitMs: 45 * 60_000 });
+    expect(parseShardGateArgs(["--label", "E2E shard", "--count", "3", "--max-wait-minutes", "55"])).toEqual({ label: "E2E shard", count: 3, maxWaitMs: 55 * 60_000 });
+    expect(() => parseShardGateArgs(["--count", "0"])).toThrow(/Invalid --count/);
+    expect(() => parseShardGateArgs(["--label", "x\"; rm"])).toThrow(/Invalid --label/);
+    expect(() => parseShardGateArgs(["--label"])).toThrow(/needs a value/);
+    expect(() => parseShardGateArgs(["--shards", "3"])).toThrow(/Unknown argument/);
+  });
+
+  it("counts only its own label's jobs, and fails closed on a skipped, cancelled, missing or duplicate one", () => {
+    const unitShard = { name: "Test shard (1/4)", status: "in_progress", conclusion: null };
+    expect(classifyTestShardJobs([e2e(1), e2e(2), e2e(3), unitShard], 3, "E2E shard")).toEqual([]);
+    expect(classifyTestShardJobs([e2e(1), e2e(3, "queued", null)], 3, "E2E shard")).toEqual(["missing 2/3", "3/3 queued"]);
+    expect(() => classifyTestShardJobs([e2e(1), e2e(2, "completed", "skipped"), e2e(3)], 3, "E2E shard")).toThrow(/E2E shard 2\/3 completed as skipped/);
+    expect(() => classifyTestShardJobs([e2e(1, "completed", "cancelled")], 3, "E2E shard")).toThrow(/completed as cancelled/);
+    expect(() => classifyTestShardJobs([e2e(1), e2e(1)], 3, "E2E shard")).toThrow(/Duplicate E2E shard/);
+    expect(() => classifyTestShardJobs([{ name: "E2E shard (1/4)", status: "completed", conclusion: "success" }], 3, "E2E shard")).toThrow(/Unexpected E2E shard/);
+  });
+
+  it("names the matrix in a timeout", async () => {
+    let clock = 0;
+    await expect(requireTestShards({
+      loadJobs: async () => [e2e(1)],
+      count: 3,
+      label: "E2E shard",
+      now: () => clock,
+      sleep: async (ms) => { clock += ms; },
+      maxWaitMs: 30_000,
+      intervalMs: 15_000,
+    })).rejects.toThrow(/Timed out waiting for E2E shard jobs: missing 2\/3, missing 3\/3/);
+  });
 });
 
 describe("Vitest shard partition on the actual repository", () => {

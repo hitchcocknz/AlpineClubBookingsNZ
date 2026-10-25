@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+import { chromiumSpecFiles, exactSpecPatterns, parseE2eShard, specsForShard } from "./scripts/ci/e2e-spec-shard.mjs";
+
 // Browser E2E suite for the Critical journeys in docs/END_TO_END_TEST_MATRIX.md.
 // It drives the staging Docker Compose stack (docker-compose.staging.yml) seeded
 // with prisma/seed.ts + prisma/demo-seed.ts. Run via `pnpm run test:e2e`, which
@@ -32,6 +34,16 @@ const excludedSpecs = (process.env.E2E_EXCLUDE_SPECS ?? "")
   .split(",")
   .map((entry) => entry.trim())
   .filter(Boolean);
+
+// One CI shard of the default suite (#4397): `E2E_SHARD=i/N` gives this run
+// its own slice of the `chromium` spec files, on its own stack and database.
+// `setup` runs in every shard (each database needs its signed-in personas);
+// `pre-setup` runs only in shard 1, still after that shard's `chromium` slice
+// and still with nothing after it. Unset (a laptop, the rollover proof, the
+// multi-lodge job), the projects below are unchanged.
+const shard = parseE2eShard(process.env.E2E_SHARD);
+const shardSpecs = shard ? exactSpecPatterns(specsForShard(chromiumSpecFiles("./e2e"), shard)) : null;
+const includePreSetup = !shard || shard.index === 1;
 
 export default defineConfig({
   testDir: "./e2e",
@@ -74,6 +86,7 @@ export default defineConfig({
       // pre-setup/ is excluded for a stronger reason: those specs CLOSE the
       // public site for their duration, so they run in their own project after
       // everything else (#2420).
+      ...(shardSpecs ? { testMatch: shardSpecs } : {}),
       testIgnore: [/(multi-lodge|pre-setup)\//, ...excludedSpecs],
     },
     // The pre-setup gate on the wire (#2420). Runs LAST — `dependencies` on the
@@ -82,13 +95,17 @@ export default defineConfig({
     // where it sits: workers: 1 and fullyParallel: false mean nothing else is in
     // flight, and nothing follows it. Needs no second stack; it needs
     // E2E_DATABASE_URL, which scripts/e2e-stack.sh exports.
-    {
-      name: "pre-setup",
-      testMatch: /pre-setup\/.*\.spec\.ts/,
-      testIgnore: excludedSpecs,
-      use: { ...devices["Desktop Chrome"] },
-      dependencies: ["chromium"],
-    },
+    ...(includePreSetup
+      ? [
+          {
+            name: "pre-setup",
+            testMatch: /pre-setup\/.*\.spec\.ts/,
+            testIgnore: excludedSpecs,
+            use: { ...devices["Desktop Chrome"] },
+            dependencies: ["chromium"],
+          },
+        ]
+      : []),
     // Cross-lodge isolation project — issue #1568, blocking in CI since #1655.
     // Only present when E2E_MULTI_LODGE=1, so the default project list is unchanged.
     // Each spec logs in for itself (like waitlist.spec), so no setup dependency.
