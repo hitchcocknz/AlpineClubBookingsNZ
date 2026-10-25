@@ -201,9 +201,8 @@ For each row:
   internet banking, so the pay step will not start a fresh card payment
   (#4348): collect what is owed by internet banking. For an `ADDITIONAL` row,
   the cancelled payment was the member's only card door to the extra. No money
-  moves. If Stripe shows the
-  intent already succeeded, the app is refunding it: check the booking and ask
-  the member to pay again.
+  moves. If Stripe shows the intent already succeeded, the app is refunding it:
+  check the booking and ask the member to pay again.
 
 Do not wait for the cancellation to finish on its own. Until its retry runs, a
 member who pays from a page they still have open is charged and then refunded,
