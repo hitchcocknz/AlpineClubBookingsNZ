@@ -142,9 +142,9 @@ same way: `uncoveredCents − paidAnotherWayUncoveredCents`. Its classifier
   - On an `INTERNET_BANKING` payment that is internet banking, *not recorded*,
     so `resolveRefundSettlement` (`src/lib/xero-invoice-payments.ts`) leaves the
     note **unsettled** for the treasurer to match to the bank line. It is never
-    settled from the Stripe account. The method comes from the settlement
-    decision, as `INV-PAY-101` requires, and the decision says "not
-    recorded".
+    settled from the Stripe account. Reading the source here is the one
+    fallback `INV-PAY-101` allows, for a row that carries no method, and the
+    same rule leaves a method nobody recorded unsettled.
   - On a STRIPE payment the fallback is card. Bank cash reaches that ask only
     through the same four conditions, so it is not reachable either.
 
