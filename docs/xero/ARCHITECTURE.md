@@ -1108,8 +1108,8 @@ A link write that names no Xero status (a retry recording the note as its
 cover, the enqueue's existing-note branch, a repair) can race the void: it
 read the note as live, and the void commits before its write. Every
 refund-note link write first reserves its natural key as an inactive row
-without changing any existing row, then locks it in the same transaction and,
-when it names no status, re-reads it (`keepStoredRefundNoteVoid`). Concurrent
+without changing any existing row, then locks it in the same transaction and
+re-reads it (`keepStoredRefundNoteVoid`). Concurrent
 first insertions wait on the unique key before this read; the reservation
 rolls back with the write. A void that committed while it waited is kept. The
 mirror stays inactive, the status and incoming metadata merge over its stored
@@ -1119,6 +1119,67 @@ back at the note is released if its Payment row is available without waiting
 to the nightly #4161 heal, so a Payment-first enqueue waiting for this same
 link cannot deadlock the retry (#4223). Lock order: [Refund-note
 link writes racing a void](../CONCURRENCY_AND_LOCKING.md#refund-note-link-writes-racing-a-void-4195-4223).
+
+**An older live reading never revives a void (#4288, owner decision 24 Oct
+2026).** Xero's contract: a VOIDED or DELETED credit note is terminal. It is
+never live again, and re-crediting always raises a new note, so no officer
+override revives one. Three writers record a status they read from Xero outside
+any transaction: the inbound reconcile, the Stripe status recorder
+(`recordStripeRefundNoteLinkStatuses`) and the hand-made note answer. A reading
+taken before a void can therefore be written after it. Each records the note's
+`UpdatedDateUTC` beside the status (`providerUpdatedAt`, through the one builder
+`xeroCreditNoteSnapshotMetadata`; `refund-note-snapshot-stamp-census.test.ts`
+fails a writer that names a status any other way). The same locked re-read
+orders the two writes (`judgeRefundNoteWrite`):
+
+- a live status never overwrites a stored VOIDED/DELETED, whatever either
+  timestamp says. With no timestamp on either side (legacy rows, status-less
+  writers) this is the decision's fallback; with both, it is the contract above;
+- a VOIDED/DELETED reading is always applied;
+- between two live readings, one whose `UpdatedDateUTC` is older than the stored
+  one's keeps the stored status, stamp and figures; the canonical rule (active
+  flag, sibling retirement) still applies. Equal
+  timestamps are one snapshot and apply, as does a write when either side has no
+  timestamp.
+
+A kept void stays inactive and retires no sibling. A pointer naming it is
+released without waiting on Payment, as for a status-less write, and the inbound
+pointer gate refuses the note. A hand-made answer whose note was voided
+meanwhile is refused (409), and its completion rolls back.
+
+The inbound reconcile then acts on each payment's note as that payment's own
+refund-note row holds it when it acts (`readRefundNoteRowsByPayment`), never on
+the raw reading or on a verdict remembered from its own link write. Its recount
+reads the row after the payment rows: an inactive or VOIDED/DELETED row counts
+nothing, a live one counts its own figures. So a total that a void lowered is
+not raised back by a reconcile still holding an older live reading, even one
+whose link write landed before the void's. Before #4288 it was, on a bank
+transfer and on a card payment alike: `INV-ADDPAY-021` lets an inbound recount
+raise a card ledger, never lower it. A void's link write changes no Payment
+column the claim compares, except a pointer naming the note, so the recount's
+claim alone cannot see it. For a payment holding the note's own refund-note
+row, the recount therefore decides in one short transaction, on a 10s/30s
+budget because the nightly follow-up holds the Payment row for up to 30s. It
+takes the Payment row lock, then re-reads that row by the same rule it counted
+it. If the row no longer counts (voided or deactivated
+since), it writes nothing and recounts once more; otherwise it takes the
+as-read claim there. An unchanged verdict also checks the payment as read, so a
+recount that waited on the lock sees the write it waited for.
+
+Every outcome is then some serial order of the recount and the void. Stated
+limit: a void that commits after the locked re-read is the order "the recount,
+then the void, then the void's own recount". On a bank transfer that last recount
+lowers the total back. On a card the ledger is raise-only (`INV-ADDPAY-021`,
+#1353), so the recount's raise stands and the existing refund-ledger-divergence
+alert fires for a person to check. A recount that would need a second retry is
+left to the next sync.
+
+A live reading's allocations and refund payments are skipped only for a payment
+whose row, in either refund-note role, is VOIDED/DELETED when they are written
+(`withoutVoidedRefundNoteLinks`). Under a newer live snapshot they are written
+as before #4288. No money reader uses a payment's `CREDIT_NOTE_ALLOCATION`
+links, and a `REFUND_PAYMENT` reader asks only whether one names the note. An
+older allocation link can therefore stay active beside a newer one.
 
 A voided note is never re-adopted (owner decision). `findCanonicalPaymentRefundCreditNote`
 skips any note a link records VOIDED or DELETED, whether it arrives as the field,
@@ -1800,9 +1861,11 @@ limit, "try again tomorrow" on the daily limit), checks it is an `ACCRECCREDIT` 
 amount, for the invoice's contact (else the owner's), allocated to no other
 invoice and tracked by nothing else here (this payment's own inactive,
 non-voided link is reactivated), and the completion links it as a per-refund
-`REFUND_CREDIT_NOTE` naming the follow-up. After the commit the note is
-reconciled once more (`reconcileXeroCreditNote`), so a void in between is
-caught. A fresh note is refused on a payment with no Xero invoice, and when
+`REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
+commits before that link write is kept under the link's row lock and the answer
+is refused (#4288). After
+the commit the note is reconciled once more (`reconcileXeroCreditNote`), so a
+later void is caught. A fresh note is refused on a payment with no Xero invoice, and when
 nothing could be queued.
 
 **Count before switching on.** `pnpm run xero:bank-refund-void-count` (read-only:
@@ -3388,9 +3451,91 @@ keeps the local ledger as its source of truth.
 - **Idempotent.** The write-down counts in the next calculation, so a repeat finds
   nothing missing; a concurrent run that lost the race finds the booking already
   converged, or its slice already shrunk below what was refused, and plans again.
-- **Not yet covered.** A reversed offset (the credit comes back in Xero) does not
-  restore the written-down lot, and a spend that no booking tries to use is not
-  noticed until one does. Both belong to the inbound mirror, the next change.
+- **Reversed or unnoticed spends** are the inbound mirror's, below: it restores a
+  lot Xero gave back and writes down a spend that no booking tried to use.
+
+## The inbound credit-note mirror (#4270)
+
+The converge acts when Xero **refuses** an allocation the app tried. The mirror acts
+on what Xero **shows**, so credit that no booking has claimed yet is not offered to a
+member after it is gone, and credit Xero gives back is not lost. It writes only the
+credit ledger, never Xero, and sends the member no email (owner decisions, 17 and 24
+Oct 2026).
+
+- **Where it runs.** Last in `reconcileXeroCreditNote` (the webhook path, reusing the
+  note that handler already read, after the links and repairs it writes), and in a
+  backstop sweep, the `credit-note-mirror` Xero cron task, run in the inbound
+  reconcile's 15-minute slot. The webhook hook never fails the event: an error is
+  logged and the sweep tries again.
+- **One comparator.** `xero-credit-note-outside-spend.ts` holds the evidence parsers
+  (`xeroAllocationsOf`, `xeroPaymentsOf`), the explained-shortfall rail
+  (`spendIsExplained`: the list must equal the note's total less its remaining
+  credit) and `outsideSpendCents`. The converge, the mirror and the Failures view
+  share it, so they cannot disagree about what counts as outside.
+- **Target state, not a delta.** With `O` the outside spend, `W` the net written down
+  for the note (write-downs less restores), `D = min(O, lot)` and `delta = D - W`
+  (`xero-credit-note-mirror-plan.ts`): a positive delta writes down at most the
+  **free** part of the lot (not drawn by a booking's slice, not already written down,
+  and not more than the member's balance, so it never goes below zero); a negative
+  delta restores `-delta`, and never more than `W`. Credit already planned onto a
+  booking is left to the converge, which also releases the booking, and the mirror's
+  audit row records it as `leftForAllocationCents`. A replayed or out-of-order event
+  cannot drift the ledger because the target is recomputed from Xero's list each time.
+- **Rows.** A negative `ADMIN_ADJUSTMENT` row (write-down) or a positive one
+  (restore), stamped with the note and marked `outsideSpendConvergedAt` like the
+  converge's rows, so no reader treats either as a lot. `writtenDownCentsByCreditNote`
+  returns the signed net, never below zero. One `xero`-category audit row per change
+  (`xero.credit_note.outside_spend_mirrored`, `xero.credit_note.outside_spend_restored`),
+  subject the member, no actor, committed in the same transaction; a no-op writes
+  none. A restore's row names the bookings the converge released for the note, since
+  the restore gives back the lot and not those bookings' applied credit.
+- **One lot, one member, an active note.** The member is chosen before the transaction
+  from the note's funding lot. A note that funds no lot is ignored (most events); one
+  that funds several fails closed. A voided or deleted note is a different class of
+  change: nothing is written and an error is logged for an officer.
+- **Settled evidence.** The note's `UpdatedDateUTC` must be at least two minutes old,
+  so an allocation or refund payment the app made and has not finished recording is
+  not read as someone else's. A fresher note leaves a `RECHECK:<note>` row in
+  `XeroSyncCursor`, which the sweep takes first on its next run. A missing or
+  unreadable change time defers too. Credit drawn onto a booking whose allocation or
+  deallocation is in flight (`PENDING` or `RUNNING`, or any deallocation fence) defers.
+- **Locks.** The member's credit-ledger key only, never the global one: the mirror
+  releases no booking's credit and moves no settlement money. See
+  [CONCURRENCY_AND_LOCKING.md](../CONCURRENCY_AND_LOCKING.md#a-credit-note-spent-or-un-spent-in-xero-the-members-credit-ledger-only-4270).
+- **The sweep** reads the population from the local ledger, never a Xero "modified
+  since" cursor: notes funding a lot with credit not yet drawn or written down, or
+  with a net write-down that could be restored. It reads at most 100 notes a run from
+  a stored cursor (`SWEEP` row), stops after three failed reads in a row, and once a
+  complete pass has run it does not start another for twelve hours (deferred rechecks
+  are never throttled). Every read passes `armTransientBreaker: false` and respects a
+  breaker armed elsewhere.
+- **Kill switch.** A `XeroSyncCursor` row, `resourceType` `CREDIT_NOTE_OUTSIDE_SPEND_MIRROR`,
+  `scope` `WRITES`, read live, so it takes effect on the next note with no deploy and
+  no restart. While it exists (unless its metadata says `writesDisabled: false`) the
+  mirror computes and logs what it would have written and writes nothing. Unset means
+  writes are on.
+
+  ```sql
+  -- Switch the mirror's writes OFF.
+  INSERT INTO "XeroSyncCursor" (id, "resourceType", scope, metadata, "createdAt", "updatedAt")
+  VALUES (gen_random_uuid()::text, 'CREDIT_NOTE_OUTSIDE_SPEND_MIRROR', 'WRITES', '{"writesDisabled": true}', now(), now())
+  ON CONFLICT ("resourceType", scope) DO UPDATE SET metadata = '{"writesDisabled": true}', "updatedAt" = now();
+
+  -- Switch them back ON.
+  DELETE FROM "XeroSyncCursor" WHERE "resourceType" = 'CREDIT_NOTE_OUTSIDE_SPEND_MIRROR' AND scope = 'WRITES';
+  ```
+- **Differences from the converge.** The converge refuses a spend larger than the lot
+  (`unexplained-spend`); the mirror bounds it by the lot, since it works from the
+  whole list. They agree on everything up to that point, in either order, and
+  together write down exactly `D`.
+- **Deploy order.** No migration. A version before #4251 (the converge and the net
+  readers) reads a written-down lot as free again. Deploy after #4251 is live and its
+  predecessor has drained or, if the two ship together, switch the writes off before
+  the deploy and back on once the previous colour has stopped (UPGRADING).
+- **Rollback.** Switch writes off and correct the note's evidence in Xero; the mirror
+  restores the credit. Never offset a wrong write-down with a manual credit
+  adjustment: it is a spendable credit with no note, so a fresh Xero note would be
+  raised for it while the original still holds the credit.
 
 ## Card payment for credit released after an outside spend (#4253)
 

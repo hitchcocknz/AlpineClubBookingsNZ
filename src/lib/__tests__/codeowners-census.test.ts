@@ -82,11 +82,22 @@ const OWNER = "@thatskiff33";
  * (`bank-refund-void-*.ts`) and the allocation unwind
  * (`refund-allocation-unwind.ts`): 256 of 1420, 18.03%, so the ceiling moves
  * to 18.5%.
+ * And 25 Oct 2026 (#4270, owner decision
+ * https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4270#issuecomment-6379874460):
+ * four new money modules, each owned by the existing `xero-*credit*` glob rather
+ * than a widened one - the inbound credit-note mirror, its plan, its sweep and
+ * the shared outside-spend comparator (`xero-credit-note-mirror*.ts`,
+ * `xero-credit-note-outside-spend.ts`): 270 of 1457, 18.53%, so the ceiling
+ * moves to 18.6%.
+ * And 25 Oct 2026 (#4270, merged onto #4253's new money modules,
+ * which the ceiling above had no room for): the same four mirror modules
+ * measured on the composed tree, 277 of 1480, 18.72%, so the ceiling moves to 18.8%.
+
  * And 25 Oct 2026 (#4320, owner decision
- * https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4320#issuecomment-6391295547):
- * the reversal's intent hygiene (`manual-settlement-intent-hygiene.ts`), owned
- * by the existing `*settlement*` glob: 274 of 1477, 18.55%, so the ceiling
- * moves to 19%.
+ * https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4320#issuecomment-6391295547,
+ * which sets the ceiling at 19%): the reversal's intent hygiene
+ * (`manual-settlement-intent-hygiene.ts`), owned by the existing
+ * `*settlement*` glob, so the ceiling moves to 19%.
  */
 const MAX_OWNED_SRC_LIB_SHARE = 0.19;
 

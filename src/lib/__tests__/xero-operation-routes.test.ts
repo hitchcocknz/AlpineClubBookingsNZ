@@ -343,6 +343,67 @@ describe("Xero operation admin retry routes", () => {
     });
   });
 
+  it("counts the failed rows a failure-state filter hides, repaired and resolved alike (#4220)", async () => {
+    const createdAt = new Date("2026-04-14T09:00:00Z");
+    const row = (id: string) => ({
+      id,
+      direction: "OUTBOUND",
+      entityType: "CONTACT",
+      operationType: "CREATE",
+      localModel: "Member",
+      localId: id,
+      status: "FAILED",
+      replayable: true,
+      requestPayload: {},
+      createdAt,
+      updatedAt: createdAt,
+    });
+    mocks.xeroOperationFindMany.mockResolvedValue([row("op_a"), row("op_b"), row("op_c")]);
+    // 3 unresolved FAILED rows: one still active, two repaired. 4 more were
+    // marked resolved, which the candidate query already leaves out.
+    mocks.xeroOperationCount.mockResolvedValue(4);
+    mocks.resolveFailedXeroOperationStates.mockImplementation(async (ops: Array<{ id: string }>) =>
+      new Map(
+        ops.map((op) => [
+          op.id,
+          {
+            state: op.id === "op_a" ? "ACTIVE" : "REPAIRED",
+            reason: "r",
+            rootKey: op.id,
+            representativeOperationId: op.id,
+          },
+        ])
+      )
+    );
+
+    const response = await listOperations(
+      new NextRequest("http://localhost/api/admin/xero/operations?status=FAILED&failureState=ACTIVE&entityType=CONTACT")
+    );
+
+    const body = await response.json();
+    expect(body.total).toBe(1);
+    expect(body.hiddenFailedCount).toBe(2 + 4);
+    // The resolved rows are counted under the same filters as the list itself.
+    expect(mocks.xeroOperationCount).toHaveBeenCalledWith({
+      where: { entityType: "CONTACT", status: "FAILED", manuallyResolvedAt: { not: null } },
+    });
+  });
+
+  it("reports nothing hidden, and runs no extra count, when no failure-state filter is set (#4220)", async () => {
+    mocks.xeroOperationFindMany.mockResolvedValue([]);
+    mocks.xeroOperationCount.mockResolvedValue(0);
+
+    const response = await listOperations(
+      new NextRequest("http://localhost/api/admin/xero/operations?status=FAILED")
+    );
+
+    const body = await response.json();
+    expect(body.hiddenFailedCount).toBe(0);
+    // Literal Failed list: the one count is the page total, with the plain filter.
+    expect(mocks.xeroOperationCount).toHaveBeenCalledTimes(1);
+    expect(mocks.xeroOperationCount).toHaveBeenCalledWith({ where: { status: "FAILED" } });
+  });
+
   it("queues retry requests through the background worker route", async () => {
     const response = await retryOperation(new NextRequest("http://localhost"), {
       params: Promise.resolve({ id: "op_123" }),

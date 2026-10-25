@@ -5,11 +5,10 @@ import { asRecord, readString } from "./xero-json";
 import {
   canonicalRefundNoteFromField,
   isPerDeltaRefundNoteLink,
-  isRefundCreditNoteLinkCancelledInXero, keepStoredRefundNoteVoid,
+  isRefundCreditNoteLinkCancelledInXero, isRefundNoteLinkOf, keepStoredRefundNoteVoid, REFUND_NOTE_LINK_ROLES,
   perDeltaRefundNoteIds,
   neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
-  readRefundCreditNoteLinkStatus,
 } from "./xero-refund-note-status";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
@@ -618,7 +617,7 @@ async function normalizePaymentRefundLinkWithClient(
     return link;
   }
 
-  if ((link.role === "REFUND_CREDIT_NOTE" || link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) && link.xeroObjectType === "CREDIT_NOTE") {
+  if (REFUND_NOTE_LINK_ROLES.some((role) => isRefundNoteLinkOf(link, role))) {
     link = await keepStoredRefundNoteVoid(client, link); // #4195, #4223: own row first; keeps a void it waited on
     // A note the write (or that stored void) records VOIDED/DELETED in Xero credits nothing, so its mirror
     // is written inactive on every payment: a Stripe or per-refund note (#2901), a bank-transfer payment's
@@ -860,9 +859,7 @@ async function upsertXeroObjectLinkWithClient(
   // note, or clear it. The where-clause is the claim: a pointer that already
   // names a different note is left alone.
   if (
-    normalizedLink.localModel === "Payment" &&
-    normalizedLink.role === "REFUND_CREDIT_NOTE" &&
-    normalizedLink.xeroObjectType === "CREDIT_NOTE" &&
+    isRefundNoteLinkOf(normalizedLink) &&
     normalizedLink.active === false &&
     isRefundCreditNoteLinkCancelledInXero(normalizedLink.metadata)
   ) {
@@ -871,12 +868,13 @@ async function upsertXeroObjectLinkWithClient(
       select: { xeroRefundCreditNoteId: true },
     });
     if (payment?.xeroRefundCreditNoteId === normalizedLink.xeroObjectId) {
-      // INV-LOCK-001, INV-LOCK-002: a statusless retry can hold this link while
-      // a Payment-first enqueue waits for it. Never wait back on that Payment.
-      // SKIP LOCKED still returns a row this transaction already holds. When
-      // busy, commit the inactive mirror; the #4161 heal can release its pointer.
-      // Explicit inbound voids keep their existing protocol (#4200).
-      if (readRefundCreditNoteLinkStatus(link.metadata) === null) {
+      // INV-LOCK-001, INV-LOCK-002: a write whose void was kept (it named no
+      // status, #4223, or an older live one, #4288) can hold this link while a
+      // Payment-first enqueue waits for it: never wait back on that Payment.
+      // SKIP LOCKED still returns a row this transaction holds. When busy, the
+      // inactive mirror commits and the #4161 heal can release its pointer. A
+      // caller naming VOIDED/DELETED itself keeps its waiting order (#4200).
+      if (!isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
         const available = await client.$executeRaw`
           SELECT 1 FROM "Payment" WHERE "id" = ${normalizedLink.localId}
           FOR NO KEY UPDATE SKIP LOCKED`;
