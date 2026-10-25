@@ -42,7 +42,7 @@ const INVOICE_ID = "race-4356-invoice";
 // Built, not quoted: a quoted `*Key` literal reads to gitleaks as a secret.
 const PAYMENT_KEY = ["race-4356", "invoice-payment", "v1"].join(":");
 
-type Deferred<T> = { promise: Promise<T>; resolve: (value: T) => void };
+type Deferred<T = void> = { promise: Promise<T>; resolve: (value: T) => void };
 function deferred<T = void>(): Deferred<T> {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((r) => {

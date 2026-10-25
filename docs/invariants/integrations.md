@@ -511,6 +511,38 @@ Pinned by `xero-operation-retry.test.ts`, `xero-operation-queue.test.ts`,
 `xero-booking-repair.test.ts`, `refunds-missing-credit-notes.test.ts`,
 `booking-provider-mismatches.test.ts`.
 
+## One outcome per Xero operation row (#4356)
+
+### INV-INT-028
+
+A recorded Xero outcome is never replaced by a worse one. Two callers can hold
+one operation row: a start that loses the insert race on the one-ACTIVE-row
+index (#1354) is handed the winner's row, and both make the same keyed Xero
+call and record their own outcome there.
+
+- **One guard, in the two writers.** `completeXeroSyncOperation` and
+  `failXeroSyncOperation` (`xero-sync.ts`) take one guard,
+  `outcomeWriteGuard` (`xero-operation-outcome-guard.ts`), and write every
+  outcome but SUCCEEDED as a status-guarded `updateMany`. Only SUCCEEDED lands
+  on SUCCEEDED, and only SUCCEEDED or PARTIAL on PARTIAL; a failure, or a
+  FAILED or CANCELLED completion, never lands on a recorded success.
+- **A success always lands.** SUCCEEDED replaces a FAILED, PARTIAL or running
+  row: it is Xero's answer to the same keyed call.
+- **A refused write changes nothing.** It answers null, writes no link, raises
+  no repeated-failure alert, and logs at info. The losing caller still gets its
+  own error.
+- **Options only narrow it.** `keepSucceeded` and `keepCancelled` keep their
+  status as well; `onlyIfRunningSince` writes onto that RUNNING claim only.
+- **The direct writers are unchanged.** Retry and repair claims, the stale
+  RUNNING reset, Mark failed, the outbox's waits and un-claim, and officer
+  resolve write the row themselves, guarded as before. Limit: when the first caller
+  fails and a retry claims the row while the second caller's call is still in
+  flight, the second caller's failure still lands on that claim and the
+  retry's completion loses; the next retry repeats the keyed call.
+
+Pinned by `xero-sync.test.ts` and, against real PostgreSQL,
+`xero-shared-operation-outcome.realdb.test.ts`.
+
 ## Stored outbox payloads (#3971)
 
 ### INV-INT-026

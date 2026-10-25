@@ -22,6 +22,7 @@ import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instr
 import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { isClosedByCreditSpentOutsideApp } from "@/lib/xero-operation-resolution";
+import { outcomeWriteGuard, refusedOutcomeWrite } from "@/lib/xero-operation-outcome-guard";
 
 export interface XeroSyncOperationInput {
   direction: string;
@@ -921,42 +922,6 @@ export async function deactivateXeroObjectLinks(params: {
   });
 }
 
-/**
- * #4356 (`INV-INT-028`): the write guard of an outcome (`status`) on an
- * operation row. Two callers can hold one row - a start that loses the insert
- * race is handed the winner's ACTIVE row (#1354) - and each records its own
- * outcome of the same keyed Xero call there. So an outcome never replaces a
- * better one already recorded: only SUCCEEDED lands on SUCCEEDED, only
- * SUCCEEDED or PARTIAL on PARTIAL; a SUCCEEDED write lands on anything (unless
- * `alsoKeep` keeps it out). `onlyIfRunningSince` writes onto that RUNNING claim
- * only, which no recorded outcome is. Null: an unguarded write.
- */
-function outcomeWriteGuard(
-  operationId: string,
-  status: string,
-  options: { onlyIfRunningSince?: Date; alsoKeep?: string },
-): Prisma.XeroSyncOperationWhereInput | null {
-  // An `updateMany` reads an undefined id as no filter at all: never let one through.
-  if (!operationId) throw new Error("A Xero operation outcome needs the operation's id.");
-  if (options.onlyIfRunningSince) return { status: "RUNNING", startedAt: options.onlyIfRunningSince };
-  const kept = new Set(status === "SUCCEEDED" ? [] : status === "PARTIAL" ? ["SUCCEEDED"] : ["SUCCEEDED", "PARTIAL"]);
-  if (options.alsoKeep) kept.add(options.alsoKeep);
-  const statuses = [...kept];
-  if (statuses.length === 0) return null;
-  return statuses.length === 1 ? { status: { not: statuses[0] } } : { status: { notIn: statuses } };
-}
-
-/** A guarded outcome write that matched no row: nothing written, nothing alerted; answers null. */
-function refusedOutcomeWrite(operationId: string, status: string, onlyIfRunningSince?: Date): null {
-  if (!onlyIfRunningSince) {
-    logger.info(
-      { operationId, status },
-      "Xero operation outcome not recorded: the row already holds an outcome this one may not replace (INV-INT-028)",
-    );
-  }
-  return null;
-}
-
 export async function completeXeroSyncOperation(
   operationId: string,
   completion: XeroSyncOperationCompletion,
@@ -1082,10 +1047,7 @@ export async function failXeroSyncOperation(
     onlyIfRunningSince: options?.onlyIfRunningSince,
     alsoKeep: options?.keepCancelled ? "CANCELLED" : undefined,
   });
-  const failed = await prisma.xeroSyncOperation.updateMany({
-    where: { id: operationId, ...guard },
-    data,
-  });
+  const failed = await prisma.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
   if (failed.count === 0) return refusedOutcomeWrite(operationId, "FAILED", options?.onlyIfRunningSince);
   const operation = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } });
 

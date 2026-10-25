@@ -173,6 +173,21 @@ During a blue/green overlap the old version's stale reset sends a stuck repair
 to FAILED, which then needs Resolve in Xero or a by-hand payment check. Proven against real PostgreSQL by
 `xero-partial-repair-claim.realdb.test.ts`.
 
+### Two callers on one Xero operation row: guarded outcomes (#4356)
+
+A start that loses the insert race on the one-ACTIVE-row index (#1354) is
+handed the winner's row, so two callers make the same keyed Xero call and each
+records its outcome on that one row. No lock is held across either call, and
+none is added: the outcome writers themselves are status-guarded
+(`INV-INT-028`). `failXeroSyncOperation` is always a guarded `updateMany` that
+never lands on SUCCEEDED or PARTIAL, and `completeXeroSyncOperation` guards
+every outcome but SUCCEEDED the same way (PARTIAL only off SUCCEEDED). A
+refused write answers null and raises no repeated-failure alert, so whichever
+order the two calls return in, a recorded success stands. The guard composes
+with the claim guards above: `onlyIfRunningSince` still writes onto its own
+RUNNING claim only. No advisory key, row lock or new participant. Proven
+against real PostgreSQL by `xero-shared-operation-outcome.realdb.test.ts`.
+
 ### The Xero token refresh uses a row lease, shared across colours (#3454)
 
 `xero-token-store.ts` composes no booking, capacity, membership or money

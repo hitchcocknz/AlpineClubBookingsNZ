@@ -3717,6 +3717,11 @@ local business event -> Xero outbox operation queued
   nothing can be read. Limit: after a FAILED winner the extra call can fail
   too and add one FAILED row toward the repeated-failure alert; an
   applied-credit allocation's is closed by the converge below
+two callers on one row (the hand-off above) each record their own outcome of
+  the same keyed Xero call (#4356, INV-INT-028): an outcome never replaces a
+  better one. A failure, or a FAILED or CANCELLED completion, never lands on
+  SUCCEEDED or PARTIAL; PARTIAL never lands on SUCCEEDED; SUCCEEDED lands on
+  any row. A refused write answers null: no link, no repeated-failure alert
 worker claims operation -> provider call -> success or retryable failure
 success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier
   wait's or failure's code is not shown on it (#4049); PARTIAL keeps them
@@ -3882,6 +3887,8 @@ The claimed-original abandon and Mark failed are pinned by
 `xero-operation-queue.test.ts` and `xero-operation-routes.test.ts` (#3462).
 The PARTIAL repair's claim is pinned by `xero-operation-retry.test.ts` and,
 against real PostgreSQL, `xero-partial-repair-claim.realdb.test.ts` (#4256).
+The shared-row outcome guard is pinned by `xero-sync.test.ts` and, against real
+PostgreSQL, `xero-shared-operation-outcome.realdb.test.ts` (#4356).
 A change capture's receipt is pinned by `additional-capture-xero-receipt.test.ts`,
 `additional-capture-recorder.test.ts` and, against real PostgreSQL,
 `additional-capture-receipt.realdb.test.ts` and

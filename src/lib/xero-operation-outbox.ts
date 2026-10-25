@@ -3223,8 +3223,8 @@ export async function processQueuedXeroOutboxOperations(options?: {
         // state the outbox expects. Every queue type but the three named below
         // owns a `catch { await failXeroSyncOperation(<this outbox row>, error); throw }`
         // (the kept late-capture invoice, #3635, self-fails like the rest),
-        // and `failXeroSyncOperation` writes `status: FAILED` + `completedAt`
-        // with no status guard — so by the time this branch runs the row is
+        // and `failXeroSyncOperation` writes `status: FAILED` + `completedAt` over a
+        // RUNNING row (only a recorded success is kept, `INV-INT-028`) — so by the time this branch runs the row is
         // already FAILED for those types, and a `status: "RUNNING"`-only guard
         // would match zero rows and leave it terminally FAILED (the very bug the
         // #2423 F2 review caught). The three handlers that do NOT self-fail
