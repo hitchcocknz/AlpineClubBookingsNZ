@@ -61,6 +61,7 @@ let kept: typeof import("@/lib/xero-kept-late-capture-invoice");
 let recorder: typeof import("@/lib/additional-capture-recorder");
 let worker: typeof import("@/lib/additional-capture-xero-receipt");
 let claim: typeof import("@/lib/xero-operation-claim");
+let withdraw: typeof import("@/lib/additional-payment-withdraw");
 
 async function clean(): Promise<void> {
   await prisma.xeroSyncOperation.deleteMany({
@@ -273,6 +274,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     recorder = await import("@/lib/additional-capture-recorder");
     worker = await import("@/lib/additional-capture-xero-receipt");
     claim = await import("@/lib/xero-operation-claim");
+    withdraw = await import("@/lib/additional-payment-withdraw");
     const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"),
       import("@/lib/prisma-adapter"),
@@ -355,6 +357,82 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
       expect(now.kind).toBe("receipt");
     }
     expect(receipts.length).toBeLessThanOrEqual(1);
+  });
+
+  it("MUTATION (anchor lock): the repair tool re-raises a withdrawn change's invoice ahead of the keep - the keep decides after it, so no kept invoice is raised beside it", { timeout: 30_000 }, async () => {
+    // The change's own ask was withdrawn (the real enqueue, then the write
+    // `withdrawAdditionalPaymentAsk` makes), so on its own the keep reads
+    // "nothing bills the change" and would raise the kept-capture invoice.
+    await seed("OPEN", { marked: false });
+    const withdrawnAsk = await outbox.enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: BOOKING_ID, bookingModificationId: MODIFICATION_ID, priceDiffCents: 8_000, changeFeeCents: 0 },
+      { paymentIntentId: "pi_race_4324_superseded", waitForConfirmedAdditionalPayment: true },
+    );
+    expect(withdrawnAsk.queueOperationId).toBeTruthy();
+    await prisma.xeroSyncOperation.updateMany({
+      where: { id: withdrawnAsk.queueOperationId!, status: "WAITING_PAYMENT" },
+      data: { status: "CANCELLED", completedAt: new Date(), lastErrorCode: withdraw.ADDITIONAL_ASK_WITHDRAWN_XERO_ERROR_CODE },
+    });
+
+    // The repair tool's supplementary invoice for the change queues first on
+    // the change's anchor; the keep starts only once it is queued there. The
+    // keep's decision serialises on that anchor and NOT on anything the repair
+    // enqueue holds, so only the anchor lock puts it behind the invoice.
+    const holder = await holdLock((tx) => outbox.lockSupplementaryInvoiceAnchor(tx, MODIFICATION_ID));
+    let queuedBehind = 0;
+    let keepOutcome: PromiseSettledResult<Awaited<ReturnType<typeof dismiss>>> | undefined;
+    let invoiceOutcome: PromiseSettledResult<unknown> | undefined;
+    try {
+      const reRaise = outbox.enqueueXeroSupplementaryInvoiceOperation({
+        bookingId: BOOKING_ID,
+        bookingModificationId: MODIFICATION_ID,
+        priceDiffCents: 8_000,
+        changeFeeCents: 0,
+      });
+      const reRaiseSettled = reRaise.then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+      expect(await untilQueuedBehind(holder.pid, 1)).toBe(1);
+      const keepRun = dismiss();
+      const keepSettled = keepRun.then(
+        (value) => ({ status: "fulfilled" as const, value }),
+        (reason: unknown) => ({ status: "rejected" as const, reason }),
+      );
+      // Under the lock the keep queues behind the holder too; without it the
+      // keep decides at once, and this stops waiting when it has.
+      queuedBehind = await Promise.race([untilQueuedBehind(holder.pid, 2), keepSettled.then(() => -1)]);
+      holder.release();
+      await holder.done;
+      [keepOutcome, invoiceOutcome] = await Promise.all([keepSettled, reRaiseSettled]);
+    } finally {
+      holder.release();
+      await holder.done.catch(() => undefined);
+    }
+
+    expect(invoiceOutcome?.status).toBe("fulfilled");
+    expect(keepOutcome?.status).toBe("fulfilled");
+    // The keep waited on the change's anchor, behind the repair tool's invoice.
+    expect(queuedBehind).toBe(2);
+    const keptInvoices = await prisma.xeroSyncOperation.findMany({
+      where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE" },
+      select: { id: true, status: true },
+    });
+    const invoices = (await supplementaryRows()).filter((row) => row.status !== "CANCELLED");
+    expect(keptInvoices).toEqual([]);
+    expect(invoices).toHaveLength(1);
+    expect((invoices[0]!.requestPayload as { recordPayment?: boolean }).recordPayment).toBe(true);
+    expect((await receiptRows()).filter((row) => row.status !== "CANCELLED")).toEqual([]);
+    // One recorder: the change's re-raised invoice records the $80.
+    await expect(
+      recorder.readCaptureRecorder({
+        bookingId: BOOKING_ID,
+        primaryInvoiceId: INVOICE_ID,
+        paymentIntentId: CHANGE_INTENT,
+        bookingModificationId: MODIFICATION_ID,
+      }),
+    ).resolves.toMatchObject({ kind: "supplementary-invoice" });
+    expect(keepOutcome).toEqual({ status: "fulfilled", value: { kind: "none" } });
   });
 
   it("the repair tool's action and a re-keep of the same task, at once: one receipt, which the loser finds", { timeout: 30_000 }, async () => {
