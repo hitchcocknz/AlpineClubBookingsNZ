@@ -610,16 +610,27 @@ export async function getSeasonalMembershipChangePreview(params: {
     return jsonResult({ error: "Subscription category not found" }, { status: 404 });
   }
 
-  // These two checks apply ONLY when the caller is actually making a decision
-  // about the category — `params.subscriptionCategoryId !== undefined`. When
-  // the field was omitted (bulk membership-type assignment, Xero import), the
-  // resolved value above is the member's PRESERVED existing category, not a
-  // new choice; refusing the save because that pre-existing value happens to
-  // be archived would break an unrelated bulk operation over a category
-  // nobody asked to touch. The billing engine's own
-  // ARCHIVED_SUBSCRIPTION_CATEGORY_ASSIGNED exception is what actually
-  // protects billing for a preserved-but-archived category.
-  if (params.subscriptionCategoryId !== undefined) {
+  // These two checks apply ONLY when the category is ACTUALLY CHANGING —
+  // not merely "the field was present in the request". Review finding,
+  // second round: the single-member admin card always sends this field
+  // explicitly, re-submitting the member's CURRENT category on every save
+  // even when the admin is only changing something else (membership type,
+  // apply-from) and deliberately left the category alone. Gating on
+  // presence alone meant that once a member's category was archived, the
+  // admin could never save ANYTHING about that member again — not just the
+  // category — until they also touched it, which is not what "archived
+  // subscription categories cannot be newly assigned" is supposed to mean.
+  // When the field was omitted entirely (bulk membership-type assignment,
+  // Xero import), the resolved value above is the member's PRESERVED
+  // existing category for the same reason; refusing the save because that
+  // pre-existing value happens to be archived would break an unrelated bulk
+  // operation over a category nobody asked to touch either. The billing
+  // engine's own ARCHIVED_SUBSCRIPTION_CATEGORY_ASSIGNED exception is what
+  // actually protects billing for a preserved-but-archived category in both
+  // cases.
+  const subscriptionCategoryIsChanging =
+    newSubscriptionCategoryId !== (previousAssignment?.subscriptionCategoryId ?? null);
+  if (subscriptionCategoryIsChanging) {
     if (newSubscriptionCategory && !newSubscriptionCategory.isActive) {
       return jsonResult(
         { error: "Archived subscription categories cannot be newly assigned" },

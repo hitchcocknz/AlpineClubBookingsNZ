@@ -14,8 +14,11 @@ const previewSchema = z
   .object({
     seasonYear: z.number().int().min(2020).max(2040),
     membershipTypeId: z.string().min(1),
-    // Subscription-category decoupling: the independent billing axis. Null/
-    // omitted means "Individual" — unchanged per-type billing.
+    // Subscription-category decoupling: the independent billing axis. An
+    // explicit null means "Individual" — unchanged per-type billing.
+    // Omitted means "no opinion" — the lib preserves the member's current
+    // category rather than clearing it (see getSeasonalMembershipChangePreview's
+    // own doc comment); never coerce an omitted value to null here.
     subscriptionCategoryId: z.string().min(1).nullable().optional(),
     applyFrom: z
       .string()

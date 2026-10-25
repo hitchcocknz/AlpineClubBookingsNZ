@@ -70,6 +70,11 @@ function payload(options: {
   decisionDate?: string;
   membershipTypeName?: string;
   exemptMembers?: Array<{ memberId: string; memberName: string; ageTier: string | null }>;
+  ungroupedCategoryMembers?: Array<{
+    subscriptionCategoryId: string;
+    subscriptionCategoryName: string;
+    members: Array<{ memberId: string; memberName: string }>;
+  }>;
 } = {}) {
   const decisionDate = options.decisionDate ?? "2026-07-13";
   const membershipTypeName = options.membershipTypeName ?? "Full";
@@ -94,6 +99,7 @@ function payload(options: {
       }],
       exceptions: [{ fingerprint: "same", message: "Configure billing" }],
       exemptMembers: options.exemptMembers ?? [],
+      ungroupedCategoryMembers: options.ungroupedCategoryMembers ?? [],
       alreadyInvoiced: [],
     },
     charges: [{
@@ -244,6 +250,30 @@ describe("subscription billing panel", () => {
     expect(await screen.findByText(/Exempt \(2\)/)).toBeTruthy();
     expect(screen.getByText("Kid One")).toBeTruthy();
     expect(screen.getByText("Kid Two")).toBeTruthy();
+  });
+
+  // Subscription-category decoupling (review finding): 2+ members billed
+  // solo under the same category (not in a shared FamilyGroup) surface as a
+  // visible warning, so an officer confirming the batch notices — the field
+  // existed on the preview before this test with nothing rendering it.
+  it("warns when members share a subscription category but are billed separately", async () => {
+    mocks.canEdit.mockReturnValue(true);
+    vi.mocked(fetch).mockImplementation(() => successResponse(payload({
+      ungroupedCategoryMembers: [
+        {
+          subscriptionCategoryId: "cat-couple",
+          subscriptionCategoryName: "Couple",
+          members: [
+            { memberId: "alice", memberName: "Alice Adult" },
+            { memberId: "bob", memberName: "Bob Adult" },
+          ],
+        },
+      ],
+    })));
+    render(<SubscriptionBillingPanel seasonYear={2026} />);
+    expect(await screen.findByText(/billed separately, not as one group/)).toBeTruthy();
+    expect(screen.getByText(/Couple:/)).toBeTruthy();
+    expect(screen.getByText(/Alice Adult, Bob Adult/)).toBeTruthy();
   });
 
   // #2148 (D2 / constraint 3): a finance-EDIT admin's Refresh reconciles via the

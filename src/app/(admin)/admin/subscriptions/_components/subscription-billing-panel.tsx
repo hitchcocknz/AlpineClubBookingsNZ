@@ -91,6 +91,20 @@ type BillingData = {
       markedByName?: string | null;
       markedAt?: string | null;
     }>;
+    // Subscription-category decoupling (review finding): 2+ members billed
+    // SOLO under the SAME subscription category this run, because they are
+    // not in a shared FamilyGroup — each bills the full flat rate
+    // separately, which can cost MORE than their individual membership-type
+    // rates for a couple/family-style category. Billing itself is
+    // unaffected (a genuinely standalone category is not an error), but
+    // this is surfaced so the confirming officer notices and can group the
+    // members into a FamilyGroup before confirming, if that was the intent.
+    // Optional so an older cached response without the field still renders.
+    ungroupedCategoryMembers?: Array<{
+      subscriptionCategoryId: string;
+      subscriptionCategoryName: string;
+      members: Array<{ memberId: string; memberName: string }>;
+    }>;
   };
   charges: Array<{
     id: string;
@@ -402,6 +416,24 @@ export function SubscriptionBillingPanel({ seasonYear }: { seasonYear: number })
                   ))}
                 </ul>
               </details>
+            ) : null}
+            {(data.preview.ungroupedCategoryMembers ?? []).length > 0 ? (
+              <Alert variant="warning">
+                <p className="font-medium">
+                  {(data.preview.ungroupedCategoryMembers ?? []).reduce((sum, row) => sum + row.members.length, 0)} member(s) sharing a subscription category are billed separately, not as one group
+                </p>
+                <p className="mt-1 text-muted-foreground">
+                  Each is still billed the full category rate on their own — for a couple/family-style category this can cost MORE than their individual membership-type rates. They are not in the same family group, which is required for a category to bill them together. Group them on their Family card, or leave as-is if this club genuinely bills this category per person.
+                </p>
+                <ul className="mt-2 space-y-2">
+                  {(data.preview.ungroupedCategoryMembers ?? []).map((row) => (
+                    <li key={row.subscriptionCategoryId}>
+                      <span className="font-medium">{row.subscriptionCategoryName}:</span>{" "}
+                      {row.members.map((member) => member.memberName).join(", ")}
+                    </li>
+                  ))}
+                </ul>
+              </Alert>
             ) : null}
             {((data.preview.alreadyInvoiced ?? []).length + (data.preview.alreadyInvoicedFamilies ?? []).length) > 0 ? (
               <details className="rounded-md border p-3 text-sm">

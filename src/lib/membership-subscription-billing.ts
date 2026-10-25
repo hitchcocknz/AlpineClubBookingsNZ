@@ -758,20 +758,26 @@ export async function buildSubscriptionBillingPreview(input: {
   // the season, so a late joiner into an already-billed category/family combo
   // raises an exception instead of a second charge — a simplified sibling of
   // existingFamilyCharges above. VOIDED is excluded (freely re-billable, same
-  // as the type axis). Review finding, corrected: a NOT_REQUIRED charge
-  // (closed as already paid, #4098) is NOT excluded the way the stale comment
-  // here used to claim — a category charge CAN be closed-as-paid once this
-  // feature has shipped, the same as any type charge, and this member only
-  // reaches this code because coveredSet/paidSet already skipped everyone
-  // currently settled — so landing here on a NOT_REQUIRED charge means they
-  // are NOT settled and the closed charge needs the SAME officer decision a
-  // reversed type-axis family gets, not a silent permanent block. This is
-  // deliberately NOT the full #4110 reversed-under-newest-charge machinery
+  // as the type axis). A NOT_REQUIRED charge (closed as already paid, #4098)
+  // is NOT excluded either — a category charge CAN be closed-as-paid once
+  // this feature has shipped, the same as any type charge — but (review
+  // finding, second correction) reaching this code can NOT be assumed to mean
+  // "unsettled": the loop-top coveredSet/paidSet skip has no NOT_REQUIRED
+  // case, so a member settled by EXEMPTION (closed with nothing owing, or a
+  // BASED_ON_AGE_TIER exemption that started after the close) reaches this
+  // code too, exactly as the type axis's own comment on
+  // settledCoveredByFamilyKey warns ("a covered member still settled has
+  // nothing to decide"). So each closed charge's coverage is read, and THIS
+  // member's CURRENT subscription status decides it: covered and still
+  // settled -> nothing to decide, fall through silently like any other
+  // settled member; covered and no longer settled -> the officer decision;
+  // never covered at all -> an ordinary late joiner, same as a live charge.
+  // Deliberately NOT the full #4110 reversed-under-newest-charge machinery
   // (reason-typed, multi-charge-history aware) — that took many review rounds
   // to get right for the type axis and nothing here needs multi-charge
   // history yet (at most one NOT_REQUIRED category charge per family+category
-  // can exist before this ships); it is withheld with an honest, actionable
-  // message rather than invented reasoning about WHY the member is unsettled.
+  // can exist before this ships); withheld with an honest, actionable message
+  // rather than invented reasoning about WHY the member is unsettled.
   const existingCategoryFamilyCharges = await db.membershipSubscriptionCharge.findMany({
     where: {
       seasonYear: input.seasonYear,
@@ -782,14 +788,24 @@ export async function buildSubscriptionBillingPreview(input: {
     // Newest first: if more than one non-voided charge somehow exists for the
     // same family+category (shouldn't, but the live partial unique index only
     // protects LIVE statuses), the Map below keeps the most recent.
-    orderBy: { createdAt: "desc" },
-    select: { id: true, subscriptionCategoryId: true, familyGroupId: true, status: true },
+    orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+    select: {
+      id: true, subscriptionCategoryId: true, familyGroupId: true, status: true,
+      coverage: { select: { subscription: { select: { memberId: true, status: true } } } },
+    },
   });
-  const billedCategoryFamilies = new Map<string, { id: string; status: string }>();
+  const billedCategoryFamilies = new Map<
+    string,
+    { id: string; status: string; coveredMemberStatus: Map<string, string> }
+  >();
   for (const charge of existingCategoryFamilyCharges) {
     const key = `${input.seasonYear}:category:${charge.subscriptionCategoryId}:family:${charge.familyGroupId}`;
     if (!billedCategoryFamilies.has(key)) {
-      billedCategoryFamilies.set(key, { id: charge.id, status: charge.status });
+      billedCategoryFamilies.set(key, {
+        id: charge.id,
+        status: charge.status,
+        coveredMemberStatus: new Map(charge.coverage.map((row) => [row.subscription.memberId, row.subscription.status])),
+      });
     }
   }
 
@@ -1375,17 +1391,38 @@ export async function buildSubscriptionBillingPreview(input: {
       if (categoryFamilyGroupId) {
         const existingCharge = billedCategoryFamilies.get(categoryGroupingKey);
         if (existingCharge?.status === "NOT_REQUIRED") {
-          // Reaching here means this member was NOT skipped by the
-          // coveredSet/paidSet check at the top of the loop — i.e. they are
-          // not currently settled, despite a closed-as-already-paid charge
-          // existing for this family+category. Withheld with an honest,
-          // actionable message — see the big comment on billedCategoryFamilies
-          // for why this deliberately doesn't invent a reversed-vs-exempt
-          // reason the way the type axis's CLOSED_FAMILY_MEMBER_NEEDS_DECISION
-          // machinery does.
+          const coveredStatus = existingCharge.coveredMemberStatus.get(member.id);
+          if (coveredStatus !== undefined && isSubscriptionSettled(coveredStatus)) {
+            // Covered by the closed charge and STILL settled (paid, or
+            // exempt) — "a covered member still settled has nothing to
+            // decide", the same rule the type axis's settledCoveredByFamilyKey
+            // check states. Falls through silently: no entry, no exception,
+            // exactly as if coveredSet/paidSet had skipped them at the top of
+            // the loop (which it would have, had this member's settlement
+            // route been PAID/claimed-coverage rather than the closed
+            // charge's own NOT_REQUIRED snapshot).
+            continue;
+          }
+          if (coveredStatus !== undefined) {
+            // Covered by the closed charge but NO LONGER settled — a
+            // reversal. Withheld with an honest, actionable message — see the
+            // big comment on billedCategoryFamilies for why this deliberately
+            // doesn't invent a reversed-vs-exempt reason the way the type
+            // axis's CLOSED_FAMILY_MEMBER_NEEDS_DECISION machinery does.
+            exceptions.push(exception({
+              code: CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
+              message: `${memberName}'s family ${categoryFamilyGroupId} has a ${subscriptionCategory.name} charge closed as already paid, but ${memberName} is no longer settled. The family is not billed again. Decide how to bill ${memberName}: if the family fee already covers everyone, mark them Paid; otherwise invoice just the difference in Xero by hand.`,
+              seasonYear: input.seasonYear, memberId: member.id, familyGroupId: categoryFamilyGroupId,
+              membershipTypeId: null, subscriptionCategoryId: subscriptionCategory.id,
+              context: { memberName, existingChargeId: existingCharge.id, subscriptionCategoryFeeId: categoryFee.id },
+            }));
+            continue;
+          }
+          // Never covered by the closed charge at all — an ordinary late
+          // joiner, same as against a LIVE charge below.
           exceptions.push(exception({
-            code: CLOSED_FAMILY_MEMBER_NEEDS_DECISION_CODE,
-            message: `${memberName}'s family ${categoryFamilyGroupId} has a ${subscriptionCategory.name} charge closed as already paid, but ${memberName} is not currently settled. The family is not billed again. Decide how to bill ${memberName}: if the family fee already covers everyone, mark them Paid; otherwise invoice just the difference in Xero by hand.`,
+            code: "FAMILY_ALREADY_BILLED",
+            message: `${memberName} joined family ${categoryFamilyGroupId} after its ${subscriptionCategory.name} fee was billed. The immutable family charge was not changed and no second invoice was created.`,
             seasonYear: input.seasonYear, memberId: member.id, familyGroupId: categoryFamilyGroupId,
             membershipTypeId: null, subscriptionCategoryId: subscriptionCategory.id,
             context: { memberName, existingChargeId: existingCharge.id, subscriptionCategoryFeeId: categoryFee.id },

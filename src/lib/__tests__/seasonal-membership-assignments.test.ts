@@ -667,6 +667,54 @@ describe("seasonal membership assignment preview and save", () => {
     );
   });
 
+  // Second review round: the admin card (unlike bulk/import) ALWAYS sends
+  // subscriptionCategoryId explicitly, even when the admin is not touching
+  // it — so gating the archived/built-in checks on "field present" rather
+  // than "value changed" would have 409'd every save for a member whose
+  // category was archived, forever, including a save that only changes
+  // their membership type and resubmits the SAME archived category id.
+  it("does not block a save that EXPLICITLY resubmits the member's own already-archived category unchanged (admin card shape)", async () => {
+    const db = makePreviewDb();
+    const archivedCategory = { id: "cat-old", key: "OLD", name: "Old Category", isActive: false, isBuiltIn: false };
+    db.subscriptionCategory.findUnique = vi.fn().mockResolvedValue(archivedCategory);
+    const assignedWithArchivedCategory = {
+      ...previousAssignment(),
+      subscriptionCategoryId: "cat-old",
+      subscriptionCategory: archivedCategory,
+    };
+    db.seasonalMembershipAssignment.findUnique = vi.fn().mockResolvedValue(assignedWithArchivedCategory);
+    db.seasonalMembershipAssignment.findUniqueOrThrow = vi.fn().mockResolvedValue(assignedWithArchivedCategory);
+
+    const previewResult = await getSeasonalMembershipChangePreview({
+      memberId: "member-1",
+      seasonYear: 2026,
+      membershipTypeId: "type-associate",
+      subscriptionCategoryId: "cat-old", // explicit, same as the member already has
+      now: new Date("2026-07-01T00:00:00.000Z"),
+      clubCurrentSeasonYear: 2026,
+      db: db as never,
+    });
+    expect(previewResult.init?.status).toBeUndefined();
+    const preview = (previewResult.body as { preview: { previewToken: string } }).preview;
+
+    const result = await saveSeasonalMembershipAssignment({
+      memberId: "member-1",
+      seasonYear: 2026,
+      membershipTypeId: "type-associate",
+      subscriptionCategoryId: "cat-old",
+      adminMemberId: "admin-1",
+      reason: "changing membership type only",
+      previewToken: preview.previewToken,
+      db: db as never,
+    });
+    expect(result.init?.status).toBeUndefined();
+    expect(db.seasonalMembershipAssignment.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ subscriptionCategoryId: "cat-old" }),
+      }),
+    );
+  });
+
   it("#2106 forces N/A, sweeps ADULT shares and audits old/new tier on a FORCED flip", async () => {
     const db = makePreviewDb();
     const previewResult = await getSeasonalMembershipChangePreview({

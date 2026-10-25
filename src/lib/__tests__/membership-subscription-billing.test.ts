@@ -658,6 +658,7 @@ describe("membership subscription billing", () => {
       id: "charge-existing",
       familyGroupId: "family-1",
       membershipTypeId: "type-1",
+      coverage: [],
     }]);
     mocks.members.findMany.mockResolvedValue([
       member("late", {
@@ -1410,7 +1411,7 @@ describe("membership subscription billing", () => {
     });
 
     it("groups an already-billed selected family under FAMILY_ALREADY_BILLED (never double-covered)", async () => {
-      mocks.charges.findMany.mockResolvedValue([{ id: "charge-B", familyGroupId: "family-B", membershipTypeId: "type-1" }]);
+      mocks.charges.findMany.mockResolvedValue([{ id: "charge-B", familyGroupId: "family-B", membershipTypeId: "type-1", coverage: [] }]);
       mocks.members.findMany.mockResolvedValue([
         member("multi", { billingFamilyGroupId: "family-B", familyGroupMemberships: [familyMembershipFor("family-A"), familyMembershipFor("family-B")] }),
       ]);
@@ -2567,7 +2568,7 @@ describe("membership subscription billing", () => {
     it("raises FAMILY_ALREADY_BILLED for a late joiner into an already-LIVE category/family charge", async () => {
       mocks.charges.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
         where.subscriptionCategoryId
-          ? [{ id: "existing-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1" }]
+          ? [{ id: "existing-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1", coverage: [] }]
           : []);
       mocks.members.findMany.mockResolvedValue([
         categoryMember("late-joiner", {}, { familyGroupMemberships: [familyMembership()] }),
@@ -2583,11 +2584,18 @@ describe("membership subscription billing", () => {
     // payment reversal left a covered member unsettled again — with a
     // message claiming they "joined after" the charge, which is false. It now
     // withholds with CLOSED_FAMILY_MEMBER_NEEDS_DECISION, the same actionable
-    // code the type axis raises for the equivalent reversal case.
+    // code the type axis raises for the equivalent reversal case. The
+    // covered member's CURRENT subscription status (not merely "reached this
+    // code") is what decides it — see the second review round's fix to the
+    // first version of this test, which could not tell a genuine reversal
+    // apart from a settled-but-exempt member (the next test below).
     it("raises CLOSED_FAMILY_MEMBER_NEEDS_DECISION, not FAMILY_ALREADY_BILLED, when a closed-as-paid category charge's member is unsettled again", async () => {
       mocks.charges.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
         where.subscriptionCategoryId
-          ? [{ id: "closed-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1", status: "NOT_REQUIRED" }]
+          ? [{
+              id: "closed-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1", status: "NOT_REQUIRED",
+              coverage: [{ subscription: { memberId: "reversed-member", status: "UNPAID" } }],
+            }]
           : []);
       mocks.members.findMany.mockResolvedValue([
         categoryMember("reversed-member", {}, { familyGroupMemberships: [familyMembership()] }),
@@ -2600,6 +2608,49 @@ describe("membership subscription billing", () => {
         familyGroupId: "family-1",
         context: expect.objectContaining({ existingChargeId: "closed-category-charge" }),
       });
+    });
+
+    // Second review-round finding: reaching this code (not in coveredSet or
+    // paidSet at the loop top) does NOT by itself mean "unsettled" — a member
+    // can be settled via NOT_REQUIRED exemption, which neither set captures.
+    // "A covered member still settled has nothing to decide" (the type
+    // axis's own rule for the identical case): this member must fall through
+    // completely silently, no entry and no exception, exactly as if the
+    // closed charge did not exist.
+    it("raises nothing for a member the closed charge covered who is STILL settled (exempt, not reversed)", async () => {
+      mocks.charges.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        where.subscriptionCategoryId
+          ? [{
+              id: "closed-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1", status: "NOT_REQUIRED",
+              coverage: [{ subscription: { memberId: "still-settled", status: "NOT_REQUIRED" } }],
+            }]
+          : []);
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("still-settled", {}, { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions).toEqual([]);
+    });
+
+    // And a member the closed charge never covered at all (a genuine late
+    // joiner) must still raise the ordinary FAMILY_ALREADY_BILLED, exactly as
+    // against a LIVE charge — not the decision code, which is only for a
+    // member the closed charge DID cover.
+    it("raises plain FAMILY_ALREADY_BILLED for a member the closed charge never covered (a late joiner, not a reversal)", async () => {
+      mocks.charges.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        where.subscriptionCategoryId
+          ? [{
+              id: "closed-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1", status: "NOT_REQUIRED",
+              coverage: [{ subscription: { memberId: "someone-else", status: "PAID" } }],
+            }]
+          : []);
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("late-joiner-2", {}, { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["FAMILY_ALREADY_BILLED"]);
     });
 
     it("existing type-axis tests are unaffected: a member with no subscriptionCategory on their assignment takes the unmodified type path", async () => {
