@@ -102,8 +102,12 @@ group lists each `install-scripts` pattern under `exclude-patterns`: Dependabot
 scores group matches rather than taking the first, so group order alone let
 them slip into the catch-all (#4364). `verify` runs
 `node scripts/ci/check-allow-builds.mjs` before the install; it fails when the
-two lists differ, and when an approval no longer matches the version
-`pnpm-lock.yaml` resolves, naming the package and both versions. When that
+two lists differ in either direction, when an approved package matches no
+`install-scripts` pattern, and when an approval no longer matches the version
+`pnpm-lock.yaml` resolves, naming the package and both versions. Adding a
+package to `allowBuilds` therefore also means adding a pattern that matches it
+to both groups in `.github/dependabot.yml`: the `install-scripts` group's
+`patterns` and the other group's `exclude-patterns`. When that
 check, or the install itself with `ERR_PNPM_IGNORED_BUILDS <name>@<version>`,
 fails on a bump:
 

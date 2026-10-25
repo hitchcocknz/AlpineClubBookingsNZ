@@ -104,6 +104,16 @@ describe("lockfileVersions", () => {
   });
 });
 
+describe("lockfileVersions with peer suffixes", () => {
+  it("cuts a peer suffix before splitting the name, so its `@` is not the package's", () => {
+    const lockText = LOCK.replace("  esbuild@0.28.1:\n", "  esbuild@0.28.1(react@19.0.0):\n");
+    const versions = lockfileVersions(lockText);
+    expect([...versions.get("esbuild")].sort()).toEqual(["0.27.0", "0.28.1"]);
+    expect([...versions.keys()].filter((name) => name.includes("("))).toEqual([]);
+    expect(allowBuildsProblems({ workspaceText: WORKSPACE, lockText })).toEqual([]);
+  });
+});
+
 describe("allowBuildsProblems", () => {
   it("passes when every approval matches the lockfile", () => {
     expect(allowBuildsProblems({ workspaceText: WORKSPACE, lockText: LOCK })).toEqual([]);
@@ -167,8 +177,86 @@ describe("dependabotGroupProblems", () => {
   it("fails when an approved package matches no install-scripts pattern", () => {
     const workspaceText = WORKSPACE.replace("prisma@7.10.0: true", "prisma@7.10.0: true\n  unrs-resolver@1.12.2: true");
     expect(dependabotGroupProblems({ dependabotText: DEPENDABOT, workspaceText })).toEqual([
-      expect.stringContaining("unrs-resolver runs an approved install script, but no `install-scripts` pattern matches it"),
+      expect.stringContaining("unrs-resolver runs an approved install script, but no `install-scripts` pattern in the npm entry for `/` matches it"),
     ]);
+  });
+});
+
+describe("dependabotGroupProblems across npm entries", () => {
+  const second = (groups) =>
+    DEPENDABOT.replace(
+      "  - package-ecosystem: github-actions\n",
+      `  - package-ecosystem: npm\n    directory: /tools\n    groups:\n${groups}  - package-ecosystem: github-actions\n`,
+    );
+
+  it("checks a second npm entry, not only the first", () => {
+    const dependabotText = second(
+      '      install-scripts:\n        patterns:\n          - "prisma"\n          - "@prisma/' +
+        '*"\n          - "esbuild"\n      everything:\n        update-types:\n          - minor\n',
+    );
+    expect(dependabotGroupProblems({ dependabotText, workspaceText: WORKSPACE })).toEqual([
+      expect.stringContaining("the npm entry for `/tools` group `everything` does not exclude"),
+    ]);
+  });
+
+  it("fails an npm entry that has groups but no install-scripts group", () => {
+    const dependabotText = second("      everything:\n        update-types:\n          - minor\n");
+    expect(dependabotGroupProblems({ dependabotText, workspaceText: WORKSPACE })).toEqual([
+      expect.stringContaining("the npm entry for `/tools` has `groups` but no `install-scripts` group"),
+    ]);
+  });
+
+  it("leaves an npm entry with no groups alone", () => {
+    const dependabotText = DEPENDABOT.replace(
+      "  - package-ecosystem: github-actions\n",
+      "  - package-ecosystem: npm\n    directory: /tools\n  - package-ecosystem: github-actions\n",
+    );
+    expect(dependabotGroupProblems({ dependabotText, workspaceText: WORKSPACE })).toEqual([]);
+  });
+});
+
+describe("dependabotGroupProblems is two-way", () => {
+  it("fails a catch-all that excludes a pattern the install-scripts group does not list", () => {
+    const dependabotText = DEPENDABOT.replace(
+      '          - "esbuild"\n  - package-ecosystem: github-actions',
+      '          - "esbuild"\n          - "lodash"\n  - package-ecosystem: github-actions',
+    );
+    expect(dependabotText).not.toBe(DEPENDABOT);
+    expect(dependabotGroupProblems({ dependabotText, workspaceText: WORKSPACE })).toEqual([
+      expect.stringContaining('group `npm-minor-and-patch` excludes "lodash", which is not an `install-scripts` pattern'),
+    ]);
+  });
+});
+
+describe("dependabotGroupProblems refuses flow-style lists", () => {
+  it("throws on flow-style install-scripts patterns instead of reading them as empty", () => {
+    const at = DEPENDABOT.indexOf("        patterns:\n");
+    const end = DEPENDABOT.indexOf("      npm-minor-and-patch:");
+    const dependabotText =
+      DEPENDABOT.slice(0, at) + '        patterns: ["prisma", "esbuild"]\n' + DEPENDABOT.slice(end);
+    expect(() => dependabotGroupProblems({ dependabotText, workspaceText: WORKSPACE })).toThrow(
+      /group `install-scripts` `patterns` is written as a flow-style list.*Use a block sequence/,
+    );
+  });
+
+  it("throws on flow-style exclude-patterns instead of reading them as empty", () => {
+    const at = DEPENDABOT.indexOf("        exclude-patterns:\n");
+    const end = DEPENDABOT.indexOf("  - package-ecosystem: github-actions");
+    const dependabotText =
+      DEPENDABOT.slice(0, at) + '        exclude-patterns: ["prisma", "esbuild"]\n' + DEPENDABOT.slice(end);
+    expect(() => dependabotGroupProblems({ dependabotText, workspaceText: WORKSPACE })).toThrow(
+      /group `npm-minor-and-patch` `exclude-patterns` is written as a flow-style list.*Use a block sequence/,
+    );
+  });
+});
+
+describe("CONTRIBUTING.md", () => {
+  it("tells whoever adds an allowBuilds package to add its pattern to both Dependabot groups", () => {
+    const text = readFileSync(path.join(REPO_ROOT, "CONTRIBUTING.md"), "utf8").replace(/\s+/g, " ");
+    expect(text).toContain(
+      "Adding a package to `allowBuilds` therefore also means adding a pattern that matches it to both " +
+        "groups in `.github/dependabot.yml`",
+    );
   });
 });
 

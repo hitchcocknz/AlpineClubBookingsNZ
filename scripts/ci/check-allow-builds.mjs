@@ -18,9 +18,9 @@
  * dependency to the first group that matches, as its documentation says: the
  * updater scores every match (dependabot-core `PatternSpecificityCalculator`),
  * and a group with no `patterns` outscores a wildcard such as `@sentry/*`. So
- * every other npm group must list each `install-scripts` pattern under
- * `exclude-patterns`, and every approved package must match one of those
- * patterns.
+ * in every npm update entry with groups, every other group's `exclude-patterns`
+ * must be exactly the `install-scripts` patterns, and every approved package
+ * must match one of those patterns.
  *
  * Source-only: it reads three files with the repository's own YAML reader
  * (`parseWorkflowYaml`), needs no install and no network, and so runs in
@@ -41,11 +41,17 @@ export const INSTALL_SCRIPTS_GROUP = "install-scripts";
 export const REAPPROVAL_GUIDE =
   'CONTRIBUTING.md -> "Package manager: pnpm" -> "Bumping a package that runs an install script"';
 
-/** `@scope/name@1.2.3` -> `@scope/name` and `1.2.3`; a bare name has no version. */
+/**
+ * `@scope/name@1.2.3` -> `@scope/name` and `1.2.3`; a bare name has no version.
+ * A lockfile key can carry a peer suffix, `esbuild@0.28.1(react@19.0.0)`, whose
+ * own `@` is not the package's: cut it off before looking for the last `@`.
+ */
 function splitNameAndVersion(key) {
-  const at = key.lastIndexOf("@");
-  if (at <= 0) return { name: key, version: undefined };
-  return { name: key.slice(0, at), version: key.slice(at + 1) };
+  const paren = key.indexOf("(");
+  const base = paren === -1 ? key : key.slice(0, paren);
+  const at = base.lastIndexOf("@");
+  if (at <= 0) return { name: base, version: undefined };
+  return { name: base.slice(0, at), version: base.slice(at + 1) };
 }
 
 /**
@@ -79,7 +85,7 @@ export function lockfileVersions(lockText) {
     const { name, version } = splitNameAndVersion(key);
     if (version === undefined) continue;
     if (!versions.has(name)) versions.set(name, new Set());
-    versions.get(name).add(version.split("(")[0]);
+    versions.get(name).add(version);
   }
   return versions;
 }
@@ -130,39 +136,93 @@ function asList(value) {
   return Array.isArray(value) ? value : [];
 }
 
-/** Why `.github/dependabot.yml` could let an approved package escape its group; empty when it cannot. */
-export function dependabotGroupProblems({ dependabotText, workspaceText }) {
-  const updates = asList(parseWorkflowYaml(dependabotText).updates);
-  const npm = updates.find((update) => update?.["package-ecosystem"] === "npm");
-  if (!npm) return [`${DEPENDABOT_FILE}: no \`npm\` update entry.`];
-  const groups = npm.groups ?? {};
+/**
+ * A `patterns` or `exclude-patterns` value. The shared YAML reader keeps a
+ * flow-style list (`["a", "b"]`) as one raw string, which would otherwise read
+ * as an empty list and pass every check; refuse it instead.
+ */
+function patternList(value, where) {
+  if (typeof value === "string") {
+    throw new Error(
+      `${DEPENDABOT_FILE}: ${where} is written as a flow-style list (\`${value}\`). ` +
+        "Use a block sequence, one `- pattern` per line, so this check can read it.",
+    );
+  }
+  return asList(value);
+}
+
+function samePatterns(a, b) {
+  const left = new Set(a);
+  const right = new Set(b);
+  return left.size === right.size && [...left].every((pattern) => right.has(pattern));
+}
+
+/** The problems in one `package-ecosystem: npm` entry that has `groups`. */
+function npmEntryProblems(groups, label, approved) {
   const installScripts = groups[INSTALL_SCRIPTS_GROUP];
-  const patterns = asList(installScripts?.patterns);
+  if (!installScripts) {
+    return [
+      `${DEPENDABOT_FILE}: ${label} has \`groups\` but no \`${INSTALL_SCRIPTS_GROUP}\` group, so ` +
+        "an install-script package lands in another group's PR.",
+    ];
+  }
+  const patterns = patternList(installScripts.patterns, `${label} group \`${INSTALL_SCRIPTS_GROUP}\` \`patterns\``);
   if (patterns.length === 0) {
-    return [`${DEPENDABOT_FILE}: the npm \`${INSTALL_SCRIPTS_GROUP}\` group has no \`patterns\`.`];
+    return [`${DEPENDABOT_FILE}: ${label} \`${INSTALL_SCRIPTS_GROUP}\` group has no \`patterns\`.`];
   }
 
   const problems = [];
   for (const [name, group] of Object.entries(groups)) {
     if (name === INSTALL_SCRIPTS_GROUP) continue;
-    const excluded = new Set(asList(group?.["exclude-patterns"]));
-    const missing = patterns.filter((pattern) => !excluded.has(pattern));
-    if (missing.length > 0) {
-      problems.push(
-        `${DEPENDABOT_FILE}: group \`${name}\` does not exclude ${missing.map((p) => `"${p}"`).join(", ")}. ` +
-          `Dependabot scores group matches rather than taking the first, so every other npm group ` +
-          `must list each \`${INSTALL_SCRIPTS_GROUP}\` pattern under \`exclude-patterns\`.`,
+    const excluded = patternList(group?.["exclude-patterns"], `${label} group \`${name}\` \`exclude-patterns\``);
+    if (samePatterns(excluded, patterns)) continue;
+    const missing = patterns.filter((pattern) => !excluded.includes(pattern));
+    const extra = excluded.filter((pattern) => !patterns.includes(pattern));
+    const parts = [];
+    if (missing.length > 0) parts.push(`does not exclude ${missing.map((p) => `"${p}"`).join(", ")}`);
+    if (extra.length > 0) {
+      parts.push(
+        `excludes ${extra.map((p) => `"${p}"`).join(", ")}, which ${extra.length === 1 ? "is" : "are"} not ` +
+          `an \`${INSTALL_SCRIPTS_GROUP}\` pattern`,
       );
     }
+    problems.push(
+      `${DEPENDABOT_FILE}: ${label} group \`${name}\` ${parts.join(" and ")}. ` +
+        `Dependabot scores group matches rather than taking the first, so every other npm group's ` +
+        `\`exclude-patterns\` must be exactly the \`${INSTALL_SCRIPTS_GROUP}\` patterns.`,
+    );
   }
-  for (const { name, allowed } of readAllowBuilds(workspaceText)) {
-    if (!allowed) continue;
+  for (const name of approved) {
     if (!patterns.some((pattern) => matchesPattern(pattern, name))) {
       problems.push(
         `${DEPENDABOT_FILE}: ${name} runs an approved install script, but no ` +
-          `\`${INSTALL_SCRIPTS_GROUP}\` pattern matches it.`,
+          `\`${INSTALL_SCRIPTS_GROUP}\` pattern in ${label} matches it.`,
       );
     }
+  }
+  return problems;
+}
+
+/**
+ * Why `.github/dependabot.yml` could let an approved package escape its group;
+ * empty when it cannot. Every `package-ecosystem: npm` entry with `groups` is
+ * checked: it needs an `install-scripts` group whose `patterns` cover every
+ * approved package, and every other group's `exclude-patterns` must be exactly
+ * those patterns, no more and no fewer. Throws on a flow-style pattern list.
+ */
+export function dependabotGroupProblems({ dependabotText, workspaceText }) {
+  const updates = asList(parseWorkflowYaml(dependabotText).updates);
+  const npmEntries = updates.filter((update) => update?.["package-ecosystem"] === "npm");
+  if (npmEntries.length === 0) return [`${DEPENDABOT_FILE}: no \`npm\` update entry.`];
+  const approved = readAllowBuilds(workspaceText)
+    .filter((entry) => entry.allowed)
+    .map((entry) => entry.name);
+
+  const problems = [];
+  for (const entry of npmEntries) {
+    if (entry.groups === undefined || entry.groups === null) continue;
+    const label = `the npm entry for \`${entry.directory ?? "/"}\``;
+    problems.push(...npmEntryProblems(entry.groups, label, approved));
   }
   return problems;
 }
