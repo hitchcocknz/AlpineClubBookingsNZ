@@ -697,6 +697,10 @@ The internal deployment engine in the same script:
 
 If `APP_IMAGE` and `MIGRATE_IMAGE` are not supplied, the internal engine keeps
 the old local-build path for bootstrap, staging, and recovery work.
+Image validation reads each service's image from `docker compose config`, so
+directory-name normalization, a `.env`-only `COMPOSE_PROJECT_NAME`, and explicit
+image overrides match the images Compose actually builds and runs. An unresolved
+image stops the engine before image inspection; it never guesses a local tag.
 
 ## Public Rate Limits And Proxy Headers
 
