@@ -40,6 +40,7 @@ import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-ca
 import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-receipt";
 import { readCaptureRecorder } from "@/lib/additional-capture-recorder";
 import { captureChangeId } from "@/lib/additional-capture-receipt-link";
+import { lateCaptureStillKept } from "@/lib/kept-late-capture-change-receipt";
 import type { PrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-fee-at-link";
 
 export type AdditionalCaptureReceiptEnqueueResult =
@@ -134,11 +135,9 @@ export async function enqueueAdditionalCaptureReceiptOperation(
     if (existing) return { outcome: "already-queued" as const, queueOperationId: existing.id };
     if (cancelled) {
       // #4324: still kept, read under the lock the receipt's worker reads it under.
-      const task = await tx.manualRefundTask.findUnique({
-        where: { lateCaptureApprovalIntentId: paymentIntentId },
-        select: { status: true },
-      });
-      if (task?.status !== "DISMISSED") return { outcome: "not-eligible" as const, reason: "capture-not-kept" as const };
+      if (!(await lateCaptureStillKept(tx, paymentIntentId))) {
+        return { outcome: "not-eligible" as const, reason: "capture-not-kept" as const };
+      }
     }
     const recorder = await readCaptureRecorder(
       {

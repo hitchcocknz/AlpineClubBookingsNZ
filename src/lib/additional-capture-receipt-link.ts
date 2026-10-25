@@ -18,6 +18,33 @@ import { SUPPLEMENTARY_INVOICE_PAYMENT_ROLE } from "@/lib/xero-inbound/object-li
 /** The link the capture's Xero payment writes, on its `PaymentTransaction`. */
 export const ADDITIONAL_CAPTURE_PAYMENT_ROLE = "ADDITIONAL_CAPTURE_PAYMENT";
 
+type ReceiptLinkStore = Pick<Prisma.TransactionClient, "paymentTransaction" | "xeroObjectLink" | "xeroSyncOperation">;
+
+/**
+ * #3953: the Xero invoice a capture's receipt's payment link names, on the
+ * capture's `PaymentTransaction` (null while none is linked). The one read of
+ * that link: the refund paths and (#4324) the late-capture receipt verdict
+ * build on it.
+ */
+export async function readAdditionalCaptureReceiptLinkedInvoiceId(
+  paymentTransactionId: string,
+  store: Pick<Prisma.TransactionClient, "xeroObjectLink"> = prisma,
+): Promise<string | null> {
+  const link = await store.xeroObjectLink.findFirst({
+    where: {
+      localModel: "PaymentTransaction",
+      localId: paymentTransactionId,
+      xeroObjectType: "PAYMENT",
+      role: ADDITIONAL_CAPTURE_PAYMENT_ROLE,
+      active: true,
+    },
+    orderBy: { createdAt: "desc" },
+    select: { metadata: true },
+  });
+  const linked = asRecord(link?.metadata)?.invoiceId;
+  return typeof linked === "string" && linked.length > 0 ? linked : null;
+}
+
 /**
  * #3953: the Xero invoice a capture's receipt was recorded against, from its
  * payment link, or - review round 1 (L) - the invoice its receipt row has
@@ -27,26 +54,15 @@ export const ADDITIONAL_CAPTURE_PAYMENT_ROLE = "ADDITIONAL_CAPTURE_PAYMENT";
  */
 export async function findAdditionalCaptureReceiptInvoiceId(
   paymentIntentId: string,
-  store: Pick<Prisma.TransactionClient, "paymentTransaction" | "xeroObjectLink" | "xeroSyncOperation"> = prisma,
+  store: ReceiptLinkStore = prisma,
 ): Promise<string | null> {
   const transaction = await store.paymentTransaction.findUnique({
     where: { stripePaymentIntentId: paymentIntentId },
     select: { id: true },
   });
   if (!transaction) return null;
-  const link = await store.xeroObjectLink.findFirst({
-    where: {
-      localModel: "PaymentTransaction",
-      localId: transaction.id,
-      xeroObjectType: "PAYMENT",
-      role: ADDITIONAL_CAPTURE_PAYMENT_ROLE,
-      active: true,
-    },
-    orderBy: { createdAt: "desc" },
-    select: { metadata: true },
-  });
-  const linked = asRecord(link?.metadata)?.invoiceId;
-  if (typeof linked === "string" && linked.length > 0) return linked;
+  const linked = await readAdditionalCaptureReceiptLinkedInvoiceId(transaction.id, store);
+  if (linked) return linked;
   const pending = await store.xeroSyncOperation.findFirst({
     where: {
       localModel: "PaymentTransaction",

@@ -2,7 +2,7 @@ import { ManualRefundTaskStatus, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { KEPT_LATE_CAPTURE_INVOICE_ROLE, xeroCreateCallAttempted } from "@/lib/late-capture-kept-xero-rules";
 import { asRecord } from "@/lib/xero-json";
-import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
+import { readAdditionalCaptureReceiptLinkedInvoiceId } from "@/lib/additional-capture-receipt-link";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 import { automaticCancelledBookingRefundTaskReasons } from "@/lib/deleted-booking-modification-payment";
 import {
@@ -170,36 +170,26 @@ async function readReceipt(
 }
 
 /**
- * #4324: the capture's own receipt (`ADDITIONAL_CAPTURE_RECEIPT`, the payment
- * link its worker writes on the capture's `PaymentTransaction`), as the
- * verdict above reads it.
+ * #4324: the capture's own receipt (`ADDITIONAL_CAPTURE_RECEIPT`), as the
+ * verdict above reads it: its payment link on the capture's
+ * `PaymentTransaction` (`readAdditionalCaptureReceiptLinkedInvoiceId`, the one
+ * read of it; every receipt row is keyed on that row), else how its rows stand.
  */
 async function readKeptCaptureReceipt(paymentIntentId: string, store: ReceiptStore): Promise<LateCaptureXeroReceipt> {
-  const link = await store.xeroObjectLink.findFirst({
-    where: {
-      localModel: "PaymentTransaction",
-      xeroObjectType: "PAYMENT",
-      role: ADDITIONAL_CAPTURE_PAYMENT_ROLE,
-      active: true,
-      metadata: { path: ["paymentIntentId"], equals: paymentIntentId },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { metadata: true },
-  });
-  const linkedInvoiceId = asRecord(link?.metadata)?.invoiceId;
-  if (typeof linkedInvoiceId === "string" && linkedInvoiceId.length > 0) {
-    return { kind: "recorded", invoiceId: linkedInvoiceId };
-  }
   const rows = await store.xeroSyncOperation.findMany({
     where: {
       queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
-      status: { not: "CANCELLED" },
       requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
     },
-    select: { status: true, manuallyResolvedAt: true, requestPayload: true },
+    select: { localId: true, status: true, manuallyResolvedAt: true, requestPayload: true },
   });
-  if (rows.some((row) => row.manuallyResolvedAt !== null)) return { kind: "resolved-by-hand" };
-  const decided = rows.filter((row) => asRecord(row.requestPayload)?.plan != null && row.status !== "SUCCEEDED");
+  const transactionId = rows.find((row) => row.localId)?.localId;
+  if (!transactionId) return { kind: "none" };
+  const linkedInvoiceId = await readAdditionalCaptureReceiptLinkedInvoiceId(transactionId, store);
+  if (linkedInvoiceId) return { kind: "recorded", invoiceId: linkedInvoiceId };
+  const live = rows.filter((row) => row.status !== "CANCELLED");
+  if (live.some((row) => row.manuallyResolvedAt !== null)) return { kind: "resolved-by-hand" };
+  const decided = live.filter((row) => asRecord(row.requestPayload)?.plan != null && row.status !== "SUCCEEDED");
   if (decided.length === 0) return { kind: "none" };
   return decided.every((row) => row.status === "FAILED")
     ? { kind: "recorded", invoiceId: null, invoiceFailed: true, invoiceMayBeInXero: true }

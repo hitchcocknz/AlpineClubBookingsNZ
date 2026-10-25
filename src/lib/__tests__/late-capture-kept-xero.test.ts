@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   lockSupplementaryInvoiceAnchor: vi.fn(),
   findLiveKeptReceiptRow: vi.fn(),
   enqueueAdditionalCaptureReceiptOperation: vi.fn(),
+  readCreditReleaseCaptureShare: vi.fn(),
 }));
 
 vi.mock("@/lib/xero-kept-late-capture-invoice", () => ({
@@ -48,6 +49,9 @@ vi.mock("@/lib/additional-capture-receipt-enqueue", () => ({
 vi.mock("@/lib/additional-capture-xero-receipt", () => ({
   additionalCaptureReceiptKey: (intent: string) => `receipt-key:${intent}`,
 }));
+vi.mock("@/lib/credit-release-capture-share", () => ({
+  readCreditReleaseCaptureShare: (...a: unknown[]) => mocks.readCreditReleaseCaptureShare(...a),
+}));
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({
   creditBackLateCaptureRefunds: (...a: unknown[]) => mocks.creditBackLateCaptureRefunds(...a),
 }));
@@ -68,6 +72,7 @@ import {
   type KeptChangeCaptureEvidence,
 } from "@/lib/late-capture-kept-xero-rules";
 import type { ClubTimeZone } from "@/lib/club-time";
+import logger from "@/lib/logger";
 
 /**
  * #3635 (owner decision 29 Sep 2026): a late capture a treasurer KEPT on a
@@ -120,6 +125,7 @@ beforeEach(() => {
   mocks.operationFindMany.mockReset().mockResolvedValue([]);
   mocks.modificationFindUnique.mockResolvedValue({ newData: {} });
   mocks.findLiveKeptReceiptRow.mockResolvedValue(null);
+  mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 0, held: false });
   mocks.enqueueAdditionalCaptureReceiptOperation.mockResolvedValue({ outcome: "queued", queueOperationId: "op_receipt" });
   mocks.enqueueXeroKeptLateCaptureInvoiceOperation.mockResolvedValue({
     queueOperationId: "op_kept",
@@ -468,6 +474,67 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       });
       await expect(plan()).resolves.toEqual({ kind: "kept-invoice-queued", queueOperationId: "op_kept" });
       expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
+    });
+
+    describe("MUTATION (#4253 credit-release sweep, review M-F1/M-F2): its share of the capture is never recorded twice", () => {
+      const withdrawn = () =>
+        mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }]);
+      const unknownChange = () =>
+        mocks.transactionFindUnique.mockResolvedValue({
+          kind: "ADDITIONAL",
+          status: "SUCCEEDED",
+          amountCents: 8000,
+          paymentId: "payment-1",
+          bookingModificationId: null,
+          reason: null,
+        });
+
+      it("kept-invoice route: the kept invoice records only the part the sweep does not", async () => {
+        withdrawn();
+        mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 5000, held: false });
+        await expect(plan()).resolves.toEqual({ kind: "kept-invoice-queued", queueOperationId: "op_kept" });
+        expect(mocks.readCreditReleaseCaptureShare).toHaveBeenCalledWith("pi_late", store);
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledWith(
+          expect.objectContaining({ capturedCents: 3000, paymentIntentId: "pi_late" }),
+        );
+      });
+
+      it("kept-invoice route: nothing where the sweep records all of it, or holds it for an officer", async () => {
+        withdrawn();
+        mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 8000, held: false });
+        await expect(plan()).resolves.toEqual({ kind: "none" });
+        withdrawn();
+        mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 0, held: true });
+        await expect(plan()).resolves.toEqual({ kind: "none" });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+      });
+
+      it("change-unknown: a capture the sweep records or holds is logged at info, never as unrecorded", async () => {
+        unknownChange();
+        mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 8000, held: false });
+        await expect(plan()).resolves.toEqual({ kind: "none" });
+        unknownChange();
+        mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 0, held: true });
+        await expect(plan()).resolves.toEqual({ kind: "none" });
+        expect(logger.error).not.toHaveBeenCalled();
+        expect(logger.info).toHaveBeenCalledTimes(2);
+      });
+
+      it("change-unknown: one nothing records is an error", async () => {
+        unknownChange();
+        await expect(plan()).resolves.toEqual({ kind: "none" });
+        expect(logger.error).toHaveBeenCalledTimes(1);
+      });
+    });
+
+    it("review D-F3: a receipt refused for no primary invoice id is logged as an error, not a warning", async () => {
+      mocks.modificationFindUnique.mockResolvedValue({
+        newData: { primaryInvoiceSettlement: { settledAgainstPrimaryInvoice: true } },
+      });
+      mocks.enqueueAdditionalCaptureReceiptOperation.mockResolvedValue({ outcome: "not-eligible", reason: "no-primary-invoice" });
+      await expect(plan()).resolves.toEqual({ kind: "none" });
+      expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({ reason: "no-primary-invoice" }), expect.any(String));
+      expect(logger.warn).not.toHaveBeenCalled();
     });
 
     it("records nothing where the receipt's enqueue finds another document records it", async () => {

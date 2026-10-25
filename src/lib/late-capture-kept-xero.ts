@@ -20,6 +20,7 @@ import { creditBackLateCaptureRefunds } from "@/lib/late-capture-refund-credit-n
 import { enqueueAdditionalCaptureReceiptOperation } from "@/lib/additional-capture-receipt-enqueue";
 import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-receipt";
 import { captureChangeId } from "@/lib/additional-capture-receipt-link";
+import { readCreditReleaseCaptureShare } from "@/lib/credit-release-capture-share";
 import { recordedPrimaryInvoiceSettlement } from "@/lib/booking-primary-invoice-claim";
 import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import {
@@ -185,12 +186,12 @@ export async function planKeptLateCaptureXeroRecord(params: {
     },
     select: { role: true, xeroObjectType: true, active: true },
   });
-  const queueKeptInvoice = async (): Promise<KeptLateCaptureXeroPlan> => {
+  const queueKeptInvoice = async (capturedCents = decision.recordCents): Promise<KeptLateCaptureXeroPlan> => {
     const queued = await enqueueXeroKeptLateCaptureInvoiceOperation({
       manualRefundTaskId: params.manualRefundTaskId,
       bookingId: params.bookingId,
       paymentIntentId: params.paymentIntentId,
-      capturedCents: decision.recordCents,
+      capturedCents,
       capturedOn: keptLateCaptureDocumentDate(task.createdAt, params.clubZone),
       createdByMemberId: params.actingMemberId ?? null,
       store,
@@ -218,10 +219,18 @@ export async function planKeptLateCaptureXeroRecord(params: {
   const evidence = await readKeptChangeCaptureEvidence(store, { paymentIntentId: params.paymentIntentId, changeId });
   const route = keptChangeCaptureRoute(evidence);
   if (route === "change-invoice") return { kind: "change-payment", paymentIntentId: params.paymentIntentId };
-  if (route === "kept-invoice") return queueKeptInvoice();
-  if (route === "change-unknown") {
+  const logged = { paymentIntentId: params.paymentIntentId, manualRefundTaskId: params.manualRefundTaskId };
+  if (route === "kept-invoice" || route === "change-unknown") {
+    // The #4253 credit-release sweep records its share of the capture on the
+    // primary, or holds the capture for an officer (`INV-ADDPAY-046`).
+    const share = await readCreditReleaseCaptureShare(params.paymentIntentId, store);
+    if (share.held || share.ownCents >= decision.recordCents) {
+      logger.info({ ...logged, share }, "A kept late card payment is recorded, or held for an officer, by the credit-release sweep; nothing more was queued");
+      return { kind: "none" };
+    }
+    if (route === "kept-invoice") return queueKeptInvoice(decision.recordCents - share.ownCents);
     logger.error(
-      { paymentIntentId: params.paymentIntentId, manualRefundTaskId: params.manualRefundTaskId },
+      logged,
       "A kept late card payment names no booking change, so which Xero invoice bills it cannot be told; nothing was queued, and the booking-vs-Xero repair tool names it",
     );
     return { kind: "none" };
@@ -232,10 +241,11 @@ export async function planKeptLateCaptureXeroRecord(params: {
     createdByMemberId: params.actingMemberId ?? null,
   });
   if (receipt.outcome === "not-eligible") {
-    logger.warn(
-      { paymentIntentId: params.paymentIntentId, reason: receipt.reason },
-      "A kept late card payment's receipt was not queued; another Xero document records it, or the repair tool names it",
-    );
+    const context = { ...logged, reason: receipt.reason };
+    const message = "A kept late card payment's receipt was not queued; another Xero document records it, or the repair tool names it";
+    // No primary invoice id beside an active link is drift: nothing records it until the field is synced.
+    if (receipt.reason === "no-primary-invoice") logger.error(context, message);
+    else logger.warn(context, message);
     return { kind: "none" };
   }
   return { kind: "receipt-queued", queueOperationId: receipt.queueOperationId };
