@@ -92,8 +92,13 @@ const OWNER = "@thatskiff33";
  * And 25 Oct 2026 (#4270, merged onto #4253's new money modules,
  * which the ceiling above had no room for): the same four mirror modules
  * measured on the composed tree, 277 of 1480, 18.72%, so the ceiling moves to 18.8%.
+ * And 25 Oct 2026 (#4312, under the owner's decision setting the ceiling at 19%,
+ * https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4320#issuecomment-6391295547):
+ * the bank-transfer card refund note modules (`card-refund-own-note*.ts`,
+ * `card-refund-resend-answer.ts`), owned by the existing `*refund*` glob, so the
+ * ceiling moves to 19%.
  */
-const MAX_OWNED_SRC_LIB_SHARE = 0.188;
+const MAX_OWNED_SRC_LIB_SHARE = 0.19;
 
 /**
  * Outside `src/lib`, a share of one directory bounds nothing, so every pattern
