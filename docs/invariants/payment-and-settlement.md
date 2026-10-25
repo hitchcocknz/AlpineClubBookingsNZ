@@ -1657,15 +1657,17 @@ change capture's receipt).
     late-success release (`INV-PAY-104`);
   - the change settled against the primary, has no supplementary invoice,
     or a live one: its receipt, capped at the invoice's AmountDue;
-  - its every supplementary invoice withdrawn: the kept-capture invoice;
+  - its every supplementary invoice withdrawn: the kept-capture invoice,
+    less the credit-release sweep's share;
   - no change readable: nothing, and the repair tool names it.
 - **One recorder.** `readCaptureRecorder` and `anchorCaptureHasReceipt` count
   a kept-capture invoice; a replayed release finds the receipt; the receipt
-  verdict (`readLateCaptureXeroReceipt`) counts it, so refunds get notes. No
-  gap invoice is raised on a cancelled booking.
-- **Reopen.** Its worker re-reads the task under the anchor before storing a
-  decision; an approval withdraws an undecided receipt, and one already
-  decided sends and is noted.
+  verdict counts it, so refunds get notes. No gap invoice on a cancelled
+  booking, and no supplementary invoice for a change a kept-capture invoice
+  bills.
+- **Reopen.** Its worker re-reads the task under the anchor and, no longer
+  kept, closes its row in that transaction; an approval takes the anchor
+  first and withdraws an undecided receipt.
 - **Repair.** `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`, listed by the dry
   run, recorded automatically by `--apply`.
 - Pinned by `xero-kept-late-capture-ledger.test.ts` (e3, e4),
