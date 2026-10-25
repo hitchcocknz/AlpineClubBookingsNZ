@@ -3277,18 +3277,11 @@ export async function processQueuedXeroOutboxOperations(options?: {
           result.skipped += 1;
           continue;
         }
-        // #4356: a caller sharing this row recorded a success on it, so the
-        // handler's own failure was refused (`INV-INT-028`). Nothing to return
-        // and nothing failed: that outcome stands.
-        const held = await prisma.xeroSyncOperation.findUnique({
-          where: { id: queuedOperation.id },
-          select: { status: true },
-        });
+        // #4356: a caller sharing this row recorded a success on it, so the handler's
+        // own failure was refused (`INV-INT-028`): nothing failed, that outcome stands.
+        const held = await prisma.xeroSyncOperation.findUnique({ where: { id: queuedOperation.id }, select: { status: true } });
         if (held && holdsRecordedXeroSuccess(held.status)) {
-          logger.info(
-            { queueOperationId: queuedOperation.id, queueType: payload?.queueType ?? null, heldStatus: held.status },
-            "Xero cooldown refused an outbox operation another caller had already completed; its outcome stands"
-          );
+          logger.info({ queueOperationId: queuedOperation.id, heldStatus: held.status }, "Xero cooldown refused an outbox operation another caller had already completed; its outcome stands");
           result.skipped += 1;
           continue;
         }

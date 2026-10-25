@@ -374,27 +374,23 @@ async function runWithClaimedOriginal<T>(
   run: (claimedAt: Date) => Promise<T>,
   // #4256: a PARTIAL repair claims only PARTIAL and stamps its marker code; a
   // throw, or a stale reset of a dead run, gives the row back PARTIAL with its
-  // payload, so it stays repairable. #4356: the FAILED refund-note repair
-  // stamps its own `marker`; a throw or a stale reset gives that row back
-  // FAILED. A marked claim takes no other caller's late outcome (`INV-INT-028`).
+  // payload, so it stays repairable. #4356: `marker` marks a FAILED repair's claim.
   options?: { from: "PARTIAL"; marker?: never } | { from?: never; marker: typeof XERO_REFUND_NOTE_REPAIR_RUNNING_CODE },
 ): Promise<T> {
   const claimedAt = new Date();
-  const partial = options?.from === "PARTIAL";
-  const marker = partial ? XERO_PARTIAL_REPAIR_RUNNING_CODE : options?.marker;
   const claimed = await prisma.xeroSyncOperation.updateMany({
     // #3635: a resolve landing after the read makes this claim lose; #4256: so
     // does a mark non-replayable.
     where: {
       id: operationId,
-      status: partial ? "PARTIAL" : { in: ["FAILED", "PARTIAL"] },
+      status: options?.from ?? { in: ["FAILED", "PARTIAL"] },
       manuallyResolvedAt: null,
       replayable: true,
     },
     data: {
       status: "RUNNING",
       startedAt: claimedAt,
-      ...(marker ? { lastErrorCode: marker } : {}),
+      ...(options ? { lastErrorCode: options.from ? XERO_PARTIAL_REPAIR_RUNNING_CODE : options.marker } : {}),
     },
   });
   if (claimed.count !== 1) {
@@ -407,7 +403,7 @@ async function runWithClaimedOriginal<T>(
     return await run(claimedAt);
   } catch (error) {
     try {
-      if (partial) {
+      if (options?.from) {
         // Not `abandonedClaimErrors`: the original is back to PARTIAL, not FAILED.
         await prisma.xeroSyncOperation.updateMany({
           where: { id: operationId, status: "RUNNING", startedAt: claimedAt },
@@ -1833,13 +1829,10 @@ export async function retryXeroSyncOperation(
     if (operation.localModel === "Payment") {
       const refundCreditNoteRepair = parseRefundCreditNoteRepairInput(operation);
       if (refundCreditNoteRepair) {
-        // #4256: claimed like the PARTIAL repair; a throw abandons it to FAILED.
-        // #4356: marked, so no other caller's late outcome lands on the claim.
-        await runWithClaimedOriginal(
-          operation.id,
-          (claimedAt) => repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claimedAt),
-          { marker: XERO_REFUND_NOTE_REPAIR_RUNNING_CODE },
-        );
+        // #4256: claimed like the PARTIAL repair; a throw abandons it to FAILED. #4356: marked (`INV-INT-028`).
+        await runWithClaimedOriginal(operation.id, (claimedAt) =>
+          repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claimedAt),
+        { marker: XERO_REFUND_NOTE_REPAIR_RUNNING_CODE });
         return { message: "Repaired Xero refund credit note follow-up actions." };
       }
 
