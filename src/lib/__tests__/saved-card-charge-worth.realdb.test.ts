@@ -283,5 +283,54 @@ async function expectSettledAtWorth(asked: number[], worthCents = WORTH_CENTS): 
       expect(response.body).toMatchObject({ status: "PAID", charged: true });
       await expectSettledAtWorth(asked, CHANGE_FEE_CENTS);
     });
+
+    // #4399: a booking worth $0 (no price, no fee) through each door.
+    async function makeWorthZero(): Promise<void> {
+      await prisma.bookingGuestNight.updateMany({ where: { bookingGuest: { bookingId: BOOKING_ID } }, data: { priceCents: 0 } });
+      await prisma.bookingGuest.updateMany({ where: { bookingId: BOOKING_ID }, data: { priceCents: 0 } });
+      await prisma.booking.update({ where: { id: BOOKING_ID }, data: { totalPriceCents: 0, finalPriceCents: 0 } });
+      await prisma.payment.update({ where: { id: PAYMENT_ID }, data: { changeFeeCents: 0 } });
+    }
+
+    it("#4399: charge-saved-method refuses a booking worth $0 before any claim or Stripe call", async () => {
+      await makeWorthZero();
+      const asked = stripeChargesAsAsked();
+      const response = await json(
+        await chargeRoute.POST(
+          new Request("http://localhost/api/payments/charge-saved-method", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ bookingId: BOOKING_ID }),
+          }) as never,
+        ),
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect(asked).toEqual([]);
+      expect((await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID } })).status).toBe("PENDING");
+      expect(await prisma.paymentTransaction.count({ where: { paymentId: PAYMENT_ID } })).toBe(0);
+    });
+
+    it("#4399: the officer's $0 confirm writes its payment row in the claim's transaction - PAID with a SUCCEEDED $0 payment", async () => {
+      await makeWorthZero();
+      const asked = stripeChargesAsAsked();
+      const response = await json(
+        await confirmGuestsRoute.POST(
+          new Request(`http://localhost/api/admin/bookings/${BOOKING_ID}/confirm-pending-guests`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ notifyMember: false }),
+          }) as never,
+          { params: Promise.resolve({ id: BOOKING_ID }) },
+        ),
+      );
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(response.body).toMatchObject({ status: "PAID", charged: false });
+      expect(asked).toEqual([]);
+      const booking = await prisma.booking.findUniqueOrThrow({
+        where: { id: BOOKING_ID },
+        select: { status: true, payment: { select: { status: true, amountCents: true } } },
+      });
+      expect(booking).toEqual({ status: "PAID", payment: { status: "SUCCEEDED", amountCents: 0 } });
+    });
   },
 );

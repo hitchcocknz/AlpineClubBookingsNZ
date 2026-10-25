@@ -1353,7 +1353,19 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(mocks.enqueueHosting.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.settleHosting.mock.invocationCallOrder[0],
     );
-    expect(mocks.paymentUpsert).toHaveBeenCalled();
+    expect(mocks.paymentUpsert).toHaveBeenCalledWith({
+      where: { bookingId: "b1" },
+      create: { bookingId: "b1", amountCents: 0, status: "SUCCEEDED" },
+      update: { amountCents: 0, status: "SUCCEEDED" },
+    });
+    // #4399: the Payment row is written inside the claim's transaction (before
+    // the after-commit hosting settle), not after it commits.
+    expect(mocks.paymentUpsert.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.settleHosting.mock.invocationCallOrder[0],
+    );
+    expect(mocks.paymentUpsert.mock.invocationCallOrder[0]).toBeGreaterThan(
+      mocks.bookingUpdateMany.mock.invocationCallOrder[0],
+    );
     expect(mocks.chargePaymentMethod).not.toHaveBeenCalled();
   });
 

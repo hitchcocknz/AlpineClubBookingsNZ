@@ -210,6 +210,16 @@ export async function POST(request: NextRequest) {
             status: 409,
           };
         }
+        // #4399 (`INV-PAY-119`): a booking worth $0 has nothing to charge. The
+        // cron and the officer's confirm-pending-guests route confirm it at no
+        // charge; this route refuses before any claim or Stripe call, rather
+        // than claim, ask Stripe for a below-minimum charge and release.
+        if (savedCardChargeCents(locked) === 0) {
+          return {
+            error: "This booking has nothing to charge - confirm it with Confirm pending guests instead." as const,
+            status: 409,
+          };
+        }
         const capacity = await checkCapacityForGuestRanges(
           lodgeId,
           locked.checkIn,

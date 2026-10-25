@@ -307,6 +307,14 @@ export async function POST(
           cause: "SYSTEM_CHANGE",
           actorMemberId: session.user.id,
         });
+        // #4399: written inside the claim's lock(1), as the cron writes its own,
+        // so an edit recording a change fee (which takes lock(1)) cannot land
+        // between the PAID claim and this row and be left uncollected.
+        await tx.payment.upsert({
+          where: { bookingId },
+          create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
+          update: { amountCents: 0, status: PaymentStatus.SUCCEEDED },
+        });
 
         return { ok: true as const };
       });
@@ -328,11 +336,6 @@ export async function POST(
       }
 
       await settleHostingCoverageAfterCommit({ bookingId });
-      await prisma.payment.upsert({
-        where: { bookingId },
-        create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
-        update: { amountCents: 0, status: PaymentStatus.SUCCEEDED },
-      });
       await queueXeroInvoice();
       await audit("paid_zero", false);
       if (notifyMember !== false) {
