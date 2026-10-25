@@ -49,6 +49,18 @@ const mocks = vi.hoisted(() => {
     return false;
   };
 
+  // One branch of an `OR`: `null`, `{ not }` or `{ notIn }` per column. A NULL
+  // column matches only `null`, as in SQL, where `NULL <> x` is not true.
+  const matchesBranch = (row: StoredOperation, branch: Record<string, unknown>): boolean =>
+    Object.entries(branch).every(([column, test]) => {
+      const value = (row as unknown as Record<string, unknown>)[column];
+      if (test === null) return value === null;
+      if (value === null || value === undefined) return false;
+      const { not, notIn } = test as { not?: unknown; notIn?: unknown[] };
+      if (notIn) return !notIn.includes(value);
+      return value !== not;
+    });
+
   // Stateful `updateMany` honouring the `where.id` + `where.status` predicate,
   // exactly as Postgres would: a guard that does not match the row's current
   // status touches nothing and returns `{ count: 0 }`. This is what makes the
@@ -59,13 +71,15 @@ const mocks = vi.hoisted(() => {
       where,
       data,
     }: {
-      where: { id: string; status?: unknown; manuallyResolvedAt?: null };
+      where: { id: string; status?: unknown; manuallyResolvedAt?: null; OR?: Record<string, unknown>[] };
       data: Partial<StoredOperation>;
     }) => {
       let count = 0;
       for (const row of rows.values()) {
         if (row.id !== where.id) continue;
         if (!matchesStatus(row.status, where)) continue;
+        // #4356: honour the not-a-repair-claim `OR` as Postgres would, NULL included.
+        if (where.OR && !where.OR.some((branch) => matchesBranch(row, branch))) continue;
         // #3635: honour the resolved-in-Xero guard the way Postgres would.
         if (
           where.manuallyResolvedAt === null &&
@@ -88,6 +102,8 @@ const mocks = vi.hoisted(() => {
   const selfFail = async (operationId: string, _error?: unknown) => {
     const row = rows.get(operationId);
     if (!row || row.status === "SUCCEEDED" || row.status === "PARTIAL") return null;
+    // Nor over a repair's marked RUNNING claim.
+    if (row.status === "RUNNING" && row.lastErrorCode === "REFUND_NOTE_REPAIR_RUNNING") return null;
     row.status = "FAILED";
     row.completedAt = new Date();
     return { ...row };
@@ -166,6 +182,7 @@ import {
 } from "@/lib/xero-api-client";
 import { XeroContactEnvironmentUnknownError } from "@/lib/xero-environment-write-gate";
 import { processQueuedXeroOutboxOperations } from "@/lib/xero-operation-outbox";
+import { NOT_A_XERO_REPAIR_CLAIM } from "@/lib/xero-operation-outcome-guard";
 
 /** Seed one PENDING row into both the store and the initial scan result. */
 function seedOperation(row: Partial<StoredOperation> & { id: string }) {
@@ -299,6 +316,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
           id: "op_refund_1",
           status: { in: ["RUNNING", "FAILED"] },
           manuallyResolvedAt: null,
+          ...NOT_A_XERO_REPAIR_CLAIM,
         },
         data: {
           status: "PENDING",
@@ -307,6 +325,32 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
           lastErrorCode: null,
           lastErrorMessage: null,
         },
+      });
+    });
+
+    // #4356 (`INV-INT-028`): a FAILED refund-note repair claimed the row the
+    // handler condemned before the hand-back ran; the claim is the repair's.
+    it("MUTATION: never returns a repair's marked claim to PENDING", async () => {
+      queueOneRefundOperation();
+      const repairClaimedAt = new Date("2026-07-01T00:00:00.000Z");
+      mocks.createXeroCreditNote.mockImplementation(async () => {
+        const refusal = new XeroTransientOutageError(120, true);
+        await mocks.failXeroSyncOperation("op_refund_1", refusal);
+        Object.assign(mocks.rows.get("op_refund_1")!, {
+          status: "RUNNING",
+          startedAt: repairClaimedAt,
+          completedAt: null,
+          lastErrorCode: "REFUND_NOTE_REPAIR_RUNNING",
+        });
+        throw refusal;
+      });
+
+      await processQueuedXeroOutboxOperations({ limit: 1 });
+
+      expect(mocks.rows.get("op_refund_1")).toMatchObject({
+        status: "RUNNING",
+        startedAt: repairClaimedAt,
+        lastErrorCode: "REFUND_NOTE_REPAIR_RUNNING",
       });
     });
 

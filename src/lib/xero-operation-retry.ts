@@ -374,7 +374,7 @@ async function runWithClaimedOriginal<T>(
   run: (claimedAt: Date) => Promise<T>,
   // #4256: a PARTIAL repair claims only PARTIAL and stamps its marker code; a
   // throw, or a stale reset of a dead run, gives the row back PARTIAL with its
-  // payload, so it stays repairable. #4356: `marker` marks a FAILED repair's claim.
+  // payload, so it stays repairable. #4356: `marker` marks a FAILED repair's claim, of FAILED only.
   options?: { from: "PARTIAL"; marker?: never } | { from?: never; marker: typeof XERO_REFUND_NOTE_REPAIR_RUNNING_CODE },
 ): Promise<T> {
   const claimedAt = new Date();
@@ -383,7 +383,7 @@ async function runWithClaimedOriginal<T>(
     // does a mark non-replayable.
     where: {
       id: operationId,
-      status: options?.from ?? { in: ["FAILED", "PARTIAL"] },
+      status: options?.from ?? (options?.marker ? "FAILED" : { in: ["FAILED", "PARTIAL"] }),
       manuallyResolvedAt: null,
       replayable: true,
     },

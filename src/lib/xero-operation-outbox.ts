@@ -27,7 +27,7 @@ import {
   startXeroSyncOperation,
   upsertXeroObjectLink,
 } from "@/lib/xero-sync";
-import { holdsRecordedXeroSuccess } from "@/lib/xero-operation-outcome-guard";
+import { holdsRecordedXeroSuccess, NOT_A_XERO_REPAIR_CLAIM } from "@/lib/xero-operation-outcome-guard";
 import {
   createXeroInvoiceForBooking,
   updateXeroBookingInvoiceForBooking,
@@ -3196,7 +3196,8 @@ export async function processQueuedXeroOutboxOperations(options?: {
         // #3791: the reason stays on the row, so a note waiting on a
         // deallocation says what it is waiting for.
         await prisma.xeroSyncOperation.updateMany({
-          where: { id: queuedOperation.id, status: "RUNNING" },
+          // #4356: never take back a repair's marked claim (`INV-INT-028`).
+          where: { id: queuedOperation.id, status: "RUNNING", ...NOT_A_XERO_REPAIR_CLAIM },
           data: {
             status: "PENDING",
             startedAt: null,
@@ -3254,8 +3255,9 @@ export async function processQueuedXeroOutboxOperations(options?: {
           where: {
             id: queuedOperation.id,
             status: { in: ["RUNNING", "FAILED"] },
-            // #3635 (`INV-INT-025`): never revive a row an officer resolved.
+            // Never revive a row an officer resolved (#3635, `INV-INT-025`), nor a repair's marked claim (#4356).
             manuallyResolvedAt: null,
+            ...NOT_A_XERO_REPAIR_CLAIM,
           },
           data: {
             status: "PENDING",

@@ -3972,13 +3972,13 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
 
     // #4356: its own marker, not the PARTIAL one, so a stale reset still gives
     // it back FAILED, and no other caller's late outcome lands on the claim.
-    it("MUTATION: claims FAILED/PARTIAL before it settles, with its own repair marker, and completes onto the claim", async () => {
+    it("MUTATION: claims FAILED only before it settles, with its own repair marker, and completes onto the claim", async () => {
       mocks.findUniqueOperation.mockResolvedValue(failedRefundNote());
       await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
 
       const claim = mocks.updateManyOperation.mock.calls[0][0];
       expect(claim).toEqual({
-        where: { id: "op_123", status: { in: ["FAILED", "PARTIAL"] }, manuallyResolvedAt: null, replayable: true },
+        where: { id: "op_123", status: "FAILED", manuallyResolvedAt: null, replayable: true },
         data: { status: "RUNNING", startedAt: expect.any(Date), lastErrorCode: XERO_REFUND_NOTE_REPAIR_RUNNING_CODE },
       });
       expect(mocks.updateManyOperation.mock.invocationCallOrder[0]).toBeLessThan(
@@ -3987,6 +3987,23 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
       expect(mocks.finishRefundCreditNoteSettlement).toHaveBeenCalledWith(
         expect.objectContaining({ operationId: "op_123", onlyIfRunningSince: claim.data.startedAt }),
       );
+    });
+
+    // #4356: a row another caller completed PARTIAL after the read is not this repair's to take.
+    it("MUTATION: a row that went PARTIAL after its read is already claimed, and it settles nothing", async () => {
+      mocks.findUniqueOperation
+        .mockResolvedValueOnce(failedRefundNote())
+        .mockResolvedValueOnce({ manuallyResolvedAt: null, requestPayload: null });
+      // The row now reads PARTIAL: only a claim that still matches PARTIAL takes it.
+      mocks.updateManyOperation.mockImplementation(async (args: { where: { status?: unknown } }) => ({
+        count: args.where.status === "FAILED" ? 0 : 1,
+      }));
+
+      await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("already claimed"),
+      });
+      noSideEffect();
     });
 
     it("MUTATION: a resolve landing before its claim makes it settle nothing", async () => {

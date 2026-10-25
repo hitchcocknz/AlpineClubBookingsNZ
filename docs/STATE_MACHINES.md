@@ -3869,9 +3869,11 @@ PARTIAL invoice payment repair or refund-note repair claims PARTIAL -> RUNNING
   "Retry it once to close it", never "Repaired"
   Reset stale running reports FAILED and PARTIAL counts separately
   rows repaired before #4256 stay PARTIAL; one retry closes them
-FAILED refund-note repair claims FAILED -> RUNNING too, with code
-  REFUND_NOTE_REPAIR_RUNNING (#4356); a throw, or a stale reset of a dead run
-  -> FAILED
+FAILED refund-note repair claims FAILED only -> RUNNING, with code
+  REFUND_NOTE_REPAIR_RUNNING (#4356); a lost claim -> "already claimed". A
+  throw before completion, or a stale reset of a dead run -> FAILED; a
+  refund-payment failure completes PARTIAL first. The outbox's busy and
+  cooldown un-claims never return a marked claim to PENDING
 mark non-replayable on FAILED/PARTIAL only, status-guarded: a retry that
   claimed the row after the officer's read -> 409, nothing written, no audit
 queued retry (REQUEUE) of an operation marked not replayable -> CANCELLED,

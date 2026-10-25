@@ -6,10 +6,27 @@ import type { Prisma } from "@prisma/client";
 import logger from "@/lib/logger";
 import { XERO_REPAIR_CLAIM_RUNNING_CODES } from "@/lib/xero-stale-operations";
 
-/** #4356: a row whose outcome is a recorded success, full or part, that a worse outcome may not replace. */
+/** #4356: the recorded successes, full or part, that a worse outcome may not replace. */
+const XERO_RECORDED_SUCCESS_STATUSES: readonly string[] = ["SUCCEEDED", "PARTIAL"];
+
+/** #4356: a row whose outcome is a recorded success. */
 export function holdsRecordedXeroSuccess(status: string): boolean {
-  return status === "SUCCEEDED" || status === "PARTIAL";
+  return XERO_RECORDED_SUCCESS_STATUSES.includes(status);
 }
+
+/**
+ * #4356 (`INV-INT-028`): a row that is not a repair's RUNNING claim
+ * (`XERO_REPAIR_CLAIM_RUNNING_CODES`). Spelled with the null case explicit, as
+ * the stale reset is: a negated match on a nullable column would also refuse
+ * every RUNNING row with no code.
+ */
+export const NOT_A_XERO_REPAIR_CLAIM = {
+  OR: [
+    { status: { not: "RUNNING" } },
+    { lastErrorCode: null },
+    { lastErrorCode: { notIn: [...XERO_REPAIR_CLAIM_RUNNING_CODES] } },
+  ],
+} satisfies Prisma.XeroSyncOperationWhereInput;
 
 /**
  * #4356 (`INV-INT-028`): the write guard of an outcome (`status`) on an
@@ -33,17 +50,11 @@ export function outcomeWriteGuard(
   if (!operationId) throw new Error("A Xero operation outcome needs the operation's id.");
   if (options.onlyIfRunningSince) return { status: "RUNNING", startedAt: options.onlyIfRunningSince };
   if (status === "SUCCEEDED") return null;
-  const kept = status === "PARTIAL" ? ["SUCCEEDED"] : ["SUCCEEDED", "PARTIAL"];
+  const kept = XERO_RECORDED_SUCCESS_STATUSES.filter((held) => held !== status);
   if (options.alsoKeep) kept.push(options.alsoKeep);
   return {
     status: kept.length === 1 ? { not: kept[0] } : { notIn: kept },
-    // Spelled with the null case explicit, as the stale reset is: a negated
-    // match on a nullable column would also refuse every RUNNING row with no code.
-    OR: [
-      { status: { not: "RUNNING" } },
-      { lastErrorCode: null },
-      { lastErrorCode: { notIn: [...XERO_REPAIR_CLAIM_RUNNING_CODES] } },
-    ],
+    ...NOT_A_XERO_REPAIR_CLAIM,
   };
 }
 
