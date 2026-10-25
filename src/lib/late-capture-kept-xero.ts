@@ -226,7 +226,7 @@ export async function planKeptLateCaptureXeroRecord(params: {
       role: "PRIMARY_INVOICE",
       active: true,
     },
-    select: { role: true, xeroObjectType: true, active: true },
+    select: { role: true, xeroObjectType: true, active: true, xeroObjectId: true },
   });
   const queueKeptInvoice = async (capturedCents = decision.recordCents): Promise<KeptLateCaptureXeroPlan> => {
     const queued = await enqueueXeroKeptLateCaptureInvoiceOperation({
@@ -266,7 +266,8 @@ export async function planKeptLateCaptureXeroRecord(params: {
     // Review M-F2: another writer's part of the capture, by the one reading.
     const elsewhere = await readKeptCaptureRecordedElsewhere(store, {
       bookingId: params.bookingId,
-      primaryInvoiceId: payment?.xeroInvoiceId ?? null,
+      // Review A-UNSYNCED-KEEP: the active link's id where the field drifted, so the full reading runs.
+      primaryInvoiceId: payment?.xeroInvoiceId ?? paymentLinks[0]?.xeroObjectId ?? null,
       paymentIntentId: params.paymentIntentId,
       changeId,
     });

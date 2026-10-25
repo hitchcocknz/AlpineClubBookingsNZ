@@ -579,6 +579,19 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
         await expect(plan()).resolves.toEqual({ kind: "none" });
         expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledTimes(1);
       });
+
+      it("MUTATION review A-UNSYNCED-KEEP: the field drifted to null beside an active link - the link's id runs the full reading", async () => {
+        mocks.paymentFindUnique.mockResolvedValue({ xeroInvoiceId: null });
+        mocks.linkFindMany.mockResolvedValue([
+          { role: "PRIMARY_INVOICE", xeroObjectType: "INVOICE", active: true, xeroObjectId: "inv_primary_link" },
+        ]);
+        expect(mocks.linkFindMany.mock.calls).toEqual([]);
+        withdrawn();
+        recorderRows({ gapCoveredCents: 2000 });
+        await expect(plan()).resolves.toEqual({ kind: "kept-invoice-queued", queueOperationId: "op_kept" });
+        expect(mocks.linkFindMany.mock.calls[0]![0]).toMatchObject({ select: { xeroObjectId: true } });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledWith(expect.objectContaining({ capturedCents: 6000 }));
+      });
     });
 
     it("review D-F3: a receipt refused for no primary invoice id is logged as an error, not a warning", async () => {
