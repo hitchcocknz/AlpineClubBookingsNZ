@@ -8,7 +8,10 @@
  *  1. The keep (the dismissal's status-fenced claim, then its plan on the same
  *     transaction) racing the repair tool's supplementary invoice for the same
  *     change, both queued on a session holding the change's anchor lock: the
- *     capture ends with one recorder, whichever wins.
+ *     capture ends with one recorder, whichever wins. And where the change's
+ *     own ask was withdrawn, the repair tool re-raising its invoice ahead of
+ *     the keep on that anchor: the keep decides after it, so no kept-capture
+ *     invoice is raised beside it (what the anchor lock alone prevents).
  *  2. The repair tool's kept-capture action racing a keep of the same task,
  *     both queued on a session holding the task row: one receipt row, which
  *     the loser finds.
@@ -412,8 +415,6 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
 
     expect(invoiceOutcome?.status).toBe("fulfilled");
     expect(keepOutcome?.status).toBe("fulfilled");
-    // The keep waited on the change's anchor, behind the repair tool's invoice.
-    expect(queuedBehind).toBe(2);
     const keptInvoices = await prisma.xeroSyncOperation.findMany({
       where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE" },
       select: { id: true, status: true },
@@ -433,6 +434,8 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
       }),
     ).resolves.toMatchObject({ kind: "supplementary-invoice" });
     expect(keepOutcome).toEqual({ status: "fulfilled", value: { kind: "none" } });
+    // The keep waited on the change's anchor, behind the repair tool's invoice.
+    expect(queuedBehind).toBe(2);
   });
 
   it("the repair tool's action and a re-keep of the same task, at once: one receipt, which the loser finds", { timeout: 30_000 }, async () => {
