@@ -373,8 +373,9 @@ exists because `DEPLOYMENT.md`'s rotation runbook did keep one, named two
 providers, and fell four behind as the rest landed. Anything that turns on
 "which credentials does rotating the auth secret strand" answers from this list.
 
-- `xero` — client id, client secret, webhook key, and the wrapped Xero
-  token-encryption key (#2079).
+- `xero` — client id, client secret and webhook key (#2079). Until #3806 R2 it
+  also held the wrapped Xero token-encryption key, now retired; a leftover row
+  is deleted on the next connect, disconnect or verify-reset.
 - `stripe` — secret key, publishable key, webhook signing secret (#2082).
 - `google` — OAuth client id and secret, plus a non-secret `verified_at`
   marker (#2087).

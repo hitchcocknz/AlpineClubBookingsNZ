@@ -605,7 +605,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 
 | Module | Owns |
 | --- | --- |
-| `xero-config` | Resolves the operational connection **from the encrypted DB store** (#2079): client id/secret and webhook key via `IntegrationCredential`, the redirect URI from `NEXTAUTH_URL`, and the auto-generated wrapped token-encryption key. No `XERO_*` credential env vars are read; legacy vars are detected and flagged. |
+| `xero-config` | Resolves the operational connection **from the encrypted DB store** (#2079): client id/secret and webhook key via `IntegrationCredential`, and the redirect URI from `NEXTAUTH_URL` (the wrapped token-encryption key it used to generate was retired by #3806). No `XERO_*` credential env vars are read; legacy vars are detected and flagged. |
 | `xero-oauth` | Consent URL, OAuth callback (`handleXeroCallback`), client construction, disconnect (revoke + clear tokens). |
 | `xero-oauth-state` | CSRF state cookie for the OAuth round-trip. |
 | `xero-token-store` | Token persistence: the only copy in the encrypted credential store (`xero-oauth` / `token-set`, #3454); the `XeroConnection` row (#3806) and, for the previous release, the `XeroToken` row; connection status; and the **refresh lease** (`claimXeroTokenRefreshLease`, on both rows) so concurrent instances — and an older deployed colour — don't double-refresh; losers wait for the lease deadline and re-read. |

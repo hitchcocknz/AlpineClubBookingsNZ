@@ -1877,8 +1877,10 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
   sessions, and issue reports.
 - Lodge rooms, lodge beds, bed allocations, allocation settings, and allocation
   approval metadata.
-- Operational Xero tokens, object links, cache tables, inbound events,
-  operation queues, account/item mappings, and API usage metering.
+- The operational Xero connection (`XeroConnection`: tenant, token expiry and
+  refresh lease, no secret; the tokens themselves are one encrypted
+  credential-store row), object links, cache tables, inbound events, operation
+  queues, account/item mappings, and API usage metering.
 - Finance sync runs, finance snapshots, chart-of-accounts snapshots, finance
   report diagnostics, and finance access levels, all using the operational Xero
   connection rather than a separate finance token store.
@@ -3138,9 +3140,11 @@ retry path re-drives compensation.
 
 Operational Xero handles member/contact sync, booking invoices, payments,
 credit notes, item codes, contact groups, inbound webhooks, local caches, retry
-queues, and usage metering. Xero tokens are encrypted at rest.
-OAuth token refresh uses a short database-backed lease on the operational
-token row so multiple app workers cannot use the same rotating refresh token.
+queues, and usage metering. Xero tokens are encrypted at rest in the
+credential store. OAuth token refresh uses a short database-backed lease on the
+`XeroConnection` row (and, until #3806 R3, on the previous release's
+`XeroToken` row too) so multiple app workers cannot use the same rotating
+refresh token.
 Internet Banking bookings use this boundary to issue invoice-backed payment
 instructions and reconcile settlement from inbound Xero invoice/payment state.
 Unheld Internet Banking reconciliation performs the final capacity claim before

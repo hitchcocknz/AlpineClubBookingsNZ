@@ -2458,8 +2458,9 @@ install:
 3. Open **Admin → Xero → Setup** (the Integrations hub links here) and use the
    **Xero Credentials** section to re-enter the client id, client secret, and
    (optional) webhook key. Each write is Full-Admin only, encrypted at rest, and
-   audited (metadata only); values are never displayed back. The wrapped
-   token-encryption key auto-generates on first use.
+   audited (metadata only); values are never displayed back. (Releases from
+   #2079 to #3454 also generated a wrapped token-encryption key here; #3806
+   retired it.)
 4. **Reconnect Xero (OAuth)** so fresh tokens are stored under the new key. A
    client-credential write drops any stale stored tokens (verify-reset), so a
    reconnect is required after re-entry.
