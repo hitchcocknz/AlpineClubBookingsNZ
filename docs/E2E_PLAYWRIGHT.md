@@ -863,6 +863,39 @@ retroactive spec's member test runs the gate is gone. Running one spec on its ow
 — exactly what you do while working on it — leaves the gate outstanding. **A spec
 must pass run on its own, not only in file order.**
 
+### 6. Leaving the page does not stop the writes it started (issue #4014)
+
+A full navigation, such as the Xero Connect step's OAuth round-trip, keeps the
+old document alive until the new page's response arrives, and every `fetch`
+it has in flight keeps going. A write the spec did not wait for can therefore
+land in the middle of the round-trip it set off, or after it.
+
+`xero-setup-wizard.spec.ts` hit both halves of this in E2E run 37830486574:
+
+- **The spec's own save.** On the Replace-credentials path, "Both credentials
+  stored" and an enabled Continue are on screen before the click. So the spec
+  reached Connect while the save's second write was still queued. That write
+  committed after the OAuth callback, and a credential write resets the Xero
+  connection by design, so the page came back Not Connected.
+- **The wizard's resume cursor.** The shell saved "credentials" and then
+  "connect" as two independent writes. The browser held both behind a socket
+  pool that the admin sidebar's prefetches had filled, and the server committed
+  the older one second. So the page came back on Credentials. `useWizardCursor`
+  now sends cursor writes one at a time, newest next.
+
+The trace's request timings hid both. A request's wait for a free socket is
+not part of its HAR duration. The server's own timestamps gave the real order:
+the row's `updatedAt`, the credential's `setAt` and the `Date` header.
+
+Two rules follow:
+
+- **Assert on what your action changed, not on standing state.** Wait for the
+  message only this save writes (`Credentials saved`) before moving on.
+- **Before leaving the page, wait for the writes the next page reads.** Both
+  wizard specs await `wizardCursorSave` (`e2e/helpers/wizard-cursor.ts`)
+  before pressing Connect, because the post-OAuth page resumes on the stored
+  step.
+
 ### What is deliberately NOT the fix
 
 Bumping `retries`, widening a `toBeVisible` timeout, `page.waitForTimeout`, or
