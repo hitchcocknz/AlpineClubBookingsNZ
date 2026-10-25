@@ -298,7 +298,8 @@ function deferred() {
     async function invoices() {
       const rows = await prisma.xeroSyncOperation.findMany({
         where: { localModel: "BookingModification", localId: { in: MODS }, queueType: "SUPPLEMENTARY_INVOICE" },
-        orderBy: { createdAt: "asc" },
+        // By change (a, b, c): rows written under the frozen clock tie on createdAt.
+        orderBy: [{ localId: "asc" }, { createdAt: "asc" }],
         select: { id: true, localId: true, status: true, lastErrorCode: true, requestPayload: true },
       });
       return rows.map((row) => {
