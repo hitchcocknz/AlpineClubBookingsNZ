@@ -921,10 +921,47 @@ export async function deactivateXeroObjectLinks(params: {
   });
 }
 
+/**
+ * #4356 (`INV-INT-028`): the write guard of an outcome (`status`) on an
+ * operation row. Two callers can hold one row - a start that loses the insert
+ * race is handed the winner's ACTIVE row (#1354) - and each records its own
+ * outcome of the same keyed Xero call there. So an outcome never replaces a
+ * better one already recorded: only SUCCEEDED lands on SUCCEEDED, only
+ * SUCCEEDED or PARTIAL on PARTIAL; a SUCCEEDED write lands on anything (unless
+ * `alsoKeep` keeps it out). `onlyIfRunningSince` writes onto that RUNNING claim
+ * only, which no recorded outcome is. Null: an unguarded write.
+ */
+function outcomeWriteGuard(
+  operationId: string,
+  status: string,
+  options: { onlyIfRunningSince?: Date; alsoKeep?: string },
+): Prisma.XeroSyncOperationWhereInput | null {
+  // An `updateMany` reads an undefined id as no filter at all: never let one through.
+  if (!operationId) throw new Error("A Xero operation outcome needs the operation's id.");
+  if (options.onlyIfRunningSince) return { status: "RUNNING", startedAt: options.onlyIfRunningSince };
+  const kept = new Set(status === "SUCCEEDED" ? [] : status === "PARTIAL" ? ["SUCCEEDED"] : ["SUCCEEDED", "PARTIAL"]);
+  if (options.alsoKeep) kept.add(options.alsoKeep);
+  const statuses = [...kept];
+  if (statuses.length === 0) return null;
+  return statuses.length === 1 ? { status: { not: statuses[0] } } : { status: { notIn: statuses } };
+}
+
+/** A guarded outcome write that matched no row: nothing written, nothing alerted; answers null. */
+function refusedOutcomeWrite(operationId: string, status: string, onlyIfRunningSince?: Date): null {
+  if (!onlyIfRunningSince) {
+    logger.info(
+      { operationId, status },
+      "Xero operation outcome not recorded: the row already holds an outcome this one may not replace (INV-INT-028)",
+    );
+  }
+  return null;
+}
+
 export async function completeXeroSyncOperation(
   operationId: string,
   completion: XeroSyncOperationCompletion,
   // #3548: `keepSucceeded` leaves a row a concurrent leg completed SUCCEEDED as it is, links and all, and answers null.
+  // #4356: a PARTIAL, FAILED or CANCELLED completion never lands on a recorded success (`outcomeWriteGuard`); null then.
   // #4256: `onlyIfRunningSince` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
   options?: { store?: Prisma.TransactionClient; keepSucceeded?: boolean; onlyIfRunningSince?: Date; alert?: false },
 ) {
@@ -952,12 +989,13 @@ export async function completeXeroSyncOperation(
       xeroObjectUrl,
       completedAt: new Date(),
     };
-    const guard = options?.onlyIfRunningSince
-      ? { status: "RUNNING" as const, startedAt: options.onlyIfRunningSince }
-      : options?.keepSucceeded ? { status: { not: "SUCCEEDED" as const } } : null;
+    const guard = outcomeWriteGuard(operationId, status, {
+      onlyIfRunningSince: options?.onlyIfRunningSince,
+      alsoKeep: options?.keepSucceeded ? "SUCCEEDED" : undefined,
+    });
     if (guard) {
       const claimed = await tx.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
-      if (claimed.count === 0) return null;
+      if (claimed.count === 0) return refusedOutcomeWrite(operationId, status, options?.onlyIfRunningSince);
     }
     const operation = guard
       ? await tx.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } })
@@ -993,7 +1031,9 @@ export async function completeXeroSyncOperation(
 
 /**
  * The optional write guard of {@link failXeroSyncOperation}: at most one, so a
- * caller can never pass two and have one silently dropped (#3462).
+ * caller can never pass two and have one silently dropped (#3462). Whichever
+ * is passed, a failure never lands on a SUCCEEDED or PARTIAL row: another
+ * caller sharing the row recorded that success (#4356, `INV-INT-028`). Null then.
  */
 type FailXeroSyncOperationGuard =
   | {
@@ -1037,21 +1077,17 @@ export async function failXeroSyncOperation(
     completedAt: new Date(),
   };
 
-  const guard = options?.onlyIfRunningSince
-    ? { status: "RUNNING" as const, startedAt: options.onlyIfRunningSince }
-    : options?.keepCancelled
-      ? { status: { not: "CANCELLED" as const } }
-      : null;
-  if (guard) {
-    const failed = await prisma.xeroSyncOperation.updateMany({
-      where: { id: operationId, ...guard },
-      data,
-    });
-    if (failed.count === 0) return null;
-  }
-  const operation = guard
-    ? await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } })
-    : await prisma.xeroSyncOperation.update({ where: { id: operationId }, data });
+  // #4356: always guarded - a failure never lands on a recorded success.
+  const guard = outcomeWriteGuard(operationId, "FAILED", {
+    onlyIfRunningSince: options?.onlyIfRunningSince,
+    alsoKeep: options?.keepCancelled ? "CANCELLED" : undefined,
+  });
+  const failed = await prisma.xeroSyncOperation.updateMany({
+    where: { id: operationId, ...guard },
+    data,
+  });
+  if (failed.count === 0) return refusedOutcomeWrite(operationId, "FAILED", options?.onlyIfRunningSince);
+  const operation = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } });
 
   try {
     const { maybeNotifyXeroRepeatedFailure } = await import("./xero-hardening");
