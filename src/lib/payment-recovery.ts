@@ -37,6 +37,7 @@ import {
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { cardRefundStillOwedCents } from "@/lib/card-refund-still-owed";
 import { onPlanWhere, refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
+import { auditCardRefundResendHeld, CardRefundResendHeldError, checkStripeBeforeCardRefundSend } from "@/lib/card-refund-resend-stripe-check";
 import { closePrePersistedRefundRow, type DoorCloseArgs } from "@/lib/pre-persisted-refund-close";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import {
@@ -1138,12 +1139,12 @@ async function completePaymentRecoveryOperation(
   return closed.count === 1;
 }
 
-async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, message: string, format: ClubFormat) {
+async function alertPaymentRecoveryFailure(operation: PaymentRecoveryOperation, message: string, format: ClubFormat, alert?: { amountCents: number; errorMessage: string }) {
   await alertPaymentRecoveryOfficers({
     bookingId: operation.bookingId,
     operationId: operation.id,
-    amountCents: await cardRefundStillOwedCents(operation), // #4117: read after the final attempt
-    errorMessage: `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempt${operation.attempts === 1 ? "" : "s"}: ${message}`,
+    amountCents: alert?.amountCents ?? (await cardRefundStillOwedCents(operation)), // #4117: read after the final attempt
+    errorMessage: alert?.errorMessage ?? `Stripe payment recovery ${operation.type} failed after ${operation.attempts} attempt${operation.attempts === 1 ? "" : "s"}: ${message}`,
     paymentIntentId: operation.paymentIntentId,
   }, format);
 }
@@ -1189,10 +1190,13 @@ async function markPaymentRecoveryOperationFailed({
   fromProcessingStartedAt,
   fromAttempts,
   format,
+  alert,
 }: {
   operation: PaymentRecoveryOperation;
   /** Recorded verbatim on `lastError`, and quoted in the exhaustion alert. */
   message: string;
+  /** #4359: a terminal failure with an alert of its own words, for this amount; else the generic one. */
+  alert?: { amountCents: number; errorMessage: string };
   /** Whether this failure ENDS the operation: nothing will replay it again. */
   terminal: boolean;
   /** When the next attempt is due. Ignored - and forced `null` - when terminal. */
@@ -1260,7 +1264,7 @@ async function markPaymentRecoveryOperationFailed({
     return "retry";
   }
 
-  await alertPaymentRecoveryFailure(operation, message, format).catch((alertError) =>
+  await alertPaymentRecoveryFailure(operation, message, format, alert).catch((alertError) =>
     logger.error(
       { err: alertError, operationId: operation.id },
       "Failed to send payment recovery failure alert"
@@ -1535,11 +1539,14 @@ async function failPaymentRecoveryOperation(
   error: unknown,
   format: ClubFormat,
 ) {
-  const cause = await unretryableRecoveryCause(operation, error);
+  // #4359 (`INV-PAY-142`): a card refund held for a dashboard refund ends at once, as a failure no retry fixes does.
+  const held = error instanceof CardRefundResendHeldError ? error : null;
+  const cause = held ? held.message : await unretryableRecoveryCause(operation, error);
   const terminal = cause !== null || operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
   const outcome = await markPaymentRecoveryOperationFailed({
     operation,
     format,
+    ...(held ? { alert: { amountCents: held.heldCents, errorMessage: held.alertMessage } } : {}),
     message: cause ?? errorMessage(error),
     terminal,
     nextRetryAt: nextRetryDate(operation.attempts),
@@ -1551,6 +1558,7 @@ async function failPaymentRecoveryOperation(
     // #4083: only the attempt this worker holds.
     fromAttempts: operation.attempts,
   });
+  if (held && outcome === "failed") await auditCardRefundResendHeld(operation, held);
 
   /**
    * A row that matched nothing was deleted by a manual mark-paid reversal or
@@ -1885,6 +1893,7 @@ async function processRefundSupersededPaymentOperation(
   // refusal moves to a one-slice plan on a fresh key, which later attempts send.
   const persistedPlan = parseRefundAllocationPlan(operation.allocationPlan);
   const plan = persistedPlan ?? [{ paymentTransactionId: refreshedTransaction.id, amountCents: outstandingCents }];
+  await checkStripeBeforeCardRefundSend({ operation, plan, format }); // #4359 (`INV-PAY-142`): nothing is sent past a dashboard refund
   await refundPlanOrRetryRefusals({
     operation,
     plan,
@@ -2135,6 +2144,7 @@ async function processBookingModificationRefundOperation(
   // own record (the slice marked made with it) - `charge.refunded`'s rule for the same refund (`queueAnsweringRefundNotes`).
   const notesEachRefund = refundRequestRecoveryNotesEachRefund(operation);
   const notes = { paymentId: operation.paymentId, operationId: operation.id, notesEachRefund, plan };
+  await checkStripeBeforeCardRefundSend({ operation, plan, format }); // #4359 (`INV-PAY-142`): nothing is sent past a dashboard refund
   const refundId = await replayNotingEachRefund(notes, (send) => refundPlanOrRetryRefusals({ operation, plan, format, refund: (allocation) =>
     send(() => refundPaymentTransactions({
       format,

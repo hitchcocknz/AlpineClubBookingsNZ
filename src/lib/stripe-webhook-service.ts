@@ -1160,12 +1160,35 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
     stripeRefunds.length > 0
       ? stripeRefunds
       : charge.refunds?.data ?? [];
+  await recordChargeRefunds({ paymentIntentId, chargeId: charge.id, amountRefundedCents: charge.amount_refunded, refunds });
+}
 
+/**
+ * #4359 (`INV-SSOT`): what `charge.refunded` does with the refunds Stripe holds
+ * on one charge - records them through the one ledger writer and queues the
+ * Xero notes for what it newly recorded. Also how the recovery runner records a
+ * refund it read before a send that the app has not seen (`record`, only those:
+ * the rest of the charge still decides the notes), so the webhook that follows
+ * records nothing new and its note is never lost.
+ */
+export async function recordChargeRefunds({
+  paymentIntentId,
+  chargeId,
+  amountRefundedCents,
+  refunds,
+  record = refunds,
+}: {
+  paymentIntentId: string;
+  chargeId: string;
+  amountRefundedCents: number;
+  refunds: Stripe.Refund[];
+  record?: Stripe.Refund[];
+}) {
   const refundSync = await syncRefundsFromStripeCharge({
     paymentIntentId,
-    stripeChargeId: charge.id,
-    refundedAmountCents: charge.amount_refunded,
-    refunds,
+    stripeChargeId: chargeId,
+    refundedAmountCents: amountRefundedCents,
+    refunds: record,
   });
 
   if (!refundSync?.payment) {
@@ -1178,7 +1201,7 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
       paymentId: refundSync.paymentId,
       refundedAmount: refundSync.payment.refundedAmountCents,
       refundDeltaCents: refundSync.refundDeltaCents,
-      stripeRefundedAmount: charge.amount_refunded,
+      stripeRefundedAmount: amountRefundedCents,
       isFullRefund:
         refundSync.payment.refundedAmountCents >= refundSync.payment.amountCents,
     },
@@ -1193,7 +1216,7 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
   if (recordedNew && (await isLateCaptureRefund(paymentIntentId))) {
     await queueLateCaptureRefundCreditNote({
       paymentId: refundSync.paymentId,
-      paymentIntentId: paymentIntentId!,
+      paymentIntentId,
     });
   } else if (
     recordedNew &&
@@ -1243,7 +1266,7 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
       {
         paymentId: refundSync.paymentId,
         refundedAmount: refundSync.payment.refundedAmountCents,
-        stripeRefundedAmount: charge.amount_refunded,
+        stripeRefundedAmount: amountRefundedCents,
       },
       "Stripe refund webhook did not increase the local refunded total; skipping Xero refund credit note queue"
     );

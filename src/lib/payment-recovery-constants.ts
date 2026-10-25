@@ -123,6 +123,17 @@ export function rearmedPaymentRecoveryOperationData(now: Date) {
 }
 
 /**
+ * #4359 (`INV-PAY-142`): the `lastError` code of a card refund row the runner
+ * held, sending nothing, because Stripe holds a refund made outside the app on
+ * that charge since the row's debt arose (`card-refund-resend-stripe-check.ts`).
+ * The Stuck States row reads it as "Stripe may have refunded".
+ */
+export const CARD_REFUND_RESEND_HELD_CODE = "CARD_REFUND_RESEND_HELD";
+export function isCardRefundResendHeldError(lastError: string | null): boolean {
+  return lastError?.startsWith(`${CARD_REFUND_RESEND_HELD_CODE}:`) ?? false;
+}
+
+/**
  * #4104 review (CL4, `INV-SSOT`): {@link PAYMENT_RECOVERY_EXHAUSTED_WHERE} as a
  * predicate - the one "dead" rule of a card refund row: the "Paid another way"
  * close's claim (`deadCardRefundOperationWhere`), the card refund shortfall's

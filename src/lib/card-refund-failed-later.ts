@@ -136,8 +136,8 @@ export class FailedLaterRefundHeldError extends Error {
   }
 }
 
-/** Where the treasurer closes a row the app will not ask Stripe for again (#4104 review, D1). */
-const CLOSE_IT_WHERE = 'close it under "Card refunds Stripe gave up on" on the Stuck states page';
+/** Where the treasurer closes a row the app will not ask Stripe for again (#4104 review, D1; #4359's hold too). */
+export const CLOSE_IT_WHERE = 'close it under "Card refunds Stripe gave up on" on the Stuck states page';
 
 /** What the row says, for a person reading it; nothing parses it. */
 function failedLaterLastError(refundId: string, outcome: FailedLaterCardRefundDebt["outcome"]): string {

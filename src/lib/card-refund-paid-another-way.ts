@@ -36,7 +36,7 @@ import {
 } from "@/lib/open-card-refund-owed";
 import { getNetCollectedCashParts } from "@/lib/payment-net-collected";
 import { prisma } from "@/lib/prisma";
-import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
+import { isCardRefundResendHeldError, isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
 import { onPlanWhere } from "@/lib/refused-card-refund-retry";
 import {
@@ -254,8 +254,8 @@ export interface DeadCardRefundRow {
  * network error, a Stripe server error, or Stripe saying the money is already
  * back - the failures where the refund may have gone through with its answer
  * lost. The panel then tells the treasurer to check the Stripe dashboard before
- * paying the member again. A hint only: it reads the worker's wording, and
- * decides nothing.
+ * paying the member again - and (#4359) a row the runner held for a dashboard
+ * refund. A hint only: it reads the worker's wording, and decides nothing.
  *
  * #3924 round 5 (money F5, concurrency F3): a 5xx is matched only beside a
  * status word ("status 502", "statusCode: 503"), never any three digits
@@ -269,7 +269,7 @@ export interface DeadCardRefundRow {
  */
 export function lastErrorSuggestsStripeMayHaveRefunded(lastError: string | null): boolean {
   if (!lastError) return false;
-  return /time[- ]?out|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network|connection (?:error|reset|closed|refused)|StripeConnectionError|StripeAPIError|status(?:Code)?\D{0,3}5\d\d\b|has already been refunded|greater than (?:the )?unrefunded amount|idempotent requests can only be used with the same parameters|idempotency_error/i.test(
+  return isCardRefundResendHeldError(lastError) || /time[- ]?out|timed out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|network|connection (?:error|reset|closed|refused)|StripeConnectionError|StripeAPIError|status(?:Code)?\D{0,3}5\d\d\b|has already been refunded|greater than (?:the )?unrefunded amount|idempotent requests can only be used with the same parameters|idempotency_error/i.test(
     lastError,
   );
 }
