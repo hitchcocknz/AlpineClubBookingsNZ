@@ -536,7 +536,7 @@ export async function recordAdditionalCaptureReceipt(
     if (recorder.kind === "receipt") return null;
     return {
       kind: recorder.kind,
-      operationId: recorder.kind === "primary-invoice" ? null : recorder.operationId,
+      operationId: "operationId" in recorder ? recorder.operationId : null,
       changeId: captureChangeId(capture),
     };
   }
