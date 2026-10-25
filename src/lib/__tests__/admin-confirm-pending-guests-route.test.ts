@@ -830,6 +830,41 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(mocks.upsertPaymentIntentTransaction).not.toHaveBeenCalled();
   });
 
+  it("#4357: charges the booking's worth - its price plus a change fee recorded on its payment - as the cron does", async () => {
+    const booking = makeBooking();
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.chargePaymentMethod.mockResolvedValue({ id: "pi_1", status: "succeeded", amount: 12500, payment_method: "pm_1" });
+    mocks.markBookingPaymentSucceeded.mockResolvedValue({ outcome: "paid" });
+
+    const res = await POST(makeRequest(), { params });
+
+    expect(res.status).toBe(200);
+    expect(mocks.chargePaymentMethod).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 12500 }));
+    expect(mocks.paymentUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ amountCents: 12500 }),
+        update: expect.objectContaining({ amountCents: 12500 }),
+      }),
+    );
+    expect(mocks.paymentTransactionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ amountCents: 12500 }) }),
+    );
+  });
+
+  it("#4357: a refused charge's alert names the worth it would have charged", async () => {
+    const booking = makeBooking();
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.chargePaymentMethod.mockRejectedValue(new Error("card_declined"));
+
+    const res = await POST(makeRequest(), { params });
+
+    expect(res.status).toBe(502);
+    expect(mocks.sendPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 12500, errorMessage: "card_declined" }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
   it("alerts with the amount that was CHARGED, not the pre-lock snapshot's: a price that moved between the two reads (#3267 fix round 2)", async () => {
     // The charge already used the claim's post-lock amount; the failure alert
     // used the pre-lock one, so an operator could be told about a figure

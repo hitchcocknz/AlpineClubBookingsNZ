@@ -32,6 +32,7 @@ import {
 } from "@/lib/capacity";
 import { bookingHasCapacityOverride } from "@/lib/booking-status";
 import { reusableSavedPaymentMethodOnRow } from "@/lib/saved-payment-method";
+import { savedCardChargeCents } from "@/lib/booking-payment-state";
 import {
   beginSavedCardChargeAttempt,
   SAVED_CARD_CHARGE_REASON,
@@ -257,10 +258,13 @@ export async function POST(request: NextRequest) {
             ? { actorMemberId: session.user.id }
             : {}),
         });
+        // #4357 (`INV-PAY-119`): the booking's worth, as the cron charges it -
+        // a change fee recorded on this unsettled payment is collected too.
+        const chargeCents = savedCardChargeCents(locked);
         const attempt = await beginSavedCardChargeAttempt(tx, {
           paymentId: locked.payment.id,
           bookingId,
-          amountCents: locked.finalPriceCents,
+          amountCents: chargeCents,
           card: lockedCard,
           reason: SAVED_CARD_CHARGE_REASON.chargeSavedMethodRoute,
         });
@@ -269,7 +273,7 @@ export async function POST(request: NextRequest) {
           attempt,
           card: lockedCard,
           paymentId: locked.payment.id,
-          amountCents: locked.finalPriceCents,
+          amountCents: chargeCents,
         };
       });
 
@@ -297,7 +301,7 @@ export async function POST(request: NextRequest) {
           memberName,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
-          amountCents: booking.finalPriceCents,
+          amountCents: savedCardChargeCents(booking),
           errorMessage: claimErr.message,
           paymentIntentId: claimErr.paymentIntentId ?? "N/A",
         }, format).catch((alertErr) =>

@@ -18,6 +18,7 @@ import {
   SavedCardChargeRefusedError,
 } from "@/lib/saved-card-charge-attempt";
 import { chargeSavedCardAttempt } from "@/lib/saved-card-charge-request";
+import { savedCardChargeCents } from "@/lib/booking-payment-state";
 import {
   describeUnsettledPaymentIntent,
   settleSavedCardChargeAttempt,
@@ -494,16 +495,19 @@ export async function POST(
       // neither launder a parent's pm nor resurrect one a concurrent
       // replacement mint just cleared.
       const rowStamp = savedPaymentMethodRowStamp(lockedCard);
+      // #4357 (`INV-PAY-119`): the booking's worth, as the cron charges it - a
+      // change fee recorded on this unsettled payment is collected too.
+      const chargeCents = savedCardChargeCents(locked);
       const payment = await tx.payment.upsert({
         where: { bookingId },
         create: {
           bookingId,
-          amountCents: locked.finalPriceCents,
+          amountCents: chargeCents,
           status: PaymentStatus.PENDING,
           ...rowStamp,
         },
         update: {
-          amountCents: locked.finalPriceCents,
+          amountCents: chargeCents,
           status: PaymentStatus.PENDING,
           ...rowStamp,
         },
@@ -511,7 +515,7 @@ export async function POST(
       const attempt = await beginSavedCardChargeAttempt(tx, {
         paymentId: payment.id,
         bookingId,
-        amountCents: locked.finalPriceCents,
+        amountCents: chargeCents,
         card: lockedCard,
         reason: SAVED_CARD_CHARGE_REASON.adminConfirmPendingGuests,
       });
@@ -520,7 +524,7 @@ export async function POST(
         paymentId: payment.id,
         attempt,
         card: lockedCard,
-        amountCents: locked.finalPriceCents,
+        amountCents: chargeCents,
       };
     });
 
@@ -548,7 +552,7 @@ export async function POST(
           memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
-          amountCents: booking.finalPriceCents,
+          amountCents: savedCardChargeCents(booking),
           errorMessage: claimErr.message,
           paymentIntentId: claimErr.paymentIntentId ?? "N/A",
         }, format).catch((alertErr) =>

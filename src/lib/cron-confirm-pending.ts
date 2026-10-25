@@ -1,4 +1,4 @@
-import { bookingWorthCents } from "@/lib/booking-payment-state";
+import { savedCardChargeCents } from "@/lib/booking-payment-state";
 import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
 import { BookingEventType, BookingStatus, PaymentSource, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
 import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
@@ -181,23 +181,6 @@ export function shouldAlertOnSavedCardChargeRefusal(
 // reason to avoid cancelling the intent Stripe would re-return under the shared
 // `pending_charge_<bookingId>` key. There is no shared key any more, and the
 // sweep excludes attempt rows by the key prefix that module owns.
-
-/**
- * #3750 (#3955 review F2, `INV-PAY-119`): what the saved card is charged — the
- * booking's worth, its price plus a change fee recorded on its payment, read
- * from the one home. Like the bare price it replaces, applied credit is not
- * netted here (the settle admits a full-worth capture and gives back any
- * credit it leaves spent, #3864).
- */
-function savedCardChargeCents(booking: {
-  finalPriceCents: number;
-  payment: { changeFeeCents: number } | null;
-}): number {
-  return bookingWorthCents({
-    finalPriceCents: booking.finalPriceCents,
-    changeFeeCents: booking.payment?.changeFeeCents ?? null,
-  });
-}
 
 const pendingBookingInclude = {
   member: true,

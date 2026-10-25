@@ -436,6 +436,23 @@ describe("POST /api/payments/charge-saved-method", () => {
     expect(releaseCall()).toBeUndefined();
   });
 
+  it("#4357: charges the booking's worth - its price plus a change fee recorded on its payment - as the cron does", async () => {
+    const withFee = makeBooking();
+    primeBooking({ ...withFee, payment: { ...withFee.payment, changeFeeCents: 2500 } });
+    mockChargePaymentMethod.mockResolvedValue({ id: "pi_worth_1", status: "succeeded", amount: 15000 });
+
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockChargePaymentMethod).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 15000 }));
+    expect(mockPaymentTransactionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ amountCents: 15000 }) }),
+    );
+    expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_worth_1", amountCents: 15000 }),
+    );
+  });
+
   it("#4300: a charge the settle refuses as superseded answers not paid, queues no invoice and releases the claim", async () => {
     mockChargePaymentMethod.mockResolvedValue({ id: "pi_superseded", status: "succeeded", amount: 12500 });
     mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
