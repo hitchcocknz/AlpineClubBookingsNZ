@@ -763,6 +763,8 @@ edit raises an ask -> mint the replacement intent
        still cancellable -> transaction FAILED, operation SUCCEEDED
        Stripe already captured it -> handed off to REFUND_SUPERSEDED_PAYMENT
        provider failure -> the queued operation stands; the recovery cron finishes
+  -> each superseded ask's WAITING_PAYMENT supplementary invoice, a declined
+       ask's included, re-pointed at the replacing intent (#3403, INV-PAY-070)
   -> the member's card sees only the replacing intent
 REFUND_SUPERSEDED_PAYMENT completes
   -> reconcile aggregates, THEN one audit row + one REFUNDED BookingEvent
@@ -3789,6 +3791,19 @@ worker finds the operation must wait (busy) -> RUNNING -> PENDING: returns
   createdAt -> FAILED for a person (an operator's retry raises it unwaited)
   it waits only when its edit expected an own note; a note the repair pass
   queues reads that from the edit's history row (#4049)
+supplementary invoice WAITING_PAYMENT on a card ask's intent (INV-PAY-104)
+  -> that intent captured and the money kept -> PENDING (released)
+  -> a later request supersedes the ask and carries its balance (#3403,
+     INV-PAY-070) -> stays WAITING_PAYMENT, re-pointed at that request
+     (`parkedFromPaymentIntentId` keeps the first intent), under the anchor's
+     key, status-guarded: by the supersede's cancel step, by the minter before
+     it returns its secret, and by the reaper before it would retire it
+     the booking ended, the anchor already linked or another invoice queued
+     for it, or the request would bill more than it asks -> left as it was
+     the request already captured -> released at once
+  -> the pay door closed and nothing carries it -> CANCELLED,
+     STALE_WAITING_PAYMENT (the reaper; only a capture of that same intent
+     revives it)
 inbound webhook/event recorded -> reconciliation worker processes event
 failure -> retry/backoff/admin visibility
 FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,

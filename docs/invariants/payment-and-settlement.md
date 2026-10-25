@@ -1253,9 +1253,8 @@ operations, and neither covers the other's ground. Change one, check the other.
 
 ## INV-PAY-104
 
-**Related: `INV-PAY-029`** (when a failed ask is looked at) **and #3403** (the
-supersession trigger, an open owner decision this rule deliberately leaves as
-it was).
+**Related: `INV-PAY-029`** (when a failed ask is looked at) **and `INV-PAY-070`**
+(a superseded ask's invoice moves to the request carrying its balance, #3403).
 
 - **A waiting supplementary invoice is retired only when the pay door is
   closed** (#3641). One door, `resolveAdditionalPaymentDoor`
@@ -1265,14 +1264,15 @@ it was).
   the money; else `payable`. The secret route serves only `payable` (404, 409;
   a `processing` intent answers `PAYMENT_PROCESSING`, not paid, #3635); the
   page card asks its booking half. The reaper
-  (`xero-waiting-invoice-reaper.ts`) retires only on `closed`, reading Stripe
+  (`xero-waiting-invoice-reaper.ts`) retires only on `closed` (an invoice
+  whose ask a later request carries is moved there instead), reading Stripe
   only for a FAILED ask (10s, 25 reads a run); a capture Stripe holds but our
   rows never recorded alerts once after three days (`sendAdminAlertOnceEver`,
   so an alert nobody received is retried, #3635).
 - **Only a kept capture is invoiced.** `lateCaptureRefundState` answers from
   the #3639 task owning the capture (OPEN undecided, COMPLETED refunded,
   DISMISSED kept, recorded gross: `INV-PAY-110`), else from the booking
-  (CANCELLED or a supersede recovery refunds; #3403 unchanged). The reaper and
+  (CANCELLED or a supersede recovery refunds). The reaper and
   `releaseXeroSupplementaryInvoiceForCapturedPaymentIntent` both ask it:
   refunded retires, undecided stays waiting, kept is released or re-queued. An invoice the capture does not cover
   is not issued, and an officer is told. A retired row is re-queued from
@@ -2616,15 +2616,14 @@ _Legacy: settles tasks raised before #4317._
   invoice behind the first and RECORDS the shortfall:
   `outcome: "short-sent"` when the invoice exists, `"short-in-flight"` when the
   worker has merely claimed the row. What happens next is `INV-PAY-063`.
-- **AND A SUPERSEDED EDIT'S INVOICE CAN BE ORPHANED** (#3371). A card booking's supplementary invoice waits
-  `WAITING_PAYMENT` on its own PaymentIntent, released only by a confirmed
-  payment on it. A later mint CANCELS that intent ([INV-ADDPAY-023]), so it is
-  never released and `reapStaleWaitingPaymentXeroOutboxOperations` retires it a
-  day later — while the replacement ask still COLLECTS that money
-  ([INV-PAY-098]). The backstop is the booking-vs-Xero repair pass's
-  `MISSING_SUPPLEMENTARY_INVOICE`. Folding the carried balance onto the
-  replacement's invoice is NOT the repair: it double-bills wherever the earlier
-  invoice DID issue.
+- **A SUPERSEDED CHANGE'S INVOICE FOLLOWS THE MONEY** (#3403, owner decision
+  26 Oct 2026). On the card route it waits `WAITING_PAYMENT` on its change's
+  own intent. When a later request carries that ask's balance ([INV-PAY-098]),
+  the invoice is re-pointed at it (`followSupersededAskInvoicesToCarrier`) by
+  the supersede's cancel, the minter and, before retiring, the reaper. That
+  request's capture releases both invoices, each for its own amount; never
+  paid, nothing is invoiced. Folding the balance onto the later invoice is
+  refused: it double-bills wherever the earlier invoice issued.
 
 ## INV-PAY-063
 
