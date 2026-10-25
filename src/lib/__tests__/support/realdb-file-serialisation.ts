@@ -35,6 +35,10 @@ export const REALDB_FILE_LOCK_KEY = [4367, 1] as const;
 
 const REALDB_FILE_PATTERN = /\.realdb\.test\.tsx?$/;
 const POLL_MS = 250;
+// The wait is unbounded, so each query is not: a race database that stops
+// answering without dropping the connection fails the file instead of hanging
+// the run. Every lock query is instant on a healthy server.
+const LOCK_QUERY_TIMEOUT_MS = 30_000;
 // A queued file may wait for every file ahead of it, and polling does not
 // serve files in arrival order, so the wait has no hook timeout: 0 is none.
 export const REALDB_FILE_WAIT_TIMEOUT = 0;
@@ -62,7 +66,7 @@ export async function acquireRealdbFileLock(
   testPath: string | undefined,
   url: string,
   connect: (url: string) => RealdbLockClient = (connectionString) =>
-    new Client({ connectionString }),
+    new Client({ connectionString, query_timeout: LOCK_QUERY_TIMEOUT_MS }),
   pause: () => Promise<void> = () => new Promise((resolve) => setTimeout(resolve, POLL_MS)),
 ): Promise<(() => Promise<void>) | null> {
   if (!isRealdbTestFile(testPath)) return null;

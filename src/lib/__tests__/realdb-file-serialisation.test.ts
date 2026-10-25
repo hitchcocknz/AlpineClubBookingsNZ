@@ -6,7 +6,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   REALDB_FILE_LOCK_KEY,
@@ -17,6 +17,21 @@ import {
   type RealdbLockClient,
 } from "./support/realdb-file-serialisation";
 import { stripComments } from "./support/strip-comments";
+
+const pgClients = vi.hoisted(() => [] as Array<Record<string, unknown>>);
+vi.mock("pg", () => ({
+  Client: class {
+    constructor(config: Record<string, unknown>) {
+      pgClients.push(config);
+    }
+    on() {}
+    async connect() {}
+    async query() {
+      return { rows: [{ locked: true }] };
+    }
+    async end() {}
+  },
+}));
 
 const RACE_URL = "postgresql://postgres:postgres@127.0.0.1:55767/concurrency_race_1881";
 const REALDB_FILE = "/repo/src/lib/__tests__/xero-refund-note-void-pointer.realdb.test.ts";
@@ -164,6 +179,12 @@ describe("realdb file serialisation (#4367)", () => {
     );
     expect(source).toContain('raceDatabaseUrl: () => process.env.CONCURRENCY_RACE_DATABASE_URL ?? ""');
     expect(source).toContain("testPath: () => expect.getState().testPath");
+  });
+
+  it("bounds each lock query by default, though the wait itself is unbounded", async () => {
+    const release = await acquireRealdbFileLock(REALDB_FILE, RACE_URL);
+    await release?.();
+    expect(pgClients).toEqual([{ connectionString: RACE_URL, query_timeout: 30_000 }]);
   });
 
   it("is registered by vitest.setup.ts whenever the race env is on", () => {

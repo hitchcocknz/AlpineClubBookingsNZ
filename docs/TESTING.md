@@ -1516,8 +1516,8 @@ failed 6 tests in 2 files.
 
 When `RUN_CONCURRENCY_RACE_TESTS=1` and `CONCURRENCY_RACE_DATABASE_URL` is
 set, `vitest.setup.ts` makes each realdb file hold one session advisory lock,
-`(4367, 1)`, from its first hook to its last test. The files then run one at a
-time whatever the worker count; importing and collecting them still overlap.
+`(4367, 1)`, from its first hook through its teardown. The files then run one
+at a time whatever the worker count; importing and collecting them still overlap.
 The same 27 files then passed twice in a row. The lock lives in
 `src/lib/__tests__/support/realdb-file-serialisation.ts`. One `aroundAll`
 holds it, so a root `afterAll` that throws still releases it, and the wait has
