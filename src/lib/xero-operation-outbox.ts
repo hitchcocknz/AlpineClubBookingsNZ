@@ -2879,6 +2879,10 @@ export interface ProcessQueuedXeroOutboxOperationsResult {
   succeeded: number;
   failed: number;
   skipped: number;
+  /** #4375: of `skipped`, rows refused before any call (outage cooldown,
+   * daily limit, environment check) and returned to PENDING. Present only
+   * when non-zero; the cron runner turns it into a health warning. */
+  cooldownDeferred?: number;
 }
 
 export async function kickQueuedXeroOutboxOperationsIfConnected(options?: {
@@ -3300,6 +3304,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
             "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
           );
           result.skipped += 1;
+          result.cooldownDeferred = (result.cooldownDeferred ?? 0) + 1;
           continue;
         }
         // The row was in neither RUNNING nor FAILED (e.g. a concurrent worker

@@ -139,7 +139,7 @@ describe("xero cron runner", () => {
   it("records a worked batch with routinely skipped rows as SUCCESS, not SKIPPED (#4375)", async () => {
     const recordCronRun = vi.fn();
 
-    await runXeroCronTaskList(["outbox", "retries", "inbound"], {
+    await runXeroCronTaskList(["outbox", "retries"], {
       taskLabel: "xero-queue",
       recordCronRun,
       isModuleEnabled: vi.fn(async () => true),
@@ -159,19 +159,47 @@ describe("xero cron runner", () => {
           failed: 0,
           skipped: 2,
         })),
-        runXeroInboundReconciliationCycle: vi.fn(async () => ({
-          skipped: 5,
-        })) as never,
       },
     });
 
-    for (const jobName of ["xero-outbox", "xero-operation-replay", "xero-inbound-reconcile"]) {
+    for (const jobName of ["xero-outbox", "xero-operation-replay"]) {
       expect(recordCronRun).toHaveBeenCalledWith(
         expect.objectContaining({ jobName, status: "SUCCESS" })
       );
     }
     expect(recordCronRun).not.toHaveBeenCalledWith(
       expect.objectContaining({ status: "SKIPPED" })
+    );
+  });
+
+  it("warns, not green, when a Xero cooldown refused outbox rows before any call (#4375)", async () => {
+    const recordCronRun = vi.fn();
+
+    const result = await runXeroCronTaskList(["outbox"], {
+      taskLabel: "xero-queue",
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => true),
+      tasks: {
+        processQueuedXeroOutboxOperations: vi.fn(async () => ({
+          found: 3,
+          processed: 3,
+          succeeded: 0,
+          failed: 0,
+          skipped: 3,
+          cooldownDeferred: 3,
+        })),
+      },
+    });
+
+    const warning = expect.stringContaining("Xero refused 3 operation(s) before any call");
+    expect(result.queuedOutboxOperations).toMatchObject({ warning });
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-outbox",
+        status: "SUCCESS",
+        resultSummary: expect.objectContaining({ warning }),
+      })
     );
   });
 

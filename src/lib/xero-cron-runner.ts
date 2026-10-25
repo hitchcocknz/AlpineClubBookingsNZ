@@ -138,15 +138,31 @@ function tasksForSelection(
 }
 
 // SKIPPED means the task did no work: `skipped: true` from a disabled or
-// unconnected task, or a sweep with nothing to read. The queue tasks report a
-// numeric `skipped` count of rows passed over (a lost claim, a row another
-// caller finished) after working their batch; that run SUCCEEDED (#4375).
+// unconnected task, a throttled credit-sync pass, or a sweep with nothing to
+// read. The outbox and replay tasks report a numeric `skipped` count of rows
+// passed over after working their batch (a lost claim, a row resolved or not
+// replayable, a note waiting its turn); that run SUCCEEDED (#4375). A pre-call
+// refusal is the exception: see `withOutboxCooldownWarning`.
 function cronStatusForResult(result: unknown): CronJobRunStatus {
   return result &&
     typeof result === "object" &&
     (result as { skipped?: unknown }).skipped === true
     ? "SKIPPED"
     : "SUCCESS";
+}
+
+// #4375: rows refused before any call (outage cooldown, daily limit,
+// environment check) are counted in `skipped`, but they mean Xero is unusable,
+// so the run carries a warning (#3663) and cron health shows it, not green.
+function withOutboxCooldownWarning<T extends { cooldownDeferred?: number }>(
+  result: T
+): T & { warning?: string } {
+  const deferred = result.cooldownDeferred ?? 0;
+  if (deferred === 0) return result;
+  return {
+    ...result,
+    warning: `Xero refused ${deferred} operation(s) before any call (outage cooldown, daily limit or environment check); they stay queued and run once it clears.`,
+  };
 }
 
 function resultSummaryFor(result: unknown) {
@@ -314,8 +330,10 @@ export async function runXeroCronTaskList(
           recordCronRun,
           work: async () =>
             connected
-              ? await (taskDependencies.processQueuedXeroOutboxOperations ??
-                  processQueuedXeroOutboxOperations)()
+              ? withOutboxCooldownWarning(
+                  await (taskDependencies.processQueuedXeroOutboxOperations ??
+                    processQueuedXeroOutboxOperations)()
+                )
               : { skipped: true, reason: "Xero not connected" },
         });
       } else if (task === "retries") {
