@@ -564,6 +564,12 @@ import "./manual-reversal-retrying-cancel.realdb.test";
 // failed mint, bumped before it runs and cancelled mid-mint. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4316-` fixtures.
 import "./ended-booking-ask-mint-race.realdb.test";
+// #4357 reuses it to prove every saved-card door charges the booking's worth:
+// a change fee the edit lifecycle's writer recorded on an unsettled payment is
+// charged by the charge-saved-method route and the officer's
+// confirm-pending-guests route, and the REAL settle takes it. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4357-` fixtures.
+import "./saved-card-charge-worth.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

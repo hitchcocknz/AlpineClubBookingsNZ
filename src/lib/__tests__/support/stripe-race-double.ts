@@ -28,7 +28,9 @@ export const stripeRaceHooks: {
   listChargeRefunds: null | ((chargeId: string) => Promise<unknown>);
   /** #4300: the Stripe customer a card door mints its intent for. */
   customer: null | ((args: Parameters<Stripe["findOrCreateCustomer"]>[0]) => Promise<unknown>);
-} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null, refund: null, listRefunds: null, listChargeRefunds: null, customer: null };
+  /** #4357: a saved card's off-session charge, which every saved-card door makes. */
+  charge: null | ((args: Parameters<Stripe["chargePaymentMethod"]>[0]) => Promise<unknown>);
+} = { update: null, get: null, create: null, findByMetadata: null, list: null, cancel: null, refund: null, listRefunds: null, listChargeRefunds: null, customer: null, charge: null };
 
 export function resetStripeRaceHooks(): void {
   stripeRaceHooks.update = null;
@@ -41,6 +43,7 @@ export function resetStripeRaceHooks(): void {
   stripeRaceHooks.listRefunds = null;
   stripeRaceHooks.listChargeRefunds = null;
   stripeRaceHooks.customer = null;
+  stripeRaceHooks.charge = null;
 }
 
 export function stripeRaceDouble(actual: Stripe): Stripe {
@@ -78,5 +81,7 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
         : actual.listRefundsForCharge(...args)) as Stripe["listRefundsForCharge"],
     findOrCreateCustomer: ((args: Parameters<Stripe["findOrCreateCustomer"]>[0]) =>
       stripeRaceHooks.customer ? stripeRaceHooks.customer(args) : actual.findOrCreateCustomer(args)) as Stripe["findOrCreateCustomer"],
+    chargePaymentMethod: ((args: Parameters<Stripe["chargePaymentMethod"]>[0]) =>
+      stripeRaceHooks.charge ? stripeRaceHooks.charge(args) : actual.chargePaymentMethod(args)) as Stripe["chargePaymentMethod"],
   };
 }
