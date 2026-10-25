@@ -4070,13 +4070,32 @@ the pre-#4217 code). Now:
   used to delete those rows first and reach the `Payment` row only at its own
   write, while the claim hold takes the `Payment` row and then upserts the same
   cancellation rows: a deadlock.
-- A writer that reaches only the rebuild, such as the superseded-intent late
-  capture in `payment-recovery.ts` (an autocommit row write, then the
-  root-client rebuild), is covered by the rebuild's own lock.
+- The superseded-intent hand-off (`handoffSucceededSupersededIntentToRefund`,
+  #4320) re-claims its cancel row, marks the capture SUCCEEDED
+  (`markSupersededTransactionSucceeded`) and rebuilds in one transaction, the
+  `Payment` row first, then the recovery row, then the transaction row. The
+  reversal holds that `Payment` row from its "no settled Stripe transaction"
+  check to its commit, so the two serialise: a hand-off that commits first
+  makes the reversal refuse, and one that waits finds its row withdrawn and
+  claims nothing. As separate statements the flip could land after that check,
+  and the member was charged and refunded on a booking left unpaid. No provider
+  call runs inside; its callers all run outside any transaction.
+- The reversal re-arms a cancellation it leaves standing that the runner will
+  not finish (`rearmDeadIntentCancellations`, #4320), including one a worker
+  holds PROCESSING on its last attempt, mid-Stripe-call and holding no lock.
+  That worker cannot undo the re-arm: its failure write is fenced on the
+  attempt it claimed (`attempts`, with `processingStartedAt` set), which the
+  re-arm reset; its success write closes the row, which is true; its hand-off
+  re-claims the PENDING row through the same status-fenced claim the webhook's
+  uses (only the webhook's adds an attempt), and queues the refund by key.
+- A writer that reaches only the rebuild, such as the superseded refund's own
+  late flip in `processRefundSupersededPaymentOperation` (an autocommit row
+  write, then the root-client rebuild), is covered by the rebuild's own lock.
 - Some writers need no lock because each of their statements autocommits, so
-  they never hold a row while they wait for another: the superseded-intent
-  marks in `payment-recovery.ts` (`markSupersededTransactionFailed` and
-  `markSupersededTransactionSucceeded`, before their rebuild), the attempt's
+  they never hold a row while they wait for another:
+  `markSupersededTransactionFailed` in `payment-recovery.ts` (before its
+  rebuild), and `markSupersededTransactionSucceeded` outside the hand-off
+  above, the attempt's
   FAILED and PROCESSING flips in `saved-card-charge-request.ts`, the retired
   card's ledger clear in `saved-card-charge-failure.ts`, and the invoice stamp
   in `xero-booking-invoices.ts`. `beginSavedCardChargeAttempt` writes attempt
@@ -4101,7 +4120,8 @@ advisory key and no row-lock statement was added: every site calls
 `lockPaymentForRefundedTotal`. Every holder of the `Payment` row was checked
 for a row it takes after it that a writer above already held. The retire, the
 saved-card settle, the claim hold, the re-issue door, the fold-close and the
-manual-payment reversal were those writers, and they now lock first.
+manual-payment reversal were those writers, and they now lock first; the
+superseded hand-off joined them in #4320.
 
 `payment-lock-before-rebuild.realdb.test.ts` proves it with seven forced
 interleavings. Races 1 to 5 each fail on the pre-#4217 code; the third stands
@@ -4111,7 +4131,10 @@ manual-payment reversal against the claim hold's shape. The two reduction
 races in `additional-ask-reduction.realdb.test.ts` cover the capture webhook,
 and the credit give-back against the real runner's claim hold.
 `payment-lock-before-rebuild.test.ts` pins the lock as each writer's first
-statement.
+statement. The hand-off against the real reversal is proved in
+`manual-reversal-retrying-cancel.realdb.test.ts` (a capture landing while the
+reversal holds the `Payment` row settles the booking, never refunded), and its
+lock order in `payment-recovery.test.ts`.
 
 **The cost: P2028 and Stripe's retry.** These writers were autocommit before
 #3640 and #4217, so they now carry Prisma's interactive-transaction limits (2 s
@@ -5023,12 +5046,69 @@ read that confirmed the signal, and the allocations and payments it listed, happ
 before the transaction, so no provider call is held inside it. That evidence can
 go stale in the milliseconds between: if the treasurer reverses the outside spend
 then, the routine writes down credit Xero has given back. The amount is capped by
-the booking's slice, and the inbound mirror (the next change of #4219) is what
+the booking's slice, and the inbound mirror (#4270, below) is what
 restores a reversed spend. There is no separate claim row: a repeat finds the
 write-down already counted and writes nothing, and a concurrent run that lost the
 race finds the booking converged or its slice already shrunk below what was refused. Registered in `advisory-lock-guard.test.ts`
 (`convergeCreditNoteSpentOutsideApp#1`); proved against real PostgreSQL by
 `credit-note-spent-outside-app.realdb.test.ts`.
+
+## A credit note spent or un-spent in Xero: the member's credit ledger only (#4270)
+
+`mirrorCreditNoteOutsideSpend` (`xero-credit-note-mirror.ts`) writes down the free
+part of a funding lot Xero shows spent outside the app, and restores it when Xero
+shows the spend undone. It adds one `ADMIN_ADJUSTMENT` row and one audit row; it
+releases no booking's applied credit and moves no settlement money, so it takes the
+**member's credit-ledger key and nothing else**, never the global key. That cannot
+invert the converge's order (global, then member): a mirror and a converge on one
+member serialise on the member key, and the converge's extra global key excludes only
+the cancel, capture and refund writers the mirror does not conflict with.
+
+| Step | Where |
+| --- | --- |
+| Xero read of the note | before the transaction (the webhook's own read, or the sweep's), no lock held |
+| Member and lot chosen | before the transaction, from the note's single funding lot; more than one lot or member fails closed |
+| `lockMemberCreditLedger(memberId)` | first statement of the transaction |
+| Re-read under the lock | the lot, its slices, the net write-down, the balance, the outside spend, in-flight `APPLIED_CREDIT_ALLOCATION` or `APPLIED_CREDIT_DEALLOCATION` operations and the deallocation fence of every payment that holds a slice on the lot |
+| Write | the row and its audit row, in the same transaction; none when nothing changes |
+
+There is no claim row. The target is recomputed from Xero's list under the lock and
+the rows are additive, so a second mirror (or a converge) that runs after the first
+finds `delta = 0`; two that race queue on the member key and the second finds the
+first's rows. `real-PostgreSQL` proof: `credit-note-outside-spend-mirror.realdb.test.ts`
+(two mirrors, a mirror and a converge in both orders and at once, a credit writer
+holding the member key, and a writer holding the global key that the mirror does not
+wait for). It is imported into `concurrency-lock-races.realdb.test.ts`. The writers
+that change a lot's free balance (the allocation engine's plan, a cancel's restore,
+an admin adjustment) take the member key, so the mirror's free-credit and balance
+reads under that key are exact.
+
+## A request for released credit: the recovery claim, and one global-key close (#4253)
+
+The card request for credit released by `convergeCreditNoteSpentOutsideApp` is
+raised by the recovery runner (`credit-release-ask.ts`) under the same claim the
+ordinary additional-ask replay holds (`holdAdditionalIntentRecoveryClaim`): the
+Stripe intent is minted first, outside every lock, under a key that names the
+release; the request's row, its audit row and the cancellation rows of the asks
+it supersedes are written in one claimed transaction; the supersede cancels run
+after it. It takes no advisory key of its own. A cancel that commits between the
+runner's ended-booking read and its row write is caught by the second read
+(`INV-ADDPAY-044`), which retires the request.
+
+The Xero payment (`credit-release-xero-payment.ts`) is a sweep that writes no
+local row except the `XeroObjectLink` the existing payment writer creates; it
+holds no lock and reads Xero outside any transaction. A repeat is harmless
+because the Xero idempotency key is stable, and the retry cap bounds the
+operation rows a failing payment can create.
+
+Closing a request Xero shows paid (`credit-release-ask-close.ts`) is a
+settlement-money writer: it cancels the card payment at Stripe first, outside
+any lock, and leaves a succeeded or processing intent alone. It then takes the
+global key and the `Payment` row lock (`INV-LOCK-001`: the global key alone, then the row), fences the
+request row (unpaid, unwithdrawn, carrying nothing) with a status-guarded
+`updateMany`, and writes the bank-cash row in the same transaction; a lost fence writes
+nothing. Registered in `advisory-lock-guard.test.ts`
+(`closeCreditReleaseAsksPaidInXero#1`).
 
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)
 
@@ -5660,7 +5740,9 @@ Counterparts:
   that transaction opens, so no provider call runs under either lock. After
   the commit, and outside any lock, the hand-made note is read again
   (`reconcileHandMadeNoteAfterCompletion`, through the inbound
-  `reconcileXeroCreditNote`), so a void in between is caught.
+  `reconcileXeroCreditNote`), so a later void is caught. A void that commits
+  before the completion's link write is kept under the link's row lock and the
+  answer is refused with a 409, rolling the completion back (#4288).
 
 **A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
 runs the very same undo (`undoUnderLocks`) for an unmatched note: the same
@@ -5712,13 +5794,20 @@ unique key serialises concurrent first insertions: if the mirror was missing,
 a competing inbound insert must commit or roll back before the status read.
 An existing row is untouched by the reservation. The reservation, lock, read
 and final link write share the caller's transaction; failure rolls them all
-back, so no identity-only placeholder commits alone. A write that names no
-Xero status then re-reads the row through Prisma and keeps a stored
-VOIDED/DELETED: the link stays inactive, the status and incoming metadata
-merge over the stored figures and provenance, and no sibling is retired for
-it. A pointer naming it is released if its Payment row is available without
-waiting; otherwise the inactive mirror commits and the #4161 heal can release
-the pointer later. A write that names a status is judged on it.
+back, so no identity-only placeholder commits alone. Every write then re-reads
+the row through Prisma under that lock and applies `judgeRefundNoteWrite`. A
+write that names no Xero status keeps a stored VOIDED/DELETED: the link stays
+inactive, the status and incoming metadata merge over the stored figures and
+provenance, and no sibling is retired for it. A pointer naming it is released
+if its Payment row is available without waiting; otherwise the inactive mirror
+commits and the #4161 heal can release the pointer later. A write that names a
+live status it read from Xero before the void committed (#4288: the inbound
+reconcile, the Stripe status recorder, a hand-made note answer) keeps the
+stored status, stamp and figures the same way; the canonical rule (active flag,
+sibling retirement) still applies. Between two live readings, the one whose Xero
+`UpdatedDateUTC` is older than the stored one's keeps the stored snapshot. A
+write that names VOIDED/DELETED is applied. The ordering reads only the row
+this lock already holds, so it adds no lock.
 
 It writes no money column, no booking status and calls no provider; under
 `INV-LOCK-001` it joins no advisory cohort and takes no advisory key, so
@@ -5728,8 +5817,8 @@ key (an enqueue inside a group cancel), the row lock comes after it, as the
 protocol requires.
 
 **Lock order.** Inside the link write, always: the link's own row, then any
-active sibling note the single-canonical rule retires. A statusless write
-keeping a stored void then tries its Payment row with
+active sibling note the single-canonical rule retires. A write keeping a stored
+void (status-less, or an older live reading, #4288) then tries its Payment row with
 `FOR NO KEY UPDATE SKIP LOCKED` before conditionally releasing the pointer;
 it never waits on Payment. A Payment row the caller already holds is returned
 and its pointer can be released in that transaction. Explicit-status inbound
@@ -5779,6 +5868,52 @@ null. This schedule does not force which waiter acquires the link first after
 the inbound commit. A separate busy-Payment case forces the nonblocking branch
 and proves fresh metadata commits while the pointer stays put; the existing
 nightly heal then selects that inactive shape and releases it.
+`xero-refund-note-stale-live-status.realdb.test.ts` (#4288) holds a live
+reading at a gate while the void commits, then releases it: for the
+bank-transfer canonical note through the real inbound reconcile, a Stripe
+per-delta note through the real status recorder, a per-refund note and a
+refund request's note. Each ends inactive and VOIDED, the pointer null, and the
+replacement sibling alone covering. It also queues a live reconcile on the
+void's row lock, orders two live readings by `UpdatedDateUTC`, and has a stale
+live write K finish while a Payment-first enqueue F holds the Payment: K never
+waits on the Payment row F holds. The inbound recount reads the note's row after
+the payment rows instead of remembering its link write's verdict. The suite
+pins the schedule A's link write, then B's void and B's recount, then A's
+recount: A counts the void and leaves the total B lowered.
+
+A's claim alone cannot see a void that commits between A's reads and its
+claim: the void's link write changes no Payment column the claim compares
+unless the payment's pointer names the note. For a payment holding the note's
+own refund-note row, A decides in one short transaction, inline in the recount:
+the Payment row (`lockPaymentForRefundedTotal`, `FOR NO KEY UPDATE`), then a
+plain re-read of that link row, then the as-read claim, or nothing when the row
+no longer counts (one retry at most; a second is left to the next sync). An
+unchanged verdict also checks the payment as read under the lock. No provider
+call runs in it, and it takes no other lock. Its budget is `{ maxWait: 10_000,
+timeout: 30_000 }`, copied from `additional-payment-withdraw.ts`, because the
+nightly bank-void follow-up holds the Payment row for up to 30s.
+
+Lock order. The recount ran outside any transaction before #4288 and takes only
+this row. The link writer holds the link row and tries the Payment pointer with
+`SKIP LOCKED`, or waits for it on an explicit void (#4200). So when the pointer
+names the note, the void's own link write waits on A's Payment lock while
+holding the link row. The hand-made answer takes its Payment row, then the link.
+This transaction takes the Payment row and only reads the link, never waiting
+on a link row lock, so neither case is a cycle (`INV-LOCK-001`, `INV-LOCK-002`).
+It takes no advisory key, so `INV-LOCK-003`'s registry gains no entry.
+
+Every outcome is some serial order of A and the void. A void committing after
+A's locked re-read is "A, then the void, then B". B's recount queues on A's
+lock, or, with a pointer naming the note, the void's link write itself queues
+there; either way B sees A's write. On a bank transfer B lowers the total back. On a card the
+ledger is raise-only (`INV-ADDPAY-021`, #1353): A's raise stands, and B raises the
+refund-ledger-divergence alert. The inbound void runs its own recount; the
+Stripe status recorder runs none. The suite pins the void before A's locked
+re-read (A writes nothing, bank and card), a row deactivated there, and the void
+after it: per-refund (B's recount waits) and pointer-named canonical and card
+(the void's link write waits). Each run asserts which statement is the waiter. A stale reading's
+allocations and refund payments are skipped only where the row, in either
+refund-note role, is VOIDED/DELETED when they are written.
 
 **Mixed releases.** The own-row-first order is consistent within this release;
 the old canonical writer takes siblings before its own row. Running both on

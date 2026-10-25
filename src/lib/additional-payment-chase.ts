@@ -24,10 +24,24 @@
  * we would chase a member for money they do not owe.
  */
 
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 import { isStripeResourceMissingError } from "@/lib/stripe-errors";
 
 /** Days after the extra was raised before the first reminder goes out. */
 export const ADDITIONAL_PAYMENT_REMINDER_DAYS = 3;
+
+/**
+ * Days after the request was raised before the first reminder, by what the request
+ * is for. A request for credit used elsewhere in the club's accounts (#4253,
+ * `INV-ADDPAY-045`) is not noticed by the member the way a change they made
+ * themselves is: nothing they did caused it, so the first email goes out at once
+ * and is the only way they hear of it. Every other request keeps the usual wait.
+ */
+export function additionalPaymentFirstReminderDelayDays(askReason: string | null | undefined): number {
+  return askReason === CREDIT_RELEASE_ASK_REASON ? 0 : ADDITIONAL_PAYMENT_REMINDER_DAYS;
+}
 
 /**
  * Days before check-in for the last-chance reminder. Deliberately inside the
@@ -420,6 +434,8 @@ export interface AdditionalPaymentChaseInput {
   episodeStartedAt: Date;
   reminderSentAt: Date | null;
   finalReminderSentAt: Date | null;
+  /** The newest request's cause (its ledger `reason`); sets how long the first reminder waits. */
+  askReason?: string | null;
   /**
    * First-deploy guard: the instant automatic chasing began on THIS deployment.
    *
@@ -494,7 +510,7 @@ export function resolveAdditionalPaymentChase(
 
   const initialDueAt =
     input.episodeStartedAt.getTime() +
-    ADDITIONAL_PAYMENT_REMINDER_DAYS * MS_PER_DAY;
+    additionalPaymentFirstReminderDelayDays(input.askReason) * MS_PER_DAY;
   if (
     input.now.getTime() >= initialDueAt &&
     !isCurrentEpisodeStamp(input.reminderSentAt, input.episodeStartedAt)

@@ -420,6 +420,12 @@ Two consequences worth knowing before you edit one:
   joiner as account credit (#3949). `{{refundAmount}}` is always this booking's own
   refund, so it can read $0.00 while the sentence names the organiser's refund.
   Keep it on a line of its own.
+- **Credit used elsewhere has its own payment request.** When account credit applied
+  to a booking was used in the club's accounts outside the app, the member is asked
+  to pay that amount by card with **Payment Needed For Your Lodge Booking**, not the
+  "a change to your booking" reminder, because nothing about their stay changed. It
+  needs `{{additionalAmount}}`, `{{requestedOn}}`, `{{checkIn}}` and `{{checkOut}}`
+  and says the credit was used elsewhere in the club's accounts (#4253).
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

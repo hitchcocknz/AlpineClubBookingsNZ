@@ -424,7 +424,7 @@ function answerRefundsAsStripeWould(params: { paymentIntentId: string; amountCen
     }
 
     /** A note the treasurer made by hand in Xero for the whole $100, as the "already in Xero" check returns it. */
-    const handMadeNote = (id: string) => ({ answer: "recorded-in-xero" as const, note: { creditNoteId: id, creditNoteNumber: `CN-${id}`, amountCents: 10_000, status: "AUTHORISED", total: 100 } });
+    const handMadeNote = (id: string) => ({ answer: "recorded-in-xero" as const, note: { creditNoteId: id, creditNoteNumber: `CN-${id}`, amountCents: 10_000, status: "AUTHORISED", total: 100, updatedDateUTC: null } });
 
     /** A later card refund and its note, through the refund-request approval's own call: what Xero is asked to raise. */
     async function laterCardNote(noteId: string) {

@@ -40,6 +40,7 @@ import {
 } from "@/lib/booking-money-lines";
 import {
   additionalPaymentReminderTemplate,
+  creditReleasedPaymentRequestTemplate,
   checkinReminderTemplate,
   preArrivalReminderTemplate,
   wholeLodgeGuestNamesReminderTemplate,
@@ -56,6 +57,9 @@ import {
 } from "../email-message-notes";
 import { bookingPaymentDueNote, type BookingPaymentDueInstruction } from "../email-payment-due-note";
 import { CLUB_NAME } from "@/config/club-identity";
+import {
+  CREDIT_RELEASE_ASK_REASON,
+} from "@/lib/credit-release-ask-keys";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
 import { appliedCreditGiveBackNote, unpaidAskCancelledNote } from "@/lib/booking-credit-give-back-copy";
@@ -1338,19 +1342,30 @@ export async function sendAdditionalPaymentReminderEmail(params: {
   checkOut: Date;
   requestedOn: Date;
   lodgeId?: string | null;
+  /**
+   * #4253: the unpaid request's cause (its ledger `reason`). A request for credit
+   * that was used elsewhere in the club's accounts is worded as that, never as
+   * "a change to your booking increased the total" (`INV-ADDPAY-045`).
+   */
+  askReason?: string | null;
 },
   format: ClubFormat,
 ) {
+  const creditRelease = params.askReason === CREDIT_RELEASE_ASK_REASON;
   // Returns the outcome rather than swallowing it (#2350): both callers write a
   // stamp BEFORE sending, and that stamp is also the 60-minute cooldown, so a
   // withheld/suppressed/placeholder send — which returns, it does not throw —
   // must not be mistaken for a delivered one.
   return sendEmail({
     to: params.email,
-    subject: `Payment Still Needed - ${EMAIL_DEFAULT_LODGE_NAME}`,
-    html: await renderEmailHtml(() => additionalPaymentReminderTemplate(params, format)),
+    subject: creditRelease
+      ? "Payment needed for your lodge booking"
+      : `Payment Still Needed - ${EMAIL_DEFAULT_LODGE_NAME}`,
+    html: await renderEmailHtml(() =>
+      creditRelease ? creditReleasedPaymentRequestTemplate(params, format) : additionalPaymentReminderTemplate(params, format),
+    ),
     bookingContext: bookingOwnerEmailContext(params.bookingId, params.recipientMemberId),
-    templateName: "additional-payment-reminder",
+    templateName: creditRelease ? "credit-released-payment-request" : "additional-payment-reminder",
     templateData: {
       firstName: params.firstName,
       additionalAmount: formatMoneyCents(params.additionalAmountCents, format),

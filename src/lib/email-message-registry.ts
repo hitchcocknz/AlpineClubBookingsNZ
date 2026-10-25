@@ -508,6 +508,15 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "checkIn",
     "checkOut",
   ],
+  // #4253: the same four are load-bearing for the same reason - this email asks for
+  // money for a stay, and an override that drops one leaves a demand that cannot be
+  // acted on or checked.
+  "credit-released-payment-request": [
+    "additionalAmount",
+    "requestedOn",
+    "checkIn",
+    "checkOut",
+  ],
   // #3827 (D-3813-7): an approved appeal is refunded to the card OR promised
   // by bank transfer, and only {{refundSentence}} says which. An override
   // saved from the old default ("processed to your original payment method"
@@ -1112,6 +1121,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "A booking change increased the total and the extra amount is still uncollected",
     frequency:
       "Twice per outstanding amount at most — a few days after the change, and once more shortly before check-in — plus any manual re-send an admin triggers from the booking page. The chase stops when the money arrives or the stay ends",
+  },
+  "credit-released-payment-request": {
+    triggerSummary:
+      "Account credit applied to a booking was used elsewhere in the club's accounts, so part of the booking is unpaid again and a card payment was requested",
+    frequency:
+      "Sent when the payment request is raised, then repeated on the booking's additional-payment reminder schedule until the money arrives or the stay ends, plus any manual re-send an admin triggers from the booking page",
   },
   "booking-policy-exception-approved": {
     triggerSummary:
