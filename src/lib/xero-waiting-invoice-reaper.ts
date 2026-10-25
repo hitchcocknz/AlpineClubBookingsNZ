@@ -22,6 +22,10 @@
  *     were declined against it;
  *   - Stripe has the money but our rows never recorded it for three days: kept,
  *     and an officer told once;
+ *   - the booking no longer names it because a later request superseded it
+ *     and carries its balance (#3403): moved to wait on that request
+ *     (`followSupersededAskInvoicesSafely`), the backstop for the move at
+ *     supersession;
  *   - the member can no longer pay it: retired (CANCELLED,
  *     `STALE_WAITING_PAYMENT`), the one state a later capture can revive.
  */
@@ -42,6 +46,7 @@ import {
   lateCaptureRefundState,
   releaseXeroSupplementaryInvoiceForCapturedPaymentIntent,
 } from "@/lib/xero-supplementary-invoice-late-capture";
+import { followSupersededAskInvoicesSafely } from "@/lib/superseded-ask-invoice-carry";
 
 const STALE_WAITING_PAYMENT_AGE_DAYS = 14;
 
@@ -117,7 +122,7 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
     orderBy: { updatedAt: "asc" },
   });
 
-  const reapableIds: string[] = [];
+  const reapable: Array<{ id: string; paymentIntentId: string | null }> = [];
   const capturedIntentIds = new Set<string>();
   const stripeReadIds: string[] = [];
   const unrecordedCaptures: Array<{ id: string; paymentIntentId: string }> = [];
@@ -136,11 +141,12 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
     // (`attachRecoveredIntentToWaitingSupplementaryInvoice`) rather than
     // leaving the row here to be retired while the member paid.
     if (!paymentIntentId) {
-      if (pastAge) reapableIds.push(operation.id);
+      if (pastAge) reapable.push({ id: operation.id, paymentIntentId: null });
       continue;
     }
 
     const verdict = await decideWaitingOperation({
+      operationId: operation.id,
       paymentIntentId,
       pastAge,
       failedGraceThreshold,
@@ -148,7 +154,7 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
       stripeReadsLeft: STRIPE_READS_PER_RUN - stripeReadIds.length,
       onStripeRead: () => stripeReadIds.push(operation.id),
     });
-    if (verdict === "retire") reapableIds.push(operation.id);
+    if (verdict === "retire") reapable.push({ id: operation.id, paymentIntentId });
     else if (verdict === "captured") capturedIntentIds.add(paymentIntentId);
     else if (verdict === "keep") kept += 1;
     else if (verdict === "keep-deferred") deferred += 1;
@@ -158,6 +164,7 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
     }
   }
 
+  const reapableIds = reapable.map((entry) => entry.id);
   // Rotate the Stripe cap: rows read this run go to the back of the next one.
   const keptAfterRead = stripeReadIds.filter((id) => !reapableIds.includes(id));
   if (keptAfterRead.length > 0) {
@@ -197,17 +204,28 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
   }
 
   let reaped = 0;
-  if (reapableIds.length > 0) {
-    const updateResult = await prisma.xeroSyncOperation.updateMany({
-      where: { id: { in: reapableIds }, status: "WAITING_PAYMENT" },
-      data: {
-        status: "CANCELLED",
-        completedAt: new Date(),
-        lastErrorCode: STALE_WAITING_PAYMENT_ERROR_CODE,
-        lastErrorMessage: "Reaped: the linked payment request can no longer be paid.",
-      },
-    });
-    reaped = updateResult.count;
+  if (reapable.length > 0) {
+    // Guarded on the intent each row was judged on, as well as the status
+    // (#3403): a superseded change's invoice moved onto the request that
+    // carries its balance since the verdict waits on a payable ask now.
+    for (const [paymentIntentId, ids] of groupByIntent(reapable)) {
+      const updateResult = await prisma.xeroSyncOperation.updateMany({
+        where: {
+          id: { in: ids },
+          status: "WAITING_PAYMENT",
+          ...(paymentIntentId === null
+            ? {}
+            : { requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId } }),
+        },
+        data: {
+          status: "CANCELLED",
+          completedAt: new Date(),
+          lastErrorCode: STALE_WAITING_PAYMENT_ERROR_CODE,
+          lastErrorMessage: "Reaped: the linked payment request can no longer be paid.",
+        },
+      });
+      reaped += updateResult.count;
+    }
     if (reaped > 0) {
       logger.info(
         { reaped, ageInDays },
@@ -223,6 +241,17 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
   };
 }
 
+/** The reapable rows by the intent each was judged on (null: none named). */
+function groupByIntent(
+  reapable: ReadonlyArray<{ id: string; paymentIntentId: string | null }>,
+): Map<string | null, string[]> {
+  const groups = new Map<string | null, string[]>();
+  for (const entry of reapable) {
+    groups.set(entry.paymentIntentId, [...(groups.get(entry.paymentIntentId) ?? []), entry.id]);
+  }
+  return groups;
+}
+
 /**
  * One waiting operation on an intent. The local rows first, and Stripe only
  * where they cannot answer: an ask whose transaction is FAILED might be a
@@ -231,6 +260,7 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
  * the local rows alone.
  */
 async function decideWaitingOperation(params: {
+  operationId: string;
   paymentIntentId: string;
   pastAge: boolean;
   failedGraceThreshold: Date;
@@ -243,6 +273,7 @@ async function decideWaitingOperation(params: {
     select: {
       status: true,
       updatedAt: true,
+      paymentId: true,
       payment: { select: { booking: { select: { status: true } } } },
     },
   });
@@ -251,7 +282,8 @@ async function decideWaitingOperation(params: {
   // failed and the webhook never arrived, or the intent was attached after the
   // capture). Released only when the club KEEPS the money; a refunded capture
   // (an approved treasurer task, or with no task a cancelled booking or a
-  // superseded intent, #3403 unchanged) is retired; one a treasurer is still
+  // superseded intent, whose capture is refunded - #3403 moves an invoice off
+  // a FAILED superseded ask only) is retired; one a treasurer is still
   // deciding (#3635) is kept waiting, whatever its age.
   if (transaction && isCapturedTransactionStatus(transaction.status)) {
     const refundState = await lateCaptureRefundState({
@@ -284,8 +316,23 @@ async function decideWaitingOperation(params: {
     },
   });
   // Found BY the intent, so no row means the booking no longer names it: the
-  // superseded or withdrawn case (#3403's trigger, deliberately unchanged).
-  if (!payment) return "retire";
+  // superseded or withdrawn case. #3403: a superseded ask's balance is carried
+  // by a later request, so its invoice is moved there first - the backstop for
+  // the cancel step and the minter, which move it at supersession - and only
+  // an invoice still waiting on this intent after that is retired.
+  if (!payment) {
+    if (!transaction) return "retire";
+    await followSupersededAskInvoicesSafely({ paymentId: transaction.paymentId });
+    const stillHere = await prisma.xeroSyncOperation.findFirst({
+      where: {
+        id: params.operationId,
+        status: "WAITING_PAYMENT",
+        requestPayload: { path: ["paymentIntentId"], equals: params.paymentIntentId },
+      },
+      select: { id: true },
+    });
+    return stillHere ? "retire" : "keep";
+  }
   const door: AdditionalPaymentDoorInput = {
     bookingStatus: payment.booking.status,
     bookingDeletedAt: payment.booking.deletedAt,

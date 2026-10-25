@@ -45,6 +45,7 @@ import {
   type XeroSupplementaryInvoiceEnqueueOutcome,
 } from "@/lib/xero-operation-outbox";
 import { attachRecoveredIntentToWaitingSupplementaryInvoice } from "@/lib/xero-supplementary-invoice-late-capture";
+import { followSupersededAskInvoicesSafely } from "@/lib/superseded-ask-invoice-carry";
 import { queueFoldedReissuedAskInvoices, queueReissuedAskSupplementaryInvoice } from "@/lib/reissued-ask-invoice";
 import {
   mintedIntentCustomerId,
@@ -1687,6 +1688,17 @@ async function markSupersededTransactionFailed(
   }
 }
 
+/**
+ * A confirmed cancel of a superseded intent, from the worker or the webhook:
+ * its row FAILED, then (#3403, `INV-PAY-070`) its change's waiting Xero
+ * supplementary invoice moved onto the request that carries its balance -
+ * before the recovery row completes, so a crash replays both. Never throws.
+ */
+async function retireSupersededAsk(operation: PaymentRecoveryOperation) {
+  await markSupersededTransactionFailed(operation);
+  await followSupersededAskInvoicesSafely({ paymentId: operation.paymentId });
+}
+
 async function markSupersededTransactionSucceeded({
   operation,
   amountCents,
@@ -1825,7 +1837,7 @@ async function processCancelPaymentIntentOperation(
   }
 
   if (isPaymentIntentCancelConfirmed(result)) {
-    await markSupersededTransactionFailed(operation);
+    await retireSupersededAsk(operation);
     await completePaymentRecoveryOperation(operation.id);
     return;
   }
@@ -2942,6 +2954,7 @@ async function processCreateAdditionalPaymentIntentOperation(
     bookingId: operation.bookingId,
     paymentId: operation.paymentId,
     queued: held.value,
+    newPaymentIntentId: pi.id,
   });
 
   // #4316: a cancel committed since that check could not see this intent; retired as the
@@ -3338,7 +3351,7 @@ export async function completeCanceledSupersededPaymentIntentRecovery({
     return false;
   }
 
-  await markSupersededTransactionFailed(operation);
+  await retireSupersededAsk(operation);
   await completePaymentRecoveryOperation(operation.id);
   return true;
 }
