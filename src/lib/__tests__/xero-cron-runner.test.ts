@@ -136,6 +136,79 @@ describe("xero cron runner", () => {
     );
   });
 
+  it("records a worked batch with routinely skipped rows as SUCCESS, not SKIPPED (#4375)", async () => {
+    const recordCronRun = vi.fn();
+
+    await runXeroCronTaskList(["outbox", "retries", "inbound"], {
+      taskLabel: "xero-queue",
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => true),
+      tasks: {
+        processQueuedXeroOutboxOperations: vi.fn(async () => ({
+          found: 4,
+          processed: 4,
+          succeeded: 3,
+          failed: 0,
+          skipped: 1,
+        })),
+        processQueuedXeroOperationRetries: vi.fn(async () => ({
+          found: 2,
+          processed: 2,
+          succeeded: 0,
+          failed: 0,
+          skipped: 2,
+        })),
+        runXeroInboundReconciliationCycle: vi.fn(async () => ({
+          skipped: 5,
+        })) as never,
+      },
+    });
+
+    for (const jobName of ["xero-outbox", "xero-operation-replay", "xero-inbound-reconcile"]) {
+      expect(recordCronRun).toHaveBeenCalledWith(
+        expect.objectContaining({ jobName, status: "SUCCESS" })
+      );
+    }
+    expect(recordCronRun).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: "SKIPPED" })
+    );
+  });
+
+  it("records a task that did no work as SKIPPED: not connected, or skipped: true (#4375)", async () => {
+    const recordCronRun = vi.fn();
+
+    await runXeroCronTaskList(["outbox", "credit-sync"], {
+      taskLabel: "xero-queue",
+      recordCronRun,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => false),
+    });
+
+    expect(recordCronRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        jobName: "xero-outbox",
+        status: "SKIPPED",
+        resultSummary: { skipped: true, reason: "Xero not connected" },
+      })
+    );
+
+    const connectedRecord = vi.fn();
+    await runXeroCronTaskList(["credit-sync"], {
+      taskLabel: "xero-credit-sync",
+      recordCronRun: connectedRecord,
+      isModuleEnabled: vi.fn(async () => true),
+      isConnected: vi.fn(async () => true),
+      tasks: {
+        reconcileXeroCreditSync: vi.fn(async () => ({ skipped: true })) as never,
+      },
+    });
+
+    expect(connectedRecord).toHaveBeenCalledWith(
+      expect.objectContaining({ status: "SKIPPED" })
+    );
+  });
+
   it("records the daily stale link cleanup job independently from backfill", async () => {
     const recordCronRun = vi.fn();
 

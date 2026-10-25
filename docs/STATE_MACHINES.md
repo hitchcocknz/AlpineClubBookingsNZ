@@ -3959,6 +3959,20 @@ failure -> run/failure visible and retryable where business-critical
 To verify: which cron jobs record `CronJobRun`, exact statuses, stale queue
 health thresholds, and skipped-module reporting.
 
+### Xero cron run status: SKIPPED means no work (#4375)
+
+```text
+module off / Xero not connected / feature flag off -> skipped: true -> SKIPPED
+sweep with nothing to read (skipped: true)                         -> SKIPPED
+batch worked, some rows passed over (skipped: <count>)            -> SUCCESS
+heal or void follow-up with a failed note                          -> FAILURE
+```
+
+A queue task's numeric `skipped` count is rows it passed over after working
+its batch: a lost claim, a row another caller already finished. That run
+succeeded, so cron health stays green; only `skipped: true` records SKIPPED.
+To verify: `xero-cron-runner.test.ts`.
+
 ### Alpine Central Server version pause (#49)
 
 ```text

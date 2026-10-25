@@ -137,11 +137,14 @@ function tasksForSelection(
   return [task];
 }
 
+// SKIPPED means the task did no work: `skipped: true` from a disabled or
+// unconnected task, or a sweep with nothing to read. The queue tasks report a
+// numeric `skipped` count of rows passed over (a lost claim, a row another
+// caller finished) after working their batch; that run SUCCEEDED (#4375).
 function cronStatusForResult(result: unknown): CronJobRunStatus {
   return result &&
     typeof result === "object" &&
-    "skipped" in result &&
-    (result as { skipped?: unknown }).skipped
+    (result as { skipped?: unknown }).skipped === true
     ? "SKIPPED"
     : "SUCCESS";
 }
