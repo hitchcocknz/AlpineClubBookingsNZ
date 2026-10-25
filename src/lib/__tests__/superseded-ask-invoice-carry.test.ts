@@ -84,7 +84,7 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
   lockSupplementaryInvoiceAnchor: mocks.lockAnchor,
 }));
 vi.mock("@/lib/additional-capture-receipt-link", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("@/lib/additional-capture-receipt-link")>()),
+  ...((await importOriginal()) as typeof import("@/lib/additional-capture-receipt-link")),
   anchorCaptureHasReceipt: mocks.anchorCaptureHasReceipt,
 }));
 vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
