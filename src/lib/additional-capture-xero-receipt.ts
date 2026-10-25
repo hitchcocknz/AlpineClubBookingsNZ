@@ -41,7 +41,7 @@
  * take the capture and no gap invoice exists, #3980's own check
  * (`recheckPrimaryInvoiceWorthGap`) raises one, never a second, and the
  * receipt waits for it. A capture on a booking since cancelled - save one a
- * treasurer KEPT, whose change the primary bills (#4324, `INV-PAY-141`,
+ * treasurer KEPT, whose change the primary bills (#4324, `INV-PAY-140`,
  * `kept-late-capture-change-receipt.ts`) - or paid by internet banking, is
  * closed unsent.
  *

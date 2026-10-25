@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof for #4324 (owner decision 25 Oct 2026; `INV-PAY-141`,
+ * Real-PostgreSQL proof for #4324 (owner decision 25 Oct 2026; `INV-PAY-140`,
  * `INV-PAY-139`): a late card payment for a booking change that a treasurer
  * KEPT on a cancelled booking whose primary invoice bills the change is
  * recorded by ONE document, decided once under the approval task's row lock
@@ -607,7 +607,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     expect(paid).toEqual([]);
     const rows = await receiptRows();
     const live = rows.filter((candidate) => candidate.status !== "CANCELLED");
-    // INV-PAY-141: the re-kept capture has one live recorder - a fresh receipt,
+    // INV-PAY-140: the re-kept capture has one live recorder - a fresh receipt,
     // never the row the worker closed.
     expect(rows.find((candidate) => candidate.id === row!.id)).toMatchObject({ status: "CANCELLED" });
     expect(live).toHaveLength(1);
@@ -634,7 +634,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
       changeFeeCents: 0,
     });
     expect(reRaise).toMatchObject({ queueOperationId: null, outcome: "none" });
-    // INV-PAY-141: the kept-capture invoice bills and records the $80; nothing else does.
+    // INV-PAY-140: the kept-capture invoice bills and records the $80; nothing else does.
     expect((await supplementaryRows()).filter((row) => row.status !== "CANCELLED")).toEqual([]);
     expect(
       await prisma.xeroSyncOperation.count({
@@ -717,7 +717,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     const invoices = (await supplementaryRows()).filter((row) => row.status !== "CANCELLED");
     expect(invoices).toHaveLength(1);
     expect((invoices[0]!.requestPayload as { recordPayment?: boolean }).recordPayment).toBe(true);
-    // INV-PAY-141 / INV-PAY-139: one recorder - the change's invoice; no kept-capture invoice beside it.
+    // INV-PAY-140 / INV-PAY-139: one recorder - the change's invoice; no kept-capture invoice beside it.
     expect(
       await prisma.xeroSyncOperation.count({
         where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE", status: { not: "CANCELLED" } },

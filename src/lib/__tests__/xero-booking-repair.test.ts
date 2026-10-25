@@ -4486,7 +4486,7 @@ describe("runBookingXeroRepair", () => {
 
     /**
      * #4324 (owner decision 25 Oct 2026, Q3 "apply automatically";
-     * `INV-PAY-141`): a kept CHANGE capture on an invoiced booking, which the
+     * `INV-PAY-140`): a kept CHANGE capture on an invoiced booking, which the
      * keep before #4324 left unrecorded. The dry run lists it with the
      * document that will record it; `--apply` runs the keep's own decision.
      */
@@ -4709,7 +4709,7 @@ describe("runBookingXeroRepair", () => {
         });
       });
 
-      describe("item 11 (`INV-PAY-141`): a change whose kept capture its kept-capture invoice records gets no supplementary invoice", () => {
+      describe("item 11 (`INV-PAY-140`): a change whose kept capture its kept-capture invoice records gets no supplementary invoice", () => {
         const pricedChange = () =>
           makeBooking({
             ...changeBooking(),

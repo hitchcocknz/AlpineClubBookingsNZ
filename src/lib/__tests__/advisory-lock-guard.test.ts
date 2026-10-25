@@ -1316,7 +1316,7 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // an invoice naming no capture, and an officer's inline Retry of a change's
   // invoice re-asks under the change's key alone, in its own short
   // transaction, before its Xero call. No new raw site, no new key.
-  // #4324 (`INV-PAY-141`): the keep's decision for a kept change capture
+  // #4324 (`INV-PAY-140`): the keep's decision for a kept change capture
   // (`planKeptLateCaptureXeroRecord`) takes it on the change (else the
   // booking) AFTER the approval task's row - the dismissal's claim, or the
   // repair tool's own `lockKeptLateCaptureTask` - and as its last lock; the

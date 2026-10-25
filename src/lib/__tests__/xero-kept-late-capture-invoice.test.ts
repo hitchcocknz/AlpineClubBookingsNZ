@@ -402,7 +402,7 @@ describe("settleKeptLateCaptureRecordOnApproval", () => {
     });
   });
 
-  describe("#4324: the capture's own receipt (`INV-PAY-141`)", () => {
+  describe("#4324: the capture's own receipt (`INV-PAY-140`)", () => {
     const receipt = (status: string, requestPayload: Record<string, unknown> = {}) => ({
       id: `op_receipt_${status}`,
       status,

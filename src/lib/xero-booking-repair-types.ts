@@ -25,7 +25,7 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "KEPT_LATE_CAPTURE_WITHOUT_XERO_INVOICE",
   // #3953 (`INV-PAY-139`): a change's card capture no Xero invoice records.
   "ADDITIONAL_CAPTURE_NOT_RECORDED_IN_XERO",
-  // #4324 (`INV-PAY-141`): a kept late capture for a booking change on a
+  // #4324 (`INV-PAY-140`): a kept late capture for a booking change on a
   // cancelled, invoiced booking that Xero does not record.
   "KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO",
   // #3635 round-3 R5: a kept capture an officer recorded by hand in Xero was

@@ -3895,7 +3895,7 @@ change's card capture kept, nothing parked on its intent, primary invoice
   or one naming or covering it, or a kept-capture invoice); a replay, or the
   webhook and the confirm route at once, find it (already-released)
 late change capture KEPT on a cancelled, invoiced booking (the #3639 task
-  DISMISSED; #4324, INV-PAY-141) -> the keep's one decision, under the task row
+  DISMISSED; #4324, INV-PAY-140) -> the keep's one decision, under the task row
   then the change's anchor lock (the repair tool's QUEUE_KEPT_LATE_CAPTURE_RECORD
   runs the same), after finding the capture's receipt or kept invoice:
     a change invoice naming the capture, live or reaper-retired -> the

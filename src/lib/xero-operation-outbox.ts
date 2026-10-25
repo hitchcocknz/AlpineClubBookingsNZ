@@ -1734,7 +1734,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
       };
     }
 
-    // #4324 (`INV-PAY-141`): a change its kept late capture's own invoice bills gets no second invoice, paid or unpaid.
+    // #4324 (`INV-PAY-140`): a change its kept late capture's own invoice bills gets no second invoice, paid or unpaid.
     if (localModel === "BookingModification" && (await keptInvoiceBillsChangeCapture(tx, localId))) return { queueOperationId: null, outcome: "none" as XeroSupplementaryInvoiceEnqueueOutcome, message: "A kept late card payment's own Xero invoice already bills this booking change." };
     // #3953 round 6: a capture its own receipt records (or is recording) is never recorded again here; a gap invoice decides its own cash.
     const recordPayment = (options?.recordPayment ?? true) && (Boolean(options?.primaryInvoiceGap) || !(await anchorCaptureHasReceipt(tx, { bookingId, bookingModificationId: localModel === "BookingModification" ? localId : null, paymentIntentId: options?.paymentIntentId ?? null })));

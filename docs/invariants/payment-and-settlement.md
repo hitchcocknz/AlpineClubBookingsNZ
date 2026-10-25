@@ -893,7 +893,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   row before the send. Keeping is dismissing the #3639 task; one pure
   `decideLateCapture` (`late-capture-kept-xero-rules.ts`) answers everywhere.
 - **Which document**: a change payment on an invoiced booking goes by its
-  change's evidence (`INV-PAY-141`); anything else gets a
+  change's evidence (`INV-PAY-140`); anything else gets a
   `KEPT_LATE_CAPTURE_INVOICE` anchored on the task, touching neither the
   booking's invoice nor its clearing note.
 - **Refunds** are the ordinary refund note, owed only once the APP recorded
@@ -1622,7 +1622,7 @@ release).
   a paying invoice there naming no capture takes first, and refuses beside one.
 - **Once.** Queued per capture under the per-anchor supplementary-invoice lock;
   never on an internet-banking or cancelled booking, save a kept capture
-  (`INV-PAY-141`).
+  (`INV-PAY-140`).
 - **Where.** The gap invoice billing its change, else an unpaid invoice naming
   it or the change's own, else the primary less unallocated credit: the
   capture net of other writers, capped at the room; the rest to an officer.
@@ -1641,7 +1641,7 @@ release).
   `additional-capture-receipt-unattributed.realdb.test.ts` and
   `xero-booking-repair.test.ts`.
 
-## INV-PAY-141
+## INV-PAY-140
 
 **Related: `INV-PAY-110`** (kept late captures) **and `INV-PAY-139`** (the
 change capture's receipt).

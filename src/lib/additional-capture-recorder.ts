@@ -17,7 +17,7 @@
  *    (`coveredPaymentIntentIds`, {@link attributeGapCash}).
  *  - A CHANGE'S OWN SUPPLEMENTARY INVOICE - one on the change, or one naming
  *    the capture's intent - is that capture's document.
- *  - #4324 (`INV-PAY-141`): A KEPT LATE CAPTURE'S OWN INVOICE
+ *  - #4324 (`INV-PAY-140`): A KEPT LATE CAPTURE'S OWN INVOICE
  *    (`KEPT_LATE_CAPTURE_INVOICE`, in any status but CANCELLED) records the
  *    capture it was queued for, where the treasurer's keep found nothing
  *    billing its change.

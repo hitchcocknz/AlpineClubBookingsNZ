@@ -43,7 +43,7 @@ type ReceiptStore = Pick<
  *    and the repair tool says so.
  *  - `none`: nothing in Xero; a refund of it needs no note.
  *
- * #4324 (`INV-PAY-141`): a kept change capture whose primary invoice bills its
+ * #4324 (`INV-PAY-140`): a kept change capture whose primary invoice bills its
  * change is recorded by its own receipt (`ADDITIONAL_CAPTURE_RECEIPT`), a
  * payment on that invoice: `recorded` naming the invoice its payment link
  * records, or with no id while a row that stored its decision has not linked

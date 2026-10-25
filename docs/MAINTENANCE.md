@@ -1480,7 +1480,7 @@ Xero: check in Xero whether that
 invoice already records it, then record by hand or resolve.
 
 **Kept card payment for a booking change not recorded in Xero** (#4324,
-`INV-PAY-141`). Before #4324, a late card payment for a booking change that a
+`INV-PAY-140`). Before #4324, a late card payment for a booking change that a
 treasurer kept on a cancelled booking whose Xero invoice exists was recorded
 only where a supplementary invoice waited on it; otherwise Stripe held the money
 and Xero showed nothing. Since #4324 the keep records it, and the repair tool
