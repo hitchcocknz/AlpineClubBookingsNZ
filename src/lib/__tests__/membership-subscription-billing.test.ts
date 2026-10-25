@@ -111,6 +111,7 @@ import {
 import { withTimeZoneAsync } from "@/lib/__tests__/helpers/timezone";
 import { defaultMembershipTypeKeyForRole } from "@/lib/membership-types";
 import { getSubscriptionItemCodes } from "@/lib/xero-mappings";
+import { stableDigest } from "@/lib/stable-digest";
 import {
   __setFinancialYearEndMonthForTesting,
   DEFAULT_FINANCIAL_YEAR_END_MONTH,
@@ -1014,10 +1015,8 @@ describe("membership subscription billing", () => {
     ]);
     const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
     expect(preview.entries).toHaveLength(0);
-    // Order is by fingerprint digest, not insertion order; the fingerprint
-    // shape widened (subscription-category decoupling) to fold in
-    // subscriptionCategoryId, which moved this pair's relative order.
-    expect(preview.exceptions.map((row) => row.code)).toEqual(["MISSING_FAMILY_RECIPIENT", "INVALID_FAMILY_RECIPIENT"]);
+    // Order is by fingerprint digest, not insertion order.
+    expect(preview.exceptions.map((row) => row.code)).toEqual(["INVALID_FAMILY_RECIPIENT", "MISSING_FAMILY_RECIPIENT"]);
   });
 
   it("surfaces a per-family fee as a config exception under individual billing without touching the recipient path", async () => {
@@ -2390,6 +2389,41 @@ describe("membership subscription billing", () => {
       expect(preview.entries[0].coveredMembers).toEqual([
         { id: "solo", name: "First-solo Member", membershipTypeId: "type-1", membershipTypeName: "Full" },
       ]);
+      // A single solo category member is not "ungrouped" — there is nobody
+      // else sharing the category to have grouped them WITH.
+      expect(preview.ungroupedCategoryMembers).toEqual([]);
+    });
+
+    // Review finding: two members assigned the SAME category but not in the
+    // same FamilyGroup each bill the full flat rate separately — for a
+    // couple/family-style category this can cost MORE than individual rates,
+    // the opposite of the feature's purpose. Billing itself is unchanged (two
+    // solo members remain two legitimate solo charges — a club can have a
+    // genuinely standalone category), but this is surfaced so an admin
+    // reviewing the run notices and can decide whether to group them.
+    it("surfaces two solo members sharing a category as ungroupedCategoryMembers, without blocking or merging their billing", async () => {
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("alice"),
+        categoryMember("bob"),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions).toEqual([]);
+      // Still two separate solo charges — this field is informational only.
+      expect(preview.entries).toHaveLength(2);
+      expect(preview.entries.map((e) => e.key).sort()).toEqual([
+        "2026:category:cat-1:member:alice",
+        "2026:category:cat-1:member:bob",
+      ]);
+      expect(preview.ungroupedCategoryMembers).toEqual([
+        {
+          subscriptionCategoryId: "cat-1",
+          subscriptionCategoryName: "Couple",
+          members: [
+            { memberId: "alice", memberName: "First-alice Member" },
+            { memberId: "bob", memberName: "First-bob Member" },
+          ],
+        },
+      ]);
     });
 
     it("merges two members of the SAME membership type sharing a category and family into one flat charge", async () => {
@@ -2442,15 +2476,19 @@ describe("membership subscription billing", () => {
       expect(preview.entries[0].chargedAmountCents).toBe(20_000);
     });
 
-    it("an inactive category is treated as no category — falls through to the member's own type unchanged", async () => {
+    // Review finding, corrected: an archived category on a live assignment
+    // used to fall through to type billing SILENTLY — no exception, no
+    // trace — which could re-price the member (losing a flat couple/family
+    // rate) with nothing telling the admin why. It now withholds billing with
+    // ARCHIVED_SUBSCRIPTION_CATEGORY_ASSIGNED until the admin resolves it.
+    it("raises ARCHIVED_SUBSCRIPTION_CATEGORY_ASSIGNED and withholds billing when the assigned category is archived", async () => {
       mocks.members.findMany.mockResolvedValue([
         categoryMember("inactive-cat", { isActive: false }),
       ]);
       const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
-      expect(preview.exceptions).toEqual([]);
-      expect(preview.entries).toHaveLength(1);
-      expect(preview.entries[0].membershipTypeId).toBe("type-1");
-      expect(preview.entries[0].subscriptionCategoryId).toBeFalsy();
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["ARCHIVED_SUBSCRIPTION_CATEGORY_ASSIGNED"]);
+      expect(preview.exceptions[0]).toMatchObject({ memberId: "inactive-cat", subscriptionCategoryId: "cat-1" });
       expect(mocks.effectiveCategoryFee).not.toHaveBeenCalled();
     });
 
@@ -2462,6 +2500,36 @@ describe("membership subscription billing", () => {
       expect(preview.exceptions.map((r) => r.code)).toEqual(["MISSING_CATEGORY_FEE_SCHEDULE"]);
       expect(preview.exceptions[0].subscriptionCategoryId).toBe("cat-1");
       expect(preview.exceptions[0].membershipTypeId).toBeNull();
+    });
+
+    // Review finding, corrected: the fingerprint must NOT widen for every
+    // exception (that moved every pre-existing type-only exception's
+    // fingerprint and falsely "resolved" all of them on the next reconcile).
+    // The one real gap is two DIFFERENT categories' MISSING_CATEGORY_FEE_SCHEDULE
+    // for the same member colliding, since both have membershipTypeId null —
+    // that is the one case the fingerprint must actually distinguish.
+    it("gives two different categories' exceptions for the same member DIFFERENT fingerprints, so neither shadows the other", async () => {
+      mocks.effectiveCategoryFee.mockResolvedValue(null);
+      mocks.members.findMany.mockResolvedValueOnce([categoryMember("m", { id: "cat-1" })]);
+      const previewA = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      mocks.members.findMany.mockResolvedValueOnce([categoryMember("m", { id: "cat-2" })]);
+      const previewB = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(previewA.exceptions[0].code).toBe("MISSING_CATEGORY_FEE_SCHEDULE");
+      expect(previewB.exceptions[0].code).toBe("MISSING_CATEGORY_FEE_SCHEDULE");
+      expect(previewA.exceptions[0].fingerprint).not.toBe(previewB.exceptions[0].fingerprint);
+    });
+
+    it("leaves a type-only exception's fingerprint exactly as it was before the category axis existed (no spurious resolve on deploy)", async () => {
+      mocks.members.findMany.mockResolvedValue([member("no-assignment", { seasonalMembershipAssignments: [] })]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["MISSING_MEMBERSHIP_ASSIGNMENT"]);
+      // The ORIGINAL, pre-category-axis digest shape: [seasonYear, code,
+      // memberId, familyGroupId, membershipTypeId], nothing appended — computed
+      // with the SAME canonical digest function the module itself imports, not
+      // a hand-typed hash literal.
+      expect(preview.exceptions[0].fingerprint).toBe(
+        stableDigest([2026, "MISSING_MEMBERSHIP_ASSIGNMENT", "no-assignment", null, null]),
+      );
     });
 
     it("reuses AMBIGUOUS_FAMILY for a category member in more than one family", async () => {
@@ -2510,12 +2578,85 @@ describe("membership subscription billing", () => {
       expect(preview.exceptions[0].context).toMatchObject({ existingChargeId: "existing-category-charge" });
     });
 
+    // Review finding: a category charge closed as already paid (#4098) used
+    // to permanently block a re-bill via FAMILY_ALREADY_BILLED even after a
+    // payment reversal left a covered member unsettled again — with a
+    // message claiming they "joined after" the charge, which is false. It now
+    // withholds with CLOSED_FAMILY_MEMBER_NEEDS_DECISION, the same actionable
+    // code the type axis raises for the equivalent reversal case.
+    it("raises CLOSED_FAMILY_MEMBER_NEEDS_DECISION, not FAMILY_ALREADY_BILLED, when a closed-as-paid category charge's member is unsettled again", async () => {
+      mocks.charges.findMany.mockImplementation(async ({ where }: { where: Record<string, unknown> }) =>
+        where.subscriptionCategoryId
+          ? [{ id: "closed-category-charge", subscriptionCategoryId: "cat-1", familyGroupId: "family-1", status: "NOT_REQUIRED" }]
+          : []);
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("reversed-member", {}, { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      expect(preview.entries).toHaveLength(0);
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["CLOSED_FAMILY_MEMBER_NEEDS_DECISION"]);
+      expect(preview.exceptions[0]).toMatchObject({
+        memberId: "reversed-member",
+        familyGroupId: "family-1",
+        context: expect.objectContaining({ existingChargeId: "closed-category-charge" }),
+      });
+    });
+
     it("existing type-axis tests are unaffected: a member with no subscriptionCategory on their assignment takes the unmodified type path", async () => {
       mocks.members.findMany.mockResolvedValue([member("unchanged")]);
       const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
       expect(preview.entries).toHaveLength(1);
       expect(preview.entries[0].membershipTypeId).toBe("type-1");
       expect(mocks.effectiveCategoryFee).not.toHaveBeenCalled();
+    });
+
+    // Review finding: the category branch and the type-axis PER_FAMILY branch
+    // dedup on DIFFERENT strings for the same family (`category:<id>:family:<fg>`
+    // vs `<typeId>:family:<fg>`), so neither used to notice the other had
+    // already billed it this run — a family with one categorized member and
+    // one PER_FAMILY-type member got billed on BOTH axes. These two tests cover
+    // both processing orders, since whichever axis's member the loop reaches
+    // first is the one that wins and the other is withheld.
+    it("withholds a family's type-axis PER_FAMILY charge when a sibling already has a category charge this run (category processed first)", async () => {
+      const familyTypeFee = fee({ id: "fee-family", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+      mocks.effectiveFee.mockResolvedValue(familyTypeFee);
+      mocks.members.findMany.mockResolvedValue([
+        categoryMember("alice", {}, { familyGroupMemberships: [familyMembership()] }),
+        member("bob", {
+          seasonalMembershipAssignments: [{
+            membershipType: { id: "type-2", key: "JUNIOR", name: "Junior", subscriptionBehavior: "REQUIRED", annualFees: [familyTypeFee] },
+          }],
+          familyGroupMemberships: [familyMembership()],
+        }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      // Exactly ONE charge for the family — the category charge Alice minted
+      // first — never a second PER_FAMILY charge for Bob's type on top of it.
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].key).toBe("2026:category:cat-1:family:family-1");
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["MIXED_AXIS_FAMILY_BILLING"]);
+      expect(preview.exceptions[0]).toMatchObject({ memberId: "bob", familyGroupId: "family-1" });
+    });
+
+    it("withholds a family's category charge when a sibling already has a type-axis PER_FAMILY charge this run (type processed first)", async () => {
+      const familyTypeFee = fee({ id: "fee-family", billingBasis: "PER_FAMILY", prorationRule: "NONE" });
+      mocks.effectiveFee.mockResolvedValue(familyTypeFee);
+      mocks.members.findMany.mockResolvedValue([
+        member("bob", {
+          seasonalMembershipAssignments: [{
+            membershipType: { id: "type-2", key: "JUNIOR", name: "Junior", subscriptionBehavior: "REQUIRED", annualFees: [familyTypeFee] },
+          }],
+          familyGroupMemberships: [familyMembership()],
+        }),
+        categoryMember("alice", {}, { familyGroupMemberships: [familyMembership()] }),
+      ]);
+      const preview = await buildSubscriptionBillingPreview({ seasonYear: 2026, decisionDate: new Date("2026-07-13T00:00:00.000Z") });
+      // Exactly ONE charge for the family — Bob's type-axis PER_FAMILY charge,
+      // minted first — never a second category charge for Alice on top of it.
+      expect(preview.entries).toHaveLength(1);
+      expect(preview.entries[0].key).toBe("2026:type-2:family:family-1");
+      expect(preview.exceptions.map((r) => r.code)).toEqual(["MIXED_AXIS_FAMILY_BILLING"]);
+      expect(preview.exceptions[0]).toMatchObject({ memberId: "alice", familyGroupId: "family-1" });
     });
   });
 });

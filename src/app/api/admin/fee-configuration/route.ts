@@ -287,6 +287,13 @@ async function loadConfiguration(canEdit: boolean) {
       },
     }),
     prisma.subscriptionCategory.findMany({
+      // Review finding: the built-in "Individual" sentinel is never a priced
+      // category — it is the routing signal for "bill under membership type,
+      // as before" — so it is excluded here entirely, the same way the
+      // member-card's own category dropdown already filters it out. Without
+      // this, the picker defaulted to it (sortOrder 0, always first) and an
+      // admin could save a fee against it that nothing would ever read.
+      where: { isBuiltIn: false },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
       select: {
         id: true, key: true, name: true, isActive: true,
@@ -590,8 +597,21 @@ export async function POST(request: Request) {
           const subscriptionCategoryId = input.action === "CREATE_SUBSCRIPTION_CATEGORY_FEE"
             ? input.subscriptionCategoryId
             : existing!.subscriptionCategoryId;
-          if (!await tx.subscriptionCategory.findUnique({ where: { id: subscriptionCategoryId }, select: { id: true } })) {
+          const targetCategory = await tx.subscriptionCategory.findUnique({
+            where: { id: subscriptionCategoryId },
+            select: { id: true, isBuiltIn: true },
+          });
+          if (!targetCategory) {
             throw new FeeScheduleValidationError("Subscription category not found.", 404);
+          }
+          // Review finding: the built-in "Individual" sentinel is never a
+          // priced category — defense in depth beside the `where: { isBuiltIn:
+          // false }` that already keeps it out of this card's own picker.
+          if (input.action === "CREATE_SUBSCRIPTION_CATEGORY_FEE" && targetCategory.isBuiltIn) {
+            throw new FeeScheduleValidationError(
+              "The built-in Individual category never bills a fee of its own and cannot have one configured.",
+              409,
+            );
           }
           await lockFeeSchedule(tx, "subscriptionCategory", subscriptionCategoryId);
           const overlap = await tx.subscriptionCategoryFee.findFirst({

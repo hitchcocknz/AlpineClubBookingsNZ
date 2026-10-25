@@ -62,7 +62,10 @@ export async function PATCH(
     adminMemberId: guard.session.user.id,
     seasonYear: parsedBody.data.seasonYear,
     membershipTypeId: parsedBody.data.membershipTypeId,
-    subscriptionCategoryId: parsedBody.data.subscriptionCategoryId ?? null,
+    // NOT `?? null`: an omitted field must stay `undefined` so the lib
+    // preserves the member's current category, rather than being coerced into
+    // the explicit-clear value a real `null` means.
+    subscriptionCategoryId: parsedBody.data.subscriptionCategoryId,
     applyFrom: parsedBody.data.applyFrom ?? null,
     reason: parsedBody.data.reason,
     previewToken: parsedBody.data.previewToken,

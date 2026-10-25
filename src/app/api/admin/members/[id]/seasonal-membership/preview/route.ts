@@ -67,7 +67,10 @@ export async function POST(
     memberId: parsedParams.data.id,
     seasonYear: parsedBody.data.seasonYear,
     membershipTypeId: parsedBody.data.membershipTypeId,
-    subscriptionCategoryId: parsedBody.data.subscriptionCategoryId ?? null,
+    // NOT `?? null`: an omitted field must stay `undefined` so the preview
+    // carries the member's current category forward, rather than being
+    // coerced into the explicit-clear value a real `null` means.
+    subscriptionCategoryId: parsedBody.data.subscriptionCategoryId,
     applyFrom: parsedBody.data.applyFrom ?? null,
     now: dateOnlyInstantOf(clubToday(clubZone)),
     clubCurrentSeasonYear: clubSeasonYear(clubZone),

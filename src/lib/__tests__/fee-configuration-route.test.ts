@@ -347,6 +347,16 @@ describe("fee configuration route", () => {
     expect(body.familyGroups[0].billingException).toBe(false);
   });
 
+  // Review finding: the built-in "Individual" sentinel must never reach this
+  // card's own category picker (it defaulted to it, being sortOrder 0 and
+  // always first) — excluded at the query itself, not filtered client-side.
+  it("excludes the built-in Individual category from the subscription-category-fees list", async () => {
+    await GET();
+    expect(mocks.subscriptionCategoryFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { isBuiltIn: false } }),
+    );
+  });
+
   it("allows a per-family schedule in family mode", async () => {
     const response = await post({
       action: "CREATE_MEMBERSHIP_FEE", membershipTypeId: "type-1", amountCents: 20000,
@@ -496,6 +506,20 @@ describe("fee configuration route", () => {
         amountCents: 20000, prorationRule: "NONE", effectiveFrom: "2026-07-13", effectiveTo: null,
       });
       expect(response.status).toBe(404);
+      expect(mocks.subscriptionCategoryFeeCreate).not.toHaveBeenCalled();
+    });
+
+    // Review finding: the built-in "Individual" sentinel is a routing signal,
+    // never a priced category — rejected even if something bypasses the
+    // card's own picker (which excludes it via `where: { isBuiltIn: false }`,
+    // asserted separately below).
+    it("rejects creating a fee for the built-in Individual category", async () => {
+      mocks.subscriptionCategoryFindUnique.mockResolvedValue({ id: "cat-individual", isBuiltIn: true });
+      const response = await post({
+        action: "CREATE_SUBSCRIPTION_CATEGORY_FEE", subscriptionCategoryId: "cat-individual",
+        amountCents: 20000, prorationRule: "NONE", effectiveFrom: "2026-07-13", effectiveTo: null,
+      });
+      expect(response.status).toBe(409);
       expect(mocks.subscriptionCategoryFeeCreate).not.toHaveBeenCalled();
     });
 

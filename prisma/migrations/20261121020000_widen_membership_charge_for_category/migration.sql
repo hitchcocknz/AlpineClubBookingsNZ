@@ -71,7 +71,7 @@ ALTER TABLE "MembershipSubscriptionCharge" ADD COLUMN "subscriptionCategoryKey" 
 ALTER TABLE "MembershipSubscriptionCharge" ADD COLUMN "subscriptionCategoryName" TEXT;
 ALTER TABLE "MembershipSubscriptionCharge" ADD COLUMN "subscriptionCategoryFeeId" TEXT;
 
-CREATE INDEX "MembershipSubscriptionCharge_subscriptionCategoryId_season_idx"
+CREATE INDEX "MembershipSubscriptionCharge_subscriptionCategoryId_seasonY_idx"
   ON "MembershipSubscriptionCharge"("subscriptionCategoryId", "seasonYear");
 
 -- ---------------------------------------------------------------------------

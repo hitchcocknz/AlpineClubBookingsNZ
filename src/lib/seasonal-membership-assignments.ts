@@ -97,6 +97,7 @@ const subscriptionCategorySelect = {
   key: true,
   name: true,
   isActive: true,
+  isBuiltIn: true,
 } satisfies Prisma.SubscriptionCategorySelect;
 
 const assignmentInclude = {
@@ -485,10 +486,17 @@ export async function getSeasonalMembershipChangePreview(params: {
   memberId: string;
   seasonYear: number;
   membershipTypeId: string;
-  // Subscription-category decoupling: the independent billing axis. Null/
-  // undefined means "Individual" — today's unchanged per-type billing, with
-  // ZERO effect on booking rights/rate (those stay governed by
-  // membershipTypeId above, resolved and validated completely independently).
+  // Subscription-category decoupling: the independent billing axis. `null`
+  // EXPLICITLY clears it to "Individual" (today's unchanged per-type billing,
+  // zero effect on booking rights/rate). `undefined` (the key omitted
+  // entirely) means the caller has no opinion and the member's CURRENT
+  // category carries forward unchanged — never defaulted to null. This
+  // distinction is load-bearing: the bulk membership-type-assignment route and
+  // the Xero member import both call this without ever naming the field,
+  // because changing someone's TYPE in bulk is not a decision to also strip
+  // their category. Only the single-member admin card always passes the field
+  // explicitly (a real id, or `null` for the "Individual" option), so it is
+  // the only caller that can ever actually clear one.
   subscriptionCategoryId?: string | null;
   applyFrom?: string | null;
   /**
@@ -536,8 +544,7 @@ export async function getSeasonalMembershipChangePreview(params: {
     return jsonResult({ error: normalizedApplyFrom.error }, { status: 400 });
   }
 
-  const newSubscriptionCategoryId = params.subscriptionCategoryId ?? null;
-  const [member, newMembershipType, previousAssignment, newSubscriptionCategory] = await Promise.all([
+  const [member, newMembershipType, previousAssignment] = await Promise.all([
     db.member.findUnique({
       where: { id: params.memberId },
       select: {
@@ -565,16 +572,24 @@ export async function getSeasonalMembershipChangePreview(params: {
       },
       include: assignmentInclude,
     }),
-    // Subscription-category decoupling: resolved and validated completely
-    // independently of membershipType — a category member's booking rights
-    // are decided solely by membershipType above, never by this lookup.
-    newSubscriptionCategoryId
-      ? db.subscriptionCategory.findUnique({
-          where: { id: newSubscriptionCategoryId },
-          select: subscriptionCategorySelect,
-        })
-      : Promise.resolve(null),
   ]);
+
+  // `undefined` (the field omitted) carries the member's CURRENT category
+  // forward unchanged — see the param's own doc comment for why this must
+  // not default to null the way a present `null` legitimately does.
+  const newSubscriptionCategoryId =
+    params.subscriptionCategoryId === undefined
+      ? previousAssignment?.subscriptionCategoryId ?? null
+      : params.subscriptionCategoryId;
+  // Subscription-category decoupling: resolved and validated completely
+  // independently of membershipType — a category member's booking rights
+  // are decided solely by membershipType above, never by this lookup.
+  const newSubscriptionCategory = newSubscriptionCategoryId
+    ? await db.subscriptionCategory.findUnique({
+        where: { id: newSubscriptionCategoryId },
+        select: subscriptionCategorySelect,
+      })
+    : null;
 
   if (!member) {
     return jsonResult({ error: "Member not found" }, { status: 404 });
@@ -595,11 +610,32 @@ export async function getSeasonalMembershipChangePreview(params: {
     return jsonResult({ error: "Subscription category not found" }, { status: 404 });
   }
 
-  if (newSubscriptionCategory && !newSubscriptionCategory.isActive) {
-    return jsonResult(
-      { error: "Archived subscription categories cannot be newly assigned" },
-      { status: 409 },
-    );
+  // These two checks apply ONLY when the caller is actually making a decision
+  // about the category — `params.subscriptionCategoryId !== undefined`. When
+  // the field was omitted (bulk membership-type assignment, Xero import), the
+  // resolved value above is the member's PRESERVED existing category, not a
+  // new choice; refusing the save because that pre-existing value happens to
+  // be archived would break an unrelated bulk operation over a category
+  // nobody asked to touch. The billing engine's own
+  // ARCHIVED_SUBSCRIPTION_CATEGORY_ASSIGNED exception is what actually
+  // protects billing for a preserved-but-archived category.
+  if (params.subscriptionCategoryId !== undefined) {
+    if (newSubscriptionCategory && !newSubscriptionCategory.isActive) {
+      return jsonResult(
+        { error: "Archived subscription categories cannot be newly assigned" },
+        { status: 409 },
+      );
+    }
+    // Review finding: the built-in "Individual" sentinel is a routing signal
+    // (null means Individual), never a real, assignable category — only the
+    // UI's own dropdown filter stopped an admin picking it, so any other
+    // caller (API, future bulk/import path) could assign it directly.
+    if (newSubscriptionCategory?.isBuiltIn) {
+      return jsonResult(
+        { error: "The built-in Individual category cannot be assigned directly — leave the field empty instead." },
+        { status: 409 },
+      );
+    }
   }
 
   const bookingSelect = {
@@ -962,7 +998,12 @@ export async function saveSeasonalMembershipAssignment(params: {
         },
         update: {
           membershipTypeId: params.membershipTypeId,
-          subscriptionCategoryId: params.subscriptionCategoryId ?? null,
+          // The preview's resolved value, NOT `params.subscriptionCategoryId`
+          // directly: the preview already applied the "omitted field preserves
+          // the current category" rule, and re-deriving it here would silently
+          // wipe it for the bulk/import callers that never name this field —
+          // the exact bug this comment is here to stop reappearing.
+          subscriptionCategoryId: preview.newSubscriptionCategory?.id ?? null,
           applyFrom: nextApplyFromDate,
           assignedByMemberId: params.adminMemberId,
           source,
@@ -971,7 +1012,7 @@ export async function saveSeasonalMembershipAssignment(params: {
           memberId: params.memberId,
           seasonYear: params.seasonYear,
           membershipTypeId: params.membershipTypeId,
-          subscriptionCategoryId: params.subscriptionCategoryId ?? null,
+          subscriptionCategoryId: preview.newSubscriptionCategory?.id ?? null,
           applyFrom: nextApplyFromDate,
           assignedByMemberId: params.adminMemberId,
           source,

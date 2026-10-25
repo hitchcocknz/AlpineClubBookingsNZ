@@ -59,10 +59,12 @@ area: membership view to read, membership **edit** to change.
 ### Archive or delete a category
 
 - **Archive** (the toggle on each custom card) stops the category being
-  assignable going forward without deleting its history; members already
-  assigned it keep their assignment, but a member with no fee for the current
-  decision date is flagged. Archived categories still show in the Fees page's
-  history.
+  assignable going forward without deleting its history. Members already
+  assigned it keep their assignment, but are **withheld from billing** at the
+  next run — an archived-category assignment is flagged for you to resolve
+  (re-assign their category, reactivate it, or clear the assignment) rather
+  than being silently re-priced under their membership type. Archived
+  categories still show in the Fees page's history.
 - **Delete** permanently removes a category. It is refused — asking you to
   re-assign members or archive instead — while any member currently holds
   that assignment, or the category has ever had a fee schedule.
@@ -95,7 +97,7 @@ season, the same way it carries their membership type.
 | Name | Required, max 120 characters, must be unique (case-insensitive) |
 | Description | Optional, max 1000 characters, for other admins only |
 | Sort order | Optional whole number; lower lists first |
-| Active | Custom categories only — archiving stops future assignment, not billing of members already assigned |
+| Active | Custom categories only — archiving stops future assignment AND withholds billing for members already assigned, flagging each one for you to resolve |
 | Built-in Individual | Cannot be archived, renamed away from active, or deleted; carries no fee of its own |
 
 ## Troubleshooting
@@ -107,6 +109,8 @@ season, the same way it carries their membership type.
 | "Subscription categories with member assignments cannot be deleted" | At least one member currently holds this category | Re-assign those members' subscription category, or archive the category instead |
 | "Subscription categories with fee history cannot be deleted" | The category has (or had) a fee schedule on the Fees page | Archive the category instead |
 | A member is flagged with a billing exception instead of being invoiced | The category they are assigned has no effective fee for the decision date | Set one on [Fees](fees.md#set-subscription-category-fees) |
+| A member is flagged with an "archived subscription category" exception | The category they are assigned has since been archived | Re-assign the member's category to an active one, reactivate the category, or clear their assignment |
+| A member is flagged as needing a decision on a closed category charge | The family's category charge was closed as already paid, then a payment was reversed, leaving a covered member unsettled | Decide in Finance: mark the member Paid if the family fee covers them, or invoice the difference in Xero by hand — the family is never billed again automatically |
 | A category card is read-only | Your admin role has membership view but not edit | Ask a full admin for membership edit access |
 
 ## Related links

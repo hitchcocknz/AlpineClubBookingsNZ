@@ -76,7 +76,7 @@ CREATE TABLE "SubscriptionCategoryFee" (
     CONSTRAINT "SubscriptionCategoryFee_date_order" CHECK ("effectiveTo" IS NULL OR "effectiveTo" >= "effectiveFrom")
 );
 
-CREATE UNIQUE INDEX "SubscriptionCategoryFee_subscriptionCategoryId_effectiveFr_key"
+CREATE UNIQUE INDEX "SubscriptionCategoryFee_subscriptionCategoryId_effectiveFro_key"
   ON "SubscriptionCategoryFee"("subscriptionCategoryId", "effectiveFrom");
 CREATE INDEX "SubscriptionCategoryFee_effective_lookup_idx"
   ON "SubscriptionCategoryFee"("subscriptionCategoryId", "effectiveFrom", "effectiveTo");
@@ -104,7 +104,7 @@ CREATE TABLE "SubscriptionCategoryFeeComponent" (
     CONSTRAINT "SubscriptionCategoryFeeComponent_pkey" PRIMARY KEY ("id")
 );
 
-CREATE INDEX "SubscriptionCategoryFeeComponent_subscriptionCategoryFeeI_idx"
+CREATE INDEX "SubscriptionCategoryFeeComponent_subscriptionCategoryFeeId__idx"
   ON "SubscriptionCategoryFeeComponent"("subscriptionCategoryFeeId", "sortOrder");
 
 ALTER TABLE "SubscriptionCategoryFeeComponent"
@@ -119,7 +119,7 @@ ALTER TABLE "SeasonalMembershipAssignment" ADD COLUMN "subscriptionCategoryId" T
 
 CREATE INDEX "SeasonalMembershipAssignment_subscriptionCategoryId_idx"
   ON "SeasonalMembershipAssignment"("subscriptionCategoryId");
-CREATE INDEX "SeasonalMembershipAssignment_seasonYear_subscriptionCatego_idx"
+CREATE INDEX "SeasonalMembershipAssignment_seasonYear_subscriptionCategor_idx"
   ON "SeasonalMembershipAssignment"("seasonYear", "subscriptionCategoryId");
 
 ALTER TABLE "SeasonalMembershipAssignment"
