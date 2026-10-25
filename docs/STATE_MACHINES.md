@@ -3962,16 +3962,21 @@ health thresholds, and skipped-module reporting.
 ### Xero cron run status: SKIPPED means no work (#4375)
 
 ```text
-module off / Xero not connected / feature flag off -> skipped: true -> SKIPPED
-sweep with nothing to read (skipped: true)                         -> SKIPPED
-batch worked, some rows passed over (skipped: <count>)            -> SUCCESS
-heal or void follow-up with a failed note                          -> FAILURE
+module off / Xero not connected / membership refresh env off -> skipped: true -> SKIPPED
+credit-sync pass already ran this interval (skipped: true)                     -> SKIPPED
+credit-note mirror with nothing to read (skipped: true)                        -> SKIPPED
+batch worked, some rows passed over (skipped: <count>)                        -> SUCCESS
+outbox rows refused before any call (cooldownDeferred > 0)                    -> SUCCESS + warning
+heal or void follow-up with a failed note                                      -> FAILURE
 ```
 
-A queue task's numeric `skipped` count is rows it passed over after working
-its batch: a lost claim, a row another caller already finished. That run
-succeeded, so cron health stays green; only `skipped: true` records SKIPPED.
-To verify: `xero-cron-runner.test.ts`.
+A queue task's numeric `skipped` count is rows it passed over after working its
+batch: a lost claim, a row resolved in Xero or marked not replayable, a note
+waiting for another note. That run succeeded, so cron health stays green. A row
+the outage cooldown, the daily limit or the environment check refused before any
+call is counted there too, but it means Xero is unusable: the outbox counts it
+as `cooldownDeferred` and the run carries a `warning`, shown amber. To verify:
+`xero-cron-runner.test.ts`, `xero-outbox-fail-fast.test.ts`.
 
 ### Alpine Central Server version pause (#49)
 
