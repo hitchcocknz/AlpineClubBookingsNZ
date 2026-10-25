@@ -1,3 +1,4 @@
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import type { Prisma } from "@prisma/client";
 
 import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
@@ -14,11 +15,7 @@ import { XERO_REQUEUE_OPERATION_TYPE } from "@/lib/xero-hardening-shared";
  * importing `xero-operation-outbox.ts`, which imports the primary invoice;
  * that module re-exports it, so no importer moved.
  */
-export const OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES = [
-  "PENDING",
-  "RUNNING",
-  "WAITING_PAYMENT",
-] as const;
+export const OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES = XERO_ACTIVE_OPERATION_STATUSES;
 
 /**
  * The supplementary-invoice outbox operations of ONE anchor, any status: the

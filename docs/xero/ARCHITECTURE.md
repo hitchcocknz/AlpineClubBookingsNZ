@@ -611,6 +611,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-token-store` | Token persistence: the authoritative copy in the encrypted credential store (`xero-oauth` / `token-set`, #3454) with the `XeroToken` row written beside it for the blue-green window; connection status; and the **refresh lease** (`claimXeroTokenRefreshLease`) so concurrent instances — and an older deployed colour — don't double-refresh; losers wait for the lease deadline and re-read. |
 | `xero-api-client` | `getAuthenticatedXeroClient` (refreshes under lease), `callXeroApi` (meters every call into `XeroApiUsageDaily`/`XeroApiUsageEvent`, observes the daily budget and process-local rate-limit cool-downs), `withXeroRetry` (in-process retry for 429/5xx/408), `XeroDailyLimitError`, `XeroTransientOutageError`. |
 | `xero-api-usage` | Daily budget constant and usage recording/summary. |
+| `xero-active-operation-statuses` | The active correlation-key population, shared by enqueue, resolution and repair reads. The census pins it to the partial unique index; supplementary-invoice statuses alias it and wider blockers extend it. |
 | `xero-api-errors`, `xero-error-shape` | Error classification helpers (status code, body message, headers). |
 | `xero-error-alert` | Ops email on sync errors, deduplicated to one per hour via `EmailLog`. |
 | `xero-links`, `xero-record-links`, `xero-record-types` | Deep links into the Xero UI and into local admin pages; shared record-activity types. See "Deep links into Xero" below for why the tenant GUID cannot be used in a Xero URL. |

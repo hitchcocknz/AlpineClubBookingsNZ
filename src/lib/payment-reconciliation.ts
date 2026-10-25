@@ -1,3 +1,4 @@
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import { bookingOwner } from "@/lib/booking-owner";
 import { settleHostingCoverageAfterCommit } from "@/lib/adult-member-hosting-coverage-drain";
 import { enqueueOwnHostingCoverageReevaluation } from "@/lib/adult-member-hosting-review";
@@ -348,7 +349,7 @@ async function assertNoXeroInvoiceEvidence(
       operationType: "CREATE",
       localModel: "Payment",
       localId: payment.id,
-      status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] },
+      status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] },
     },
     select: { id: true },
   });
