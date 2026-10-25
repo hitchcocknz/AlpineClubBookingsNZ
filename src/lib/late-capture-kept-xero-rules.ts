@@ -123,6 +123,11 @@ export type KeptChangeCaptureEvidence = {
    * `withdrawn` every one CANCELLED.
    */
   changeInvoices: "none" | "live" | "withdrawn";
+  /**
+   * A #3980 gap invoice anchored on the change and not CANCELLED: it bills the
+   * change, so the capture is a payment on it (`readCaptureRecorder`).
+   */
+  billedByGapInvoice: boolean;
 };
 
 export type KeptChangeCaptureRoute = "change-invoice" | "receipt" | "kept-invoice" | "change-unknown";
@@ -137,8 +142,8 @@ export type KeptChangeCaptureRoute = "change-invoice" | "receipt" | "kept-invoic
  * - `change-invoice`: a change invoice already answers the capture; the
  *   late-success release sends, revives or alerts on it.
  * - `receipt`: the primary invoice bills the change (the change settled
- *   against it, or never had a supplementary invoice), or the change's own
- *   invoice is live. The capture's own receipt records it against the invoice
+ *   against it, or never had a supplementary invoice), the change's own
+ *   invoice is live, or a live #3980 gap invoice anchored on it bills it. The capture's own receipt records it against the invoice
  *   that bills it, capped at what Xero shows due (`INV-PAY-139`).
  * - `kept-invoice`: the change's supplementary invoice was withdrawn or
  *   retired, so nothing bills it; the kept-capture invoice does (`INV-PAY-110`).
@@ -148,7 +153,7 @@ export type KeptChangeCaptureRoute = "change-invoice" | "receipt" | "kept-invoic
 export function keptChangeCaptureRoute(evidence: KeptChangeCaptureEvidence): KeptChangeCaptureRoute {
   if (evidence.answeredByChangeInvoice) return "change-invoice";
   if (evidence.changeId === null) return "change-unknown";
-  if (evidence.settledAgainstPrimary) return "receipt";
+  if (evidence.settledAgainstPrimary || evidence.billedByGapInvoice) return "receipt";
   return evidence.changeInvoices === "withdrawn" ? "kept-invoice" : "receipt";
 }
 

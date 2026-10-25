@@ -4625,7 +4625,7 @@ describe("runBookingXeroRepair", () => {
           return findings;
         };
         const unknown = (recordedElsewhere: boolean): KeptChangeCaptureRepairEvidence => ({
-          evidence: { answeredByChangeInvoice: false, changeId: null, settledAgainstPrimary: false, changeInvoices: "none" },
+          evidence: { answeredByChangeInvoice: false, changeId: null, settledAgainstPrimary: false, changeInvoices: "none", billedByGapInvoice: false },
           route: "change-unknown",
           receiptOperations: [],
           receiptLinked: false,
@@ -4751,7 +4751,7 @@ describe("runBookingXeroRepair", () => {
 
         it("review I11: one predicate - a kept invoice bills the change only where it is asked for, or this pass raises it", () => {
           const found = (over: Partial<KeptChangeCaptureRepairEvidence> = {}): KeptChangeCaptureRepairEvidence => ({
-            evidence: { answeredByChangeInvoice: false, changeId: "mod_change", settledAgainstPrimary: false, changeInvoices: "withdrawn" },
+            evidence: { answeredByChangeInvoice: false, changeId: "mod_change", settledAgainstPrimary: false, changeInvoices: "withdrawn", billedByGapInvoice: false },
             route: "kept-invoice",
             receiptOperations: [],
             receiptLinked: false,

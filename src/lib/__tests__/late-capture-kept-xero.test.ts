@@ -316,6 +316,7 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
     changeId: "mod_change",
     settledAgainstPrimary: false,
     changeInvoices: "none",
+    billedByGapInvoice: false,
     ...overrides,
   });
 
@@ -327,6 +328,10 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
     expect(keptChangeCaptureRoute(evidence({ changeInvoices: "none" }))).toBe("receipt");
     expect(keptChangeCaptureRoute(evidence({ changeInvoices: "live" }))).toBe("receipt");
     expect(keptChangeCaptureRoute(evidence({ changeInvoices: "withdrawn" }))).toBe("kept-invoice");
+    // A live #3980 gap invoice anchored on the change bills it, whatever its own invoices did.
+    expect(keptChangeCaptureRoute(evidence({ billedByGapInvoice: true, changeInvoices: "withdrawn" }))).toBe("receipt");
+    expect(keptChangeCaptureRoute(evidence({ billedByGapInvoice: true, changeId: null }))).toBe("change-unknown");
+    expect(keptChangeCaptureRoute(evidence({ billedByGapInvoice: true, answeredByChangeInvoice: true }))).toBe("change-invoice");
   });
 
   describe("readKeptChangeCaptureEvidence: a change invoice answers the capture exactly where the release does not answer none-queued", () => {
@@ -359,7 +364,7 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
         .mockResolvedValueOnce([{ status: "PENDING", requestPayload: { primaryInvoiceGap: true } }]);
       await expect(
         readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
-      ).resolves.toEqual(evidence({ settledAgainstPrimary: true, changeInvoices: "none" }));
+      ).resolves.toEqual(evidence({ settledAgainstPrimary: true, changeInvoices: "none", billedByGapInvoice: true }));
       expect(mocks.operationFindMany.mock.calls[1]![0]).toMatchObject({
         where: {
           queueType: "SUPPLEMENTARY_INVOICE",
@@ -369,6 +374,18 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
           ],
         },
       });
+    });
+
+    it("MUTATION gap-anchored change: a live gap invoice anchored on it bills it beside withdrawn own invoices; a CANCELLED one does not", async () => {
+      const gapRow = (status: string) => ({ status, requestPayload: { primaryInvoiceGap: true } });
+      mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }, gapRow("PENDING")]);
+      await expect(
+        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
+      ).resolves.toMatchObject({ changeInvoices: "withdrawn", billedByGapInvoice: true });
+      mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }, gapRow("CANCELLED")]);
+      await expect(
+        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
+      ).resolves.toMatchObject({ changeInvoices: "withdrawn", billedByGapInvoice: false });
     });
 
     it("reads the change's invoices as withdrawn only when every one is CANCELLED, and live where Xero has one linked", async () => {
@@ -439,6 +456,14 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
         expect.objectContaining({ capturedCents: 8000, paymentIntentId: "pi_late" }),
       );
       expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION gap-anchored change: own invoices withdrawn but a live gap invoice bills it - its receipt, never a kept invoice", async () => {
+      mocks.operationFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }, { status: "PENDING", requestPayload: { primaryInvoiceGap: true } }]);
+      await expect(plan()).resolves.toEqual({ kind: "receipt-queued", queueOperationId: "op_receipt" });
+      expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
     });
 
     it("queues nothing where no change can be read from the capture, and locks the booking", async () => {

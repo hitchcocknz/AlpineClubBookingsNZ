@@ -1656,7 +1656,8 @@ change capture's receipt).
   - a change invoice naming the capture, live or reaper-retired: the
     late-success release (`INV-PAY-104`);
   - the change settled against the primary, has no supplementary invoice,
-    or a live one: its receipt, capped at the invoice's AmountDue;
+    a live one, or a live #3980 gap invoice anchored on it: its receipt,
+    capped at the invoice's AmountDue;
   - its every supplementary invoice withdrawn: the kept-capture invoice,
     less what another writer records (`readCaptureRecorder`);
   - no change readable: nothing, and the repair tool names it.
@@ -1664,7 +1665,7 @@ change capture's receipt).
   a kept-capture invoice; a replayed release finds the receipt; the receipt
   verdict counts it, so refunds get notes. No gap invoice on a cancelled
   booking, and no supplementary invoice for a change a kept-capture invoice
-  bills.
+  bills; a gap invoice so refused raises the treasurer's UNDERBILLED task.
 - **Reopen.** Its worker re-reads the task under the anchor and, no longer
   kept, closes its row in that transaction; an approval takes the anchor
   first and withdraws an undecided receipt. A paid-another-way close plans

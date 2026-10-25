@@ -90,7 +90,7 @@ export async function readKeptChangeCaptureEvidence(
   );
   const { changeId } = input;
   if (changeId === null) {
-    return { answeredByChangeInvoice, changeId, settledAgainstPrimary: false, changeInvoices: "none" };
+    return { answeredByChangeInvoice, changeId, settledAgainstPrimary: false, changeInvoices: "none", billedByGapInvoice: false };
   }
   const [change, rows, link] = await Promise.all([
     store.bookingModification.findUnique({ where: { id: changeId }, select: { newData: true } }),
@@ -115,8 +115,9 @@ export async function readKeptChangeCaptureEvidence(
       select: { id: true },
     }),
   ]);
-  // The change's own invoices: never the #3980 gap invoice a marked edit anchors.
-  const own = rows.filter((row) => asRecord(row.requestPayload)?.primaryInvoiceGap !== true);
+  // The change's own invoices: never the #3980 gap invoice a marked edit anchors, which is read on its own.
+  const isGap = (row: (typeof rows)[number]) => asRecord(row.requestPayload)?.primaryInvoiceGap === true;
+  const own = rows.filter((row) => !isGap(row));
   const changeInvoices: KeptChangeCaptureEvidence["changeInvoices"] =
     link !== null || own.some((row) => row.status !== "CANCELLED") ? "live" : own.length > 0 ? "withdrawn" : "none";
   return {
@@ -124,6 +125,7 @@ export async function readKeptChangeCaptureEvidence(
     changeId,
     settledAgainstPrimary: recordedPrimaryInvoiceSettlement(change?.newData) !== null,
     changeInvoices,
+    billedByGapInvoice: rows.some((row) => isGap(row) && row.status !== "CANCELLED"),
   };
 }
 
