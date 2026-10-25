@@ -333,7 +333,7 @@ export async function loadKeptChangeCaptureEvidence(
     for (const capture of captures) {
       const changeId = captureChangeId({ bookingModificationId: capture.bookingModificationId ?? null, reason: capture.reason ?? null });
       const [evidence, receiptOperations, link] = await Promise.all([
-        readKeptChangeCaptureEvidence(store, { paymentIntentId: capture.stripePaymentIntentId, changeId }),
+        readKeptChangeCaptureEvidence(store, { paymentIntentId: capture.stripePaymentIntentId, changeId, bookingId: booking.id, primaryInvoiceId }),
         store.xeroSyncOperation.findMany({
           where: {
             localModel: "PaymentTransaction",

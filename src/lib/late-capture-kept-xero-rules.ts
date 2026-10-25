@@ -124,8 +124,10 @@ export type KeptChangeCaptureEvidence = {
    */
   changeInvoices: "none" | "live" | "withdrawn";
   /**
-   * A #3980 gap invoice anchored on the change and not CANCELLED: it bills the
-   * change, so the capture is a payment on it (`readCaptureRecorder`).
+   * The #3980 gap invoice bills the change (`primaryInvoiceGapBillsChange`:
+   * the change is one of its anchors, and it is in Xero or may still get
+   * there, never voided), so the capture is a payment on it
+   * (`readCaptureRecorder`).
    */
   billedByGapInvoice: boolean;
 };

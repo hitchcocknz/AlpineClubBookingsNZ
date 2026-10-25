@@ -28,6 +28,12 @@ import {
 } from "@/lib/xero-operation-outbox-payload";
 import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
 import {
+  findPrimaryInvoiceGapInvoice,
+  primaryInvoiceGapBillsChange,
+  readPrimaryInvoiceFeeAtLink,
+  type GapAnchorStore,
+} from "@/lib/xero-primary-invoice-gap-anchors";
+import {
   decideLateCapture,
   bookingHasPrimaryXeroInvoice,
   keptChangeCaptureRoute,
@@ -74,8 +80,8 @@ export type KeptLateCaptureXeroPlan =
  * apply decides again under the lock.
  */
 export async function readKeptChangeCaptureEvidence(
-  store: Pick<Prisma.TransactionClient, "xeroSyncOperation" | "xeroObjectLink" | "bookingModification">,
-  input: { paymentIntentId: string; changeId: string | null },
+  store: GapAnchorStore,
+  input: { paymentIntentId: string; changeId: string | null; bookingId: string; primaryInvoiceId: string | null },
 ): Promise<KeptChangeCaptureEvidence> {
   const naming = await store.xeroSyncOperation.findMany({
     where: {
@@ -116,8 +122,7 @@ export async function readKeptChangeCaptureEvidence(
     }),
   ]);
   // The change's own invoices: never the #3980 gap invoice a marked edit anchors, which is read on its own.
-  const isGap = (row: (typeof rows)[number]) => asRecord(row.requestPayload)?.primaryInvoiceGap === true;
-  const own = rows.filter((row) => !isGap(row));
+  const own = rows.filter((row) => asRecord(row.requestPayload)?.primaryInvoiceGap !== true);
   const changeInvoices: KeptChangeCaptureEvidence["changeInvoices"] =
     link !== null || own.some((row) => row.status !== "CANCELLED") ? "live" : own.length > 0 ? "withdrawn" : "none";
   return {
@@ -125,8 +130,19 @@ export async function readKeptChangeCaptureEvidence(
     changeId,
     settledAgainstPrimary: recordedPrimaryInvoiceSettlement(change?.newData) !== null,
     changeInvoices,
-    billedByGapInvoice: rows.some((row) => isGap(row) && row.status !== "CANCELLED"),
+    billedByGapInvoice: await readChangeBilledByGapInvoice(store, { ...input, changeId }),
   };
+}
+
+/** Review N2: the gap invoice's billing of the change, by the recorder's own reading (`primaryInvoiceGapBillsChange`). */
+async function readChangeBilledByGapInvoice(
+  store: GapAnchorStore,
+  input: { bookingId: string; primaryInvoiceId: string | null; changeId: string },
+): Promise<boolean> {
+  if (!input.primaryInvoiceId) return false;
+  const figures = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.primaryInvoiceId, store);
+  if (!figures) return false;
+  return primaryInvoiceGapBillsChange(await findPrimaryInvoiceGapInvoice(input.bookingId, figures, store), input.changeId);
 }
 
 /**
@@ -260,7 +276,14 @@ export async function planKeptLateCaptureXeroRecord(params: {
     select: { id: true },
   });
   if (receiptRow) return { kind: "receipt-queued", queueOperationId: receiptRow.id };
-  const evidence = await readKeptChangeCaptureEvidence(store, { paymentIntentId: params.paymentIntentId, changeId });
+  // Review A-UNSYNCED-KEEP: the active link's id where the field drifted, so the full reading runs.
+  const primaryInvoiceId = payment?.xeroInvoiceId ?? paymentLinks[0]?.xeroObjectId ?? null;
+  const evidence = await readKeptChangeCaptureEvidence(store, {
+    paymentIntentId: params.paymentIntentId,
+    changeId,
+    bookingId: params.bookingId,
+    primaryInvoiceId,
+  });
   const route = keptChangeCaptureRoute(evidence);
   if (route === "change-invoice") return { kind: "change-payment", paymentIntentId: params.paymentIntentId };
   const logged = { paymentIntentId: params.paymentIntentId, manualRefundTaskId: params.manualRefundTaskId };
@@ -268,8 +291,7 @@ export async function planKeptLateCaptureXeroRecord(params: {
     // Review M-F2: another writer's part of the capture, by the one reading.
     const elsewhere = await readKeptCaptureRecordedElsewhere(store, {
       bookingId: params.bookingId,
-      // Review A-UNSYNCED-KEEP: the active link's id where the field drifted, so the full reading runs.
-      primaryInvoiceId: payment?.xeroInvoiceId ?? paymentLinks[0]?.xeroObjectId ?? null,
+      primaryInvoiceId,
       paymentIntentId: params.paymentIntentId,
       changeId,
     });

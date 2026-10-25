@@ -1656,7 +1656,8 @@ change capture's receipt).
   - a change invoice naming the capture, live or reaper-retired: the
     late-success release (`INV-PAY-104`);
   - the change settled against the primary, has no supplementary invoice,
-    a live one, or a live #3980 gap invoice anchored on it: its receipt,
+    a live one, or a #3980 gap invoice billing it
+    (`primaryInvoiceGapBillsChange`): its receipt,
     capped at the invoice's AmountDue;
   - its every supplementary invoice withdrawn: the kept-capture invoice,
     less what another writer records (`readCaptureRecorder`);

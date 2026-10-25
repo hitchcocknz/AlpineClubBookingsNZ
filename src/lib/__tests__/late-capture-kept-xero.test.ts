@@ -19,7 +19,23 @@ const mocks = vi.hoisted(() => ({
   findLiveKeptReceiptRow: vi.fn(),
   enqueueAdditionalCaptureReceiptOperation: vi.fn(),
   readCreditReleaseCaptureShare: vi.fn(),
+  readPrimaryInvoiceFeeAtLink: vi.fn(),
+  findPrimaryInvoiceGapInvoice: vi.fn(),
+  actualGapAnchors: {} as Record<string, (...a: unknown[]) => unknown>,
 }));
+
+// Review N2: the gap invoice's anchors are read through the recorder's own
+// helpers; each defaults to the real one (the recorder reads it too) and a
+// test may answer it directly.
+vi.mock("@/lib/xero-primary-invoice-gap-anchors", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("@/lib/xero-primary-invoice-gap-anchors");
+  Object.assign(mocks.actualGapAnchors, actual);
+  return {
+    ...actual,
+    readPrimaryInvoiceFeeAtLink: (...a: unknown[]) => mocks.readPrimaryInvoiceFeeAtLink(...a),
+    findPrimaryInvoiceGapInvoice: (...a: unknown[]) => mocks.findPrimaryInvoiceGapInvoice(...a),
+  };
+});
 
 vi.mock("@/lib/xero-kept-late-capture-invoice", () => ({
   enqueueXeroKeptLateCaptureInvoiceOperation: (...a: unknown[]) =>
@@ -126,6 +142,8 @@ beforeEach(() => {
   mocks.modificationFindUnique.mockResolvedValue({ newData: {} });
   mocks.findLiveKeptReceiptRow.mockResolvedValue(null);
   mocks.readCreditReleaseCaptureShare.mockResolvedValue({ ownCents: 0, held: false });
+  mocks.readPrimaryInvoiceFeeAtLink.mockImplementation((...a: unknown[]) => mocks.actualGapAnchors.readPrimaryInvoiceFeeAtLink!(...a));
+  mocks.findPrimaryInvoiceGapInvoice.mockImplementation((...a: unknown[]) => mocks.actualGapAnchors.findPrimaryInvoiceGapInvoice!(...a));
   mocks.enqueueAdditionalCaptureReceiptOperation.mockResolvedValue({ outcome: "queued", queueOperationId: "op_receipt" });
   mocks.enqueueXeroKeptLateCaptureInvoiceOperation.mockResolvedValue({
     queueOperationId: "op_kept",
@@ -337,7 +355,7 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
   describe("readKeptChangeCaptureEvidence: a change invoice answers the capture exactly where the release does not answer none-queued", () => {
     const read = (rows: Array<{ status: string; lastErrorCode: string | null }>) => {
       mocks.operationFindMany.mockResolvedValueOnce(rows).mockResolvedValueOnce([]);
-      return readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" });
+      return readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: null });
     };
     for (const status of ["WAITING_PAYMENT", "PENDING", "RUNNING", "SUCCEEDED", "FAILED", "PARTIAL"]) {
       it(`a ${status} row naming the intent answers it (the release releases, reports or finds it)`, async () => {
@@ -363,8 +381,8 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
         .mockResolvedValueOnce([])
         .mockResolvedValueOnce([{ status: "PENDING", requestPayload: { primaryInvoiceGap: true } }]);
       await expect(
-        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
-      ).resolves.toEqual(evidence({ settledAgainstPrimary: true, changeInvoices: "none", billedByGapInvoice: true }));
+        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: null }),
+      ).resolves.toEqual(evidence({ settledAgainstPrimary: true, changeInvoices: "none", billedByGapInvoice: false }));
       expect(mocks.operationFindMany.mock.calls[1]![0]).toMatchObject({
         where: {
           queueType: "SUPPLEMENTARY_INVOICE",
@@ -376,27 +394,87 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       });
     });
 
-    it("MUTATION gap-anchored change: a live gap invoice anchored on it bills it beside withdrawn own invoices; a CANCELLED one does not", async () => {
-      const gapRow = (status: string) => ({ status, requestPayload: { primaryInvoiceGap: true } });
-      mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }, gapRow("PENDING")]);
-      await expect(
-        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
-      ).resolves.toMatchObject({ changeInvoices: "withdrawn", billedByGapInvoice: true });
-      mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }, gapRow("CANCELLED")]);
-      await expect(
-        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
-      ).resolves.toMatchObject({ changeInvoices: "withdrawn", billedByGapInvoice: false });
+    describe("MUTATION review N2 (`INV-SSOT`): the gap invoice bills the change by the recorder's own reading (`findPrimaryInvoiceGapInvoice` and its anchors)", () => {
+      const figures = { atLink: {}, operationId: "op_primary" };
+      const gap = (over: { anchorIds?: string[]; status?: string | null; linkActive?: boolean | null }) => ({
+        anchorIds: over.anchorIds ?? ["mod_change"],
+        operation: over.status === null ? null : { id: "op_gap", status: over.status ?? "PENDING", requestPayload: {}, responsePayload: null, manuallyResolvedAt: null },
+        link: over.linkActive === null || over.linkActive === undefined ? null : { id: "link_gap", xeroObjectId: "inv_gap", active: over.linkActive },
+      });
+      /** The change's own rows withdrawn, beside whatever gap row the old reading looked for on the change itself. */
+      const read = async (found: ReturnType<typeof gap> | null, ownGapRow?: { status: string }) => {
+        mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValueOnce(figures);
+        mocks.findPrimaryInvoiceGapInvoice.mockResolvedValueOnce(found);
+        mocks.operationFindMany
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([
+            { status: "CANCELLED", requestPayload: {} },
+            ...(ownGapRow ? [{ status: ownGapRow.status, requestPayload: { primaryInvoiceGap: true } }] : []),
+          ]);
+        return readKeptChangeCaptureEvidence(store as never, {
+          paymentIntentId: "pi_late",
+          changeId: "mod_change",
+          bookingId: "booking-1",
+          primaryInvoiceId: "inv_primary",
+        });
+      };
+
+      it("bills a change that is a SECOND racing anchor - the gap row sits on the first, never on this change", async () => {
+        await expect(read(gap({ anchorIds: ["mod_first", "mod_change"], status: "PENDING" }))).resolves.toMatchObject({
+          changeInvoices: "withdrawn",
+          billedByGapInvoice: true,
+        });
+        expect(mocks.findPrimaryInvoiceGapInvoice).toHaveBeenCalledWith("booking-1", figures, store);
+      });
+
+      for (const status of ["PENDING", "RUNNING", "WAITING_PAYMENT", "FAILED"]) {
+        it(`bills it while the gap invoice may still reach Xero (${status}, not yet linked)`, async () => {
+          await expect(read(gap({ status }))).resolves.toMatchObject({ billedByGapInvoice: true });
+        });
+      }
+
+      it("bills it where Xero has the gap invoice linked", async () => {
+        await expect(read(gap({ status: "SUCCEEDED", linkActive: true }))).resolves.toMatchObject({ billedByGapInvoice: true });
+      });
+
+      for (const status of ["SUCCEEDED", "PARTIAL"]) {
+        it(`bills NOTHING where the gap invoice was voided in Xero (row ${status}, link deactivated) - a receipt on it would only be refused`, async () => {
+          await expect(read(gap({ status, linkActive: false }), { status })).resolves.toMatchObject({
+            changeInvoices: "withdrawn",
+            billedByGapInvoice: false,
+          });
+        });
+      }
+
+      it("bills nothing where the gap invoice was withdrawn, or does not bill this change, or there is no gap", async () => {
+        await expect(read(gap({ status: "CANCELLED" }), { status: "CANCELLED" })).resolves.toMatchObject({ billedByGapInvoice: false });
+        await expect(read(gap({ anchorIds: ["mod_other"], status: "PENDING" }))).resolves.toMatchObject({ billedByGapInvoice: false });
+        await expect(read(null)).resolves.toMatchObject({ billedByGapInvoice: false });
+      });
+
+      it("reads no gap without the primary invoice's id or its stored figures", async () => {
+        mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+        await expect(
+          readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: null }),
+        ).resolves.toMatchObject({ billedByGapInvoice: false });
+        mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValueOnce(null);
+        mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+        await expect(
+          readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: "inv_primary" }),
+        ).resolves.toMatchObject({ billedByGapInvoice: false });
+        expect(mocks.findPrimaryInvoiceGapInvoice).not.toHaveBeenCalled();
+      });
     });
 
     it("reads the change's invoices as withdrawn only when every one is CANCELLED, and live where Xero has one linked", async () => {
       mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }]);
       await expect(
-        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
+        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: null }),
       ).resolves.toMatchObject({ changeInvoices: "withdrawn" });
       mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }]);
       mocks.linkFindFirst.mockResolvedValueOnce({ id: "link_change" });
       await expect(
-        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change" }),
+        readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: null }),
       ).resolves.toMatchObject({ changeInvoices: "live" });
     });
   });
@@ -458,12 +536,32 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
     });
 
-    it("MUTATION gap-anchored change: own invoices withdrawn but a live gap invoice bills it - its receipt, never a kept invoice", async () => {
-      mocks.operationFindMany
-        .mockResolvedValueOnce([])
-        .mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }, { status: "PENDING", requestPayload: { primaryInvoiceGap: true } }]);
-      await expect(plan()).resolves.toEqual({ kind: "receipt-queued", queueOperationId: "op_receipt" });
-      expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+    describe("MUTATION review N2: a change billed by the gap invoice, by the recorder's reading", () => {
+      const gapOn = (anchorIds: string[], status: string, linkActive: boolean | null) => ({
+        anchorIds,
+        operation: { id: "op_gap", status, requestPayload: {}, responsePayload: null, manuallyResolvedAt: null },
+        link: linkActive === null ? null : { id: "link_gap", xeroObjectId: "inv_gap", active: linkActive },
+      });
+      beforeEach(() => {
+        mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValue({ atLink: {}, operationId: "op_primary" });
+      });
+
+      it("own invoices withdrawn, a second racing anchor of a live gap invoice: its receipt, never a kept invoice beside the gap", async () => {
+        mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(gapOn(["mod_first", "mod_change"], "SUCCEEDED", true));
+        mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }]);
+        await expect(plan()).resolves.toEqual({ kind: "receipt-queued", queueOperationId: "op_receipt" });
+        expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+      });
+
+      it("own invoices withdrawn, the gap invoice voided in Xero: billed nowhere, so the kept invoice - never a receipt the worker would refuse", async () => {
+        mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(gapOn(["mod_change"], "SUCCEEDED", false));
+        mocks.operationFindMany
+          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }, { status: "SUCCEEDED", requestPayload: { primaryInvoiceGap: true } }])
+          .mockResolvedValue([]);
+        await expect(plan()).resolves.toMatchObject({ kind: "kept-invoice-queued" });
+        expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
+      });
     });
 
     it("queues nothing where no change can be read from the capture, and locks the booking", async () => {

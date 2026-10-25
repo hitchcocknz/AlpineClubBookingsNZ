@@ -3901,10 +3901,11 @@ late change capture KEPT on a cancelled, invoiced booking (the #3639 task
     a change invoice naming the capture, live or reaper-retired -> the
       late-success release, after commit
     the change settled against the primary, or with no or a live
-      supplementary invoice, or a live #3980 gap invoice anchored on it ->
+      supplementary invoice, or a #3980 gap invoice billing it (one of its
+      anchors, in Xero or on its way, never voided) ->
       ADDITIONAL_CAPTURE_RECEIPT PENDING (task re-read
       DISMISSED under the lock); a replayed release finds it (already-released)
-    every supplementary invoice of the change withdrawn, no live gap invoice ->
+    every supplementary invoice of the change withdrawn, no gap invoice billing it ->
       KEPT_LATE_CAPTURE_INVOICE PENDING, less what another writer records
       (readCaptureRecorder); nothing where another records all of it
     no change readable -> nothing; the repair tool names it
