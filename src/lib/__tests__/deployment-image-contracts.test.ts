@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
+import { readAllowBuilds } from "../../../scripts/ci/check-allow-builds.mjs";
+
 /**
  * Every tracked file under `dir` whose extension is in `exts`, repository-
  * relative, recursively.
@@ -910,22 +912,14 @@ describe("package manager contract (#3673)", () => {
   it("pins which install scripts run, and forbids the settings that would widen that or blind the audit", () => {
     const workspace = readRepoFile("pnpm-workspace.yaml");
     const lines = workspace.split(/\r?\n/);
-    const start = lines.indexOf("allowBuilds:");
-    expect(start).toBeGreaterThan(-1);
-    const entries: string[] = [];
-    for (const line of lines.slice(start + 1)) {
-      if (!/^\s/.test(line)) break;
-      entries.push(line.trim());
-    }
+    expect(lines).toContain("allowBuilds:");
     // Which packages, and allowed or denied, is the contract. The exact version
     // lives only in pnpm-workspace.yaml, so a reviewed bump is a one-line edit
     // there (CONTRIBUTING.md, "Package manager: pnpm"). Every allowed entry must
     // carry an exact version: a bare name would approve every future version.
-    const parsed = entries.map((entry) => {
-      const m = /^"?(@?[^@"]+)(?:@([^"]+))?"?:\s*(true|false)$/.exec(entry);
-      expect(m, `unreadable allowBuilds entry: ${entry}`).not.toBeNull();
-      return { name: m![1], version: m![2], allowed: m![3] === "true" };
-    });
+    // The entries are read by the pre-install gate's own reader (#4364), which
+    // also checks each version against pnpm-lock.yaml.
+    const parsed = readAllowBuilds(workspace);
     expect(parsed.map(({ name, allowed }) => `${name}=${allowed}`)).toEqual([
       "@prisma/engines=true",
       "core-js=false",
@@ -934,9 +928,10 @@ describe("package manager contract (#3673)", () => {
       "unrs-resolver=true",
     ]);
     for (const entry of parsed.filter((e) => e.allowed)) {
-      expect(entry.version, `${entry.name} must be pinned to an exact version`).toMatch(
-        /^\d+\.\d+\.\d+(?: \|\| \d+\.\d+\.\d+)*$/,
-      );
+      expect(entry.versions, `${entry.name} must be pinned to an exact version`).not.toEqual([]);
+      for (const version of entry.versions) {
+        expect(version, `${entry.name} must be pinned to an exact version`).toMatch(/^\d+\.\d+\.\d+$/);
+      }
     }
 
     const topLevelKeys = lines
