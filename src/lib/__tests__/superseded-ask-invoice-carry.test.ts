@@ -354,6 +354,23 @@ describe("what it refuses, leaving the row exactly as it was", () => {
     await refused("booking-ended");
   });
 
+  it("a booking cancelled while the move waited on the anchor's key: refused under the key", async () => {
+    aSupersededByB();
+    mocks.lockAnchor.mockImplementation(async () => {
+      store.bookings[0]!.status = "CANCELLED";
+    });
+    await refused("booking-ended");
+  });
+
+  it("a newer request minted while the move waited on the key: the carrier changed, nothing moves", async () => {
+    aSupersededByB();
+    mocks.lockAnchor.mockImplementation(async () => {
+      store.transactions.find((row) => row.id === "txn_b")!.status = "FAILED";
+      store.transactions.push(ask("c", { amountCents: 10000, carriedAskCents: 8000 }));
+    });
+    await refused("changed-under-lock");
+  });
+
   it("a deleted booking", async () => {
     aSupersededByB();
     store.bookings[0]!.deletedAt = new Date();
