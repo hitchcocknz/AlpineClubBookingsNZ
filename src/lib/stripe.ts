@@ -262,14 +262,16 @@ export const STRIPE_IDEMPOTENCY_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000;
  */
 export async function listRefundsForPaymentIntent(
   paymentIntentId: string,
-  /** #4149: a bounded read with no retries (a webhook's or a nightly sweep's), as `retrieveRefund`'s is. Omitted, the request is unchanged. */
-  options?: { timeoutMs: number },
+  /**
+   * #4149: a bounded read with no retries (a webhook's or a nightly sweep's), as `retrieveRefund`'s is. Omitted, the
+   * request is unchanged. #4359: `expand`, e.g. each refund's `data.failure_balance_transaction` (when Stripe failed it).
+   */
+  options?: { timeoutMs: number; expand?: string[] },
 ): Promise<Stripe.Refund[]> {
   const stripe = await getStripe();
   const refunds: Stripe.Refund[] = [];
-  const list = options
-    ? stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 }, { timeout: options.timeoutMs, maxNetworkRetries: 0 })
-    : stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 });
+  const params = { payment_intent: paymentIntentId, limit: 100, ...(options?.expand ? { expand: options.expand } : {}) };
+  const list = options ? stripe.refunds.list(params, { timeout: options.timeoutMs, maxNetworkRetries: 0 }) : stripe.refunds.list(params);
   for await (const refund of list) {
     refunds.push(refund);
   }

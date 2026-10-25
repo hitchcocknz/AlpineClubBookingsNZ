@@ -84,6 +84,22 @@ describe("when the debt a slice is sent for arose (Stripe's clock, whole seconds
     expect(cardRefundDebtAroseAtSeconds(failedLaterRow, { slice: SLICE, onIntent: [failedRefund] })).toBe(FAILED_REFUND_MADE);
   });
 
+  it("a failed-later slice: when Stripe FAILED the refund (its failure's balance transaction), not when it made it", () => {
+    const failure = { id: "txn_failure", object: "balance_transaction", created: FAILED_REFUND_MADE + 86_400 } as Stripe.BalanceTransaction;
+    const failedDaysLater = { ...failedRefund, failure_balance_transaction: failure };
+    expect(cardRefundDebtAroseAtSeconds(failedLaterRow, { slice: SLICE, onIntent: [failedDaysLater] })).toBe(FAILED_REFUND_MADE + 86_400);
+    // A dashboard refund made while the refund was still pending is not this debt's answer; one after the failure is.
+    const whilePending = refund("re_dash_pending", FAILED_REFUND_MADE + 60, null);
+    const afterFailure = refund("re_dash_after", FAILED_REFUND_MADE + 86_400, null);
+    expect(
+      dashboardRefundsHoldingSend(failedLaterRow, [{ slice: SLICE, onIntent: [failedDaysLater, whilePending, afterFailure] }]).map((hold) => hold.refund.id),
+    ).toEqual(["re_dash_after"]);
+    // Not expanded (an id only): read at when Stripe made it, never later than the failure.
+    expect(cardRefundDebtAroseAtSeconds(failedLaterRow, { slice: SLICE, onIntent: [{ ...failedRefund, failure_balance_transaction: "txn_failure" }] })).toBe(
+      FAILED_REFUND_MADE,
+    );
+  });
+
   it("a re-planned slice: the earliest refund it records as failed later", () => {
     const later = refund("re_failed_2", FAILED_REFUND_MADE + 50, appMetadata, { status: "failed" });
     const slice = { ...SLICE, stripeKeySuffix: "refused2", failedRefundIds: ["re_failed_2", "re_failed"] };
@@ -156,7 +172,7 @@ describe("the check before the runner's send", () => {
     mocks.refundFindMany.mockResolvedValue([{ stripeRefundId: "re_app" }]);
     await checkStripeBeforeCardRefundSend({ operation: cancellationRow, plan: [SLICE, { ...SLICE, amountCents: 500 }], format: CLUB_FORMAT_TEST });
     expect(mocks.listRefunds).toHaveBeenCalledTimes(1);
-    expect(mocks.listRefunds).toHaveBeenCalledWith("pi_1", { timeoutMs: READ_BACK_TIMEOUT_MS });
+    expect(mocks.listRefunds).toHaveBeenCalledWith("pi_1", { timeoutMs: READ_BACK_TIMEOUT_MS, expand: ["data.failure_balance_transaction"] });
     expect(mocks.recordChargeRefunds).not.toHaveBeenCalled();
   });
 

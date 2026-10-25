@@ -6,7 +6,8 @@
  * So every realdb file that doubles a Stripe call registers this same factory
  * (`stripeRaceDouble`) and installs its hooks on this one shared object: the
  * double behaves the same whichever file registered last, and every call no
- * case has hooked runs the REAL function.
+ * case has hooked runs the REAL function - except the intent's refund list,
+ * which the recovery runner reads before every card refund it sends (#4359).
  */
 import type * as StripeModule from "@/lib/stripe";
 
@@ -22,7 +23,7 @@ export const stripeRaceHooks: {
   cancel: null | ((id: string) => Promise<unknown>);
   /** #4096: a card refund's answer, e.g. one Stripe refused (`failed`). */
   refund: null | ((args: Parameters<Stripe["processRefund"]>[0]) => Promise<unknown>);
-  /** #4149: the refunds Stripe lists for one intent, read to prove which door sent them. */
+  /** #4149: the refunds Stripe lists for one intent, read to prove which door sent them. Unhooked, none (#4359). */
   listRefunds: null | ((paymentIntentId: string) => Promise<unknown>);
   /** #4170: the refunds Stripe lists for one charge, which `charge.refunded` records. */
   listChargeRefunds: null | ((chargeId: string) => Promise<unknown>);
@@ -68,10 +69,11 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
         : actual.cancelPaymentIntentIfCancellableWithResult(...args)) as Stripe["cancelPaymentIntentIfCancellableWithResult"],
     processRefund: ((args: Parameters<Stripe["processRefund"]>[0]) =>
       stripeRaceHooks.refund ? stripeRaceHooks.refund(args) : actual.processRefund(args)) as Stripe["processRefund"],
-    listRefundsForPaymentIntent: ((...args: Parameters<Stripe["listRefundsForPaymentIntent"]>) =>
-      stripeRaceHooks.listRefunds
-        ? stripeRaceHooks.listRefunds(args[0])
-        : actual.listRefundsForPaymentIntent(...args)) as Stripe["listRefundsForPaymentIntent"],
+    // #4359: the one exception to "unhooked runs the real function". The recovery runner reads this before EVERY card
+    // refund it sends, so a case that hooks no list holds no refund made outside the app: Stripe lists none. A case about
+    // what Stripe holds hooks it (`listRefunds`).
+    listRefundsForPaymentIntent: (async (...args: Parameters<Stripe["listRefundsForPaymentIntent"]>) =>
+      stripeRaceHooks.listRefunds ? stripeRaceHooks.listRefunds(args[0]) : []) as Stripe["listRefundsForPaymentIntent"],
     listRefundsForCharge: ((...args: Parameters<Stripe["listRefundsForCharge"]>) =>
       stripeRaceHooks.listChargeRefunds
         ? stripeRaceHooks.listChargeRefunds(args[0])

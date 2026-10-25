@@ -12,7 +12,8 @@
  * transaction (`checkStripeBeforeCardRefundSend`):
  *
  * - **One bounded read per intent** the slices to send are on
- *   (`listRefundsForPaymentIntent`, `READ_BACK_TIMEOUT_MS`, no retries). A read
+ *   (`listRefundsForPaymentIntent`, `READ_BACK_TIMEOUT_MS`, no retries, each
+ *   refund's failure expanded). A read
  *   that fails sends nothing and fails the attempt, which the backoff retries:
  *   it only delays the refund.
  * - **Every refund the app has not seen is recorded** through what
@@ -54,7 +55,22 @@ import { stripeReferenceId } from "@/lib/stripe-references";
 import { formatCents } from "@/lib/utils";
 
 /** A refund Stripe lists on an intent, as this check reads it. */
-export type StripeRefundOnIntent = Pick<Stripe.Refund, "id" | "amount" | "status" | "created" | "metadata">;
+export type StripeRefundOnIntent = Pick<Stripe.Refund, "id" | "amount" | "status" | "created" | "metadata"> & {
+  failure_balance_transaction?: Stripe.Refund["failure_balance_transaction"];
+};
+
+/** The read's expansion: when Stripe failed a refund, on its own clock (`failedAtSeconds`). */
+export const CARD_REFUND_READ_EXPAND = ["data.failure_balance_transaction"];
+
+/**
+ * When Stripe failed a refund: its failure's balance transaction, read expanded
+ * (`CARD_REFUND_READ_EXPAND`); where Stripe gives none, when Stripe made it,
+ * which is never later - so a debt is never read as arising after it did.
+ */
+export function failedAtSeconds(refund: StripeRefundOnIntent): number {
+  const failure = refund.failure_balance_transaction;
+  return failure && typeof failure === "object" && typeof failure.created === "number" ? failure.created : refund.created;
+}
 
 /** The row being sent, as the check reads it: its raise time and the metadata its runner sends. */
 export type CardRefundSendOperation = {
@@ -79,11 +95,11 @@ const toSeconds = (at: Date) => Math.floor(at.getTime() / 1000);
  * WHEN THE DEBT A SLICE IS SENT FOR AROSE, on Stripe's clock in whole seconds:
  *
  * - a slice sent for refunds Stripe failed later (`cardRefundSliceFailedRefundIds`):
- *   when Stripe made the earliest of them - its `created`, the only Stripe
- *   time a refund carries, and never after its failure;
- * - a slice Stripe refused (`stripeKeySuffix`): when Stripe made the earliest
- *   refusal on its intent of its amount that this row's runner could have sent
- *   (`carriesCardRefundOperationMetadata`);
+ *   when Stripe failed the earliest of them (`failedAtSeconds`) - a refund
+ *   made while it was still pending is not this debt's answer;
+ * - a slice Stripe refused (`stripeKeySuffix`): when Stripe refused the
+ *   earliest refusal on its intent of its amount that this row's runner could
+ *   have sent (`carriesCardRefundOperationMetadata`);
  * - otherwise, or with no such refund listed: when the row was raised.
  */
 export function cardRefundDebtAroseAtSeconds(
@@ -91,7 +107,7 @@ export function cardRefundDebtAroseAtSeconds(
   { slice, onIntent }: CardRefundSendSlice,
 ): number {
   const failed = cardRefundSliceFailedRefundIds(operation, slice);
-  const madeAt =
+  const debtRefunds =
     failed.length > 0
       ? onIntent.filter((refund) => failed.includes(refund.id))
       : slice.stripeKeySuffix
@@ -102,7 +118,7 @@ export function cardRefundDebtAroseAtSeconds(
               carriesCardRefundOperationMetadata(operation, refund.metadata),
           )
         : [];
-  return madeAt.length > 0 ? Math.min(...madeAt.map((refund) => refund.created)) : toSeconds(operation.createdAt);
+  return debtRefunds.length > 0 ? Math.min(...debtRefunds.map(failedAtSeconds)) : toSeconds(operation.createdAt);
 }
 
 /**
@@ -239,7 +255,7 @@ export async function checkStripeBeforeCardRefundSend({
   for (const paymentIntentId of new Set(toSend.map((slice) => intentOf.get(slice.paymentTransactionId)))) {
     if (!paymentIntentId) continue;
     try {
-      byIntent.set(paymentIntentId, await listRefundsForPaymentIntent(paymentIntentId, { timeoutMs: READ_BACK_TIMEOUT_MS }));
+      byIntent.set(paymentIntentId, await listRefundsForPaymentIntent(paymentIntentId, { timeoutMs: READ_BACK_TIMEOUT_MS, expand: CARD_REFUND_READ_EXPAND }));
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);
       throw new Error(`Could not read the refunds Stripe holds on ${paymentIntentId} before sending this card refund, so nothing was sent; it is retried (#4359): ${reason}`);
