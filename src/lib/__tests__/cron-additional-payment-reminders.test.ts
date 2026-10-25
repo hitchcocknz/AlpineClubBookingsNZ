@@ -151,7 +151,7 @@ describe("sendAdditionalPaymentReminders", () => {
     );
   });
 
-  describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-047)", () => {
+  describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-048)", () => {
     const DAY = 86_400_000;
     const sentFor = async (rows: Record<string, unknown>[], stamp: Date | null, overrides: Record<string, unknown> = {}) => {
       mockPrisma.booking.findMany.mockResolvedValue([

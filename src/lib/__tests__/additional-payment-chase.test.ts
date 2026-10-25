@@ -369,7 +369,7 @@ describe("resolveAdditionalPaymentChase", () => {
   });
 });
 
-describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-047)", () => {
+describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-048)", () => {
   const DAY = 86_400_000;
   const start = new Date("2026-07-01T00:00:00Z");
   const at = (days: number, hours = 0) => new Date(start.getTime() + days * DAY + hours * 3_600_000);

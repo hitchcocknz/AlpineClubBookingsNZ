@@ -45,7 +45,7 @@ export function additionalPaymentFirstReminderDelayDays(askReason: string | null
 
 /**
  * The repeating chase for a request for credit used elsewhere in the club's
- * accounts (`INV-ADDPAY-047`): one email at once, then one every 7 days, four in
+ * accounts (`INV-ADDPAY-048`): one email at once, then one every 7 days, four in
  * all, and after the fourth the officers' own queues (the unsettled-stays
  * dashboard card, the sidebar badge, the bookings-list filter) are the only
  * chaser. It is a separate rule from the two-email edit chase beside it
@@ -582,7 +582,7 @@ export function creditReleaseStampBoundary(params: {
 }
 
 /**
- * The repeating chase for a credit-release request (`INV-ADDPAY-047`): due when
+ * The repeating chase for a credit-release request (`INV-ADDPAY-048`): due when
  * no reminder at all has gone out since the request was raised, or the last one
  * is older than the start of the slot the request is in. Stateless over the one
  * existing stamp, so a missed run sends ONE catch-up (never one per missed week),

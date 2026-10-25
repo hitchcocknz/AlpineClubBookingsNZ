@@ -38,6 +38,7 @@ import { getNetCollectedCashParts } from "@/lib/payment-net-collected";
 import { prisma } from "@/lib/prisma";
 import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
+import { onPlanWhere } from "@/lib/refused-card-refund-retry";
 import {
   applyLocalRefundAllocation,
   lockPaymentForRefundedTotal,
@@ -539,8 +540,11 @@ export async function closeCardRefundPaidAnotherWay(
     });
 
     const closedAt = new Date();
+    // #4312 F2 (`INV-ADDPAY-047`): on the plan the owed figure was read from,
+    // so a re-send's mark (`markResentSlices`, `pairResendRecordedFirst`)
+    // landing in between fails the claim - one plan, read and closed.
     const claimed = await tx.paymentRecoveryOperation.updateMany({
-      where: { id: operation.id, ...deadCardRefundOperationWhere },
+      where: { id: operation.id, ...deadCardRefundOperationWhere, ...onPlanWhere(operation.allocationPlan) },
       data: {
         status: PaymentRecoveryOperationStatus.SUCCEEDED,
         succeededAt: closedAt,

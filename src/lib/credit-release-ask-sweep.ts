@@ -73,7 +73,7 @@ export async function creditReleaseAskWriterSince(
 }
 
 /**
- * THE BACKLOG'S SWITCH (#4253 release 2, D4, `INV-ADDPAY-049`), a second `XeroSyncCursor` row, also off until set.
+ * THE BACKLOG'S SWITCH (#4253 release 2, D4, `INV-ADDPAY-050`), a second `XeroSyncCursor` row, also off until set.
  * `enabled: true` lets each pass raise requests for releases written BEFORE the writer's floor,
  * oldest first, at most `perRun` of them (default 5, never over 25), and only while the writer
  * is itself on (the backlog rows are the same key family, so the same blue/green rule holds).

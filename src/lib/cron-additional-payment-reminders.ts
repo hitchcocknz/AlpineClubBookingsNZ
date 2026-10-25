@@ -162,7 +162,7 @@ export async function sendAdditionalPaymentReminders(): Promise<AdditionalPaymen
         // The stay is still ahead of (or in) the current NZ day. A finished stay
         // is the dashboard queue's business, not this job's...
         { checkOut: { gt: today } },
-        // ...except for a request for credit used elsewhere (`INV-ADDPAY-047`);
+        // ...except for a request for credit used elsewhere (`INV-ADDPAY-048`);
         // `resolveChaseFor` re-decides in memory.
         buildFinishedCreditReleaseChaseWhere(today, now),
       ],
@@ -486,7 +486,7 @@ interface DueAdditionalPaymentReminder {
   /**
    * A stamp must be older than this for the claim to take the reminder. The
    * episode's start for the edit chase; the start of the current slot for the
-   * repeating credit-release chase (`INV-ADDPAY-047`).
+   * repeating credit-release chase (`INV-ADDPAY-048`).
    */
   stampBoundary: Date;
   /** The amount as read; the claim pins it so the email cannot quote a stale one. */

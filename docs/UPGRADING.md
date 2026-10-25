@@ -119,6 +119,157 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Check card cancellations left behind by earlier cash-payment reversals (#4320)
+
+**What changes.** When an officer reverses a booking recorded as paid in cash,
+the app now works out again which of the member's open card payments are out of
+date, keeps cancelling those (restarting a cancellation that had given up), and
+stops cancelling the one the booking can still be paid with, even if its
+cancellation was waiting to retry. No migration runs.
+
+**After upgrading.** A reversal made before this release (or by the previous
+colour during the switch) could leave such a waiting cancellation behind. It
+stays live until something finishes it, and it can refund the member's card
+payment for a booking that then stays unpaid. Run this read-only query against
+the live database. It writes nothing:
+
+```sql
+WITH last_manual AS (
+  SELECT DISTINCT ON (a."entityId")
+         a."entityId" AS "paymentId", a."action", a."createdAt", a."metadata"
+  FROM "AuditLog" a
+  WHERE a."entityType" = 'Payment'
+    AND a."action" IN ('booking-payment.manual-payment.mark-paid',
+                       'booking-payment.manual-payment.mark-unpaid')
+  ORDER BY a."entityId", a."createdAt" DESC
+)
+SELECT b."id" AS "bookingId", b."status" AS "bookingStatus",
+       b."finalPriceCents", p."changeFeeCents", o."id" AS "operationId",
+       o."type", o."status", o."attempts", o."nextRetryAt",
+       o."paymentIntentId", t."kind", t."status" AS "intentRowStatus",
+       t."amountCents", t."reference", p."additionalPaymentIntentId",
+       p."additionalAmountCents",
+       t."id" = (SELECT n."id" FROM "PaymentTransaction" n
+                 WHERE n."paymentId" = p."id" AND n."kind" = 'ADDITIONAL'
+                   AND n."source" = 'STRIPE' AND n."withdrawnAt" IS NULL
+                 ORDER BY n."createdAt" DESC, n."insertionSeq" DESC
+                 LIMIT 1) AS "newestCardAsk",
+       lm."createdAt" AS "reversedAt"
+FROM last_manual lm
+JOIN "Payment" p ON p."id" = lm."paymentId"
+JOIN "PaymentRecoveryOperation" o ON o."paymentId" = lm."paymentId"
+JOIN "Booking" b ON b."id" = o."bookingId"
+LEFT JOIN "PaymentTransaction" t ON t."id" = o."paymentTransactionId"
+WHERE lm."action" = 'booking-payment.manual-payment.mark-unpaid'
+  AND NOT (lm."metadata" ? 'stillCancelledPaymentIntentIds')
+  AND o."type" IN ('CANCEL_PAYMENT_INTENT', 'REFUND_SUPERSEDED_PAYMENT')
+  AND o."status" <> 'SUCCEEDED'
+  AND o."createdAt" < lm."createdAt"
+ORDER BY lm."createdAt", o."createdAt";
+```
+
+It lists every cancellation still open on a payment whose last cash-payment
+action was a reversal made before this release, and the card payment it names.
+For each row:
+
+- if `intentRowStatus` is not `PENDING` or `PROCESSING`, or the booking is
+  cancelled, there is nothing to do;
+- if `nextRetryAt` is empty, the cancellation has given up and will never run
+  again, whatever the rest of the row says. The same goes for a row on its
+  last attempt (`FAILED` with `attempts` 4, or `PROCESSING` with `attempts` 5):
+  if Stripe is still failing, that attempt gives up too. Cancel that payment intent
+  (`paymentIntentId`) in the Stripe dashboard: that moves no money, and
+  Stripe's cancellation event closes the row. Where the bullets below would not
+  have left the cancellation, the last one also says what the member is left
+  with;
+- if `kind` is `PRIMARY` and `reference` starts with `pending_charge_`, the row
+  is a saved-card charge, judged against the booking's full value:
+  `finalPriceCents` plus `changeFeeCents` (never empty; 0 when the booking
+  carries no change fee). If `amountCents` differs from that,
+  the cancellation is right: leave it;
+- if `kind` is any other `PRIMARY` row and `amountCents` differs from what the
+  booking page asks the member to pay, the cancellation is right: leave it;
+- if `kind` is `ADDITIONAL` and `additionalPaymentIntentId` is set but is not
+  `paymentIntentId`, the cancellation is right: leave it. If
+  `additionalPaymentIntentId` is empty, the cash settlement hid the extra's card
+  request: the row's payment is still the live one only when `newestCardAsk` is
+  true and `amountCents` equals `additionalAmountCents`. Otherwise the
+  cancellation is right: leave it;
+- otherwise, cancel that payment intent (`paymentIntentId`) in the Stripe
+  dashboard, and do it promptly. The cancellation then closes itself and the
+  member's open payment page stops working. For a `PRIMARY` row their next
+  visit to the pay step starts a fresh card payment; an `ADDITIONAL` row's
+  payment was the member's only card door to the extra, so collect the extra
+  another way, such as by internet banking. No money moves. If Stripe shows the
+  intent already succeeded, the app is refunding it: check the booking and ask
+  the member to pay again.
+
+Do not wait for the cancellation to finish on its own. Until its retry runs, a
+member who pays from a page they still have open is charged and then refunded,
+because the app hands that payment to the cancellation's refund, and the
+booking stays unpaid. A row with retries left cancels the card payment itself
+once Stripe answers, closing the member's page anyway. A row with no
+`nextRetryAt` has given up, and one on its last attempt gives up if Stripe is
+still failing, which is why the second bullet has both cancelled in Stripe. No
+admin screen closes these rows, and they must never be deleted by hand.
+
+**A hidden card request with no cancellation left.** A reversal made before
+this release, after a cash settlement that also covered the extra, left the
+reversed cash record newer than the extra's card request. The app reads the
+extra off the newest record, so it shows the extra as owed with no card button,
+even though the card request may still be open at Stripe with nothing
+cancelling it. If the member pays it from a page they still have open, the
+money arrives but the booking still shows the extra as owed, and the reminder
+emails chase them for money they have paid. This release avoids that for new
+reversals; this read-only query lists the earlier ones:
+
+```sql
+SELECT p."bookingId", b."status" AS "bookingStatus", p."id" AS "paymentId",
+       p."additionalAmountCents", p."additionalPaymentStatus",
+       ask."stripePaymentIntentId" AS "askPaymentIntentId",
+       ask."status" AS "askStatus", ask."amountCents" AS "askAmountCents"
+FROM "Payment" p
+JOIN "Booking" b ON b."id" = p."bookingId"
+JOIN LATERAL (
+  SELECT n.* FROM "PaymentTransaction" n
+  WHERE n."paymentId" = p."id" AND n."kind" = 'ADDITIONAL'
+    AND n."withdrawnAt" IS NULL
+  ORDER BY n."createdAt" DESC, n."insertionSeq" DESC LIMIT 1
+) newest ON newest."source" = 'INTERNET_BANKING'
+        AND newest."reason" = 'manual_mark_paid_additional_reversed'
+JOIN LATERAL (
+  SELECT c.* FROM "PaymentTransaction" c
+  WHERE c."paymentId" = p."id" AND c."kind" = 'ADDITIONAL'
+    AND c."source" = 'STRIPE' AND c."withdrawnAt" IS NULL
+  ORDER BY c."createdAt" DESC, c."insertionSeq" DESC LIMIT 1
+) ask ON ask."status" IN ('PENDING', 'PROCESSING', 'SUCCEEDED',
+                          'PARTIALLY_REFUNDED')
+WHERE NOT EXISTS (
+  SELECT 1 FROM "PaymentRecoveryOperation" o
+  WHERE o."paymentId" = p."id"
+    AND o."paymentIntentId" = ask."stripePaymentIntentId"
+    AND o."type" IN ('CANCEL_PAYMENT_INTENT', 'REFUND_SUPERSEDED_PAYMENT')
+    AND o."status" <> 'SUCCEEDED'
+)
+ORDER BY p."bookingId";
+```
+
+For each row:
+
+- if the booking is cancelled, or `askAmountCents` is not
+  `additionalAmountCents`, the request was replaced before the cash
+  settlement; there is nothing to do here;
+- if `askStatus` is `PENDING` or `PROCESSING`, cancel `askPaymentIntentId` in
+  the Stripe dashboard. That moves no money and closes the open page, and the
+  extra stays owed with no card button: collect it another way, such as by
+  internet banking. If Stripe shows the intent already succeeded, treat the row
+  as the next bullet;
+- if `askStatus` is `SUCCEEDED` or `PARTIALLY_REFUNDED`, the member has paid the
+  extra by card and the club holds the money. Do not chase them, and do not
+  record the extra as paid in cash, which would count it twice. No admin
+  screen corrects what the booking shows, so do not edit the rows by hand:
+  report the booking id to the maintainers.
+
 ### Credit used or un-used in Xero is mirrored by itself (#4270)
 
 **What changes.** The app now notices when a member's credit note is used in Xero
@@ -383,10 +534,9 @@ applies to the first refund handed back too. No migration runs.
 refund handed back before the upgrade that never got its own note is not given
 one now: keep using the read-only query in
 [the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
-to find those payments, and raise their notes by hand as that entry says. A
-refund appeal's card-refunded part, a dashboard card refund and a late card
-capture's refund on a bank-transfer payment still have no note of their own
-(#4312); the query lists those too.
+to find those payments, and raise their notes by hand as that entry says.
+Card refunds on a bank-transfer payment get their own notes from #4312 (next
+entry); one made before that upgrade is listed by the query too.
 
 **During the switch, and if you roll back.** While the previous version still
 runs - the blue/green switch window, or after a rollback - its Xero worker
@@ -397,6 +547,143 @@ rows. In the same window a card refund's credit note on a bank-transfer
 payment that also had a hand-back noted this way can come out short; check
 those payments in Xero. Details:
 [A later bank-transfer hand-back gets its own note](xero/ARCHITECTURE.md#a-later-bank-transfer-hand-back-gets-its-own-note-4287).
+
+### A card refund on a bank-transfer payment gets its own Xero credit note (#4312)
+
+`20261122010000_bt_card_refund_notes_cutover` is a **marker, not a schema
+change**: a `SELECT 1` whose finish time on your database is the cutover. It
+touches no table and is safe with the previous app colour still serving.
+
+**What changes.** On a bank-transfer payment, a card refund now gets a credit
+note of its own in Xero, for exactly that refund, instead of being counted
+under the payment's first refund note: the card part of an approved refund
+appeal (including one the payment recovery job finishes later), a refund made
+in the Stripe dashboard, and a refund of a card payment captured after the
+booking was cancelled. Only refunds Stripe makes after the marker migration has
+run qualify.
+
+**After upgrading.** Nothing to do for card refunds made from now on. A card
+refund made before the upgrade is never given a note of its own: keep using the
+read-only query in
+[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
+to find those payments, and raise their notes by hand as that entry says.
+
+**Card refunds made in the switch window (#4312).** While the previous version
+still serves - between this migration and the switch, and again for as long as
+it serves after a rollback - it handles a refund of a card payment captured
+after the booking was cancelled as it always did: it counts the refund under the
+payment's first refund note. This version can later give that refund a note of
+its own (when Stripe next reports a refund of that captured payment, say), and
+an officer may already have raised one by hand for it. Nothing in the app
+records a credit note raised by hand in Xero, so a hand-raised note does not
+stop the app raising its own.
+
+Run this read-only query once this version serves alone. First replace
+`'SET-ME'` with that moment - the switch, or, after a rollback, the roll
+forward - written with its UTC offset, such as
+`TIMESTAMPTZ '2026-11-23 09:30:00+13'` (`+00` for UTC, `+13` for New Zealand
+daylight time); left as it is, the query refuses to run. Run it again after
+every roll forward. It lists each such refund made in the window - on a
+bank-transfer payment, of a card payment captured after its booking was
+cancelled that a treasurer held for a decision or that the app has noted
+against that captured payment - once for each note of its own this version
+raised or may still raise, or once with no `operationId` when it has none yet.
+The refund's time is stored in UTC with no zone, so the query reads the
+marker's finish and your timestamp in UTC too, in whole seconds as the app
+does, whatever time zone your database session uses; a refund recorded without
+Stripe's time is dated by when the app recorded it:
+
+```sql
+WITH own AS (
+  SELECT r.id AS "refundRowId", o.id, o.status, o."xeroObjectId", o."xeroObjectNumber", o."manuallyResolvedAt"
+  FROM "PaymentRefund" r
+  JOIN "XeroSyncOperation" o ON o."localId" = r."paymentId"
+    AND o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE'
+    AND (o."requestPayload"->>'cardRefundId' = r."stripeRefundId" OR o."correlationKey" LIKE '%:card-refund:' || r."stripeRefundId" || ':%')
+)
+SELECT r."paymentId", p."bookingId", r."stripeRefundId", r."amountCents",
+  COALESCE(r."stripeCreatedAt", r."createdAt") AS "refundMadeAtUtc",
+  n.id AS "operationId", n.status, n."xeroObjectId" AS "creditNoteId", n."xeroObjectNumber" AS "creditNoteNumber"
+FROM "PaymentRefund" r
+JOIN "Payment" p ON p.id = r."paymentId" AND p.source = 'INTERNET_BANKING'
+LEFT JOIN own n ON n."refundRowId" = r.id
+  AND (n."xeroObjectId" IS NOT NULL OR (n.status NOT IN ('SUCCEEDED', 'CANCELLED') AND n."manuallyResolvedAt" IS NULL))
+  AND NOT (n."xeroObjectId" IS NULL AND n.status IN ('FAILED', 'PARTIAL')
+    AND EXISTS (SELECT 1 FROM own raised WHERE raised."refundRowId" = r.id AND raised."xeroObjectId" IS NOT NULL))
+WHERE r.status NOT IN ('failed', 'canceled')
+  AND (EXISTS (SELECT 1 FROM "ManualRefundTask" t WHERE t."lateCaptureApprovalIntentId" = r."stripePaymentIntentId")
+    OR EXISTS (SELECT 1 FROM "XeroSyncOperation" c WHERE c."localId" = r."paymentId"
+      AND c."localModel" = 'Payment' AND c."entityType" = 'CREDIT_NOTE' AND c."operationType" = 'CREATE'
+      AND c."requestPayload"->>'paymentIntentId' = r."stripePaymentIntentId"))
+  AND NOT EXISTS (SELECT 1 FROM own resolved WHERE resolved."refundRowId" = r.id AND resolved."manuallyResolvedAt" IS NOT NULL AND resolved.status <> 'CANCELLED')
+  AND date_trunc('second', COALESCE(r."stripeCreatedAt", r."createdAt")) >= (SELECT date_trunc('second', min(m."finished_at") AT TIME ZONE 'UTC')
+    FROM "_prisma_migrations" m WHERE m."migration_name" = '20261122010000_bt_card_refund_notes_cutover' AND m."rolled_back_at" IS NULL)
+  AND date_trunc('second', COALESCE(r."stripeCreatedAt", r."createdAt")) <= (TIMESTAMPTZ 'SET-ME' AT TIME ZONE 'UTC')
+ORDER BY p."bookingId", "refundMadeAtUtc", n.id;
+```
+
+For each row, look at the booking's invoice in Xero for a credit note an
+officer raised by hand for the same refund. Where there is one:
+
+- **A row with a `creditNoteId`**: the app's note is in Xero. Void the
+  hand-raised one and keep the app's.
+- **A row with no `creditNoteId`, status `PENDING` or `RUNNING`**: the next
+  Xero run raises the app's note. Keep the hand-raised note until then, and run
+  this query again: once the row shows a `creditNoteId`, void the hand-raised
+  one.
+- **A row with no `creditNoteId`, status `FAILED` or `PARTIAL`**: it raises
+  nothing until someone presses **Retry in background** on it in Xero
+  Operations. Don't retry it. The error may have come after Xero raised the
+  app's note, so look in Xero first for a credit note with the reference
+  `Refund against original credit card - Booking <first eight characters of bookingId>`,
+  dated the day of the refund, for the refund's amount or less, that no officer
+  raised. If there is one, it is the app's: void the hand-raised note and keep
+  the app's. Either way, press **Resolve (fixed in Xero)** on the row.
+- **A row with no `operationId`**: the app has no note of this refund's own
+  yet. If the previous version counted the refund under the payment's first
+  refund note, this version raises one the next time it notes that captured
+  payment: when Stripe reports another refund of it, a refund appeal on it is
+  approved, or its invoice for the kept payment reaches Xero. If the previous
+  version instead raised a note for the whole captured payment, which covers
+  the refund, it never does. Keep the hand-raised note, and run this query
+  again after any of those events on the booking: once the refund shows a
+  `creditNoteId`, void the hand-raised one. With no hand-raised note, leave it
+  for the app; if Xero should show the refund before then, you may raise one by
+  hand on the same terms.
+
+The query leaves out a refund that Stripe failed or cancelled, and one whose
+own note row was resolved by hand: the app counts that note as in Xero and asks
+for nothing more. Of a refund's note rows it leaves out one that will never
+raise a note - cancelled, or finished without raising one because other notes
+already covered it - and a failed one a later retry has already raised: the
+retry's row, with its `creditNoteId`, stands for it. Never resolve such a
+failed row: the app would then count the refund twice.
+
+**During the switch, and if you roll back.** The previous version's Xero worker
+treats a card refund's new credit-note row as the one note it would have used,
+so it either closes it as covered by the payment's first note or raises it as
+that first note - exactly what the previous version did with such refunds.
+Notes already raised per refund stay valid. Two gaps, both listed by the
+[#4230 deploy note's query](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230):
+
+- **An approved refund appeal whose card refund was still waiting in the
+  payment recovery queue** when the previous version took over (after a
+  rollback, or while that version still ran the recovery job during the switch)
+  gets no credit note at all: this version's approval left the note to the
+  refund, and the previous version's recovery job does not raise one. Check the
+  payments that query lists and raise their notes by hand as it says.
+- **A card refund the previous version made during the window** stays counted
+  under the first note, as before - except a late-captured payment's refund,
+  which this version can later note on its own (the query above lists those).
+
+**If the marker migration is rolled back and applied again,** the cutover moves
+to the second run's finish: refunds made in between are treated as made before
+it and keep the previous behaviour. While it is rolled back (not applied), no
+card refund gets a note of its own and every approval takes the single note, as
+before.
+
+Details:
+[A card refund on a bank transfer gets its own note](xero/ARCHITECTURE.md#a-card-refund-on-a-bank-transfer-gets-its-own-note-4312).
 
 ### One-off correction of the starter privacy policy's audit-log retention (#4031)
 

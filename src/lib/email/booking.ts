@@ -1341,7 +1341,7 @@ export async function sendAdditionalPaymentReminderEmail(params: {
    * #4253: why the request exists (`additionalAskCause` over its ledger rows). A request for
    * credit that was used elsewhere in the club's accounts is worded as that, never as "a
    * change to your booking increased the total" (`INV-ADDPAY-045`); one an edit merged into
-   * says both (`INV-ADDPAY-047`). Absent reads as a change, the wording this email always had.
+   * says both (`INV-ADDPAY-048`). Absent reads as a change, the wording this email always had.
    */
   askCause?: AdditionalAskCause;
   /**

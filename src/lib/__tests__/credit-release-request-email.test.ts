@@ -22,7 +22,7 @@ vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info:
 import { sendAdditionalPaymentReminderEmail } from "@/lib/email/booking";
 
 /*
-  #4253 release 2 (`INV-ADDPAY-047`, `INV-ADDPAY-048`): the request email's cause wording and its
+  #4253 release 2 (`INV-ADDPAY-048`, `INV-ADDPAY-049`): the request email's cause wording and its
   bank-transfer offer. The sender owns which template, subject and tokens go out for a cause.
 */
 const params = {

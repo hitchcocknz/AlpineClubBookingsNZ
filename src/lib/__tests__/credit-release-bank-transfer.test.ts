@@ -13,7 +13,7 @@ vi.mock("@/lib/booking-message-settings", () => ({
 import { bankTransferNoteText, loadBankTransferOffer } from "@/lib/credit-release-bank-transfer";
 
 /*
-  #4253 release 2, D6 (`INV-ADDPAY-048`): the bank-transfer offer on a request for credit used
+  #4253 release 2, D6 (`INV-ADDPAY-049`): the bank-transfer offer on a request for credit used
   elsewhere. The club's account details are text the club writes; the reference is the invoice number.
 */
 const KEY = "paymentRequest.bankTransfer.instructions";

@@ -2,7 +2,7 @@ import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
 
 /**
  * WHY AN UNPAID ADDITIONAL REQUEST EXISTS, and the member- and officer-facing words for it
- * (#4253 release 2, `INV-ADDPAY-047`). Pure: no client, no clock.
+ * (#4253 release 2, `INV-ADDPAY-048`). Pure: no client, no clock.
  *
  * A payment holds ONE live ask, but that ask can have absorbed the one before it
  * (`carriedAskCents`, `INV-PAY-098`), so a request can be a change the member made, credit

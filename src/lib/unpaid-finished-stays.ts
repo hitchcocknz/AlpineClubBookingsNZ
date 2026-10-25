@@ -93,7 +93,7 @@ export function buildAdditionalOwedWhere(): Prisma.BookingWhereInput {
 
 /**
  * A finished stay whose newest unpaid request is for credit used elsewhere in the club's
- * accounts and young enough to still have reminders to send (`INV-ADDPAY-047`): the one kind
+ * accounts and young enough to still have reminders to send (`INV-ADDPAY-048`): the one kind
  * of request the reminder cron keeps chasing after check-out. Narrowing only; the cron
  * re-decides in memory with the cause read from the ledger rows.
  */

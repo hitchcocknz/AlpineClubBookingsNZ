@@ -24,7 +24,7 @@ const edit = (carriedAskCents = 0, withdrawnAt: Date | null = null) => ({
   withdrawnAt,
 });
 
-describe("additionalAskCause (#4253, INV-ADDPAY-047)", () => {
+describe("additionalAskCause (#4253, INV-ADDPAY-048)", () => {
   it("reads no rows as an ordinary change, the wording every surface had before", () => {
     expect(additionalAskCause([])).toBe("edit");
   });
