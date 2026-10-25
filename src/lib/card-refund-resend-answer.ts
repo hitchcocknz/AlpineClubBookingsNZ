@@ -13,6 +13,7 @@ import {
   parseRefundAllocationPlan,
 } from "@/lib/open-card-refund-owed";
 import { isPaymentRecoveryOperationExhausted } from "@/lib/payment-recovery-constants";
+import type { RefundAllocationSlice } from "@/lib/payment-transactions";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
 import { onPlanWhere } from "@/lib/refused-card-refund-retry";
@@ -115,12 +116,21 @@ export function unmarkedResendSlicesFor(
     // Raised dead (`raised-dead`, `raised-backlog`): never claimed, so it never sent anything Stripe could answer.
     if (operation.status === "PENDING" && isPaymentRecoveryOperationExhausted(operation)) return [];
     if (!operationWindowTakes(operation, refund)) return [];
-    return (parseRefundAllocationPlan(operation.allocationPlan) ?? []).flatMap((slice, sliceIndex) => {
-      if (slice.madeRefundId || slice.paymentTransactionId !== refund.paymentTransactionId || slice.amountCents !== refund.amountCents) return [];
-      const failed = cardRefundSliceFailedRefundIds(operation, slice);
-      return failed.length > 0 && !failed.includes(refund.stripeRefundId) ? [{ operation, sliceIndex }] : [];
-    });
+    return (parseRefundAllocationPlan(operation.allocationPlan) ?? []).flatMap((slice, sliceIndex) =>
+      sliceCouldBeResend(operation, slice, refund) ? [{ operation, sliceIndex }] : [],
+    );
   });
+}
+
+/** One slice, not marked made yet, sent for refunds Stripe failed later, on the refund's charge for exactly its amount. */
+function sliceCouldBeResend(
+  operation: Pick<ResendRow, "idempotencyKey">,
+  slice: RefundAllocationSlice | undefined,
+  refund: Pick<RecordedResend, "stripeRefundId" | "paymentTransactionId" | "amountCents">,
+): boolean {
+  if (!slice || slice.madeRefundId || slice.paymentTransactionId !== refund.paymentTransactionId || slice.amountCents !== refund.amountCents) return false;
+  const failed = cardRefundSliceFailedRefundIds(operation, slice);
+  return failed.length > 0 && !failed.includes(refund.stripeRefundId);
 }
 
 /**
@@ -128,11 +138,15 @@ export function unmarkedResendSlicesFor(
  * is marked with it (`pairResendRecordedFirst`): `none` - no re-send could be
  * it; `replay` - an unclosed row that will replay its slice could have sent
  * it; `marked` - it was the one re-send of a dead row, now marked with it;
- * `ambiguous` - several dead rows' re-sends could be it.
+ * `ambiguous` - several dead rows' re-sends could be it, or the dead row's
+ * mark lost to a write it cannot follow: logged, noted by nobody.
  */
 export type ResendRecordedFirst = "none" | "replay" | "marked" | "ambiguous";
 
-type ResendStore = { paymentRefund: Pick<typeof prisma.paymentRefund, "findFirst">; paymentRecoveryOperation: Pick<typeof prisma.paymentRecoveryOperation, "findMany" | "updateMany"> };
+type ResendStore = {
+  paymentRefund: Pick<typeof prisma.paymentRefund, "findFirst">;
+  paymentRecoveryOperation: Pick<typeof prisma.paymentRecoveryOperation, "findMany" | "findUnique" | "updateMany">;
+};
 
 /**
  * #4312 round 8 (#4104, `INV-ADDPAY-047`): A RE-SEND `charge.refunded`
@@ -149,9 +163,13 @@ type ResendStore = { paymentRefund: Pick<typeof prisma.paymentRefund, "findFirst
  *   never replayed, so its one matching re-send is marked here, compare-and-set
  *   on the plan, status and attempts read: the refund carries that row's
  *   runner metadata, on that slice's charge, for its amount, made after the
- *   row was raised. A write in between leaves it to whoever wrote.
+ *   row was raised. A write in between is read again
+ *   (`markClosedRowAfterLostWrite`): a slice marked with it is marked, a row
+ *   just closed as "Paid another way" is marked on its plan alone, and
+ *   anything else is logged and noted by nobody.
  * - Several dead rows' re-sends that could each be it are left unmarked and
- *   logged: nothing here can tell which one Stripe answered.
+ *   logged: nothing here can tell which one Stripe answered. A live row's and
+ *   a dead row's are left to the live row's replay, and logged.
  *
  * STATED LIMIT: a final attempt whose answer is lost after `charge.refunded`
  * already left the refund to it is marked by nobody - no refund row stores the
@@ -174,16 +192,27 @@ export async function pairResendRecordedFirst(
       bookingId: true, allocationPlan: true, createdAt: true, succeededAt: true,
     },
   });
-  const candidates = unmarkedResendSlicesFor(operations, {
+  const resend: RecordedResend = {
     stripeRefundId: refund.id,
     paymentTransactionId: recorded.paymentTransactionId,
     amountCents: recorded.amountCents,
     createdAt: recorded.createdAt,
     stripeCreatedAt: recorded.stripeCreatedAt,
     metadata: refund.metadata,
-  });
+  };
+  const candidates = unmarkedResendSlicesFor(operations, resend);
   if (candidates.length === 0) return "none";
-  if (candidates.some(({ operation }) => !isPaymentRecoveryOperationExhausted(operation))) return "replay";
+  const live = candidates.filter(({ operation }) => !isPaymentRecoveryOperationExhausted(operation));
+  if (live.length > 0) {
+    // STATED LIMIT (F3): when it was the dead row's, the live row's replay marks its own slice with its own refund, and this one is noted by nobody.
+    if (live.length < candidates.length) {
+      logger.warn(
+        { paymentId, stripeRefundId: refund.id, operationIds: candidates.map(({ operation }) => operation.id) },
+        "A card refund re-send that charge.refunded recorded first could be a live row's or a dead row's slice: it is left to the live row's replay - if it was the dead row's, it is noted by nobody; check its Xero note by hand (#4312)",
+      );
+    }
+    return "replay";
+  }
   const [only] = candidates;
   if (!only || candidates.length > 1) {
     logger.error(
@@ -199,5 +228,41 @@ export async function pairResendRecordedFirst(
     where: { id: operation.id, status: operation.status as PaymentRecoveryOperationStatus, attempts: operation.attempts, ...onPlanWhere(operation.allocationPlan as Prisma.JsonValue) },
     data: { allocationPlan: marked as unknown as Prisma.InputJsonValue },
   });
-  return written.count === 1 ? "marked" : "replay";
+  if (written.count === 1) return "marked";
+  return markClosedRowAfterLostWrite(db, paymentId, operation, sliceIndex, resend);
+}
+
+/**
+ * F1: the compare-and-set lost - something wrote the dead row between the
+ * read and the write. A dead row is never replayed, so "left to whoever wrote"
+ * holds only when what wrote marked the slice itself. Read again: a slice now
+ * marked with this refund is marked; a row an officer just closed as "Paid
+ * another way" (SUCCEEDED) still leaves its slice unmarked, so it is marked on
+ * the plan alone, as the runner's mark is (`markResentSlices`) - a closed row's
+ * status and attempts stay as they are. Anything else is logged and noted by
+ * nobody, as the ambiguous case.
+ */
+async function markClosedRowAfterLostWrite(
+  db: ResendStore,
+  paymentId: string,
+  operation: Pick<ResendRow, "id" | "idempotencyKey">,
+  sliceIndex: number,
+  resend: RecordedResend,
+): Promise<ResendRecordedFirst> {
+  const now = await db.paymentRecoveryOperation.findUnique({ where: { id: operation.id }, select: { status: true, allocationPlan: true } });
+  const plan = parseRefundAllocationPlan(now?.allocationPlan) ?? [];
+  if (plan[sliceIndex]?.madeRefundId === resend.stripeRefundId) return "marked";
+  if (now?.status === "SUCCEEDED" && sliceCouldBeResend(operation, plan[sliceIndex], resend)) {
+    const marked = plan.map((slice, index) => (index === sliceIndex ? { ...slice, madeRefundId: resend.stripeRefundId } : slice));
+    const written = await db.paymentRecoveryOperation.updateMany({
+      where: { id: operation.id, ...onPlanWhere(now.allocationPlan) },
+      data: { allocationPlan: marked as unknown as Prisma.InputJsonValue },
+    });
+    if (written.count === 1) return "marked";
+  }
+  logger.error(
+    { paymentId, stripeRefundId: resend.stripeRefundId, operationId: operation.id, status: now?.status ?? null },
+    "A card refund re-send that charge.refunded recorded first lost its mark on a dead row that something else wrote: it is noted by nobody - raise its Xero note by hand (#4312)",
+  );
+  return "ambiguous";
 }

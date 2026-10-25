@@ -13,6 +13,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const lateCaptures = vi.hoisted(() => new Set<string>());
 const coverByRefund = vi.hoisted(() => new Map<string, number>());
+const log = vi.hoisted(() => ({ error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() }));
+
+vi.mock("@/lib/logger", () => ({ default: log }));
 
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
   findLateCapturePaymentIntents: async (ids: readonly string[]) => new Set(ids.filter((id) => lateCaptures.has(id))),
@@ -250,13 +253,22 @@ describe("a re-send charge.refunded records before its slice is marked (#4312 ro
     expect(unmarkedResendSlicesFor([{ ...row1, createdAt: new Date(MADE.getTime() + 1_000) }], recorded)).toEqual([]);
   });
 
-  function store(operations: ResendRow[], refund: { paymentTransactionId: string | null; status: string } | null = { paymentTransactionId: TXN, status: "succeeded" }, written = 1) {
-    const updateMany = vi.fn(async () => ({ count: written }));
+  /** `written`: what each write matches in turn (the last repeats); `reread`: the row a lost write reads again. */
+  function store(
+    operations: ResendRow[],
+    refund: { paymentTransactionId: string | null; status: string } | null = { paymentTransactionId: TXN, status: "succeeded" },
+    written: number | number[] = 1,
+    reread: Pick<ResendRow, "status" | "allocationPlan"> | null = null,
+  ) {
+    const counts = Array.isArray(written) ? [...written] : [written];
+    const updateMany = vi.fn(async (_args: unknown) => ({ count: counts.length > 1 ? counts.shift()! : counts[0]! }));
+    const findUnique = vi.fn(async () => reread);
     return {
       updateMany,
+      findUnique,
       db: {
         paymentRefund: { findFirst: async () => (refund ? { ...refund, amountCents: 4_000, createdAt: MADE, stripeCreatedAt: MADE } : null) },
-        paymentRecoveryOperation: { findMany: async () => operations, updateMany },
+        paymentRecoveryOperation: { findMany: async () => operations, findUnique, updateMany },
       } as never,
     };
   }
@@ -281,8 +293,56 @@ describe("a re-send charge.refunded records before its slice is marked (#4312 ro
     });
   });
 
-  it("a write in between leaves it to whoever wrote; several dead rows' re-sends are not guessed at; a refund not counted is none", async () => {
-    expect(await pair(store([resendRow("row-1", { dead: true })], undefined, 0).db)).toBe("replay");
+  it("MUTATION (#4312 F1): a lost write on a dead row an officer just closed marks it on the plan alone, never the replay nobody sends", async () => {
+    const dead = resendRow("row-1", { dead: true });
+    const closed = { status: "SUCCEEDED", allocationPlan: dead.allocationPlan };
+    const { db, updateMany, findUnique } = store([dead], undefined, [0, 1], closed);
+    expect(await pair(db)).toBe("marked");
+    expect(findUnique).toHaveBeenCalledWith({ where: { id: "row-1" }, select: { status: true, allocationPlan: true } });
+    expect(updateMany).toHaveBeenLastCalledWith({
+      where: { id: "row-1", allocationPlan: { equals: dead.allocationPlan } },
+      data: { allocationPlan: [{ ...(dead.allocationPlan as object[])[0], madeRefundId: "re_s" }] },
+    });
+  });
+
+  it("#4312 F1: a lost write is read again - marked with this refund already is marked; anything else is logged and noted by nobody", async () => {
+    const dead = resendRow("row-1", { dead: true });
+    const slice = (dead.allocationPlan as object[])[0]!;
+    // Another writer marked the slice with this refund.
+    const markedElsewhere = store([dead], undefined, 0, { status: "FAILED", allocationPlan: [{ ...slice, madeRefundId: "re_s" }] });
+    log.error.mockClear();
+    expect(await pair(markedElsewhere.db)).toBe("marked");
+    expect(markedElsewhere.updateMany).toHaveBeenCalledTimes(1);
+    expect(log.error).not.toHaveBeenCalled();
+    // Still dead but re-planned, closed with its slice marked by another refund, or gone: noted by nobody, never "replay".
+    for (const reread of [
+      { status: "FAILED", allocationPlan: [{ ...slice, stripeKeySuffix: "refused2" }] },
+      { status: "SUCCEEDED", allocationPlan: [{ ...slice, madeRefundId: "re_other" }] },
+      null,
+    ]) {
+      const lost = store([dead], undefined, 0, reread);
+      log.error.mockClear();
+      expect(await pair(lost.db)).toBe("ambiguous");
+      expect(lost.updateMany).toHaveBeenCalledTimes(1);
+      expect(log.error).toHaveBeenCalledTimes(1);
+    }
+    // Closed, but the plan moved again before the mark: logged, not retried.
+    expect(await pair(store([dead], undefined, 0, { status: "SUCCEEDED", allocationPlan: dead.allocationPlan }).db)).toBe("ambiguous");
+  });
+
+  it("#4312 F3: a live row's and a dead row's re-sends that could each be it are left to the live row's replay", async () => {
+    const mixed = store([resendRow("row-1"), resendRow("row-2", { dead: true })]);
+    log.warn.mockClear();
+    expect(await pair(mixed.db)).toBe("replay");
+    expect(mixed.updateMany).not.toHaveBeenCalled();
+    expect(log.warn).toHaveBeenCalledWith(expect.objectContaining({ operationIds: ["row-1", "row-2"] }), expect.stringContaining("live row's or a dead row's"));
+    // Live rows alone are not logged.
+    log.warn.mockClear();
+    expect(await pair(store([resendRow("row-1")]).db)).toBe("replay");
+    expect(log.warn).not.toHaveBeenCalled();
+  });
+
+  it("several dead rows' re-sends are not guessed at; a refund not counted is none", async () => {
     const two = store([resendRow("row-1", { dead: true }), resendRow("row-2", { dead: true })]);
     expect(await pair(two.db)).toBe("ambiguous");
     expect(two.updateMany).not.toHaveBeenCalled();
