@@ -22,8 +22,7 @@ import { writeXeroInboundAuditLogs } from "./audit";
 import { resolveMemberIdsForContact } from "./contact";
 import { refreshLinkedSubscriptionsForInvoice, syncLinkedPaymentInvoiceMetadata } from "./payment";
 import { syncGroupSettlementForPaidInvoice, syncInternetBankingPaymentsForPaidInvoice } from "./invoice-paid-effects";
-import { failIfRecountLeftUnsettled } from "./recount-left-unsettled";
-import { notifyXeroSyncError } from "@/lib/xero-error-alert";
+import { alertUnrecountedInvoices, failIfRecountLeftUnsettled, type UnrecountedInvoice } from "./recount-left-unsettled";
 
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -312,6 +311,7 @@ export async function runIncrementalInvoiceReconciliation(options: {
   let succeeded = 0;
   let failed = 0;
   const errorDetails: Array<{ invoiceId: string; error: string }> = [];
+  const unrecounted: UnrecountedInvoice[] = [];
 
   for (const invoiceId of changedInvoiceIds) {
     processed += 1;
@@ -321,13 +321,9 @@ export async function runIncrementalInvoiceReconciliation(options: {
       // #4095 (PR #4437 review, L2): a recount its settle left unwritten. Unlike
       // a stored event, nothing retries this invoice: the membership cursor has
       // already moved past it, and no caller reads `failed`. So a person is
-      // alerted, and the invoice is reported failed.
+      // alerted after the loop, and the invoice is reported failed.
       if ("recountLeftUnsettled" in reconciled && reconciled.recountLeftUnsettled) {
-        await notifyXeroSyncError({
-          errorType: "refund-ledger-divergence",
-          operation: `incremental-invoice-reconciliation:recount:${invoiceId}`,
-          errorMessage: `${reconciled.recountLeftUnsettled} Nothing retries it on its own; check the payment's refunded total against Xero.`,
-        });
+        unrecounted.push({ invoiceId, message: reconciled.recountLeftUnsettled });
       }
       failIfRecountLeftUnsettled(reconciled);
       succeeded += 1;
@@ -339,6 +335,8 @@ export async function runIncrementalInvoiceReconciliation(options: {
       });
     }
   }
+
+  await alertUnrecountedInvoices(unrecounted);
 
   return {
     processed,
