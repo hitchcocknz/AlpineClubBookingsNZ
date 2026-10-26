@@ -301,19 +301,8 @@ export const CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE = {
   occurrenceKey: { startsWith: CARD_REFUND_PAID_ANOTHER_WAY_KEY_PREFIX },
 } as const;
 
-/**
- * #4210 review (C3, `INV-SSOT`): THE COMPLETED PAID-ANOTHER-WAY CLOSE RECORDS OF
- * THESE CARD REFUND ROWS, as a `ManualRefundTask` where clause - the records
- * above (`CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE`) keyed on any of the rows,
- * by every key a close of one can carry (`closeKeysOf`). The one composition
- * every reader of "was this row closed Paid another way" asks.
- */
-export function cardRefundPaidAnotherWayClosesWhere(paymentRecoveryOperationIds: Iterable<string>) {
-  return {
-    ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
-    occurrenceKey: { in: [...paymentRecoveryOperationIds].flatMap(closeKeysOf) },
-  };
-}
+/** #4210 review (C3, `INV-SSOT`): the one where clause for the records above keyed on any of these rows (`closeKeysOf`). */
+export const cardRefundPaidAnotherWayClosesWhere = (operationIds: Iterable<string>) => ({ ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE, occurrenceKey: { in: [...operationIds].flatMap(closeKeysOf) } });
 
 /**
  * #3827 (`INV-PAY-117`): IS THIS TASK AN EDIT REFUND HAND-BACK? It is a
