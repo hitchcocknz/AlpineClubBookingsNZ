@@ -721,20 +721,30 @@ describe("deployment image contracts", () => {
       expect(verify.length).toBeGreaterThan(0);
       expect(verify).not.toContain("npm audit");
       expect(verify).not.toContain("pnpm audit");
-      // The gates that were skipped must all still be in `verify`, and none of
-      // them may have acquired a condition of its own on the way out. #3431
-      // moves the suite itself to independent shard jobs but keeps its
-      // fail-closed bridge as a step in this required job.
+      // The gates that were skipped must all still be reached by `verify`, and
+      // none of them may have acquired a condition of its own on the way out.
+      // #3431 moves the suite itself to independent shard jobs, and #4425 does
+      // the same for lint, typecheck and build; each keeps its fail-closed
+      // bridge as a step in this required job, which names every one of them.
       for (const step of [
-        "run: pnpm run lint",
         "run: pnpm run quality:budget",
         "run: pnpm run db:generate",
-        "run: pnpm run typecheck",
         "run: pnpm exec knip",
-        "run: node scripts/ci/require-test-shards.mjs",
-        "run: pnpm run build",
+        'run: node scripts/ci/require-test-shards.mjs --job Typecheck --job Lint --job "Production build"',
       ]) {
         expect(verify, `verify no longer runs \`${step}\``).toContain(step);
+      }
+      for (const [jobId, step] of [
+        ["typecheck", "run: pnpm run typecheck"],
+        ["lint", "run: pnpm run lint"],
+        ["build", "run: pnpm run build"],
+      ]) {
+        const start = workflow.indexOf(`\n  ${jobId}:\n`);
+        expect(start, `the ${jobId} job is missing`).toBeGreaterThan(-1);
+        const rest = workflow.slice(start + 1).search(/\n {2}[a-z][a-z0-9-]*:\n/);
+        const job = directivesOnly(workflow.slice(start, start + 1 + rest));
+        expect(job, `the ${jobId} job no longer runs \`${step}\``).toContain(step);
+        expect(verify, `verify runs \`${step}\` as well as its own job`).not.toContain(step);
       }
     });
 

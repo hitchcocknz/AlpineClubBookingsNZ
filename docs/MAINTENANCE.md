@@ -344,7 +344,12 @@ safe (`browserslist` above is the standing example).
   protected-branch check (`Image security gate (Trivy CRITICAL)`), so it blocks
   the merge rather than only turning a job red; the HIGH step keeps
   `continue-on-error: true` and the two steps are named "REQUIRED" and
-  "ADVISORY" so the distinction is readable from the checks list.
+  "ADVISORY" so the distinction is readable from the checks list. Since #4425
+  (owner decision, 26 Oct 2026) a pull request builds and scans the image only
+  when it changes dependencies, `patches/`, the Dockerfile, a compose file,
+  `.dockerignore`, `.trivyignore` or the CI workflow; the check still reports,
+  and every push to `main` scans in full, so a newly published CVE surfaces
+  there rather than on an unrelated pull request.
 - Keep a scanner's configuration file honest about what it actually enables. A
   `.gitleaks.toml` without `[extend] useDefault = true` REPLACES the built-in
   rule set instead of adding to it, and this repository shipped exactly that for
@@ -641,8 +646,9 @@ Two consequences worth holding on to.
 
 Trivy scans the built image against a vulnerability database that moves on its
 own. A newly published CRITICAL against the `node:24.15-alpine` base therefore
-turns `Image security gate (Trivy CRITICAL)` red on **every** open pull request,
-including the one that would fix it, with nobody having changed a line. Branch
+turns `Image security gate (Trivy CRITICAL)` red on the next push to `main` and
+on **every** open pull request that rebuilds the image (#4425), including the one
+that would fix it, with nobody having changed a line. Branch
 protection has `enforce_admins` off, so the owner can force a merge through; an
 agent cannot, and must not try. Do this instead, in order:
 
