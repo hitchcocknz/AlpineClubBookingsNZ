@@ -3409,6 +3409,44 @@ describe("payment recovery worker", () => {
       );
     });
 
+    it.each([
+      ["missing change", null, PaymentStatus.SUCCEEDED],
+      ["zero-net change", { priceDiffCents: 0, changeFeeCents: 0 }, PaymentStatus.SUCCEEDED],
+      ["refunded capture", null, PaymentStatus.REFUNDED],
+      ["partly refunded capture", null, PaymentStatus.PARTIALLY_REFUNDED],
+    ] as const)("refuses an unverifiable frozen replay after a capture (%s), on every retry", async (_name, modification, status) => {
+      const payment = paymentWithAsk(7000, PaymentStatus.SUCCEEDED);
+      payment.transactions.push({
+        ...payment.transactions[0]!,
+        id: "txn-a",
+        kind: "ADDITIONAL",
+        stripePaymentIntentId: "pi_a",
+        amountCents: 7000,
+        status,
+      });
+      mockPaymentFindUnique.mockResolvedValue(payment);
+      for (const attempts of [1, 2, MAX_PAYMENT_RECOVERY_ATTEMPTS]) {
+        mockBookingModificationFindUnique.mockResolvedValueOnce(modification);
+        primeQueue(additionalIntentOperation({ amountCents: 10000, attempts }));
+        const result = await processPaymentRecoveryOperations({ limit: 1 });
+        expect(result).toMatchObject({
+          succeeded: 0,
+          retried: attempts < MAX_PAYMENT_RECOVERY_ATTEMPTS ? 1 : 0,
+          failed: attempts < MAX_PAYMENT_RECOVERY_ATTEMPTS ? 0 : 1,
+        });
+      }
+
+      expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+      expect(mockUpsertPaymentIntentTransaction).not.toHaveBeenCalled();
+      expect(mockPaymentTransactionFindMany).not.toHaveBeenCalled();
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(expect.objectContaining({
+        errorMessage: expect.stringContaining("cannot safely replay its frozen amount"),
+      }), expect.anything());
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ lastError: expect.stringContaining("cannot safely replay its frozen amount") }),
+      }));
+    });
+
     it("re-derives a smaller ask when the superseded one was paid in the meantime", async () => {
       primeQueue(additionalIntentOperation({ amountCents: 10000 }));
       // $70 was outstanding when edit 2 sized its $100 ask; the member has since

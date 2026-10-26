@@ -2945,7 +2945,8 @@ async function processCreateAdditionalPaymentIntentOperation(
    * components, already read above the mint for #3181's reasons; with no
    * modification to read from - or a modification whose own net is not positive,
    * which an ordinary edit's row should never be - there is nothing better than
-   * the frozen figure, and the frozen figure is what runs.
+   * the frozen figure. It runs only with no additional capture on the ledger;
+   * otherwise its carried part is unknown and the replay refuses below.
    *
    * The `EDIT_FINANCIAL_REVIEW` fork returns far above this, so the components
    * read here are always the ordinary edit's own. A review charge's debt is the
@@ -2957,13 +2958,26 @@ async function processCreateAdditionalPaymentIntentOperation(
   // this edit's own, and frozen at the edit - the ask it replaced was retired in
   // that edit's transaction, so there is nothing on the Payment to re-derive it
   // from.
+  // #4442: a frozen figure cannot separate this edit's debt from an earlier
+  // ask's balance. After a capture, accepting a fresh zero-balance snapshot
+  // would let the next retry charge that balance again. Refuse every retry
+  // rather than guess a subtraction; normal recovery exhaustion alerts officers.
+  // Read the ledger, not just the current mirror: a later ask can hide a capture.
+  if (replay.kind === "frozen" && payment.transactions.some(
+    (row) => row.kind === PaymentTransactionKind.ADDITIONAL && isCapturedTransactionStatus(row.status),
+  )) {
+    throw new Error(
+      "Additional intent recovery cannot safely replay its frozen amount after an additional capture; reconcile the booking's payments and collect only the unpaid balance",
+    );
+  }
+
   if (modificationToBill && replay.kind === "frozen") {
     // Belt and braces, and deliberately NOT a completion. An ordinary edit only
     // reaches this processor because its own net was positive, so a zero net
     // here means the modification row and the frozen figure disagree - and
     // completing on that reading would retire a real debt for an arithmetic
-    // reason nobody has checked. Fall back to exactly the pre-fix behaviour,
-    // which never loses money, and say so.
+    // reason nobody has checked. With no additional capture, keep the frozen
+    // amount and say so; after a capture the refusal above prevents overcharging.
     logger.warn(
       {
         operationId: operation.id,

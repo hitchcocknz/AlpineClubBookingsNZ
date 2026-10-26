@@ -45,7 +45,7 @@
  *    committed - from inside B's mint, while B's queue waits on the global key,
  *    and inside the recovery runner's replay - withholds B, and the replay
  *    asks for B's own change alone: A's balance is never asked for twice;
- *    and a frozen replay (no figure to re-derive) is refused in the same window.
+ *    and a frozen replay (no figure to re-derive) stays refused on its next retry.
  *
  * M1, F2 and F3 prove the take-back for a declined ask no live cancel row owns.
  * Since #4422 a supersede cancels a declined ask, so they reach that state the
@@ -733,6 +733,14 @@ function deferred() {
       expect(await prisma.paymentTransaction.findUnique({ where: { stripePaymentIntentId: refused } })).toBeNull();
       expect(await captured(a)).toBe(A_CENTS);
       expect(await prisma.paymentRecoveryOperation.count({ where: { paymentIntentId: a, type: "CANCEL_PAYMENT_INTENT" } })).toBe(0);
+
+      // A second attempt must not accept the old A+B amount just because its
+      // new balance snapshot is now zero. No provenance can separate A from B.
+      const minted = stripe.created.length;
+      expect(await runAskRecovery()).toBe("failed");
+      expect(stripe.created).toHaveLength(minted);
+      expect(await prisma.paymentTransaction.findUnique({ where: { stripePaymentIntentId: refused } })).toBeNull();
+      expect(await captured(a)).toBe(A_CENTS);
     });
 
     it("A -> B -> B captured: both invoices go out, each for its own amount, and their payments sum to the capture", async () => {

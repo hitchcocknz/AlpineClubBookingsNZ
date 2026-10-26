@@ -3116,7 +3116,11 @@ cancel row (`lateCaptureRefundState`) and leaves the invoice unsent, even where
 the webhook's unlocked cancel-row check ran before the queue committed. Folded
 waiting re-issues are not that live balance and stay owed. A frozen replay (no
 figure it can re-derive) is fenced the same way on the balance its own read
-saw; that closes the window, but its retry still asks for the frozen figure.
+saw. If an additional capture is already on the ledger, a frozen replay refuses
+before minting on every attempt: its amount cannot distinguish the paid balance
+from this change's own debt. The existing retry exhaustion alerts an officer to
+reconcile the payments and collect only what remains owed. This includes fully
+or partly refunded captures, whose effect on the frozen debt is also unknown.
 
 The runner's re-stamp after the Stripe cancels writes nothing and fences only a
 reduction, which orders on the `Payment` row, so it takes that row alone, not
