@@ -16,6 +16,7 @@ const ROOT = mkdtempSync(path.join(tmpdir(), "deploy-env-value-"));
 afterAll(() => rmSync(ROOT, { recursive: true, force: true }));
 const HARNESS = path.join(ROOT, "lookup.sh");
 writeFileSync(HARNESS, `set -Eeuo pipefail
+${shellFunctionSource(readRepoFile(DEPLOY_SCRIPT), "compose_service_environment_entries")}
 ${shellFunctionSource(readRepoFile(DEPLOY_SCRIPT), "compose_service_environment_value")}
 rendered="$(cat rendered.yml)"
 # A conditional call, as the script's callers make it: a failed pipeline must
