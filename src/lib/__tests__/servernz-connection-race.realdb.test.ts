@@ -40,10 +40,11 @@ function latch() {
     const start = process.hrtime.bigint();
     while (true) {
       // An observation, not a row-lock read; there is no Prisma model for this view.
+      // Only this suite's settings-row statements count, not any waiter in the database.
       const rows = await observer.$queryRaw<Array<{ count: number }>>`
         SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
         WHERE datname = current_database() AND pid <> pg_backend_pid()
-          AND wait_event_type = 'Lock'
+          AND wait_event_type = 'Lock' AND query ILIKE '%"ServerNzSettings"%'
       `;
       if ((rows[0]?.count ?? 0) > 0) return;
       if (realElapsedMs(start) > 10_000) throw new Error("The competing connection never queued on the settings fence.");
@@ -51,13 +52,24 @@ function latch() {
     }
   }
 
+  /**
+   * The settings route's own write (`saveServerNzConnectionSettings`), not a
+   * copy of it. `pause` holds the transaction open after the address write and
+   * before the key removal, the window #4436 closed.
+   */
   async function moveAddress(pause?: ReturnType<typeof latch>, entered?: ReturnType<typeof latch>) {
-    return config.withServerNzConnectionTransaction(async (tx) => {
-      await settings.updateServerNzSettings({ baseUrl: NEW_URL, updatedByMemberId: ACTOR_ID }, tx);
+    const originalUpdate = settings.updateServerNzSettings;
+    const update = vi.spyOn(settings, "updateServerNzSettings").mockImplementationOnce(async (input, db) => {
+      const value = await originalUpdate(input, db);
       entered?.release();
       if (pause) await pause.promise;
-      await config.clearServerNzApiKey({ kind: "admin", memberId: ACTOR_ID }, tx);
+      return value;
     });
+    try {
+      return await config.saveServerNzConnectionSettings({ baseUrl: NEW_URL }, ACTOR_ID);
+    } finally {
+      update.mockRestore();
+    }
   }
 
   beforeAll(async () => {
@@ -116,7 +128,7 @@ function latch() {
       return value;
     });
     const sync = api.pullOtherLodges();
-    let move: Promise<void> | undefined;
+    let move: Promise<unknown> | undefined;
     try {
       await Promise.race([readAddress.promise, sync.then(() => { throw new Error("Sync escaped the read barrier."); })]);
       move = moveAddress();
@@ -137,7 +149,7 @@ function latch() {
     }
   });
 
-  it("serialises initial setup when the singleton is absent", async () => {
+  it("rejects a sync with no connection, whichever order it runs against initial setup", async () => {
     await prisma.serverNzSettings.delete({ where: { id: "default" } });
     const [move, sync] = await Promise.allSettled([moveAddress(), api.pullOtherLodges()]);
     expect(move.status).toBe("fulfilled");

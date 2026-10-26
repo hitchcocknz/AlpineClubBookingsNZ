@@ -118,7 +118,11 @@ describe("ServerNZ credential wiring", () => {
     // `updatedByUserId`, so an admin action could reach the store attributed
     // to nobody and store the same NULL a background writer stores.
     const actor = { kind: "admin", memberId: "member-1" } as const;
-    await setServerNzApiKey("acs_new", actor);
+    const request = { id: "req-1", ipAddress: "1.2.3.4", userAgent: "test" };
+    const saved = { provider: "servernz", key: "api_key", updatedAt: new Date() };
+    mocks.setIntegrationCredential.mockResolvedValueOnce(saved);
+    // The credentials route's result is the store's own (#4436).
+    await expect(setServerNzApiKey("acs_new", actor, request)).resolves.toBe(saved);
     expect(mocks.setIntegrationCredential).toHaveBeenCalledWith({
       tx: mocks.tx,
       provider: "servernz",
@@ -126,9 +130,13 @@ describe("ServerNZ credential wiring", () => {
       value: "acs_new",
       actor,
       expect: { expect: "any" },
+      request,
     });
+    expect(mocks.lockServerNzSettings).toHaveBeenCalledWith(mocks.tx);
+    expect(mocks.lockServerNzSettings.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.setIntegrationCredential.mock.invocationCallOrder[0]);
 
-    await clearServerNzApiKey(actor);
+    await clearServerNzApiKey(actor, mocks.tx as never);
     expect(mocks.deleteIntegrationCredential).toHaveBeenCalledWith({
       tx: mocks.tx,
       provider: "servernz",
@@ -140,15 +148,18 @@ describe("ServerNZ credential wiring", () => {
 
   it("forgets connection answers on both replacement and disconnect (#4436)", async () => {
     // The list was the server's answer for THAT key; the next key may own
-    // different lodges. (The settings route routes a server-address change
-    // through this same helper, so it is covered too.)
+    // different lodges. (The settings route's address move removes the key
+    // through `clearServerNzApiKey`, so it is covered too.)
     const actor = { kind: "admin", memberId: "member-1" } as const;
     await setServerNzApiKey("acs_new", actor);
     expect(mocks.forgetServerConnectionAnswers).toHaveBeenCalledWith(mocks.tx);
-    await clearServerNzApiKey(actor);
+    expect(mocks.setIntegrationCredential.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.forgetServerConnectionAnswers.mock.invocationCallOrder[0]);
+    await clearServerNzApiKey(actor, mocks.tx as never);
     // #49: the server's last reported version was that connection's answer
     // too, and both are forgotten in the one write.
     expect(mocks.forgetServerConnectionAnswers).toHaveBeenCalledTimes(2);
+    expect(mocks.forgetServerConnectionAnswers).toHaveBeenLastCalledWith(mocks.tx);
   });
 });
 

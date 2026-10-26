@@ -14,6 +14,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 import {
   SERVERNZ_SETTINGS_ID,
   clearOtherLodgesOwnedNames,
@@ -183,7 +184,7 @@ describe("the server's reported API version (#49)", () => {
   });
 
   it("forgets the owned list AND the version in ONE write when the connection ends", async () => {
-    await forgetServerConnectionAnswers();
+    await forgetServerConnectionAnswers(prisma);
     expect(mocks.upsert).toHaveBeenCalledTimes(1);
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.where).toEqual({ id: SERVERNZ_SETTINGS_ID });

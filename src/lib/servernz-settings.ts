@@ -203,12 +203,16 @@ export function validateCentralServerBaseUrl(value: string): BaseUrlValidation {
   return { ok: true, value: normalizeBaseUrl(parsed.toString()) ?? trimmed };
 }
 
-/** Update the connection settings (base URL and/or the per-item enable flag). */
+/**
+ * Update the connection settings (base URL and/or the per-item enable flag).
+ * `db` is REQUIRED (#4436): the one caller is `saveServerNzConnectionSettings`,
+ * whose fenced transaction moves the address and removes its key together.
+ */
 export async function updateServerNzSettings(input: {
   baseUrl?: string | null;
   otherLodgesEnabled?: boolean;
   updatedByMemberId: string;
-}, db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma): Promise<ServerNzSettingsValues> {
+}, db: Pick<Prisma.TransactionClient, "serverNzSettings">): Promise<ServerNzSettingsValues> {
   const data: {
     baseUrl?: string | null;
     otherLodgesEnabled?: boolean;
@@ -364,10 +368,12 @@ export async function clearServerVersionCheck(): Promise<void> {
  * because both answers belonged to it. One upsert rather than the two
  * single-purpose writers above in sequence, so a crash between them cannot
  * leave the row half-forgotten: a stale version pausing a new connection, or a
- * stale owned list editable under a new key.
+ * stale owned list editable under a new key. `db` is REQUIRED (#4436): the
+ * connection change it belongs to runs in `withServerNzConnectionTransaction`,
+ * so the forget commits with the key or address write, never on its own.
  */
 export async function forgetServerConnectionAnswers(
-  db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma,
+  db: Pick<Prisma.TransactionClient, "serverNzSettings">,
 ): Promise<void> {
   await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },

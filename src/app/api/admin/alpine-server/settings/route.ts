@@ -7,12 +7,8 @@ import { parseJsonRequestBody } from "@/lib/api-json";
 import { requireAdmin } from "@/lib/session-guards";
 import { isFullAdmin } from "@/lib/access-roles";
 import { createAuditLog } from "@/lib/audit";
-import {
-  loadServerNzSettings,
-  updateServerNzSettings,
-  validateCentralServerBaseUrl,
-} from "@/lib/servernz-settings";
-import { clearServerNzApiKey, withServerNzConnectionTransaction } from "@/lib/servernz-config";
+import { validateCentralServerBaseUrl } from "@/lib/servernz-settings";
+import { saveServerNzConnectionSettings } from "@/lib/servernz-config";
 
 // POST /api/admin/alpine-server/settings — save the NON-secret ServerNZ
 // connection settings (base URL and per-shared-item enable flags). The API key
@@ -81,20 +77,14 @@ export async function POST(request: Request) {
     parsed.data.baseUrl = check.value;
   }
 
-  const { settings, apiKeyCleared } = await withServerNzConnectionTransaction(async (tx) => {
-    const before = await loadServerNzSettings(tx);
-    const settings = await updateServerNzSettings({
+  // One fenced transaction: a moved address takes the old key with it (#4436).
+  const { settings, apiKeyCleared } = await saveServerNzConnectionSettings(
+    {
       baseUrl: parsed.data.baseUrl,
       otherLodgesEnabled: parsed.data.otherLodgesEnabled,
-      updatedByMemberId: guard.session.user.id,
-    }, tx);
-    // A destination and its credential must never become visible separately.
-    const apiKeyCleared = changingBaseUrl && before.baseUrl !== settings.baseUrl;
-    if (apiKeyCleared) {
-      await clearServerNzApiKey({ kind: "admin", memberId: guard.session.user.id }, tx);
-    }
-    return { settings, apiKeyCleared };
-  });
+    },
+    guard.session.user.id,
+  );
 
   await createAuditLog({
     action: "alpine_server.settings.update",

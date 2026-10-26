@@ -28,16 +28,21 @@ import {
   setIntegrationCredentialInTransaction,
   deleteIntegrationCredentialInTransaction,
   withCredentialTransaction,
+  type SetCredentialResult,
 } from "@/lib/integration-credentials";
 import type {
   CredentialActor,
+  CredentialRequestContext,
   CredentialVersion,
 } from "@/lib/integration-credential-actor";
 import {
   forgetServerConnectionAnswers,
+  loadServerNzSettings,
   lockServerNzSettings,
+  updateServerNzSettings,
   SERVERNZ_SETTINGS_ID,
   SERVERNZ_TRANSACTION_OPTIONS,
+  type ServerNzSettingsValues,
 } from "@/lib/servernz-settings";
 
 export const SERVERNZ_PROVIDER = "servernz";
@@ -92,18 +97,23 @@ export async function readServerNzCredentialVersion(
 }
 
 /**
- * Store (or replace) the ServerNZ API key. Encrypted at rest.
+ * Store (or replace) the ServerNZ API key. Encrypted at rest. The one
+ * definition of key replacement (#4436): the credentials route calls it. The
+ * new key and the reset of the previous connection's answers commit together
+ * under the connection fence, so no request pairs the new key with the old
+ * connection's owned-lodge list or API version.
  *
  * The actor is the caller's to supply and is REQUIRED (#2723) — this used to
  * take an optional `updatedByUserId`, which let an admin action reach the store
- * attributed to nobody.
+ * attributed to nobody. `request` keeps the audit row's id, IP and user agent.
  */
 export async function setServerNzApiKey(
   value: string,
   actor: CredentialActor,
-): Promise<void> {
-  await withServerNzConnectionTransaction(async (tx) => {
-    await setIntegrationCredentialInTransaction({
+  request?: CredentialRequestContext,
+): Promise<SetCredentialResult> {
+  return withServerNzConnectionTransaction(async (tx) => {
+    const saved = await setIntegrationCredentialInTransaction({
       tx,
       provider: SERVERNZ_PROVIDER,
       key: SERVERNZ_CREDENTIAL_KEYS.apiKey,
@@ -112,8 +122,10 @@ export async function setServerNzApiKey(
       // The admin form posts the key it wants stored outright; there is no
       // read-modify-write here to be stale against.
       expect: { expect: "any" },
+      request,
     });
     await forgetServerConnectionAnswers(tx);
+    return saved;
   });
 }
 
@@ -124,14 +136,15 @@ export async function setServerNzApiKey(
  * caller here — may own different lodges. The panel is read-only until the next
  * download records a fresh list. The server's last reported API version goes
  * for the same reason (#49): it was that server's answer. Both in ONE write.
+ *
+ * `tx` is REQUIRED and must be a `withServerNzConnectionTransaction` client
+ * (#4436): a removal outside the fence could let a request pair a moved
+ * address with the key being removed.
  */
 export async function clearServerNzApiKey(
   actor: CredentialActor,
-  tx?: Prisma.TransactionClient,
+  tx: Prisma.TransactionClient,
 ): Promise<void> {
-  if (!tx) {
-    return withServerNzConnectionTransaction((client) => clearServerNzApiKey(actor, client));
-  }
   await deleteIntegrationCredentialInTransaction({
     tx,
     provider: SERVERNZ_PROVIDER,
@@ -140,6 +153,35 @@ export async function clearServerNzApiKey(
     expect: { expect: "any" },
   });
   await forgetServerConnectionAnswers(tx);
+}
+
+/**
+ * Save the non-secret connection settings, moving the server address and its
+ * key as ONE unit (#4436). The address is where requests send the key, so a
+ * changed address removes the stored key and forgets the old server's answers
+ * in the same fenced transaction: no request can read the new address with the
+ * old key. An unchanged address (or a flag-only save) keeps both. The caller
+ * has already checked who may move the address and validated it; no HTTP and
+ * no audit row here — the settings route audits after commit.
+ */
+export async function saveServerNzConnectionSettings(
+  input: { baseUrl?: string | null; otherLodgesEnabled?: boolean },
+  memberId: string,
+): Promise<{ settings: ServerNzSettingsValues; apiKeyCleared: boolean }> {
+  return withServerNzConnectionTransaction(async (tx) => {
+    const before = await loadServerNzSettings(tx);
+    const settings = await updateServerNzSettings({
+      baseUrl: input.baseUrl,
+      otherLodgesEnabled: input.otherLodgesEnabled,
+      updatedByMemberId: memberId,
+    }, tx);
+    // A destination and its credential must never become visible separately.
+    const apiKeyCleared = input.baseUrl !== undefined && before.baseUrl !== settings.baseUrl;
+    if (apiKeyCleared) {
+      await clearServerNzApiKey({ kind: "admin", memberId }, tx);
+    }
+    return { settings, apiKeyCleared };
+  });
 }
 
 /**

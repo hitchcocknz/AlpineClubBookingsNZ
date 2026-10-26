@@ -238,7 +238,8 @@ let observerClient: PrismaClient;
         ]);
         const replacement = await storeKey("race-4366-iv-b");
         expect(replacement).not.toBe(sentOn);
-        forget = forgetServerConnectionAnswers();
+        // A bare forget on the global client: it still queues on the recorder's row.
+        forget = forgetServerConnectionAnswers(prisma);
 
         const pollStart = process.hrtime.bigint();
         while ((await lockWaiters()) < 1) {

@@ -47,11 +47,10 @@ import {
   DIAGNOSTICS_WRITABLE_CREDENTIAL_KEYS,
 } from "@/lib/ai-diagnostics-config";
 import {
-  withServerNzConnectionTransaction,
+  setServerNzApiKey,
   SERVERNZ_PROVIDER,
   SERVERNZ_WRITABLE_CREDENTIAL_KEYS,
 } from "@/lib/servernz-config";
-import { forgetServerConnectionAnswers } from "@/lib/servernz-settings";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
 
@@ -264,20 +263,14 @@ export async function POST(request: Request) {
     // The request context travels in so the row keeps its id, IP and user agent.
     // The form posts the value it wants stored; there is no read-modify-write
     // here for a second Full Admin to make stale, so both writes expect `any`.
+    // ServerNZ's only writable key is the API key; its helper saves it and
+    // resets the previous connection's answers under the connection fence.
     result = provider === SERVERNZ_PROVIDER
-      ? await withServerNzConnectionTransaction(async (tx) => {
-          const saved = await setIntegrationCredentialInTransaction({
-            tx,
-            provider,
-            key,
-            value,
-            actor: { kind: "admin", memberId: guard.memberId },
-            expect: { expect: "any" },
-            request: requestContext,
-          });
-          await forgetServerConnectionAnswers(tx);
-          return saved;
-        })
+      ? await setServerNzApiKey(
+          value,
+          { kind: "admin", memberId: guard.memberId },
+          requestContext,
+        )
       : credentialWriteResetsXeroTokens(provider, key)
       ? await withXeroVerifyReset(
           {

@@ -141,14 +141,12 @@ const CREDENTIAL_WRITE_SITES: Record<string, string> = {
     "setIntegrationCredential (forwarded) actor / (forwarded) writeExpectation",
   // #3454: a Xero client id or secret is written INSIDE the verify-reset's
   // transaction, so the token destruction it causes commits with it; every
-  // other credential takes the ordinary writer, except ServerNZ below (#4436).
+  // other credential takes the ordinary writer, except ServerNZ, whose key
+  // goes through `setServerNzApiKey` under the connection fence (#4436).
   "src/app/api/admin/integrations/credentials/route.ts::POST#0":
     "setIntegrationCredentialInTransaction admin / any",
   "src/app/api/admin/integrations/credentials/route.ts::POST#1":
     "setIntegrationCredential admin / any",
-  // #4436: ServerNZ key save and answer reset share the settings fence.
-  "src/app/api/admin/integrations/credentials/route.ts::POST.saved#0":
-    "setIntegrationCredentialInTransaction admin / any",
   "src/lib/club-post-mirror.ts::ensurePushRegistration#0":
     "setIntegrationCredential system / any",
   "src/lib/google-config.ts::clearGoogleVerified#0":
@@ -176,7 +174,7 @@ const CREDENTIAL_WRITE_SITES: Record<string, string> = {
     "setIntegrationCredential (forwarded) params.actor / (forwarded) params.expect",
   "src/lib/servernz-config.ts::clearServerNzApiKey#0":
     "deleteIntegrationCredentialInTransaction (forwarded) actor / any",
-  "src/lib/servernz-config.ts::setServerNzApiKey#0":
+  "src/lib/servernz-config.ts::setServerNzApiKey.saved#0":
     "setIntegrationCredentialInTransaction (forwarded) actor / any",
   "src/lib/stripe-config.ts::clearStripeWebhookVerified#0":
     "deleteIntegrationCredential (forwarded) actor / any",
@@ -228,7 +226,7 @@ const ACTOR_FORWARDED_SITES: Record<string, string> = {
     "the actor and the expectation are both this helper's own required parameters, supplied by the admin route that holds the acting member and the version the screen was shown",
   "src/lib/servernz-config.ts::clearServerNzApiKey#0":
     "the actor is this helper's own required parameter, supplied by its caller",
-  "src/lib/servernz-config.ts::setServerNzApiKey#0":
+  "src/lib/servernz-config.ts::setServerNzApiKey.saved#0":
     "the actor is this helper's own required parameter, supplied by its caller",
   "src/lib/stripe-config.ts::clearStripeWebhookVerified#0":
     "the actor is this helper's own required parameter: the admin credential route supplies the officer, and recordStripeWebhookVerified supplies its system actor when taking back a marker that raced a signing-secret swap",
