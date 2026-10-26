@@ -318,7 +318,7 @@ export async function decideInternetBankingReceiptFigure(
   /**
    * The invoice-correction notes applied to the invoice, one per note with its
    * applied amounts summed (a note allocated twice counts whole), for the
-   * recount after a kept settle (#4095).
+   * recount after a kept settle (#4095); none when several payments match it.
    */
   appliedCorrectionNotes: AppliedCreditNote[];
 }> {
@@ -356,10 +356,10 @@ export async function decideInternetBankingReceiptFigure(
       correctionCentsByNoteId.set(note.id, (correctionCentsByNoteId.get(note.id) ?? 0) + note.appliedCents);
     }
   }
-  const appliedCorrectionNotes: AppliedCreditNote[] = [...correctionCentsByNoteId].map(([id, appliedCents]) => ({
-    id,
-    appliedCents,
-  }));
+  // On an invoice matched to several payments no payment's share of a
+  // correction is known, as the note's own sync finds (one payment per invoice).
+  const appliedCorrectionNotes: AppliedCreditNote[] =
+    input.matchedPayments === 1 ? [...correctionCentsByNoteId].map(([id, appliedCents]) => ({ id, appliedCents })) : [];
 
   const plan = planInternetBankingCashSettlement({
     refundedAmountCents: payment.refundedAmountCents,

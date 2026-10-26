@@ -149,6 +149,7 @@ describe("a keep counts an applied correction already synced in its own transact
     noteLinks?: unknown[];
     allocationLinks?: unknown[];
     cash?: { knownCents: number; complete: boolean };
+    matchedPayments?: number;
   }) {
     mocks.readModificationNoteCash.mockResolvedValue(new Map([["cn-correction", "correction"]]));
     const linkFindMany = vi.fn(async ({ where }: { where: { role: string } }) =>
@@ -164,7 +165,7 @@ describe("a keep counts an applied correction already synced in its own transact
       payment: { id: PAYMENT_ID, amountCents: 30_000, refundedAmountCents: input.refundedAmountCents ?? 0 },
       // Xero's amount paid unquantifiable: the settle keeps the stored $300.
       cash: input.cash ?? { knownCents: 20_000, complete: false },
-      matchedPayments: 1,
+      matchedPayments: input.matchedPayments ?? 1,
       secondInstrument: false,
       invoice: { totalCents: 30_000, appliedCreditNotes: [{ id: "cn-correction", appliedCents: 10_000 }] },
     });
@@ -212,6 +213,12 @@ describe("a keep counts an applied correction already synced in its own transact
   it("MUTATION: never against a receipt that would not hold the stored figure", async () => {
     const { decided, linkFindMany } = decide({ rows: [pendingReceipt({ reason: "xero_part_payment_recognised_at_cancel" })] });
     await expect(decided).resolves.toMatchObject({ plan: { kind: "keep" }, paymentColumns: null });
+    expect(linkFindMany).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: never on an invoice matched to several payments, whose share of the correction is unknown; nor is it recounted after", async () => {
+    const { decided, linkFindMany } = decide({ matchedPayments: 2 });
+    await expect(decided).resolves.toMatchObject({ plan: { kind: "keep" }, paymentColumns: null, appliedCorrectionNotes: [] });
     expect(linkFindMany).not.toHaveBeenCalled();
   });
 
