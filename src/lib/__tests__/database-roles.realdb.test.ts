@@ -1,0 +1,637 @@
+/**
+ * Real-PostgreSQL proof for the least-privilege database roles (#4453; owner
+ * decision 27 Oct 2026).
+ *
+ * Every claim the issue makes is a claim about PostgreSQL's own privilege checks
+ * — "the application role cannot UPDATE a ledger line", "it cannot run a
+ * superuser-only statement", "migrations still run", "pg_dump still works" — so
+ * only a real server can prove them. The roles are created by the SHIPPED
+ * statements (`buildDatabaseRolesSql`, and the operator CLI for the re-runs),
+ * never by a fixture that re-declares its own grants.
+ *
+ * Three scratch databases, created and dropped here:
+ *  - FRESH: provisioned while empty, then `prisma migrate deploy` runs as the
+ *    MIGRATION role — every migration in the repository, with no superuser —
+ *    and is provisioned again once the tables exist.
+ *  - UPGRADE: the shape of an existing deployment — every object owned by the
+ *    superuser, plus an AI Diagnostics role (ADR-007) — which the CLI then
+ *    provisions. Every proof about the application and retention roles runs here.
+ *  - RESTORE: a `pg_dump` taken AS THE APPLICATION ROLE (the nightly backup's
+ *    credential), restored by the superuser.
+ *
+ * ROLES ARE CLUSTER-GLOBAL, so every role and database carries a per-run
+ * `tac_test_4453_<random>` prefix and is dropped in `afterAll`.
+ *
+ * Off by default. Runs only with `RUN_CONCURRENCY_RACE_TESTS=1` and the guarded
+ * loopback `CONCURRENCY_RACE_DATABASE_URL` (`assertSafeRaceDbUrl`); it needs the
+ * superuser that URL carries, `pg_dump` and `psql` on PATH, and the repository's
+ * Prisma CLI. CI's `realdb-all` job runs it (`scripts/ci/realdb-files.mjs`).
+ *
+ *   RUN_CONCURRENCY_RACE_TESTS=1 \
+ *   CONCURRENCY_RACE_DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:55442/concurrency_race_1881 \
+ *   pnpm exec vitest run src/lib/__tests__/database-roles.realdb.test.ts
+ */
+import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import path from "node:path";
+
+import type { PrismaClient } from "@prisma/client";
+import { Client } from "pg";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+
+import { FROZEN_TEST_CLOCK_BASE_ISO } from "./helpers/clock";
+import { assertSafeRaceDbUrl } from "./support/race-db-url";
+import { buildDatabaseRolesSql } from "@/lib/database-roles";
+import { buildAiDiagnosticsRoleSql } from "@/lib/diagnostics/tools/provision-role";
+
+const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
+const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
+const REPO_ROOT = process.cwd();
+const INSUFFICIENT_PRIVILEGE = "42501";
+
+const PREFIX = `tac_test_4453_${randomBytes(3).toString("hex")}`;
+const ROLES = {
+  migrator: `${PREFIX}_migrator`,
+  app: `${PREFIX}_app`,
+  auditRetention: `${PREFIX}_retention`,
+  diagnostics: `${PREFIX}_diag`,
+} as const;
+// Test-only secrets, long enough for the CLI and URL-safe.
+const PASSWORDS = {
+  migrator: "test-4453-migrator-password-not-a-secret",
+  app: "test-4453-application-password-not-a-secret",
+  auditRetention: "test-4453-retention-password-not-a-secret",
+  diagnostics: "test-4453-diagnostics-password-not-a-secret",
+} as const;
+const DATABASES = {
+  fresh: `${PREFIX}_fresh`,
+  upgrade: `${PREFIX}_upgrade`,
+  restore: `${PREFIX}_restore`,
+} as const;
+
+type RoleKey = keyof typeof ROLES;
+
+function urlFor(database: string, role?: RoleKey): string {
+  const url = new URL(RACE_DB_URL);
+  url.pathname = `/${database}`;
+  url.search = "";
+  if (role) {
+    url.username = ROLES[role];
+    url.password = PASSWORDS[role];
+  }
+  return url.toString();
+}
+
+async function withClient<T>(url: string, run: (client: Client) => Promise<T>): Promise<T> {
+  const client = new Client({ connectionString: url });
+  await client.connect();
+  try {
+    return await run(client);
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+/** Runs the shipped statement list in one transaction, as the CLI does. */
+async function provisionWithBuilder(database: string): Promise<void> {
+  const statements = buildDatabaseRolesSql({
+    databaseName: database,
+    migrator: { roleName: ROLES.migrator, password: PASSWORDS.migrator },
+    app: { roleName: ROLES.app, password: PASSWORDS.app },
+    auditRetention: { roleName: ROLES.auditRetention, password: PASSWORDS.auditRetention },
+  });
+  await withClient(urlFor(database), async (client) => {
+    await client.query("BEGIN");
+    try {
+      for (const statement of statements) await client.query(statement);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    }
+  });
+}
+
+/** The operator CLI, `pnpm run db:provision-roles --apply`, exactly as shipped. */
+function provisionWithCli(database: string) {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    DB_ROLES_PROVISION_DATABASE_URL: urlFor(database),
+    MIGRATION_DB_USER: ROLES.migrator,
+    APP_DB_USER: ROLES.app,
+    AUDIT_RETENTION_DB_USER: ROLES.auditRetention,
+    MIGRATION_DB_PASSWORD: PASSWORDS.migrator,
+    APP_DB_PASSWORD: PASSWORDS.app,
+    AUDIT_RETENTION_DB_PASSWORD: PASSWORDS.auditRetention,
+    AI_DIAGNOSTICS_DB_ROLE: ROLES.diagnostics,
+  };
+  return spawnSync(
+    path.join(REPO_ROOT, "node_modules/.bin/tsx"),
+    ["scripts/provision-database-roles.ts", "--apply"],
+    { cwd: REPO_ROOT, env, encoding: "utf8", timeout: 120_000 },
+  );
+}
+
+function runTool(command: string, args: string[], input?: string) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    input,
+    maxBuffer: 512 * 1024 * 1024,
+    timeout: 240_000,
+  });
+  if (result.error && (result.error as NodeJS.ErrnoException).code === "ENOENT") {
+    throw new Error(`${command} is not on PATH; this suite needs the PostgreSQL client tools.`);
+  }
+  return result;
+}
+
+/** SQLSTATE of a refused statement, or "ok" when PostgreSQL ran it. */
+async function sqlstate(client: Client, sql: string, values: unknown[] = []): Promise<string> {
+  await client.query("SAVEPOINT probe");
+  try {
+    await client.query(sql, values);
+    await client.query("RELEASE SAVEPOINT probe");
+    return "ok";
+  } catch (error) {
+    await client.query("ROLLBACK TO SAVEPOINT probe");
+    return String((error as { code?: string }).code ?? "unknown");
+  }
+}
+
+/** Every owner, ACL and default ACL in the schema, plus the roles' own shape. */
+async function privilegeSnapshot(database: string, { includeDatabaseAcl = true } = {}) {
+  return withClient(urlFor(database), async (client) => {
+    // A NULL ACL means "the owner's default"; a REVOKE materialises that default
+    // explicitly, and pg_dump then omits it again, so both read as acldefault.
+    const sortedAcl = (column: string, fallback?: string) =>
+      `(SELECT string_agg(x::text, ',' ORDER BY x::text) FROM unnest(${fallback ? `coalesce(${column}, ${fallback})` : column}) x)`;
+    const { rows } = await client.query(`
+      SELECT json_build_object(
+        'relations', (SELECT json_agg(json_build_array(c.relname, c.relkind, pg_get_userbyid(c.relowner), ${sortedAcl("c.relacl", "acldefault((CASE WHEN c.relkind = 'S' THEN 's' ELSE 'r' END)::\"char\", c.relowner)")}) ORDER BY c.relname)
+          FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')),
+        'columns', (SELECT json_agg(json_build_array(c.relname, a.attname, ${sortedAcl("a.attacl")}) ORDER BY c.relname, a.attname)
+          FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND a.attacl IS NOT NULL),
+        'types', (SELECT json_agg(json_build_array(t.typname, pg_get_userbyid(t.typowner)) ORDER BY t.typname)
+          FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace WHERE n.nspname = 'public'),
+        'routines', (SELECT json_agg(json_build_array(p.oid::regprocedure::text, pg_get_userbyid(p.proowner), ${sortedAcl("p.proacl", "acldefault('f'::\"char\", p.proowner)")}) ORDER BY p.oid::regprocedure::text)
+          FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public'),
+        'defaults', (SELECT json_agg(json_build_array(pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype, ${sortedAcl("d.defaclacl")}) ORDER BY pg_get_userbyid(d.defaclrole), n.nspname, d.defaclobjtype)
+          FROM pg_default_acl d LEFT JOIN pg_namespace n ON n.oid = d.defaclnamespace),
+        'schema', (SELECT ${sortedAcl("nspacl", "acldefault('n'::\"char\", nspowner)")} FROM pg_namespace WHERE nspname = 'public'),
+        'database', ${includeDatabaseAcl ? `(SELECT ${sortedAcl("datacl")} FROM pg_database WHERE datname = current_database())` : "null"},
+        'roles', (SELECT json_agg(json_build_array(r.rolname, r.rolsuper, r.rolinherit, r.rolcreaterole, r.rolcreatedb, r.rolcanlogin, r.rolreplication, r.rolbypassrls) ORDER BY r.rolname)
+          FROM pg_roles r WHERE r.rolname LIKE $1),
+        'memberships', (SELECT json_agg(json_build_array(g.rolname, m.rolname) ORDER BY g.rolname, m.rolname)
+          FROM pg_auth_members am JOIN pg_roles g ON g.oid = am.roleid JOIN pg_roles m ON m.oid = am.member
+          WHERE g.rolname LIKE $1 OR m.rolname LIKE $1)
+      ) AS snapshot`, [`${PREFIX}%`]);
+    return rows[0].snapshot as Record<string, unknown>;
+  });
+}
+
+(RUN ? describe : describe.skip)(
+  "least-privilege database roles (#4453) - real PostgreSQL",
+  { timeout: 180_000 },
+  () => {
+    let admin: Client;
+    let migrateResult: ReturnType<typeof spawnSync>;
+    let firstCliRun: ReturnType<typeof spawnSync>;
+    let diagnosticsBefore: unknown;
+    let appPrisma: PrismaClient;
+    let appDumpSql = "";
+
+    async function diagnosticsPrivileges(database: string) {
+      return withClient(urlFor(database), async (client) => {
+        const { rows } = await client.query(
+          `SELECT json_build_object(
+             'tables', (SELECT json_agg(json_build_array(c.relname,
+                 has_table_privilege($1, c.oid, 'SELECT'), has_table_privilege($1, c.oid, 'INSERT, UPDATE, DELETE, TRUNCATE')) ORDER BY c.relname)
+               FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm')
+                 AND (has_table_privilege($1, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')
+                      OR has_any_column_privilege($1, c.oid, 'SELECT, INSERT, UPDATE'))),
+             'columns', (SELECT json_agg(json_build_array(c.relname, a.attname) ORDER BY c.relname, a.attname)
+               FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'public' AND a.attnum > 0 AND NOT a.attisdropped
+                 AND has_column_privilege($1, c.oid, a.attnum, 'SELECT')),
+             'createOnSchema', has_schema_privilege($1, 'public', 'CREATE'),
+             'temp', has_database_privilege($1, current_database(), 'TEMPORARY'),
+             'memberOf', (SELECT count(*) FROM pg_auth_members am JOIN pg_roles m ON m.oid = am.member WHERE m.rolname = $1),
+             'attributes', (SELECT row_to_json(r) FROM (SELECT rolsuper, rolinherit, rolcreaterole, rolcreatedb, rolreplication, rolbypassrls, rolconnlimit, rolconfig FROM pg_roles WHERE rolname = $1) r)
+           ) AS privileges`,
+          [ROLES.diagnostics],
+        );
+        return rows[0].privileges;
+      });
+    }
+
+    beforeAll(async () => {
+      assertSafeRaceDbUrl(RACE_DB_URL, "Least-privilege database roles");
+      admin = new Client({ connectionString: RACE_DB_URL });
+      await admin.connect();
+      const superuser = await admin.query("SELECT rolsuper FROM pg_roles WHERE rolname = current_user");
+      if (!superuser.rows[0]?.rolsuper) {
+        throw new Error("This suite provisions roles and transfers ownership: CONCURRENCY_RACE_DATABASE_URL must be a superuser.");
+      }
+
+      // FRESH: roles first, then every migration as the migration role.
+      await admin.query(`CREATE DATABASE "${DATABASES.fresh}"`);
+      await provisionWithBuilder(DATABASES.fresh);
+      const migrateEnv: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: urlFor(DATABASES.fresh, "migrator") };
+      delete migrateEnv.SHADOW_DATABASE_URL;
+      migrateResult = spawnSync(path.join(REPO_ROOT, "node_modules/.bin/prisma"), ["migrate", "deploy"], {
+        cwd: REPO_ROOT,
+        env: migrateEnv,
+        encoding: "utf8",
+        timeout: 400_000,
+      });
+      if (migrateResult.status !== 0) {
+        throw new Error(`prisma migrate deploy as the migration role failed:\n${migrateResult.stdout}\n${migrateResult.stderr}`);
+      }
+      await provisionWithBuilder(DATABASES.fresh);
+
+      // UPGRADE: the fresh schema re-created with every object owned by the
+      // superuser and no grants — an existing single-superuser deployment.
+      await admin.query(`CREATE DATABASE "${DATABASES.upgrade}"`);
+      const schemaDump = runTool("pg_dump", ["--no-owner", "--no-privileges", urlFor(DATABASES.fresh)]);
+      if (schemaDump.status !== 0) throw new Error(`pg_dump of the fresh database failed: ${schemaDump.stderr}`);
+      const load = runTool("psql", ["-q", "-v", "ON_ERROR_STOP=1", urlFor(DATABASES.upgrade)], schemaDump.stdout);
+      if (load.status !== 0) throw new Error(`loading the upgrade database failed: ${load.stderr}`);
+
+      // An AI Diagnostics role provisioned the shipped way, before the split.
+      const superuserName = new URL(RACE_DB_URL).username;
+      await withClient(urlFor(DATABASES.upgrade), async (client) => {
+        await client.query("BEGIN");
+        for (const statement of buildAiDiagnosticsRoleSql({
+          roleName: ROLES.diagnostics,
+          password: PASSWORDS.diagnostics,
+          databaseName: DATABASES.upgrade,
+          preserveTempForRoles: [superuserName],
+          statementTimeoutMs: 5_000,
+          connectionLimit: 4,
+        })) {
+          await client.query(statement);
+        }
+        await client.query("COMMIT");
+      });
+      diagnosticsBefore = await diagnosticsPrivileges(DATABASES.upgrade);
+
+      firstCliRun = provisionWithCli(DATABASES.upgrade);
+
+      vi.stubEnv("DATABASE_URL", urlFor(DATABASES.upgrade, "app"));
+      const { PrismaClient: Prisma } = await import("@prisma/client");
+      const { createPrismaPgAdapter } = await import("@/lib/prisma-adapter");
+      appPrisma = new Prisma({ adapter: createPrismaPgAdapter(urlFor(DATABASES.upgrade, "app")) });
+    }, 600_000);
+
+    afterAll(async () => {
+      await appPrisma?.$disconnect().catch(() => {});
+      vi.unstubAllEnvs();
+      if (!admin) return;
+      for (const database of Object.values(DATABASES)) {
+        await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`).catch(() => {});
+      }
+      for (const role of Object.values(ROLES)) {
+        await admin.query(`DROP ROLE IF EXISTS "${role}"`).catch((error) => {
+          console.warn(`[database-roles.realdb] could not drop test role ${role}: ${String(error)}`);
+        });
+      }
+      await admin.end().catch(() => {});
+    });
+
+    describe("migrations", () => {
+      it("runs every migration as the migration role on an empty database, with no superuser", async () => {
+        expect(migrateResult.status).toBe(0);
+        const owners = await withClient(urlFor(DATABASES.fresh), (client) =>
+          client.query(
+            `SELECT DISTINCT pg_get_userbyid(c.relowner) AS owner FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S')`,
+          ),
+        );
+        expect(owners.rows.map((row) => row.owner)).toEqual([ROLES.migrator]);
+      });
+
+      it("transfers ownership of every schema object on an existing database to the migration role", async () => {
+        expect(firstCliRun.status, `${firstCliRun.stdout}\n${firstCliRun.stderr}`).toBe(0);
+        const { rows } = await withClient(urlFor(DATABASES.upgrade), (client) =>
+          client.query(
+            `SELECT 'relation ' || c.relname AS object FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+               WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p', 'v', 'm', 'S') AND pg_get_userbyid(c.relowner) <> $1
+             UNION ALL
+             SELECT 'type ' || t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
+               WHERE n.nspname = 'public' AND t.typtype = 'e' AND pg_get_userbyid(t.typowner) <> $1
+             UNION ALL
+             SELECT 'routine ' || p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+               WHERE n.nspname = 'public' AND pg_get_userbyid(p.proowner) <> $1
+                 AND NOT EXISTS (SELECT 1 FROM pg_depend d WHERE d.classid = 'pg_proc'::regclass AND d.objid = p.oid AND d.deptype = 'e')`,
+            [ROLES.migrator],
+          ),
+        );
+        expect(rows).toEqual([]);
+      });
+
+      it("lets the migration role run the DDL and data statements a migration is made of", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "migrator"), async (client) => {
+          await client.query("BEGIN");
+          for (const statement of [
+            "CREATE EXTENSION IF NOT EXISTS pgcrypto",
+            `ALTER TABLE "BookingLedgerLine" ADD COLUMN "tac4453Probe" TEXT`,
+            `CREATE INDEX "tac4453_probe_idx" ON "AuditLog" ("action", "createdAt")`,
+            `ALTER TYPE "LedgerSide" ADD VALUE IF NOT EXISTS 'TAC4453_PROBE'`,
+            `UPDATE "AuditLog" SET "summary" = "summary" WHERE false`,
+            `CREATE OR REPLACE FUNCTION tac4453_probe() RETURNS int LANGUAGE sql AS 'SELECT 1'`,
+          ]) {
+            expect(await sqlstate(client, statement), statement).toBe("ok");
+          }
+          await client.query("ROLLBACK");
+        });
+      });
+
+      it("gives a table a later migration creates the application's grants at once (default privileges)", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "migrator"), (client) =>
+          client.query(`CREATE TABLE "Tac4453Later" ("id" INT PRIMARY KEY, "note" TEXT)`),
+        );
+        await withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
+          await client.query("BEGIN");
+          expect(await sqlstate(client, `INSERT INTO "Tac4453Later" VALUES (1, 'a')`)).toBe("ok");
+          expect(await sqlstate(client, `UPDATE "Tac4453Later" SET "note" = 'b' WHERE "id" = 1`)).toBe("ok");
+          expect(await sqlstate(client, `SELECT * FROM "Tac4453Later"`)).toBe("ok");
+          expect(await sqlstate(client, `DELETE FROM "Tac4453Later" WHERE "id" = 1`)).toBe("ok");
+          expect(await sqlstate(client, `TRUNCATE "Tac4453Later"`)).toBe(INSUFFICIENT_PRIVILEGE);
+          await client.query("ROLLBACK");
+        });
+        await withClient(urlFor(DATABASES.upgrade, "auditRetention"), async (client) => {
+          await client.query("BEGIN");
+          expect(await sqlstate(client, `SELECT * FROM "Tac4453Later"`)).toBe(INSUFFICIENT_PRIVILEGE);
+          await client.query("ROLLBACK");
+        });
+      });
+    });
+
+    describe("the application role", () => {
+      const lodgeId = "tac4453-lodge";
+      const bookingId = "tac4453-booking";
+      let ledgerLineId = "";
+      let auditId = "";
+
+      beforeAll(async () => {
+        await appPrisma.lodge.create({ data: { id: lodgeId, name: "Roles test lodge", slug: lodgeId } });
+        await appPrisma.organisation.create({ data: { id: "tac4453-organisation", name: "Roles test school" } });
+        await appPrisma.booking.create({
+          data: {
+            id: bookingId,
+            lodgeId,
+            organisationId: "tac4453-organisation",
+            checkIn: new Date("2026-08-01T00:00:00.000Z"),
+            checkOut: new Date("2026-08-02T00:00:00.000Z"),
+            totalPriceCents: 100,
+            finalPriceCents: 100,
+          },
+        });
+        ledgerLineId = (
+          await appPrisma.bookingLedgerLine.create({
+            data: {
+              bookingId,
+              lodgeId,
+              side: "ADJUSTMENT",
+              kind: "AGREED_ADJUSTMENT",
+              sign: 1,
+              quantity: 1,
+              unitCents: 100,
+              amountCents: 100,
+              guestNames: [],
+              anchorKind: "REVIEW_TASK",
+              anchorId: "tac4453",
+              narration: "Adjustment agreed with member: roles test",
+            },
+          })
+        ).id;
+        auditId = (await appPrisma.auditLog.create({ data: { action: "tac4453.roles.probe", ipAddress: "203.0.113.7" } })).id;
+      });
+
+      it("keeps ordinary tables fully usable through Prisma", async () => {
+        await appPrisma.booking.update({ where: { id: bookingId }, data: { finalPriceCents: 90 } });
+        const scratch = await appPrisma.lodge.create({ data: { id: "tac4453-scratch", name: "Scratch", slug: "tac4453-scratch" } });
+        await appPrisma.lodge.delete({ where: { id: scratch.id } });
+        expect((await appPrisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).finalPriceCents).toBe(90);
+        expect(await appPrisma.bookingLedgerLine.count({ where: { bookingId } })).toBe(1);
+        expect(await appPrisma.auditLog.count({ where: { id: auditId } })).toBe(1);
+      });
+
+      it("cannot UPDATE, DELETE, TRUNCATE, upsert over or lock a ledger line or an audit row", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
+          await client.query("BEGIN");
+          const refused = [
+            [`UPDATE "BookingLedgerLine" SET "narration" = 'rewritten' WHERE "id" = $1`, [ledgerLineId]],
+            [`DELETE FROM "BookingLedgerLine" WHERE "id" = $1`, [ledgerLineId]],
+            [`UPDATE "AuditLog" SET "summary" = 'rewritten' WHERE "id" = $1`, [auditId]],
+            [`UPDATE "AuditLog" SET "ipAddress" = NULL WHERE "id" = $1`, [auditId]],
+            [`DELETE FROM "AuditLog" WHERE "id" = $1`, [auditId]],
+            [`TRUNCATE "BookingLedgerLine"`, []],
+            [`TRUNCATE "AuditLog"`, []],
+            [`INSERT INTO "AuditLog" ("id", "action") VALUES ($1, 'x') ON CONFLICT ("id") DO UPDATE SET "action" = 'y'`, [auditId]],
+            [`SELECT 1 FROM "BookingLedgerLine" WHERE "id" = $1 FOR UPDATE`, [ledgerLineId]],
+            [`INSERT INTO "_prisma_migrations" ("id", "checksum", "migration_name", "started_at") VALUES ('x', 'x', 'x', now())`, []],
+          ] as const;
+          for (const [sql, values] of refused) {
+            expect(await sqlstate(client, sql, [...values]), sql).toBe(INSUFFICIENT_PRIVILEGE);
+          }
+          // What the application may still do with them: read and append.
+          expect(await sqlstate(client, `SELECT count(*) FROM "BookingLedgerLine"`)).toBe("ok");
+          expect(await sqlstate(client, `SELECT count(*) FROM "_prisma_migrations"`)).toBe("ok");
+          expect(await sqlstate(client, `INSERT INTO "AuditLog" ("id", "action") VALUES ('tac4453-dup', 'x') ON CONFLICT DO NOTHING`)).toBe("ok");
+          await client.query("ROLLBACK");
+        });
+        const unchanged = await withClient(urlFor(DATABASES.upgrade), (client) =>
+          client.query(`SELECT "narration" FROM "BookingLedgerLine" WHERE "id" = $1`, [ledgerLineId]),
+        );
+        expect(unchanged.rows).toEqual([{ narration: "Adjustment agreed with member: roles test" }]);
+      });
+
+      it("cannot run superuser-only or owner-only statements", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
+          await client.query("BEGIN");
+          const refused = [
+            `CREATE ROLE tac4453_escalated`,
+            `ALTER ROLE "${ROLES.app}" SUPERUSER`,
+            `SET session_replication_role = replica`,
+            `SELECT pg_read_file('postgresql.conf')`,
+            `COPY (SELECT 1) TO PROGRAM 'true'`,
+            `ALTER TABLE "BookingLedgerLine" DISABLE TRIGGER ALL`,
+            `ALTER TABLE "AuditLog" DROP COLUMN "summary"`,
+            `DROP TABLE "BookingLedgerLine"`,
+            `CREATE TABLE "Tac4453Escape" ("id" INT)`,
+            `SET ROLE "${ROLES.migrator}"`,
+            // The in-app "restore local backup" first statement: refused, so a
+            // split deployment's live data is never dropped by the app.
+            `DROP SCHEMA IF EXISTS public CASCADE`,
+          ];
+          for (const sql of refused) {
+            expect(await sqlstate(client, sql), sql).toBe(INSUFFICIENT_PRIVILEGE);
+          }
+          await client.query("ROLLBACK");
+          // ALTER SYSTEM and CREATE DATABASE cannot run inside a transaction block.
+          for (const sql of [`ALTER SYSTEM SET work_mem = '64MB'`, `CREATE DATABASE tac4453_escape`]) {
+            const code = await client.query(sql).then(
+              () => "ok",
+              (error: { code?: string }) => String(error.code),
+            );
+            expect(code, sql).toBe(INSUFFICIENT_PRIVILEGE);
+          }
+        });
+      });
+
+      it("takes a pg_dump backup as the application role, which the operator restores with the role split intact", async () => {
+        const dump = runTool("pg_dump", [urlFor(DATABASES.upgrade, "app")]);
+        expect(dump.status, dump.stderr).toBe(0);
+        appDumpSql = dump.stdout;
+        expect(appDumpSql).toContain(`CREATE TABLE public."BookingLedgerLine"`);
+        expect(appDumpSql).toContain(`OWNER TO ${ROLES.migrator}`);
+
+        await admin.query(`CREATE DATABASE "${DATABASES.restore}"`);
+        const restore = runTool("psql", ["-q", "-v", "ON_ERROR_STOP=1", urlFor(DATABASES.restore)], appDumpSql);
+        expect(restore.status, restore.stderr).toBe(0);
+
+        const restored = await withClient(urlFor(DATABASES.restore), (client) =>
+          client.query(`SELECT "narration" FROM "BookingLedgerLine" WHERE "id" = $1`, [ledgerLineId]),
+        );
+        expect(restored.rows).toHaveLength(1);
+        // Ownership, table and column grants and default privileges all travel
+        // in the dump; the database-level CONNECT grants do not (pg_dump writes
+        // those only with --create), so the operator re-runs provisioning.
+        expect(await privilegeSnapshot(DATABASES.restore, { includeDatabaseAcl: false })).toEqual(
+          await privilegeSnapshot(DATABASES.upgrade, { includeDatabaseAcl: false }),
+        );
+      });
+    });
+
+    describe("the audit-retention role", () => {
+      const now = new Date(FROZEN_TEST_CLOCK_BASE_ISO);
+      const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000);
+
+      async function seedRetentionRows() {
+        await appPrisma.auditLog.createMany({
+          data: [
+            { id: "tac4453-anonymise", action: "tac4453.retention", ipAddress: "203.0.113.8", userAgent: "probe", retentionClass: "standard", createdAt: daysAgo(200) },
+            { id: "tac4453-prune", action: "tac4453.retention", retentionClass: "diagnostic_high_volume", createdAt: daysAgo(200), expiresAt: daysAgo(1) },
+            { id: "tac4453-keep", action: "tac4453.retention", ipAddress: "203.0.113.9", retentionClass: "standard", createdAt: daysAgo(1) },
+          ],
+        });
+      }
+
+      it("runs the real retention job: anonymises and prunes AuditLog through AUDIT_RETENTION_DATABASE_URL", async () => {
+        await seedRetentionRows();
+        const { runAuditLogRetentionJob } = await import("@/lib/audit-retention");
+        const result = await runAuditLogRetentionJob({
+          now,
+          retentionDatabaseUrl: urlFor(DATABASES.upgrade, "auditRetention"),
+          archiveDatabaseUrl: null,
+        });
+        expect(result.requestData.anonymized).toBeGreaterThanOrEqual(1);
+        expect(result.mainPrune.deleted).toBeGreaterThanOrEqual(1);
+
+        const rows = await appPrisma.auditLog.findMany({
+          where: { action: "tac4453.retention" },
+          select: { id: true, ipAddress: true, userAgent: true },
+          orderBy: { id: "asc" },
+        });
+        expect(rows).toEqual([
+          { id: "tac4453-anonymise", ipAddress: null, userAgent: null },
+          { id: "tac4453-keep", ipAddress: "203.0.113.9", userAgent: null },
+        ]);
+      });
+
+      it("fails closed on the application role's own client, which may not change audit rows", async () => {
+        await appPrisma.auditLog.create({
+          data: { action: "tac4453.retention.app", ipAddress: "203.0.113.10", createdAt: daysAgo(200) },
+        });
+        const { runAuditLogRetentionJob } = await import("@/lib/audit-retention");
+        await expect(
+          runAuditLogRetentionJob({ now, db: appPrisma, archiveDatabaseUrl: null }),
+        ).rejects.toThrow(/permission denied|42501/i);
+      });
+
+      it("can do nothing else: no INSERT, no other column, no other table", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "auditRetention"), async (client) => {
+          await client.query("BEGIN");
+          const refused = [
+            `INSERT INTO "AuditLog" ("id", "action") VALUES ('tac4453-forged', 'x')`,
+            `UPDATE "AuditLog" SET "summary" = 'rewritten' WHERE false`,
+            `UPDATE "AuditLog" SET "action" = 'rewritten' WHERE false`,
+            `TRUNCATE "AuditLog"`,
+            `SELECT 1 FROM "BookingLedgerLine" LIMIT 1`,
+            `DELETE FROM "BookingLedgerLine" WHERE false`,
+            `SELECT 1 FROM "Member" LIMIT 1`,
+            `UPDATE "Booking" SET "finalPriceCents" = 0 WHERE false`,
+            `CREATE TABLE "Tac4453RetentionEscape" ("id" INT)`,
+          ];
+          for (const sql of refused) {
+            expect(await sqlstate(client, sql), sql).toBe(INSUFFICIENT_PRIVILEGE);
+          }
+          expect(await sqlstate(client, `UPDATE "AuditLog" SET "ipAddress" = NULL, "userAgent" = NULL WHERE false`)).toBe("ok");
+          expect(await sqlstate(client, `DELETE FROM "AuditLog" WHERE false`)).toBe("ok");
+          await client.query("ROLLBACK");
+        });
+      });
+    });
+
+    describe("provisioning", () => {
+      it("is idempotent: a second CLI run changes nothing", async () => {
+        const before = await privilegeSnapshot(DATABASES.upgrade);
+        const rerun = provisionWithCli(DATABASES.upgrade);
+        expect(rerun.status, `${rerun.stdout}\n${rerun.stderr}`).toBe(0);
+        expect(await privilegeSnapshot(DATABASES.upgrade)).toEqual(before);
+      });
+
+      it("repairs drift: a hand-granted UPDATE on the ledger and a membership are revoked by the next run", async () => {
+        const before = await privilegeSnapshot(DATABASES.upgrade);
+        await withClient(urlFor(DATABASES.upgrade), async (client) => {
+          await client.query(`GRANT UPDATE, DELETE ON "BookingLedgerLine" TO "${ROLES.app}"`);
+          await client.query(`GRANT UPDATE ("summary") ON "AuditLog" TO "${ROLES.auditRetention}"`);
+          await client.query(`GRANT "${ROLES.migrator}" TO "${ROLES.app}"`);
+          await client.query(`ALTER TABLE "Member" OWNER TO CURRENT_USER`);
+        });
+        expect(await privilegeSnapshot(DATABASES.upgrade)).not.toEqual(before);
+        const rerun = provisionWithCli(DATABASES.upgrade);
+        expect(rerun.status, `${rerun.stdout}\n${rerun.stderr}`).toBe(0);
+        expect(await privilegeSnapshot(DATABASES.upgrade)).toEqual(before);
+      });
+
+      it("refuses to commit when the application role could still change a ledger line", async () => {
+        const statements = buildDatabaseRolesSql({
+          databaseName: DATABASES.upgrade,
+          migrator: { roleName: ROLES.migrator, password: PASSWORDS.migrator },
+          app: { roleName: ROLES.app, password: PASSWORDS.app },
+          auditRetention: { roleName: ROLES.auditRetention, password: PASSWORDS.auditRetention },
+        });
+        const verification = statements.at(-1)!;
+        await withClient(urlFor(DATABASES.upgrade), async (client) => {
+          for (const breach of [
+            `GRANT UPDATE ON "BookingLedgerLine" TO PUBLIC`,
+            `GRANT DELETE ON "AuditLog" TO "${ROLES.app}"`,
+            `GRANT UPDATE ("summary") ON "AuditLog" TO "${ROLES.auditRetention}"`,
+            `GRANT SELECT ON "Member" TO "${ROLES.auditRetention}"`,
+            `GRANT "${ROLES.migrator}" TO "${ROLES.app}"`,
+            `ALTER ROLE "${ROLES.app}" CREATEROLE`,
+          ]) {
+            await client.query("BEGIN");
+            await client.query(breach);
+            await expect(client.query(verification), breach).rejects.toThrow(/Refusing to commit/);
+            await client.query("ROLLBACK");
+          }
+          // And the same statement commits cleanly on the provisioned state.
+          await client.query("BEGIN");
+          await client.query(verification);
+          await client.query("ROLLBACK");
+        });
+      });
+
+      it("leaves the AI Diagnostics SELECT-only role exactly as it was", async () => {
+        expect(await diagnosticsPrivileges(DATABASES.upgrade)).toEqual(diagnosticsBefore);
+      });
+    });
+  },
+);
