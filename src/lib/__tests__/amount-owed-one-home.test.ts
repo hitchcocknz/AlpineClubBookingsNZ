@@ -330,6 +330,13 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
         /amountCents:\s*0,\s*status:\s*PaymentStatus\.SUCCEEDED/,
       );
     }
+    // Every call anywhere passes the caller's transaction client, never the root client.
+    const offCallers = sourceFiles(path.join(REPO, "src")).flatMap((file) =>
+      [...read(file).matchAll(/\bwriteZeroWorthConfirmPayment\(\s*(\w+)/g)]
+        .filter((match) => match[1] !== "tx")
+        .map((match) => `${file}: ${match[0]}`),
+    );
+    expect(offCallers, "write the $0 payment on the claim's tx, never the root client").toEqual([]);
     expect(read("src/app/api/payments/charge-saved-method/route.ts"), "charge-saved-method refuses worth $0 under its locks").toMatch(
       /if \(savedCardChargeCents\(locked\) === 0\)/,
     );
