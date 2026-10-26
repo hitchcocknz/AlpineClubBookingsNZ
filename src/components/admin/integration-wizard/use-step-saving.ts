@@ -26,12 +26,21 @@ export function useStepSaving(
     reportRef.current = reportSaving;
   }, [reportSaving]);
 
+  // Whether this copy of the step holds the shell's lock, so an unmount
+  // releases only a lock it took.
+  const holdsLockRef = useRef(false);
   const setSaving = useCallback((next: boolean) => {
     setSavingState(next);
+    holdsLockRef.current = next;
     reportRef.current(next);
   }, []);
 
-  useEffect(() => () => reportRef.current(false), []);
+  useEffect(
+    () => () => {
+      if (holdsLockRef.current) reportRef.current(false);
+    },
+    [],
+  );
 
   return [saving, setSaving];
 }

@@ -12,7 +12,11 @@ import { describe, expect, it } from "vitest";
  * `useStepSaving`, never `useState`.
  *
  * WHAT THIS CANNOT SEE: a save flag under some other name, or a save with no
- * flag at all.
+ * flag at all. Deliberately NOT locked, because the operator is meant to be
+ * able to move on while they run (#4410 review): the verify and poll flags
+ * (`verifying`, `checking`, `starting` - the Xero webhook verify even tells the
+ * operator to skip while it polls) and the display wizard's restore-boards
+ * `running`, a restore whose completion does not depend on staying on the step.
  */
 const REPO = path.resolve(__dirname, "..", "..", "..", "..", "..");
 

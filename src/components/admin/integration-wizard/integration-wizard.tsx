@@ -205,6 +205,7 @@ export function IntegrationWizard<Ctx>({
   // Skip an optional, unverified step: acknowledge it (persist its id so gating
   // passes it) and advance. A no-op for a required or already-verified step.
   function skipCurrent() {
+    if (stepSaving) return; // #4410: held like every other move mid-save
     const current = stepStates[index];
     if (!current) return; // see the unreachable note in `goTo` above
     const { step, verified } = current;
@@ -259,7 +260,10 @@ export function IntegrationWizard<Ctx>({
     optional: isWizardStepOptional(activeStep),
     acknowledged: acknowledgedOnly,
     skip: skipCurrent,
-    reportSaving: (saving) => setSavingStepIndex(saving ? index : null),
+    // A release clears only this step's own lock, so a late release from a
+    // copy of the step that already unmounted cannot unlock a newer save.
+    reportSaving: (saving) =>
+      setSavingStepIndex((previous) => (saving ? index : previous === index ? null : previous)),
     // The shell's vouch (#2324): `viewOnlyBanner` above is rendered in EVERY
     // branch of this component — the loading early-return included — so a step's
     // gated controls may drop their own per-button reason and lean on it. The
@@ -380,7 +384,7 @@ export function IntegrationWizard<Ctx>({
             <div className="flex flex-wrap items-center justify-end gap-3">
               {canSkip ? (
                 <div className="flex flex-col items-end gap-0.5">
-                  <Button type="button" variant="ghost" onClick={skipCurrent}>
+                  <Button type="button" variant="ghost" onClick={skipCurrent} disabled={stepSaving}>
                     {skipCopy.skipLabel}
                   </Button>
                   {skipCopy.skipDescription ? (
