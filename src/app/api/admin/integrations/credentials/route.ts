@@ -202,8 +202,7 @@ async function applyVerifyReset(
   if (provider === GOOGLE_PROVIDER) {
     await clearGoogleVerified(actor, request);
   }
-  // ServerNZ resets the owned-lodge list and API version in the credential
-  // transaction below, under the connection fence (#4436).
+  // ServerNZ's answer reset rides in setServerNzApiKey's fenced write (#4436).
 }
 
 export async function POST(request: Request) {
@@ -263,14 +262,9 @@ export async function POST(request: Request) {
     // The request context travels in so the row keeps its id, IP and user agent.
     // The form posts the value it wants stored; there is no read-modify-write
     // here for a second Full Admin to make stale, so both writes expect `any`.
-    // ServerNZ's only writable key is the API key; its helper saves it and
-    // resets the previous connection's answers under the connection fence.
+    // ServerNZ's one writable key is its API key, saved under the connection fence.
     result = provider === SERVERNZ_PROVIDER
-      ? await setServerNzApiKey(
-          value,
-          { kind: "admin", memberId: guard.memberId },
-          requestContext,
-        )
+      ? await setServerNzApiKey(value, { kind: "admin", memberId: guard.memberId }, requestContext)
       : credentialWriteResetsXeroTokens(provider, key)
       ? await withXeroVerifyReset(
           {
