@@ -17,7 +17,7 @@
  *    (`coveredPaymentIntentIds`, {@link attributeGapCash}).
  *  - A CHANGE'S OWN SUPPLEMENTARY INVOICE - one on the change, or one naming
  *    the capture's intent - is that capture's document.
- *  - #4324 (`INV-PAY-140`): A KEPT LATE CAPTURE'S OWN INVOICE
+ *  - #4324 (`INV-PAY-141`): A KEPT LATE CAPTURE'S OWN INVOICE
  *    (`KEPT_LATE_CAPTURE_INVOICE`, in any status but CANCELLED) records the
  *    capture it was queued for, where the treasurer's keep found nothing
  *    billing its change.
@@ -109,6 +109,19 @@ const SUPPLEMENTARY_SELECT = {
 /** Whether a supplementary invoice's queued payload records a Stripe payment (the enqueue's default). */
 function recordsPayment(requestPayload: Prisma.JsonValue | null): boolean {
   return asRecord(requestPayload)?.recordPayment !== false;
+}
+
+/**
+ * #3403 review 2 (F3): whether a change's own supplementary invoice records
+ * THIS capture of the change. It records a payment, and names no other
+ * capture: a superseded change's invoice moved onto the request carrying its
+ * balance (`INV-PAY-140`) records that request's capture, never the change's
+ * own superseded ask, so a stale-tab capture of that ask is recorded by its
+ * own receipt instead of standing down to an invoice that paid with other money.
+ */
+function changeInvoiceRecordsCapture(requestPayload: Prisma.JsonValue | null, paymentIntentId: string): boolean {
+  const named = asRecord(requestPayload)?.paymentIntentId;
+  return recordsPayment(requestPayload) && (typeof named !== "string" || named === paymentIntentId);
 }
 
 /**
@@ -272,7 +285,10 @@ async function readBaseCaptureRecorder(
         alreadyRecordedCents,
       };
     }
-    if (own || ownLink) return { kind: "supplementary-invoice", operationId: own?.id ?? null };
+    // Review 2 (F3): a paid one naming another capture records that one; its link is that invoice's.
+    if (own ? changeInvoiceRecordsCapture(own.requestPayload, input.paymentIntentId) : ownLink) {
+      return { kind: "supplementary-invoice", operationId: own?.id ?? null };
+    }
   }
   return { kind: "receipt", figures, gap, target: null, alreadyRecordedCents };
 }
@@ -297,18 +313,24 @@ export async function readSupplementaryRecordedIntents(
     select: { localModel: true, localId: true, requestPayload: true },
   });
   const named = new Set<string>();
-  const paidChanges = new Set<string>();
+  const changeInvoices = new Map<string, Prisma.JsonValue[]>();
   for (const row of rows) {
     const payload = asRecord(row.requestPayload);
     if (payload?.primaryInvoiceGap === true) continue;
     if (typeof payload?.paymentIntentId === "string" && recordsPayment(row.requestPayload)) named.add(payload.paymentIntentId);
-    if (row.localModel === "BookingModification" && row.localId && recordsPayment(row.requestPayload)) {
-      paidChanges.add(row.localId);
+    if (row.localModel === "BookingModification" && row.localId) {
+      changeInvoices.set(row.localId, [...(changeInvoices.get(row.localId) ?? []), row.requestPayload]);
     }
   }
+  // Review 2 (F3): the change's own invoice counts for a capture only where it records that capture.
+  const recordedByChangeInvoice = (capture: { paymentIntentId: string; bookingModificationId: string | null }) =>
+    capture.bookingModificationId !== null &&
+    (changeInvoices.get(capture.bookingModificationId) ?? []).some((payload) =>
+      changeInvoiceRecordsCapture(payload, capture.paymentIntentId),
+    );
   return new Set(
     captures
-      .filter((capture) => named.has(capture.paymentIntentId) || (capture.bookingModificationId !== null && paidChanges.has(capture.bookingModificationId)))
+      .filter((capture) => named.has(capture.paymentIntentId) || recordedByChangeInvoice(capture))
       .map((capture) => capture.paymentIntentId),
   );
 }

@@ -1,5 +1,5 @@
 /**
- * Real-PostgreSQL proof for #4324 (owner decision 25 Oct 2026; `INV-PAY-140`,
+ * Real-PostgreSQL proof for #4324 (owner decision 25 Oct 2026; `INV-PAY-141`,
  * `INV-PAY-139`): a late card payment for a booking change that a treasurer
  * KEPT on a cancelled booking whose primary invoice bills the change is
  * recorded by ONE document, decided once under the approval task's row lock
@@ -529,7 +529,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
 
     const paid: unknown[] = [];
     await worker.recordAdditionalCaptureReceipt(
-      { syncOperationId: row!.id },
+      { syncOperation: claimed! },
       {
         getAuthenticatedXeroClient: async () =>
           ({
@@ -578,7 +578,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     try {
       const work = worker
         .recordAdditionalCaptureReceipt(
-          { syncOperationId: row!.id },
+          { syncOperation: claimed! },
           {
             getAuthenticatedXeroClient: async () => {
               throw new Error("no Xero call for a capture no longer kept");
@@ -613,7 +613,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     expect(paid).toEqual([]);
     const rows = await receiptRows();
     const live = rows.filter((candidate) => candidate.status !== "CANCELLED");
-    // INV-PAY-140: the re-kept capture has one live recorder - a fresh receipt,
+    // INV-PAY-141: the re-kept capture has one live recorder - a fresh receipt,
     // never the row the worker closed.
     expect(rows.find((candidate) => candidate.id === row!.id)).toMatchObject({ status: "CANCELLED" });
     expect(live).toHaveLength(1);
@@ -640,7 +640,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
       changeFeeCents: 0,
     });
     expect(reRaise).toMatchObject({ queueOperationId: null, outcome: "none" });
-    // INV-PAY-140: the kept-capture invoice bills and records the $80; nothing else does.
+    // INV-PAY-141: the kept-capture invoice bills and records the $80; nothing else does.
     expect((await supplementaryRows()).filter((row) => row.status !== "CANCELLED")).toEqual([]);
     expect(
       await prisma.xeroSyncOperation.count({
@@ -723,7 +723,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     const invoices = (await supplementaryRows()).filter((row) => row.status !== "CANCELLED");
     expect(invoices).toHaveLength(1);
     expect((invoices[0]!.requestPayload as { recordPayment?: boolean }).recordPayment).toBe(true);
-    // INV-PAY-140 / INV-PAY-139: one recorder - the change's invoice; no kept-capture invoice beside it.
+    // INV-PAY-141 / INV-PAY-139: one recorder - the change's invoice; no kept-capture invoice beside it.
     expect(
       await prisma.xeroSyncOperation.count({
         where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE", status: { not: "CANCELLED" } },
@@ -744,7 +744,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
   });
 
   /**
-   * 4384-R2 (Codex re-review, `INV-PAY-140`): two marked +$80 edits raced a
+   * 4384-R2 (Codex re-review, `INV-PAY-141`): two marked +$80 edits raced a
    * $220 primary invoice built before either, so its $160 gap invoice bills
    * both, anchored on the newer. The primary's link is saved (its figures
    * stored on its create row) and its gap check has not run yet. The kept

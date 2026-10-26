@@ -552,7 +552,8 @@ new ADR:
   groups, applications, subscriptions, lifecycle requests.
 - Payments: `Payment`, `PaymentTransaction`, `PaymentRefund`, Stripe
   references. Payments attach to bookings; the booking carries the lodge.
-- Xero and finance: all `Xero*` models, `FinanceSnapshot`,
+- Xero and finance: all `Xero*` models (including `XeroConnection`, the one
+  operational connection row, #3806), `FinanceSnapshot`,
   `FinanceReportCategory*`, item/account mappings. One club-wide ledger and
   one operational Xero connection, consistent with
   `finance-dashboard/decisions/ADR-005-single-operational-xero-connection.md`.

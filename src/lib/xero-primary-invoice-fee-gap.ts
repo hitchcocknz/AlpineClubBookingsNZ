@@ -654,7 +654,7 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   // (or a concurrent run's of this same gap, which the enqueue's anchor lock
   // makes the one operation). Anything else bills nothing.
   if (queued.outcome !== "covers-total" || !queued.queueOperationId) {
-    // #4324 (`INV-PAY-140`): the anchor is billed by a kept late capture's own
+    // #4324 (`INV-PAY-141`): the anchor is billed by a kept late capture's own
     // invoice, which a gap invoice would bill again; the treasurer bills the
     // rest by hand (orchestrator decision, option 2: no accounting-rule change).
     if (queued.refusedBy === "kept-late-capture-invoice") {

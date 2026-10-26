@@ -345,7 +345,8 @@ Prefix `INV-PAY`.
 | `INV-PAY-136` | An edit racing the primary invoice create is refused or measured |
 | `INV-PAY-137` | An IB organiser-paid joiner's refund goes to the organiser, on its mirror |
 | `INV-PAY-139` | A change capture nothing else records is recorded once, against its invoice |
-| `INV-PAY-140` | A kept change capture is recorded by the document its evidence names |
+| `INV-PAY-140` | A superseded card change's waiting invoice follows the carrying request |
+| `INV-PAY-141` | A kept change capture is recorded by the document its evidence names |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |
@@ -912,6 +913,8 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-025` | Resolved in Xero means done: no automatic retry or re-mint |
 | `INV-INT-026` | Outbox workers never read a target from a redacted payload key |
 | `INV-INT-027` | Central-server syncing pauses on any API version difference, integer-compared |
+| `INV-INT-028` | A refund note resolved by hand records its Xero note, once |
+| `INV-INT-029` | Xero outcomes never replace better ones nor land on another claim |
 
 ## Operations
 

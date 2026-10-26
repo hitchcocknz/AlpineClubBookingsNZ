@@ -53,7 +53,7 @@ export function primaryInvoiceReviewMessage(
     bookingId: string;
     gapCents: number;
     settledBy?: ReductionSettlement;
-    /** #4324 (`INV-PAY-140`): the change that would carry a shortfall is billed by a kept late capture's own invoice. */
+    /** #4324 (`INV-PAY-141`): the change that would carry a shortfall is billed by a kept late capture's own invoice. */
     keptInvoiceBillsChange?: boolean;
   },
   format: ClubFormat,

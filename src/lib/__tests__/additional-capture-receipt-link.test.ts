@@ -15,7 +15,7 @@ function store(input: {
   captures?: Array<{ id: string; stripePaymentIntentId?: string | null }>;
   kept?: Array<{ queueType: string }>;
   link?: { id: string } | null;
-  receipts?: Array<{ status: string; requestPayload: unknown }>;
+  receipts?: Array<{ status: string; requestPayload: unknown; manuallyResolvedAt?: Date | null }>;
   supplementaries?: Array<{ requestPayload: unknown }>;
   unattributed?: number;
   modifications?: Array<{ id: string }>;
@@ -173,7 +173,7 @@ describe("anchorCaptureHasReceipt", () => {
     await expect(anchorCaptureHasReceipt(store({ captures, link: { id: "link_1" } }) as never, input, decidedOnly)).resolves.toBe(true);
   });
 
-  it("MUTATION #4324 (INV-PAY-140): counts a kept late capture's own invoice naming one of the captures, in both modes", async () => {
+  it("MUTATION #4324 (INV-PAY-141): counts a kept late capture's own invoice naming one of the captures, in both modes", async () => {
     const input = { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: "pi_kept" };
     const captures = [{ id: "tx_1", stripePaymentIntentId: "pi_kept" }];
     const kept = [{ queueType: "KEPT_LATE_CAPTURE_INVOICE" }];
@@ -206,6 +206,24 @@ describe("anchorCaptureHasReceipt", () => {
     );
     await expect(keptInvoiceBillsChangeCapture(store({ captures }) as never, "mod_1")).resolves.toBe(false);
     await expect(keptInvoiceBillsChangeCapture(store({ kept: [{ queueType: "KEPT_LATE_CAPTURE_INVOICE" }] }) as never, "mod_1")).resolves.toBe(false);
+  });
+
+  it("#3403 review 2 (F6): with queuedCounts, a receipt that will still run counts - queued, or failed before deciding and not resolved by hand", async () => {
+    const input = { bookingId: "booking_1", bookingModificationId: null, paymentIntentId: "pi_carrier" };
+    const captures = [{ id: "tx_1" }];
+    const queuedCounts = { queuedCounts: true };
+    const has = (receipt: { status: string; manuallyResolvedAt?: Date | null }) =>
+      anchorCaptureHasReceipt(store({ captures, receipts: [{ requestPayload: {}, manuallyResolvedAt: null, ...receipt }] }) as never, input, queuedCounts);
+    await expect(has({ status: "PENDING" })).resolves.toBe(true);
+    await expect(has({ status: "WAITING_PAYMENT" })).resolves.toBe(true);
+    await expect(has({ status: "FAILED" })).resolves.toBe(true);
+    await expect(has({ status: "PARTIAL" })).resolves.toBe(true);
+    await expect(has({ status: "FAILED", manuallyResolvedAt: new Date() })).resolves.toBe(false);
+    await expect(has({ status: "SUCCEEDED" })).resolves.toBe(false);
+    // Without the option the old answer stands: a PENDING row with no plan is not a recorder.
+    await expect(
+      anchorCaptureHasReceipt(store({ captures, receipts: [{ status: "PENDING", requestPayload: {}, manuallyResolvedAt: null }] }) as never, input),
+    ).resolves.toBe(false);
   });
 
   it("counts a RUNNING row or a stored plan, never a PENDING row with no plan", async () => {

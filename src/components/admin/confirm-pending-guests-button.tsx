@@ -50,7 +50,13 @@ function isCancelledRefundRecovery(value: unknown): boolean {
 interface ConfirmPendingGuestsButtonProps {
   bookingId: string;
   hasSavedPaymentMethod: boolean;
-  finalPriceCents: number;
+  /**
+   * What the route charges the saved card: the booking's worth,
+   * `savedCardChargeCents` (#4357, `INV-PAY-119`) - its price plus a change fee
+   * recorded on its payment - so the dialog quotes the figure the card is
+   * charged, and "no charge" means the route will charge nothing.
+   */
+  savedCardChargeCents: number;
   /**
    * #2259 honesty rule: the booking's "No emails" switch. With it on, the
    * confirmation email is withheld by the mailer whatever is chosen here, so
@@ -63,7 +69,7 @@ interface ConfirmPendingGuestsButtonProps {
 export function ConfirmPendingGuestsButton({
   bookingId,
   hasSavedPaymentMethod,
-  finalPriceCents,
+  savedCardChargeCents,
   noEmails = false,
 }: ConfirmPendingGuestsButtonProps) {
   const format = useClubFormat();
@@ -85,7 +91,7 @@ export function ConfirmPendingGuestsButton({
   // Mirror the server's branch order: a zero-dollar booking is confirmed at no
   // charge regardless of a card on file; otherwise a saved card is charged, and
   // without one the booking moves to payment-owed.
-  const isZeroDollar = finalPriceCents === 0;
+  const isZeroDollar = savedCardChargeCents === 0;
   const willCharge = !isZeroDollar && hasSavedPaymentMethod;
   // #1769b honesty rule: the confirmation email sends when the booking becomes
   // PAID — the zero-dollar (paid_zero) and charged-card (paid_charged) paths.
@@ -95,7 +101,7 @@ export function ConfirmPendingGuestsButton({
   const consequence = isZeroDollar
     ? "This will confirm the booking at no charge."
     : hasSavedPaymentMethod
-      ? `The member's saved card will be charged ${formatCents(finalPriceCents, format)}.`
+      ? `The member's saved card will be charged ${formatCents(savedCardChargeCents, format)}.`
       : "This will move the booking to payment-owed (no card on file).";
 
   function showActionError(message: string) {
@@ -228,7 +234,7 @@ export function ConfirmPendingGuestsButton({
           {isZeroDollar
             ? " There is no charge for this booking."
             : hasSavedPaymentMethod
-              ? ` The member's saved card will be charged ${formatCents(finalPriceCents, format)}.`
+              ? ` The member's saved card will be charged ${formatCents(savedCardChargeCents, format)}.`
               : " There is no saved card, so the booking will move to payment-owed for payment to be arranged separately."}
         </p>
         <FocusedActionError

@@ -1,3 +1,4 @@
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import { PaymentSource, Prisma } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
@@ -22,6 +23,7 @@ import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instr
 import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { isClosedByCreditSpentOutsideApp } from "@/lib/xero-operation-resolution";
+import { outcomeWriteGuard, refusedOutcomeWrite, type XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
 
 export interface XeroSyncOperationInput {
   direction: string;
@@ -541,7 +543,7 @@ export async function startXeroSyncOperation(
       if (!isPrismaUniqueConstraintError(error) || !input.correlationKey || db !== prisma) throw error;
       const { correlationKey } = input;
       const existing = await db.xeroSyncOperation.findFirst({
-        where: { correlationKey, status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] } },
+        where: { correlationKey, status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] } },
         orderBy: { createdAt: "desc" },
       });
       if (existing) return existing;
@@ -922,12 +924,14 @@ export async function deactivateXeroObjectLinks(params: {
 }
 
 export async function completeXeroSyncOperation(
-  operationId: string,
+  // #4373: the claim this outcome was made under; it never lands on another claim (`INV-INT-029`).
+  claim: XeroOperationClaim,
   completion: XeroSyncOperationCompletion,
-  // #3548: `keepSucceeded` leaves a row a concurrent leg completed SUCCEEDED as it is, links and all, and answers null.
-  // #4256: `onlyIfRunningSince` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
-  options?: { store?: Prisma.TransactionClient; keepSucceeded?: boolean; onlyIfRunningSince?: Date; alert?: false },
+  // #4356 (`INV-INT-029`): no PARTIAL, FAILED or CANCELLED completion lands on a recorded success or a repair's claim; null then.
+  // #4256: `retryClaim` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
+  options?: { store?: Prisma.TransactionClient; retryClaim?: true; alert?: false },
 ) {
+  const operationId = claim.id;
   // #2314: organisation-agnostic in the column, organisation applied on read —
   // see the note on the object-link funnel above.
   const xeroObjectUrl = stripXeroOrgShortCode(
@@ -943,7 +947,7 @@ export async function completeXeroSyncOperation(
       status,
       // #4049: no earlier wait's or failure's error stays on a SUCCEEDED row (PARTIAL keeps it).
       ...(status === "SUCCEEDED" ? { lastErrorCode: null, lastErrorMessage: null } : {}),
-      ...(status !== "SUCCEEDED" && options?.onlyIfRunningSince ? { lastErrorCode: null } : {}),
+      ...(status !== "SUCCEEDED" && options?.retryClaim ? { lastErrorCode: null } : {}),
       ...(status !== "SUCCEEDED" && completion.lastErrorMessage ? { lastErrorMessage: completion.lastErrorMessage } : {}),
       responsePayload: sanitizeForJson(completion.responsePayload),
       xeroObjectType: completion.xeroObjectType ?? null,
@@ -952,16 +956,18 @@ export async function completeXeroSyncOperation(
       xeroObjectUrl,
       completedAt: new Date(),
     };
-    const guard = options?.onlyIfRunningSince
-      ? { status: "RUNNING" as const, startedAt: options.onlyIfRunningSince }
-      : options?.keepSucceeded ? { status: { not: "SUCCEEDED" as const } } : null;
-    if (guard) {
-      const claimed = await tx.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
-      if (claimed.count === 0) return null;
+    const guard = outcomeWriteGuard(claim, status, { retryClaim: options?.retryClaim });
+    const claimed = await tx.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
+    if (claimed.count === 0) {
+      // #4373 review F1: a success refused on a later claim still records its links.
+      return refusedOutcomeWrite(tx, claim, status, options ?? {}, {
+        xeroObjectId: completion.xeroObjectId ?? null,
+        recordLinks: async () => {
+          for (const link of completion.extraLinks ?? []) await upsertXeroObjectLinkWithClient(tx, link);
+        },
+      });
     }
-    const operation = guard
-      ? await tx.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } })
-      : await tx.xeroSyncOperation.update({ where: { id: operationId }, data });
+    const operation = await tx.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } });
 
     for (const link of completion.extraLinks ?? []) {
       await upsertXeroObjectLinkWithClient(tx, link);
@@ -993,7 +999,9 @@ export async function completeXeroSyncOperation(
 
 /**
  * The optional write guard of {@link failXeroSyncOperation}: at most one, so a
- * caller can never pass two and have one silently dropped (#3462).
+ * caller can never pass two and have one silently dropped (#3462). Either way a failure
+ * never lands on a recorded success, a repair's claim (#4356) or another claim (#4373,
+ * `INV-INT-029`): null.
  */
 type FailXeroSyncOperationGuard =
   | {
@@ -1003,23 +1011,24 @@ type FailXeroSyncOperationGuard =
        * approval can withdraw a kept row in between. Answers null then.
        */
       keepCancelled: true;
-      onlyIfRunningSince?: never;
+      retryClaim?: never;
     }
   | {
       /**
-       * #3462: fail the row ONLY while it is still the RUNNING claim stamped at
-       * this instant - the abandon of a claim whose handler threw before it
-       * owned completion. A row the handler already completed, failed or
-       * cancelled, or one a later claim re-stamped, is left exactly as it is.
-       * Answers null then.
+       * #3462: fail the row ONLY while it is still the claim's RUNNING claim -
+       * a retry's abandon of a claim whose handler threw before it owned
+       * completion. A row the handler already completed, failed or cancelled,
+       * or one a later claim re-stamped, is left exactly as it is. Answers null
+       * then, and the retry reports it.
        */
-      onlyIfRunningSince: Date;
+      retryClaim: true;
       keepCancelled?: never;
     }
-  | { keepCancelled?: never; onlyIfRunningSince?: never };
+  | { keepCancelled?: never; retryClaim?: never };
 
 export async function failXeroSyncOperation(
-  operationId: string,
+  // #4373: the claim this failure was made under; it never lands on another claim (`INV-INT-029`).
+  claim: XeroOperationClaim,
   error: unknown,
   responsePayload?: unknown,
   options?: FailXeroSyncOperationGuard & {
@@ -1030,6 +1039,7 @@ export async function failXeroSyncOperation(
     lastErrorMessage?: string;
   }
 ) {
+  const operationId = claim.id;
   const data = {
     status: "FAILED" as const,
     ...xeroSyncErrorFields(error, options?.lastErrorMessage),
@@ -1037,21 +1047,14 @@ export async function failXeroSyncOperation(
     completedAt: new Date(),
   };
 
-  const guard = options?.onlyIfRunningSince
-    ? { status: "RUNNING" as const, startedAt: options.onlyIfRunningSince }
-    : options?.keepCancelled
-      ? { status: { not: "CANCELLED" as const } }
-      : null;
-  if (guard) {
-    const failed = await prisma.xeroSyncOperation.updateMany({
-      where: { id: operationId, ...guard },
-      data,
-    });
-    if (failed.count === 0) return null;
-  }
-  const operation = guard
-    ? await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } })
-    : await prisma.xeroSyncOperation.update({ where: { id: operationId }, data });
+  // #4356: always guarded - a failure never lands on a recorded success. The
+  // row returned, and offered to the alert, is the one this write wrote.
+  const guard = outcomeWriteGuard(claim, "FAILED", {
+    retryClaim: options?.retryClaim,
+    alsoKeep: options?.keepCancelled ? "CANCELLED" : undefined,
+  });
+  const [operation] = await prisma.xeroSyncOperation.updateManyAndReturn({ where: { id: operationId, ...guard }, data });
+  if (!operation) return refusedOutcomeWrite(prisma, claim, "FAILED", options ?? {});
 
   try {
     const { maybeNotifyXeroRepeatedFailure } = await import("./xero-hardening");

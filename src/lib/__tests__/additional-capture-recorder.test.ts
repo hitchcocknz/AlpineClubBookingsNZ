@@ -233,7 +233,7 @@ describe("readCaptureRecorder (B, C)", () => {
     );
   });
 
-  it("MUTATION #4324 (INV-PAY-140): is the kept late capture's own invoice queued for it, before anything the primary or a gap took", async () => {
+  it("MUTATION #4324 (INV-PAY-141): is the kept late capture's own invoice queued for it, before anything the primary or a gap took", async () => {
     found = { naming: null, covering: gapCovering(3_000), own: null, kept: { id: "op_kept" } };
     await expect(read()).resolves.toEqual({ kind: "kept-late-capture-invoice", operationId: "op_kept" });
     expect(store.xeroSyncOperation.findFirst).toHaveBeenCalledWith({
@@ -279,6 +279,16 @@ describe("readCaptureRecorder (B, C)", () => {
     await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_change_invoice" });
     const ownRead = store.xeroSyncOperation.findFirst.mock.calls.map((call) => call[0]).find((args) => args.where.localModel);
     expect(ownRead?.where).toMatchObject({ localModel: "BookingModification", localId: "mod_change", status: { not: "CANCELLED" } });
+  });
+
+  it("MUTATION #3403 review 2 (F3): is the receipt where the change's own paid invoice names ANOTHER capture - the request that carried its balance", async () => {
+    // A superseded ask's stale-tab capture: the change's invoice was moved onto, and paid by, the carrier.
+    found.own = { id: "op_change_invoice", status: "SUCCEEDED", requestPayload: { recordPayment: true, paymentIntentId: "pi_carrier" } };
+    store.xeroObjectLink.findFirst.mockResolvedValue({ id: "link_change", xeroObjectId: "inv_change", active: true });
+    await expect(read()).resolves.toEqual({ kind: "receipt", figures, gap: null, target: null, alreadyRecordedCents: 0 });
+    // Naming this capture, it still records it.
+    found.own = { id: "op_change_invoice", status: "SUCCEEDED", requestPayload: { recordPayment: true, paymentIntentId: "pi_change" } };
+    await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_change_invoice" });
   });
 
   it("is the receipt, against the gap invoice, where the capture's change is one the gap bills for", async () => {
@@ -357,6 +367,8 @@ describe("readSupplementaryRecordedIntents (round 3, F3)", () => {
           // Round 5: an unpaid invoice naming its intent records nothing either.
           { localModel: "BookingModification", localId: "mod_unpaid_named", requestPayload: { paymentIntentId: "pi_unpaid_named", recordPayment: false } },
           { localModel: "BookingModification", localId: "mod_gap", requestPayload: { primaryInvoiceGap: true, recordPayment: true } },
+          // #3403 review 2 (F3): moved onto, and paid by, the request that carried its balance.
+          { localModel: "BookingModification", localId: "mod_moved", requestPayload: { paymentIntentId: "pi_carrier", recordPayment: true } },
         ]),
       },
     };
@@ -369,9 +381,11 @@ describe("readSupplementaryRecordedIntents (round 3, F3)", () => {
         { paymentIntentId: "pi_gap", bookingModificationId: "mod_gap" },
         { paymentIntentId: "pi_none", bookingModificationId: null },
         { paymentIntentId: "pi_unpaid_named", bookingModificationId: "mod_unpaid_named" },
+        { paymentIntentId: "pi_superseded_ask", bookingModificationId: "mod_moved" },
+        { paymentIntentId: "pi_carrier", bookingModificationId: "mod_carrier" },
       ],
       store as never,
     );
-    expect([...recorded].sort()).toEqual(["pi_named", "pi_paid"]);
+    expect([...recorded].sort()).toEqual(["pi_carrier", "pi_named", "pi_paid"]);
   });
 });

@@ -58,7 +58,7 @@ import {
  *   invoiced, get the kept-capture invoice (`xero-kept-late-capture-invoice.ts`),
  *   queued INSIDE the dismissal's claim so it commits with the decision.
  * - A CHANGE payment on a booking Xero invoiced is split on the evidence
- *   (#4324, owner decision 25 Oct 2026, `INV-PAY-140`;
+ *   (#4324, owner decision 25 Oct 2026, `INV-PAY-141`;
  *   `keptChangeCaptureRoute`): a change invoice that already answers the
  *   capture is released after commit (or its retired row re-queued), then any
  *   refund already taken is credited back; where the primary invoice bills the
@@ -208,7 +208,7 @@ export async function readKeptCaptureRecordedElsewhere(
  * reaches here; a keep after a reopen finds the task's live row and queues
  * nothing more. `clubZone` is read before the transaction (`INV-LOCK-004`).
  *
- * LOCKS (#4324, `INV-PAY-140`): the task row first (`lockKeptLateCaptureTask`;
+ * LOCKS (#4324, `INV-PAY-141`): the task row first (`lockKeptLateCaptureTask`;
  * the dismissal already holds it), the task re-read there and still
  * DISMISSED, then - for a change payment on an invoiced booking - the
  * per-anchor supplementary-invoice lock on the change (`captureChangeId`, else

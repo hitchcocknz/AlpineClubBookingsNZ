@@ -201,6 +201,19 @@ describe("repository agent workflow contract", () => {
     }
   });
 
+  // #4392 (owner decision, 26 Oct 2026): a Sekreton lane writes as its app and
+  // runs the whole pipeline itself; its text is agent text, never owner authority.
+  it("names sekreton[bot] as an agent identity whose lane runs the whole pipeline", () => {
+    const agents = readRepoFile("AGENTS.md").replace(/\s+/g, " ");
+    const coordination = readRepoFile("docs/agents/COORDINATION.md").replace(/\s+/g, " ");
+    const issueWorkflow = readRepoFile("docs/agents/ISSUE_WORKFLOW.md").replace(/\s+/g, " ");
+    expect(agents).toContain("agents are `thatskiff33-agents` or `sekreton[bot]`, the owner is `thatskiff33`");
+    expect(issueWorkflow).toContain("its text is never owner authorisation");
+    expect(coordination).toContain("runs the whole pipeline itself");
+    expect(coordination).toContain("Another lane finishes a Sekreton PR only when the owner reassigns it on the issue");
+    expect(coordination).toContain("never as a push to its branch");
+  });
+
   it("recognises a fixed reviewer count however it is worded", () => {
     // The wording CP1 removed, close variants, and the two the independent
     // review of #4379 showed the first detector missed, are caught…

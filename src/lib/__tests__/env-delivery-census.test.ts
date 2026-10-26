@@ -6,6 +6,7 @@ import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
 import { ciEnvHeredocs } from "./helpers/ci-env-heredocs";
+import { trackedRootDotenvFiles } from "./helpers/tracked-root-dotenv";
 import {
   appEnvironmentAnchor,
   BASE_COMPOSE,
@@ -81,11 +82,13 @@ const ROOT = process.cwd();
  */
 const ENV_ASSIGNMENT = /^[ \t]*(?:export[ \t]+)?([A-Z][A-Z0-9_]*)[ \t]*=/;
 
-/** Tracked dotenv files and examples at the repository root, discovered. */
+/**
+ * Tracked dotenv files and examples at the repository root, discovered through
+ * Git (#4411) - a developer's untracked `.env` is not something this repository
+ * tells an operator to set.
+ */
 function envFileSources(): string[] {
-  return readdirSync(ROOT)
-    .filter((name) => /^\.env($|\.)/.test(name))
-    .sort();
+  return trackedRootDotenvFiles(ROOT);
 }
 
 /**

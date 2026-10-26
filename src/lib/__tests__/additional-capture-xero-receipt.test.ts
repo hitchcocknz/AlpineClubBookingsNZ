@@ -105,6 +105,7 @@ import { ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE, supplementaryReplayMayRecordPa
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
+import { xeroClaim } from "@/lib/__tests__/helpers/xero-claim";
 
 const PRIMARY = "11111111-1111-4111-8111-111111111111";
 const GAP = "22222222-2222-4222-8222-222222222222";
@@ -251,11 +252,11 @@ beforeEach(() => {
   mocks.txFindManyLink.mockResolvedValue([]);
 });
 
-const run = (seam = providers()) => recordAdditionalCaptureReceipt({ syncOperationId: "op_receipt" }, seam);
+const run = (seam = providers()) => recordAdditionalCaptureReceipt({ syncOperation: xeroClaim("op_receipt") }, seam);
 const storedPlan = () => mocks.updateOperation.mock.calls[0]?.[0]?.data?.requestPayload?.plan;
 const expectRefused = (reason: string) => {
   expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(
-    "op_receipt",
+    expect.objectContaining({ id: "op_receipt" }),
     expect.any(Error),
     expect.objectContaining({ refused: reason }),
     expect.objectContaining({ lastErrorMessage: expect.stringContaining("was not recorded in Xero") }),
@@ -317,7 +318,7 @@ describe("recordAdditionalCaptureReceipt", () => {
       }),
     );
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_receipt",
+      expect.objectContaining({ id: "op_receipt" }),
       expect.objectContaining({
         xeroObjectType: "PAYMENT",
         xeroObjectId: "xero_payment_1",
@@ -388,7 +389,7 @@ describe("recordAdditionalCaptureReceipt", () => {
 
       expect(seam.getAuthenticatedXeroClient).not.toHaveBeenCalled();
       expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-        "op_receipt",
+        expect.objectContaining({ id: "op_receipt" }),
         expect.objectContaining({ status: "SUCCEEDED", responsePayload: expect.objectContaining({ skipped }) }),
       );
     });
@@ -503,7 +504,7 @@ describe("recordAdditionalCaptureReceipt", () => {
     await run(seam);
 
     expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
-    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", expect.objectContaining({ xeroObjectId: "xero_payment_lost" }));
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ id: "op_receipt" }), expect.objectContaining({ xeroObjectId: "xero_payment_lost" }));
   });
 
   it.each([
@@ -515,13 +516,13 @@ describe("recordAdditionalCaptureReceipt", () => {
 
     await expect(run(seam)).resolves.toBeNull();
 
-    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", { status: "CANCELLED", responsePayload: { skipped } });
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ id: "op_receipt" }), { status: "CANCELLED", responsePayload: { skipped } });
     expect(mocks.sendAdminXeroSyncErrorAlert).not.toHaveBeenCalled();
     expect(seam.getAuthenticatedXeroClient).not.toHaveBeenCalled();
   });
 
   /**
-   * #4324 (owner decision 25 Oct 2026; `INV-PAY-140`): a late capture a
+   * #4324 (owner decision 25 Oct 2026; `INV-PAY-141`): a late capture a
    * treasurer KEPT on a cancelled booking whose primary invoice bills its
    * change is recorded as a payment on that invoice, capped at what Xero
    * shows due.
@@ -685,7 +686,7 @@ describe("recordAdditionalCaptureReceipt", () => {
 
     await run(seam);
 
-    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", {
+    expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ id: "op_receipt" }), {
       status: "CANCELLED",
       responsePayload: { skipped: "capture-not-kept", refundState: "refunded" },
     });
@@ -757,7 +758,7 @@ describe("recordAdditionalCaptureReceipt", () => {
       await expect(run(seam)).resolves.toBe("xero_payment_first");
 
       expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
-      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", expect.objectContaining({ xeroObjectId: "xero_payment_first" }));
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ id: "op_receipt" }), expect.objectContaining({ xeroObjectId: "xero_payment_first" }));
       expect(mocks.sendAdminXeroSyncErrorAlert).toHaveBeenCalledWith(
         expect.objectContaining({ errorMessage: expect.stringContaining("another document now records it too") }),
       );
@@ -933,7 +934,7 @@ describe("recordAdditionalCaptureReceipt", () => {
       expect(mocks.updateOperation).not.toHaveBeenCalled();
       expect(seam.createXeroPaymentForInvoice).not.toHaveBeenCalled();
       expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-        "op_receipt",
+        expect.objectContaining({ id: "op_receipt" }),
         expect.objectContaining({ status: "SUCCEEDED", responsePayload: expect.objectContaining({ skipped: "recorded-by-supplementary-invoice" }) }),
       );
     });
@@ -1009,7 +1010,7 @@ describe("recordAdditionalCaptureReceipt", () => {
     await expect(run(seam)).rejects.toThrow("Xero 500");
 
     expect(storedPlan()).toEqual(expect.objectContaining({ invoiceId: PRIMARY }));
-    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith("op_receipt", expect.objectContaining({ message: "Xero 500" }));
+    expect(mocks.failXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ id: "op_receipt" }), expect.objectContaining({ message: "Xero 500" }));
   });
 });
 

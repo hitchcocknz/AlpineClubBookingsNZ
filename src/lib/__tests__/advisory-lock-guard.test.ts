@@ -546,6 +546,20 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-001",
   },
   {
+    site: "claimResolveRecordingRefundNote#1",
+    tier: "GLOBAL",
+    reason:
+      "#4421 (owner decision 26 Oct 2026, INV-INT-028: one note, one refund): 'Resolve by hand' on a FAILED payment refund-note create that names no note of its own records the Xero credit note the officer made, with the resolve - on the row and as the payment's tracked REFUND_CREDIT_NOTE link (writeHandMadeRefundNoteLink, the #4162 answer's own writer). Its counterpart is the #4162 hand-made answer (recordHandMadeRefundNoteLink, inside resolveManualRefundTask#1, which holds lock(1) for its whole transaction): both check that no create row or link here records the note and then record it, on ANY payment, so no per-payment row covers the race and a note-id key would be a new advisory key. Under lock(1) whichever commits second sees the first and refuses with a 409, so a note is recorded once; a second resolve offering the same note queues here too. The #4162 follow-up's order: lock(1) FIRST, then the Payment row (lockPaymentForRefundedTotal) BEFORE the payment's records are read, then the row re-read, a retry of it that ran since the route read it refused (review, concurrency F1), a run that already raised its note or a queued live copy refused (review round 2), the note's create rows and links read one after the other, the status-guarded claim (FAILED, unresolved, no note) and the link row last, through the link funnel - the inbound link write and the heal take only the link row, so no cycle. A lost claim writes nothing; a refusal rolls back the claim. The Xero check (verifyHandMadeRefundNote) runs before the transaction opens and the re-read after the commit, so no provider call is held under it.",
+    invariant: "INV-LOCK-001",
+  },
+  {
+    site: "withdrawResolveRecordingRefundNote#1",
+    tier: "GLOBAL",
+    reason:
+      "#4421 (INV-INT-028): the withdrawal of a 'Resolve by hand' that recorded a note, when the route's post-commit check finds a retry of the row running beside the mark (findRetryOverlappingMark). It clears the mark and the note on the row and retires the link the claim wrote, so it un-records the same fact claimResolveRecordingRefundNote#1 records and the #4162 answer reads; it takes the claim's own order - lock(1) FIRST, then the Payment row (lockPaymentForRefundedTotal), the row's guarded updateMany (this mark, this note) and the link row last - so it never interleaves with an answer or another resolve reading those records. No provider call.",
+    invariant: "INV-LOCK-001",
+  },
+  {
     site: "resolveManualRefundTask#1",
     tier: "GLOBAL",
     reason:
@@ -1316,7 +1330,7 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // an invoice naming no capture, and an officer's inline Retry of a change's
   // invoice re-asks under the change's key alone, in its own short
   // transaction, before its Xero call. No new raw site, no new key.
-  // #4324 (`INV-PAY-140`): the keep's decision for a kept change capture
+  // #4324 (`INV-PAY-141`): the keep's decision for a kept change capture
   // (`planKeptLateCaptureXeroRecord`) takes it on the change (else the
   // booking) AFTER the approval task's row - the dismissal's claim, or the
   // repair tool's own `lockKeptLateCaptureTask` - and as its last lock; the
@@ -1332,6 +1346,16 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // amount bills, sorted, never the booking's, before asking whether a kept
   // capture's own invoice bills any of them. Same site, no new key.
   // Task row -> anchor, never the reverse. No new raw site, no new key.
+  // #3403 (`INV-PAY-140`): the superseded-invoice move
+  // (`superseded-ask-invoice-carry.ts`) calls the same helper on each change
+  // whose waiting invoice it re-points at the request carrying its balance,
+  // and on that carrier's own key (its change, else the booking - booking
+  // first, else the two changes sorted), one short transaction per change
+  // holding nothing else; its return (`superseded-ask-invoice-return.ts`)
+  // takes it on one change alone, inside a kept capture's release. Their
+  // callers (the supersede's cancel step, the minters after their cancels, an
+  // edit's Xero leg, the reaper, the release) hold nothing there. Still no new
+  // raw site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,
@@ -1419,6 +1443,15 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
   "src/app/api/members/[id]/photo/route.ts": 2,
+  // Alpine Central Server version recorder (#4366): `lockServerNzSettings`
+  // locks the singleton settings row (`SELECT 1 … FOR UPDATE`) so
+  // `recordServerVersionIfCurrent` re-reads the connection (address and API-key
+  // credential version) under it before it records the server's answer; a
+  // connection change writes the same row, so the two serialise. #4277 adds a
+  // second caller of the same one statement (the download record step). No
+  // advisory key; disjoint from booking/money writers. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Alpine Central Server version recorder".
+  "src/lib/servernz-settings.ts": 1,
   // Adult-member-hosting queue participants (#2597): the shared helper mints
   // one reviewed `FOR UPDATE` protocol for member merge over master, loser and
   // every planned ancillary owner, plus the shared standing-subject barrier

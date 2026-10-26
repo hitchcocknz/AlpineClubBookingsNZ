@@ -36,7 +36,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  *    locks `card-refund-paid-another-way.test.ts` pins. What it queues is the
  *    REAL enqueue, and the receipt's worker and the cash evidence are real.
  *
- * #4324 (`INV-PAY-140`): a kept change capture whose primary invoice bills the
+ * #4324 (`INV-PAY-141`): a kept change capture whose primary invoice bills the
  * change is recorded by the REAL receipt enqueue and worker
  * (`recordAdditionalCaptureReceipt`) against a fake Xero whose AmountDue is
  * read from the ledger (cases e3, e4).
@@ -186,7 +186,7 @@ vi.mock("@/lib/xero-sync", () => ({
     return row;
   },
   completeXeroSyncOperation: async (
-    operationId: string,
+    claim: { id: string },
     completion: {
       status?: string;
       extraLinks?: Array<Record<string, unknown>>;
@@ -194,7 +194,7 @@ vi.mock("@/lib/xero-sync", () => ({
       responsePayload?: unknown;
     },
   ) => {
-    const row = h.table("xeroSyncOperation").find((r) => r.id === operationId)!;
+    const row = h.table("xeroSyncOperation").find((r) => r.id === claim.id)!;
     row.status = completion.status ?? "SUCCEEDED";
     row.xeroObjectId = completion.xeroObjectId ?? row.xeroObjectId ?? null;
     row.responsePayload = completion.responsePayload ?? null;
@@ -210,8 +210,8 @@ vi.mock("@/lib/xero-sync", () => ({
   upsertXeroObjectLink: async (link: Record<string, unknown>) => {
     h.writeLinks([link]);
   },
-  failXeroSyncOperation: async (operationId: string) => {
-    const row = h.table("xeroSyncOperation").find((r) => r.id === operationId)!;
+  failXeroSyncOperation: async (claim: { id: string }) => {
+    const row = h.table("xeroSyncOperation").find((r) => r.id === claim.id)!;
     row.status = "FAILED";
   },
 }));
@@ -368,6 +368,7 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
 import { createXeroPaymentForInvoice } from "@/lib/xero-invoice-payments";
 import type { ClubTimeZone } from "@/lib/club-time";
+import { xeroClaim } from "@/lib/__tests__/helpers/xero-claim";
 
 const ZONE = "Pacific/Auckland" as ClubTimeZone;
 const CAPTURED_AT = new Date("2026-06-10T01:00:00.000Z"); // 10 Jun at the club
@@ -578,13 +579,13 @@ async function runOutbox() {
     (r) => r.queueType === "KEPT_LATE_CAPTURE_INVOICE" && r.status === "PENDING",
   )) {
     row.status = "RUNNING";
-    await createXeroKeptLateCaptureInvoice({ syncOperationId: row.id }).catch(() => undefined);
+    await createXeroKeptLateCaptureInvoice({ syncOperation: xeroClaim(row.id) }).catch(() => undefined);
   }
   for (const row of h.table("xeroSyncOperation").filter(
     (r) => r.queueType === "ADDITIONAL_CAPTURE_RECEIPT" && r.status === "PENDING",
   )) {
     row.status = "RUNNING";
-    await recordAdditionalCaptureReceipt({ syncOperationId: row.id }, receiptProviders).catch(() => undefined);
+    await recordAdditionalCaptureReceipt({ syncOperation: xeroClaim(row.id) }, receiptProviders).catch(() => undefined);
   }
   for (const note of h.table("xeroSyncOperation").filter(
     (r) => r.queueType === "REFUND_CREDIT_NOTE" && r.status === "PENDING",
@@ -773,7 +774,7 @@ describe("a kept late capture is counted once in Xero", () => {
   });
 
   /**
-   * #4324 (`INV-PAY-140`): a change invoice the reaper RETIRED still answers
+   * #4324 (`INV-PAY-141`): a change invoice the reaper RETIRED still answers
    * the capture it names (`RETIRED_CODES_ANSWERING_CAPTURE`), though every row
    * the change has is CANCELLED - so the keep leaves it to the late-success
    * release and never raises the kept-capture invoice or a receipt beside it.
@@ -886,7 +887,7 @@ describe("a kept late capture is counted once in Xero", () => {
     row.status = "RUNNING"; // claimed, not yet at its locked check
     await keep(); // the re-keep waits on the task row, then finds the live RUNNING row
     expect(h.table("xeroSyncOperation").filter((r) => r.queueType === "KEPT_LATE_CAPTURE_INVOICE")).toHaveLength(1);
-    await createXeroKeptLateCaptureInvoice({ syncOperationId: row.id }); // its check now reads DISMISSED
+    await createXeroKeptLateCaptureInvoice({ syncOperation: xeroClaim(row.id) }); // its check now reads DISMISSED
     expect(books()).toEqual({ income: 24000, stripe: 24000, receivable: 0 });
   });
 
@@ -908,7 +909,7 @@ describe("a kept late capture is counted once in Xero", () => {
  */
 /**
  * #4324 (owner decision 25 Oct 2026, Q1 "split on the evidence";
- * `INV-PAY-140`): a kept CHANGE capture on a paid-cancelled booking whose
+ * `INV-PAY-141`): a kept CHANGE capture on a paid-cancelled booking whose
  * primary invoice exists. The paid cancel leaves the primary standing, so
  * where it bills the change it still shows the change owing; the capture is
  * then a payment on it (e3), never a second invoice. Where nothing bills the
@@ -1434,7 +1435,7 @@ describe("round 6: a late charge's refund paid another way - record the receipt,
     const row = h.table("xeroSyncOperation").find((r) => r.queueType === "KEPT_LATE_CAPTURE_INVOICE")!;
     expect(row.status).toBe("PARTIAL");
     row.status = "RUNNING"; // the retry
-    await createXeroKeptLateCaptureInvoice({ syncOperationId: row.id });
+    await createXeroKeptLateCaptureInvoice({ syncOperation: xeroClaim(row.id) });
     await runOutbox();
     // One note, never a second for the retry.
     expect(noteRows()).toHaveLength(1);

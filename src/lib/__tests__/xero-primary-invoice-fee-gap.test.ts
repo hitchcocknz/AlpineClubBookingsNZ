@@ -870,7 +870,7 @@ describe("the primary invoice's worth gap (#3980)", () => {
     );
   });
 
-  it("MUTATION #4324 (`INV-PAY-140`, item D): an anchor a kept late capture's own invoice bills is refused, and the shortfall goes to the treasurer's task naming why", async () => {
+  it("MUTATION #4324 (`INV-PAY-141`, item D): an anchor a kept late capture's own invoice bills is refused, and the shortfall goes to the treasurer's task naming why", async () => {
     mocks.enqueue.mockResolvedValue({ queueOperationId: null, outcome: "none", refusedBy: "kept-late-capture-invoice" });
     await expect(queuePrimaryInvoiceWorthGap({ bookingId: "booking_1", atLink: increaseAtLink() })).resolves.toMatchObject({
       gapCents: 8_000,

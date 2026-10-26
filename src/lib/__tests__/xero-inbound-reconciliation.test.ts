@@ -839,7 +839,7 @@ describe("processStoredXeroInboundEvents", () => {
       expect.objectContaining({ store: expect.any(Object) }),
     );
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           contactGroupsSeen: 1,
@@ -5581,7 +5581,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           matchedAccountCreditPayments: 0,
@@ -5688,7 +5688,7 @@ describe("processStoredXeroInboundEvents", () => {
       }),
     );
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           handled: true,
@@ -5741,7 +5741,7 @@ describe("processStoredXeroInboundEvents", () => {
       "No inbound reconciliation handler for Xero webhook category",
     );
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           handled: false,
@@ -5901,7 +5901,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           matchedAccountCreditPayments: 1,
@@ -6097,7 +6097,7 @@ describe("processStoredXeroInboundEvents", () => {
       data: { creditAppliedCents: 0 },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           // The fallback opened the applied-credit repair gate for a note with
@@ -6207,7 +6207,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           matchedAccountCreditPayments: 1,
@@ -6311,7 +6311,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           matchedRefundedPayments: 1,
@@ -6523,7 +6523,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           matchedRefundedPayments: 1,
@@ -6675,7 +6675,7 @@ describe("processStoredXeroInboundEvents", () => {
       },
     });
     expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(
-      "op_1",
+      expect.objectContaining({ id: "op_1" }),
       expect.objectContaining({
         responsePayload: expect.objectContaining({
           matchedRefundedPayments: 1,
