@@ -700,10 +700,11 @@ function deferred() {
             import("@/lib/additional-capture-xero-receipt"),
             import("@/lib/xero-applied-credit-operation-serialization"),
           ]);
-          expect(await claimXeroSyncOperationToRunning(receipt.id, { localModel: { in: ["PaymentTransaction"] } })).toBe(true);
+          const receiptClaim = await claimXeroSyncOperationToRunning(receipt.id, { localModel: { in: ["PaymentTransaction"] } });
+          expect(receiptClaim).not.toBeNull();
           const runReceipt = () =>
             worker.recordAdditionalCaptureReceipt(
-              { syncOperationId: receipt.id },
+              { syncOperation: receiptClaim! },
               {
                 getAuthenticatedXeroClient: (async () => ({ xero: {}, tenantId: "tenant_race_3403" })) as never,
                 callXeroApi: (async () => ({
@@ -964,10 +965,11 @@ function deferred() {
           import("@/lib/xero-operation-claim"),
           import("@/lib/additional-capture-xero-receipt"),
         ]);
-        expect(await claimXeroSyncOperationToRunning(receipt!.id, { localModel: { in: ["PaymentTransaction"] } })).toBe(true);
+        const receiptClaim = await claimXeroSyncOperationToRunning(receipt!.id, { localModel: { in: ["PaymentTransaction"] } });
+        expect(receiptClaim).not.toBeNull();
         const sent: Array<{ invoiceId: string; amountCents: number }> = [];
         await worker.recordAdditionalCaptureReceipt(
-          { syncOperationId: receipt!.id },
+          { syncOperation: receiptClaim! },
           {
             getAuthenticatedXeroClient: (async () => ({ xero: {}, tenantId: "tenant_race_3403" })) as never,
             callXeroApi: (async (_call: unknown, meta: { context: string }) => ({
