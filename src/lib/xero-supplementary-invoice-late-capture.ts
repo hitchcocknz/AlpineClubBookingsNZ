@@ -21,7 +21,7 @@ import {
   stillWaitingOnIntentWhere,
   supplementaryInvoicesNamingIntentWhere,
 } from "@/lib/xero-supplementary-invoice-statuses";
-import { returnMovedInvoicesToCapturedIntent } from "@/lib/superseded-ask-invoice-return";
+import { alertTakenBackInvoicesPaidAgain, returnMovedInvoicesToCapturedIntent } from "@/lib/superseded-ask-invoice-return";
 import {
   OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES,
   attachPaymentIntentToWaitingSupplementaryInvoiceOperations,
@@ -286,6 +286,8 @@ export async function releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(
     paymentIntentId,
     transaction,
   );
+  // Review 2 (F3): an invoice taken back from this request by its change's own capture was paid twice.
+  await alertTakenBackInvoicesPaidAgain(paymentIntentId);
 
   const retiredOperations = (
     await prisma.xeroSyncOperation.findMany({

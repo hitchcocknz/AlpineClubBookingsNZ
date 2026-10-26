@@ -7,9 +7,7 @@
  * cancelled at Stripe, so a stale tab can still pay it, and the club keeps that
  * capture like any other. Its change's invoice must then record THAT capture:
  * left on the carrier, the capture's release would find nothing parked on it,
- * its receipt would stand down to the change's own invoice
- * (`readCaptureRecorder`), and if the carrier were never paid the invoice
- * would be retired - the capture recorded nowhere.
+ * and if the carrier were never paid the invoice would be retired.
  *
  * So the late-capture release, for a capture the club KEEPS, first returns
  * every invoice still `WAITING_PAYMENT` that was first parked on this intent
@@ -22,15 +20,35 @@
  * 2, F2): paid, unless this capture's own receipt already records it - the
  * unpaid a move onto a carrier with its own receipt wrote
  * (`SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY`) was about the carrier's capture.
+ *
+ * WHEN BOTH ARE PAID AND KEPT (review 2, F3) the change was paid twice - by
+ * its own ask and inside the carrier's capture - and no answer records both
+ * automatically:
+ * - the CARRIER first: its release issued the change's invoice recording the
+ *   carrier's capture, and nothing is waiting to take back. The ask's own
+ *   capture is then recorded by its own receipt: a change's invoice naming
+ *   another capture is never this one's recorder (`readCaptureRecorder`).
+ * - the ASK first: the invoice comes back here and records the ask's
+ *   capture, and the carrier's own invoice records only its own amount, so
+ *   the part of the carrier's capture that paid this change again is billed
+ *   by nothing. The return marks the invoice with the carrier it was taken
+ *   from (`SUPPLEMENTARY_INVOICE_TAKEN_BACK_FROM_KEY`), and the carrier's
+ *   kept release tells an officer, once ever per invoice
+ *   ({@link alertTakenBackInvoicesPaidAgain}), rather than record that money
+ *   anywhere.
  */
 import type { Prisma } from "@prisma/client";
 
+import { sendAdminAlertOnceEver } from "@/lib/admin-alert-once";
 import { anchorCaptureHasReceipt } from "@/lib/additional-capture-receipt-link";
+import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
 import { prisma } from "@/lib/prisma";
 import {
   SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY,
   SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY,
+  SUPPLEMENTARY_INVOICE_TAKEN_BACK_FROM_KEY,
 } from "@/lib/supplementary-invoice-parked-from";
+import { supplementaryInvoiceBilledCents } from "@/lib/xero-operation-outbox-payload";
 import { asRecord, readString } from "@/lib/xero-json";
 import { lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
 import { SUPPLEMENTARY_INVOICE_CREATE_WHERE } from "@/lib/xero-supplementary-invoice-statuses";
@@ -82,7 +100,13 @@ export async function returnMovedInvoicesToCapturedIntent(paymentIntentId: strin
             correlationKey: row.correlationKey,
             requestPayload: { path: ["paymentIntentId"], equals: payload.paymentIntentId },
           },
-          data: { requestPayload: { ...unmoved, paymentIntentId } as Prisma.InputJsonObject },
+          data: {
+            requestPayload: {
+              ...unmoved,
+              paymentIntentId,
+              [SUPPLEMENTARY_INVOICE_TAKEN_BACK_FROM_KEY]: payload.paymentIntentId,
+            } as Prisma.InputJsonObject,
+          },
         });
         count += written.count;
       }
@@ -90,4 +114,39 @@ export async function returnMovedInvoicesToCapturedIntent(paymentIntentId: strin
     });
   }
   return returned;
+}
+
+/**
+ * Review 2 (F3): a kept capture of a request that an invoice was taken back
+ * from paid that change a second time; nothing bills that part of it. One
+ * officer alert per invoice, ever (`sendAdminAlertOnceEver`): the webhook, the
+ * confirm route, the reaper and a treasurer's keep may all release this capture.
+ */
+export async function alertTakenBackInvoicesPaidAgain(paymentIntentId: string): Promise<number> {
+  const takenBack = await prisma.xeroSyncOperation.findMany({
+    where: {
+      ...SUPPLEMENTARY_INVOICE_CREATE_WHERE,
+      status: { not: "CANCELLED" },
+      requestPayload: { path: [SUPPLEMENTARY_INVOICE_TAKEN_BACK_FROM_KEY], equals: paymentIntentId },
+    },
+    select: { id: true, localId: true, requestPayload: true },
+  });
+  for (const operation of takenBack) {
+    const payload = asRecord(operation.requestPayload) ?? {};
+    const cents = supplementaryInvoiceBilledCents(operation.requestPayload);
+    const amount = cents === null ? "its amount" : `$${(cents / 100).toFixed(2)}`;
+    await sendAdminAlertOnceEver({
+      key: `supplementary-invoice-paid-twice:${readString(payload.bookingId) ?? "booking"}:${operation.id}`,
+      label: "change-paid-twice alert",
+      context: { operationId: operation.id, paymentIntentId },
+      send: () =>
+        sendAdminXeroSyncErrorAlert({
+          errorType: "SUPPLEMENTARY_INVOICE_CHANGE_PAID_TWICE",
+          operation: `Supplementary invoice for booking change ${operation.localId ?? "unknown"}`,
+          errorMessage: `Booking change ${operation.localId ?? "unknown"} was paid twice by card: by its own payment request ${readString(payload.paymentIntentId) ?? "unknown"}, and again inside the later request ${paymentIntentId}, which carried its unpaid balance. Both payments were kept. The change's Xero supplementary invoice (outbox operation ${operation.id}) records the first; nothing in Xero bills the ${amount} of the second. Refund or credit the member that amount, or record it in Xero by hand.`,
+          timestamp: new Date(),
+        }),
+    });
+  }
+  return takenBack.length;
 }
