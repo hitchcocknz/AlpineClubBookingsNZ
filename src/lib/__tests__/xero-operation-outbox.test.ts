@@ -4189,6 +4189,24 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
     expect(result.reaped).toBe(1);
   });
 
+  it("#3403 review 2 (F1): a superseded intent captured late MOVES its waiting invoices to the request carrying its balance before anything is retired", async () => {
+    waiting = [waitingOp("op_superseded", "pi_superseded")];
+    mocks.findFirstPaymentTransaction.mockResolvedValue({
+      ...transaction("SUCCEEDED"),
+      paymentId: "pay_1",
+      payment: { booking: { status: "CONFIRMED" } },
+    });
+    mocks.findFirstRecoveryOperation.mockResolvedValue({ id: "recovery_cancel_pi" });
+    mocks.followSupersededAskInvoicesSafely.mockResolvedValue({ moved: 1 });
+    mocks.findFirstOperation.mockResolvedValue(null);
+
+    const result = await reapStaleWaitingPaymentXeroOutboxOperations();
+
+    expect(mocks.followSupersededAskInvoicesSafely).toHaveBeenCalledWith({ paymentId: "pay_1" });
+    expect(retireCall()).toBeUndefined();
+    expect(result).toMatchObject({ reaped: 0, released: 0, moved: 1 });
+  });
+
   /**
    * #3635 (owner decision 29 Sep 2026): on a cancelled booking a #3639 approval
    * task, when one owns the capture, decides - not the booking's status. One

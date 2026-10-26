@@ -939,8 +939,9 @@ describe("payment recovery worker", () => {
         amountCents: 6000,
       }),
     });
-    // #3403: a captured superseded intent is refunded, not carried: nothing moves.
-    expect(mockFollowSupersededAskInvoices).not.toHaveBeenCalled();
+    // #3403 review 2 (F1): captured late, it is refunded and the request after
+    // it carries its balance - with every invoice already moved onto it.
+    expect(mockFollowSupersededAskInvoices).toHaveBeenCalledWith({ paymentId: "payment-1" });
   });
 
   it("does not double-count a previously written refund when the recovery retries", async () => {
