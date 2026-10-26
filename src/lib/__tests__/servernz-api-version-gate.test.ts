@@ -73,7 +73,7 @@ vi.mock("@/lib/servernz-settings", () => ({
 
 vi.mock("@/lib/prisma", () => ({
   prisma: {
-    $transaction: async (work: (tx: unknown) => Promise<unknown>) => work(mocks.tx),
+    $transaction: vi.fn(async (work: (tx: unknown) => Promise<unknown>) => work(mocks.tx)),
   },
 }));
 
@@ -97,6 +97,7 @@ import {
   SERVERNZ_EXPECTED_SERVER_VERSION,
   SERVER_VERSION_UNKNOWN,
 } from "@/lib/servernz-api-version";
+import { prisma } from "@/lib/prisma";
 
 const fetchMock = vi.fn();
 
@@ -401,6 +402,7 @@ describe("refreshStoredServerVersion: one path writes the column", () => {
     await expect(refreshStoredServerVersion()).resolves.toBe("3.0");
     expectRecorded("3.0");
     expect(mocks.order[0]).toBe("lock");
+    expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), { timeout: 150_000, maxWait: 10_000 });
     expect(mocks.order.slice(1).sort()).toEqual(["read address", "read credential version"]);
     // ...and the gate then enforces it: nothing else reaches the server.
     settings("3.0");

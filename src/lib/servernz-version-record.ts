@@ -54,22 +54,26 @@ export async function recordServerVersionIfCurrent(
   identity: ServerNzConnectionIdentity,
   version: string,
 ): Promise<boolean> {
-  const recorded = await prisma.$transaction(async (tx) => {
-    await lockServerNzSettings(tx);
-    const settings = await tx.serverNzSettings.findUnique({
-      where: { id: SERVERNZ_SETTINGS_ID },
-      select: { baseUrl: true },
-    });
-    const credentialVersion = await readServerNzCredentialVersion(tx);
-    if (
-      settings?.baseUrl !== identity.baseUrl ||
-      credentialVersion !== identity.credentialVersion
-    ) {
-      return false;
-    }
-    await recordServerVersionCheck(version, new Date(), tx);
-    return true;
-  });
+  const recorded = await prisma.$transaction(
+    async (tx) => {
+      await lockServerNzSettings(tx);
+      const settings = await tx.serverNzSettings.findUnique({
+        where: { id: SERVERNZ_SETTINGS_ID },
+        select: { baseUrl: true },
+      });
+      const credentialVersion = await readServerNzCredentialVersion(tx);
+      if (
+        settings?.baseUrl !== identity.baseUrl ||
+        credentialVersion !== identity.credentialVersion
+      ) {
+        return false;
+      }
+      await recordServerVersionCheck(version, new Date(), tx);
+      return true;
+    },
+    // Allow a bounded wait behind a lodge merge holding the shared settings row.
+    { timeout: 150_000, maxWait: 10_000 },
+  );
   if (!recorded) invalidateProviderCredentialCache(SERVERNZ_PROVIDER);
   return recorded;
 }

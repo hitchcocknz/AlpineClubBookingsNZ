@@ -2045,7 +2045,9 @@ mispricing a booking.
   (`recordServerVersionIfCurrent`, #4366): every write of the server's
   reported API version, from the version check and from a request the server
   refused for version (409), runs AFTER the HTTP call in one short
-  transaction. It takes `lockServerNzSettings`
+  transaction with a 150s timeout (including row-lock waits) and a 10s pool
+  acquisition maxWait, allowing it to queue behind a lodge merge rather than
+  fail at Prisma's default 5s transaction timeout. It takes `lockServerNzSettings`
   (`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE`),
   then re-reads the stored base URL and the API key's credential version and
   records only if both still equal what the request was built from. The
