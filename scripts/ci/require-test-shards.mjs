@@ -55,15 +55,21 @@ export function classifyRequiredJobs(jobs, required = []) {
     const [job] = matches;
     if (!job) {
       pending.push(`missing "${name}"`);
-    } else if (job.status === "completed") {
-      if (job.conclusion !== "success") throw new Error(`Required job "${name}" completed as ${job.conclusion ?? "unknown"}`);
-    } else if (PENDING_STATUSES.includes(job.status)) {
+    } else if (!jobSucceeded(job, `Required job "${name}"`)) {
       pending.push(`"${name}" ${job.status}`);
-    } else {
-      throw new Error(`Required job "${name}" has unknown status ${job.status ?? "missing"}`);
     }
   }
   return pending;
+}
+
+/** One job's state: true once it succeeded, false while it is still pending; any other conclusion or status throws. */
+function jobSucceeded(job, what) {
+  if (job.status === "completed") {
+    if (job.conclusion !== "success") throw new Error(`${what} completed as ${job.conclusion ?? "unknown"}`);
+    return true;
+  }
+  if (PENDING_STATUSES.includes(job.status)) return false;
+  throw new Error(`${what} has unknown status ${job.status ?? "missing"}`);
 }
 
 export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label = DEFAULT_SHARD_LABEL, upstream = [], from = 1) {
@@ -95,15 +101,7 @@ export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label 
       pending.push(`missing ${index}/${count}`);
       continue;
     }
-    if (job.status === "completed") {
-      if (job.conclusion !== "success") {
-        throw new Error(`${label} ${index}/${count} completed as ${job.conclusion ?? "unknown"}`);
-      }
-    } else if (PENDING_STATUSES.includes(job.status)) {
-      pending.push(`${index}/${count} ${job.status}`);
-    } else {
-      throw new Error(`${label} ${index}/${count} has unknown status ${job.status ?? "missing"}`);
-    }
+    if (!jobSucceeded(job, `${label} ${index}/${count}`)) pending.push(`${index}/${count} ${job.status}`);
   }
   return pending;
 }
