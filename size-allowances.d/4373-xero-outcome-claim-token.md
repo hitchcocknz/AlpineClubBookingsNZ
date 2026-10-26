@@ -53,6 +53,6 @@ reason: the retry's claim is handed to its handlers and repairs in place of
   cancellation replay notes it takes no claim.
 
 file: src/lib/xero-sync.ts
-lines: 1127
+lines: 1135
 reason: the two outcome writers take the claim; the one added line is the
   claim's comment, which states the rule at the writer.
