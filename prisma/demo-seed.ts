@@ -72,6 +72,8 @@ import {
   LOCKED_OUT_MEMBER,
   PAID_CANCEL_BOOKING_ID,
   PAID_CANCEL_WINDOW,
+  HELP_WIDGET_BOOKING_ID,
+  HELP_WIDGET_WINDOW,
   ROLE_PERSONAS,
   WAITLIST_FILL_GUEST_COUNT,
   WAITLIST_FULL_WINDOW,
@@ -1224,40 +1226,49 @@ async function main() {
   // Mirrors the PAID demo booking (bPaid) shape, but future-dated with a
   // deterministic id and WITHOUT the additional/setup payment-intent fields, so
   // the credit-method cancel makes no Stripe call (src/lib/booking-cancel.ts).
-  const paidCancelNights = nightsBetween(
-    PAID_CANCEL_WINDOW.checkIn,
-    PAID_CANCEL_WINDOW.checkOut,
-  ).length;
-  const paidCancelBooking = await prisma.booking.create({
-    data: {
-      id: PAID_CANCEL_BOOKING_ID,
-      memberId: nadia.id,
-      status: "PAID",
-      totalPriceCents: NIGHTLY * paidCancelNights,
-      finalPriceCents: NIGHTLY * paidCancelNights,
-      ...seededBookingDates(PAID_CANCEL_WINDOW.checkIn, PAID_CANCEL_WINDOW.checkOut),
-    },
-  });
-  await addGuest(
-    paidCancelBooking.id,
-    { firstName: NOMINATOR_TWO.firstName, lastName: NOMINATOR_TWO.lastName, ageTier: "ADULT", isMember: true, memberId: nadia.id },
-    PAID_CANCEL_WINDOW.checkIn,
-    PAID_CANCEL_WINDOW.checkOut,
-    NIGHTLY,
-  );
-  const paidCancelPayment = await prisma.payment.create({
-    data: {
-      bookingId: paidCancelBooking.id,
-      amountCents: paidCancelBooking.finalPriceCents,
-      source: "STRIPE",
-      status: "SUCCEEDED",
-      stripePaymentIntentId: "pi_e2e_paid_cancel",
-    },
-  });
-  await prisma.paymentTransaction.create({
-    data: { paymentId: paidCancelPayment.id, kind: "PRIMARY", source: "STRIPE", amountCents: paidCancelBooking.finalPriceCents, status: "SUCCEEDED", stripePaymentIntentId: "pi_e2e_paid_cancel" },
-  });
-  await prisma.bookingEvent.create({ data: { bookingId: paidCancelBooking.id, type: "MEMBER_PAID", actorMemberId: nadia.id, amountCents: paidCancelBooking.finalPriceCents } });
+  //
+  // #4397: the help-widget spec gets its own booking of the same shape
+  // (HELP_WIDGET_BOOKING_ID), which no spec cancels, so its refund-schedule
+  // assertion no longer depends on running before or after the cancel spec.
+  async function seedNadiaPaidCardBooking(
+    id: string,
+    window: { checkIn: string; checkOut: string },
+    paymentIntentId: string,
+  ) {
+    const nights = nightsBetween(window.checkIn, window.checkOut).length;
+    const booking = await prisma.booking.create({
+      data: {
+        id,
+        memberId: nadia.id,
+        status: "PAID",
+        totalPriceCents: NIGHTLY * nights,
+        finalPriceCents: NIGHTLY * nights,
+        ...seededBookingDates(window.checkIn, window.checkOut),
+      },
+    });
+    await addGuest(
+      booking.id,
+      { firstName: NOMINATOR_TWO.firstName, lastName: NOMINATOR_TWO.lastName, ageTier: "ADULT", isMember: true, memberId: nadia.id },
+      window.checkIn,
+      window.checkOut,
+      NIGHTLY,
+    );
+    const payment = await prisma.payment.create({
+      data: {
+        bookingId: booking.id,
+        amountCents: booking.finalPriceCents,
+        source: "STRIPE",
+        status: "SUCCEEDED",
+        stripePaymentIntentId: paymentIntentId,
+      },
+    });
+    await prisma.paymentTransaction.create({
+      data: { paymentId: payment.id, kind: "PRIMARY", source: "STRIPE", amountCents: booking.finalPriceCents, status: "SUCCEEDED", stripePaymentIntentId: paymentIntentId },
+    });
+    await prisma.bookingEvent.create({ data: { bookingId: booking.id, type: "MEMBER_PAID", actorMemberId: nadia.id, amountCents: booking.finalPriceCents } });
+  }
+  await seedNadiaPaidCardBooking(PAID_CANCEL_BOOKING_ID, PAID_CANCEL_WINDOW, "pi_e2e_paid_cancel");
+  await seedNadiaPaidCardBooking(HELP_WIDGET_BOOKING_ID, HELP_WIDGET_WINDOW, "pi_e2e_help_widget_paid");
 
   // Stage 4 of #3272: deterministic, synthetic officer-visibility fixture.
   // The headline remains self-consistent while the recorded guest strand is
