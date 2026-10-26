@@ -35,6 +35,7 @@ const HELPERS = [
   "printable_deploy_value",
   "get_env_file_value",
   "require_exported_value_matches_env_file",
+  "require_exported_secret_matches_env_file",
 ];
 
 const dirs: string[] = [];
@@ -42,17 +43,17 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** Runs one deploy-script function against a `.env`, with no role variable exported. */
-function run(fn: string, envFile: string, extraFunctions: string[] = []) {
+/** Runs one deploy-script function against a `.env`, with only `exported` in the shell. */
+function run(fn: string, envFile: string, exported: Record<string, string> = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "deploy-db-roles-"));
   dirs.push(dir);
   writeFileSync(path.join(dir, ".env"), envFile);
   const harness = [
     "set -Eeuo pipefail",
-    ...[...HELPERS, ...extraFunctions, fn].map((name) => shellFunctionSource(script, name)),
+    ...[...HELPERS, fn].map((name) => shellFunctionSource(script, name)),
     `${fn}`,
   ].join("\n");
-  const env: NodeJS.ProcessEnv = { NODE_ENV: "test", PATH: process.env.PATH ?? "" };
+  const env: NodeJS.ProcessEnv = { NODE_ENV: "test", PATH: process.env.PATH ?? "", ...exported };
   return spawnSync("bash", ["-c", harness], { cwd: dir, env, encoding: "utf8" });
 }
 
@@ -83,6 +84,36 @@ describe("require_least_privilege_roles_complete", () => {
     const result = run("require_least_privilege_roles_complete", envFile);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("MIGRATION_DB_USER and AUDIT_RETENTION_DATABASE_URL must be set too");
+  });
+
+  it("refuses a shell AUDIT_RETENTION_DATABASE_URL that disagrees with .env without printing either password (N1)", () => {
+    const inEnvFile = `${"0123456789abcdef".repeat(2)}`;
+    const inShell = `${"fedcba9876543210".repeat(2)}`;
+    const url = (secret: string) => `postgresql://tac_audit_retention:${secret}@postgres:5432/tacbookings`;
+    const result = run(
+      "require_least_privilege_roles_complete",
+      `APP_DB_USER=tac_app\nMIGRATION_DB_USER=tac_migrator\nAUDIT_RETENTION_DATABASE_URL=${url(inEnvFile)}\n`,
+      { AUDIT_RETENTION_DATABASE_URL: url(inShell) },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("AUDIT_RETENTION_DATABASE_URL disagrees between this shell and .env");
+    const output = result.stdout + result.stderr;
+    for (const secret of [inEnvFile, inShell]) {
+      // Not the password, nor any 8-character run of it.
+      for (let start = 0; start + 8 <= secret.length; start += 1) {
+        expect(output).not.toContain(secret.slice(start, start + 8));
+      }
+    }
+  });
+
+  it("still names a disagreeing role NAME, which is not a secret", () => {
+    const result = run(
+      "require_least_privilege_roles_complete",
+      "APP_DB_USER=tac_app\nMIGRATION_DB_USER=tac_migrator\nAUDIT_RETENTION_DATABASE_URL=postgresql://r@postgres/tacbookings\n",
+      { APP_DB_USER: "tac_other" },
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("tac_other");
   });
 
   it("is part of the step-3 env preflight, right after the password check", () => {

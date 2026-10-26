@@ -1800,6 +1800,33 @@ require_safe_database_password() {
   done
 }
 
+# The same shell-versus-.env check for a value that carries a password, such as a
+# connection string (#4453 review N1). It says only THAT the two differ: the
+# generic helper above prints both values, which here would put the password in
+# the deploy log.
+require_exported_secret_matches_env_file() {
+  local key="$1"
+  local exported
+  local in_env_file
+
+  if [ -z "${!key+x}" ]; then
+    return 0
+  fi
+  exported="${!key}"
+  in_env_file="$(compose_env_file_value "$key")" || return 1
+
+  if [ "$exported" != "$in_env_file" ]; then
+    echo "$key disagrees between this shell and .env, and Docker Compose would" >&2
+    echo "hand the containers the SHELL value. Refusing rather than deploying the" >&2
+    echo "one you did not write in .env. (Neither value is shown: it holds a password.)" >&2
+    echo "Run 'unset $key' in this shell (and remove it from whatever exported" >&2
+    echo "it), set the value you want in .env, then re-run." >&2
+    return 1
+  fi
+
+  unset "$key"
+}
+
 # The least-privilege database roles (#4453) are switched on together or not at
 # all. With APP_DB_USER alone, the next migration would create its tables as the
 # superuser, invisible to the application role (and to the nightly pg_dump it
@@ -1811,9 +1838,10 @@ require_least_privilege_roles_complete() {
   local migration_user
   local retention_url
 
-  for key in APP_DB_USER MIGRATION_DB_USER AUDIT_RETENTION_DATABASE_URL; do
+  for key in APP_DB_USER MIGRATION_DB_USER; do
     require_exported_value_matches_env_file "$key"
   done
+  require_exported_secret_matches_env_file AUDIT_RETENTION_DATABASE_URL
 
   app_user="$(trim_whitespace "$(get_env_file_value APP_DB_USER)")"
   [ -n "$app_user" ] || return 0
