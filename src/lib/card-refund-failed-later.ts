@@ -51,8 +51,9 @@
  * that close recorded may already have paid this money back, so an officer
  * checks it and settles anything still owed with "Paid another way". A slice of
  * an open row is re-planned whenever its refund was made: that row is still
- * being worked, and no close can have been recorded on it. Not owed at all, only alerted and recorded in the audit log
- * (#4104 review, CL3): a refund whose Stripe metadata names no booking of this
+ * being worked, and no close can have been recorded on it. Not owed at all,
+ * only alerted and recorded in the audit log (#4104 review, CL3): a refund
+ * whose Stripe metadata names no booking of this
  * payment (made by hand in the Stripe dashboard, or a legacy group refund).
  *
  * The officers are alerted once per decision, after the commit that made it
