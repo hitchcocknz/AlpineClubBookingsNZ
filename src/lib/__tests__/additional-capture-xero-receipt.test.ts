@@ -105,7 +105,7 @@ import { ADDITIONAL_CAPTURE_RECEIPT_WAITING_CODE, supplementaryReplayMayRecordPa
 import { ADDITIONAL_CAPTURE_PAYMENT_ROLE } from "@/lib/additional-capture-receipt-link";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { XeroAppliedCreditOperationBusyError } from "@/lib/xero-applied-credit-operation-serialization";
-import { xeroClaim } from "@/lib/__tests__/helpers/xero-claim";
+import { TEST_XERO_CLAIMED_AT, xeroClaim } from "@/lib/__tests__/helpers/xero-claim";
 
 const PRIMARY = "11111111-1111-4111-8111-111111111111";
 const GAP = "22222222-2222-4222-8222-222222222222";
@@ -571,7 +571,7 @@ describe("recordAdditionalCaptureReceipt", () => {
       await expect(run(seam)).resolves.toBeNull();
       // Review C1: closed in the transaction that read it, guarded on its claim.
       expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-        where: { id: "op_receipt", status: "RUNNING", manuallyResolvedAt: null },
+        where: { id: "op_receipt", status: "RUNNING", startedAt: TEST_XERO_CLAIMED_AT, manuallyResolvedAt: null },
         data: expect.objectContaining({
           status: "CANCELLED",
           responsePayload: { skipped: "capture-not-kept", decidedAgainUnderLock: true },
@@ -590,7 +590,7 @@ describe("recordAdditionalCaptureReceipt", () => {
       const seam = providers();
       await expect(run(seam)).resolves.toBeNull();
       expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-        where: { id: "op_receipt", status: "RUNNING", manuallyResolvedAt: null },
+        where: { id: "op_receipt", status: "RUNNING", startedAt: TEST_XERO_CLAIMED_AT, manuallyResolvedAt: null },
         data: expect.objectContaining({ status: "CANCELLED", responsePayload: expect.objectContaining({ refundState: "pending" }) }),
       });
       expect(mocks.completeXeroSyncOperation).not.toHaveBeenCalled();
@@ -610,7 +610,7 @@ describe("recordAdditionalCaptureReceipt", () => {
       mocks.readCaptureRecorder.mockResolvedValue({ kind: "kept-late-capture-invoice", operationId: "op_kept" });
       const seam = providers();
       await expect(run(seam)).resolves.toBeNull();
-      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith("op_receipt", {
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ id: "op_receipt" }), {
         status: "SUCCEEDED",
         responsePayload: { skipped: "recorded-by-kept-late-capture-invoice", operationId: "op_kept" },
       });

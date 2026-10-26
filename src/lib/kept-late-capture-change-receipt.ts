@@ -1,5 +1,5 @@
 /**
- * #4324 (owner decision 25 Oct 2026; `INV-PAY-140`): A KEPT CHANGE CAPTURE'S
+ * #4324 (owner decision 25 Oct 2026; `INV-PAY-141`): A KEPT CHANGE CAPTURE'S
  * OWN RECEIPT on a cancelled booking. Where a treasurer keeps a late card
  * payment for a booking change whose primary invoice bills that change, the
  * keep's decision (`planKeptLateCaptureXeroRecord`) queues the capture's own
@@ -28,6 +28,7 @@ import { asRecord } from "@/lib/xero-json";
 import { captureChangeId } from "@/lib/additional-capture-receipt-link";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
 import { ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE } from "@/lib/additional-capture-receipt-gate";
+import type { XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
 
 /** Whether a #3639 approval task owns this capture - a late capture on a cancelled booking. */
 export async function hasLateCaptureApprovalTask(paymentIntentId: string): Promise<boolean> {
@@ -59,11 +60,14 @@ export async function lateCaptureStillKept(
  */
 export async function closeKeptReceiptNotKept(
   tx: Prisma.TransactionClient,
-  operationId: string,
+  claim: XeroOperationClaim,
   details: Record<string, unknown>,
 ): Promise<void> {
+  const operationId = claim.id;
+  // #4373 (`INV-INT-029`): only on this worker's own claim - never a retry's,
+  // after a stale reset, that holds the row RUNNING under another `startedAt`.
   const closed = await tx.xeroSyncOperation.updateMany({
-    where: { id: operationId, status: "RUNNING", manuallyResolvedAt: null },
+    where: { id: operationId, status: "RUNNING", startedAt: claim.startedAt, manuallyResolvedAt: null },
     data: {
       status: "CANCELLED",
       completedAt: new Date(),
@@ -84,7 +88,7 @@ export async function closeKeptReceiptNotKept(
  * is closed there ({@link closeKeptReceiptNotKept}). Holds no other key.
  */
 export async function keptReceiptStillKeptElseClosed(
-  input: { operationId: string; anchorId: string; paymentIntentId: string },
+  input: { claim: XeroOperationClaim; anchorId: string; paymentIntentId: string },
   details: Record<string, unknown>,
 ): Promise<boolean> {
   // Imported here: the outbox dispatches to the workers that import this.
@@ -92,7 +96,7 @@ export async function keptReceiptStillKeptElseClosed(
   return prisma.$transaction(async (tx) => {
     await lockSupplementaryInvoiceAnchor(tx, input.anchorId);
     if (await lateCaptureStillKept(tx, input.paymentIntentId)) return true;
-    await closeKeptReceiptNotKept(tx, input.operationId, details);
+    await closeKeptReceiptNotKept(tx, input.claim, details);
     return false;
   });
 }

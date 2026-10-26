@@ -33,6 +33,10 @@
  *     change, the invoice first on the change's anchor: the close reads its
  *     plan under that anchor, so it finds the invoice and queues no
  *     kept-capture invoice beside it - one recorder.
+ *  8. (#3403 LANE-SYNC.) The change's waiting invoice moved off the
+ *     capture's intent onto a carrier (#4406): the keep reads it as the
+ *     change's invoice answering the capture, and the real release takes it
+ *     back and pays it - no receipt and no kept-capture invoice beside it.
  *
  * The dismissal is driven as `resolveManualRefundTask` drives it - the
  * `OPEN -> DISMISSED` guarded `updateMany`, then `planKeptLateCaptureXeroRecord`
@@ -65,6 +69,8 @@ const FIRST_ANCHOR_ID = "race-4324-modification-first";
 const TASK_ID = "race-4324-approval-task";
 const PRIMARY_INTENT = "pi_race_4324_primary";
 const CHANGE_INTENT = "pi_race_4324_change";
+/** #3403: the later request a superseded ask's invoice was moved onto. */
+const CARRIER_INTENT = "pi_race_4324_carrier";
 const INVOICE_ID = "race-4324-xero-invoice";
 const ZONE = "Pacific/Auckland";
 const LOCK_POLL_TIMEOUT_MS = 5_000;
@@ -506,6 +512,63 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     expect(replays.map((result) => result.outcome)).toEqual(["already-released", "already-released"]);
     expect(replays.every((result) => result.released === 0)).toBe(true);
     expect(await receiptRows()).toHaveLength(1);
+  });
+
+  it("MUTATION #3403 LANE-SYNC: the change's invoice moved off the capture's intent onto a carrier answers the keep - the release takes it back and pays it, and nothing else records the capture", async () => {
+    await seed("OPEN", { marked: false });
+    // The change's invoice, parked on its ask (the real enqueue) ...
+    const parked = await outbox.enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: BOOKING_ID, bookingModificationId: MODIFICATION_ID, priceDiffCents: 8_000, changeFeeCents: 0 },
+      { paymentIntentId: CHANGE_INTENT, waitForConfirmedAdditionalPayment: true },
+    );
+    const parkedRow = await prisma.xeroSyncOperation.findUniqueOrThrow({
+      where: { id: parked.queueOperationId! },
+      select: { status: true, requestPayload: true },
+    });
+    expect(parkedRow.status).toBe("WAITING_PAYMENT");
+    // ... then moved by #4406's supersede onto the request carrying its
+    // balance, written as `followSupersededAskInvoicesToCarrier` writes it.
+    await prisma.xeroSyncOperation.update({
+      where: { id: parked.queueOperationId! },
+      data: {
+        requestPayload: {
+          ...(parkedRow.requestPayload as Prisma.JsonObject),
+          paymentIntentId: CARRIER_INTENT,
+          parkedFromPaymentIntentId: CHANGE_INTENT,
+        },
+      },
+    });
+
+    // The keep reads the moved invoice as the change's, answering this capture.
+    const plan = await dismiss();
+    expect(plan).toEqual({ kind: "change-payment", paymentIntentId: CHANGE_INTENT });
+    expect(await receiptRows()).toEqual([]);
+
+    // The real release takes it back to this capture's intent and releases it, paid.
+    const released = await release.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(CHANGE_INTENT);
+    expect(released.released).toBe(1);
+    const invoices = await supplementaryRows();
+    expect(invoices).toHaveLength(1);
+    const payload = invoices[0]!.requestPayload as Record<string, unknown>;
+    expect(invoices[0]!.status).not.toBe("WAITING_PAYMENT");
+    expect(invoices[0]!.status).not.toBe("CANCELLED");
+    expect(payload).toMatchObject({ paymentIntentId: CHANGE_INTENT, takenBackFromPaymentIntentId: CARRIER_INTENT });
+    expect(payload.parkedFromPaymentIntentId).toBeUndefined();
+    expect(payload.recordPayment).not.toBe(false);
+
+    // One recorder: the change's invoice. No receipt, no kept-capture invoice.
+    expect(await receiptRows()).toEqual([]);
+    expect(
+      await prisma.xeroSyncOperation.count({ where: { localModel: "ManualRefundTask", localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE" } }),
+    ).toBe(0);
+    await expect(
+      recorder.readCaptureRecorder({
+        bookingId: BOOKING_ID,
+        primaryInvoiceId: INVOICE_ID,
+        paymentIntentId: CHANGE_INTENT,
+        bookingModificationId: MODIFICATION_ID,
+      }),
+    ).resolves.toEqual({ kind: "supplementary-invoice", operationId: parked.queueOperationId });
   });
 
   it("an approval committed between the receipt worker's claim and its locked decision: the worker stands down, nothing reaches Xero", async () => {

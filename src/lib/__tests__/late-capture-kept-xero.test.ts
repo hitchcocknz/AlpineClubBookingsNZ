@@ -91,6 +91,7 @@ import {
 } from "@/lib/late-capture-kept-xero-rules";
 import type { ClubTimeZone } from "@/lib/club-time";
 import logger from "@/lib/logger";
+import { supplementaryInvoicesMovedOffIntentWhere } from "@/lib/supplementary-invoice-parked-from";
 
 /**
  * #3635 (owner decision 29 Sep 2026): a late capture a treasurer KEPT on a
@@ -381,6 +382,25 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
         await expect(read([{ status: "CANCELLED", lastErrorCode: code }])).resolves.toMatchObject({ answeredByChangeInvoice: false });
       });
     }
+
+    it("MUTATION #3403 LANE-SYNC: asks for an invoice naming the intent, or one moved off it onto a carrier and still waiting there", async () => {
+      await read([]);
+      expect(mocks.operationFindMany.mock.calls[0]![0]).toMatchObject({
+        where: {
+          queueType: "SUPPLEMENTARY_INVOICE",
+          OR: [
+            { requestPayload: { path: ["paymentIntentId"], equals: "pi_late" } },
+            supplementaryInvoicesMovedOffIntentWhere("pi_late"),
+          ],
+        },
+      });
+      expect(supplementaryInvoicesMovedOffIntentWhere("pi_late")).toMatchObject({
+        queueType: "SUPPLEMENTARY_INVOICE",
+        status: "WAITING_PAYMENT",
+        localModel: "BookingModification",
+        requestPayload: { path: ["parkedFromPaymentIntentId"], equals: "pi_late" },
+      });
+    });
 
     it("reads the #3980 marker and the change's own invoices, never the gap invoice a marked edit anchors", async () => {
       mocks.modificationFindUnique.mockResolvedValue({

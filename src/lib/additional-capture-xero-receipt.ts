@@ -384,7 +384,7 @@ export async function recordAdditionalCaptureReceipt(
     if (refundState !== "kept" && !cancelled) return standDown("CANCELLED", "capture-not-kept", { refundState });
     // #4324 (review C1): on a cancelled booking its approval task decides, read again and closed under the anchor.
     const anchorId = captureChangeId(transaction) ?? bookingId;
-    if (refundState !== "kept" && !(await keptReceiptStillKeptElseClosed({ operationId, anchorId, paymentIntentId }, { refundState }))) return null;
+    if (refundState !== "kept" && !(await keptReceiptStillKeptElseClosed({ claim: params.syncOperation, anchorId, paymentIntentId }, { refundState }))) return null;
 
     // Review round 1: one recorder per capture.
     const recorder = await readCaptureRecorder({
@@ -501,7 +501,7 @@ export async function recordAdditionalCaptureReceipt(
       // #4324: a kept capture is still kept, read under the lock the approval
       // withdraws an undecided receipt under, and closed there if not (C1).
       if (cancelled && !(await lateCaptureStillKept(tx, paymentIntentId))) {
-        await closeKeptReceiptNotKept(tx, operationId, {});
+        await closeKeptReceiptNotKept(tx, params.syncOperation, {});
         return "not-kept" as const;
       }
       const now = await readCaptureRecorder({ bookingId, primaryInvoiceId, paymentIntentId, bookingModificationId: changeId }, tx);

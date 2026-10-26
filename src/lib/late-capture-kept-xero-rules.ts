@@ -110,7 +110,9 @@ export type KeptChangeCaptureEvidence = {
   /**
    * A supplementary invoice naming the capture's intent that the late-success
    * release answers from: in any status but CANCELLED, or retired by the
-   * reaper (`STALE_WAITING_PAYMENT`, or its captured and covered stamps).
+   * reaper (`STALE_WAITING_PAYMENT`, or its captured and covered stamps). Or
+   * (#3403) one moved off that intent onto a carrier and still waiting there,
+   * which the release returns to it first.
    */
   answeredByChangeInvoice: boolean;
   /** The change the capture pays for (`captureChangeId`); null when none can be read. */

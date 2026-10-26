@@ -20,6 +20,7 @@ import { creditBackLateCaptureRefunds } from "@/lib/late-capture-refund-credit-n
 import { enqueueAdditionalCaptureReceiptOperation } from "@/lib/additional-capture-receipt-enqueue";
 import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-receipt";
 import { captureChangeId } from "@/lib/additional-capture-receipt-link";
+import { supplementaryInvoicesMovedOffIntentWhere } from "@/lib/supplementary-invoice-parked-from";
 import { readCreditReleaseCaptureShare } from "@/lib/credit-release-capture-share";
 import { recordedPrimaryInvoiceSettlement } from "@/lib/booking-primary-invoice-claim";
 import {
@@ -84,10 +85,17 @@ export async function readKeptChangeCaptureEvidence(
   store: GapAnchorStore,
   input: { paymentIntentId: string; changeId: string | null; bookingId: string; primaryInvoiceId: string | null },
 ): Promise<KeptChangeCaptureEvidence> {
+  // #3403 (LANE-SYNC): a change's invoice moved off this intent onto the
+  // request carrying its balance still bills THIS capture's change; the
+  // release returns it to this intent before it reads
+  // (`returnMovedInvoicesToCapturedIntent`), so it answers the capture too.
   const naming = await store.xeroSyncOperation.findMany({
     where: {
       queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-      requestPayload: { path: ["paymentIntentId"], equals: input.paymentIntentId },
+      OR: [
+        { requestPayload: { path: ["paymentIntentId"], equals: input.paymentIntentId } },
+        supplementaryInvoicesMovedOffIntentWhere(input.paymentIntentId),
+      ],
     },
     select: { status: true, lastErrorCode: true },
   });
