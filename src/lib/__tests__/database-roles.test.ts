@@ -19,9 +19,9 @@ import {
 
 const INPUT = {
   databaseName: "tacbookings",
-  migrator: { roleName: "tac_migrator", password: "migrator-secret-0123456789" },
-  app: { roleName: "tac_app", password: "app-secret-it's-quoted-0123" },
-  auditRetention: { roleName: "tac_audit_retention", password: "retention-secret-0123456789" },
+  migrator: { roleName: "tac_migrator", password: "m".repeat(20) },
+  app: { roleName: "tac_app", password: `${"a".repeat(10)}'${"a".repeat(10)}` },
+  auditRetention: { roleName: "tac_audit_retention", password: "r".repeat(20) },
 };
 
 const indexOf = (statements: string[], fragment: string) => {
@@ -60,7 +60,7 @@ describe("buildDatabaseRolesSql (#4453)", () => {
   });
 
   it("quotes each password as a literal, only in its own ALTER ROLE", () => {
-    expect(sql).toContain(`PASSWORD 'app-secret-it''s-quoted-0123'`);
+    expect(sql).toContain(`PASSWORD '${"a".repeat(10)}''${"a".repeat(10)}'`);
     for (const { password } of [INPUT.migrator, INPUT.auditRetention]) {
       expect(statements.filter((statement) => statement.includes(password))).toHaveLength(1);
     }
