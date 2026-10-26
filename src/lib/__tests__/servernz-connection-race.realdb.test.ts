@@ -7,6 +7,9 @@
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+// The seeded and answered server version is whatever THIS build expects, so the
+// suite proves the connection race on any API version the lane is built for.
+import { SERVERNZ_EXPECTED_SERVER_VERSION } from "@/lib/servernz-api-version";
 import { assertSafeRaceDbUrl } from "@/lib/__tests__/support/race-db-url";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
@@ -99,7 +102,7 @@ function latch() {
     await clean();
     const { encryptCredential, INTEGRATION_CREDENTIAL_LABEL } = await import("@/lib/integration-crypto");
     await prisma.serverNzSettings.create({ data: {
-      id: "default", baseUrl: OLD_URL, serverVersion: "2.1", otherLodgesOwnedNames: ["Old lodge"],
+      id: "default", baseUrl: OLD_URL, serverVersion: SERVERNZ_EXPECTED_SERVER_VERSION, otherLodgesOwnedNames: ["Old lodge"],
     } });
     await prisma.integrationCredential.create({ data: {
       provider: "servernz", key: "api_key",
@@ -164,7 +167,7 @@ function latch() {
     // read both, so the move (and the key save behind it) waits.
     const NEW_KEY = "race-4436-new-key";
     fetchMock.mockImplementation(async (url: string | URL) => new Response(JSON.stringify(
-      String(url).endsWith("/api/v1/version") ? { version: "2.1", match: true } : { lodges: [], cursor: null, count: 0 },
+      String(url).endsWith("/api/v1/version") ? { version: SERVERNZ_EXPECTED_SERVER_VERSION, match: true } : { lodges: [], cursor: null, count: 0 },
     )));
     const readAddress = latch();
     const resumeReader = latch();
