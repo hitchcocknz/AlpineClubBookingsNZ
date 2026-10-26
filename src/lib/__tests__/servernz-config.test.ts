@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   credFindFirst: vi.fn(),
   resolveIntegrationCredential: vi.fn(),
-  readIntegrationCredentialVersion: vi.fn(),
+  readIntegrationCredentialRow: vi.fn(),
   setIntegrationCredential: vi.fn(),
   deleteIntegrationCredential: vi.fn(),
   forgetServerConnectionAnswers: vi.fn(),
@@ -26,7 +26,7 @@ vi.mock("@/lib/prisma", () => ({
 
 vi.mock("@/lib/integration-credentials", () => ({
   resolveIntegrationCredential: mocks.resolveIntegrationCredential,
-  readIntegrationCredentialVersion: mocks.readIntegrationCredentialVersion,
+  readIntegrationCredentialRow: mocks.readIntegrationCredentialRow,
   setIntegrationCredential: mocks.setIntegrationCredential,
   deleteIntegrationCredential: mocks.deleteIntegrationCredential,
 }));
@@ -84,9 +84,17 @@ describe("ServerNZ credential wiring", () => {
 
   it("re-reads the key's version through the caller's client, under the provider namespace (#4366)", async () => {
     const tx = { integrationCredential: {} };
-    mocks.readIntegrationCredentialVersion.mockResolvedValue("row-version-2");
+    mocks.readIntegrationCredentialRow.mockResolvedValue({ status: "configured", version: "row-version-2" });
     await expect(readServerNzCredentialVersion(tx as never)).resolves.toBe("row-version-2");
-    expect(mocks.readIntegrationCredentialVersion).toHaveBeenCalledWith(tx, "servernz", "api_key");
+    expect(mocks.readIntegrationCredentialRow).toHaveBeenCalledWith(tx, "servernz", "api_key");
+  });
+
+  it("keeps an unreadable row's version and returns null only for an absent row", async () => {
+    const tx = { integrationCredential: {} };
+    mocks.readIntegrationCredentialRow.mockResolvedValueOnce({ status: "needs_reentry", version: "row-version-2" });
+    await expect(readServerNzCredentialVersion(tx as never)).resolves.toBe("row-version-2");
+    mocks.readIntegrationCredentialRow.mockResolvedValueOnce({ status: "not_configured" });
+    await expect(readServerNzCredentialVersion(tx as never)).resolves.toBeNull();
   });
 
   it("stores and clears the key through the encrypted-credential helpers", async () => {

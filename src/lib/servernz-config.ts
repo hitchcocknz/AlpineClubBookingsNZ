@@ -24,7 +24,7 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
-  readIntegrationCredentialVersion,
+  readIntegrationCredentialRow,
   resolveIntegrationCredential,
   setIntegrationCredential,
   deleteIntegrationCredential,
@@ -70,17 +70,18 @@ export async function getOperationalServerNzCredential(): Promise<
 
 /**
  * The stored API key's version token read through `db`, or `null` when no key
- * is stored. Uncached and never decrypted, so it can run under the caller's
+ * is stored. Uncached, so it can run under the caller's
  * lock as the re-read half of a compare-and-record (#4366).
  */
 export async function readServerNzCredentialVersion(
   db: Pick<Prisma.TransactionClient, "integrationCredential">,
 ): Promise<CredentialVersion | null> {
-  return readIntegrationCredentialVersion(
+  const resolution = await readIntegrationCredentialRow(
     db,
     SERVERNZ_PROVIDER,
     SERVERNZ_CREDENTIAL_KEYS.apiKey,
   );
+  return resolution.status === "not_configured" ? null : resolution.version;
 }
 
 /**
