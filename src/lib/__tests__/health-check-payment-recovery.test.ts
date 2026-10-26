@@ -8,7 +8,7 @@ const count = vi.hoisted(() => vi.fn<(...args: unknown[]) => Promise<number>>(as
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $queryRaw: vi.fn(async () => [{ "?column?": 1 }]),
-    xeroToken: { findFirst: vi.fn(async () => null) },
+    xeroConnection: { findUnique: vi.fn(async () => null) },
     paymentRecoveryOperation: { count },
   },
 }));

@@ -1,3 +1,5 @@
+import { readFileSync, readdirSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -12,6 +14,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 import {
   SERVERNZ_SETTINGS_ID,
   clearOtherLodgesOwnedNames,
@@ -22,6 +25,7 @@ import {
   recordOtherLodgesDownload,
   recordServerVersionCheck,
   validateCentralServerBaseUrl,
+  type ServerNzConnectionTx,
 } from "@/lib/servernz-settings";
 
 beforeEach(() => {
@@ -53,6 +57,11 @@ describe("loadServerNzSettings", () => {
     expect(settings.otherLodgesEnabled).toBe(false);
     expect(settings.baseUrl).toBeNull();
   });
+});
+
+it("propagates a fenced settings read failure instead of reporting defaults (#4436)", async () => {
+  const db = { serverNzSettings: { findUnique: vi.fn().mockRejectedValue(new Error("database unavailable")) } };
+  await expect(loadServerNzSettings(db as never)).rejects.toThrow("database unavailable");
 });
 
 describe("normalizeBaseUrl", () => {
@@ -158,7 +167,7 @@ describe("the server's reported API version (#49)", () => {
 
   it("records an answer with its instant and touches nothing else on the row", async () => {
     const at = new Date("2026-07-01T00:00:00.000Z");
-    await recordServerVersionCheck("unknown", at);
+    await recordServerVersionCheck("unknown", at, { serverNzSettings: { upsert: mocks.upsert } } as never);
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.where).toEqual({ id: SERVERNZ_SETTINGS_ID });
     expect(args.update).toEqual({ serverVersion: "unknown", serverVersionCheckedAt: at });
@@ -176,7 +185,10 @@ describe("the server's reported API version (#49)", () => {
   });
 
   it("forgets the owned list AND the version in ONE write when the connection ends", async () => {
-    await forgetServerConnectionAnswers();
+    // The writer's own write, on the mocked client. Only the connection fence
+    // mints this type in production (#4436); `servernz-config.test.ts` covers it.
+    const unfencedClientForUnitTest = prisma as unknown as ServerNzConnectionTx;
+    await forgetServerConnectionAnswers(unfencedClientForUnitTest);
     expect(mocks.upsert).toHaveBeenCalledTimes(1);
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.where).toEqual({ id: SERVERNZ_SETTINGS_ID });
@@ -270,5 +282,19 @@ describe("the owned lodge list (#52)", () => {
     expect(args.update).not.toHaveProperty("otherLodgesOwnedNames");
     expect(args.update).not.toHaveProperty("otherLodgesOwnedNamesAt");
     expect(args.create).not.toHaveProperty("otherLodgesOwnedNames");
+  });
+});
+
+describe("the version column has one writer (#4366)", () => {
+  it("is called only by the fenced recorder, which passes its transaction", () => {
+    // `recordServerVersionCheck` takes no default client, but any client still
+    // satisfies its type; this census is what keeps an unfenced caller out.
+    const srcRoot = resolve(__dirname, "../..");
+    const callers = (readdirSync(srcRoot, { recursive: true }) as string[])
+      .filter((file) => /\.tsx?$/.test(file) && !/__tests__|\.test\.tsx?$/.test(file))
+      .filter((file) => /\brecordServerVersionCheck\(/.test(readFileSync(join(srcRoot, file), "utf8")))
+      .map((file) => file.split("\\").join("/"))
+      .sort();
+    expect(callers).toEqual(["lib/servernz-settings.ts", "lib/servernz-version-record.ts"]);
   });
 });

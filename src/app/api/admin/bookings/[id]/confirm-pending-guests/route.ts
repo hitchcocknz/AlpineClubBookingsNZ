@@ -18,6 +18,8 @@ import {
   SavedCardChargeRefusedError,
 } from "@/lib/saved-card-charge-attempt";
 import { chargeSavedCardAttempt } from "@/lib/saved-card-charge-request";
+import { savedCardChargeCents } from "@/lib/booking-payment-state";
+import { writeZeroWorthConfirmPayment } from "@/lib/zero-worth-confirm-payment";
 import {
   describeUnsettledPaymentIntent,
   settleSavedCardChargeAttempt,
@@ -213,7 +215,10 @@ export async function POST(
     // PENDING -> PAID (a capacity-holding status) inside that lock. The lodgeId
     // comes from the pre-lock booking snapshot; a booking never changes lodge,
     // so the lock key is stable.
-    if (booking.finalPriceCents === 0) {
+    // #4357 (`INV-PAY-119`): "nothing to charge" is decided on the booking's
+    // worth, the figure the charge branch charges - a change fee recorded on a
+    // $0 booking's payment is still owed - and re-checked under the locks.
+    if (savedCardChargeCents(booking) === 0) {
       const zeroResult = await prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
         // Two-tier protocol (#1881): this branch CLAIMS capacity (PENDING -> a
@@ -231,10 +236,16 @@ export async function POST(
         // capacity-holding status (same-booking TOCTOU).
         const locked = await tx.booking.findUnique({
           where: { id: bookingId },
-          include: { guests: { include: { nights: true } } },
+          include: { guests: { include: { nights: true } }, payment: true },
         });
         if (!locked || locked.status !== BookingStatus.PENDING) {
           return { error: "Booking is no longer pending" as const, status: 409 };
+        }
+        if (savedCardChargeCents(locked) !== 0) {
+          return {
+            error: "This booking's amount changed while you were confirming it - refresh and try again." as const,
+            status: 409,
+          };
         }
 
         const { available, nightDetails } = await checkCapacityForGuestRanges(
@@ -297,6 +308,7 @@ export async function POST(
           cause: "SYSTEM_CHANGE",
           actorMemberId: session.user.id,
         });
+        await writeZeroWorthConfirmPayment(tx, bookingId);
 
         return { ok: true as const };
       });
@@ -318,11 +330,6 @@ export async function POST(
       }
 
       await settleHostingCoverageAfterCommit({ bookingId });
-      await prisma.payment.upsert({
-        where: { bookingId },
-        create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
-        update: { amountCents: 0, status: PaymentStatus.SUCCEEDED },
-      });
       await queueXeroInvoice();
       await audit("paid_zero", false);
       if (notifyMember !== false) {
@@ -333,7 +340,7 @@ export async function POST(
           booking.checkIn,
           booking.checkOut,
           booking.guests.length,
-          booking.finalPriceCents,
+          savedCardChargeCents(booking),
           format,
           promoEmailOptions
         ).catch((err) =>
@@ -494,16 +501,19 @@ export async function POST(
       // neither launder a parent's pm nor resurrect one a concurrent
       // replacement mint just cleared.
       const rowStamp = savedPaymentMethodRowStamp(lockedCard);
+      // #4357 (`INV-PAY-119`): the booking's worth, as the cron charges it - a
+      // change fee recorded on this unsettled payment is collected too.
+      const chargeCents = savedCardChargeCents(locked);
       const payment = await tx.payment.upsert({
         where: { bookingId },
         create: {
           bookingId,
-          amountCents: locked.finalPriceCents,
+          amountCents: chargeCents,
           status: PaymentStatus.PENDING,
           ...rowStamp,
         },
         update: {
-          amountCents: locked.finalPriceCents,
+          amountCents: chargeCents,
           status: PaymentStatus.PENDING,
           ...rowStamp,
         },
@@ -511,7 +521,7 @@ export async function POST(
       const attempt = await beginSavedCardChargeAttempt(tx, {
         paymentId: payment.id,
         bookingId,
-        amountCents: locked.finalPriceCents,
+        amountCents: chargeCents,
         card: lockedCard,
         reason: SAVED_CARD_CHARGE_REASON.adminConfirmPendingGuests,
       });
@@ -520,7 +530,7 @@ export async function POST(
         paymentId: payment.id,
         attempt,
         card: lockedCard,
-        amountCents: locked.finalPriceCents,
+        amountCents: chargeCents,
       };
     });
 
@@ -548,7 +558,7 @@ export async function POST(
           memberName: `${bookingOwner(booking).member.firstName} ${bookingOwner(booking).member.lastName}`,
           checkIn: booking.checkIn,
           checkOut: booking.checkOut,
-          amountCents: booking.finalPriceCents,
+          amountCents: savedCardChargeCents(booking),
           errorMessage: claimErr.message,
           paymentIntentId: claimErr.paymentIntentId ?? "N/A",
         }, format).catch((alertErr) =>
@@ -914,7 +924,7 @@ export async function POST(
         booking.checkIn,
         booking.checkOut,
         booking.guests.length,
-        booking.finalPriceCents,
+        claim.amountCents,
         format,
         promoEmailOptions
       ).catch((err) =>

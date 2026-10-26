@@ -275,12 +275,14 @@ import "./edit-financial-review-captured-cancel.realdb.test";
 // never touching the cancelled invoice. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3880-` fixtures.
 import "./edit-financial-review-cancelled-refund-xero.realdb.test";
-// #3454 reuses it to prove the Xero token store's two fences against real row
-// locks: simultaneous refresh-lease claims (this code against itself, and
-// against an older colour's own claim statement) let exactly one through, and a
-// refresh whose credential-store compare-and-set loses rolls the `XeroToken`
-// mirror back with it. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it clears
-// the singleton `XeroToken` table and its own `xero-oauth` row.
+// #3454 reuses it, and #3806 R2 extends it, to prove the Xero token store's
+// fences against real row locks: simultaneous refresh-lease claims (this code
+// against itself, and against the previous release's own claim statement) let
+// exactly one through, both leases are claimed or neither, a refresh whose
+// credential-store compare-and-set loses rolls everything back, and the previous
+// release keeps reading the store copy after this release's writes. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it clears the singleton `XeroToken` and
+// `XeroConnection` tables and its own `xero-oauth` row.
 import "./xero-token-credential-store.realdb.test";
 // #3653 reuses it to prove an organiser-settled child's refund out of the
 // group's combined card payment: recorded once, converged after an ambiguous
@@ -535,6 +537,13 @@ import "./resolved-voided-refund-note-coverage.realdb.test";
 // failed write gives the row back PARTIAL. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4256-` fixtures.
 import "./xero-partial-repair-claim.realdb.test";
+// #4356 reuses it to prove two callers sharing one ACTIVE Xero operation row
+// never let a failure overwrite a recorded success: the real
+// createXeroPaymentForInvoice twice onto one row, each Xero call held on a gate,
+// in both orders, a success replacing an earlier failure, and a late failure
+// kept off a PARTIAL repair's claim. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4356-` fixtures.
+import "./xero-shared-operation-outcome.realdb.test";
 // #4291 reuses it to prove a refund note Xero voided still recounts the payment
 // whose mirror the void turned off: the retry of a void event that died after
 // its link write finishes the recount, the mirror stays off and the pointer
@@ -564,6 +573,45 @@ import "./manual-reversal-retrying-cancel.realdb.test";
 // failed mint, bumped before it runs and cancelled mid-mint. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4316-` fixtures.
 import "./ended-booking-ask-mint-race.realdb.test";
+// #3403 (`INV-PAY-140`) reuses it to prove a superseded card change's waiting
+// Xero invoice follows the request that carries its balance: released with
+// that request's capture, each invoice for its own amount, retired when it is
+// never paid; and the move forced on the anchor's key against a price
+// reduction's retire and the repair pass's enqueue, in both orders. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3403-`
+// fixtures.
+import "./superseded-ask-invoice-carry.realdb.test";
+// #4357 reuses it to prove every saved-card door charges the booking's worth:
+// a change fee the edit lifecycle's writer recorded on an unsettled payment is
+// charged by the charge-saved-method route and the officer's
+// confirm-pending-guests route, and the REAL settle takes it. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4357-` fixtures.
+import "./saved-card-charge-worth.realdb.test";
+// #4265 reuses it to prove a refund-note row covers only its own live,
+// non-request note: a refund request's note resolved by hand through the real
+// outbox and resolve route covers nothing, live or voided, so the bank-void
+// follow-up undoes a voided note it once called spare; a close row covered by
+// another note counts none of it (#4258); and the hand-made answer refuses a
+// note a resolved row records (#4321). Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4265-` fixtures.
+import "./own-live-refund-note-coverage.realdb.test";
+// #4366 reuses it to prove a late central-server version answer records
+// nothing once its connection has changed: the same key saved again or a moved
+// address is refused, and a recorder racing a key change queues on the settings
+// row and then refuses rather than writing over the forget. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans the singleton settings row.
+import "./servernz-version-record-race.realdb.test";
+
+// #4436: address/key replacement and request capture share the settings fence.
+import "./servernz-connection-race.realdb.test";
+// #4421 reuses it to prove "Resolve by hand" on a refund-note create that
+// names no note records the officer's note, and that note then records no
+// other refund: the real resolve route and the real hand-made answer, in
+// sequence both ways and each holding lock(1) past its check while the other
+// queues, and an inbound void of the recorded note undone by the nightly
+// follow-up through the link the resolve wrote. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4421-` fixtures.
+import "./resolve-records-refund-note.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

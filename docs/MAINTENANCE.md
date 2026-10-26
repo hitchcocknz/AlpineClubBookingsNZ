@@ -54,9 +54,9 @@ CI also runs independent static and container checks:
   `Dependency audit` job, on pull requests and on pushes to `main`. It runs
   `pnpm audit --audit-level=high --json` and reports which of three things
   happened — see "When the advisory service is down" below — plus a fourth
-  passing verdict, MITIGATED (never CLEAN), for one reviewed unfixed advisory
-  under an expiring owner-approved record (#3843; see "Mitigated advisories"
-  below). It runs from a bare
+  passing verdict, MITIGATED (never CLEAN), for a reviewed unfixed advisory
+  under an expiring owner-approved record (introduced in #3843; none is live
+  since #3851 — see "Mitigated advisories" below). It runs from a bare
   checkout with no install: measured on npm 11.16.0 / Node 24 the audit built
   its tree from `package-lock.json` and returned the same verdict with or without
   `node_modules`, and `pnpm audit` likewise reads `pnpm-lock.yaml` alone (#3673).
@@ -100,6 +100,12 @@ CI also runs independent static and container checks:
 - Keep `pnpm-lock.yaml` committed. It is the only lockfile; CI refuses a
   `package-lock.json` (#3673).
 - Prefer small dependency update PRs with explicit validation results.
+- A package that runs an install script is approved in `pnpm-workspace.yaml`
+  `allowBuilds` at one exact version, and Dependabot bumps it in its own
+  `install-scripts` group. `verify` checks both before the install
+  (`scripts/ci/check-allow-builds.mjs`, #4364); a failure there is re-approved
+  as [`CONTRIBUTING.md` → "Package manager: pnpm"](../CONTRIBUTING.md#package-manager-pnpm)
+  describes.
 - Keep the `overrides` block in `pnpm-workspace.yaml` to the minimum that is still
   load-bearing, and retire an entry as soon as the upstream dependency graph no
   longer needs it. The register below — not the workspace file, whose comments
@@ -344,7 +350,12 @@ safe (`browserslist` above is the standing example).
   protected-branch check (`Image security gate (Trivy CRITICAL)`), so it blocks
   the merge rather than only turning a job red; the HIGH step keeps
   `continue-on-error: true` and the two steps are named "REQUIRED" and
-  "ADVISORY" so the distinction is readable from the checks list.
+  "ADVISORY" so the distinction is readable from the checks list. Since #4425
+  (owner decision, 26 Oct 2026) a pull request builds and scans the image only
+  when it changes dependencies, `patches/`, the Dockerfile, a compose file,
+  `.dockerignore`, `.trivyignore` or the CI workflow; the check still reports,
+  and every push to `main` scans in full, so a newly published CVE surfaces
+  there rather than on an unrelated pull request.
 - Keep a scanner's configuration file honest about what it actually enables. A
   `.gitleaks.toml` without `[extend] useDefault = true` REPLACES the built-in
   rule set instead of adding to it, and this repository shipped exactly that for
@@ -641,8 +652,9 @@ Two consequences worth holding on to.
 
 Trivy scans the built image against a vulnerability database that moves on its
 own. A newly published CRITICAL against the `node:24.15-alpine` base therefore
-turns `Image security gate (Trivy CRITICAL)` red on **every** open pull request,
-including the one that would fix it, with nobody having changed a line. Branch
+turns `Image security gate (Trivy CRITICAL)` red on the next push to `main` and
+on **every** open pull request that rebuilds the image (#4425), including the one
+that would fix it, with nobody having changed a line. Branch
 protection has `enforce_admins` off, so the owner can force a merge through; an
 agent cannot, and must not try. Do this instead, in order:
 
@@ -2300,7 +2312,9 @@ DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash --json
 A receipt whose invoice was paid by an applied overpayment or prepayment (Xero
 records an allocation, not a payment; the inbound sync marks the primary-invoice
 link), one with no recorded payment, or one whose amount cannot be read is
-listed apart as not judged: check its invoice in Xero. Officer-settled payments
+listed apart as not judged: check its invoice in Xero. An invoice last synced
+before the sync recorded allocations carries no mark, so the report says when a
+difference, or a missing payment, may hide one (#4095). Officer-settled payments
 (`INV-PAY-001`) are left out. **Correcting a row is a database change**: the
 owner or a developer makes it under the raw-SQL rules (`INV-OPS`), and corrects
 the receipt and the payment's refunded total TOGETHER - either alone moves the
@@ -2413,6 +2427,16 @@ running operations** first. And an applied-credit allocation
 or deallocation cannot be resolved at all, because a hand fix in Xero does not
 bring the club's own credit ledger back in line; retry it instead. One marked
 resolved before this release can still be retried.
+
+A Xero call already under way can still succeed after you resolve (#4374,
+`INV-INT-029`): two attempts can share one operation, and one may answer late.
+The operation then shows as succeeded and, if the app recorded a document in
+Xero, the finance contacts get one **Xero Sync Error** email for it
+(`XERO_SUCCESS_AFTER_RESOLUTION`) naming that document. If you also made the
+document by hand, Xero may now hold it twice. The app may instead have found
+and used yours, by its reference, leaving only one: check Xero before voiding
+a duplicate. If that email cannot reach anyone, it is not sent again; the
+operation's succeeded status on the panel is then the only sign.
 
 There is no undo on the panel. If you marked one by mistake, fix the Xero side
 by hand, or use **Targeted force sync** for that one booking's invoice: it

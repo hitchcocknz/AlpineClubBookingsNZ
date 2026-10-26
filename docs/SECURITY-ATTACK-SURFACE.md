@@ -373,8 +373,10 @@ exists because `DEPLOYMENT.md`'s rotation runbook did keep one, named two
 providers, and fell four behind as the rest landed. Anything that turns on
 "which credentials does rotating the auth secret strand" answers from this list.
 
-- `xero` — client id, client secret, webhook key, and the wrapped Xero
-  token-encryption key (#2079).
+- `xero` — client id, client secret and webhook key (#2079). Until #3806 R2 it
+  also held the wrapped Xero token-encryption key, now retired; a leftover row
+  is deleted on the next connect, disconnect or verify-reset, and the previous
+  release may write one again until it has drained.
 - `stripe` — secret key, publishable key, webhook signing secret (#2082).
 - `google` — OAuth client id and secret, plus a non-secret `verified_at`
   marker (#2087).
@@ -417,8 +419,8 @@ behind the code again the way the runbook did.
 ### Who changed a credential, and when (#2723)
 
 **Every mutation of this store names its writer, and the store refuses one that
-does not.** `actor` is a required argument on `setIntegrationCredential`,
-`ensureGeneratedCredential` and `deleteIntegrationCredential`, so a write with
+does not.** `actor` is a required argument on `setIntegrationCredential` and
+`deleteIntegrationCredential`, so a write with
 no attribution does not compile; `assertCredentialActor` catches the value that
 gets past the type (a cast, untyped JavaScript, a forwarded value); and
 `credential-actor-census.test.ts` walks the tree for a writer that skips the
@@ -458,8 +460,6 @@ this page already learnt about once, from the rotation runbook two sections up.
   re-read. Verify-reset drops it whenever any Stripe credential is rewritten.
 - `servernz-push-registration` — the shared-post sync registered this install
   for pushes and stored the secret the central server issued.
-- `xero-token-key-generation` — first use of Xero token encryption generated
-  (or, after an auth-secret change, replaced) the wrapped token key.
 - `xero-token-refresh` — the Xero access token was near expiry, so the API
   client spent the refresh token under the shared refresh lease and stored the
   rotated pair (#3454). Connecting, disconnecting and the verify-reset each have
@@ -496,10 +496,9 @@ emits on a success, a database failure, a lost race and a refused actor. That is
 a claim about the store's own doors; a caller that catches a value and logs it
 itself is outside that boundary.
 
-**Reads make no mutation noise.** The Xero token path calls
-`ensureGeneratedCredential` on every token decrypt; it returns the existing key
-and writes nothing, so no audit row. A delete that matches no row writes none
-either, which keeps verify-reset from burying the real deletions. The Stripe
+**Reads make no mutation noise.** The Xero token path reads the token set on
+every API call and writes nothing, so no audit row. A delete that matches no row
+writes none either, which keeps verify-reset from burying the real deletions. The Stripe
 webhook marker follows the same rule from the other side: the route calls its
 writer on every signature-verified event
 ([when it is written](#the-background-writers-in-full-2723)), so it is written
@@ -521,17 +520,35 @@ incident can rely on the following:
   `cause: verify-reset` naming the credential that caused it
   (`causedByCredential`, a name and never a value). A treasurer asking why the
   connection broke now gets both halves.
-- **The old `XeroToken` table is still written, for now.** A blue-green deploy
-  runs the previous colour beside this one for a while, and that colour reads and
-  refreshes only `XeroToken`. Xero refresh tokens can be spent once, so this
-  release keeps that row current in the same transaction as every write and
-  keeps the refresh lease on it, so the two colours can never both spend one
-  refresh token. Writes the previous colour makes during that window are not
-  attributed, because that code predates this contract. In this release only
-  the token store may write `XeroToken`: the credential census reports any other
-  writer, raw SQL or migration that rewrites it, because the token store reads
-  that row as the newer copy when it no longer matches. Retiring the table is a
-  separate, later change.
+- **This release no longer writes or reads token ciphertext in `XeroToken`
+  (#3806 R2).** A blue-green deploy runs the previous release (#3454) beside
+  this one for a while, and after a rollback it runs alone; it reads,
+  refreshes, connects and disconnects through `XeroToken` and the store copy.
+  So this release keeps that row present while connected, with its tenant and
+  expiry current, and claims the previous release's refresh lease beside its
+  own; Xero refresh tokens can be spent once, so the two releases still compete
+  for one. It never writes or reads the row's two ciphertext columns: the
+  schema ignores them, a row it creates gets an empty value, and its
+  credential-store copy carries the fingerprint the previous release checks,
+  so that release keeps reading the store copy. **The row is not empty yet:**
+  until this release's first connect replaces it, or R3 drops the table, it
+  still holds the last ciphertext #3454 wrote, encrypted under the wrapped key
+  below; after this release's first refresh that refresh token has been spent.
+  The previous release's own writes are attributed through the store as this
+  release's are (the tokens entered the store with it). Only the token store
+  may write `XeroToken`: the credential census reports any other writer, raw
+  SQL or migration that rewrites it, because the previous release would read a
+  rewritten row as the newer copy, and no production raw SQL may name the
+  table at all. The connection facts and the lease live in `XeroConnection`,
+  which holds no secret; a test pins its six fields. The table is dropped in a
+  later release.
+- **The wrapped Xero token key is retired here (#3806 R2).** It encrypted only
+  the `XeroToken` ciphertext. This release never generates or reads it, and its
+  next connect, disconnect or verify-reset deletes the row under that
+  operation's actor. While the previous release still runs it generates a new
+  key whenever it writes the tokens and finds none, and records that as
+  `xero-token-key-generation`, so such rows can appear after this release
+  ships until that release has drained.
 - **A member's second factor** — the TOTP secret (`Member.totpSecret`) and the
   recovery codes — stays where it is, encrypted or hashed at rest; it is not a
   provider credential. Enrolment, replacing the recovery codes and the
@@ -547,10 +564,12 @@ incident can rely on the following:
 **What the census can and cannot see.** It enumerates every DIRECT CALL of the
 three store mutators, found by walking the tree — not every function that
 ultimately causes a credential to change. A wrapper hides its own callers:
-`clearServerNzApiKey` appears, the admin route that calls it does not. That is
-sound rather than a gap, because a wrapper takes the actor as a REQUIRED
-parameter and so cannot supply one itself — the type is what covers its callers,
-and the census covers the wrapper. It is worth stating plainly because "every
+`setServerNzApiKey` appears, the credentials route that calls it does not;
+`clearServerNzApiKey` appears, `saveServerNzConnectionSettings` and the
+settings route above it do not. That is sound rather than a gap, because a
+wrapper takes the actor as a REQUIRED parameter and so cannot supply one
+itself — the type is what covers its callers, and the census covers the
+wrapper. It is worth stating plainly because "every
 writer" would be a stronger claim than the instrument makes.
 
 - **A database backup + the auth secret decrypts everything.** Anyone who holds
@@ -564,8 +583,7 @@ writer" would be a stronger claim than the instrument makes.
   secret it would silently hold live, decryptable credentials.
 - **Rotation blast radius.** Rotating the auth secret strands the credentials of
   **every** provider in the list above — all seven namespaces, not just the two an
-  operator is likely to be thinking about — plus the wrapped Xero token key, on
-  top of dropping sessions and all 2FA enrolments/recovery codes. See the
+  operator is likely to be thinking about — on top of dropping sessions and all 2FA enrolments/recovery codes. See the
   auth-secret rotation runbook in `DEPLOYMENT.md`, which sequences the re-entry
   and points back here for what has to be re-entered.
 - **Decrypt-before-verify on webhook paths.** Both the Xero webhook route
@@ -618,6 +636,11 @@ surface, not just a durability feature:
   destination or credentials. Every config change writes a metadata-only audit
   entry (`backup.config.set`); credential writes audit as
   `integration.credential.set`; run-now audits as `backup.run.now`.
+- **The setup wizard's resume cursor is support-area, and holds nothing
+  sensitive.** `/api/admin/backups/wizard-progress` (#4409) is read with
+  support view and saved with support edit. It stores only which step is open
+  and which steps were acknowledged - never the destination, credentials or
+  settings - and every step re-checks its own gate against live state.
 - **Bucket/region are validated before any CLI call.** They are interpolated into
   `aws s3 cp` (via `execFileSync` array-args, which are injection-safe) and an
   `s3://…` URI, so a strict bucket regex and `^[a-z0-9-]+$` region regex reject
@@ -1151,7 +1174,8 @@ Verified controls already present and intentionally preserved:
   The conditions it requires are stated once, in
   [`dependency-mitigations.d/README.md`](../dependency-mitigations.d/README.md)
   -> "When the wrapper says MITIGATED"; it covers only the copy the audit can
-  see, and the bundled copies it cannot reach are printed on every run.
+  see, and a record's known bundled copies it cannot reach are printed on
+  every run. No record is live since the braces record was retired (#3851).
 - The secret scan reads merge commits. `git log -p` emits no patch for a merge
   commit, and roughly a third of this repository's 7,510 commits are merges, so
   a scan without `--diff-merges=first-parent` never looked at them — and a

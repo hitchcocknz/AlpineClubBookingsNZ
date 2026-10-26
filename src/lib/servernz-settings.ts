@@ -16,6 +16,22 @@ import { isBlockedDestinationHost } from "@/lib/private-destination-hosts";
 
 export const SERVERNZ_SETTINGS_ID = "default";
 
+/** Bounded settings-row contention, including a lodge merge holding the row. */
+export const SERVERNZ_TRANSACTION_OPTIONS = { timeout: 150_000, maxWait: 10_000 };
+
+declare const SERVERNZ_CONNECTION_FENCE: unique symbol;
+
+/**
+ * A transaction client that holds the connection fence (#4436): the settings
+ * row is locked and credential caches are invalidated when it ends. Only
+ * `withServerNzConnectionTransaction` (`servernz-config.ts`) mints one. The
+ * writers that change a connection require it, so a call on the global
+ * client, or on a transaction that never took the fence, does not compile.
+ */
+export type ServerNzConnectionTx = Prisma.TransactionClient & {
+  readonly [SERVERNZ_CONNECTION_FENCE]: true;
+};
+
 export interface ServerNzSettingsValues {
   baseUrl: string | null;
   otherLodgesEnabled: boolean;
@@ -101,12 +117,28 @@ export async function loadOwnedOtherLodgeNames(
 }
 
 /**
+ * Lock the settings row for the caller's transaction (#4366, #4436).
+ * Request capture, connection replacement and version recording share this
+ * fence. Each reads mutable connection state only after locking, and takes
+ * credential rows afterwards. No advisory key or provider call is involved.
+ * The connection transaction materialises the singleton before locking it;
+ * the recorder can safely decline an answer when the row is absent.
+ */
+export async function lockServerNzSettings(
+  db: Pick<Prisma.TransactionClient, "$executeRaw">,
+): Promise<void> {
+  await db.$executeRaw`SELECT 1 FROM "ServerNzSettings" WHERE "id" = ${SERVERNZ_SETTINGS_ID} FOR UPDATE`;
+}
+
+/**
  * Read the ServerNZ settings with safe defaults. A missing row or query failure
  * falls back to defaults so the setup page keeps rendering.
  */
-export async function loadServerNzSettings(): Promise<ServerNzSettingsValues> {
+export async function loadServerNzSettings(
+  db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma,
+): Promise<ServerNzSettingsValues> {
   try {
-    const row = await prisma.serverNzSettings.findUnique({
+    const row = await db.serverNzSettings.findUnique({
       where: { id: SERVERNZ_SETTINGS_ID },
     });
     if (!row) return { ...DEFAULTS };
@@ -124,7 +156,9 @@ export async function loadServerNzSettings(): Promise<ServerNzSettingsValues> {
       serverVersion: row.serverVersion,
       serverVersionCheckedAt: row.serverVersionCheckedAt?.toISOString() ?? null,
     };
-  } catch {
+  } catch (error) {
+    // A fenced operational read must fail rather than hide a database failure.
+    if (db !== prisma) throw error;
     return { ...DEFAULTS };
   }
 }
@@ -182,12 +216,17 @@ export function validateCentralServerBaseUrl(value: string): BaseUrlValidation {
   return { ok: true, value: normalizeBaseUrl(parsed.toString()) ?? trimmed };
 }
 
-/** Update the connection settings (base URL and/or the per-item enable flag). */
+/**
+ * Update the connection settings (base URL and/or the per-item enable flag).
+ * `db` is a fenced client (#4436): the one caller is
+ * `saveServerNzConnectionSettings`, whose transaction moves the address and
+ * removes its key together.
+ */
 export async function updateServerNzSettings(input: {
   baseUrl?: string | null;
   otherLodgesEnabled?: boolean;
   updatedByMemberId: string;
-}): Promise<ServerNzSettingsValues> {
+}, db: ServerNzConnectionTx): Promise<ServerNzSettingsValues> {
   const data: {
     baseUrl?: string | null;
     otherLodgesEnabled?: boolean;
@@ -197,12 +236,12 @@ export async function updateServerNzSettings(input: {
   if (input.otherLodgesEnabled !== undefined)
     data.otherLodgesEnabled = input.otherLodgesEnabled;
 
-  await prisma.serverNzSettings.upsert({
+  await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },
     create: { id: SERVERNZ_SETTINGS_ID, ...data },
     update: data,
   });
-  return loadServerNzSettings();
+  return loadServerNzSettings(db);
 }
 
 /**
@@ -297,16 +336,20 @@ export async function clearOtherLodgesOwnedNames(): Promise<void> {
 /**
  * Record what the central server said its API version is (#49): a canonical
  * `major.minor`, or `SERVER_VERSION_UNKNOWN` when it answered 404. Written
- * AFTER the HTTP call has completed and outside any transaction. A failed call
+ * AFTER the HTTP call has completed, only through `recordServerVersionIfCurrent`
+ * (`servernz-version-record.ts`), whose short transaction passes `db` - there
+ * is no default client, and `servernz-settings.test.ts` pins that one caller
+ * (#4366). A failed call
  * never reaches here - the previous answer stays, so a network blip cannot
  * pause syncing (`INV-INT-027`). Bounded to the column's VarChar(16) by the
  * caller's schema, which caps the wire value at 16 characters.
  */
 export async function recordServerVersionCheck(
   version: string,
-  at: Date = new Date(),
+  at: Date,
+  db: Pick<Prisma.TransactionClient, "serverNzSettings">,
 ): Promise<void> {
-  await prisma.serverNzSettings.upsert({
+  await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },
     create: {
       id: SERVERNZ_SETTINGS_ID,
@@ -339,10 +382,15 @@ export async function clearServerVersionCheck(): Promise<void> {
  * because both answers belonged to it. One upsert rather than the two
  * single-purpose writers above in sequence, so a crash between them cannot
  * leave the row half-forgotten: a stale version pausing a new connection, or a
- * stale owned list editable under a new key.
+ * stale owned list editable under a new key. `db` is a fenced client (#4436):
+ * the connection change it belongs to runs in
+ * `withServerNzConnectionTransaction`, so the forget commits with the key or
+ * address write, never on its own.
  */
-export async function forgetServerConnectionAnswers(): Promise<void> {
-  await prisma.serverNzSettings.upsert({
+export async function forgetServerConnectionAnswers(
+  db: ServerNzConnectionTx,
+): Promise<void> {
+  await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },
     create: { id: SERVERNZ_SETTINGS_ID },
     update: {

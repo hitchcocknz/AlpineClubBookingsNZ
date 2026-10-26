@@ -12,14 +12,17 @@ import { bookingAmountOwedCents } from "@/lib/booking-payment-state";
  * in; the payment row's mirror column is set to a different figure throughout,
  * so a card that read the column would show it.
  */
-function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }) {
+function resolve(
+  payment: { changeFeeCents: number; creditAppliedCents: number },
+  options: { finalPriceCents?: number; modules?: Record<string, boolean> } = {},
+) {
   const booking = {
     status: "PAYMENT_PENDING",
     // #3372 (composed with #3924): the loader selects these for the retained
     // line's Net Collected rule (`getNetCollectedCashParts`).
     deletedAt: null,
     manualRefundTasks: [],
-    finalPriceCents: 20000,
+    finalPriceCents: options.finalPriceCents ?? 20000,
     organiserSettled: false,
     creditsFromCancellation: [],
     refundRequests: [],
@@ -50,7 +53,7 @@ function resolve(payment: { changeFeeCents: number; creditAppliedCents: number }
   };
   return resolveBookingDetailPayment({
     booking: booking as never,
-    modules: {} as never,
+    modules: (options.modules ?? {}) as never,
     viewer: { canManageBooking: true, isBookingOwner: true, nonOwnerAdminViewer: false, canSeeOwnerCredit: true } as never,
     access: { isDeleted: false } as never,
     party: { hasProvisionalChildren: false, isProvisionalChild: false, isFlaggedProvisional: false } as never,
@@ -72,6 +75,12 @@ describe("booking page amount due with a recorded change fee (#3955 F8)", () => 
     // 20000 + 2500 - 5000
     expect(payment.cardAmountDueCents).toBe(17500);
     expect(payment.amountDueAfterCreditCents).toBe(17500);
+  });
+
+  it("#4357: a $0 booking still owing a recorded change fee can switch to Internet Banking; one owing nothing cannot", () => {
+    const modules = { xeroIntegration: true, internetBankingPayments: true };
+    expect(resolve({ changeFeeCents: 2500, creditAppliedCents: 0 }, { finalPriceCents: 0, modules }).canSwitchToInternetBanking).toBe(true);
+    expect(resolve({ changeFeeCents: 0, creditAppliedCents: 0 }, { finalPriceCents: 0, modules }).canSwitchToInternetBanking).toBe(false);
   });
 
   it("CONTROL: with no fee and no credit there is no breakdown and the price is due", () => {

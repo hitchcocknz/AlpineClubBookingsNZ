@@ -52,7 +52,7 @@ admin surface showed one. These rules now hold:
   BUMPED**, and that is the invariant: a member is never shown, and can never
   complete, a card payment for a booking the club has stopped counting.
   Enforcement is not cosmetic — cancellation marks the additional intent
-  `FAILED` without zeroing the amount, and the cancel path asks Stripe to cancel
+  `FAILED` without zeroing the amount, and the booking cancel asks Stripe to cancel
   only an intent that was still *outstanding*, so an intent that had already
   failed (a declined card) stays confirmable at Stripe. Before this gate the
   owner of a cancelled booking could open it, be offered "pay this
@@ -65,7 +65,7 @@ admin surface showed one. These rules now hold:
   case and a SUPERSEDED ask is the other (#3340).** A booking edit that raises a
   new extra retires the extra before it: minting the replacement ADDITIONAL
   PaymentIntent queues every other outstanding one on that payment for
-  cancellation. Until #3340 the cancellation was only *enqueued* for the
+  cancellation, a declined one included (#4422). Until #3340 the cancellation was only *enqueued* for the
   five-minute recovery cron, so the retired intent stayed confirmable — measured
   at 4 minutes 5 seconds in the live case, and a member's card confirm landed
   inside it. The same shape as a cancelled booking, and the same harm: a member
@@ -95,8 +95,7 @@ admin surface showed one. These rules now hold:
   audit row and a REFUNDED `BookingEvent` (discriminated so the cancellation
   narrative can never read it as a settlement clause), emails the member naming
   what came back and what is still owing, and alerts admins. Before #3340 Stripe's
-  own receipt was the entire notice, and a member's query about one is the only
-  reason the money leak underneath ([INV-PAY-047]) was ever found.
+  own receipt was the entire notice ([INV-PAY-047]).
 
 ### INV-ADDPAY-024
 
@@ -1637,8 +1636,8 @@ _Legacy: settles tasks raised before #4317._
   (`bank-refund-void-follow-up.ts`) handles every voided `REFUND_CREDIT_NOTE`
   on an `INTERNET_BANKING` payment EXACTLY ONCE (`bank-refund-void-scan.ts`):
 - **A spare moves nothing.** When live notes, plus notes resolved by hand
-  (`INV-INT-025`), still cover every bank hand-back, a marker on the link
-  records it.
+  (`INV-INT-025`, #4265), still cover every bank hand-back, a marker on the
+  link records it.
 - **Otherwise one transaction**, under `lock(1)` then the Payment row:
   re-classify, defer while a create could mint, claim with the follow-up's
   unique key `bank-refund-void:<payment>:<note>`, then unwind the allocation,
@@ -1653,7 +1652,9 @@ _Legacy: settles tasks raised before #4317._
   here.
 - **Nothing is raised in Xero without a person.** No email, booking event or
   provider call. Completing the follow-up needs an answer: a fresh note keyed
-  and sized on it, or a hand-made note checked in Xero first and then tracked.
+  and sized on it, or a hand-made note checked in Xero first and then tracked,
+  never one another record tracks or an unfinished or hand-resolved create
+  row names (#4321, `INV-INT-028`).
 - **Report-only** until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`: nothing,
   the person's pick included, writes before then.
   Pinned by `bank-refund-void-follow-up` (unit and realdb),

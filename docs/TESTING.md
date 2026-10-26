@@ -1505,6 +1505,48 @@ case reached the remainder-note mint because its credit lots tied on the
 frozen clock; the cure was an explicit fixture chronology and a regression that
 names the path (`INV-PAY-127`), not a declaration that let the mint go further.
 
+### Realdb files take turns on the race database
+
+Running several `*.realdb.test.ts` files in one `vitest run` used to fail
+intermittently, while every file passed alone (#4367). They share one
+database. Trigger DDL takes table-level locks, the global Xero outbox
+processor and the ownership guard see other files' rows, and some cases scan
+whole tables. The first local run of the 27 Xero and refund files in parallel
+failed 6 tests in 2 files.
+
+When `RUN_CONCURRENCY_RACE_TESTS=1` and `CONCURRENCY_RACE_DATABASE_URL` is
+set, `vitest.setup.ts` makes each realdb file hold one session advisory lock,
+`(4367, 1)`, from its first hook through its teardown. The files then run one
+at a time whatever the worker count; importing and collecting them still overlap.
+The same 27 files then passed twice in a row. The lock lives in
+`src/lib/__tests__/support/realdb-file-serialisation.ts`. One `aroundAll`
+holds it, so a root `afterAll` that throws still releases it, and the wait has
+no hook timeout. A waiting file polls `pg_try_advisory_lock` instead of
+blocking, because several suites' barriers count ungranted advisory rows in
+`pg_locks`. Realdb files on another database, such as
+`data-migration-verification`, take the race lock too when the race env is
+on. Expect a batch of realdb files to
+take as long as running them one after another. Inside one file the old rules
+still apply: a suite owns its own fixtures and queued work.
+
+CI runs every one of these files in the advisory `realdb-all` job (#4458), in
+one `vitest run` on one Postgres service, with `RUN_CONCURRENCY_RACE_TESTS=1`.
+The file list is `scripts/ci/realdb-files.mjs`: every `*.realdb.test.*` file
+under `src/` minus `scripts/ci/realdb-quarantine.txt`, which names a suite that
+is red for a known reason, or cannot share the process, with its issue or PR.
+Add a realdb file and it joins the job with no edit. `realdb-ci-coverage-census.test.ts` fails when a file is
+neither run nor quarantined, when the job stops setting
+`RUN_CONCURRENCY_RACE_TESTS=1`, or when any other job names `realdb-all`. The
+job points `DATA_MIGRATION_VERIFICATION_DATABASE_URL` at the same race service
+(those three suites create scratch databases of their own), and its last step,
+`scripts/ci/check-realdb-ran.mjs`, reads Vitest's JSON report and fails when a
+listed file is missing from it, passed no test, or skipped any: a suite whose
+gate is unset skips green otherwise. The seed suite
+(`booking-ledger-history-seed`) is quarantined because
+`scripts/booking-ledger-seed-gate.sh` runs it against a database of its own. The
+per-file steps in `migration-drift` and `data-migration-verification` stay: they
+are required checks and this job is not.
+
 ## Mocking a money seam: never in a test that asserts its money
 
 The rule is `INV-OPS-015` ([`invariants/operations.md`](invariants/operations.md));

@@ -214,9 +214,8 @@ function readAdoptedCancelIntentIds(metadata: Prisma.JsonValue | null | undefine
  *   rule (`queueSupersededPrimaryIntentCancellations`). A saved-card charge
  *   attempt's row is judged against the booking's full worth instead
  *   (`bookingWorthCents`): the figure the cron charges (#3750) and the one the
- *   capture path accepts (#3864). The member's and the officer's saved-card
- *   routes charge the bare price, which is the worth unless the booking
- *   carries a change fee; an attempt of theirs on such a booking reads stale;
+ *   capture path accepts (#3864), and since #4357 every saved-card door
+ *   charges it (`savedCardChargeCents`);
  * - an ADDITIONAL intent is stale unless it is the payment's live ask
  *   (`additionalPaymentIntentId`, the one pointer every consumer honours), the
  *   #3340 rule (`queueSupersededAdditionalIntentCancellationRows`). A settle

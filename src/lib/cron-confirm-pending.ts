@@ -1,4 +1,5 @@
-import { bookingWorthCents } from "@/lib/booking-payment-state";
+import { savedCardChargeCents } from "@/lib/booking-payment-state";
+import { writeZeroWorthConfirmPayment } from "@/lib/zero-worth-confirm-payment";
 import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
 import { BookingEventType, BookingStatus, PaymentSource, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
 import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
@@ -181,23 +182,6 @@ export function shouldAlertOnSavedCardChargeRefusal(
 // reason to avoid cancelling the intent Stripe would re-return under the shared
 // `pending_charge_<bookingId>` key. There is no shared key any more, and the
 // sweep excludes attempt rows by the key prefix that module owns.
-
-/**
- * #3750 (#3955 review F2, `INV-PAY-119`): what the saved card is charged — the
- * booking's worth, its price plus a change fee recorded on its payment, read
- * from the one home. Like the bare price it replaces, applied credit is not
- * netted here (the settle admits a full-worth capture and gives back any
- * credit it leaves spent, #3864).
- */
-function savedCardChargeCents(booking: {
-  finalPriceCents: number;
-  payment: { changeFeeCents: number } | null;
-}): number {
-  return bookingWorthCents({
-    finalPriceCents: booking.finalPriceCents,
-    changeFeeCents: booking.payment?.changeFeeCents ?? null,
-  });
-}
 
 const pendingBookingInclude = {
   member: true,
@@ -423,7 +407,8 @@ async function sendConfirmationEmail(booking: PendingBooking, format: ClubFormat
       booking.checkIn,
       booking.checkOut,
       booking.guests.length,
-      booking.finalPriceCents,
+      // #4357 (`INV-PAY-119`): confirmation emails quote worth, what was charged.
+      savedCardChargeCents(booking),
       format,
       bookingPromoEmailOptions(booking)
     );
@@ -608,7 +593,9 @@ async function resolveHoldWindowUnderLock(
     }
 
     // Zero-dollar booking: skip Stripe, just confirm with a SUCCEEDED Payment.
-    if (booking.finalPriceCents === 0) {
+    // #4357 (`INV-PAY-119`): decided on worth, the figure the charge branch
+    // charges - a change fee recorded on a $0 booking's payment is still owed.
+    if (savedCardChargeCents(booking) === 0) {
       const claimed = await tx.booking.updateMany({
         where: { id: booking.id, status: BookingStatus.PENDING },
         data: {
@@ -636,18 +623,7 @@ async function resolveHoldWindowUnderLock(
         cause: "SYSTEM_CHANGE",
       });
 
-      await tx.payment.upsert({
-        where: { bookingId: booking.id },
-        create: {
-          bookingId: booking.id,
-          amountCents: 0,
-          status: PaymentStatus.SUCCEEDED,
-        },
-        update: {
-          amountCents: 0,
-          status: PaymentStatus.SUCCEEDED,
-        },
-      });
+      await writeZeroWorthConfirmPayment(tx, booking.id);
 
       return { type: "confirmed_zero", booking };
     }

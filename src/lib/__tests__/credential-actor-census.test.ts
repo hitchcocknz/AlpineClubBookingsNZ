@@ -141,7 +141,8 @@ const CREDENTIAL_WRITE_SITES: Record<string, string> = {
     "setIntegrationCredential (forwarded) actor / (forwarded) writeExpectation",
   // #3454: a Xero client id or secret is written INSIDE the verify-reset's
   // transaction, so the token destruction it causes commits with it; every
-  // other credential takes the ordinary writer.
+  // other credential takes the ordinary writer, except ServerNZ, whose key
+  // goes through `setServerNzApiKey` under the connection fence (#4436).
   "src/app/api/admin/integrations/credentials/route.ts::POST#0":
     "setIntegrationCredentialInTransaction admin / any",
   "src/app/api/admin/integrations/credentials/route.ts::POST#1":
@@ -172,24 +173,26 @@ const CREDENTIAL_WRITE_SITES: Record<string, string> = {
   "src/lib/mirotalk-config-write.ts::setMirotalkSecret#0":
     "setIntegrationCredential (forwarded) params.actor / (forwarded) params.expect",
   "src/lib/servernz-config.ts::clearServerNzApiKey#0":
-    "deleteIntegrationCredential (forwarded) actor / any",
-  "src/lib/servernz-config.ts::setServerNzApiKey#0":
-    "setIntegrationCredential (forwarded) actor / any",
+    "deleteIntegrationCredentialInTransaction (forwarded) actor / any",
+  "src/lib/servernz-config.ts::setServerNzApiKey.saved#0":
+    "setIntegrationCredentialInTransaction (forwarded) actor / any",
   "src/lib/stripe-config.ts::clearStripeWebhookVerified#0":
     "deleteIntegrationCredential (forwarded) actor / any",
   "src/lib/stripe-config.ts::recordStripeWebhookVerified#0":
     "setIntegrationCredential system / any",
-  "src/lib/xero-config.ts::getOperationalXeroEncryptionKey.value#0":
-    "ensureGeneratedCredential system / (not-applicable)",
   // #3454 — the Xero OAuth token set. The refresh declares the version it read
   // with the lease; a connect replaces whatever was stored; destroying the
   // tokens wants them gone whatever they were.
   "src/lib/xero-token-store.ts::deleteXeroTokensInTransaction.storeRemoved#0":
     "deleteIntegrationCredentialInTransaction (forwarded) params.actor / any",
   "src/lib/xero-token-store.ts::saveXeroTokens#0":
-    "setIntegrationCredentialInTransaction (forwarded) options.actor / (forwarded) storeExpectation",
-  "src/lib/xero-token-store.ts::saveXeroTokens#1":
+    "setIntegrationCredentialInTransaction (forwarded) options.actor / version",
+  "src/lib/xero-token-store.ts::saveXeroTokens#2":
     "setIntegrationCredentialInTransaction (forwarded) options.actor / any",
+  // #3806 R2 — the retired wrapped token key, deleted by the next connect,
+  // disconnect or verify-reset under that operation's actor and cause.
+  "src/lib/xero-token-store.ts::deleteRetiredTokenKey#0":
+    "deleteIntegrationCredentialInTransaction (forwarded) context.actor / any",
 };
 
 /**
@@ -222,8 +225,8 @@ const ACTOR_FORWARDED_SITES: Record<string, string> = {
   "src/lib/mirotalk-config-write.ts::setMirotalkSecret#0":
     "the actor and the expectation are both this helper's own required parameters, supplied by the admin route that holds the acting member and the version the screen was shown",
   "src/lib/servernz-config.ts::clearServerNzApiKey#0":
-    "the actor is this helper's own required parameter, supplied by its caller",
-  "src/lib/servernz-config.ts::setServerNzApiKey#0":
+    "the actor is this helper's own required parameter, forwarded from saveServerNzConnectionSettings's own required admin actor, which the settings route builds from the acting member (#4436)",
+  "src/lib/servernz-config.ts::setServerNzApiKey.saved#0":
     "the actor is this helper's own required parameter, supplied by its caller",
   "src/lib/stripe-config.ts::clearStripeWebhookVerified#0":
     "the actor is this helper's own required parameter: the admin credential route supplies the officer, and recordStripeWebhookVerified supplies its system actor when taking back a marker that raced a signing-secret swap",
@@ -231,8 +234,10 @@ const ACTOR_FORWARDED_SITES: Record<string, string> = {
     "the actor is this helper's own required parameter: the administrator disconnecting, or the one whose credential write caused the verify-reset",
   "src/lib/xero-token-store.ts::saveXeroTokens#0":
     "the actor is the token store's own required parameter, the named `xero-token-refresh` job supplied by the API client's refresh; the expectation is the version read with the lease",
-  "src/lib/xero-token-store.ts::saveXeroTokens#1":
+  "src/lib/xero-token-store.ts::saveXeroTokens#2":
     "the actor is the token store's own required parameter, the connecting administrator supplied by the OAuth callback",
+  "src/lib/xero-token-store.ts::deleteRetiredTokenKey#0":
+    "the actor is the connect's, disconnect's or verify-reset's own, passed through: the retired key goes with whatever operation replaced or destroyed the tokens (#3806 R2)",
 };
 
 /**
@@ -246,24 +251,25 @@ const ACTOR_FORWARDED_SITES: Record<string, string> = {
 const APPROVED_STORE_BYPASSES: Record<string, string> = {};
 
 /**
- * Every write to the `XeroToken` mirror (#3454), each reviewed. The token store
- * is the only module allowed to make one — anywhere else it is a bypass, above —
- * because the store READS that row as the newer copy when its ciphertext no
- * longer matches. Two of these are not credential writes and are pinned as such.
+ * Every write to the `XeroToken` row (#3454, #3806 R2), each reviewed. The token
+ * store is the only module allowed to make one — anywhere else it is a bypass,
+ * above — because the previous release still READS that row's ciphertext when the
+ * store copy's fingerprint no longer matches it. Since R2 none of these names a
+ * ciphertext column (the schema `@ignore`s both), so none is a credential write.
  */
 const TOKEN_MIRROR_WRITES: Record<string, string> = {
-  "src/lib/xero-token-store.ts::claimXeroTokenRefreshLease.claimed#0":
-    "the refresh LEASE claim: writes only `refreshInProgressUntil`, never a token, so it is not a credential write and records no audit row",
+  "src/lib/xero-token-store.ts::claimXeroTokenRefreshLease.previousRelease#0":
+    "the previous release's half of the refresh LEASE claim: writes only `refreshInProgressUntil`, so it is not a credential write and records no audit row",
   "src/lib/xero-token-store.ts::releaseXeroTokenRefreshLease#0":
-    "the refresh LEASE release: clears only `refreshInProgressUntil`, likewise not a credential write",
-  "src/lib/xero-token-store.ts::saveXeroTokens.updated#0":
-    "the refresh save's mirror half, in the same transaction as the store write and its audit row",
+    "the previous release's half of the LEASE release: clears only `refreshInProgressUntil`, likewise not a credential write",
+  "src/lib/xero-token-store.ts::saveXeroTokens.previousRelease#0":
+    "the refresh save's `expiresAt`/`tenantId`/lease update, guarded on the lease, in the same transaction as the store write and its audit row",
+  "src/lib/xero-token-store.ts::saveXeroTokens#1":
+    "the connect's delete of every old row, so the fresh row's ciphertext is the database's '' default whose fingerprint the store copy records",
   "src/lib/xero-token-store.ts::saveXeroTokens.row#0":
-    "the connect's mirror half (an existing row), in the same transaction as the store write and its audit row",
-  "src/lib/xero-token-store.ts::saveXeroTokens.row#1":
-    "the connect's mirror half (no row yet), likewise",
-  "src/lib/xero-token-store.ts::deleteXeroTokensInTransaction.legacy#0":
-    "the delete's mirror half, audited in the same transaction whichever copies existed",
+    "the connect's fresh row: `expiresAt` and `tenantId` only, in the same transaction as the store write and its audit row",
+  "src/lib/xero-token-store.ts::deleteXeroTokensInTransaction.previousRelease#0":
+    "the delete's half for the previous release, audited in the same transaction whichever copies existed",
 };
 
 /**
@@ -291,11 +297,11 @@ describe("credential-actor census: the tree names an actor everywhere (#2723)", 
     expect(census().sites.length).toBeGreaterThanOrEqual(MINIMUM_WRITE_SITES);
     // Three writers, plus the in-transaction forms of set and delete (#3454).
     expect(CREDENTIAL_MUTATORS.length).toBe(5);
-    // Three modules are exempt from the bypass check because they ARE the
-    // implementation: the store, the compare-and-set claim, and the create-only
-    // generator. Pinned, because every addition widens the one check that can
-    // see a writer which skips the store.
-    expect(CREDENTIAL_BOUNDARY_MODULES.length).toBe(3);
+    // Two modules are exempt from the bypass check because they ARE the
+    // implementation: the store and the compare-and-set claim (the create-only
+    // generator was the third until #3806 R2 retired it). Pinned, because every
+    // addition widens the one check that can see a writer which skips the store.
+    expect(CREDENTIAL_BOUNDARY_MODULES.length).toBe(2);
     // One module may write the `XeroToken` mirror (#3454).
     expect(TOKEN_MIRROR_BOUNDARY_MODULES).toEqual(["src/lib/xero-token-store.ts"]);
   });
@@ -342,7 +348,7 @@ describe("credential-actor census: the tree names an actor everywhere (#2723)", 
       publishersNote(
         "Something writes `IntegrationCredential` without going through the " +
           "store, so no required argument can make it name an actor. Route it " +
-          "through `setIntegrationCredential` / `ensureGeneratedCredential` / " +
+          "through `setIntegrationCredential` / " +
           "`deleteIntegrationCredential`, or — if it genuinely cannot be — " +
           "record it in APPROVED_STORE_BYPASSES with the reason.",
       ),
@@ -413,8 +419,8 @@ describe("credential-actor census: the pinned populations (#2723)", { timeout: 1
 describe("credential-actor census: reads stay out of it (#2723)", { timeout: 180_000 }, () => {
   it("counts no read as a mutation, so a status check makes no audit noise", () => {
     // Half a dozen config modules read the table directly on purpose, and the
-    // Xero token path calls `ensureGeneratedCredential` on every decrypt. If a
-    // read counted here, the population would be dominated by traffic nobody
+    // Xero token path reads the token set on every API call. If a read counted
+    // here, the population would be dominated by traffic nobody
     // needs to attribute — and the census would be ignored.
     const readers: CredentialWriteSite[] = census().sites.filter((site) =>
       site.mutator.startsWith("get") || site.mutator.startsWith("resolve"),

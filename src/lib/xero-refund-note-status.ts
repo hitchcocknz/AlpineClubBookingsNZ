@@ -8,7 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
-import { readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import { isRefundRequestNoteOperation, readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { xeroInstant } from "@/lib/xero-provider-dates";
 
 /**
@@ -503,6 +503,38 @@ export async function readRefundNoteRaisingRow(
  */
 export function isCoveredByExistingNoteRow(row: { responsePayload: unknown }): boolean {
   return asRecord(row.responsePayload)?.coveredByExistingNote === true;
+}
+
+/**
+ * #4265 (owner decision 26 Oct 2026, `INV-INT-025`): THE ONE RULE for which
+ * refund-note create rows count toward a payment's refund-note coverage. A
+ * row covers only its OWN note - never one it closed as covered by
+ * (`isCoveredByExistingNoteRow`, #4258) - and never a refund request's
+ * (`INV-PAY-118`: those notes answer the request, never the payment's refunds).
+ * The third part, LIVE, is read from the note's links (`refundNoteIdSets`), as
+ * every coverage reader does. Such a row still reports its key to the fences;
+ * its amount is never read.
+ */
+export function countsTowardRefundNoteCoverage(row: { requestPayload: unknown; responsePayload: unknown; correlationKey?: string | null; idempotencyKey?: string | null }): boolean {
+  return !isCoveredByExistingNoteRow(row) && !isRefundRequestNoteOperation(row);
+}
+
+/**
+ * `INV-INT-025` (#4321, #4421): THE credit-note create rows that record a
+ * given Xero credit note - on any payment, by the note's id alone, never its
+ * number (an old organisation's, or a reused one). Every writer that records a
+ * number records the id. One spelling, shared by the hand-made answer's guard
+ * (`recordHandMadeRefundNoteLink`) and "Resolve by hand"'s
+ * (`claimResolveRecordingRefundNote`), so "one note, one refund" is asked the
+ * same way from both sides.
+ */
+export function creditNoteCreateRowsRecordingWhere(creditNoteId: string) {
+  return {
+    xeroObjectType: "CREDIT_NOTE",
+    xeroObjectId: creditNoteId,
+    entityType: "CREDIT_NOTE",
+    operationType: "CREATE",
+  } satisfies Prisma.XeroSyncOperationWhereInput;
 }
 
 /**

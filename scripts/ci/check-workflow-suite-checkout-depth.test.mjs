@@ -451,7 +451,10 @@ describe("this repository", () => {
     // #3431 moved CI's full suite to Vitest's four-file shards. The canary is
     // now the one unsharded run; require-test-shards.test.mjs pins the matrix
     // checkout depth and partition, so neither path can quietly lose coverage.
-    expect(fullSuiteJobs).toBe(1);
+    // The advisory realdb-all job (#4458) is the second: it passes its file list
+    // as a shell array the gate cannot read, so the gate counts it as a whole
+    // suite and holds it to fetch-depth: 0, which it has.
+    expect(fullSuiteJobs).toBe(2);
   });
 
   it("runs the file-size ratchet as verify's actual final step", () => {
@@ -484,7 +487,9 @@ describe("this repository", () => {
         .flatMap((step) => classifyRunScript(step.run))
         .map((invocation) => invocation.kind),
     ).toContain("targeted");
-    expect(jobs.verify.steps.some((step) => step.run === "node scripts/ci/require-test-shards.mjs")).toBe(true);
+    expect(
+      jobs.verify.steps.some((step) => String(step.run ?? "").startsWith("node scripts/ci/require-test-shards.mjs")),
+    ).toBe(true);
 
     const canary = parseWorkflowYaml(read("clock-rollover-canary.yml")).jobs[
       "wound-forward-suite"
@@ -497,7 +502,7 @@ describe("this repository", () => {
     ).toContain("full-suite");
   });
 
-  it("leaves the realdb jobs, which run targeted files, passing — and only ONE of them still checks out shallow", () => {
+  it("leaves the realdb jobs, which run targeted files, passing — with only the depth each one's git use needs", () => {
     const jobs = parseWorkflowYaml(
       readFileSync(path.join(REPO_ROOT, ".github", "workflows", "ci.yml"), "utf8"),
     ).jobs;
@@ -521,7 +526,10 @@ describe("this repository", () => {
       clone outright for that reason; the full checkout is what stops it refusing
       on every run.
 
-      `data-migration-verification` still touches no git and stays shallow.
+      `data-migration-verification` ran no git until #4425, which gave it the
+      change-scope step: that diffs a pull request's merge commit against its
+      first parent, so it needs exactly two commits — `fetch-depth: 2`, not a
+      full history. Its suite is still targeted, so the gate is unaffected.
     */
     // Compared numerically: this file's small YAML reader returns scalars as
     // strings, so `toBe(0)` would pin the reader rather than the workflow.
@@ -529,8 +537,8 @@ describe("this repository", () => {
       Number(checkoutOf(jobs["migration-drift"]).with?.["fetch-depth"]),
     ).toBe(0);
     expect(
-      checkoutOf(jobs["data-migration-verification"]).with?.["fetch-depth"],
-    ).toBeUndefined();
+      Number(checkoutOf(jobs["data-migration-verification"]).with?.["fetch-depth"]),
+    ).toBe(2);
 
     for (const jobId of ["migration-drift", "data-migration-verification"]) {
       const invocations = jobs[jobId].steps
