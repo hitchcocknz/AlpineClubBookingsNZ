@@ -47,8 +47,9 @@ jobs:
   # runner job below, instead of each job building the image (10 min) and
   # running the demo seed (5 min) for itself. Both run in parallel. Artifacts
   # rather than GHCR, because a fork's pull request cannot push packages.
-  # Neither is a required check: a failure here skips the runner jobs, and the
-  # required gates at the end then fail closed on the skipped runners.
+  # Neither is a required check. A failure here skips shards 2 and 3, and the
+  # two required jobs, which wait for these artifacts in a step rather than a
+  # `needs:`, fail at once on it (scripts/ci/wait-for-run-artifacts.mjs).
   e2e-image:
     name: E2E app image
     runs-on: ubuntu-latest
@@ -199,7 +200,9 @@ jobs:
   playwright:
     name: Playwright E2E
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    # Setup + the artifact wait (45) + its own shard + the gate (75): the
+    # gate's own error reports before this fires.
+    timeout-minutes: 165
     permissions:
       contents: read
       actions: read # read this run's artifacts and its shard jobs
@@ -257,7 +260,7 @@ jobs:
       - name: Require shards 2 and 3 to pass
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/ci/require-test-shards.mjs --label "E2E shard" --count 3 --from 2 --max-wait-minutes 60 --upstream "E2E app image" --upstream "E2E seeded database"
+        run: node scripts/ci/require-test-shards.mjs --label "E2E shard" --count 3 --from 2 --max-wait-minutes 75 --upstream "E2E app image" --upstream "E2E seeded database"
 
   # Shards 2 and 3 of the single-lodge suite, each on its own stack and
   # database. Workers stay at one per stack: specs share seeded personas and
@@ -325,7 +328,7 @@ jobs:
   multi-lodge:
     name: E2E multi-lodge
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 95
     permissions:
       contents: read
       actions: read # read this run's artifacts and its jobs

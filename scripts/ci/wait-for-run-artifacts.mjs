@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
-import { getAttemptJobs } from "./require-test-shards.mjs";
+import { UPSTREAM_JOB_NAME, assertUpstreamSucceeded, getAttemptJobs, getRunApiJson, parseMaxWaitMinutes } from "./require-test-shards.mjs";
 
 // #4397: lets a REQUIRED job use another job's output without a `needs:`
 // edge. A required job with `needs:` reports "skipped" when its upstream
@@ -26,11 +26,10 @@ export function parseArtifactWaitArgs(argv) {
       if (!/^[\w.-]+$/.test(value)) throw new Error(`Invalid --artifact: ${value}`);
       options.artifacts.push(value);
     } else if (flag === "--upstream") {
-      if (!/^[A-Za-z][\w -]*$/.test(value)) throw new Error(`Invalid --upstream: ${value}`);
+      if (!UPSTREAM_JOB_NAME.test(value)) throw new Error(`Invalid --upstream: ${value}`);
       options.upstream.push(value);
     } else if (flag === "--max-wait-minutes") {
-      if (!/^[1-9]\d{0,2}$/.test(value)) throw new Error(`Invalid --max-wait-minutes: ${value}`);
-      options.maxWaitMs = Number(value) * 60_000;
+      options.maxWaitMs = parseMaxWaitMinutes(value);
     } else {
       throw new Error(`Unknown argument: ${flag}`);
     }
@@ -39,35 +38,22 @@ export function parseArtifactWaitArgs(argv) {
   return options;
 }
 
-/** The names still missing, or a throw when a named upstream job has failed. */
+/**
+ * What is still missing, and whether every upstream job has finished (they
+ * all succeeded: a failure throws). Missing with everything finished means
+ * the upload never happened - the caller confirms it on a second poll, as the
+ * artifacts listing can trail the jobs listing.
+ */
 export function classifyArtifactWait({ artifacts, jobs, wanted, upstream }) {
-  for (const name of upstream) {
-    const job = jobs.find((item) => item?.name === name);
-    if (job?.status === "completed" && job.conclusion !== "success") {
-      throw new Error(`Upstream job "${name}" completed as ${job.conclusion ?? "unknown"}`);
-    }
-  }
+  assertUpstreamSucceeded(jobs, upstream);
   const present = new Set(artifacts.filter((item) => item && item.expired !== true).map((item) => item.name));
   const missing = wanted.filter((name) => !present.has(name));
-  // Every upstream job succeeded (failures threw above) yet something is
-  // missing: it will never be uploaded, so waiting could only time out.
-  const allDone = upstream.length > 0 && upstream.every((name) => jobs.find((item) => item?.name === name)?.status === "completed");
-  if (missing.length > 0 && allDone) throw new Error(`Every upstream job finished but ${missing.join(", ")} never appeared`);
-  return missing;
+  const upstreamDone = upstream.length > 0 && upstream.every((name) => jobs.find((item) => item?.name === name)?.status === "completed");
+  return { missing, upstreamDone };
 }
 
-async function getRunArtifacts({ apiUrl, repository, runId, token, fetchImpl = fetch }) {
-  if (!/^[-\w.]+\/[-\w.]+$/.test(repository ?? "")) throw new Error("Invalid GITHUB_REPOSITORY");
-  if (!/^[1-9]\d*$/.test(String(runId ?? ""))) throw new Error("Invalid GITHUB_RUN_ID");
-  if (!token) throw new Error("GITHUB_TOKEN is required to wait for artifacts");
-  const url = new URL(`repos/${repository}/actions/runs/${runId}/artifacts`, `${apiUrl.replace(/\/$/, "")}/`);
-  url.searchParams.set("per_page", "100");
-  const response = await fetchImpl(url, {
-    signal: AbortSignal.timeout(10_000),
-    headers: { Accept: "application/vnd.github+json", Authorization: `Bearer ${token}`, "X-GitHub-Api-Version": "2022-11-28" },
-  });
-  if (!response.ok) throw new Error(`GitHub artifacts API returned HTTP ${response.status}`);
-  const payload = await response.json();
+async function getRunArtifacts(context) {
+  const payload = await getRunApiJson(context, "artifacts", { per_page: 100 }, "artifacts");
   if (!Array.isArray(payload?.artifacts)) throw new Error("GitHub artifacts API returned no artifacts array");
   return payload.artifacts;
 }
@@ -83,9 +69,15 @@ export async function waitForRunArtifacts({
   intervalMs = POLL_INTERVAL_MS,
 }) {
   const start = now();
+  let missingAfterUpstreamDone = 0;
   while (true) {
-    const missing = classifyArtifactWait({ artifacts: await loadArtifacts(), jobs: await loadJobs(), wanted, upstream });
+    // Jobs first: an artifact uploaded before its job finished is then
+    // listed by the time the artifacts are read.
+    const jobs = await loadJobs();
+    const { missing, upstreamDone } = classifyArtifactWait({ artifacts: await loadArtifacts(), jobs, wanted, upstream });
     if (missing.length === 0) return;
+    missingAfterUpstreamDone = upstreamDone ? missingAfterUpstreamDone + 1 : 0;
+    if (missingAfterUpstreamDone >= 2) throw new Error(`Every upstream job finished but ${missing.join(", ")} never appeared`);
     if (now() - start >= maxWaitMs) throw new Error(`Timed out waiting for artifacts: ${missing.join(", ")}`);
     await sleep(intervalMs);
   }

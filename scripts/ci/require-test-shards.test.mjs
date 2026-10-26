@@ -173,11 +173,20 @@ describe("the gate for another matrix (--label/--count)", () => {
     const image = (conclusion, status = "completed") => ({ name: "E2E app image", status, conclusion });
     const upstream = ["E2E app image", "E2E seeded database"];
     expect(() => classifyTestShardJobs([image("failure"), placeholder], 3, "E2E shard", upstream)).toThrow(/Upstream job "E2E app image" completed as failure/);
-    expect(() => classifyTestShardJobs([image("cancelled")], 1, "E2E multi-lodge run", upstream)).toThrow(/completed as cancelled/);
+    expect(() => classifyTestShardJobs([image("cancelled")], 1, "E2E shard", upstream)).toThrow(/completed as cancelled/);
     // Still running or passed upstream: just pending.
-    expect(classifyTestShardJobs([image(null, "in_progress"), placeholder], 1, "E2E multi-lodge run", upstream)).toEqual(["missing 1/1"]);
-    expect(classifyTestShardJobs([image("success")], 1, "E2E multi-lodge run", upstream)).toEqual(["missing 1/1"]);
-    expect(parseShardGateArgs(["--upstream", "E2E app image", "--upstream", "E2E seeded database"]).upstream).toEqual(upstream);
+    expect(classifyTestShardJobs([image(null, "in_progress"), placeholder], 1, "E2E shard", upstream)).toEqual(["missing 1/1"]);
+    expect(classifyTestShardJobs([image("success")], 1, "E2E shard", upstream)).toEqual(["missing 1/1"]);
+  });
+
+  it("with --from, checks only the shards from that index and refuses one the gate job should have run", () => {
+    expect(classifyTestShardJobs([e2e(2), e2e(3)], 3, "E2E shard", [], 2)).toEqual([]);
+    expect(classifyTestShardJobs([e2e(2)], 3, "E2E shard", [], 2)).toEqual(["missing 3/3"]);
+    expect(() => classifyTestShardJobs([e2e(2), e2e(3, "completed", "failure")], 3, "E2E shard", [], 2)).toThrow(/3\/3 completed as failure/);
+    expect(() => classifyTestShardJobs([e2e(1), e2e(2), e2e(3)], 3, "E2E shard", [], 2)).toThrow(/run by the gate job itself/);
+    expect(() => classifyTestShardJobs([], 3, "E2E shard", [], 4)).toThrow(/past --count/);
+    expect(() => parseShardGateArgs(["--count", "3", "--from", "4"])).toThrow(/past --count/);
+    expect(parseShardGateArgs(["--upstream", "E2E app image", "--upstream", "E2E seeded database"]).upstream).toEqual(["E2E app image", "E2E seeded database"]);
   });
 
   it("names the matrix in a timeout", async () => {
@@ -293,12 +302,28 @@ describe("e2e.yml's required jobs, their shards and the run action", () => {
     expect(shards.if).toBeUndefined();
     expect(shards["continue-on-error"]).toBeUndefined();
     expect(shards.strategy["fail-fast"]).toBe("false");
+    // The names the run action downloads are the ones the jobs upload.
+    const downloads = action.runs.steps.filter((step) => step.uses?.startsWith("actions/download-artifact@")).map((step) => step.with.name);
+    expect(downloads).toEqual(["e2e-app-image-${{ github.run_id }}", "e2e-seeded-db-${{ github.run_id }}"]);
     const shardRun = runStep(shards);
     expect(shardRun.with["wait-for-artifacts"]).toBe("false");
     expect(shardRun.with["playwright-args"]).toBeUndefined();
     expect(shardRun.if).toBeUndefined();
-    // The gate outwaits the slowest chain it depends on (image, then a shard).
-    expect(options.maxWaitMs / 60_000).toBeGreaterThanOrEqual(Number(e2e.jobs["e2e-image"]["timeout-minutes"]) + Number(shards["timeout-minutes"]) - 25);
+    // The time budget, stated. The gate starts after shard 1, which itself
+    // waited for the image, so it must outwait a shard's own run plus the
+    // runner queue it can sit in (25 min measured in run 40248216639). The
+    // job outlasts setup, the artifact wait, its own shard and the gate, so
+    // the gate's own error reports before the job times out.
+    const QUEUE_MINUTES = 25;
+    const SETUP_MINUTES = 10;
+    const OWN_SHARD_MINUTES = 30;
+    const gateMinutes = options.maxWaitMs / 60_000;
+    expect(gateMinutes).toBeGreaterThanOrEqual(Number(shards["timeout-minutes"]) + QUEUE_MINUTES);
+    const artifactWait = parseArtifactWaitArgs(action.runs.steps.find((step) => step.run?.startsWith("node scripts/ci/wait-for-run-artifacts.mjs")).run.replaceAll("${{ github.run_id }}", "1").replace("node scripts/ci/wait-for-run-artifacts.mjs", "").match(/"[^"]*"|\S+/g).map((arg) => arg.replace(/^"|"$/g, "")));
+    const waitMinutes = artifactWait.maxWaitMs / 60_000;
+    expect(waitMinutes).toBeGreaterThanOrEqual(Number(e2e.jobs["e2e-image"]["timeout-minutes"]));
+    expect(Number(e2e.jobs.playwright["timeout-minutes"])).toBeGreaterThan(SETUP_MINUTES + waitMinutes + OWN_SHARD_MINUTES + gateMinutes);
+    expect(Number(e2e.jobs["multi-lodge"]["timeout-minutes"])).toBeGreaterThan(SETUP_MINUTES + waitMinutes + OWN_SHARD_MINUTES);
   });
 
   it("the run action prepares and runs Playwright, skippable only on an explicit needed=false, and waits on the right inputs", () => {

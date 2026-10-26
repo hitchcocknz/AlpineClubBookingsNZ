@@ -13,19 +13,35 @@ export const DEFAULT_SHARD_LABEL = "Test shard";
 const POLL_INTERVAL_MS = 15_000;
 const MAX_WAIT_MS = 45 * 60_000;
 
-export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label = DEFAULT_SHARD_LABEL, upstream = [], from = 1) {
-  if (!Array.isArray(jobs)) throw new Error("GitHub returned no jobs array");
-  // #4397: a matrix whose `needs:` failed is skipped before its names expand,
-  // and GitHub then reports it under a placeholder (seen as `matrix.name`)
-  // that no label matches, so waiting on it would only time out. The gate is
-  // told the upstream jobs by name and fails at once when one of them ends
-  // in anything but success.
+/** A GitHub job name as `--upstream` accepts it. */
+export const UPSTREAM_JOB_NAME = /^[A-Za-z][\w -]*$/;
+
+/** `--max-wait-minutes`, shared by both waiting gates. */
+export function parseMaxWaitMinutes(value) {
+  if (!/^[1-9]\d{0,2}$/.test(value ?? "")) throw new Error(`Invalid --max-wait-minutes: ${value}`);
+  return Number(value) * 60_000;
+}
+
+/**
+ * #4397: the one rule both waiting gates use for their upstream jobs. A
+ * matrix whose `needs:` failed is skipped before its names expand (GitHub
+ * reports a placeholder such as `matrix.name`), and an artifact a failed job
+ * never uploaded never appears, so waiting could only time out: throw at once
+ * when a named upstream job has completed as anything but success.
+ */
+export function assertUpstreamSucceeded(jobs, upstream) {
   for (const name of upstream) {
     const job = jobs.find((item) => item?.name === name);
     if (job?.status === "completed" && job.conclusion !== "success") {
       throw new Error(`Upstream job "${name}" completed as ${job.conclusion ?? "unknown"}`);
     }
   }
+}
+
+export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label = DEFAULT_SHARD_LABEL, upstream = [], from = 1) {
+  if (!Array.isArray(jobs)) throw new Error("GitHub returned no jobs array");
+  if (from > count) throw new Error(`--from ${from} is past --count ${count}: nothing would be checked`);
+  assertUpstreamSucceeded(jobs, upstream);
   const found = new Map();
   const pattern = new RegExp(`^${escapeRegex(label)} \\(([1-9]\\d*)\\/([1-9]\\d*)\\)$`);
   for (const job of jobs) {
@@ -42,7 +58,7 @@ export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label 
   const pending = [];
   // `from` > 1: the calling job runs the shards before `from` itself
   // (`Playwright E2E` is shard 1 of the browser suite, #4397).
-  if (found.has(from - 1) || [...found.keys()].some((index) => index < from)) {
+  if ([...found.keys()].some((index) => index < from)) {
     throw new Error(`${label} ${Math.min(...found.keys())}/${count} should be run by the gate job itself, not a separate job`);
   }
   for (let index = from; index <= count; index += 1) {
@@ -64,30 +80,34 @@ export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label 
   return pending;
 }
 
-export async function getAttemptJobs({ apiUrl, repository, runId, attempt, token, fetchImpl = fetch }) {
+/**
+ * One GET against this run's Actions API (#4397: shared by the shard gate and
+ * the artifact wait, so both validate the run identity and send the same
+ * headers the same way).
+ */
+export async function getRunApiJson({ apiUrl, repository, runId, token, fetchImpl = fetch }, suffix, params = {}, what = "run") {
   if (!/^[-\w.]+\/[-\w.]+$/.test(repository ?? "")) throw new Error("Invalid GITHUB_REPOSITORY");
   if (!/^[1-9]\d*$/.test(String(runId ?? ""))) throw new Error("Invalid GITHUB_RUN_ID");
+  if (!token) throw new Error(`GITHUB_TOKEN is required to read this run's ${what}`);
+  const url = new URL(`repos/${repository}/actions/runs/${runId}/${suffix}`, `${new URL(apiUrl).toString().replace(/\/$/, "")}/`);
+  for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
+  const response = await fetchImpl(url, {
+    signal: AbortSignal.timeout(10_000),
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "X-GitHub-Api-Version": "2022-11-28",
+    },
+  });
+  if (!response.ok) throw new Error(`GitHub ${what} API returned HTTP ${response.status}`);
+  return response.json();
+}
+
+export async function getAttemptJobs({ apiUrl, repository, runId, attempt, token, fetchImpl = fetch }) {
   if (!/^[1-9]\d*$/.test(String(attempt ?? ""))) throw new Error("Invalid GITHUB_RUN_ATTEMPT");
-  if (!token) throw new Error("GITHUB_TOKEN is required to verify shard jobs");
-  const base = new URL(apiUrl);
   const jobs = [];
   for (let page = 1; page <= 20; page += 1) {
-    const url = new URL(
-      `repos/${repository}/actions/runs/${runId}/attempts/${attempt}/jobs`,
-      `${base.toString().replace(/\/$/, "")}/`,
-    );
-    url.searchParams.set("per_page", "100");
-    url.searchParams.set("page", String(page));
-    const response = await fetchImpl(url, {
-      signal: AbortSignal.timeout(10_000),
-      headers: {
-        Accept: "application/vnd.github+json",
-        Authorization: `Bearer ${token}`,
-        "X-GitHub-Api-Version": "2022-11-28",
-      },
-    });
-    if (!response.ok) throw new Error(`GitHub jobs API returned HTTP ${response.status}`);
-    const payload = await response.json();
+    const payload = await getRunApiJson({ apiUrl, repository, runId, token, fetchImpl }, `attempts/${attempt}/jobs`, { per_page: 100, page }, "jobs");
     if (!Array.isArray(payload?.jobs) || !Number.isSafeInteger(payload.total_count)) {
       throw new Error("GitHub jobs API returned an invalid job list");
     }
@@ -141,15 +161,15 @@ export function parseShardGateArgs(argv) {
       if (!/^[1-9]\d?$/.test(value)) throw new Error(`Invalid --from: ${value}`);
       options.from = Number(value);
     } else if (flag === "--upstream") {
-      if (!/^[A-Za-z][\w -]*$/.test(value)) throw new Error(`Invalid --upstream: ${value}`);
+      if (!UPSTREAM_JOB_NAME.test(value)) throw new Error(`Invalid --upstream: ${value}`);
       options.upstream.push(value);
     } else if (flag === "--max-wait-minutes") {
-      if (!/^[1-9]\d{0,2}$/.test(value)) throw new Error(`Invalid --max-wait-minutes: ${value}`);
-      options.maxWaitMs = Number(value) * 60_000;
+      options.maxWaitMs = parseMaxWaitMinutes(value);
     } else {
       throw new Error(`Unknown argument: ${flag}`);
     }
   }
+  if (options.from > options.count) throw new Error(`--from ${options.from} is past --count ${options.count}: nothing would be checked`);
   return options;
 }
 

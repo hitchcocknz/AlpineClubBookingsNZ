@@ -19,9 +19,9 @@ describe("waiting for this run's artifacts in a required job (#4397)", () => {
 
   it("is ready only when every wanted, unexpired artifact is present", () => {
     const jobs = [job(upstream[0], "completed", "success"), job(upstream[1], "completed", "success")];
-    expect(classifyArtifactWait({ artifacts: wanted.map((name) => artifact(name)), jobs, wanted, upstream })).toEqual([]);
-    expect(classifyArtifactWait({ artifacts: [artifact(wanted[0])], jobs: [jobs[0], job(upstream[1])], wanted, upstream })).toEqual([wanted[1]]);
-    expect(classifyArtifactWait({ artifacts: [artifact(wanted[0]), artifact(wanted[1], true)], jobs: [jobs[0], job(upstream[1])], wanted, upstream })).toEqual([wanted[1]]);
+    expect(classifyArtifactWait({ artifacts: wanted.map((name) => artifact(name)), jobs, wanted, upstream })).toEqual({ missing: [], upstreamDone: true });
+    expect(classifyArtifactWait({ artifacts: [artifact(wanted[0])], jobs: [jobs[0], job(upstream[1])], wanted, upstream })).toEqual({ missing: [wanted[1]], upstreamDone: false });
+    expect(classifyArtifactWait({ artifacts: [artifact(wanted[0]), artifact(wanted[1], true)], jobs: [jobs[0], job(upstream[1])], wanted, upstream }).missing).toEqual([wanted[1]]);
   });
 
   it("fails at once when an upstream job fails, is cancelled or is skipped", () => {
@@ -30,9 +30,23 @@ describe("waiting for this run's artifacts in a required job (#4397)", () => {
     }
   });
 
-  it("fails at once when every upstream job succeeded but an artifact never appeared", () => {
-    const jobs = [job(upstream[0], "completed", "success"), job(upstream[1], "completed", "success")];
-    expect(() => classifyArtifactWait({ artifacts: [artifact(wanted[0])], jobs, wanted, upstream })).toThrow(/never appeared/);
+  it("gives up when an artifact is still missing on two polls after every upstream job succeeded, but not on one", async () => {
+    const done = [job(upstream[0], "completed", "success"), job(upstream[1], "completed", "success")];
+    // The artifacts listing trails the jobs listing by one poll: no failure.
+    let polls = 0;
+    await expect(waitForRunArtifacts({
+      wanted, upstream,
+      loadJobs: async () => done,
+      loadArtifacts: async () => (++polls >= 2 ? wanted.map((name) => artifact(name)) : [artifact(wanted[0])]),
+      sleep: async () => {}, maxWaitMs: 60_000,
+    })).resolves.toBeUndefined();
+    // Still missing on the second poll: it will never be uploaded.
+    await expect(waitForRunArtifacts({
+      wanted, upstream,
+      loadJobs: async () => done,
+      loadArtifacts: async () => [artifact(wanted[0])],
+      sleep: async () => {}, maxWaitMs: 60_000,
+    })).rejects.toThrow(/never appeared/);
   });
 
   it("times out rather than waiting for ever", async () => {
