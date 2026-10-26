@@ -530,9 +530,12 @@ describe("review round (db90565cb)", () => {
   });
 
   it("C2: a carrier naming no change is keyed on the booking, taken BEFORE the change's key", async () => {
+    // A booking id sorting AFTER the change's, so only the booking-first rule orders it first.
+    store.payments = [{ id: "pay_1", bookingId: "zz_booking" }];
+    store.bookings = [{ id: "zz_booking", status: "PAID", deletedAt: null }];
     aSupersededByB({ b: { bookingModificationId: null, reason: "credit_release" } });
     await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
-    expect(mocks.lockAnchor.mock.calls.map((call) => call[1])).toEqual(["booking_1", "mod_a"]);
+    expect(mocks.lockAnchor.mock.calls.map((call) => call[1])).toEqual(["zz_booking", "mod_a"]);
   });
 
   it("C4: the capture that absorbed A carries it, though a newer request exists - A's invoice is released on that capture", async () => {
