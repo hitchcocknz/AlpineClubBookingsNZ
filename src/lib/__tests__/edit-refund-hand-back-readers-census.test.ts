@@ -42,6 +42,7 @@ function readCalls(source: string): string[] {
     /manualRefundTask\.(?:findFirst|findMany|count|aggregate|groupBy)\(/g,
     /manualRefundTasks:\s*\{/g,
   ];
+  if (!source.includes("manualRefundTask")) return calls;
   // Found over masked text: a read named in a comment or string is not one.
   const structure = blankLiterals(source);
   for (const re of shapes) {

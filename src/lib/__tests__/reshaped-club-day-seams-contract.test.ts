@@ -165,6 +165,7 @@ function codeOf(file: string): string {
 function callArguments(code: string, name: string): string[] {
   const out: string[] = [];
   const needle = `${name}(`;
+  if (!code.includes(needle)) return out;
   // Found over masked text: a call named in a string is not a call.
   const structure = blankLiterals(code);
   let from = 0;

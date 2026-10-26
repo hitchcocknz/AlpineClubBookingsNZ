@@ -132,6 +132,8 @@ function dataExpressionText(code: string, callArgText: string): string {
  */
 function writesAgeTier(code: string): boolean {
   const re = /\.member\.(update|updateMany)\(/g;
+  // Masking costs a pass over the file, so only a file naming the write is masked.
+  if (!/\.member\.(?:update|updateMany)\(/.test(code)) return false;
   const structure = blankLiterals(code);
   let m: RegExpExecArray | null;
   while ((m = re.exec(structure)) !== null) {

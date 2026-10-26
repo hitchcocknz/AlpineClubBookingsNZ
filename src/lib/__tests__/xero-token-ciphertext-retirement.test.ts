@@ -99,6 +99,7 @@ function rawSqlNamesTable(source: string): boolean {
 
 /** The argument text of every `xeroToken.<method>(…)` call, balanced. */
 function xeroTokenDelegateCalls(source: string): string[] {
+  if (!source.includes("xeroToken")) return [];
   // Found over masked text: a delegate call named in a comment or string is not one.
   const structure = blankLiterals(source);
   return [...structure.matchAll(/\bxeroToken\s*\.\s*\w+\s*\(/g)].map((match) =>

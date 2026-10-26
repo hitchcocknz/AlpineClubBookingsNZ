@@ -113,6 +113,7 @@ describe("doomed-column models are read and written with an explicit select", ()
     for (const root of SCAN_ROOTS) {
       for (const file of walk(root)) {
         const source = fs.readFileSync(file, "utf8");
+        if (!NARROW_SELECT_MODELS.some((model) => source.includes(model))) continue;
         // Calls are found over masked text: one named in a comment or string
         // is not a call and has no opening bracket to read.
         const structure = blankLiterals(source);

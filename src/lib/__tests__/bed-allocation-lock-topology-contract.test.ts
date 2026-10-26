@@ -394,6 +394,7 @@ describe("bed allocation lock topology", () => {
       const rel = path.relative(process.cwd(), full);
       if (isTestFile(rel) || rel === path.join("src", "lib", "member-credit.ts")) continue;
       const text = stripComments(readFileSync(full, "utf8"));
+      if (!text.includes(CALL)) continue;
       // Calls and enclosing transactions are found over masked text: a mention
       // inside a string is not a call and has no bracket to read.
       const structure = blankLiterals(text);
@@ -630,7 +631,7 @@ describe("bed allocation lock topology", () => {
 
       // Call sites and payload keys are found over masked text, so a
       // `.booking.update(` named in a comment or string is not a call.
-      const structure = blankLiterals(text);
+      const structure = text.includes(".booking.") ? blankLiterals(text) : text;
       const writeCall = /\.booking\.(update|updateMany|upsert)\(/g;
       let call: RegExpExecArray | null;
       while ((call = writeCall.exec(structure)) !== null) {

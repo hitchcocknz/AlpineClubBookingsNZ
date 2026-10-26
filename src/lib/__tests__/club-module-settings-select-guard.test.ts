@@ -134,6 +134,7 @@ function projectingCalls(): ProjectingCall[] {
   const calls: ProjectingCall[] = [];
   for (const file of walk(SRC_DIR)) {
     const code = stripComments(fs.readFileSync(file, "utf8"));
+    if (!code.includes("clubModuleSettings")) continue;
     // Calls are found over masked text: one named in a string is not a call.
     const structure = blankLiterals(code);
     let match: RegExpExecArray | null;

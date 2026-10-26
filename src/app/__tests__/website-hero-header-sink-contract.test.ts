@@ -152,6 +152,7 @@ async function findPagesComposingAFallback(): Promise<string[]> {
  */
 function sinkExpressions(source: string): string[] {
   const expressions: string[] = [];
+  if (!source.includes("__html")) return expressions;
   const structure = blankLiterals(source);
 
   for (const match of structure.matchAll(/__html\s*:/g)) {

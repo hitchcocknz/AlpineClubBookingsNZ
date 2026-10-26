@@ -54,7 +54,7 @@ function bareValueAllowed(value: string): boolean {
 function inspectSource(source: string): string[] {
   const values: string[] = [];
   const code = stripComments(source);
-  const structure = blankLiterals(code);
+  const structure = /startsWith|contains/.test(code) ? blankLiterals(code) : code;
   // Shorthand and computed keys cannot establish a literal operand.
   for (const match of code.matchAll(/(?:\{|,)\s*(?:startsWith|contains)\s*[,}]|\[\s*["'`](?:startsWith|contains)["'`]\s*\]/g)) {
     values.push(match[0].trim());

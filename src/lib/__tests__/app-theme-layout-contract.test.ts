@@ -49,6 +49,7 @@ const STRING_LITERAL = /(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
  * returned text is the original, because the caller reads its string literals.
  */
 function cnCallRegions(source: string): string[] {
+  if (!source.includes("cn(")) return [];
   const structure = blankLiterals(source);
   return [...structure.matchAll(/\bcn\(/g)].map(
     (match) => balancedBrackets(source, match.index + match[0].length - 1, structure).text,

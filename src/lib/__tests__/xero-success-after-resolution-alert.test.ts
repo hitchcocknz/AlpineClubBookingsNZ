@@ -269,6 +269,7 @@ function completionSites(): CompletionSite[] {
   const sites: CompletionSite[] = [];
   for (const full of files) {
     const source = stripComments(readFileSync(full, "utf8"));
+    if (!source.includes("completeXeroSyncOperation")) continue;
     // Calls are found over masked text: one named in a string is not a call.
     const structure = blankLiterals(source);
     for (const match of structure.matchAll(/\bcompleteXeroSyncOperation\s*\(/g)) {

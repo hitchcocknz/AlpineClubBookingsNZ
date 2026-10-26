@@ -51,6 +51,7 @@ describe("only a review's give-back marks an applied-credit row with its source 
     const marked: string[] = [];
     for (const file of sourceFiles(join(ROOT, "src"))) {
       const text = readFileSync(file, "utf8");
+      if (!text.includes("memberCredit.") && !text.includes("giveBackAppliedCredit")) continue;
       // Call sites are found over masked text: one named in a comment or string
       // is not a call and has no opening bracket to read.
       const structure = blankLiterals(text);

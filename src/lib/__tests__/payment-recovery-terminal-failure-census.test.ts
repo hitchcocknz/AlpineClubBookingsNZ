@@ -188,7 +188,7 @@ describe("INV-PAY-056: one terminal-failure transition, census", () => {
 
       // Call sites are found over masked text: a call named in a string is not
       // one. The arguments are read from the original, which keeps the raw string.
-      const structure = blankLiterals(source);
+      const structure = source.includes(RECOVERY_DELEGATE) ? blankLiterals(source) : source;
       for (const method of WRITE_METHODS) {
         const call = `${RECOVERY_DELEGATE}.${method}(`;
         for (const at of occurrences(structure, call)) {

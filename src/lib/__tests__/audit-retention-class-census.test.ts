@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import { AUDIT_RETENTION_CLASSES } from "@/lib/audit-retention-classes";
 import { expressionAt } from "./support/balanced-brackets";
-import { stripComments } from "./support/strip-comments";
+import { blankLiterals, stripComments } from "./support/strip-comments";
 
 /**
  * #3940: `AuditLog.retentionClass` is free text, so a value outside
@@ -41,15 +41,17 @@ function walk(dir: string, accept: (file: string) => boolean): string[] {
 const relative = (file: string) => path.relative(ROOT, file);
 
 /** The text of a property's value: from after the colon to the next `,` or `}` at depth 0. */
-function propertyValueAt(source: string, start: number): string {
+function propertyValueAt(source: string, start: number, structure: string): string {
   // A quoted string is skipped whole, so a `,` or bracket inside it never ends the value.
-  return expressionAt(source, start).text;
+  return expressionAt(source, start, structure).text;
 }
 
 function retentionClassLiteralsIn(source: string): string[] {
   const code = stripComments(source);
+  if (!code.includes("retentionClass")) return [];
+  const structure = blankLiterals(code);
   return [...code.matchAll(/\bretentionClass\s*:/g)].flatMap((match) => {
-    const raw = propertyValueAt(code, match.index + match[0].length);
+    const raw = propertyValueAt(code, match.index + match[0].length, structure);
     // A filter or the archive DDL manifest's `{ ddl }` is not a class value;
     // Prisma's `{ set: … }` is a write, so its literals are read like any other.
     if (/^\s*\{\s*(?:in|notIn|not|equals|ddl)\s*:/.test(raw)) return [];

@@ -261,6 +261,7 @@ function countPlacementStatements(
   source: string,
   into: Map<string, number>,
 ): void {
+  if (!source.includes("bedAllocation.")) return;
   const call = /bedAllocation\.(create|createMany|upsert|updateMany)\s*\(/g;
   // Found over masked text: a statement named in a comment or string is not one.
   const structure = blankLiterals(source);

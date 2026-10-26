@@ -74,6 +74,7 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     const writers: string[] = [];
     for (const file of sourceFiles()) {
       const source = read(file);
+      if (!source.includes(".payment.")) continue;
       // Call sites are found over masked text: a `payment.update(` named in a
       // string is not a call.
       const structure = blankLiterals(source);

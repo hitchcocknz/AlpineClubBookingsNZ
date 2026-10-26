@@ -405,6 +405,7 @@ type Finding = { rule: string; file: string; detail: string };
 
 /** Every `new …PrismaClient(` call, including aliased and namespaced ones. */
 function prismaConstructorStarts(code: string): number[] {
+  if (!code.includes("PrismaClient")) return [];
   // Read over masked text, so a constructor named in a string is not one and
   // `constructorArguments` is never handed an offset that is not a bracket.
   const structure = blankLiterals(code);
