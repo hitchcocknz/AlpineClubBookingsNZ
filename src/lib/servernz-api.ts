@@ -95,6 +95,17 @@ export class ServerNzVersionMismatchError extends Error {
 }
 
 /**
+ * A resolved connection: where to send, the bearer key, and the identity of
+ * both as stored when they were read (#4366). `identity` travels with every
+ * request so a version answer is recorded only for the connection it came from.
+ */
+interface ServerNzConnection {
+  baseUrl: string;
+  apiKey: string;
+  identity: ServerNzConnectionIdentity;
+}
+
+/**
  * The connection every request is built from, and THE ONE PLACE the version
  * gate lives (#49, `INV-INT-027`). Every server-bound function in this module
  * calls it, so a caller cannot reach the server past the gate; the only opt-out
@@ -109,17 +120,6 @@ export class ServerNzVersionMismatchError extends Error {
  * syncing blind until 03:00. A check that FAILS leaves the row `null` and lets
  * the request through: a failed check never pauses syncing.
  */
-/**
- * A resolved connection: where to send, the bearer key, and the identity of
- * both as stored when they were read (#4366). `identity` travels with every
- * request so a version answer is recorded only for the connection it came from.
- */
-interface ServerNzConnection {
-  baseUrl: string;
-  apiKey: string;
-  identity: ServerNzConnectionIdentity;
-}
-
 async function resolveConnection(
   options: { skipVersionGate?: boolean } = {},
 ): Promise<ServerNzConnection> {
