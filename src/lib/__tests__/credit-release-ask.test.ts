@@ -209,6 +209,19 @@ describe("processCreditReleaseAskOperation", () => {
     );
   });
 
+  it("keeps waiting, attempt handed back, while Xero is down: the wait is decided before any Xero read", async () => {
+    mocks.prisma.payment.findUnique.mockResolvedValue(
+      payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_edit", amountCents: 32_000 }),
+    );
+    mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: "edit_price_increase" });
+    const deps = runnerDeps();
+    const read = vi.fn().mockRejectedValue(new Error("Xero unavailable"));
+    // Never a throw (which would spend an attempt and, five times over, make the row terminal).
+    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), read)).resolves.toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
+    expect(deps.wait).toHaveBeenCalledWith(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
+  });
+
   it("asks once the edit request is paid: the release's own live request is not something to wait for", async () => {
     mocks.prisma.payment.findUnique.mockResolvedValue(
       payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_rel_old", amountCents: 32_000 }),

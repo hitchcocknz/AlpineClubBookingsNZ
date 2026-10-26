@@ -205,6 +205,33 @@ export async function processCreditReleaseAskOperation(
     return;
   }
 
+  // An unpaid EDIT request may have its own supplementary invoice, which a release request
+  // superseding it could not pay (an edit made after the release merges instead, `INV-ADDPAY-048`).
+  // The release waits for it to be paid or withdrawn - for as long as that takes. A throw here used
+  // to spend the row's attempts in about 17 hours and leave it terminal, and the sweep never looks
+  // at a release twice, so the money was never asked for. Now the row is put back at the longest
+  // retry interval with its attempt handed back, and the officers are told once (`INV-ADDPAY-051`).
+  // Asked BEFORE the Xero read below: it needs only the payment and the ledger, and a waiting row
+  // must never take the read's failure path (an unreachable Xero would otherwise spend its attempts
+  // and make it terminal after all), nor read Xero every 12 hours for nothing.
+  if (outstandingAdditionalAskCents(payment) > 0 && payment.additionalPaymentIntentId) {
+    const live = await prisma.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: payment.additionalPaymentIntentId },
+      select: { reason: true },
+    });
+    if (live?.reason !== CREDIT_RELEASE_ASK_REASON) {
+      await signalCreditReleaseToOfficers({
+        bookingId: operation.bookingId,
+        reason: "waiting-on-edit-request",
+        key: `waiting-on-edit-request:${operation.id}`,
+        metadata: { operationId: operation.id, releasedCents: operation.amountCents, editPaymentIntentId: payment.additionalPaymentIntentId },
+      });
+      logger.info({ operationId: operation.id, bookingId: operation.bookingId }, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
+      await deps.wait(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
+      return;
+    }
+  }
+
   // The released amount stands on the booking's own invoice (D1): that invoice is what the card
   // payment will be recorded against, so it must exist and still owe the money. A provider read,
   // outside every lock. An invoice not yet in Xero, or in a state that cannot take a payment, is a
@@ -230,30 +257,6 @@ export async function processCreditReleaseAskOperation(
     throw new Error(
       `Xero shows the booking's invoice as ${balance.status || "unreadable"}, so a card payment cannot be recorded against it; leaving the request to retry`,
     );
-  }
-
-  // An unpaid EDIT request may have its own supplementary invoice, which a release request
-  // superseding it could not pay (an edit made after the release merges instead, `INV-ADDPAY-048`).
-  // The release waits for it to be paid or withdrawn - for as long as that takes. A throw here used
-  // to spend the row's attempts in about 17 hours and leave it terminal, and the sweep never looks
-  // at a release twice, so the money was never asked for. Now the row is put back at the longest
-  // retry interval with its attempt handed back, and the officers are told once (`INV-ADDPAY-051`).
-  if (outstandingAdditionalAskCents(payment) > 0 && payment.additionalPaymentIntentId) {
-    const live = await prisma.paymentTransaction.findUnique({
-      where: { stripePaymentIntentId: payment.additionalPaymentIntentId },
-      select: { reason: true },
-    });
-    if (live?.reason !== CREDIT_RELEASE_ASK_REASON) {
-      await signalCreditReleaseToOfficers({
-        bookingId: operation.bookingId,
-        reason: "waiting-on-edit-request",
-        key: `waiting-on-edit-request:${operation.id}`,
-        metadata: { operationId: operation.id, releasedCents: operation.amountCents, editPaymentIntentId: payment.additionalPaymentIntentId },
-      });
-      logger.info({ operationId: operation.id, bookingId: operation.bookingId }, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
-      await deps.wait(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
-      return;
-    }
   }
 
   const unaskedCents = bookingLedgerResidualCents({
