@@ -1664,8 +1664,8 @@ release).
   invoice, or a carrier that would bill more than its amount, or more than it
   carried for other changes. Decided under the change's and the carrier's
   supplementary-invoice keys, booking first; writes guarded on status, intent
-  and correlation key. A captured carrier releases at once, unpaid where its
-  receipt records it.
+  and correlation key. A captured carrier releases at once, unpaid where a
+  receipt for its capture is active or records it.
 - **The capture covers them together.** A capture is checked against the sum
   of every invoice naming it, not each alone.
 - **A capture of the carried ask takes it back.** A declined ask stays

@@ -77,6 +77,8 @@ import { PaymentSource, PaymentStatus, PaymentTransactionKind, type Prisma } fro
 
 import { isAdditionalAskRetiredBookingStatus } from "@/lib/additional-payment-chase";
 import { anchorCaptureHasReceipt, captureChangeId } from "@/lib/additional-capture-receipt-link";
+import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
+import { XERO_ACTIVE_OPERATION_STATUSES } from "@/lib/xero-active-operation-statuses";
 import { findActiveSupplementaryInvoiceLink } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
@@ -413,17 +415,33 @@ async function moveAnchorOntoCarrier(input: {
     // receipt decides too, and marked, so a return to the superseded ask
     // decides it again for that ask's capture (review 2, F2).
     const carrierCaptured = isCapturedTransactionStatus(carrier.status);
+    // Review 2 (F6): a receipt for the carrier's capture still queued counts
+    // too. A paid invoice moved onto it would read as the whole capture's
+    // recorder (`readCaptureRecorder`), and that receipt would stand down with
+    // the carrier's own part recorded nowhere; unpaid, the receipt records it all.
+    const carrierReceiptActive =
+      carrierCaptured &&
+      (await tx.xeroSyncOperation.findFirst({
+        where: {
+          localModel: "PaymentTransaction",
+          localId: carrier.id,
+          queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
+          status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] },
+        },
+        select: { id: true },
+      })) !== null;
     let moved = 0;
     for (const operation of moving) {
       const payload = asRecord(operation.requestPayload) ?? {};
       const unpaid =
         carrierCaptured &&
         payload.recordPayment !== false &&
-        (await anchorCaptureHasReceipt(tx, {
+        (carrierReceiptActive ||
+          (await anchorCaptureHasReceipt(tx, {
           bookingId: input.bookingId,
           bookingModificationId: input.anchorId,
           paymentIntentId: carrierIntentId,
-        }));
+        })));
       // Guarded on what was read: the status, the intent and the correlation
       // key, which an unlocked restate rewrites whenever it raises the amount
       // (review C1) - so a raise landing since is never written back over.
