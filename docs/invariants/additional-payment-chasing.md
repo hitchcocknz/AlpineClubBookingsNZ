@@ -1771,7 +1771,8 @@ _Legacy: settles tasks raised before #4317._
   chain that cannot be traced records nothing and alerts the officers once a day.
   Retries are at least an hour apart and capped at five.
 - **Xero paying first closes the request.** An unpaid request that carries
-  nothing is closed when Xero shows its invoice paid: the card payment is
+  nothing, or carried only earlier credit-release requests [INV-ADDPAY-049], is
+  closed when Xero shows its invoice paid: the card payment is
   cancelled first (a succeeded or processing one is left), then one transaction
   under the global key fences the row and writes the money as bank cash.
 - **No new advisory key.** Home: `credit-release-xero-payment.ts`,
