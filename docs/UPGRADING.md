@@ -119,6 +119,43 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Optional: stop connecting the app as the database superuser (#4453)
+
+**What changes.** Nothing, until you opt in. This release adds a way to split the
+Compose stack's single superuser connection into separate roles. A migration role
+owns the schema. An application role may change ordinary tables, but may only
+**INSERT and SELECT** the booking ledger and the audit log. A narrow audit-retention
+role runs the nightly audit clean-up. The superuser is kept for people. With the
+split, the application cannot rewrite a ledger line or an audit entry even if its
+credential leaks. The new settings are `APP_DB_USER`, `APP_DB_PASSWORD`,
+`MIGRATION_DB_USER`, `MIGRATION_DB_PASSWORD` and `AUDIT_RETENTION_DATABASE_URL`. Each
+one left empty keeps today's behaviour. The rendered Compose stack is byte-identical
+to the previous release until you set them.
+
+**No migration and no deploy-window change.** The roles are created by an operator
+script, not by a migration: `pnpm run db:provision-roles`, a dry run unless you add
+`--apply`. Running it changes nothing for the live app, which still connects as the
+superuser.
+
+**To adopt it**, follow [`DEPLOYMENT.md` → "Least-privilege database roles"](../DEPLOYMENT.md#least-privilege-database-roles).
+Rehearse it on staging first. In short: choose three hex passwords, run the script
+with `--apply` as the operator, set the five variables in `.env`, and deploy. Set all
+five together: once the application role is split, the nightly audit retention job
+needs `AUDIT_RETENTION_DATABASE_URL`, or it fails with "permission denied" and
+expired audit rows are kept until you set it. To roll back, unset the variables and
+deploy.
+
+**After you adopt it:**
+
+- Restoring a backup over the live database from **Admin → Backups** is refused.
+  Restore as the operator with `psql` instead. Backups themselves keep working.
+- Run `pnpm run diagnostics:provision-role` with
+  `AI_DIAGNOSTICS_PROVISION_DATABASE_URL` set to the operator connection.
+- Re-run `pnpm run db:provision-roles --apply` whenever a later release's notes ask
+  you to. That happens when a release adds a table to the append-only list.
+- A future migration that needs a superuser fails under the migration role; its
+  release notes will say so. Every migration in the repository today runs without one.
+
 ### The Xero connection moves to its own table; some installs reconnect Xero once (#3806)
 
 **What changes.** Release R2 of #3806. The Xero refresh lease and the "is Xero

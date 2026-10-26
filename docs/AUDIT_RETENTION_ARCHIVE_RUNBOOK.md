@@ -128,6 +128,31 @@ AUDIT_LOG_ARCHIVE_DATABASE_URL=postgresql://...
 
 The archive database can be a separate PostgreSQL database. The job creates and maintains the `AuditLogArchive` table and supporting indexes automatically. Do not point the archive URL at the primary `DATABASE_URL`; archive movement deletes copied eligible rows from the main audit table.
 
+## Retention Database Connection (#4453)
+
+The job anonymises (`UPDATE`) and deletes (`DELETE`) rows in the **primary**
+database's `AuditLog`. By default it does so through the application's own
+`DATABASE_URL`. A deployment that uses the
+[least-privilege roles](../DEPLOYMENT.md#least-privilege-database-roles) connects
+the application as a role that may only INSERT and SELECT audit rows, so it sets:
+
+```bash
+AUDIT_RETENTION_DATABASE_URL=postgresql://tac_audit_retention:<password>@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10
+```
+
+on the cron-enabled app instance. `pnpm run db:provision-roles --apply` creates
+the role. Beyond SELECT on `AuditLog` it holds only DELETE and UPDATE of
+`ipAddress` and `userAgent`, the columns the anonymisation clears. It has no
+right on any other table, and it cannot insert or rewrite an audit entry. When
+the variable is empty the job uses `DATABASE_URL`, exactly as before.
+
+This is not the archive connection. `AUDIT_ARCHIVE_DATABASE_URL` names a
+different database, and its role is unchanged. If the application role is split
+but this variable is unset, the job's first step fails with "permission denied
+for table AuditLog". The `data-pruning` run records `FAILURE`, and nothing is
+anonymised, archived or pruned until the variable is set. As with an archive
+failure, rows are over-retained, never lost.
+
 ## Incident-preserved rows are kept for ten years (#3939)
 
 `AuditLog.incidentPreserved` marks a row kept as evidence of an incident. The app sets it automatically, not an officer: today, on the audit entry for an admin capacity hold or force-confirm that overbooked the lodge, which is also recorded as `critical`. The Audit Log screen does not show the flag; use the count below to see these rows.
@@ -256,3 +281,4 @@ Rows archived before a column existed keep `NULL` for it; the archive is not bac
 4. If archive movement must be paused, remove the archive URL and restart only the cron-enabled app instance.
 5. After a release that adds a column to `AuditLog`, apply the `ALTER TABLE` in "Adding a column to AuditLog" to the archive database before the next `data-pruning` run. If you are not sure whether a release added one, run the two drift queries in "Checking an existing archive for drift" — they need only database access.
 6. Treat a `data-pruning` FAILURE that names the audit archive as time-bound. While it persists, expired audit rows are not being deleted from either database, so fix the archive schema (step 2) rather than waiting for it to clear on its own. The failure message states both halves.
+7. If `APP_DB_USER` is set (least-privilege roles), confirm `AUDIT_RETENTION_DATABASE_URL` is set on the cron-enabled app too. See "Retention Database Connection".

@@ -188,7 +188,10 @@ pnpm run diagnostics:provision-role --dry-run
 
 The script needs a connection that may create roles: the application's own
 `DATABASE_URL` in the stock Compose stack, or `AI_DIAGNOSTICS_PROVISION_DATABASE_URL`
-for a deployment that keeps a separate DBA credential.
+for a deployment that keeps a separate DBA credential. A deployment that uses the
+[least-privilege database roles](../../DEPLOYMENT.md#least-privilege-database-roles)
+(#4453) must use the latter, set to the operator connection: its `DATABASE_URL` is
+no longer a superuser. Those roles leave this one exactly as provisioned here.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |

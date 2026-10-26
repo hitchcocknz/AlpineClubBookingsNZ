@@ -38,6 +38,7 @@ Postgres `max_connections=40`:
 | `app_blue` / `app_green` | web slots | 10 each |
 | `app` | cron leader + warm fallback web | 5 |
 | `migrate` | deploy-window migrations | 2 |
+| `app` (cron leader), `AUDIT_RETENTION_DATABASE_URL` | nightly audit retention, only when set (#4453) | 2 |
 
 The ceiling holds per container because `src/lib/prisma.ts` shares one client
 through `globalThis` (#4269). Before that, each of Next's server bundles built its
@@ -55,12 +56,15 @@ app_blue(10) + app_green(10) + app(5) = 25 steady
                                  + migrate(2) = 27
 ```
 
-That leaves the pools **13 slots** under the 40 ceiling — but those slots are
-**not** a protected admin reservation. The app connects as role `tac`, which the
-`postgres` image creates as a **superuser** (`POSTGRES_USER`), so
-`superuser_reserved_connections` (the 3 slots Postgres nominally holds back) does
-**not** fence the app's own pools off: once the pools reach the ceiling, even a
-superuser `psql` is refused. The headroom is therefore best-effort room for the
+That leaves the pools **13 slots** under the 40 ceiling. The audit-retention pool
+(2, only while the nightly job runs, and only once the roles are split) brings the
+worst case to 29. Those slots are **not** a protected admin reservation while the
+app connects as role `tac`, which the `postgres` image creates as a **superuser**
+(`POSTGRES_USER`) and which is still the default: `superuser_reserved_connections`
+(the 3 slots Postgres nominally holds back) does **not** fence the app's own pools
+off, so once the pools reach the ceiling even a superuser `psql` is refused. With
+the [least-privilege roles](#least-privilege-database-roles) in place no pool
+connects as a superuser, and those 3 slots really are kept for the operator. The headroom is therefore best-effort room for the
 **non-pool** consumers you must budget alongside the pools:
 
 - the nightly `pg_dump` backup (its own backend, outside every pool)
@@ -96,16 +100,108 @@ they needed to diagnose. 40 restores real headroom for those consumers. The 768m
 `mem_limit` covers the extra backends plus their `work_mem` (~256m more per host —
 negligible above ~1 GiB free).
 
-A true protected admin slot would need a dedicated **`NOSUPERUSER`** application
-role (so `superuser_reserved_connections` can hold slots back from it). This is a
-**consciously accepted limitation**: because the pools are hard-capped at 27 well
-under the 40 ceiling, the ~13-slot margin covers the non-pool consumers in
-practice, so the simpler single-superuser model is retained. Revisit the
-`NOSUPERUSER` split only if a future change makes the margin tight (a new pooled
-consumer, a much larger replica count, or enabling the audit-archive client via
-`AUDIT_ARCHIVE_DATABASE_URL`, which opens its own pool). A constrained-VPS fork
-may lower both values, but keep the invariant above whenever you change a pool
-size, `max_connections`, or the replica count.
+A true protected admin slot needs a **`NOSUPERUSER`** application role, so that
+`superuser_reserved_connections` can hold slots back from it. The
+[least-privilege roles](#least-privilege-database-roles) provide one (#4453, which
+replaces #2240's decision to keep the single superuser). Until a deployment
+switches, the hard-capped pools leave the ~13-slot margin described above. A
+constrained-VPS fork may lower both values, but keep the invariant above whenever
+you change a pool size, `max_connections`, or the replica count.
+
+## Least-privilege database roles
+
+Audience: Operator.
+
+By default every container connects as `tac`, the PostgreSQL superuser. Since
+#4453 a deployment can split that into roles that each hold only what their job
+needs. The application can then no longer rewrite the booking ledger or the audit
+log, even if its credential leaks (owner decision, 27 Oct 2026).
+
+| Role | Default name | Used by | May |
+| --- | --- | --- | --- |
+| Operator | `tac` (`POSTGRES_USER`) | humans: provisioning, restores, repairs | everything (superuser) |
+| Migration | `tac_migrator` | the `migrate` service | own every object in schema `public`; run `prisma migrate deploy` |
+| Application | `tac_app` | both web slots and the cron leader | SELECT, INSERT, UPDATE, DELETE on ordinary tables; only **INSERT and SELECT** on `BookingLedgerLine` and `AuditLog`; only SELECT on `_prisma_migrations` |
+| Audit retention | `tac_audit_retention` | the nightly audit retention job | SELECT and DELETE on `AuditLog`, UPDATE of `ipAddress` and `userAgent` only |
+
+None of the three new roles is a superuser, may create roles or databases, or is a
+member of any role. The application role cannot TRUNCATE, `SELECT … FOR UPDATE` an
+append-only row, alter or drop a table, `SET ROLE`, or run superuser-only
+statements. `src/lib/__tests__/database-roles.realdb.test.ts` proves each of these
+against PostgreSQL. The AI Diagnostics role (ADR-007) and the audit archive
+database's role are separate and unchanged.
+
+### Switching a deployment over (blue/green)
+
+Rehearse every step on staging first (`.env.staging`, the `-p tacbookings-staging`
+stack in [Staging](#staging)), then repeat on production.
+
+1. **Choose three passwords**, hex so they need no URL encoding:
+   `openssl rand -hex 24`. Put them in `.env` as `MIGRATION_DB_PASSWORD`,
+   `APP_DB_PASSWORD` and `AUDIT_RETENTION_DB_PASSWORD`.
+2. **Preview, then provision**, as the operator. Nothing connects without
+   `--apply`:
+
+   ```bash
+   # With DB_PASSWORD and the three passwords from .env exported in this shell:
+   docker compose --profile migrate run --rm --no-deps \
+     -e DB_ROLES_PROVISION_DATABASE_URL="postgresql://tac:${DB_PASSWORD}@postgres:5432/tacbookings" \
+     -e MIGRATION_DB_PASSWORD -e APP_DB_PASSWORD -e AUDIT_RETENTION_DB_PASSWORD \
+     migrate ./node_modules/.bin/tsx scripts/provision-database-roles.ts          # dry run
+   # …the same command with --apply at the end
+   ```
+
+   From a checkout with dependencies installed, `pnpm run db:provision-roles
+   [--apply]` does the same. The run is one transaction: it creates or repairs the
+   roles, hands every object in schema `public` to the migration role, grants the
+   table rights above, sets default privileges so tables that later migrations create
+   reach the application at once, and then re-checks the result. If the application
+   role could still change a ledger or audit row, it rolls back. The running app is
+   unaffected: it still connects as `tac`.
+3. **Set the switch** in `.env`: `APP_DB_USER=tac_app`, `MIGRATION_DB_USER=tac_migrator`
+   (their passwords are already there) and
+   `AUDIT_RETENTION_DATABASE_URL=postgresql://tac_audit_retention:<password>@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10`.
+   All three belong together: once the app role is split, the retention job
+   needs its own role, because the application role may no longer change audit rows.
+4. **Deploy** as usual (`scripts/run-production-blue-green-deploy.sh`). The
+   `migrate` service now runs as the migration role, and the new colour and the cron
+   leader start as the application role. The old colour keeps its superuser
+   connection until it is stopped, and no grant it relies on is removed.
+5. **Check**: the next `data-pruning` cron run succeeds, and
+   `psql -U tac -d tacbookings -c "\du"` lists the three roles without
+   `Superuser`.
+
+**Rollback** is the reverse of step 3: unset `APP_DB_USER`, `MIGRATION_DB_USER`
+and `AUDIT_RETENTION_DATABASE_URL`, and deploy. Ownership stays with the migration
+role, which the superuser can still use, so nothing needs undoing in the database.
+
+**Re-run `--apply`** after the first migration of a brand-new database, after a
+release whose upgrade note adds a relation to the append-only list
+(`APPEND_ONLY_RELATIONS` in `src/lib/database-roles.ts`), and to rotate a password.
+It is idempotent and repairs drift. A hand-granted UPDATE on the ledger, a stray
+role membership, or a table someone created as `tac` is put back on the next run.
+
+### What changes for operators
+
+- **Backups** keep working: the nightly `pg_dump` runs as the application role,
+  which can read every table. A dump now carries `OWNER TO tac_migrator` and the
+  grants, so it restores cleanly **as the operator** on a cluster where the roles
+  exist. On a new cluster, run step 2 against the empty database first. Point the
+  in-app **restore-validation** URL at a shadow database as the operator role, as
+  the stock stack already does.
+- **Restoring over the live database from Admin → Backups no longer works** once
+  the app is split: the application role may not drop the schema, so PostgreSQL
+  refuses the restore before anything is touched. Restore as the operator with
+  `psql`, as in `scripts/backup-restore-drill.sh`.
+- **AI Diagnostics provisioning** (`pnpm run diagnostics:provision-role`) needs the
+  operator connection. Set `AI_DIAGNOSTICS_PROVISION_DATABASE_URL` to it once
+  `DATABASE_URL` is no longer a superuser.
+- **A migration that needs a superuser** — an untrusted extension, `ALTER SYSTEM`
+  — fails under the migration role. Apply that one statement as the operator, then
+  re-run the deploy. Every migration in the repository today runs without one.
+- **Deleting a booking still deletes its ledger lines.** The foreign key's
+  `ON DELETE CASCADE` runs with the table owner's rights, not the application's,
+  so the grant does not stop it.
 
 ## App CPU sizing
 
@@ -1358,7 +1454,9 @@ policy (or equivalent object-expiry rule) so uploaded dumps do not accumulate
 indefinitely.
 
 Operators should also keep provider-level snapshots or equivalent independent
-backups. Test restore procedures before relying on backups.
+backups. Test restore procedures before relying on backups. With the
+[least-privilege roles](#least-privilege-database-roles), restore as the operator
+role: the in-app restore over the live database is refused.
 
 ## Webhooks
 
