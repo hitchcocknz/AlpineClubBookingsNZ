@@ -1,6 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { collectReservations, staleReservations } from "./lanes-stale.mjs";
+
+import { ghJson } from "./lib/github-cli.mjs";
+
+vi.mock("./lib/github-cli.mjs", () => ({ ghJson: vi.fn() }));
+afterEach(() => { vi.unstubAllGlobals(); vi.resetAllMocks(); });
 
 const now = Date.parse("2026-07-01T00:00:00Z");
 const comment = (body, created_at = "2026-06-26T00:00:00Z") => ({
@@ -76,6 +81,50 @@ describe("GitHub collection", () => {
     expect(threads).toHaveLength(101);
     expect(threads[100].pushedAt).toBe("2026-06-30T00:00:00Z");
     expect(staleReservations(threads, now)).toEqual([]);
+  });
+
+  it("uses the claim branch for issues and caches shared branch activity", async () => {
+    const read = vi.fn(async (path) => {
+      if (path.includes("/issues?")) return [{ number: 1 }, { number: 2 }];
+      if (path.includes("/comments?")) return [claim];
+      if (path.includes("/activity?ref=refs%2Fheads%2Ffeature%2Falpine")) return [];
+      throw new Error(`Unexpected request ${path}`);
+    });
+    expect(staleReservations(await collectReservations("o/r", read), now)).toHaveLength(2);
+    expect(read.mock.calls.filter(([path]) => path.includes("/activity?"))).toHaveLength(2);
+  });
+
+  it("flags missing branch information and does not query released reservations", async () => {
+    const read = vi.fn(async (path) => {
+      if (path.includes("/issues?")) return [{ number: 1 }, { number: 2 }];
+      if (path.includes("/issues/1/comments?")) return [comment("CLAIM: Unnamed branch lane")];
+      if (path.includes("/issues/2/comments?")) return [claim, comment("RELEASE: done", "2026-06-27T00:00:00Z")];
+      throw new Error(`Unexpected request ${path}`);
+    });
+    const rows = staleReservations(await collectReservations("o/r", read), now);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].pushWarning).toContain("check push activity manually");
+  });
+
+  it("uses only explicit GET requests through gh", async () => {
+    vi.mocked(ghJson).mockReturnValue([]);
+    expect(await collectReservations("o/r")).toEqual([]);
+    expect(ghJson).toHaveBeenCalledWith(["api", "--method", "GET", "repos/o/r/issues?state=open&per_page=100&page=1"]);
+  });
+
+  it.each(["not on PATH", "not authenticated"])("supports public reads when gh is %s", async (message) => {
+    vi.mocked(ghJson).mockImplementation(() => { throw new Error(message); });
+    const fetch = vi.fn().mockResolvedValue({ ok: true, json: async () => [] });
+    vi.stubGlobal("fetch", fetch);
+    expect(await collectReservations("o/r")).toEqual([]);
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/o/r/issues?state=open&per_page=100&page=1",
+      { headers: { Accept: "application/vnd.github+json" } });
+  });
+
+  it("propagates public REST failures without returning an empty stale list", async () => {
+    vi.mocked(ghJson).mockImplementation(() => { throw new Error("not authenticated"); });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 403 }));
+    await expect(collectReservations("o/r")).rejects.toThrow("HTTP 403");
   });
 
   it("does not turn failed GitHub reads into a clean report", async () => {

@@ -26,7 +26,7 @@ function activeClaim(comments) {
 }
 
 function branchOf(claim) {
-  return claim?.body.match(/\b[Bb]ranch\s*[:=]?\s*`?([\w./-]+)/)?.[1];
+  return claim?.body.match(/(?:^|[\n.,;])\s*(?:[-*]\s+)?branch\s*[:=]?\s*`?([\w./-]+)/im)?.[1];
 }
 
 /**
