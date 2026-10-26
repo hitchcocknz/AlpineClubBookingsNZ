@@ -1223,7 +1223,7 @@ drop_shadow_database() {
 }
 
 trap fail ERR
-trap drop_shadow_database EXIT
+trap 'drop_shadow_database; rm -f "${CADDY_VALIDATION_ENV_FILE:-}"' EXIT
 
 # The #3034 check's pattern for one key: the shared grammar above, for exactly
 # that key. Deliberately scoped to the role check rather than by changing
@@ -1342,8 +1342,30 @@ compose_service_environment_entries() {
   '
 }
 
+# One scalar as `docker compose config` writes it, decoded to the value the
+# container receives (#4276 review): whitespace and one layer of quotes off;
+# inside double quotes the YAML escapes `\"` and `\\`, inside single quotes
+# `''`; then the render's `$$` (Compose's escape for a literal `$`) back to `$`.
+# Other YAML escapes (`\n`, `\t`, `\uXXXX`) are left as written: none of the
+# settings this script reads is expected to hold a control character, and a
+# value left encoded is refused or compared as written, never silently widened.
+compose_render_scalar() {
+  local raw
+  local value
+
+  raw="$(trim_whitespace "$1")"
+  value="$(strip_matching_quotes "$raw")"
+  if [ "$value" != "$raw" ]; then
+    case "$raw" in
+      \"*) value="$(printf '%s' "$value" | sed -E 's/\\(["\\])/\1/g')" ;;
+      *) value="${value//\'\'/\'}" ;;
+    esac
+  fi
+  printf '%s' "${value//\$\$/\$}"
+}
+
 # One value as the service's container would receive it: read from the render
-# step 3 took (`render_resolved_compose_config`), with YAML's quotes removed.
+# step 3 took (`render_resolved_compose_config`), decoded as above.
 # Compose has already applied the shell's precedence over `.env`, `.env`'s own
 # grammar and every `${VAR:-default}`, so this is the value the app parses —
 # not the file's line, which can be overridden, defaulted or quoted (#4275).
@@ -1351,9 +1373,9 @@ resolved_service_env_value() {
   local service="$1"
   local key="$2"
 
-  strip_matching_quotes "$(trim_whitespace "$(
+  compose_render_scalar "$(
     compose_service_environment_value "$RESOLVED_COMPOSE_CONFIG" "$service" "$key"
-  )")"
+  )"
 }
 
 # Every item of one service's rendered `command:` list, one per line, as the
@@ -1639,10 +1661,37 @@ require_resolved_caddy_tls_mode() {
   case "$value" in
     acme|local) return 0 ;;
     *)
-      echo "CADDY_TLS_MODE must be 'acme' (Caddy is the public edge) or 'local' (behind a TLS-terminating proxy); Docker Compose would hand the '${CADDY_SERVICE}' service '$(printable_deploy_value "$value")'" >&2
+      echo "CADDY_TLS_MODE must be 'acme' (Caddy is the public edge) or 'local' (behind a TLS-terminating proxy); Docker Compose would hand the '${CADDY_SERVICE}' service '$(printable_deploy_value "$value")'. Set it in .env." >&2
       return 1
       ;;
   esac
+}
+
+# In local mode Caddy believes the client address a trusted proxy forwards, so
+# the proxies it trusts are an explicit setting (#4275): CADDY_TRUSTED_PROXIES,
+# the address or CIDR of the proxy in front, as the caddy service would receive
+# it. There is no default, because the only general one, `private_ranges`,
+# trusts every private address rather than the proxy. Unused in acme mode.
+require_resolved_caddy_trusted_proxies() {
+  local mode
+  local value
+  local entry
+
+  mode="$(resolved_service_env_value "$CADDY_SERVICE" CADDY_TLS_MODE)"
+  [ "$mode" = "local" ] || return 0
+  value="$(resolved_service_env_value "$CADDY_SERVICE" CADDY_TRUSTED_PROXIES)"
+  if [ -z "$value" ]; then
+    echo "CADDY_TLS_MODE=local needs CADDY_TRUSTED_PROXIES: the address or CIDR of the proxy in front of Caddy (for example 192.168.1.101/32), set in .env. There is no default, because trusting every private address (private_ranges) is broader than the one proxy Caddy should believe. See DEPLOYMENT.md, \"Client IPs behind the proxy\"." >&2
+    return 1
+  fi
+  for entry in $value; do
+    case "$entry" in
+      0.0.0.0/0|::/0)
+        echo "CADDY_TRUSTED_PROXIES must name the proxy in front of Caddy, not every address ($(printable_deploy_value "$entry")). Set it in .env." >&2
+        return 1
+        ;;
+    esac
+  done
 }
 
 # NOTE: require_boolean_env_key / require_positive_integer_env_key /
@@ -2102,10 +2151,10 @@ validate_resolved_email_transport() {
 # default and is left alone.
 POSTGRES_MAX_CONNECTIONS_MAX=1000
 validate_resolved_postgres_max_connections() {
-  local item value="" found=0 service url limit pools=0
+  local item value="" found=0 service url limit pools=0 reason
 
   while IFS= read -r item; do
-    item="$(strip_matching_quotes "$item")"
+    item="$(compose_render_scalar "$item")"
     case "$item" in
       max_connections=*) value="${item#max_connections=}"; found=1 ;;
     esac
@@ -2117,12 +2166,17 @@ validate_resolved_postgres_max_connections() {
   for service in "$BLUE_SERVICE" "$GREEN_SERVICE" "$CRON_SERVICE" "$MIGRATE_SERVICE"; do
     url="$(compose_service_environment_value "$RESOLVED_COMPOSE_CONFIG" "$service" DATABASE_URL)"
     limit="$(printf '%s' "$url" | sed -nE 's/.*[?&]connection_limit=([0-9]+).*/\1/p')"
-    pools=$((pools + ${limit:-0}))
+    # Base 10 explicitly: `connection_limit=08` is eight, not an octal error.
+    pools=$((pools + 10#${limit:-0}))
   done
 
-  require_integer_setting_in_range POSTGRES_MAX_CONNECTIONS "$(printable_deploy_value "$value")" \
-    "$((pools + 1))" "$POSTGRES_MAX_CONNECTIONS_MAX" \
-    "PostgreSQL refuses anything else only once the postgres container is recreated, and the resolved pools can open ${pools} connections together (DEPLOYMENT.md, Connection pool sizing)" \
+  reason="the resolved pools can open ${pools} connections together (DEPLOYMENT.md, Connection pool sizing), and PostgreSQL refuses anything it cannot parse only once the postgres container is recreated; set POSTGRES_MAX_CONNECTIONS in .env"
+  if ! printf '%s' "$value" | grep -Eq '^[0-9]+$'; then
+    echo "POSTGRES_MAX_CONNECTIONS must be a whole number between $((pools + 1)) and ${POSTGRES_MAX_CONNECTIONS_MAX}: ${reason}. Got: $(printable_deploy_value "$value")" >&2
+    return 1
+  fi
+  require_integer_setting_in_range POSTGRES_MAX_CONNECTIONS "$value" \
+    "$((pools + 1))" "$POSTGRES_MAX_CONNECTIONS_MAX" "$reason" \
     || return 1
 }
 
@@ -2260,28 +2314,44 @@ validate_repo_contract() {
 # local-mode installation and left a broken local one to fail at step 17, after
 # the migration. Read from the step-3 render, so a shell export and every
 # Compose default apply here exactly as they will to the running container.
+CADDY_VALIDATION_ENV_FILE=""
 validate_caddy_contract() {
   local domain
   local entry
-  local -a environment=()
+  local status=0
 
   domain="$(resolved_service_env_value "$CADDY_SERVICE" DOMAIN)"
+  if [ -z "$domain" ]; then
+    echo "DOMAIN is empty in what Docker Compose would hand the '${CADDY_SERVICE}' service; set DOMAIN in .env" >&2
+    return 1
+  fi
   if ! grep -Fq "$domain" Caddyfile && ! grep -Fq '{$DOMAIN}' Caddyfile; then
     echo "DOMAIN=$domain does not appear in Caddyfile and Caddyfile does not use the {\$DOMAIN} placeholder" >&2
     return 1
   fi
 
+  # Through a file, not `-e` arguments a process listing would show: created
+  # mode 600 (umask in the substitution's subshell), removed on every return
+  # here and by the EXIT trap if the deploy is interrupted mid-validation.
+  CADDY_VALIDATION_ENV_FILE="$(umask 077 && mktemp)"
   while IFS= read -r entry; do
     [ -n "$entry" ] || continue
-    environment+=(-e "${entry%%:*}=$(strip_matching_quotes "$(trim_whitespace "${entry#*:}")")")
+    printf '%s=%s\n' "${entry%%:*}" "$(compose_render_scalar "${entry#*:}")" >> "$CADDY_VALIDATION_ENV_FILE"
   done <<< "$(compose_service_environment_entries "$RESOLVED_COMPOSE_CONFIG" "$CADDY_SERVICE")"
 
-  docker run --rm \
-    ${environment[@]+"${environment[@]}"} \
+  if docker run --rm \
+    --env-file "$CADDY_VALIDATION_ENV_FILE" \
     -v "$PROJECT_DIR/Caddyfile:/etc/caddy/Caddyfile:ro" \
     -v "$PROJECT_DIR/deploy/caddy:/etc/caddy/deploy:ro" \
     caddy:2-alpine \
-    caddy validate --config /etc/caddy/Caddyfile >/dev/null
+    caddy validate --config /etc/caddy/Caddyfile >/dev/null; then
+    status=0
+  else
+    status=$?
+  fi
+  rm -f "$CADDY_VALIDATION_ENV_FILE"
+  CADDY_VALIDATION_ENV_FILE=""
+  return "$status"
 }
 
 wait_for_health() {
@@ -4047,6 +4117,7 @@ validate_migration_lock_timeout_contract
 # its service would receive it, and refused here rather than at step 11 or 17.
 validate_resolved_email_transport
 require_resolved_caddy_tls_mode
+require_resolved_caddy_trusted_proxies
 validate_resolved_postgres_max_connections
 # Same reasoning (#3965): an unreadable bound must stop the deploy here, not
 # make the in-container read retry at step 14 compare against a non-number.

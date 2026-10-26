@@ -1,11 +1,10 @@
 - **The production deploy no longer demands AWS SES keys from a club that
-  sends mail through its own SMTP relay.** The deploy
-  script's step-3 preflight required `AWS_SES_ACCESS_KEY_ID`,
-  `AWS_SES_SECRET_ACCESS_KEY` and `SES_SNS_TOPIC_ARN` whatever the
-  `.env` said about the mail provider, so an installation with
-  `USE_SMTP_RELAY=true` and those keys legitimately blank, exactly as the
-  configuration guide describes, was refused with "Missing required .env
-  entry" before anything was deployed.
+  sends mail through its own SMTP relay (#4275).** The deploy script's step-3
+  preflight required `AWS_SES_ACCESS_KEY_ID`, `AWS_SES_SECRET_ACCESS_KEY` and
+  `SES_SNS_TOPIC_ARN` whatever the `.env` said about the mail provider, so an
+  installation with `USE_SMTP_RELAY=true` and those keys legitimately blank,
+  exactly as the configuration guide describes, was refused with "Missing
+  required .env entry" before anything was deployed.
 
   The preflight now follows the provider flags the way the application does,
   and reads them as the application will receive them, after Docker Compose's
@@ -27,5 +26,5 @@
   repository's `.env` when the shell does not set them, with the same rules
   Compose applies to that file (quotes, `export`, the last duplicate wins),
   instead of falling straight back to the upstream registry, and step 3/8
-  says which source each name came from. A deploy run under `sudo`, which strips the shell
-  environment, therefore still pulls the fork's own images.
+  says which source each name came from. A deploy run under `sudo`, which
+  strips the shell environment, therefore still pulls the fork's own images.

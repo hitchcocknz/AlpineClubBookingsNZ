@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -7,6 +7,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import { bashFixturePath, bashGateArgs } from "./helpers/bash-fixture-path";
 import { readRepoFile } from "./helpers/compose";
 import { DEPLOY_SCRIPT, shellFunctionSource } from "./helpers/deploy-script";
+import { resolveEmailDeliveryConfigFromEnv } from "@/lib/email-delivery";
 
 /*
   The settings #4275 made configurable for a production host behind a
@@ -168,11 +169,11 @@ const CADDY_ENV: EnvMap = {
   MEET_HOST: "meet.club.test",
   MIROTALK_UPSTREAM: "host.docker.internal:3010",
   CADDY_TLS_MODE: "acme",
-  CADDY_TRUSTED_PROXIES: "private_ranges",
+  CADDY_TRUSTED_PROXIES: "192.168.1.101/32",
 };
 const POSTGRES_COMMAND = ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=40"];
 
-function url(limit: number) {
+function url(limit: number | string) {
   return `postgresql://tac:pw@postgres:5432/tacbookings?connection_limit=${limit}&pool_timeout=10`;
 }
 
@@ -220,6 +221,7 @@ ${lift([
   "strip_matching_quotes",
   "compose_service_environment_entries",
   "compose_service_environment_value",
+  "compose_render_scalar",
   "resolved_service_env_value",
   "compose_service_command_items",
   "value_looks_like_placeholder",
@@ -229,13 +231,29 @@ ${lift([
   "require_resolved_email_transport_for_service",
   "validate_resolved_email_transport",
   "require_resolved_caddy_tls_mode",
+  "require_resolved_caddy_trusted_proxies",
   "require_integer_setting_in_range",
   "validate_resolved_postgres_max_connections",
   "validate_caddy_contract",
 ])}
-docker() { printf '%s\\n' "$@" > docker.args; }
+${exactLine('CADDY_VALIDATION_ENV_FILE=""')}
+# A stub that records its arguments and a copy of the --env-file it was handed.
+docker() {
+  local previous=""
+  local argument
+  printf '%s\\n' "$@" > docker.args
+  for argument in "$@"; do
+    if [ "$previous" = --env-file ]; then
+      cp "$argument" docker.env
+      printf '%s' "$argument" > docker.envpath
+      stat -c %a "$argument" > docker.envmode 2>/dev/null || true
+    fi
+    previous="$argument"
+  done
+}
 RESOLVED_COMPOSE_CONFIG="$(cat rendered.yml)"
 "$ENTRY"
+if [ -f docker.envpath ] && [ -e "$(cat docker.envpath)" ]; then echo LEFTOVER-ENV-FILE; fi
 echo PASSED
 `;
 
@@ -345,6 +363,111 @@ describe("step 3 checks the email transport each app service would receive (#427
   });
 });
 
+/**
+ * The preflight's provider rule is a MIRROR of the app's, so the two are run
+ * side by side over the same inputs (INV-SSOT-002): every combination of the
+ * three flags through `resolveEmailDeliveryConfigFromEnv`
+ * (src/lib/email-delivery.ts) and through the extracted bash rule, with every
+ * provider's settings present so only the flags decide. One bash process walks
+ * every render, so the matrix costs one spawn rather than sixty-four.
+ */
+describe("the preflight's provider rule agrees with the app's (#4276 review)", { timeout: 120_000 }, () => {
+  const FLAG_VALUES = ["", "true", "FALSE", "yes"];
+  const ALL_SETTINGS: EnvMap = {
+    ...SES_ENV,
+    EMAIL_SERVER_HOST: "mailpit",
+    EMAIL_SERVER_PORT: "1025",
+    EMAIL_SERVER_USER: "capture",
+    EMAIL_SERVER_PASSWORD: "capture-secret",
+  };
+  const PARITY_HARNESS = `set -Eeuo pipefail
+VALIDATED_ENVIRONMENT_ROLE=non-production
+${lift([
+  "trim_whitespace",
+  "printable_deploy_value",
+  "strip_matching_quotes",
+  "compose_service_environment_entries",
+  "compose_service_environment_value",
+  "compose_render_scalar",
+  "resolved_service_env_value",
+  "value_looks_like_placeholder",
+  "email_flag_is_true",
+  "require_email_flag_is_boolean",
+  "require_resolved_service_value",
+  "require_resolved_email_transport_for_service",
+])}
+for render_file in renders/*.yml; do
+  RESOLVED_COMPOSE_CONFIG="$(cat "$render_file")"
+  if require_resolved_email_transport_for_service app 2>/dev/null; then
+    printf '%s PASS\\n' "$render_file"
+  else
+    printf '%s REFUSE\\n' "$render_file"
+  fi
+done
+`;
+
+  type Case = { label: string; env: EnvMap };
+
+  function verdicts(cases: Case[]): Map<string, boolean> {
+    const dir = mkdtempSync(path.join(ROOT, "parity-"));
+    mkdirSync(path.join(dir, "renders"));
+    cases.forEach((entry, index) =>
+      writeFileSync(path.join(dir, "renders", `${String(index).padStart(3, "0")}.yml`), render({ app: entry.env }), "utf8"),
+    );
+    writeFileSync(path.join(dir, "harness.sh"), PARITY_HARNESS, "utf8");
+    const result = spawnSync("bash", bashGateArgs(bashFixturePath(path.join(dir, "harness.sh"), dir)), {
+      cwd: dir,
+      encoding: "utf8",
+      timeout: 110_000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    const lines = result.stdout.trim().split("\n");
+    expect(lines).toHaveLength(cases.length);
+    return new Map(
+      lines.map((line) => {
+        const [file, verdict] = line.split(" ");
+        return [cases[Number(path.basename(file, ".yml"))].label, verdict === "PASS"];
+      }),
+    );
+  }
+
+  function appAccepts(env: EnvMap): boolean {
+    return resolveEmailDeliveryConfigFromEnv({ ...env, EMAIL_FROM: "bookings@club.test" }).ok;
+  }
+
+  it("accepts exactly the flag combinations the app accepts", () => {
+    const cases: Case[] = [];
+    for (const ses of FLAG_VALUES)
+      for (const relay of FLAG_VALUES)
+        for (const capture of FLAG_VALUES)
+          cases.push({
+            label: `USE_AWS_SES=${ses} USE_SMTP_RELAY=${relay} USE_LOCAL_CAPTURE=${capture}`,
+            env: { ...ALL_SETTINGS, USE_AWS_SES: ses, USE_SMTP_RELAY: relay, USE_LOCAL_CAPTURE: capture },
+          });
+    const bash = verdicts(cases);
+    const disagreements = cases
+      .filter((entry) => bash.get(entry.label) !== appAccepts(entry.env))
+      .map((entry) => `${entry.label}: preflight ${bash.get(entry.label) ? "passes" : "refuses"}, app ${appAccepts(entry.env) ? "accepts" : "refuses"}`);
+    expect(disagreements).toEqual([]);
+    // Both outcomes are exercised, so an always-pass or always-refuse rule fails.
+    expect(new Set(bash.values()).size).toBe(2);
+  });
+
+  it("refuses wherever the app refuses for a missing setting of the selected provider", () => {
+    const modes: Array<[string, EnvMap, string[]]> = [
+      ["aws-ses", { USE_AWS_SES: "true", USE_SMTP_RELAY: "false", USE_LOCAL_CAPTURE: "false" }, ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"]],
+      ["smtp-relay", { USE_AWS_SES: "false", USE_SMTP_RELAY: "true", USE_LOCAL_CAPTURE: "false" }, ["EMAIL_SERVER_HOST", "EMAIL_SERVER_PORT", "EMAIL_SERVER_USER", "EMAIL_SERVER_PASSWORD"]],
+      ["local-capture", { USE_AWS_SES: "false", USE_SMTP_RELAY: "false", USE_LOCAL_CAPTURE: "true" }, ["EMAIL_SERVER_HOST", "EMAIL_SERVER_PORT", "EMAIL_SERVER_USER", "EMAIL_SERVER_PASSWORD"]],
+    ];
+    const cases: Case[] = modes.flatMap(([mode, flags, keys]) =>
+      keys.map((key) => ({ label: `${mode} without ${key}`, env: { ...ALL_SETTINGS, ...flags, [key]: "" } })),
+    );
+    for (const entry of cases) expect(appAccepts(entry.env), entry.label).toBe(false);
+    const bash = verdicts(cases);
+    for (const entry of cases) expect(bash.get(entry.label), entry.label).toBe(false);
+  });
+});
+
 describe("step 3 checks Postgres's max_connections as the postgres command would carry it (#4275)", RUN, () => {
   const pg = (setting: string | string[] | null) =>
     check(
@@ -362,10 +485,25 @@ describe("step 3 checks Postgres's max_connections as the postgres command would
     expect(pg('"max_connections=80"').passed).toBe(true);
   });
 
-  it("refuses a value PostgreSQL could not parse, before the container is recreated", () => {
+  it("refuses a value PostgreSQL could not parse, before the container is recreated, saying where to set it", () => {
     const result = pg("max_connections=abc");
     expect(result.passed).toBe(false);
-    expect(result.stderr).toContain("POSTGRES_MAX_CONNECTIONS must be a non-negative integer. Got: abc");
+    expect(result.stderr).toContain("POSTGRES_MAX_CONNECTIONS must be a whole number between 28 and 1000");
+    expect(result.stderr).toContain("set POSTGRES_MAX_CONNECTIONS in .env. Got: abc");
+  });
+
+  it("reads a leading-zero connection_limit as decimal, not octal", () => {
+    // app_blue's pool is 08 here: eight, so the pools sum to 25 and the floor is 26.
+    const rendered = (maxConnections: number) =>
+      render({
+        perService: { app_blue: { DATABASE_URL: url("08") } },
+        postgresCommand: ["postgres", "-c", `max_connections=${maxConnections}`],
+      });
+    const at = check("validate_resolved_postgres_max_connections", rendered(26));
+    expect(at.passed, at.stderr).toBe(true);
+    const below = check("validate_resolved_postgres_max_connections", rendered(25));
+    expect(below.passed).toBe(false);
+    expect(below.stderr).toContain("must be between 26 and 1000");
   });
 
   it("refuses a ceiling at or below the pools the render can open together (10+10+5+2)", () => {
@@ -396,27 +534,75 @@ describe("Caddy is validated with the TLS mode and settings it will run with (#4
       const result = check("require_resolved_caddy_tls_mode", render({ caddy: { CADDY_TLS_MODE: mode } }));
       expect(result.passed, mode).toBe(false);
       expect(result.stderr).toContain("CADDY_TLS_MODE must be 'acme'");
+      expect(result.stderr).toContain("Set it in .env.");
     }
   });
 
-  it("hands the validation container the caddy service's whole resolved environment, unquoted", () => {
+  it("requires an explicit trusted proxy in local mode, and never every address", () => {
+    const proxies = (mode: string, value: string) =>
+      check(
+        "require_resolved_caddy_trusted_proxies",
+        render({ caddy: { CADDY_TLS_MODE: mode, CADDY_TRUSTED_PROXIES: value } }),
+      );
+    expect(proxies("local", "192.168.1.101/32").passed).toBe(true);
+    expect(proxies("local", "10.0.0.5 192.168.1.101/32").passed).toBe(true);
+    // Unused in acme mode, so nothing is demanded there.
+    expect(proxies("acme", "").passed).toBe(true);
+    const missing = proxies("local", "");
+    expect(missing.passed).toBe(false);
+    expect(missing.stderr).toContain("CADDY_TLS_MODE=local needs CADDY_TRUSTED_PROXIES");
+    expect(missing.stderr).toContain("set in .env");
+    for (const everything of ["0.0.0.0/0", "192.168.1.101/32 ::/0"]) {
+      const result = proxies("local", everything);
+      expect(result.passed, everything).toBe(false);
+      expect(result.stderr).toContain("not every address");
+    }
+  });
+
+  it("refuses a render whose caddy service has no DOMAIN", () => {
+    const result = check("validate_caddy_contract", render({ caddy: { DOMAIN: "" } }));
+    expect(result.passed).toBe(false);
+    expect(result.stderr).toContain("DOMAIN is empty");
+  });
+
+  it("hands the validation container the caddy service's whole resolved environment, decoded, in a file", () => {
     const result = check(
       "validate_caddy_contract",
-      render({ caddy: { CADDY_TLS_MODE: "local", CADDY_TRUSTED_PROXIES: "192.168.1.10/32", MEET_HOST: "" } }),
+      render({
+        caddy: {
+          CADDY_TLS_MODE: "local",
+          CADDY_TRUSTED_PROXIES: "192.168.1.10/32",
+          MEET_HOST: "",
+          // As the render writes them: Compose's `$$` for a literal `$`, and a
+          // double-quoted scalar with an escaped quote.
+          MIROTALK_UPSTREAM: "mirotalk$$1:3010",
+          EXTRA_SETTING: '"say \\"hi\\""',
+        },
+      }),
     );
     expect(result.passed, result.stderr).toBe(true);
+    const envFile = readFileSync(path.join(result.dir, "docker.env"), "utf8").trimEnd().split("\n");
+    expect(envFile.sort()).toEqual(
+      [
+        "CADDY_TLS_MODE=local",
+        "CADDY_TRUSTED_PROXIES=192.168.1.10/32",
+        "DOMAIN=bookings.club.test",
+        'EXTRA_SETTING=say "hi"',
+        "MEET_HOST=",
+        "MIROTALK_UPSTREAM=mirotalk$1:3010",
+      ].sort(),
+    );
+    // Nothing from the environment on the command line, where a process
+    // listing would show it.
     const args = readFileSync(path.join(result.dir, "docker.args"), "utf8").trimEnd().split("\n");
-    for (const pair of [
-      "CADDY_TLS_MODE=local",
-      "CADDY_TRUSTED_PROXIES=192.168.1.10/32",
-      "DOMAIN=bookings.club.test",
-      "MEET_HOST=",
-      "MIROTALK_UPSTREAM=host.docker.internal:3010",
-    ]) {
-      expect(args, pair).toContain(pair);
-      expect(args[args.indexOf(pair) - 1], pair).toBe("-e");
-    }
+    expect(args).not.toContain("-e");
+    expect(args.join(" ")).not.toContain("192.168.1.10/32");
     expect(args.slice(-3)).toEqual(["validate", "--config", "/etc/caddy/Caddyfile"]);
+    // Removed once validated, and private while it existed.
+    expect(result.stdout).not.toContain("LEFTOVER-ENV-FILE");
+    if (process.platform !== "win32") {
+      expect(readFileSync(path.join(result.dir, "docker.envmode"), "utf8").trim()).toBe("600");
+    }
   });
 });
 
@@ -431,6 +617,7 @@ describe("the step-3 wiring (#4275)", () => {
       "\nvalidate_migration_lock_timeout_contract\n",
       "\nvalidate_resolved_email_transport\n",
       "\nrequire_resolved_caddy_tls_mode\n",
+      "\nrequire_resolved_caddy_trusted_proxies\n",
       "\nvalidate_resolved_postgres_max_connections\n",
     ].map((call) => {
       expect(SCRIPT.split(call).length - 1, call).toBe(1);
@@ -469,6 +656,16 @@ describe("the step-3 wiring (#4275)", () => {
   });
 });
 
+/** The acme snippet as #4275 shipped it; local mode's trust change must not touch it. */
+const ACME_SNIPPET = `# CADDY_TLS_MODE=acme (the default): Caddy is the public edge and obtains its
+# certificates from Let's Encrypt itself, which is Caddy's own default — so
+# this snippet adds nothing. It exists so the Caddyfile's single
+# \`import /etc/caddy/deploy/tls-{$CADDY_TLS_MODE:acme}.caddy\` resolves to a
+# file in every mode. The alternative is \`tls-local.caddy\`.
+# No proxy is trusted in this mode: Caddy IS the edge, so \`{client_ip}\` is the
+# connecting peer and a visitor cannot forge it through X-Forwarded-For.
+`;
+
 describe("the remaining #4275 settings", () => {
   it("treats the legacy dashboard export token as optional, refusing only a placeholder", () => {
     const contract = shellFunctionSource(SCRIPT, "validate_env_contract");
@@ -490,17 +687,25 @@ describe("the remaining #4275 settings", () => {
   });
 
   it("forwards the visitor's IP, not the proxy's, in both TLS modes", () => {
-    const local = readRepoFile("deploy/caddy/tls-local.caddy");
-    expect(local).toMatch(/^\s*trusted_proxies static \{\$CADDY_TRUSTED_PROXIES:private_ranges\}$/m);
-    expect(local).toMatch(/^\s*client_ip_headers X-Forwarded-For$/m);
-    expect(readRepoFile("deploy/caddy/tls-acme.caddy")).not.toMatch(/trusted_proxies/);
+    const local = readRepoFile("deploy/caddy/tls-local.caddy").replace(/\r\n/g, "\n");
+    // Local mode trusts exactly the configured proxy list — no default — and
+    // reads the forwarded header strictly, inside the one `servers` block.
+    const servers = /^servers \{\n([\s\S]*?)\n\}$/m.exec(local)?.[1] ?? "";
+    expect(servers.split("\n").map((line) => line.trim())).toEqual([
+      "trusted_proxies static {$CADDY_TRUSTED_PROXIES}",
+      "trusted_proxies_strict",
+      "client_ip_headers X-Forwarded-For",
+    ]);
+    expect(local).not.toMatch(/^[^#]*private_ranges/m);
+    // ACME mode is unchanged, byte for byte: it trusts no proxy at all.
+    expect(readRepoFile("deploy/caddy/tls-acme.caddy").replace(/\r\n/g, "\n")).toBe(ACME_SNIPPET);
     const forward = "header_up X-Forwarded-For {client_ip}";
     expect(readRepoFile("deploy/caddy/tacbookings-active.caddy")).toContain(forward);
     expect(readRepoFile("Caddyfile.staging")).toContain(forward);
     // Both generators of the active snippet (the wrapper's and the engine's).
     expect(SCRIPT.split(`echo "  ${forward}"`).length - 1).toBe(2);
     expect(readRepoFile("docker-compose.yml")).toContain(
-      "CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-private_ranges}",
+      "CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-}",
     );
   });
 });

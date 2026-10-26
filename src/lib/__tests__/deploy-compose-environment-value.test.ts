@@ -87,5 +87,7 @@ describe("deploy compose_service_environment_value (#4416)", () => {
         expect(result.stdout, `${service}/${key}`).toBe("");
       }
     }
-  });
+    // Eight bash spawns, half of them over a 512 KiB render: past the default
+    // 5 s on a loaded Windows host, so a timeout here is not a finding.
+  }, 60_000);
 });

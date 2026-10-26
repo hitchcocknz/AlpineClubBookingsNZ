@@ -798,7 +798,9 @@ relays Caddy's `308` back to the browser forever. The deploy's outside check
 (`https://<DOMAIN>/api/health/ready`) fails the same way the browser does, so
 step 17 reports an empty health payload and rolls the upstream back.
 
-Set `CADDY_TLS_MODE=local` in `.env` for that shape. The Caddyfile's global
+Set `CADDY_TLS_MODE=local` in `.env` for that shape, with
+`CADDY_TRUSTED_PROXIES` set to the proxy's address (see "Client IPs behind the
+proxy" below; the deploy refuses local mode without it). The Caddyfile's global
 options import `deploy/caddy/tls-local.caddy`, which turns on `local_certs`:
 Caddy issues every site's certificate from its own internal CA and never
 contacts Let's Encrypt. Then point the proxy at the VM's **443** with scheme
@@ -812,7 +814,11 @@ running the deploy wrapper**, as for a release: it validates the Caddyfile with
 the resolved `CADDY_TLS_MODE` and `CADDY_TRUSTED_PROXIES` at step 4, before the
 migration, and carries the live upstream into its workspace at step 5/8. If
 `main` has moved on and no release is due, set `DEPLOY_REF` to the commit that
-is live.
+is live — but only once the live commit already carries the `CADDY_TLS_MODE`
+wiring (the Caddyfile import, the `deploy/caddy/tls-*.caddy` snippets and the
+compose settings). Turning local mode on for the first time takes a deploy of a
+commit that has them, because the deploy builds its workspace from the commit,
+not from the checkout.
 
 Do **not** run `docker compose up -d caddy` from the source checkout. The
 running Caddy bind-mounts the live deploy workspace, whose
@@ -822,8 +828,10 @@ tracked copy of that file names `app_blue` and the cron leader `app`: on a host
 serving green, whose blue container the last deploy removed, every request
 then reaches the cron leader.
 
-If a deploy is not possible, the manual equivalent is the deploy's own step-17
-command, run in the live workspace with the edited `.env` copied into it:
+If a deploy is not possible, the manual route is equivalent to the deploy's
+step 17 (`docker compose up -d caddy` in its workspace), run by hand in the live
+workspace with the edited `.env` copied into it; the deploy's own call needs
+neither flag below, because it already runs in that project and workspace:
 
 ```bash
 cid=$(docker compose --project-name <project> -f <checkout>/docker-compose.yml ps -q caddy)
@@ -851,13 +859,21 @@ limits on login, registration, forgotten-password and magic-link requests would
 share one bucket for the whole site (ten failed logins from anyone would lock
 every member out for the window), and the audit log would record the proxy's
 IP on every row. `tls-local.caddy` therefore declares the proxy as a trusted
-proxy (`servers { trusted_proxies static … }`, from `CADDY_TRUSTED_PROXIES`,
-default `private_ranges`) and reads the visitor's address from the proxy's
-`X-Forwarded-For`; the app's `reverse_proxy` then sends that resolved address
-as the one `X-Forwarded-For` value the app reads. Set `CADDY_TRUSTED_PROXIES`
-to the proxy's own address or CIDR when it is not on a private range, and
-**never** to a range the public can reach, because a visitor connecting from
-a trusted address can name any IP it likes. The proxy must itself set
+proxy (`servers { trusted_proxies static … }`, from `CADDY_TRUSTED_PROXIES`)
+with `trusted_proxies_strict`, and reads the visitor's address from the
+proxy's `X-Forwarded-For`; the app's `reverse_proxy` then sends that resolved
+address as the one `X-Forwarded-For` value the app reads.
+
+`CADDY_TRUSTED_PROXIES` is **required** in local mode and has no default: the
+step-3 preflight refuses `CADDY_TLS_MODE=local` without it, and refuses
+`0.0.0.0/0` or `::/0`. Pin it to the proxy's own address or CIDR, for example
+`192.168.1.101/32`. Caddy believes the forwarded address from any peer on the
+list, so the list should be the proxy and nothing else; `private_ranges`,
+which Caddy accepts, trusts every private address on the network, including
+other hosts and anything that reaches Caddy from one, and is broader than any
+single proxy needs. With `trusted_proxies_strict`, Caddy reads
+`X-Forwarded-For` from the right and takes the first address not on the list,
+which is the one the trusted proxy itself appended. The proxy must set
 `X-Forwarded-For` (Nginx Proxy Manager does by default).
 
 

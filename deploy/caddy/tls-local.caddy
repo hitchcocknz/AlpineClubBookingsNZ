@@ -11,14 +11,18 @@ local_certs
 # The proxy in front is the only peer Caddy sees, so without this every
 # visitor would reach the app as the proxy's address: the per-IP rate limits on
 # login, register, forgot-password and magic links would share ONE bucket for
-# the whole site (ten bad logins from anyone would lock out every member) and
-# audit-log IPs would all be the proxy. `trusted_proxies` makes Caddy read the
-# visitor's address from the proxy's X-Forwarded-For, which `{client_ip}` then
-# carries to the app (see `header_up` in deploy/caddy/tacbookings-active.caddy).
-# CADDY_TRUSTED_PROXIES (docker-compose.yml) lists the proxy's addresses or
-# CIDRs; the default `private_ranges` covers a proxy on the same LAN. Never set
-# it to a range the public can reach: that would let any visitor forge their IP.
+# the whole site and audit-log IPs would all be the proxy. `trusted_proxies`
+# makes Caddy read the visitor's address from the proxy's X-Forwarded-For,
+# which `{client_ip}` then carries to the app (see `header_up` in
+# deploy/caddy/tacbookings-active.caddy).
+#
+# CADDY_TRUSTED_PROXIES is the proxy's own address or CIDR, and has no default:
+# the deploy refuses local mode without it (DEPLOYMENT.md, "Client IPs behind
+# the proxy"). `trusted_proxies_strict` reads X-Forwarded-For from the right,
+# skipping only addresses on that list, so the address Caddy uses is the one
+# the trusted proxy itself appended.
 servers {
-	trusted_proxies static {$CADDY_TRUSTED_PROXIES:private_ranges}
+	trusted_proxies static {$CADDY_TRUSTED_PROXIES}
+	trusted_proxies_strict
 	client_ip_headers X-Forwarded-For
 }
