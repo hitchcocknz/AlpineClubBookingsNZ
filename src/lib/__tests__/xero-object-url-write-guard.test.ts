@@ -1,4 +1,4 @@
-import { balancedBrackets } from "./support/balanced-brackets";
+import { balancedBrackets, expressionAt } from "./support/balanced-brackets";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -135,24 +135,9 @@ function readPropertyValues(payload: string, key: string): PropertyValue[] {
 
     if (after === ":") {
       const valueStart = from + afterText.indexOf(":") + 1;
-      let depth = 0;
-      let end = payload.length;
-      for (let i = valueStart; i < payload.length; i += 1) {
-        const ch = payload[i];
-        if (ch === "(" || ch === "[" || ch === "{") depth += 1;
-        else if (ch === ")" || ch === "]") depth -= 1;
-        else if (ch === "}") {
-          if (depth === 0) {
-            end = i;
-            break;
-          }
-          depth -= 1;
-        } else if (ch === "," && depth === 0) {
-          end = i;
-          break;
-        }
-      }
-      found.push({ value: payload.slice(valueStart, end).trim() });
+      // `payload` is already masked, so it is its own structure.
+      const { text, end } = expressionAt(payload, valueStart, payload);
+      found.push({ value: text.trim() });
       from = end;
     } else if (after === "," || after === "}" || after === "") {
       found.push({ value: null });
