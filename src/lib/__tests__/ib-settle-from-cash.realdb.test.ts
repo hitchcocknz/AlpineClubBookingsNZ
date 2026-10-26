@@ -459,6 +459,25 @@ async function cancellationCreditCents(): Promise<number> {
     // The cancel arm's own alert, for the whole cash; never a "partial" one.
   }, 60_000);
 
+  it("A CORRECTION ON A LATE CAPACITY CANCEL: invoice $300 less a $100 invoice-correction note, paid $200: the whole cash is credited, never as a mixed invoice's portion (#4095 item 2)", async () => {
+    await bookAt(30_000, { holdsBeds: false });
+    await raiseInvoice();
+    await editPriceTo(20_000);
+    await queueModificationNote(10_000, { noteWording: "invoice-correction" });
+
+    const result = await settle(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] });
+
+    expect((await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { status: true } })).status).toBe("CANCELLED");
+    expect(await memberCredit.getMemberCreditBalance(MEMBER_ID)).toBe(20_000);
+    // The correction lowered what the invoice asked for: the $200 is all of it.
+    expect(result.partialCashCreditedInternetBankingBookings).toBe(0);
+    const credited = await prisma.bookingEvent.findMany({
+      where: { bookingId: BOOKING_ID, type: "CREDITED" },
+      select: { reason: true },
+    });
+    expect(credited.map((event) => event.reason)).toEqual(["Paid Internet Banking amount held as account credit."]);
+  }, 60_000);
+
   it("CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200", async () => {
     await bookAt(20_000);
     await raiseInvoice();

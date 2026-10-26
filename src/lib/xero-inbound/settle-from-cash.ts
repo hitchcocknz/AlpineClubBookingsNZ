@@ -225,9 +225,10 @@ export async function decideInternetBankingReceiptFigure(
   paymentColumns: { amountCents: number; refundedAmountCents: number; status: PaymentStatus } | null;
   /**
    * The cash the invoice expected - its total less the member's own account
-   * credit applied to it - when the cash came short of it: the rest was cleared
-   * some other way (a write-off, a clearing note) and an operator should know
-   * (#1459). Null when the cash covers it.
+   * credit and the correction and no-cash notes applied to it - when the cash
+   * came short of it: the rest was cleared some other way (a write-off, a
+   * clearing note) and an operator should know (#1459). Null when the cash
+   * covers it.
    */
   mixedInvoiceExpectedCents: number | null;
 }> {
@@ -278,8 +279,12 @@ export async function decideInternetBankingReceiptFigure(
     onlyUncapturedPrimary && moreUncapturedPrimary.length === 0 ? onlyUncapturedPrimary.amountCents : payment.amountCents;
   const receiptCents = plan.kind === "rewrite" ? plan.receiptCents : storedReceiptCents;
 
+  // An applied correction or give-back note lowered what the invoice asked for
+  // and moved no cash, so it is not a part cleared some other way (#4095 item 2).
   const expectedCents =
-    input.invoice.totalCents !== null ? input.invoice.totalCents - memberCreditCents : storedReceiptCents;
+    input.invoice.totalCents !== null
+      ? input.invoice.totalCents - memberCreditCents - noCashCents
+      : storedReceiptCents;
   // Only cash that quantified to something can be "part" of the invoice; a
   // figure that read as nothing is the unquantifiable fallback, not a mix.
   const mixedInvoiceExpectedCents =

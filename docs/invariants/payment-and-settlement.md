@@ -3678,7 +3678,8 @@ _Split from `INV-PAY-057` (#3220)._
   admin-only marker in the settle's transaction (`SETTLEMENT_MARKERS`) and sends
   an unmuteable alert after commit, recorded once sent. The cancel arms alert
   themselves: their credit's face is the receipt, and a mixed invoice is
-  measured against its total less the member's own applied credit.
+  measured against its total less the member's own applied credit and any
+  applied correction or no-cash note, which moved no cash (#4095).
 - `pnpm run payments:audit-ib-settled-cash` lists receipts differing from the
   recorded cash, and refunded totals beyond the rows.
 - Pinned by `settle-from-cash.test.ts`, `xero-inbound-reconciliation.test.ts`,
