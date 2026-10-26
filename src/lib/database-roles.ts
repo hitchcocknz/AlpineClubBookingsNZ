@@ -1,0 +1,428 @@
+/**
+ * Least-privilege database roles (#4453; owner decision 27 Oct 2026, which
+ * replaces #2240's 25 Jul 2026 decision).
+ *
+ * Three roles replace the one superuser the stock Compose stack connects as:
+ *
+ *  - the OPERATOR — the existing superuser (`POSTGRES_USER`). Humans only:
+ *    provisioning, restores, hand repairs. No application process holds it.
+ *  - the MIGRATION role — owns every object in schema `public`, so it can run
+ *    `prisma migrate deploy`. Not a superuser, and a member of no role.
+ *  - the APPLICATION role — SELECT, INSERT, UPDATE and DELETE on ordinary tables,
+ *    but only INSERT and SELECT on the append-only relations below, SELECT only on
+ *    the migration history, and nothing that is not a table or sequence right.
+ *
+ * plus a fourth, narrow AUDIT-RETENTION role for the one job that must change
+ * audit rows: `runAuditLogRetentionJob` anonymises request data after 90 days and
+ * deletes expired or archived rows. Beyond SELECT on `AuditLog` it holds only
+ * `UPDATE` of the anonymised columns and `DELETE` (the orchestrator's resolution
+ * on #4453), so the application role never needs either.
+ *
+ * PURE ON PURPOSE, like `diagnostics/tools/provision-role.ts`, whose identifier
+ * rules and role-creation statements it reuses rather than copies (`INV-SSOT`):
+ * no database handle, no environment read, no `server-only`. Three consumers run
+ * ONE definition — the operator's `pnpm run db:provision-roles`, its unit test,
+ * and `database-roles.realdb.test.ts`, which proves against PostgreSQL that the
+ * shipped statements really produce roles that cannot rewrite the ledger.
+ *
+ * DECLARATIVE, NOT ADDITIVE. Every run revokes each role's object privileges and
+ * grants the declared set back, transfers ownership of anything the migration
+ * role does not yet own, and re-asserts the default privileges, so a re-run is
+ * both the repair path and the password-rotation path. The last statement
+ * re-checks the result inside the same transaction and raises if the
+ * application role can change an append-only row, so a partial or drifted run
+ * rolls back rather than committing.
+ *
+ * WHAT IT DOES NOT DO: create the database, touch the operator role, the AI
+ * Diagnostics role (ADR-007) or the audit ARCHIVE database's role, revoke
+ * anything from PUBLIC, or print a password.
+ */
+
+import type { Prisma } from "@prisma/client";
+
+import {
+  buildCreateLoginRoleIfAbsentSql,
+  buildStripAllRoleMembershipsSql,
+  quoteIdentifier,
+  quoteLiteral,
+} from "./diagnostics/tools/provision-role";
+
+/** The schema every application relation lives in. */
+export const APPLICATION_SCHEMA = "public";
+
+/**
+ * Relations the application role may only INSERT into and SELECT from. A row in
+ * one of these is a fact that is corrected by appending another row, never by
+ * rewriting it: the booking ledger (`docs/design/booking-ledger.md` §4) and the
+ * audit log. Adding a relation here is a release that asks every deployment to
+ * re-run `pnpm run db:provision-roles --apply`, and the upgrade note says so.
+ */
+export const APPEND_ONLY_RELATIONS = ["BookingLedgerLine", "AuditLog"] as const;
+
+/** Prisma's migration history: the application reads it, only migrations write it. */
+export const MIGRATION_HISTORY_RELATION = "_prisma_migrations";
+
+/** The audit relation the retention role maintains. */
+export const AUDIT_RETENTION_RELATION = "AuditLog";
+
+type AuditLogColumnName = keyof typeof Prisma.AuditLogScalarFieldEnum;
+
+/**
+ * The request-data columns `anonymizeExpiredAuditRequestData` clears after 90
+ * days. ONE list for the job and for the grant: the job derives its UPDATE from
+ * it, and the retention role may UPDATE exactly these columns, so adding a column
+ * to the anonymisation widens the grant on the next provisioning run instead of
+ * failing the nightly job with "permission denied".
+ */
+export const AUDIT_ANONYMISED_REQUEST_COLUMNS = [
+  "ipAddress",
+  "userAgent",
+] as const satisfies readonly AuditLogColumnName[];
+
+/** Table rights the application role holds on an ordinary relation. */
+export const APPLICATION_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE";
+/** Table rights it holds on an append-only relation. */
+export const APPEND_ONLY_TABLE_PRIVILEGES = "SELECT, INSERT";
+
+/** The stock role names. A deployment may choose its own. */
+export const DEFAULT_DATABASE_ROLE_NAMES = {
+  migrator: "tac_migrator",
+  app: "tac_app",
+  auditRetention: "tac_audit_retention",
+} as const;
+
+export type DatabaseRoleKind = keyof typeof DEFAULT_DATABASE_ROLE_NAMES;
+
+export interface DatabaseRoleCredential {
+  roleName: string;
+  /** Quoted as a SQL literal; never logged. */
+  password: string;
+}
+
+export interface DatabaseRolesProvisionInput {
+  /** The database the roles may CONNECT to and whose schema is provisioned. */
+  databaseName: string;
+  migrator: DatabaseRoleCredential;
+  app: DatabaseRoleCredential;
+  auditRetention: DatabaseRoleCredential;
+}
+
+const ROLE_ATTRIBUTES =
+  "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS";
+
+/** A relation name in the application schema, quoted for SQL text. */
+function relation(name: string): string {
+  return `${quoteIdentifier(APPLICATION_SCHEMA)}.${quoteIdentifier(name)}`;
+}
+
+/** The same name as a `regclass` literal, for `to_regclass` and `has_*_privilege`. */
+function regclassLiteral(name: string): string {
+  return quoteLiteral(relation(name));
+}
+
+/**
+ * Hand every object in the application schema that the migration role does not
+ * already own to it: tables, partitioned tables, views, materialised views,
+ * foreign tables, standalone sequences, types and routines.
+ *
+ * Written as a catalogue loop rather than `REASSIGN OWNED BY <old owner>`,
+ * because the old owner in the stock stack is the cluster's bootstrap superuser
+ * (`POSTGRES_USER`), whose objects PostgreSQL refuses to reassign, and because
+ * REASSIGN would also move objects outside this schema and the database itself.
+ *
+ * Skipped on purpose: an extension's own members (`pgcrypto`'s functions — the
+ * extension keeps its owner), a sequence a column owns (it moves with its table),
+ * an index (it follows its table), and the row and array types PostgreSQL derives
+ * from a table or a type (they follow their parent).
+ */
+function buildOwnershipTransferSql(migrator: string): string {
+  const schemaLiteral = quoteLiteral(APPLICATION_SCHEMA);
+  const migratorLiteral = quoteLiteral(migrator);
+  return `DO $$
+DECLARE
+  object record;
+BEGIN
+  FOR object IN
+    SELECT c.oid::regclass::text AS name,
+      CASE c.relkind
+        WHEN 'v' THEN 'VIEW'
+        WHEN 'm' THEN 'MATERIALIZED VIEW'
+        WHEN 'S' THEN 'SEQUENCE'
+        WHEN 'f' THEN 'FOREIGN TABLE'
+        ELSE 'TABLE'
+      END AS kind
+    FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ${schemaLiteral}
+      AND c.relkind IN ('r', 'p', 'v', 'm', 'f', 'S')
+      AND pg_catalog.pg_get_userbyid(c.relowner) <> ${migratorLiteral}
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid
+          AND d.deptype IN ('e', 'a', 'i')
+      )
+    ORDER BY 1
+  LOOP
+    EXECUTE format('ALTER %s %s OWNER TO %I', object.kind, object.name, ${migratorLiteral});
+  END LOOP;
+
+  FOR object IN
+    SELECT t.oid::regtype::text AS name
+    FROM pg_catalog.pg_type t
+    JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+    LEFT JOIN pg_catalog.pg_class c ON c.oid = t.typrelid
+    WHERE n.nspname = ${schemaLiteral}
+      AND t.typtype IN ('e', 'd', 'r', 'c')
+      AND (t.typrelid = 0 OR c.relkind = 'c')
+      AND pg_catalog.pg_get_userbyid(t.typowner) <> ${migratorLiteral}
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_type'::regclass AND d.objid = t.oid
+          AND d.deptype = 'e'
+      )
+    ORDER BY 1
+  LOOP
+    EXECUTE format('ALTER TYPE %s OWNER TO %I', object.name, ${migratorLiteral});
+  END LOOP;
+
+  FOR object IN
+    SELECT p.oid::regprocedure::text AS name
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = ${schemaLiteral}
+      AND pg_catalog.pg_get_userbyid(p.proowner) <> ${migratorLiteral}
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_catalog.pg_depend d
+        WHERE d.classid = 'pg_catalog.pg_proc'::regclass AND d.objid = p.oid
+          AND d.deptype = 'e'
+      )
+    ORDER BY 1
+  LOOP
+    EXECUTE format('ALTER ROUTINE %s OWNER TO %I', object.name, ${migratorLiteral});
+  END LOOP;
+END
+$$;`;
+}
+
+/**
+ * Narrow the application role on the append-only relations and the migration
+ * history, and grant the retention role its three rights. Each relation is looked
+ * up first: on an empty database (provisioned before the first migration) it does
+ * not exist yet, and the run says so rather than failing — re-running after the
+ * migrations applies it.
+ */
+function buildRelationNarrowingSql(
+  app: string,
+  auditRetention: string,
+): string {
+  const lines: string[] = [];
+  for (const name of APPEND_ONLY_RELATIONS) {
+    lines.push(`  IF to_regclass(${regclassLiteral(name)}) IS NOT NULL THEN
+    EXECUTE ${quoteLiteral(`REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE ${relation(name)} FROM ${app}`)};
+  ELSE
+    RAISE NOTICE 'Relation % does not exist yet: re-run provisioning after the migrations so the application role is narrowed on it.', ${quoteLiteral(name)};
+  END IF;`);
+  }
+  lines.push(`  IF to_regclass(${regclassLiteral(MIGRATION_HISTORY_RELATION)}) IS NOT NULL THEN
+    EXECUTE ${quoteLiteral(`REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE ${relation(MIGRATION_HISTORY_RELATION)} FROM ${app}`)};
+  END IF;`);
+  const columns = AUDIT_ANONYMISED_REQUEST_COLUMNS.map(quoteIdentifier).join(", ");
+  lines.push(`  IF to_regclass(${regclassLiteral(AUDIT_RETENTION_RELATION)}) IS NOT NULL THEN
+    EXECUTE ${quoteLiteral(`GRANT SELECT, DELETE ON TABLE ${relation(AUDIT_RETENTION_RELATION)} TO ${auditRetention}`)};
+    EXECUTE ${quoteLiteral(`GRANT UPDATE (${columns}) ON TABLE ${relation(AUDIT_RETENTION_RELATION)} TO ${auditRetention}`)};
+  ELSE
+    RAISE NOTICE 'Relation % does not exist yet: re-run provisioning after the migrations so the audit-retention role can maintain it.', ${quoteLiteral(AUDIT_RETENTION_RELATION)};
+  END IF;`);
+  return `DO $$
+BEGIN
+${lines.join("\n")}
+END
+$$;`;
+}
+
+/**
+ * The re-check, inside the same transaction as everything above. A warning is
+ * not a failure in PostgreSQL, so the properties this issue exists for are read
+ * back from the server's own privilege functions — which count PUBLIC grants and
+ * role memberships too — and any breach raises, rolling the whole run back.
+ */
+function buildVerificationSql(input: {
+  migrator: string;
+  app: string;
+  auditRetention: string;
+}): string {
+  const app = quoteLiteral(input.app);
+  const retention = quoteLiteral(input.auditRetention);
+  const migrator = quoteLiteral(input.migrator);
+  const auditRelation = regclassLiteral(AUDIT_RETENTION_RELATION);
+  const appendOnlyChecks = APPEND_ONLY_RELATIONS.map(
+    (name) => `  IF to_regclass(${regclassLiteral(name)}) IS NOT NULL AND (
+       pg_catalog.has_table_privilege(${app}, ${regclassLiteral(name)}, 'UPDATE, DELETE, TRUNCATE')
+       OR pg_catalog.has_any_column_privilege(${app}, ${regclassLiteral(name)}, 'UPDATE')) THEN
+    RAISE EXCEPTION 'Refusing to commit: the application role can still change rows of %.', ${quoteLiteral(name)};
+  END IF;`,
+  ).join("\n");
+  const anonymised = AUDIT_ANONYMISED_REQUEST_COLUMNS.map(quoteLiteral).join(", ");
+  return `DO $$
+DECLARE
+  offending text;
+BEGIN
+  SELECT string_agg(rolname, ', ' ORDER BY rolname) INTO offending
+    FROM pg_catalog.pg_roles
+    WHERE rolname IN (${migrator}, ${app}, ${retention})
+      AND (rolsuper OR rolcreaterole OR rolcreatedb OR rolreplication OR rolbypassrls);
+  IF offending IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to commit: % still holds a superuser-class attribute.', offending;
+  END IF;
+
+  IF pg_catalog.pg_has_role(${app}, ${migrator}, 'MEMBER')
+     OR pg_catalog.pg_has_role(${retention}, ${migrator}, 'MEMBER')
+     OR pg_catalog.pg_has_role(${retention}, ${app}, 'MEMBER') THEN
+    RAISE EXCEPTION 'Refusing to commit: the application or retention role can SET ROLE to a wider role.';
+  END IF;
+
+  IF pg_catalog.has_schema_privilege(${app}, ${quoteLiteral(APPLICATION_SCHEMA)}, 'CREATE')
+     OR pg_catalog.has_schema_privilege(${retention}, ${quoteLiteral(APPLICATION_SCHEMA)}, 'CREATE') THEN
+    RAISE EXCEPTION 'Refusing to commit: the application or retention role may create objects in schema %.', ${quoteLiteral(APPLICATION_SCHEMA)};
+  END IF;
+
+${appendOnlyChecks}
+
+  IF to_regclass(${auditRelation}) IS NOT NULL THEN
+    SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO offending
+      FROM pg_catalog.pg_class c
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = ${quoteLiteral(APPLICATION_SCHEMA)}
+        AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+        AND c.oid <> ${auditRelation}::regclass
+        AND (pg_catalog.has_table_privilege(${retention}, c.oid, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE')
+             OR pg_catalog.has_any_column_privilege(${retention}, c.oid, 'SELECT, INSERT, UPDATE'));
+    IF offending IS NOT NULL THEN
+      RAISE EXCEPTION 'Refusing to commit: the audit-retention role holds rights on %.', offending;
+    END IF;
+
+    IF pg_catalog.has_table_privilege(${retention}, ${auditRelation}, 'INSERT, UPDATE, TRUNCATE') THEN
+      RAISE EXCEPTION 'Refusing to commit: the audit-retention role may insert, truncate or update whole rows of %.', ${quoteLiteral(AUDIT_RETENTION_RELATION)};
+    END IF;
+
+    SELECT string_agg(a.attname, ', ' ORDER BY a.attname) INTO offending
+      FROM pg_catalog.pg_attribute a
+      WHERE a.attrelid = ${auditRelation}::regclass AND a.attnum > 0 AND NOT a.attisdropped
+        AND pg_catalog.has_column_privilege(${retention}, ${auditRelation}, a.attnum, 'UPDATE')
+        AND a.attname NOT IN (${anonymised});
+    IF offending IS NOT NULL THEN
+      RAISE EXCEPTION 'Refusing to commit: the audit-retention role may update audit columns %.', offending;
+    END IF;
+  END IF;
+END
+$$;`;
+}
+
+/**
+ * The ordered statement list, run in ONE transaction by the operator CLI. Every
+ * statement is safe to re-run; the order is load-bearing: roles exist and are
+ * pinned before anything is granted to them, ownership moves before the
+ * migration role's default privileges are declared, every role is stripped
+ * before it is granted back, and the re-check runs last.
+ *
+ * Refuses (throws) when two of the roles share a name: the separation IS the
+ * control, and one role in two slots would satisfy every statement below while
+ * delivering none of it.
+ */
+export function buildDatabaseRolesSql(input: DatabaseRolesProvisionInput): string[] {
+  const names = [input.migrator.roleName, input.app.roleName, input.auditRetention.roleName];
+  if (new Set(names.map((name) => name.toLowerCase())).size !== names.length) {
+    throw new Error(
+      "Refusing to build role SQL: the migration, application and audit-retention roles must be three different roles.",
+    );
+  }
+
+  const database = quoteIdentifier(input.databaseName);
+  const schema = quoteIdentifier(APPLICATION_SCHEMA);
+  const migrator = quoteIdentifier(input.migrator.roleName);
+  const app = quoteIdentifier(input.app.roleName);
+  const retention = quoteIdentifier(input.auditRetention.roleName);
+  const all = [input.migrator, input.app, input.auditRetention];
+
+  const statements: string[] = [];
+
+  // 1. Create each role if it is absent, then pin its attributes and password
+  //    whether it was just created or had drifted. Not a superuser, no role or
+  //    database creation, no replication, row-level security applies.
+  for (const credential of all) {
+    statements.push(
+      buildCreateLoginRoleIfAbsentSql(credential.roleName),
+      `ALTER ROLE ${quoteIdentifier(credential.roleName)} WITH ${ROLE_ATTRIBUTES} PASSWORD ${quoteLiteral(credential.password)};`,
+    );
+  }
+
+  // 2. Each role belongs to NO role. A member is one `SET ROLE` away from that
+  //    role's privileges, so an application role that was a member of the
+  //    migration role could rewrite the ledger through it.
+  for (const credential of all) {
+    statements.push(buildStripAllRoleMembershipsSql(credential.roleName));
+  }
+
+  // 3. Database and schema. CONNECT for all three; the migration role also gets
+  //    CREATE on the database (a migration's `CREATE EXTENSION` of a trusted
+  //    extension needs it) and USAGE, CREATE on the schema. Nothing is revoked
+  //    from PUBLIC.
+  for (const role of [migrator, app, retention]) {
+    statements.push(
+      `REVOKE ALL PRIVILEGES ON DATABASE ${database} FROM ${role};`,
+      `GRANT CONNECT ON DATABASE ${database} TO ${role};`,
+      `REVOKE ALL PRIVILEGES ON SCHEMA ${schema} FROM ${role};`,
+    );
+  }
+  statements.push(
+    `GRANT CREATE ON DATABASE ${database} TO ${migrator};`,
+    `GRANT USAGE, CREATE ON SCHEMA ${schema} TO ${migrator};`,
+    `GRANT USAGE ON SCHEMA ${schema} TO ${app};`,
+    `GRANT USAGE ON SCHEMA ${schema} TO ${retention};`,
+  );
+
+  // 4. The migration role owns the schema's objects, so `prisma migrate deploy`
+  //    can alter them without a superuser.
+  statements.push(buildOwnershipTransferSql(input.migrator.roleName));
+
+  // 5. Object privileges, declarative: strip the application and retention roles
+  //    (this also clears column grants), then grant back.
+  for (const role of [app, retention]) {
+    statements.push(
+      `REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${schema} FROM ${role};`,
+      `REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA ${schema} FROM ${role};`,
+      `REVOKE ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA ${schema} FROM ${role};`,
+    );
+  }
+  statements.push(
+    `GRANT ${APPLICATION_TABLE_PRIVILEGES} ON ALL TABLES IN SCHEMA ${schema} TO ${app};`,
+    `GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA ${schema} TO ${app};`,
+    buildRelationNarrowingSql(app, retention),
+  );
+
+  // 6. Default privileges: a table or sequence a FUTURE migration creates (as the
+  //    migration role) is usable by the application at once, with no
+  //    re-provisioning. Routines need nothing: PostgreSQL grants EXECUTE to
+  //    PUBLIC. Re-declared from scratch each run.
+  for (const role of [app, retention]) {
+    statements.push(
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator} IN SCHEMA ${schema} REVOKE ALL ON TABLES FROM ${role};`,
+      `ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator} IN SCHEMA ${schema} REVOKE ALL ON SEQUENCES FROM ${role};`,
+    );
+  }
+  statements.push(
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator} IN SCHEMA ${schema} GRANT ${APPLICATION_TABLE_PRIVILEGES} ON TABLES TO ${app};`,
+    `ALTER DEFAULT PRIVILEGES FOR ROLE ${migrator} IN SCHEMA ${schema} GRANT USAGE, SELECT ON SEQUENCES TO ${app};`,
+  );
+
+  // 7. Read the result back and refuse to commit a breach.
+  statements.push(
+    buildVerificationSql({
+      migrator: input.migrator.roleName,
+      app: input.app.roleName,
+      auditRetention: input.auditRetention.roleName,
+    }),
+  );
+
+  return statements;
+}

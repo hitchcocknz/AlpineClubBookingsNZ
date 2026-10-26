@@ -881,6 +881,70 @@ export function quoteLiteral(value: string): string {
 }
 
 /**
+ * Create a LOGIN role if it is absent. `DO` rather than `CREATE ROLE IF NOT
+ * EXISTS` because PostgreSQL has no such form, and a plain CREATE would make
+ * re-provisioning (the password-rotation path) fail.
+ *
+ * Exported since #4453 so the least-privilege application roles
+ * (`src/lib/database-roles.ts`) are created by the same statement as this one
+ * rather than a copy (`INV-SSOT`).
+ */
+export function buildCreateLoginRoleIfAbsentSql(roleName: string): string {
+  quoteIdentifier(roleName); // throws on a name the dollar-quoted body cannot carry
+  const roleLiteral = quoteLiteral(roleName);
+  return `DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = ${roleLiteral}) THEN
+    EXECUTE format('CREATE ROLE %I LOGIN', ${roleLiteral});
+  END IF;
+END
+$$;`;
+}
+
+/**
+ * Revoke every role membership `roleName` holds, one recorded grantor at a time,
+ * then re-read `pg_auth_members` and RAISE if any survived. The reasoning is at
+ * step 5 of `buildAiDiagnosticsRoleSql`, its first caller.
+ *
+ * Exported since #4453: the application and audit-retention roles must belong to
+ * no role either, because a member is one `SET ROLE` away from that role's
+ * privileges — an application role that is a member of the migration role could
+ * `SET ROLE` to it and rewrite the ledger.
+ */
+export function buildStripAllRoleMembershipsSql(roleName: string): string {
+  quoteIdentifier(roleName); // throws on a name the dollar-quoted body cannot carry
+  const roleLiteral = quoteLiteral(roleName);
+  return `DO $$
+DECLARE
+  membership record;
+  surviving text;
+BEGIN
+  FOR membership IN
+    SELECT granted.rolname AS granted_role, grantor.rolname AS grantor
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
+    JOIN pg_catalog.pg_roles member ON member.oid = m.member
+    JOIN pg_catalog.pg_roles grantor ON grantor.oid = m.grantor
+    WHERE member.rolname = ${roleLiteral}
+  LOOP
+    EXECUTE format('REVOKE %I FROM %I GRANTED BY %I', membership.granted_role, ${roleLiteral}, membership.grantor);
+  END LOOP;
+
+  SELECT string_agg(DISTINCT granted.rolname, ', ')
+    INTO surviving
+    FROM pg_catalog.pg_auth_members m
+    JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
+    JOIN pg_catalog.pg_roles member ON member.oid = m.member
+    WHERE member.rolname = ${roleLiteral};
+
+  IF surviving IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to provision %: it is still a member of % after revoking every recorded membership. Revoke it with the grantor that granted it, then re-run.', ${roleLiteral}, surviving;
+  END IF;
+END
+$$;`;
+}
+
+/**
  * The ordered, idempotent statement list that provisions the role. Every
  * statement is safe to re-run, and the ORDER is load-bearing: create/repair the
  * role, strip everything, then grant back only the declared allowlist, which
@@ -907,13 +971,7 @@ export function buildAiDiagnosticsRoleSql(
     // 1. Create the role if it is absent. `DO` rather than `CREATE ROLE IF NOT
     //    EXISTS` because PostgreSQL has no such form, and a plain CREATE would
     //    make re-provisioning (the password-rotation path) fail.
-    `DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = ${roleLiteral}) THEN
-    EXECUTE format('CREATE ROLE %I LOGIN', ${roleLiteral});
-  END IF;
-END
-$$;`,
+    buildCreateLoginRoleIfAbsentSql(input.roleName),
 
     // 2. Pin every role ATTRIBUTE, whether the role was just created or already
     //    existed with drifted attributes. This is the line that makes
@@ -1026,34 +1084,7 @@ $$;`);
   //    runtime. That case is documented in `deployment.md` as the one refusal
   //    re-provisioning cannot repair; the remedy is not to make the diagnostics role a
   //    database owner.
-  statements.push(`DO $$
-DECLARE
-  membership record;
-  surviving text;
-BEGIN
-  FOR membership IN
-    SELECT granted.rolname AS granted_role, grantor.rolname AS grantor
-    FROM pg_catalog.pg_auth_members m
-    JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
-    JOIN pg_catalog.pg_roles member ON member.oid = m.member
-    JOIN pg_catalog.pg_roles grantor ON grantor.oid = m.grantor
-    WHERE member.rolname = ${roleLiteral}
-  LOOP
-    EXECUTE format('REVOKE %I FROM %I GRANTED BY %I', membership.granted_role, ${roleLiteral}, membership.grantor);
-  END LOOP;
-
-  SELECT string_agg(DISTINCT granted.rolname, ', ')
-    INTO surviving
-    FROM pg_catalog.pg_auth_members m
-    JOIN pg_catalog.pg_roles granted ON granted.oid = m.roleid
-    JOIN pg_catalog.pg_roles member ON member.oid = m.member
-    WHERE member.rolname = ${roleLiteral};
-
-  IF surviving IS NOT NULL THEN
-    RAISE EXCEPTION 'Refusing to provision %: it is still a member of % after revoking every recorded membership. Revoke it with the grantor that granted it, then re-run.', ${roleLiteral}, surviving;
-  END IF;
-END
-$$;`);
+  statements.push(buildStripAllRoleMembershipsSql(input.roleName));
 
   // 6. Database-level privileges: CONNECT only. TEMP has to be revoked from
   //    PUBLIC to be denied to this role at all (see PUBLIC_TEMP_REVOKE_NOTE),
