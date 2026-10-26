@@ -1107,18 +1107,15 @@ jobs:
 
       # The pnpm version comes from `packageManager` in package.json (#3673).
       - name: Set up pnpm
-        if: steps.scope.outputs.needed != 'false'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Set up Node.js
-        if: steps.scope.outputs.needed != 'false'
         uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
-        if: steps.scope.outputs.needed != 'false'
         run: pnpm install --frozen-lockfile
 
       - name: Create shadow database
@@ -1126,14 +1123,12 @@ jobs:
         run: psql "$DATABASE_URL" -c "CREATE DATABASE drift_shadow"
 
       - name: Generate Prisma client
-        if: steps.scope.outputs.needed != 'false'
         run: pnpm run db:generate
 
       # #1881: never let the opt-in real-Postgres lock harness silently skip in
       # CI. It uses a separate loopback-only service/database and the harness's
       # high-port + dedicated-name guard remains enforced.
       - name: Resolve dedicated race database endpoint
-        if: steps.scope.outputs.needed != 'false'
         env:
           CONCURRENCY_RACE_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:${{ job.services.concurrency-race-postgres.ports[5432] }}/concurrency_race_1881
         run: |
@@ -1141,13 +1136,11 @@ jobs:
           printf 'CONCURRENCY_RACE_DATABASE_URL=%s\n' "$CONCURRENCY_RACE_DATABASE_URL" >> "$GITHUB_ENV"
 
       - name: Migrate dedicated advisory-lock race database
-        if: steps.scope.outputs.needed != 'false'
         env:
           DATABASE_URL: ${{ env.CONCURRENCY_RACE_DATABASE_URL }}
         run: pnpm exec prisma migrate deploy
 
       - name: Test advisory-lock race protocol against dedicated PostgreSQL
-        if: steps.scope.outputs.needed != 'false'
         env:
           RUN_CONCURRENCY_RACE_TESTS: "1"
         run: pnpm exec vitest run src/lib/__tests__/concurrency-lock-races.realdb.test.ts
@@ -1164,7 +1157,6 @@ jobs:
       # missing. Its describe carries a 120s per-test budget of its own, so no
       # --testTimeout override is needed here.
       - name: Test member-merge shared-double races against dedicated PostgreSQL
-        if: steps.scope.outputs.needed != 'false'
         env:
           RUN_CONCURRENCY_RACE_TESTS: "1"
         run: pnpm exec vitest run src/lib/__tests__/member-merge-shared-double-races.realdb.test.ts
@@ -1180,7 +1172,6 @@ jobs:
       # reach, which the census rightly disagrees with.
       # `booking-ledger-realdb-wiring.test.ts` fails if this step goes missing.
       - name: Back-post a seeded booking history and require the census gate
-        if: steps.scope.outputs.needed != 'false'
         run: bash scripts/booking-ledger-seed-gate.sh "${CONCURRENCY_RACE_DATABASE_URL}_ledger_history"
 
       # #3852: the page-content DELETE under a concurrent edit and a second delete.
@@ -1191,7 +1182,6 @@ jobs:
       # self-skips without the env vars, so this step MUST stay wired —
       # `review-findings-contracts.test.ts` fails if it goes missing.
       - name: Test page-content delete race against dedicated PostgreSQL
-        if: steps.scope.outputs.needed != 'false'
         env:
           RUN_CONCURRENCY_RACE_TESTS: "1"
         run: pnpm exec vitest run src/lib/__tests__/page-content-delete-race.realdb.test.ts
@@ -1208,7 +1198,6 @@ jobs:
       # describe.skip's itself without the env vars, so this step MUST stay wired —
       # `review-findings-contracts.test.ts` fails if it goes missing.
       - name: Prove the SELECT-only diagnostics role against dedicated PostgreSQL
-        if: steps.scope.outputs.needed != 'false'
         env:
           RUN_CONCURRENCY_RACE_TESTS: "1"
         run: pnpm exec vitest run src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts
@@ -1230,7 +1219,6 @@ jobs:
       # disposable-schema pattern as the step above; the suite describe.skip's
       # itself when the env var is absent, so this step MUST stay wired.
       - name: Test email override annotation strip against PostgreSQL
-        if: steps.scope.outputs.needed != 'false'
         env:
           EMAIL_OVERRIDE_ANNOTATION_STRIP_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
         run: pnpm exec vitest run src/lib/__tests__/email-message-annotation-strip.test.ts
@@ -1242,7 +1230,6 @@ jobs:
       # the steps above; the suite describe.skip's itself when the env var is
       # absent, so this step MUST stay wired.
       - name: Test the public Book Now default-off migration against PostgreSQL
-        if: steps.scope.outputs.needed != 'false'
         env:
           PUBLIC_BOOK_NOW_DEFAULT_OFF_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
         run: pnpm exec vitest run src/lib/__tests__/public-book-now-default-off-migration.test.ts
@@ -1253,7 +1240,6 @@ jobs:
       # Postgres. This step MUST stay wired — the suite describe.skip's itself
       # when the env var is absent, which is exactly how it went unrun before.
       - name: Test guarded BookingGuest stay-range triggers against PostgreSQL
-        if: steps.scope.outputs.needed != 'false'
         env:
           BOOKING_GUEST_RANGE_TRIGGER_TEST_DATABASE_URL: ${{ env.DATABASE_URL }}
         run: pnpm exec vitest run src/lib/__tests__/booking-guest-range-triggers.test.ts
@@ -1358,22 +1344,18 @@ jobs:
 
       # The pnpm version comes from `packageManager` in package.json (#3673).
       - name: Set up pnpm
-        if: steps.scope.outputs.needed != 'false'
         uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - name: Set up Node.js
-        if: steps.scope.outputs.needed != 'false'
         uses: actions/setup-node@v7.1.0
         with:
           node-version: 24
           cache: pnpm
 
       - name: Install dependencies
-        if: steps.scope.outputs.needed != 'false'
         run: pnpm install --frozen-lockfile
 
       - name: Generate Prisma client
-        if: steps.scope.outputs.needed != 'false'
         run: pnpm run db:generate
 
       - name: Verify data migrations against PostgreSQL
@@ -1394,7 +1376,6 @@ jobs:
         run: pnpm exec vitest run src/lib/__tests__/school-organisation-backfill-fail-closed.realdb.test.ts
 
       - name: Verify pending adult naming races and rollback
-        if: steps.scope.outputs.needed != 'false'
         env:
           DATA_MIGRATION_VERIFICATION_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55443/data_migration_verification
         run: pnpm exec vitest run src/lib/__tests__/school-pending-adult-resolution.realdb.test.ts

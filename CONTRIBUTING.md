@@ -366,8 +366,8 @@ the owner's checklist for rebuilding it.
 | Required check | Status | Job | What it gates |
 | --- | --- | --- | --- |
 | `verify` | applied | `ci.yml` → `verify` | knip, PR-body gates and the other cheap checks itself, then one fail-closed same-attempt poll of four independent full-suite test shards (#3431) and the `Typecheck`, `Lint` and `Production build` jobs (#4425; those three are not required contexts themselves). It no longer runs the dependency audit (#2946) |
-| `Migration drift check` | applied | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses. On a pull request that changes nothing in `CHANGE_SCOPES.migrations` (`scripts/ci/change-scope.mjs`), only its coverage checks run (#4425, a step-level skip) |
-| `Data migration verification` | applied | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state; skips like `Migration drift check` (#4425) |
+| `Migration drift check` | applied | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses. On a pull request that changes nothing in `CHANGE_SCOPES.migrations` (`scripts/ci/change-scope.mjs`), its migration-only steps skip (drift, partial indexes, two migration tests; a step-level skip, #4425). Every real-Postgres proof that imports app code still runs |
+| `Data migration verification` | applied | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state; its two migration-only proofs skip like `Migration drift check`, and the school naming races always run (#4425) |
 | `Static analysis gate` | applied | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
 | `Playwright E2E` | applied | `e2e.yml` → `playwright` | the browser suite: runs shard 1 and fails closed unless `E2E shard (2/3)`/`(3/3)` pass (#4397) |
 | `E2E multi-lodge` | applied | `e2e.yml` → `multi-lodge` | the multi-lodge browser suite (#4397: waits for the run's image and database in a step, never `needs:`) |

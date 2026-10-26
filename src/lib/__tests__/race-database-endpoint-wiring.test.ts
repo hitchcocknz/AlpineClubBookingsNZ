@@ -42,8 +42,7 @@ describe("dedicated CI race database endpoint (#4238)", () => {
       expect(step).toContain('RUN_CONCURRENCY_RACE_TESTS: "1"');
       expect(step).toContain("run: pnpm exec vitest run");
       expect(step).not.toContain("CONCURRENCY_RACE_DATABASE_URL:");
-      // #4425: the only condition is the change-scope skip, which runs on any classification error.
-      expect(step.match(/\n\s+if:.*/g) ?? []).toEqual(["\n        if: steps.scope.outputs.needed != 'false'"]);
+      expect(step).not.toMatch(/\n\s+if:/);
       expect(job.indexOf(name)).toBeGreaterThan(job.indexOf("Migrate dedicated advisory-lock race database"));
     }
     expect(stepBlock(job, "Back-post a seeded booking history and require the census gate")).toContain(

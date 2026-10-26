@@ -21,6 +21,11 @@ function cli(args, env) {
 }
 
 describe("change-scope: which pull requests can skip a required job's heavy steps (#4425)", () => {
+  it("runs whenever git had to quote a changed path (a quoted path can't be matched reliably)", () => {
+    expect(needed("migrations", ['"prisma/migrations/a\\"b/migration.sql"'])).toBe(true);
+    expect(needed("image", ['"Docker\\tfile"'])).toBe(true);
+  });
+
   it.each([
     [["prisma/schema.prisma"], true],
     [["prisma/migrations/20261026000000_x/migration.sql"], true],
@@ -96,13 +101,28 @@ describe("change-scope: which pull requests can skip a required job's heavy step
 // on an explicit `needed=false` - so a missing answer runs everything.
 describe("ci.yml's scoped required jobs", () => {
   const SKIP = "steps.scope.outputs.needed != 'false'";
+  // Only steps that read nothing but prisma/, the migrations and their own test
+  // files may skip. A real-Postgres proof that imports app code (the race
+  // harness, the diagnostics role, the back-post census, the school naming
+  // races) must run on every pull request: nothing else runs it before main
+  // (#4433 review).
+  const MIGRATION_ONLY_STEPS = new Set([
+    "Create shadow database",
+    "Test guarded Xero member-grouping migration against PostgreSQL",
+    "Test ManualRefundTask money constraints against PostgreSQL",
+    "Check migrations reproduce schema.prisma",
+    "Apply migrations to the drift database",
+    "Check partial indexes match the manifest",
+    "Verify data migrations against PostgreSQL",
+    "Prove the school backfill refuses an unclassified row",
+  ]);
   const JOBS = [
-    { id: "migration-drift", name: "Migration drift check", scope: "migrations" },
-    { id: "data-migration-verification", name: "Data migration verification", scope: "migrations" },
-    { id: "docker-image-security", name: "Image security gate (Trivy CRITICAL)", scope: "image" },
+    { id: "migration-drift", name: "Migration drift check", scope: "migrations", skippable: MIGRATION_ONLY_STEPS },
+    { id: "data-migration-verification", name: "Data migration verification", scope: "migrations", skippable: MIGRATION_ONLY_STEPS },
+    { id: "docker-image-security", name: "Image security gate (Trivy CRITICAL)", scope: "image", skippable: null },
   ];
 
-  it.each(JOBS)("$name has no needs/if and skips only after its scope step, only on needed=false", ({ id, name, scope }) => {
+  it.each(JOBS)("$name has no needs/if and skips only after its scope step, only on needed=false", ({ id, name, scope, skippable }) => {
     const job = workflow.jobs[id];
     expect(job.name).toBe(name);
     expect(job.needs).toBeUndefined();
@@ -117,9 +137,11 @@ describe("ci.yml's scoped required jobs", () => {
     const depth = Number(job.steps.find((step) => step.uses?.startsWith("actions/checkout"))?.with?.["fetch-depth"]);
     expect(depth === 0 || depth >= 2).toBe(true);
     job.steps.slice(0, at).forEach((step) => expect(step.if, step.name).toBeUndefined());
-    job.steps.slice(at + 1).forEach((step) => expect(step.if, step.name).toBe(SKIP));
+    job.steps.slice(at + 1).forEach((step) =>
+      expect(step.if, step.name).toBe(skippable === null || skippable.has(step.name) ? SKIP : undefined),
+    );
     // The heavy steps are still there to run.
-    expect(job.steps.slice(at + 1).length).toBeGreaterThan(3);
+    expect(job.steps.slice(at + 1).filter((step) => step.if === SKIP).length).toBeGreaterThan(skippable === null ? 3 : 1);
   });
 
   it("the Trivy CRITICAL gate itself still blocks whenever it runs", () => {

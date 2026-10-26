@@ -86,6 +86,10 @@ export function touchesAny(files, triggers, subject) {
   if (!Array.isArray(files) || files.length === 0) {
     return { needed: true, reason: `no changed-file list, so ${subject} run` };
   }
+  // Git quotes a path holding `"`, `\\`, a tab or a newline even with
+  // core.quotePath=false; a quoted path can't be matched reliably, so it runs.
+  const quoted = files.find((file) => file.startsWith('"'));
+  if (quoted !== undefined) return { needed: true, reason: `${quoted} is a quoted path, so ${subject} run` };
   const hit = files.find((file) => triggers.some((pattern) => pattern.test(file)));
   if (hit !== undefined) return { needed: true, reason: `${hit} can change ${subject}` };
   return { needed: false, reason: `none of the ${files.length} changed file(s) can change ${subject}` };
