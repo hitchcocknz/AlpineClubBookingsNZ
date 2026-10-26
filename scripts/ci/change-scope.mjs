@@ -43,6 +43,7 @@ export const CHANGE_SCOPES = {
       /^pnpm-workspace\.yaml$/,
       /^patches\//,
       /^vitest\.config\.mts$/,
+      /^tsconfig(?:\.[\w-]+)?\.json$/,
       /^vitest\.[\w-]+\.ts$/,
       /^src\/lib\/__tests__\/[^/]+\.realdb\.test\.ts$/,
       /^src\/lib\/__tests__\/(?:helpers|support)\//,

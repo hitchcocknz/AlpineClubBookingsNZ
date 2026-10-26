@@ -3,17 +3,20 @@ import { pathToFileURL } from "node:url";
 
 import { escapeRegex } from "./escape-regex.mjs";
 
-// #3431: this is the sole required-check bridge for an independent matrix.
-// `verify` runs it bare for the unit-test shards; `e2e.yml`'s required jobs
-// run it with `--label`/`--count` for theirs (#4397). The workflow contract
-// tests (require-test-shards.test.mjs) check that these names match each
-// matrix in both workflows.
+// #3431: this is the sole required-check bridge for independent jobs.
+// `verify` runs it with the unit-test shard defaults and, since #4425, names
+// its typecheck, lint and build jobs with `--require`, so one poll gates all
+// of them; `e2e.yml`'s required jobs run it with `--label`/`--count` for their
+// matrix (#4397). The workflow contract tests (require-test-shards.test.mjs)
+// check that these names match the jobs in both workflows.
 export const EXPECTED_SHARD_COUNT = 4;
 export const DEFAULT_SHARD_LABEL = "Test shard";
 const POLL_INTERVAL_MS = 15_000;
 const MAX_WAIT_MS = 45 * 60_000;
 
-/** A GitHub job name as `--upstream` accepts it. */
+const PENDING_STATUSES = ["queued", "in_progress", "waiting", "pending", "requested"];
+
+/** A GitHub job name as `--upstream` and `--require` accept it. */
 export const UPSTREAM_JOB_NAME = /^[A-Za-z][\w -]*$/;
 
 /** `--max-wait-minutes`, shared by both waiting gates. */
@@ -36,6 +39,31 @@ export function assertUpstreamSucceeded(jobs, upstream) {
       throw new Error(`Upstream job "${name}" completed as ${job.conclusion ?? "unknown"}`);
     }
   }
+}
+
+/**
+ * #4425: single jobs a gate requires by exact name (`--require`). Each must
+ * appear exactly once and succeed; missing or still running is pending, and
+ * any other completed conclusion, a skip included, fails at once.
+ */
+export function classifyRequiredJobs(jobs, required = []) {
+  if (!Array.isArray(jobs)) throw new Error("GitHub returned no jobs array");
+  const pending = [];
+  for (const name of required) {
+    const matches = jobs.filter((job) => job?.name === name);
+    if (matches.length > 1) throw new Error(`Duplicate required job: ${name}`);
+    const [job] = matches;
+    if (!job) {
+      pending.push(`missing "${name}"`);
+    } else if (job.status === "completed") {
+      if (job.conclusion !== "success") throw new Error(`Required job "${name}" completed as ${job.conclusion ?? "unknown"}`);
+    } else if (PENDING_STATUSES.includes(job.status)) {
+      pending.push(`"${name}" ${job.status}`);
+    } else {
+      throw new Error(`Required job "${name}" has unknown status ${job.status ?? "missing"}`);
+    }
+  }
+  return pending;
 }
 
 export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label = DEFAULT_SHARD_LABEL, upstream = [], from = 1) {
@@ -71,7 +99,7 @@ export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label 
       if (job.conclusion !== "success") {
         throw new Error(`${label} ${index}/${count} completed as ${job.conclusion ?? "unknown"}`);
       }
-    } else if (["queued", "in_progress", "waiting", "pending", "requested"].includes(job.status)) {
+    } else if (PENDING_STATUSES.includes(job.status)) {
       pending.push(`${index}/${count} ${job.status}`);
     } else {
       throw new Error(`${label} ${index}/${count} has unknown status ${job.status ?? "missing"}`);
@@ -127,6 +155,7 @@ export async function requireTestShards({
   label = DEFAULT_SHARD_LABEL,
   upstream = [],
   from = 1,
+  required = [],
   now = () => performance.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   maxWaitMs = MAX_WAIT_MS,
@@ -134,7 +163,8 @@ export async function requireTestShards({
 }) {
   const start = now();
   while (true) {
-    const pending = classifyTestShardJobs(await loadJobs(), count, label, upstream, from);
+    const jobs = await loadJobs();
+    const pending = [...classifyTestShardJobs(jobs, count, label, upstream, from), ...classifyRequiredJobs(jobs, required)];
     if (pending.length === 0) return;
     if (now() - start >= maxWaitMs) {
       throw new Error(`Timed out waiting for ${label} jobs: ${pending.join(", ")}`);
@@ -143,9 +173,9 @@ export async function requireTestShards({
   }
 }
 
-/** `--label <job name prefix>`, `--count <n>`, `--max-wait-minutes <n>` and repeatable `--upstream <job name>`; bare, the unit-test defaults. */
+/** `--label <job name prefix>`, `--count <n>`, `--from <n>`, `--max-wait-minutes <n>`, and repeatable `--upstream <job name>` and `--require <job name>`; bare, the unit-test defaults. */
 export function parseShardGateArgs(argv) {
-  const options = { label: DEFAULT_SHARD_LABEL, count: EXPECTED_SHARD_COUNT, maxWaitMs: MAX_WAIT_MS, upstream: [], from: 1 };
+  const options = { label: DEFAULT_SHARD_LABEL, count: EXPECTED_SHARD_COUNT, maxWaitMs: MAX_WAIT_MS, upstream: [], from: 1, required: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -163,6 +193,10 @@ export function parseShardGateArgs(argv) {
     } else if (flag === "--upstream") {
       if (!UPSTREAM_JOB_NAME.test(value)) throw new Error(`Invalid --upstream: ${value}`);
       options.upstream.push(value);
+    } else if (flag === "--require") {
+      if (!UPSTREAM_JOB_NAME.test(value)) throw new Error(`Invalid --require: ${value}`);
+      if (options.required.includes(value)) throw new Error(`Duplicate --require: ${value}`);
+      options.required.push(value);
     } else if (flag === "--max-wait-minutes") {
       options.maxWaitMs = parseMaxWaitMinutes(value);
     } else {
@@ -188,7 +222,8 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
         token: process.env.GITHUB_TOKEN,
       }),
     });
-    console.log(`All ${options.count} "${label}" jobs passed in this run attempt.`);
+    const also = options.required.length > 0 ? `, and ${options.required.map((name) => `"${name}"`).join(", ")},` : "";
+    console.log(`All ${options.count - options.from + 1} "${label}" jobs${also} passed in this run attempt.`);
   } catch (error) {
     console.error(`::error::Shard gate for "${label}" failed: ${error.message}`);
     process.exitCode = 1;
