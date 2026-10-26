@@ -523,8 +523,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1344",
-  "src/lib/payment-recovery.ts:2600",
-  "src/lib/payment-recovery.ts:2652",
+  "src/lib/payment-recovery.ts:2605",
+  "src/lib/payment-recovery.ts:2657",
   "src/lib/xero-admin-health.ts:394",
 ];
 
@@ -793,7 +793,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `organisation`.
   "src/lib/booking-owner-name.ts:12",
   "src/lib/cron-additional-payment-reminders.ts:441",
-  "src/lib/cron-confirm-pending.ts:205",
+  "src/lib/cron-confirm-pending.ts:189",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep
   // it in budget. Verified by hand: written through
@@ -809,7 +809,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // build. The walk cannot root it only because the literal names no delegate.
   "src/lib/member-lodge-roster.ts:112",
   "src/lib/payment-link.ts:81",
-  "src/lib/payment-reconciliation.ts:105",
+  "src/lib/payment-reconciliation.ts:106",
   "src/lib/stuck-state-dashboard.ts:620",
   "src/lib/xero-booking-repair-types.ts:230",
   "src/lib/xero-inbound/settlement-conflicts.ts:155",

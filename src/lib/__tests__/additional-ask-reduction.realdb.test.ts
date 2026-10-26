@@ -1707,7 +1707,9 @@ let webhookClient: PrismaClient;
       expect((await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } })).status).toBe("SUCCEEDED");
     });
 
-    it("#4036: a refused replay adopts the intent a pre-#4036 runner's lost reply minted under the key with its old reason", async () => {
+    // #4079: only the pre-#4036 runner sent its own reason under a door's key,
+    // and no row of its remains, so such an intent is no longer adopted.
+    it("#4079: a refused replay does not adopt an intent minted under the key with the pre-#4036 runner's reason - it fails closed and retries", async () => {
       await grownBooking("card", 1_000, 100, "minted", "primary-before-increase");
       const increase = await ordinaryIncrease(1_000);
       const stripe = fakeStripe();
@@ -1728,9 +1730,12 @@ let webhookClient: PrismaClient;
         where: { idempotencyKey: buildAdditionalIntentRecoveryIdempotencyKey(increase.id) },
       });
       const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
-      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+      expect(await runPaymentRecoveryOperationNow(recovery.id, CLUB_FORMAT_TEST)).toBe("failed");
       expect(stripe.intents.size).toBe(1);
-      expect((await liveAsks()).map((row) => row.stripePaymentIntentId)).toEqual([oldRunnerIntent.id]);
+      expect((await liveAsks()).map((row) => row.stripePaymentIntentId)).not.toContain(oldRunnerIntent.id);
+      const after = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: recovery.id } });
+      expect(after).toMatchObject({ status: "FAILED", attempts: 1 });
+      expect(after.nextRetryAt).not.toBeNull();
     });
 
     it("#4036: a refused replay that matches two unrecorded intents fails closed - nothing is recorded and the recovery stays open to retry", async () => {

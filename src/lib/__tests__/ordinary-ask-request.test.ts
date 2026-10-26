@@ -6,6 +6,7 @@ import {
   ORDINARY_ASK_RECOVERY_REASON,
   couldRecoveryRowOwnIntent,
   isIntentForOrdinaryAskPlan,
+  latestAdoptableIntentCreatedAt,
   ordinaryAskDoorRequest,
   ordinaryAskReasonForStripeKey,
   planOrdinaryAskMint,
@@ -131,16 +132,8 @@ describe("isIntentForOrdinaryAskPlan (#4036)", () => {
     metadata: { bookingId: BOOKING, type: ADDITIONAL_ASK_INTENT_TYPE, reason: "guest_add_price_increase" },
   };
 
-  it("matches the door's intent, and one a pre-#4036 runner minted under its old reason", () => {
+  it("matches the door's intent", () => {
     expect(isIntentForOrdinaryAskPlan(minted, plan, "nzd", ROW_AT)).toBe(true);
-    expect(
-      isIntentForOrdinaryAskPlan(
-        { ...minted, metadata: { ...minted.metadata, reason: ORDINARY_ASK_RECOVERY_REASON } },
-        plan,
-        "nzd",
-        ROW_AT,
-      ),
-    ).toBe(true);
   });
 
   it.each([
@@ -163,9 +156,27 @@ describe("isIntentForOrdinaryAskPlan (#4036)", () => {
     expect(isIntentForOrdinaryAskPlan({ ...minted, created: undefined }, plan, "nzd", ROW_AT)).toBe(false);
   });
 
-  it("an old-runner intent is minted after the row by design and is not held to it", () => {
-    const oldRunner = { ...minted, created: atRow + 3_600, metadata: { ...minted.metadata, reason: ORDINARY_ASK_RECOVERY_REASON } };
-    expect(isIntentForOrdinaryAskPlan(oldRunner, plan, "nzd", ROW_AT)).toBe(true);
+  it("#4079 - an intent under the runner's own reason is never adopted, before the row or after it", () => {
+    const runnerReason = { ...minted.metadata, reason: ORDINARY_ASK_RECOVERY_REASON };
+    expect(isIntentForOrdinaryAskPlan({ ...minted, metadata: runnerReason }, plan, "nzd", ROW_AT)).toBe(false);
+    expect(isIntentForOrdinaryAskPlan({ ...minted, created: atRow + 3_600, metadata: runnerReason }, plan, "nzd", ROW_AT)).toBe(false);
+  });
+
+  it("MUTATION: #4079 - nor by a plan whose key names no door, though that plan sends the runner's reason", () => {
+    const noDoor = planOrdinaryAskMint({
+      bookingId: BOOKING,
+      bookingModificationId: EDIT,
+      stripeKey: "pi_written_earlier",
+      frozenAmountCents: 6_000,
+      amountCents: 6_000,
+    });
+    expect(noDoor.metadata.reason).toBe(ORDINARY_ASK_RECOVERY_REASON);
+    const runnerReason = { ...minted.metadata, reason: ORDINARY_ASK_RECOVERY_REASON };
+    expect(isIntentForOrdinaryAskPlan({ ...minted, metadata: runnerReason }, noDoor, "nzd", ROW_AT)).toBe(false);
+  });
+
+  it("the adoptable bound is the row's creation plus the clock skew", () => {
+    expect(latestAdoptableIntentCreatedAt(ROW_AT)).toEqual(new Date(ROW_AT.getTime() + DOOR_INTENT_CLOCK_SKEW_MS));
   });
 });
 
@@ -192,7 +203,6 @@ describe("couldRecoveryRowOwnIntent (#4036 review)", () => {
 
   it.each([
     ["the same door's reason and amount", otherRow(), match("guest_add_price_increase")],
-    ["the old runner's reason, from any door", otherRow({ paymentIntentId: ordinaryAskDoorRequest("dateChange", BOOKING, OTHER).idempotencyKey }), match(ORDINARY_ASK_RECOVERY_REASON)],
     ["a row naming the intent itself", otherRow({ amountCents: 1 }), match("guest_add_price_increase", { id: otherRow().paymentIntentId })],
     ["a row whose key names no door (any reason)", otherRow({ paymentIntentId: "pi_written_earlier" }), match("date_change_price_increase")],
   ])("a rival: %s", (_label, row, intent) => {
@@ -202,6 +212,8 @@ describe("couldRecoveryRowOwnIntent (#4036 review)", () => {
   it.each([
     ["another amount", otherRow({ amountCents: 4_000 }), match("guest_add_price_increase")],
     ["another door's reason", otherRow({ paymentIntentId: ordinaryAskDoorRequest("dateChange", BOOKING, OTHER).idempotencyKey }), match("guest_add_price_increase")],
+    // #4079: no door's row replays under the pre-#4036 runner's reason any more.
+    ["the old runner's reason, against a door's row", otherRow({ paymentIntentId: ordinaryAskDoorRequest("dateChange", BOOKING, OTHER).idempotencyKey }), match(ORDINARY_ASK_RECOVERY_REASON)],
     ["a review charge's row", otherRow({ idempotencyKey: `edit_financial_review_additional_intent_recovery_${OTHER}` }), match(ORDINARY_ASK_RECOVERY_REASON)],
     ["a re-issue's row", otherRow({ paymentIntentId: `mod_reissued_ask_${OTHER}` }), match(ORDINARY_ASK_RECOVERY_REASON)],
   ])("not a rival: %s", (_label, row, intent) => {

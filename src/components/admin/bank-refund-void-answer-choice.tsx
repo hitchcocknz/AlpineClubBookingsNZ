@@ -5,6 +5,7 @@ import { useId } from "react";
 import {
   BANK_REFUND_VOID_ANSWER_COPY,
   BANK_REFUND_VOID_ANSWERS,
+  EXAMPLE_CREDIT_NOTE_NUMBER,
   HAND_MADE_CREDIT_NOTE_NUMBER_MAX,
   type BankRefundVoidAnswer,
 } from "@/lib/bank-refund-void-follow-up-copy";
@@ -65,7 +66,7 @@ export function BankRefundVoidAnswerChoice({
             value={creditNoteNumber}
             maxLength={HAND_MADE_CREDIT_NOTE_NUMBER_MAX}
             disabled={disabled}
-            placeholder="e.g. CN-0123"
+            placeholder={`e.g. ${EXAMPLE_CREDIT_NOTE_NUMBER}`}
             onChange={(event) => onCreditNoteNumber(event.target.value)}
           />
         </div>
