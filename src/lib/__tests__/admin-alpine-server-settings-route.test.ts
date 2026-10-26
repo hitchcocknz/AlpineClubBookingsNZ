@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   stored: { baseUrl: "https://old.example.invalid", otherLodgesEnabled: true, apiKey: "old-key", serverVersion: "2.1", otherLodgesOwnedNames: ["Old lodge"] } as Record<string, unknown>,
   transaction: vi.fn(),
   invalidateProviderCredentialCache: vi.fn(),
+  removedBy: undefined as unknown,
 }));
 vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
 vi.mock("@/lib/session-guards", async () => ({
@@ -20,7 +21,10 @@ vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.createAuditLog }));
 vi.mock("@/lib/prisma", () => ({ prisma: { $transaction: mocks.transaction } }));
 vi.mock("@/lib/integration-credentials", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/integration-credentials")),
-  deleteIntegrationCredentialInTransaction: async ({ tx }: { tx: { removeKey: () => void } }) => tx.removeKey(),
+  deleteIntegrationCredentialInTransaction: async ({ tx, actor }: { tx: { removeKey: () => void }; actor: unknown }) => {
+    mocks.removedBy = actor;
+    tx.removeKey();
+  },
 }));
 
 import { POST } from "@/app/api/admin/alpine-server/settings/route";
@@ -38,6 +42,7 @@ beforeEach(() => {
   mocks.failDelete = false;
   mocks.failReset = false;
   mocks.locked = false;
+  mocks.removedBy = undefined;
   mocks.stored = { baseUrl: "https://old.example.invalid", otherLodgesEnabled: true, apiKey: "old-key", serverVersion: "2.1", otherLodgesOwnedNames: ["Old lodge"] };
   mocks.transaction.mockImplementation(async (work) => {
     const staged = structuredClone(mocks.stored);
@@ -74,6 +79,10 @@ describe("central-server settings replacement (#4436)", () => {
     expect(mocks.transaction).toHaveBeenCalledTimes(1);
     expect(mocks.stored).toMatchObject({ baseUrl: "https://new.example.invalid", apiKey: null, serverVersion: null, otherLodgesOwnedNamesAt: null, serverVersionCheckedAt: null });
     expect(mocks.stored.otherLodgesOwnedNames).not.toEqual(["Old lodge"]);
+    // The route names the acting admin once; the helper forwards that actor to
+    // the key removal and records its member as the row's editor (#2723).
+    expect(mocks.removedBy).toEqual({ kind: "admin", memberId: "admin-4436" });
+    expect(mocks.stored.updatedByMemberId).toBe("admin-4436");
   });
 
   it.each(["failDelete", "failReset"] as const)("rolls the address and key back when %s", async (failure) => {

@@ -164,22 +164,27 @@ export async function clearServerNzApiKey(
  * old key. An unchanged address (or a flag-only save) keeps both. The caller
  * has already checked who may move the address and validated it; no HTTP and
  * no audit row here — the settings route audits after commit.
+ *
+ * The actor is the caller's to supply and is REQUIRED (#2723), like every
+ * credential wrapper's: this helper forwards it to the key removal and records
+ * its member as the settings row's editor. Only an administrator moves the
+ * address, so the type admits the admin actor alone.
  */
 export async function saveServerNzConnectionSettings(
   input: { baseUrl?: string | null; otherLodgesEnabled?: boolean },
-  memberId: string,
+  actor: Extract<CredentialActor, { kind: "admin" }>,
 ): Promise<{ settings: ServerNzSettingsValues; apiKeyCleared: boolean }> {
   return withServerNzConnectionTransaction(async (tx) => {
     const before = await loadServerNzSettings(tx);
     const settings = await updateServerNzSettings({
       baseUrl: input.baseUrl,
       otherLodgesEnabled: input.otherLodgesEnabled,
-      updatedByMemberId: memberId,
+      updatedByMemberId: actor.memberId,
     }, tx);
     // A destination and its credential must never become visible separately.
     const apiKeyCleared = input.baseUrl !== undefined && before.baseUrl !== settings.baseUrl;
     if (apiKeyCleared) {
-      await clearServerNzApiKey({ kind: "admin", memberId }, tx);
+      await clearServerNzApiKey(actor, tx);
     }
     return { settings, apiKeyCleared };
   });

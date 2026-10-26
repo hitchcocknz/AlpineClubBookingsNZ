@@ -225,7 +225,7 @@ const ACTOR_FORWARDED_SITES: Record<string, string> = {
   "src/lib/mirotalk-config-write.ts::setMirotalkSecret#0":
     "the actor and the expectation are both this helper's own required parameters, supplied by the admin route that holds the acting member and the version the screen was shown",
   "src/lib/servernz-config.ts::clearServerNzApiKey#0":
-    "the actor is this helper's own required parameter, supplied by its caller",
+    "the actor is this helper's own required parameter, forwarded from saveServerNzConnectionSettings's own required admin actor, which the settings route builds from the acting member (#4436)",
   "src/lib/servernz-config.ts::setServerNzApiKey.saved#0":
     "the actor is this helper's own required parameter, supplied by its caller",
   "src/lib/stripe-config.ts::clearStripeWebhookVerified#0":

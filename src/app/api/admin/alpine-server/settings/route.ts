@@ -83,7 +83,7 @@ export async function POST(request: Request) {
       baseUrl: parsed.data.baseUrl,
       otherLodgesEnabled: parsed.data.otherLodgesEnabled,
     },
-    guard.session.user.id,
+    { kind: "admin", memberId: guard.session.user.id },
   );
 
   await createAuditLog({

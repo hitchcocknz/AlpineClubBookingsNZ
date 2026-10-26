@@ -66,7 +66,7 @@ function latch() {
       return value;
     });
     try {
-      return await config.saveServerNzConnectionSettings({ baseUrl: NEW_URL }, ACTOR_ID);
+      return await config.saveServerNzConnectionSettings({ baseUrl: NEW_URL }, { kind: "admin", memberId: ACTOR_ID });
     } finally {
       update.mockRestore();
     }
