@@ -31,10 +31,11 @@ const mocks = vi.hoisted(() => {
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prisma }));
 
 import { encryptCredential, INTEGRATION_CREDENTIAL_LABEL } from "@/lib/integration-crypto";
-import type { CredentialActor } from "@/lib/integration-credential-actor";
+import { credentialVersionOf, type CredentialActor } from "@/lib/integration-credential-actor";
 import {
   CACHE_TTL_MS,
   getIntegrationsNeedingReentry,
+  readIntegrationCredentialVersion,
   resetIntegrationCredentialCacheForTests,
   resolveIntegrationCredential,
   setIntegrationCredential,
@@ -197,5 +198,37 @@ describe("integration-credentials: state + source-flip + re-entry", () => {
     expect(await getIntegrationsNeedingReentry(["xero", "stripe"])).toEqual([
       "xero",
     ]);
+  });
+});
+
+describe("integration-credentials: uncached version re-read (#4366)", () => {
+  it("reads the version through the caller's client, uncached and never decrypted", async () => {
+    const row = storedRow("servernz", "api_key", "key-a");
+    mocks.tx.integrationCredential.findUnique.mockResolvedValue(row);
+    process.env.AUTH_SECRET = OTHER_STRONG_SECRET; // undecryptable: still versioned
+
+    await expect(
+      readIntegrationCredentialVersion(mocks.tx as never, "servernz", "api_key"),
+    ).resolves.toBe(credentialVersionOf(row));
+    expect(mocks.tx.integrationCredential.findUnique).toHaveBeenCalledWith({
+      where: { provider_key: { provider: "servernz", key: "api_key" } },
+      select: { ciphertext: true, iv: true, authTag: true },
+    });
+    expect(mocks.prisma.integrationCredential.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("moves when the same value is saved again, and is null with no row", async () => {
+    const first = storedRow("servernz", "api_key", "key-a");
+    const again = storedRow("servernz", "api_key", "key-a");
+    mocks.tx.integrationCredential.findUnique.mockResolvedValueOnce(first).mockResolvedValueOnce(again);
+
+    const a1 = await readIntegrationCredentialVersion(mocks.tx as never, "servernz", "api_key");
+    const a2 = await readIntegrationCredentialVersion(mocks.tx as never, "servernz", "api_key");
+    expect(a1).not.toBe(a2);
+
+    mocks.tx.integrationCredential.findUnique.mockResolvedValueOnce(null);
+    await expect(
+      readIntegrationCredentialVersion(mocks.tx as never, "servernz", "api_key"),
+    ).resolves.toBeNull();
   });
 });
