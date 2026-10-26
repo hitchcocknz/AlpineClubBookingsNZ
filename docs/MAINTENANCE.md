@@ -2430,7 +2430,7 @@ resolved before this release can still be retried.
 
 A Xero call already under way can still succeed after you resolve (#4374,
 `INV-INT-029`): two attempts can share one operation, and one may answer late.
-The operation then shows as succeeded, stays marked resolved, and the finance
+The operation then shows as succeeded (marked resolved when the alert was sent), and the finance
 contacts get one **Xero Sync Error** email for it
 (`XERO_SUCCESS_AFTER_RESOLUTION`) naming what the app recorded in Xero. If you
 also made that document by hand, Xero now holds it twice: void the duplicate

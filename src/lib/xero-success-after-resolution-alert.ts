@@ -57,7 +57,7 @@ export function successAfterResolutionAlert(
         return sendAdminXeroSyncErrorAlert({
           errorType: "XERO_SUCCESS_AFTER_RESOLUTION",
           operation: `${operation.operationType} ${operation.entityType} for ${operation.localModel ?? "record"} ${operation.localId ?? "unknown"} (outbox operation ${operation.id})`,
-          errorMessage: `This Xero operation was marked "${resolutionLabel(operation.manuallyResolvedReason)}", and then another attempt at the same Xero call succeeded: it recorded ${recorded} in Xero. If the item was also made by hand in Xero, Xero now holds it twice. Check Xero and void the duplicate. The operation now shows as succeeded and stays marked resolved.`,
+          errorMessage: `This Xero operation was marked "${resolutionLabel(operation.manuallyResolvedReason)}", and then another attempt at the same Xero call succeeded: it recorded ${recorded} in Xero. If the item was also made by hand in Xero, Xero now holds it twice. Check Xero and void the duplicate. The operation now shows as succeeded; it was marked resolved when this alert was sent.`,
           timestamp: new Date(),
         });
       },
