@@ -7,6 +7,8 @@
 
   Each answer is now recorded only if the address and the saved key it was
   sent with are still the ones stored. Otherwise it is dropped, and the next
-  check asks the current server. An in-flight sync rechecks the current
-  connection once before sending anything; if the connection changes again,
-  retry the sync. You do not need to change any settings.
+  check asks the current server. An in-flight sync rechecks the current key
+  once at the same address before sending anything. If the address changes
+  or the recheck is dropped again, retry the sync; no old key is forwarded
+  to the replacement address by the inline retry. You do not need to change
+  any settings.
