@@ -421,6 +421,8 @@ export async function writeReissuedAskUnderRecovery<T>(
   now: Date = new Date(),
 ): Promise<T | null> {
   return prisma.$transaction(async (tx) => {
+    // #4442: exclude capture/settlement before taking the Payment row.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     // #4217 (`INV-LOCK-002`): the Payment row before the recovery row.
     await lockPaymentForRefundedTotal(tx, recovery.paymentId);
     const completed = await tx.paymentRecoveryOperation.updateMany({

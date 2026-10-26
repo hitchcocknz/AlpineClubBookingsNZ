@@ -162,6 +162,9 @@ class AdditionalAskValue {
    */
   readonly #carriedCents: number;
 
+  /** Live balance observed when sizing, distinct from folded waiting re-issues. */
+  readonly #paymentBalanceCents: number | null;
+
   /**
    * #3954: this ask RE-ISSUES, smaller, an unpaid ask a price reduction retired
    * (`reissueUnpaidAdditionalAsk`). The member's card was already asked for it,
@@ -170,10 +173,15 @@ class AdditionalAskValue {
    */
   readonly #reissuesUnpaidAsk: boolean;
 
-  constructor(params: { ownCents: number; carriedCents: number; reissuesUnpaidAsk?: boolean }) {
+  constructor(params: { ownCents: number; carriedCents: number; reissuesUnpaidAsk?: boolean; paymentBalanceCents?: number }) {
     this.amountCents = params.ownCents + params.carriedCents;
+    this.#paymentBalanceCents = params.paymentBalanceCents ?? null;
     this.#carriedCents = params.carriedCents;
     this.#reissuesUnpaidAsk = params.reissuesUnpaidAsk ?? false;
+  }
+
+  get paymentBalanceCents(): number | null {
+    return this.#paymentBalanceCents;
   }
 
   get carriedCents(): number {
@@ -197,6 +205,7 @@ function buildAdditionalAsk(params: {
   ownCents: number;
   carriedCents: number;
   reissuesUnpaidAsk?: boolean;
+  paymentBalanceCents?: number;
 }): AdditionalAsk {
   return new AdditionalAskValue(params);
 }
@@ -247,6 +256,7 @@ export function sizeAdditionalAsk({
   return buildAdditionalAsk({
     ownCents: priceDiffCents + changeFeeCents,
     carriedCents: outstandingAdditionalAskCents(payment) + Math.max(0, waitingReissuedAskCents),
+    paymentBalanceCents: outstandingAdditionalAskCents(payment),
   });
 }
 
@@ -280,6 +290,7 @@ export function sizeReviewChargeAsk({
   return buildAdditionalAsk({
     ownCents: shareTotalCents,
     carriedCents: outstandingAdditionalAskCents(payment),
+    paymentBalanceCents: outstandingAdditionalAskCents(payment),
   });
 }
 
@@ -334,6 +345,7 @@ export function restateAdditionalAsk(request: {
   return buildAdditionalAsk({
     ownCents: request.amountCents - request.carriedAskCents,
     carriedCents: request.carriedAskCents,
+    paymentBalanceCents: request.amountCents,
   });
 }
 
@@ -448,14 +460,17 @@ export function reductionLeftAfterUnpaidAskCents({
  */
 export function reissueUnpaidAdditionalAsk({
   askLeftCents,
+  payment,
 }: {
   askLeftCents: number;
+  payment?: AdditionalAskPayment | null;
 }): AdditionalAsk {
   if (askLeftCents <= 0) return NO_ADDITIONAL_ASK;
   return buildAdditionalAsk({
     ownCents: 0,
     carriedCents: askLeftCents,
     reissuesUnpaidAsk: true,
+    ...(payment !== undefined ? { paymentBalanceCents: outstandingAdditionalAskCents(payment) } : {}),
   });
 }
 

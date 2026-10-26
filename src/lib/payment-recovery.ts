@@ -1,3 +1,4 @@
+import { assertAdditionalAskSizingCurrent } from "@/lib/additional-ask-queue-transaction";
 import {
   PaymentSource,
   PaymentRecoveryOperationStatus,
@@ -2383,6 +2384,8 @@ async function holdAdditionalIntentRecoveryClaim<T>(
   write: (store: Prisma.TransactionClient) => Promise<T>,
 ): Promise<{ value: T; heldAt: Date } | null> {
   return prisma.$transaction(async (tx) => {
+    // #4442: exclude capture/settlement before taking the Payment row.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
     // #4217 (`INV-LOCK-002`): the Payment row before the recovery row, as a reduction netting this ask off takes them.
     await lockPaymentForRefundedTotal(tx, operation.paymentId);
     const heldAt = new Date();
@@ -2899,6 +2902,7 @@ async function processCreateAdditionalPaymentIntentOperation(
   const { queueSupersededAdditionalIntentCancellationRows, cancelSupersededAdditionalIntentsNow } =
     await import("@/lib/booking-payment-cleanup");
   const held = await holdAdditionalIntentRecoveryClaim(operation, async (store) => {
+    if (replay.kind !== "frozen") await assertAdditionalAskSizingCurrent(store, operation.paymentId, replay.ask);
     // #4036 review: an adopted intent another ask recorded meanwhile is never written over.
     await refuseAdoptedIntentOnLedger(store, { intent: pi, adopted });
     await upsertPaymentIntentTransaction({
