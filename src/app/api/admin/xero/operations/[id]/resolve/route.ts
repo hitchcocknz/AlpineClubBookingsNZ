@@ -6,7 +6,6 @@ import { requireAdmin } from "@/lib/session-guards";
 import logger from "@/lib/logger";
 import { isResolvedInXero } from "@/lib/xero-operation-resolution";
 import { isAppliedCreditLedgerOperation } from "@/lib/xero-applied-credit-operation-serialization";
-import { HAND_MADE_CREDIT_NOTE_NUMBER_MAX } from "@/lib/bank-refund-void-follow-up-copy";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { reconcileHandMadeNoteAfterRecording, type VerifiedHandMadeRefundNote } from "@/lib/bank-refund-void-answer";
@@ -18,12 +17,13 @@ import {
 } from "@/lib/xero-resolve-refund-note";
 import {
   alreadyResolvedWithNoteMessage,
+  HAND_MADE_CREDIT_NOTE_NUMBER_MAX,
   RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE,
   RESOLVE_NOTE_NOT_ASKED_MESSAGE,
   RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE,
   RESOLVE_REASON_MAX,
   RESOLVE_REASON_MIN,
-} from "@/lib/xero-resolve-refund-note-copy";
+} from "@/lib/bank-refund-void-follow-up-copy";
 import {
   findQueuedLiveCopy,
   findRetryOverlappingMark,
@@ -91,8 +91,9 @@ export async function POST(
    * #4421 review (security F6): a refused resolve that offered or needed a
    * credit note number is audited too, with the number tried and the status.
    */
-  const refuse = async (status: number, message: string) => {
-    await createAuditLog({
+  /** The route's one audit write: a mark kept, or (#4421) a refusal. */
+  const audit = (entry: { outcome: "success" | "failure"; summary: string; details: string; metadata: Record<string, unknown> }) =>
+    createAuditLog({
       action: "xero.operation.manually_resolved",
       memberId: session.user.id,
       actorMemberId: session.user.id,
@@ -101,6 +102,13 @@ export async function POST(
       entityId: id,
       category: "xero",
       severity: "important",
+      outcome: entry.outcome,
+      summary: entry.summary,
+      details: entry.details,
+      metadata: entry.metadata,
+    });
+  const refuse = async (status: number, message: string) => {
+    await audit({
       outcome: "failure",
       summary: "Xero operation not marked resolved: its credit note was refused",
       details: message,
@@ -276,15 +284,7 @@ export async function POST(
       });
     }
 
-    await createAuditLog({
-      action: "xero.operation.manually_resolved",
-      memberId: session.user.id,
-      actorMemberId: session.user.id,
-      targetId: operation.id,
-      entityType: "XeroSyncOperation",
-      entityId: operation.id,
-      category: "xero",
-      severity: "important",
+    await audit({
       outcome: "success",
       summary: "Xero operation marked resolved in Xero",
       details: parsed.data.reason,

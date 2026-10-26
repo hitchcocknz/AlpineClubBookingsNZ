@@ -12,8 +12,12 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { EXAMPLE_CREDIT_NOTE_NUMBER, HAND_MADE_CREDIT_NOTE_NUMBER_MAX } from "@/lib/bank-refund-void-follow-up-copy"
-import { RESOLVE_REASON_MAX, RESOLVE_REASON_MIN } from "@/lib/xero-resolve-refund-note-copy"
+import {
+  EXAMPLE_CREDIT_NOTE_NUMBER,
+  HAND_MADE_CREDIT_NOTE_NUMBER_MAX,
+  RESOLVE_REASON_MAX,
+  RESOLVE_REASON_MIN,
+} from "@/lib/bank-refund-void-follow-up-copy"
 import { resolveDialogDescription } from "./resolve-dialog-copy"
 
 export interface ResolveWithNoteAnswer {

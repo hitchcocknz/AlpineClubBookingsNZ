@@ -157,7 +157,7 @@ import {
   RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE,
   RESOLVE_NOTE_NOT_ASKED_MESSAGE,
   RESOLVE_NOTE_RETRY_RAN_MESSAGE,
-} from "@/lib/xero-resolve-refund-note-copy";
+} from "@/lib/bank-refund-void-follow-up-copy";
 
 /** A FAILED $200 refund note on pay_1, queued and never raised: no note of its own. */
 function refundNoteRow(overrides: Partial<Row> = {}): Row {

@@ -23,7 +23,11 @@ import {
   writeHandMadeRefundNoteLink,
   type VerifiedHandMadeRefundNote,
 } from "@/lib/bank-refund-void-answer";
-import { handMadeNoteAlreadyRecordedMessage } from "@/lib/bank-refund-void-follow-up-copy";
+import {
+  handMadeNoteAlreadyRecordedMessage,
+  RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE,
+  RESOLVE_NOTE_RETRY_RAN_MESSAGE,
+} from "@/lib/bank-refund-void-follow-up-copy";
 import type { ClubFormat } from "@/lib/club-format";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
@@ -33,7 +37,6 @@ import { findRetryRunningOrSince } from "@/lib/xero-operation-resolve-guards";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
 import { countsTowardRefundNoteCoverage, creditNoteCreateRowsRecordingWhere } from "@/lib/xero-refund-note-status";
 import { isRefundNoteCreateRow } from "@/lib/xero-resolved-in-xero-fences";
-import { RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE, RESOLVE_NOTE_RETRY_RAN_MESSAGE } from "@/lib/xero-resolve-refund-note-copy";
 
 /** The fields of an operation row the shape below reads. */
 export type RefundNoteResolveRow = {
