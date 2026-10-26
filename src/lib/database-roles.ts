@@ -103,14 +103,16 @@ export const APPLICATION_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE";
 export const SECURITY_DEFINER_ROUTINE_ALLOWLIST: readonly string[] = [];
 
 /**
- * How long the provisioning transaction waits for a lock, and for any one
- * statement. The first run hands every table to the migration role, and
+ * How long the provisioning transaction waits for a lock, and how long any ONE
+ * statement may run. The first run hands every table to the migration role, and
  * `ALTER … OWNER TO` takes ACCESS EXCLUSIVE until COMMIT, so without a bound a
  * long-open reader would hold every table already transferred behind it for as
  * long as it stays open. Five seconds is the migrate service's own bound (#3377).
- * The bound is per wait: the ownership loop is ONE statement, so the tables it has
- * transferred stay locked for up to `PROVISIONING_STATEMENT_TIMEOUT` in the worst
- * case. The CLI reports a timeout as "retry in a quiet window".
+ * Both bounds are per statement, not per run (#4453 review R6): the ownership
+ * loop is one statement, so it alone can hold the tables it has transferred for
+ * up to `PROVISIONING_STATEMENT_TIMEOUT`, and every later statement gets its own
+ * allowance before COMMIT releases them. The CLI reports a timeout as "retry in a
+ * quiet window".
  */
 export const PROVISIONING_LOCK_TIMEOUT = "5s";
 export const PROVISIONING_STATEMENT_TIMEOUT = "120s";
@@ -470,8 +472,10 @@ export function buildDatabaseRolesSql(input: DatabaseRolesProvisionInput): strin
     // 0. Bound every wait (#4453 review, O-F1). The first run takes ACCESS
     //    EXCLUSIVE on each table it hands over, held to COMMIT; a lock it cannot
     //    get in 5 s stops the run with nothing changed, rather than waiting on a
-    //    long-open reader indefinitely; the whole run, and so its locks, is
-    //    bounded by the statement timeout. `LOCAL`: the CLI runs one transaction.
+    //    long-open reader indefinitely. The statement timeout bounds EACH
+    //    statement, not the run (#4453 review R6): locks taken early are held
+    //    through every later statement to COMMIT. `LOCAL`: the CLI runs one
+    //    transaction.
     `SET LOCAL lock_timeout = ${quoteLiteral(PROVISIONING_LOCK_TIMEOUT)};`,
     `SET LOCAL statement_timeout = ${quoteLiteral(PROVISIONING_STATEMENT_TIMEOUT)};`,
   ];

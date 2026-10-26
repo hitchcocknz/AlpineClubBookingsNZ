@@ -161,8 +161,10 @@ stack in [Staging](#staging)), then repeat on production.
    report, merge or open `psql` transaction is going. Each lock wait is bounded at
    5 seconds. A run that cannot get a lock stops with nothing changed and says
    "retry in a quiet window". The tables it has already handed over stay locked
-   until the run ends, which on a slow server can take up to its 120-second
-   statement bound; app requests that touch them wait meanwhile. Later runs only
+   until the run commits. Each statement, not the whole run, is bounded at 120
+   seconds: handing the tables over is one statement and can take that long on a
+   slow server, and the checks after it run while the locks are still held. App
+   requests that touch those tables wait meanwhile. Later runs only
    grant and revoke, and wait on nothing the app holds. Nothing connects without
    `--apply`.
 

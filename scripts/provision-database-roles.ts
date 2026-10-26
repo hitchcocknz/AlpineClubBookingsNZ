@@ -23,10 +23,12 @@
  * role, and `ALTER … OWNER TO` holds ACCESS EXCLUSIVE until COMMIT: run it in a
  * quiet window. Each lock wait is bounded at 5 s (`lock_timeout`), so a
  * long-open reader stops the run, with nothing changed, rather than leaving it
- * queued. The tables already handed over stay locked until the run ends, though,
- * and the ownership loop is one statement, so that can last up to its 120 s
- * `statement_timeout` on a slow server; app requests touching those tables wait
- * meanwhile. Later runs only GRANT and REVOKE, which wait on nothing an app holds.
+ * queued. The tables already handed over stay locked until the run commits,
+ * though. `statement_timeout` (120 s) bounds each statement, not the run: the
+ * ownership loop is one statement and can take up to that on a slow server, and
+ * the statements after it run while those locks are still held. App requests
+ * touching those tables wait meanwhile. Later runs only GRANT and REVOKE, which
+ * wait on nothing an app holds.
  *
  * WHAT IT NEEDS. A connection as the OPERATOR — a superuser, or a role that may
  * create roles and change object owners: `DB_ROLES_PROVISION_DATABASE_URL`, or
