@@ -83,7 +83,7 @@ describe("#4374: a success landing after an officer resolved the operation in Xe
     });
     mocks.send.mockImplementation(async () => {
       expect(committed).toBe(true);
-      return { deliveryAllowed: true, recipients: 1, sent: 1, queuedForRetry: 0 };
+      return { deliveryAllowed: true, recipients: 1, sent: 1, queuedForRetry: 0, notDelivered: 0 };
     });
   });
 
