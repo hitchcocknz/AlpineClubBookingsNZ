@@ -1667,7 +1667,7 @@ release).
   receipt for its capture is active or records it.
 - **Checked together:** a capture against the sum of every invoice naming it.
 - **A capture of the carried ask.** A declined ask is cancelled too (#4422);
-  a capture racing that cancel is refunded, its invoices staying. A kept
+  a capture racing that cancel is refunded or held, invoices staying. A kept
   capture no cancel row owns returns the invoices first parked on it
   (`parkedFromPaymentIntentId`), paid unless its receipt records it; a change
   invoice naming another capture never records it. Both kept: an officer is

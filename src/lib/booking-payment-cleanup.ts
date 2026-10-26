@@ -313,8 +313,8 @@ export type AdditionalAskMirror = {
 
 /**
  * Does the mirror name an additional intent that is still OUTSTANDING - neither
- * paid nor already failed? An intent that already failed (a declined card) is
- * left alone: it is not cancelled again (`INV-ADDPAY-023`).
+ * paid nor already failed? A booking cancel leaves an intent that already
+ * failed (a declined card) alone; a supersede cancels it (`INV-ADDPAY-023`).
  */
 export function hasOutstandingAdditionalPaymentIntent(
   payment: Omit<AdditionalAskMirror, "id"> | null | undefined,
