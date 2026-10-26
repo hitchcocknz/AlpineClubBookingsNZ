@@ -71,12 +71,7 @@ import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { asRecord } from "@/lib/xero-json";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { formatCents } from "@/lib/utils";
-import {
-  buildXeroIdempotencyKey,
-  completeXeroSyncOperation,
-  failXeroSyncOperation,
-  sanitizeForJson,
-} from "@/lib/xero-sync";
+import { buildXeroIdempotencyKey, completeXeroSyncOperation, failXeroSyncOperation, sanitizeForJson } from "@/lib/xero-sync";
 import { readCaptureRecorder } from "@/lib/additional-capture-recorder";
 import {
   ADDITIONAL_CAPTURE_RECEIPT_PLANNING_CODE,

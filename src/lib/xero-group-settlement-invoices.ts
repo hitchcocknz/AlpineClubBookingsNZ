@@ -31,10 +31,7 @@ import {
   startXeroSyncOperation,
   upsertXeroObjectLink,
 } from "@/lib/xero-sync";
-import {
-  callXeroApi,
-  getAuthenticatedXeroClient,
-} from "./xero-api-client";
+import { callXeroApi, getAuthenticatedXeroClient } from "./xero-api-client";
 import {
   reassertXeroInvoiceEmailPolicy,
   resolveXeroInvoiceEmailPolicy,
@@ -325,12 +322,11 @@ export async function createXeroInvoiceForGroupSettlement(
   // and a later attempt is never answered with this one's invoice.
   const invoiceIdempotencyKey = groupSettlementInvoiceCreateKey(settlementId, attempt);
   let operationClaim = options?.syncOperation ?? null;
-  let operationId = operationClaim?.id ?? null;
   const requestPayload = { invoices: [buildInvoice(contactId)], ...lines.operationRecord };
 
-  if (operationId) {
+  if (operationClaim) {
     await prisma.xeroSyncOperation.update({
-      where: { id: operationId },
+      where: { id: operationClaim.id },
       data: { requestPayload: sanitizeForJson(requestPayload) },
     });
   } else {
@@ -345,7 +341,6 @@ export async function createXeroInvoiceForGroupSettlement(
       requestPayload,
       createdByMemberId: options?.createdByMemberId ?? null,
     });
-    operationId = operation.id;
     operationClaim = operation;
   }
 
@@ -354,7 +349,7 @@ export async function createXeroInvoiceForGroupSettlement(
       memberId: organiserMemberId,
       currentContactId: contactId,
       workflow: "createXeroInvoiceForGroupSettlement",
-      operationId: operationId!,
+      operationId: operationClaim!.id,
       repairExistingLink: options?.repairExistingLink,
       createdByMemberId: options?.createdByMemberId,
       buildRequestPayload: (resolvedContactId) => ({
