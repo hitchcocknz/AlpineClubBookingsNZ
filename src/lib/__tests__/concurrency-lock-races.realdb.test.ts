@@ -275,12 +275,14 @@ import "./edit-financial-review-captured-cancel.realdb.test";
 // never touching the cancelled invoice. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3880-` fixtures.
 import "./edit-financial-review-cancelled-refund-xero.realdb.test";
-// #3454 reuses it to prove the Xero token store's two fences against real row
-// locks: simultaneous refresh-lease claims (this code against itself, and
-// against an older colour's own claim statement) let exactly one through, and a
-// refresh whose credential-store compare-and-set loses rolls the `XeroToken`
-// mirror back with it. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it clears
-// the singleton `XeroToken` table and its own `xero-oauth` row.
+// #3454 reuses it, and #3806 R2 extends it, to prove the Xero token store's
+// fences against real row locks: simultaneous refresh-lease claims (this code
+// against itself, and against the previous release's own claim statement) let
+// exactly one through, both leases are claimed or neither, a refresh whose
+// credential-store compare-and-set loses rolls everything back, and the previous
+// release keeps reading the store copy after this release's writes. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it clears the singleton `XeroToken` and
+// `XeroConnection` tables and its own `xero-oauth` row.
 import "./xero-token-credential-store.realdb.test";
 // #3653 reuses it to prove an organiser-settled child's refund out of the
 // group's combined card payment: recorded once, converged after an ambiguous
@@ -570,6 +572,14 @@ import "./ended-booking-ask-mint-race.realdb.test";
 // confirm-pending-guests route, and the REAL settle takes it. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4357-` fixtures.
 import "./saved-card-charge-worth.realdb.test";
+// #4265 reuses it to prove a refund-note row covers only its own live,
+// non-request note: a refund request's note resolved by hand through the real
+// outbox and resolve route covers nothing, live or voided, so the bank-void
+// follow-up undoes a voided note it once called spare; a close row covered by
+// another note counts none of it (#4258); and the hand-made answer refuses a
+// note a resolved row records (#4321). Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4265-` fixtures.
+import "./own-live-refund-note-coverage.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

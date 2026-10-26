@@ -458,11 +458,17 @@ Nothing is sent to the member and nothing is raised in Xero until you answer:
   number of the credit note you made in Xero (for example `CN-0789`). The app
   reads it from Xero and checks that it is a sales credit note, **approved or
   paid**, for exactly this amount, for the **same contact** as the booking's
-  invoice, and not allocated to another invoice. If not, it tells you why and
-  nothing changes. If Xero is busy, try again in a minute; if Xero's daily
-  limit has been reached, try again tomorrow; if the booking has no Xero
-  invoice and its owner no Xero contact, there is nothing to check the note
-  against, and the app says so. If it is, the
+  invoice, and not allocated to another invoice. It also refuses a note the app
+  already records for another refund, including one whose Xero operation is
+  unfinished or that you marked resolved (#4321). It cannot recognise a note
+  you made by hand for a failed operation you then marked resolved, as the app
+  never learns that note's number (#4421), so never give a
+  note that already records another refund. If not, it tells you why and
+  nothing changes. If
+  Xero is busy, try again in a minute; if Xero's daily limit has been
+  reached, try again tomorrow; if the booking has no Xero invoice and its
+  owner no Xero contact, there is nothing to check the note against, and the
+  app says so. If it is, the
   refund is recorded as paid back again against that note, and the app keeps
   track of it: it reads the note once more straight afterwards, and if that
   note is ever voided too, the refund comes back here again.

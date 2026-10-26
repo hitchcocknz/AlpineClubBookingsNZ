@@ -1,5 +1,5 @@
 import { CHANGE_FEE_LINE_DESCRIPTION } from "@/lib/xero-modification-line-items";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const tx = {
@@ -94,11 +94,15 @@ const mocks = vi.hoisted(() => {
       findFirst: vi.fn(),
       findMany: vi.fn(),
     },
-    xeroToken: {
-      findFirst: vi.fn(),
+    // #3806 R2: the token store reads the connection row and the
+    // credential-store token set; `mockXeroConnection` points both at a fixture.
+    xeroConnection: {
+      findUnique: vi.fn(),
     },
-    // #3454: the token store reads its credential-store copy too; none here,
-    // so these suites keep exercising the pre-upgrade XeroToken row.
+    // The previous release's lease, which a waiting refresh also honours.
+    xeroToken: {
+      findFirst: vi.fn(async () => null),
+    },
     integrationCredential: {
       findUnique: vi.fn(async () => null),
     },
@@ -303,11 +307,6 @@ vi.mock("@/lib/xero-config", async (importOriginal) => {
       scopes: [...actual.XERO_REQUIRED_REPORT_OAUTH_SCOPES],
       httpTimeout: 10_000,
     }),
-    getOperationalXeroEncryptionKey: vi
-      .fn()
-      .mockResolvedValue(
-        "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-      ),
   };
 });
 
@@ -315,21 +314,23 @@ import {
   createXeroCreditNoteForModification,
   createXeroCreditNote,
   createXeroInvoiceForBooking,
-  encryptToken,
   resetXeroRateLimitStateForTests,
   updateXeroBookingInvoiceForBooking,
 } from "@/lib/xero";
 import { frozenTestNow } from "@/lib/__tests__/helpers/clock";
+import {
+  connectedXeroFixture,
+  ensureStrongTestAuthSecret,
+  mockXeroConnection,
+} from "@/lib/__tests__/helpers/xero-connected-mock";
 import { expectClubTimeZonePremise } from "@/lib/__tests__/helpers/club-time-zone";
 import { declareEnvironmentRole } from "@/lib/__tests__/helpers/environment-role";
 import { toXeroSandboxContactEmail } from "@/lib/xero-sandbox-contact-email";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
-// encryptToken is async (#2079); precompute the fixture ciphertexts once so the
-// synchronous mock-setup blocks below need no await. The stubbed token key
-// (getOperationalXeroEncryptionKey mock above) makes these deterministic.
-let encryptedAccess: string;
-let encryptedRefresh: string;
+// #3806 R2: a connected Xero is the connection row plus the credential-store
+// token set, encrypted under a strong test AUTH_SECRET set once for the suite.
+let restoreAuthSecret: () => void = () => {};
 
 type XeroBookingFixture = Record<string, unknown> & {
   checkIn: Date | string;
@@ -407,9 +408,12 @@ function withMoneyBuildUpProjection<T extends XeroBookingFixture>(booking: T) {
   };
 }
 
-beforeAll(async () => {
-  encryptedAccess = await encryptToken("access");
-  encryptedRefresh = await encryptToken("refresh");
+beforeAll(() => {
+  restoreAuthSecret = ensureStrongTestAuthSecret();
+});
+
+afterAll(() => {
+  restoreAuthSecret();
 });
 
 /*
@@ -493,13 +497,13 @@ describe("createXeroInvoiceForBooking", () => {
     mocks.prisma.season.findFirst.mockResolvedValue({ type: "WINTER" });
     mocks.prisma.payment.update.mockResolvedValue({ id: "pay_1" });
     mocks.prisma.xeroObjectLink.findFirst.mockResolvedValue(null);
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: encryptedAccess,
-      refreshToken: encryptedRefresh,
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.prisma.xeroAccountMapping.findUnique.mockResolvedValue(null);
     mocks.prisma.xeroItemCodeMapping.findMany.mockResolvedValue([]);
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_1" });
@@ -3521,13 +3525,13 @@ describe("createXeroCreditNoteForModification", () => {
         xeroInvoiceId: "inv_1",
       },
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: encryptedAccess,
-      refreshToken: encryptedRefresh,
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.prisma.xeroAccountMapping.findUnique.mockResolvedValue(null);
     mocks.xeroClientInstance.accountingApi.createCreditNotes.mockResolvedValue({
       body: {
@@ -3831,13 +3835,13 @@ describe("createXeroCreditNote", () => {
       email: "member@example.com",
       xeroContactId: "contact_1",
     });
-    mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-      id: "token_1",
-      accessToken: encryptedAccess,
-      refreshToken: encryptedRefresh,
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
       expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       tenantId: "tenant_1",
-    });
+      }),
+    );
     mocks.prisma.xeroAccountMapping.findUnique.mockResolvedValue(null);
     mocks.prisma.xeroItemCodeMapping.findMany.mockResolvedValue([]);
     mocks.prisma.payment.update.mockResolvedValue({ id: "pay_1" });
@@ -3896,13 +3900,13 @@ describe("createXeroCreditNote", () => {
         email: "member@example.com",
         xeroContactId: "contact_1",
       });
-      mocks.prisma.xeroToken.findFirst.mockResolvedValue({
-        id: "token_1",
-        accessToken: encryptedAccess,
-        refreshToken: encryptedRefresh,
+      mockXeroConnection(
+        mocks.prisma,
+        connectedXeroFixture({
         expiresAt: new Date(Date.now() + 60 * 60 * 1000),
         tenantId: "tenant_1",
-      });
+        }),
+      );
       mocks.prisma.xeroAccountMapping.findUnique.mockResolvedValue(null);
       mocks.prisma.xeroItemCodeMapping.findMany.mockResolvedValue([]);
       mocks.prisma.payment.update.mockResolvedValue({ id: "pay_1" });

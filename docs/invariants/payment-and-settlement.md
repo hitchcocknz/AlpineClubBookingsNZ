@@ -2432,14 +2432,13 @@ _Legacy: settles tasks raised before #4317._
   (#3827; owner decision D-3813-7, #3492). Approving a refund request plans
   the Stripe refund inside the approval's own transaction, under `lock(1)`;
   on an internet-banking payment whatever that plan cannot carry raises a
-  `ManualRefundTask` in the same transaction through
-  `raiseRefundRequestHandBack`, so it is netted before the lock releases. A card payment planned short is drift,
-  logged, never a task. An unraisable task refuses the approval.
+  `ManualRefundTask` in that transaction (`raiseRefundRequestHandBack`),
+  netted before the lock releases. A card payment planned short is logged
+  drift, never a task. An unraisable task refuses the approval.
   - **One task per request**: occurrence key
     `refund-request-hand-back:<RefundRequest id>`, unique, inserted
     `ON CONFLICT DO NOTHING`. A released claim (Stripe and its recovery
-    enqueue both failed) deletes the OPEN task in the approval's locked
-    transaction.
+    enqueue both failed) deletes the OPEN task under the approval's locks.
   - **The same kind and marker as an edit's.** `isNonCancellationHandBackTask`
     and `NOT_NON_CANCELLATION_HAND_BACK_WHERE` cover both. Completion records
     the refund on the payment (kept by `INV-ADDPAY-021`'s recount), the
@@ -2451,7 +2450,7 @@ _Legacy: settles tasks raised before #4317._
     card part; completion atomically queues the request's own note for the
     amount paid back (`enqueueXeroRefundRequestCreditNoteOperation`), keyed by
     the request, linked as `REFUND_REQUEST_CREDIT_NOTE`, outside
-    `INV-ADDPAY-020`'s one note.
+    `INV-ADDPAY-020`'s one note and refund-note coverage (#4265).
   - **An appeal's ceiling nets everything already handed back**
     (`refundAppealHandedBackParts`; screens `refundAppealCeilingParts`): every
     OPEN hand-back, any kind, late-cash member credit, and card refunds still
@@ -3601,6 +3600,9 @@ _Split from `INV-PAY-057` (#3220)._
   An edit's credit clamp, zero-dollar decision and stale-intent comparison
   read worth; a guest's acceptance nets credit to the price, its return route
   admitting only credit and cash summing to it.
+- A booking worth $0 has nothing to charge: the cron and confirm-pending-guests
+  confirm it, writing its $0 payment in the claim's transaction
+  (`writeZeroWorthConfirmPayment`); charge-saved-method refuses it (#4399).
 - A finished-stay correction's fee on a stay with nothing captured is recorded
   on the payment and posts its `CHANGE_FEE` line under its modification's key
   at the settle, counting as income once captured.
