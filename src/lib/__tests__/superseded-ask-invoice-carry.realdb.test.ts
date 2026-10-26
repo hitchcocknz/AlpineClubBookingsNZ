@@ -25,7 +25,11 @@
  *  - the move against a price reduction's retire, both orders, forced on the
  *    anchor's key: the reduction retires and counts A's invoice once;
  *  - the move against the repair pass's enqueue, both orders: one invoice;
- *  - two bank-transfer edits: nothing waits, nothing moves.
+ *  - two bank-transfer edits: nothing waits, nothing moves;
+ *  - review round: a declined A paid from a stale tab takes its invoice back
+ *    (M1); a capture between A and a newer request carries A (C4); the move
+ *    queues behind the captured carrier's key (C2); B's capture landing while
+ *    the move waits on A's key (C5).
  *
  * Envelope: identical to `concurrency-lock-races.realdb.test.ts`, which imports
  * this file; the describe runs ONLY when `RUN_CONCURRENCY_RACE_TESTS=1`,
@@ -592,6 +596,88 @@ function deferred() {
       expect(all.reduce((sum, row) => sum + row.cents, 0)).toBe(await captured(c));
     });
 
+    describe("review round (db90565cb)", () => {
+      it("M1: a DECLINED A paid from a stale tab after its invoice moved takes it back: A's capture records A's invoice", async () => {
+        await seedPaidBooking();
+        const a = await priceIncrease(MOD_A, A_CENTS);
+        await declineCard(a);
+        const b = await priceIncrease(MOD_B, B_CENTS);
+        expect(await invoiceFor(MOD_A)).toMatchObject({ waitsOn: b, parkedFrom: a });
+
+        // Never cancelled at Stripe, so the old secret still confirms with another card.
+        await payWithCard(a);
+
+        expect(await captured(a)).toBe(A_CENTS);
+        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: a, parkedFrom: undefined, cents: A_CENTS, recordPayment: true });
+        expect(await invoiceFor(MOD_B)).toMatchObject({ status: "WAITING_PAYMENT", waitsOn: b, cents: B_CENTS });
+      });
+
+      it("C4: a capture after A, then a newer request: A's invoice moves onto the capture that absorbed it, never dropped", async () => {
+        await seedPaidBooking();
+        const a = await priceIncrease(MOD_A, A_CENTS);
+        // Stripe is down for B's inline cancel of A; C's mint finds A's cancel already queued, in its backoff.
+        stripe.failCancels = 1;
+        const b = await priceIncrease(MOD_B, B_CENTS);
+        await payWithCard(b);
+        const c = await priceIncrease(MOD_C, C_CENTS);
+        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "WAITING_PAYMENT", waitsOn: a });
+
+        await drainCancels();
+
+        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: b, parkedFrom: a, cents: A_CENTS });
+        expect(await invoiceFor(MOD_C)).toMatchObject({ status: "WAITING_PAYMENT", waitsOn: c });
+        const onB = (await invoices()).filter((row) => row.waitsOn === b);
+        expect(onB.reduce((sum, row) => sum + row.cents, 0)).toBe(await captured(b));
+      });
+
+      it("C2: the move onto a captured carrier queues behind the CARRIER's key, where its receipt decides, then releases", async () => {
+        await seedPaidBooking();
+        const a = await priceIncrease(MOD_A, A_CENTS);
+        stripe.failCancels = 1;
+        const b = await priceIncrease(MOD_B, B_CENTS);
+        await payWithCard(b);
+
+        const release = deferred();
+        const { pid, holder } = await holdAnchor(MOD_B, release.promise);
+        let cancel: Promise<void> | undefined;
+        try {
+          cancel = drainCancels();
+          await waitForQueue(pid, 1, "the move behind the carrier's key");
+          expect(await invoiceFor(MOD_A)).toMatchObject({ status: "WAITING_PAYMENT", waitsOn: a });
+        } finally {
+          release.resolve();
+          await holder;
+          await cancel;
+        }
+        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: b, parkedFrom: a, recordPayment: true });
+      });
+
+      it("C5: B's capture lands while the move waits on A's key - the move, reading under the key, releases A's invoice itself", async () => {
+        await seedPaidBooking();
+        const a = await priceIncrease(MOD_A, A_CENTS);
+        stripe.failCancels = 1;
+        const b = await priceIncrease(MOD_B, B_CENTS);
+
+        const release = deferred();
+        const { pid, holder } = await holdAnchor(MOD_A, release.promise);
+        let cancel: Promise<void> | undefined;
+        try {
+          cancel = drainCancels();
+          await waitForQueue(pid, 1, "the move behind A's key");
+          // B is paid now: its release sees only B's own invoice on B.
+          await payWithCard(b);
+          expect(await invoiceFor(MOD_B)).toMatchObject({ status: "PENDING" });
+          expect(await invoiceFor(MOD_A)).toMatchObject({ status: "WAITING_PAYMENT", waitsOn: a });
+        } finally {
+          release.resolve();
+          await holder;
+          await cancel;
+        }
+        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: b, parkedFrom: a });
+        expect((await invoices()).reduce((sum, row) => sum + row.cents, 0)).toBe(await captured(b));
+      });
+    });
+
     describe("the move against a price reduction's retire (`retireUnpaidAskChain`)", () => {
       it("the reduction first, the move queued on A's anchor: A's invoice is retired, counted once, and never moved", async () => {
         await seedPaidBooking();
@@ -696,7 +782,7 @@ function deferred() {
 
       const { followSupersededAskInvoicesToCarrier } = await import("@/lib/superseded-ask-invoice-carry");
       expect(await followSupersededAskInvoicesToCarrier({ paymentId: PAYMENT_ID })).toEqual({
-        carrierPaymentIntentId: null,
+        carrierPaymentIntentIds: [],
         moved: 0,
         refusals: [],
         releasedOnCapturedCarrier: false,

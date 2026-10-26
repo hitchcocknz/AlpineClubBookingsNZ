@@ -34,6 +34,10 @@ describe("INV-PAY-070: the superseded-invoice carry proof stays wired into CI (#
       "the move first: the reduction still retires A's invoice off B and reads it as A's own money, once",
       "%s first: one invoice for A's change, waiting on B",
       "two bank-transfer edits: each invoice was queued unpaid when priced; nothing waits and nothing moves",
+      "M1: a DECLINED A paid from a stale tab after its invoice moved takes it back: A's capture records A's invoice",
+      "C4: a capture after A, then a newer request: A's invoice moves onto the capture that absorbed it, never dropped",
+      "C2: the move onto a captured carrier queues behind the CARRIER's key, where its receipt decides, then releases",
+      "C5: B's capture lands while the move waits on A's key - the move, reading under the key, releases A's invoice itself",
     ]) {
       expect(suite).toContain(proof);
     }
