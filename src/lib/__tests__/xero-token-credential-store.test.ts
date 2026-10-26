@@ -720,6 +720,31 @@ describe("the read takes the store copy only, and the connection decides connect
     expect(leases()).toEqual({ previousRelease: null, ours: null });
   });
 
+  it("a store copy naming another organisation than the connection is a reconnect (#3806 review)", async () => {
+    await saveXeroTokens(tokenSet("c1"), { actor: ADMIN });
+    // A release from before #3454 reconnected to another organisation: it wrote
+    // XeroToken only, the trigger carried the tenant over, the store kept the old grant.
+    h.state.xeroToken[0]!.tenantId = "tenant-elsewhere";
+    h.state.xeroConnection[0]!.tenantId = "tenant-elsewhere";
+
+    await expect(loadXeroTokens()).rejects.toThrow(
+      new XeroTokenDecryptError(
+        "The stored Xero token set belongs to a different Xero organisation from the connection",
+      ),
+    );
+    await expect(getXeroTokenReadability()).resolves.toBe("unreadable");
+    await expect(claimXeroTokenRefreshLease()).rejects.toBeInstanceOf(XeroTokenDecryptError);
+    expect(leases()).toEqual({ previousRelease: null, ours: null });
+  });
+
+  it("a store copy that names no organisation takes the connection's", async () => {
+    await saveXeroTokens({ ...tokenSet("c1"), tenantId: undefined }, { actor: ADMIN });
+    h.state.xeroConnection[0]!.tenantId = "tenant-1";
+
+    await expect(loadXeroTokens()).resolves.toMatchObject({ tenantId: "tenant-1" });
+    await expect(getXeroTokenReadability()).resolves.toBe("readable");
+  });
+
   it("reads the previous release's own writes, through the store copy it wrote", async () => {
     await oldRelease.write(tokenSet("old"), "oauth-connect");
     await expect(loadXeroTokens()).resolves.toMatchObject({

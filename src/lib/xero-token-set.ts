@@ -76,6 +76,42 @@ function parseStoredTokenSet(value: string): StoredXeroTokenSet | null {
 }
 
 /** The usable token set in a store resolution, or `null`. */
-export function usableTokenSet(stored: CredentialResolution): StoredXeroTokenSet | null {
+function usableTokenSet(stored: CredentialResolution): StoredXeroTokenSet | null {
   return stored.status === "configured" ? parseStoredTokenSet(stored.value) : null;
+}
+
+/** Why a connection has no token set this release may use. */
+export type ConnectionTokenSetRefusal = "absent" | "unreadable" | "other-tenant";
+
+/**
+ * The store copy, when it belongs to the connection whose tenant is
+ * `connectionTenantId` (#3806 review).
+ *
+ * Refused when it is missing, unreadable or malformed, AND when it names a
+ * different organisation from the connection. That disagreement means the two
+ * were written by different code: a release from before #3454, which writes
+ * only `XeroToken`, reconnected after a #3454 or later release had stored a
+ * copy, and the trigger carried the new tenant into `XeroConnection` while the
+ * store kept the old grant. Its tokens would act on an organisation the club
+ * has left, so only a reconnect settles it. A copy that names the SAME
+ * organisation cannot be told apart from a current one; the upgrade notes
+ * cover that case.
+ */
+export function tokenSetForConnection(
+  stored: CredentialResolution,
+  connectionTenantId: string | null,
+):
+  | { usable: true; value: StoredXeroTokenSet }
+  | { usable: false; refusal: ConnectionTokenSetRefusal } {
+  if (stored.status === "not_configured") return { usable: false, refusal: "absent" };
+  const value = usableTokenSet(stored);
+  if (value === null) return { usable: false, refusal: "unreadable" };
+  if (
+    value.tenantId !== null &&
+    connectionTenantId !== null &&
+    value.tenantId !== connectionTenantId
+  ) {
+    return { usable: false, refusal: "other-tenant" };
+  }
+  return { usable: true, value };
 }

@@ -227,6 +227,7 @@ import {
   xeroSandboxContainmentTarget,
 } from "@/lib/xero-sandbox-contact-email";
 import { XeroContactEnvironmentUnknownError } from "@/lib/xero-environment-write-gate";
+import { XeroTokenDecryptError } from "@/lib/xero-token-errors";
 
 describe("findOrCreateXeroContact", () => {
   beforeEach(() => {
@@ -341,6 +342,29 @@ describe("findOrCreateXeroContact", () => {
       },
       { store: mocks.tx },
     );
+  });
+
+  it("calls Xero with neither tenant when the stored grant names another organisation than the connection (#3806 review)", async () => {
+    mocks.tx.member.findUnique.mockResolvedValue({
+      id: "mem_1",
+      email: "member@example.com",
+      xeroContactId: "xero_stale",
+    });
+    mockXeroConnection(
+      mocks.prisma,
+      connectedXeroFixture({
+        expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+        tenantId: "tenant_now",
+        storeTenantId: "tenant_before",
+      }),
+    );
+
+    await expect(
+      findOrCreateXeroContact("mem_1", { repairExistingLink: true })
+    ).rejects.toThrow(XeroTokenDecryptError);
+
+    expect(mocks.xeroClientInstance.accountingApi.getContacts).not.toHaveBeenCalled();
+    expect(mocks.tx.member.update).not.toHaveBeenCalled();
   });
 
   it("skips the Xero email search for a walk-in placeholder owner and sends an empty email (#1935)", async () => {

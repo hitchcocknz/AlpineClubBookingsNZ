@@ -15,6 +15,7 @@ import {
   isAuthSecretStrongEnough,
 } from "@/lib/integration-crypto";
 import { XERO_OAUTH_TOKEN_KEY, XERO_OAUTH_TOKEN_PROVIDER } from "@/lib/xero-token-store";
+import { serializeStoredTokenSet } from "@/lib/xero-token-set";
 
 const TEST_AUTH_SECRET = "xero-connected-mock-auth-secret-0123456789abcdef";
 
@@ -44,16 +45,24 @@ export function connectedXeroFixture(params: {
   refreshToken?: string;
   expiresAt: Date;
   tenantId: string | null;
+  /**
+   * The tenant the STORE copy names, when it differs from the connection's: a
+   * copy left behind by a release that wrote only `XeroToken` (#3806 review).
+   * Defaults to `tenantId`.
+   */
+  storeTenantId?: string | null;
   refreshInProgressUntil?: Date | null;
 }): ConnectedXeroFixture {
-  const plaintext = JSON.stringify({
-    v: 1,
-    accessToken: params.accessToken ?? "access",
-    refreshToken: params.refreshToken ?? "refresh",
-    expiresAt: params.expiresAt.toISOString(),
-    tenantId: params.tenantId,
-    mirror: "0".repeat(64),
-  });
+  // The token store's own serializer, so the fixture cannot drift from the format.
+  const plaintext = serializeStoredTokenSet(
+    {
+      accessToken: params.accessToken ?? "access",
+      refreshToken: params.refreshToken ?? "refresh",
+      expiresAt: params.expiresAt,
+    },
+    params.storeTenantId === undefined ? params.tenantId : params.storeTenantId,
+    "0".repeat(64),
+  );
   const encrypted = encryptCredential({
     provider: XERO_OAUTH_TOKEN_PROVIDER,
     key: XERO_OAUTH_TOKEN_KEY,

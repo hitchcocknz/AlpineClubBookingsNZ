@@ -41,7 +41,8 @@ import { XeroTokenDecryptError } from "@/lib/xero-token-errors";
 import {
   freshRowMirror,
   serializeStoredTokenSet,
-  usableTokenSet,
+  tokenSetForConnection,
+  type ConnectionTokenSetRefusal,
 } from "@/lib/xero-token-set";
 
 // Every caller already finds these here.
@@ -187,8 +188,9 @@ interface CurrentTokens {
 /**
  * Read the current token set on `db`, or `null` when Xero is not connected.
  * Throws `XeroTokenDecryptError` when a connection exists but its store copy is
- * missing, unreadable or malformed: only a reconnect fixes that, and there is no
- * other copy this release may read.
+ * missing, unreadable or malformed, or names a different organisation from the
+ * connection (`tokenSetForConnection`): only a reconnect fixes that, and there
+ * is no other copy this release may read.
  */
 async function readCurrentTokens(db: XeroTokenDb): Promise<CurrentTokens | null> {
   // The store row first: every writer of either release that replaces the token
@@ -201,27 +203,26 @@ async function readCurrentTokens(db: XeroTokenDb): Promise<CurrentTokens | null>
   );
   const connection = await db.xeroConnection.findUnique({
     where: { id: XERO_CONNECTION_ID },
-    select: { refreshInProgressUntil: true },
+    select: { tenantId: true, refreshInProgressUntil: true },
   });
   if (!connection) return null;
   const previousReleaseLease = await db.xeroToken.findFirst({
     orderBy: XERO_TOKEN_ROW_ORDER,
     select: { refreshInProgressUntil: true },
   });
-  const value = usableTokenSet(stored);
-  if (value === null || stored.status !== "configured") {
+  const tokenSet = tokenSetForConnection(stored, connection.tenantId);
+  if (!tokenSet.usable || stored.status !== "configured") {
     throw new XeroTokenDecryptError(
-      stored.status === "not_configured"
-        ? "No stored Xero token set exists for this connection"
-        : undefined,
+      tokenSet.usable ? undefined : TOKEN_SET_REFUSAL_MESSAGES[tokenSet.refusal],
     );
   }
+  const value = tokenSet.value;
   return {
     record: {
       accessToken: value.accessToken,
       refreshToken: value.refreshToken,
       expiresAt: new Date(value.expiresAt),
-      tenantId: value.tenantId ?? undefined,
+      tenantId: value.tenantId ?? connection.tenantId ?? undefined,
       refreshInProgressUntil: laterOf(
         connection.refreshInProgressUntil,
         previousReleaseLease?.refreshInProgressUntil ?? null,
@@ -231,6 +232,14 @@ async function readCurrentTokens(db: XeroTokenDb): Promise<CurrentTokens | null>
     mirror: value.mirror ?? "",
   };
 }
+
+/** Fixed sentences: an error about the token set never carries a value from it. */
+const TOKEN_SET_REFUSAL_MESSAGES: Record<ConnectionTokenSetRefusal, string | undefined> = {
+  absent: "No stored Xero token set exists for this connection",
+  unreadable: undefined,
+  "other-tenant":
+    "The stored Xero token set belongs to a different Xero organisation from the connection",
+};
 
 const LEASE_LOST_MESSAGE =
   "Xero token refresh lease expired before refreshed tokens could be saved";
@@ -395,7 +404,8 @@ export type XeroTokenReadability = "no_tokens" | "readable" | "unreadable";
  * the decrypted value. Returns:
  *   - "no_tokens"   — no connection (not connected);
  *   - "unreadable"  — connected, but the store copy is missing, fails to decrypt
- *                     (auth secret changed) or is malformed ⇒ reconnect;
+ *                     (auth secret changed), is malformed or names another
+ *                     organisation than the connection ⇒ reconnect;
  *   - "readable"    — decrypts cleanly.
  */
 export async function getXeroTokenReadability(): Promise<XeroTokenReadability> {
@@ -405,8 +415,9 @@ export async function getXeroTokenReadability(): Promise<XeroTokenReadability> {
     XERO_OAUTH_TOKEN_PROVIDER,
     XERO_OAUTH_TOKEN_KEY,
   );
-  if ((await readXeroConnection()) === null) return "no_tokens";
-  return usableTokenSet(stored) !== null ? "readable" : "unreadable";
+  const connection = await readXeroConnection();
+  if (connection === null) return "no_tokens";
+  return tokenSetForConnection(stored, connection.tenantId).usable ? "readable" : "unreadable";
 }
 
 /** The claim lost to a lease held on `XeroConnection` alone; rolls our claim back. */
