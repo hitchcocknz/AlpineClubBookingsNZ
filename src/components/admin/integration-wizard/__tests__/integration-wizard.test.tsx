@@ -792,6 +792,7 @@ describe("a step's save in flight holds the wizard where it is (#4410)", () => {
         <button type="button" onClick={() => setSaving(true)}>start save</button>
         <button type="button" onClick={() => setSaving(false)}>finish save</button>
         <button type="button" onClick={() => helpers.goNext()}>step goes next</button>
+        <button type="button" onClick={() => helpers.skip()}>step skips</button>
         <span>{saving ? "saving" : "idle"}</span>
       </div>
     );
@@ -830,6 +831,8 @@ describe("a step's save in flight holds the wizard where it is (#4410)", () => {
     const skip = screen.getByRole("button", { name: /Skip for now/ });
     expect((skip as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(skip);
+    expect(screen.getByText("Saving step body")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "step skips" }));
     expect(screen.getByText("Saving step body")).toBeTruthy();
   });
 
