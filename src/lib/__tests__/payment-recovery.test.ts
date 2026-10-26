@@ -54,7 +54,7 @@ const {
 } = vi.hoisted(() => ({
   // #4442 review C-F1: the raw statements each transaction runs, so a test can
   // say which took the global key.
-  mockExecuteRaw: vi.fn(async () => 0),
+  mockExecuteRaw: vi.fn<(...args: unknown[]) => Promise<number>>(async () => 0),
   mockPaymentRecoveryFindMany: vi.fn(),
   mockPaymentRecoveryFindUnique: vi.fn(),
   mockPaymentRecoveryFindFirst: vi.fn(),
