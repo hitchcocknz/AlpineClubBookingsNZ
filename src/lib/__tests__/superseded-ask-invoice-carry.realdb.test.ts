@@ -902,21 +902,33 @@ function deferred() {
 
       it("the ask first: A's invoice comes back and records A; B's own invoice records only B's own amount, and an officer is told once that B paid A's change again", async () => {
         const { a, b } = await aCarriedByB();
-        await payWithCard(a);
-        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: a, recordPayment: true });
-        expect(await paidTwiceAlerts()).toBe(0);
+        // The officer alert reaches one admin (the CI harness doubles this sender for another suite).
+        const email = await import("@/lib/email");
+        const alert = vi
+          .spyOn(email, "sendAdminXeroSyncErrorAlert")
+          .mockResolvedValue({ deliveryAllowed: true, recipients: 1, sent: 1, queuedForRetry: 0, notDelivered: 0 } as never);
+        const paidTwiceSends = () =>
+          alert.mock.calls.filter(([data]) => (data as { errorType: string }).errorType === "SUPPLEMENTARY_INVOICE_CHANGE_PAID_TWICE");
+        try {
+          await payWithCard(a);
+          expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: a, recordPayment: true });
+          expect(paidTwiceSends()).toHaveLength(0);
 
-        await payWithCard(b);
+          await payWithCard(b);
 
-        expect(await recordersOf(a)).toEqual({ invoicedCents: await captured(a), receipts: 0 });
-        // B's capture carried A's balance too: only B's own amount is recorded, never A's twice...
-        expect(await captured(b)).toBe(A_CENTS + B_CENTS);
-        expect(await recordersOf(b)).toEqual({ invoicedCents: B_CENTS, receipts: 0 });
-        // ...and the A_CENTS of it nothing bills is an officer's, told once whoever releases B again.
-        expect(await paidTwiceAlerts()).toBe(1);
-        const { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } = await import("@/lib/xero-supplementary-invoice-late-capture");
-        await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(b);
-        expect(await paidTwiceAlerts()).toBe(1);
+          expect(await recordersOf(a)).toEqual({ invoicedCents: await captured(a), receipts: 0 });
+          // B's capture carried A's balance too: only B's own amount is recorded, never A's twice...
+          expect(await captured(b)).toBe(A_CENTS + B_CENTS);
+          expect(await recordersOf(b)).toEqual({ invoicedCents: B_CENTS, receipts: 0 });
+          // ...and the A_CENTS of it nothing bills is an officer's, told once whoever releases B again.
+          expect(paidTwiceSends()).toHaveLength(1);
+          expect(await paidTwiceAlerts()).toBe(1);
+          const { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } = await import("@/lib/xero-supplementary-invoice-late-capture");
+          await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(b);
+          expect(paidTwiceSends()).toHaveLength(1);
+        } finally {
+          alert.mockRestore();
+        }
       });
     });
 
