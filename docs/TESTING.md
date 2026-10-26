@@ -1251,7 +1251,22 @@ Censuses reading balanced call arguments or object bodies share
 [`balancedBrackets`](../src/lib/__tests__/support/balanced-brackets.ts).
 It returns original text, the inclusive closing offset and top-level comma-separated
 parts, using the shared literal masker so comments and quoted brackets cannot
-end a region early. An invalid opener or unclosed region fails the scan.
+end a region early. An invalid opener or unclosed region fails the scan. Its
+sibling `expressionAt` reads a value that has no opener, up to its first top-level
+comma or the bracket closing the object that holds it.
+
+Two rules follow from the scan throwing rather than skipping:
+
+- **Find call sites over masked text.** Run the call-site regex over
+  `blankLiterals(source)` and hand the same text in as `structure`, so a call named
+  in a comment or string is not a call site. A hit inside a comment or string has
+  no opening bracket, and the reader throws on it. Read the arguments from the
+  original `source`, which keeps its string contents.
+- **Pass already-masked code as `structure`.** When the code has been through
+  `blankLiterals`, `blankLiteralsWithSpans` or `stripCommentsAndStrings`, pass it
+  as both `source` and `structure`. Masking twice is unsafe: a blanked regex has
+  lost its closing slash. `structure` must be the same length as `source`, and the
+  scan fails if it is not.
 
 ### Running the fast censuses on a composed tree
 

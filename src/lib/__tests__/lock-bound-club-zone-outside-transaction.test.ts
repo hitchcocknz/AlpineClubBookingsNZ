@@ -1,9 +1,9 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 import { blankLiterals } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * The club's day reaches a lock-bound writer as a VALUE, never as a read taken

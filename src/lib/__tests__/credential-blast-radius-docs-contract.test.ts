@@ -1,9 +1,9 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { CREDENTIAL_SYSTEM_ACTORS } from "@/lib/integration-credential-actor";
 import { blankLiterals } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /*
   #2720 — the credential blast-radius list has ONE home, and it is current.

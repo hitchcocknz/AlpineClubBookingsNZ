@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 // #3110 — which Prisma client reads the cancellation and non-member-hold policy
 // set, read off the real source files.
 //
@@ -57,6 +56,7 @@ import { describe, expect, it } from "vitest";
 import { blankLiterals, stripComments } from "./support/strip-comments";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * The three readers of the booking policy set. All three take

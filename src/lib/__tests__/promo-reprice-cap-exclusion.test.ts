@@ -1,8 +1,8 @@
-import { balancedBrackets } from "./support/balanced-brackets";
-import { blankLiterals } from "./support/strip-comments";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { balancedBrackets } from "./support/balanced-brackets";
+import { blankLiterals } from "./support/strip-comments";
 
 // #2299 F1 — LIVE MONEY BUG.
 //

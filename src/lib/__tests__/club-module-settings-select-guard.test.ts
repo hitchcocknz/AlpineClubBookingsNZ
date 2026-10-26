@@ -1,9 +1,9 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import { MODULE_KEYS } from "@/config/modules";
 import { blankLiterals, stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 // #153 / #150 / #175 guard: every read AND write of the ClubModuleSettings
 // singleton must use an explicit column `select`

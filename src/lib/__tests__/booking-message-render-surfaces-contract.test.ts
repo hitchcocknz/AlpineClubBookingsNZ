@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 // #2919 review — EVERY surface that puts a booking-message body on a screen
 // must render it through the booking-message renderer, never by hand.
 //
@@ -27,6 +26,7 @@ import {
   BOOKING_MESSAGE_DEFINITIONS,
   renderClientBookingMessage,
 } from "@/lib/booking-message-definitions";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * Files that read booking-message bodies and put them on a screen, with the

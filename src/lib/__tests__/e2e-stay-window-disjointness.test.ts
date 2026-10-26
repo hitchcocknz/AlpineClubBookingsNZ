@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 // #2779 — the Playwright suite's stay-window allocation, checked by machine
 // instead of by comment.
 //
@@ -32,6 +31,7 @@ import { describe, expect, it } from "vitest";
 // that does not exist — and would have "passed" this file's own motivating bug
 // for the wrong reason.
 import { blankLiterals, stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 const SPEC_UNDER_CONTRACT = "e2e/locked-out-pickup-and-pay.spec.ts";
 const STAY_DATES_HELPER = "e2e/helpers/stay-dates.ts";

@@ -1,9 +1,9 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { blankLiterals, stripComments } from "@/lib/__tests__/support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * #3980 (`INV-PAY-136`, `INV-LOCK-003`'s spirit for a row-lock site): the

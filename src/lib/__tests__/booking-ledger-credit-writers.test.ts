@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
@@ -6,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 // `INV-SSOT-004`: the one comment/string stripper in the tree.
 import { stripCommentsAndStrings } from "@/lib/__tests__/support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * #3599 (programme #3527, `INV-MONEY-035`): EVERY CREDIT ROW A BOOKING OWNS

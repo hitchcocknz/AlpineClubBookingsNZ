@@ -1,8 +1,8 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import { blankLiterals } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 // #2130 guard (same shape as club-module-settings-select-guard.test.ts): every
 // read AND write of XeroItemCodeMapping and AgeTierSetting must name its

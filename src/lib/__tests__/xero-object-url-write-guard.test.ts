@@ -1,9 +1,9 @@
-import { balancedBrackets, expressionAt } from "./support/balanced-brackets";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { blankLiterals } from "./support/strip-comments";
+import { balancedBrackets, expressionAt } from "./support/balanced-brackets";
 
 // #2314: `XeroObjectLink.xeroObjectUrl` and `XeroSyncOperation.xeroObjectUrl`
 // are stored ORGANISATION-AGNOSTIC. A short code baked into a row is wrong the

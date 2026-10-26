@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 /**
  * Whose civil day a payment link dies at the end of (CT-4, #2870;
  * `INV-CONFIG-002`).
@@ -131,6 +130,7 @@ import {
 } from "@/lib/payment-link-split-guest";
 
 import { divergentClubZone } from "./helpers/club-time-zone";
+import { balancedBrackets } from "./support/balanced-brackets";
 import { blankLiterals } from "./support/strip-comments";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
