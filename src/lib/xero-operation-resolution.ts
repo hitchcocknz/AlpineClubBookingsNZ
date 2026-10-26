@@ -3,6 +3,16 @@
 // component) and the server retry machinery read the same predicate.
 
 /**
+ * #4421 (`INV-SSOT`): the bounds of the reason an officer gives for acting on
+ * a Xero operation by hand - Resolve, Mark failed and Mark non-replayable -
+ * as each route's schema checks it and the panel's dialogs enforce it. Here,
+ * in this dependency-free module, because the panel (a client component)
+ * reads it too.
+ */
+export const XERO_OPERATION_REASON_MIN = 3;
+export const XERO_OPERATION_REASON_MAX = 500;
+
+/**
  * #3635 (owner decision, 28 Sep 2026): "Every repair path treats a manually
  * resolved operation as done and never offers to re-run it." An officer's
  * "resolved in Xero" mark (`POST /api/admin/xero/operations/[id]/resolve`)

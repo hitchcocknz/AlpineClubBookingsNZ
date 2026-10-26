@@ -97,7 +97,7 @@ const mocks = vi.hoisted(() => {
   // The handlers' own `catch` self-fails the outbox row via this shared helper
   // (xero-sync.ts): it writes FAILED + completedAt over any row but one holding
   // a recorded success, SUCCEEDED or PARTIAL, which it leaves as it is and
-  // answers null (#4356, `INV-INT-028`). The mock reproduces that write against
+  // answers null (#4356, `INV-INT-029`). The mock reproduces that write against
   // the store so the outbox's un-claim runs against a genuinely-FAILED row.
   const selfFail = async (operationId: string, _error?: unknown) => {
     const row = rows.get(operationId);
@@ -299,6 +299,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
         succeeded: 0,
         failed: 0,
         skipped: 1,
+        cooldownDeferred: 1,
       });
       // The handler self-failed once; the outbox must NOT fail it again.
       expect(mocks.failXeroSyncOperation).toHaveBeenCalledTimes(1);
@@ -328,7 +329,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
       });
     });
 
-    // #4356 (`INV-INT-028`): a FAILED refund-note repair claimed the row the
+    // #4356 (`INV-INT-029`): a FAILED refund-note repair claimed the row the
     // handler condemned before the hand-back ran; the claim is the repair's.
     it("MUTATION: never returns a repair's marked claim to PENDING", async () => {
       queueOneRefundOperation();
@@ -407,6 +408,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
         succeeded: 0,
         failed: 0,
         skipped: 1,
+        cooldownDeferred: 1,
       });
       expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
       // The subscription-charge exposure below the cooldown branch must NOT run
@@ -450,6 +452,7 @@ describe("outbox processor fail-fast for all queue types (#1354)", () => {
       succeeded: 0,
       failed: 0,
       skipped: 1,
+      cooldownDeferred: 1,
     });
     const row = mocks.rows.get("op_refund_1");
     expect(row?.status).toBe("PENDING");

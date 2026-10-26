@@ -195,7 +195,7 @@ vi.mock("@/lib/xero-sync", async (importOriginal) => {
           throw CRASH;
         }
         const row = state.operations.find((operation) => operation.id === id)!;
-        // #4356 (`INV-INT-028`): a PARTIAL completion never lands on SUCCEEDED.
+        // #4356 (`INV-INT-029`): a PARTIAL completion never lands on SUCCEEDED.
         if (completion.status === "PARTIAL" && row.status === "SUCCEEDED") return null;
         // #4256: a retry's completion lands only on its own claim.
         if (options?.onlyIfRunningSince && !(row.status === "RUNNING" && row.startedAt === options.onlyIfRunningSince)) return null;

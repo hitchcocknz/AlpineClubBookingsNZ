@@ -9,7 +9,7 @@
  * outcome writers used to be unguarded, so whichever wrote last won: a SUCCEEDED
  * row with its Xero payment could be turned FAILED by the other caller's 429 or
  * concurrent-key refusal, and that false failure counted toward the
- * repeated-failure alert. The writers are now guarded (`INV-INT-028`).
+ * repeated-failure alert. The writers are now guarded (`INV-INT-029`).
  *
  * Driven through a REAL caller, `createXeroPaymentForInvoice`: its start, its
  * completion with the payment's link, and its failure. Xero is a fake at the

@@ -1,5 +1,5 @@
 /**
- * The write guard of a Xero operation outcome (#4356, `INV-INT-028`), used by
+ * The write guard of a Xero operation outcome (#4356, `INV-INT-029`), used by
  * `completeXeroSyncOperation` and `failXeroSyncOperation` (`xero-sync.ts`).
  */
 import type { Prisma } from "@prisma/client";
@@ -15,7 +15,7 @@ export function holdsRecordedXeroSuccess(status: string): boolean {
 }
 
 /**
- * #4356 (`INV-INT-028`): a row that is not a repair's RUNNING claim
+ * #4356 (`INV-INT-029`): a row that is not a repair's RUNNING claim
  * (`XERO_REPAIR_CLAIM_RUNNING_CODES`). Spelled with the null case explicit, as
  * the stale reset is: a negated match on a nullable column would also refuse
  * every RUNNING row with no code.
@@ -29,7 +29,7 @@ export const NOT_A_XERO_REPAIR_CLAIM = {
 } satisfies Prisma.XeroSyncOperationWhereInput;
 
 /**
- * #4356 (`INV-INT-028`): the write guard of an outcome (`status`) on an
+ * #4356 (`INV-INT-029`): the write guard of an outcome (`status`) on an
  * operation row. Two callers can hold one row - a start that loses the insert
  * race is handed the winner's ACTIVE row (#1354) - and each records its own
  * outcome of the same keyed Xero call there. So an outcome never replaces a
@@ -84,7 +84,7 @@ export async function refusedOutcomeWrite(
   if (!caller.onlyIfRunningSince) {
     logger.info(
       { operationId, status, heldStatus: row.status },
-      "Xero operation outcome not recorded: the row kept the outcome or claim it holds (INV-INT-028)",
+      "Xero operation outcome not recorded: the row kept the outcome or claim it holds (INV-INT-029)",
     );
   }
   return null;

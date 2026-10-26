@@ -1,3 +1,4 @@
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import { PaymentSource, Prisma } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
@@ -542,7 +543,7 @@ export async function startXeroSyncOperation(
       if (!isPrismaUniqueConstraintError(error) || !input.correlationKey || db !== prisma) throw error;
       const { correlationKey } = input;
       const existing = await db.xeroSyncOperation.findFirst({
-        where: { correlationKey, status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] } },
+        where: { correlationKey, status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] } },
         orderBy: { createdAt: "desc" },
       });
       if (existing) return existing;
@@ -925,7 +926,7 @@ export async function deactivateXeroObjectLinks(params: {
 export async function completeXeroSyncOperation(
   operationId: string,
   completion: XeroSyncOperationCompletion,
-  // #4356 (`INV-INT-028`): no PARTIAL, FAILED or CANCELLED completion lands on a recorded success or a repair's claim; null then.
+  // #4356 (`INV-INT-029`): no PARTIAL, FAILED or CANCELLED completion lands on a recorded success or a repair's claim; null then.
   // #4256: `onlyIfRunningSince` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
   options?: { store?: Prisma.TransactionClient; onlyIfRunningSince?: Date; alert?: false },
 ) {
@@ -993,7 +994,7 @@ export async function completeXeroSyncOperation(
 /**
  * The optional write guard of {@link failXeroSyncOperation}: at most one, so a
  * caller can never pass two and have one silently dropped (#3462). Either way a failure
- * never lands on a recorded success or a repair's claim (#4356, `INV-INT-028`): null.
+ * never lands on a recorded success or a repair's claim (#4356, `INV-INT-029`): null.
  */
 type FailXeroSyncOperationGuard =
   | {

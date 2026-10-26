@@ -102,7 +102,7 @@ import { buildXeroContactUrl } from "@/lib/xero-links";
 import { prisma } from "@/lib/prisma";
 import { CREDIT_SPENT_OUTSIDE_APP_REASON_PREFIX } from "@/lib/xero-operation-resolution";
 
-/** #4356: every guarded outcome but a claim's also stays off a repair's RUNNING claim (`INV-INT-028`). */
+/** #4356: every guarded outcome but a claim's also stays off a repair's RUNNING claim (`INV-INT-029`). */
 const NOT_A_REPAIR_CLAIM = {
   OR: [
     { status: { not: "RUNNING" } },
@@ -1743,7 +1743,7 @@ describe("failXeroSyncOperation onlyIfRunningSince", () => {
 
 // #3548 round 3 (R2-6): the loser of two concurrent refund-note legs never
 // writes PARTIAL over the winner's SUCCEEDED. Once its own `keepSucceeded`
-// option; since #4356 every PARTIAL completion is guarded so (`INV-INT-028`).
+// option; since #4356 every PARTIAL completion is guarded so (`INV-INT-029`).
 describe("a PARTIAL completion never lands on SUCCEEDED", () => {
   function store(count: number) {
     return {
@@ -1866,13 +1866,13 @@ describe("completeXeroSyncOperation onlyIfRunningSince", () => {
   });
 });
 
-// #4356 (`INV-INT-028`): two callers can hold one operation row (a start that
+// #4356 (`INV-INT-029`): two callers can hold one operation row (a start that
 // loses the insert race is handed the winner's ACTIVE row, #1354) and each
 // records its own outcome there. An outcome never replaces a better one already
 // recorded, nor lands on a repair's claim. A one-row double evaluates each
 // write's guard against the row the way PostgreSQL would, so these pin the
 // DECISION, not the `where` spelling.
-describe("outcome writes never replace a recorded success (#4356, INV-INT-028)", () => {
+describe("outcome writes never replace a recorded success (#4356, INV-INT-029)", () => {
   type Row = {
     id: string;
     status: string;
@@ -2076,7 +2076,7 @@ describe("outcome writes never replace a recorded success (#4356, INV-INT-028)",
     });
   });
 
-  // The stated limit of `INV-INT-028` (#4373): a plain retry's claim carries no
+  // The stated limit of `INV-INT-029` (#4373): a plain retry's claim carries no
   // marker, so another caller's late failure still lands on it, and a
   // completion guarded on that claim then loses. Pinned so a fix changes it on purpose.
   it("LIMIT (#4373): a late failure lands on a plain retry's unmarked claim, and the claim's own completion then loses", async () => {

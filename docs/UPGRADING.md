@@ -119,6 +119,81 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### The Xero connection moves to its own table; some installs reconnect Xero once (#3806)
+
+**What changes.** Release R2 of #3806. The Xero refresh lease and the "is Xero
+connected" answer move to a new table, `XeroConnection`, which holds no secret.
+The Xero tokens are read only from the encrypted credential store, where #3454
+put them. The old `XeroToken` row is still kept current for the previous
+release, but its token columns are no longer written or read. One migration
+(`20261124010000_add_xero_connection`) creates the table, fills it from
+`XeroToken`, and adds a trigger that keeps it in step while the previous release
+can still run. It is an ordinary blue-green release: no window.
+
+This release reads only the credential store's copy of the tokens. A release
+before #3454 never wrote that copy, so whether you need to reconnect depends on
+the release you run now. **No tagged release contains #3454 yet**: v0.13.2, the
+newest, predates it. #3454 reached `main` on 2 October 2026.
+
+**If you run v0.13.2 or any other release without #3454**, using Xero before
+you deploy does nothing, because those releases never write the store copy.
+Choose one:
+
+- **Reconnect once (recommended for most clubs).** Deploy this release, then
+  reconnect Xero from **Admin → Xero** straight away. Until then Xero shows
+  "reconnect required" and Xero work pauses; nothing is lost.
+- **No reconnect.** First deploy a build that contains #3454 but not this
+  change, then follow the next paragraph before deploying this one.
+
+**If you run a build that contains #3454**, check before you deploy that the
+store holds this connection's tokens. Run this read-only query against the live
+database:
+
+```sql
+SELECT (SELECT count(*) FROM "XeroToken") AS "connectedRows",
+       (SELECT count(*) FROM "IntegrationCredential"
+         WHERE "provider" = 'xero-oauth' AND "key" = 'token-set') AS "storedTokenSets";
+```
+
+If `connectedRows` is 1 or more and `storedTokenSets` is 0, the connection has
+not refreshed since #3454 arrived. Use any Xero feature (a contact sync, say)
+at least 30 minutes after Xero was last used, so the access token has expired
+and the call refreshes it and stores a copy; then run the query again. Or plan
+to reconnect straight after the deploy.
+
+The query cannot see one more case. If an older release ran after #3454 was
+first deployed (a rollback, or the old colour during that deploy) and used
+Xero, it refreshed the tokens in `XeroToken` alone, and the store copy holds a
+refresh token Xero has since retired. #3454 notices this and reads the newer
+row, but this release reads only the store. So if that happened, use a Xero
+feature on #3454 that refreshes, as above, after the older release last ran,
+before you deploy this one. A store copy for a different organisation from the
+connection reads as "reconnect required"; one for the same organisation fails
+at its first refresh, and a reconnect fixes it.
+
+**If Xero says "reconnect required" after upgrading** because the connection
+predates #3454, reconnecting fixes it. Rolling back to a build that contains
+#3454, using a Xero feature that refreshes and deploying this release again
+fixes it without a reconnect.
+
+**After upgrading.** Nothing else. After the first connect, disconnect or
+change of Xero client id or secret, the retired wrapped token key
+(`xero` / `token_key`) is deleted from the credential store, recorded in the
+audit log as that administrator's act.
+
+**Rolling back.**
+
+- **To a build that contains #3454:** it keeps working on this schema. It reads
+  the same `XeroToken` row and the same credential-store tokens, and the trigger
+  keeps `XeroConnection` current behind it. When it next writes the tokens it
+  generates a new `xero` / `token_key`, which the audit log records as a key
+  generation; this release deletes it again at its next connect or disconnect.
+- **To v0.13.2 or another release without #3454,** once this release has
+  connected, refreshed or disconnected Xero: Xero needs a reconnect there. That
+  release reads only `XeroToken`'s token columns, which this release leaves
+  empty on a connect and stale after a refresh, and the key that encrypted them
+  is deleted.
+
 ### Check card cancellations left behind by earlier cash-payment reversals (#4320)
 
 **What changes.** When an officer reverses a booking recorded as paid in cash,
@@ -197,12 +272,12 @@ For each row:
   cancellation is right: leave it;
 - otherwise, cancel that payment intent (`paymentIntentId`) in the Stripe
   dashboard, and do it promptly. The cancellation then closes itself and the
-  member's open payment page stops working. For a `PRIMARY` row their next
-  visit to the pay step starts a fresh card payment; an `ADDITIONAL` row's
-  payment was the member's only card door to the extra, so collect the extra
-  another way, such as by internet banking. No money moves. If Stripe shows the
-  intent already succeeded, the app is refunding it: check the booking and ask
-  the member to pay again.
+  member's open payment page stops working. The reversed payment stays on
+  internet banking, so the pay step will not start a fresh card payment
+  (#4348): collect what is owed by internet banking. For an `ADDITIONAL` row,
+  the cancelled payment was the member's only card door to the extra. No money
+  moves. If Stripe shows the intent already succeeded, the app is refunding it:
+  check the booking and ask the member to pay again.
 
 Do not wait for the cancellation to finish on its own. Until its retry runs, a
 member who pays from a page they still have open is charged and then refunded,
@@ -534,10 +609,9 @@ applies to the first refund handed back too. No migration runs.
 refund handed back before the upgrade that never got its own note is not given
 one now: keep using the read-only query in
 [the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
-to find those payments, and raise their notes by hand as that entry says. A
-refund appeal's card-refunded part, a dashboard card refund and a late card
-capture's refund on a bank-transfer payment still have no note of their own
-(#4312); the query lists those too.
+to find those payments, and raise their notes by hand as that entry says.
+Card refunds on a bank-transfer payment get their own notes from #4312 (next
+entry); one made before that upgrade is listed by the query too.
 
 **During the switch, and if you roll back.** While the previous version still
 runs - the blue/green switch window, or after a rollback - its Xero worker
@@ -548,6 +622,143 @@ rows. In the same window a card refund's credit note on a bank-transfer
 payment that also had a hand-back noted this way can come out short; check
 those payments in Xero. Details:
 [A later bank-transfer hand-back gets its own note](xero/ARCHITECTURE.md#a-later-bank-transfer-hand-back-gets-its-own-note-4287).
+
+### A card refund on a bank-transfer payment gets its own Xero credit note (#4312)
+
+`20261122010000_bt_card_refund_notes_cutover` is a **marker, not a schema
+change**: a `SELECT 1` whose finish time on your database is the cutover. It
+touches no table and is safe with the previous app colour still serving.
+
+**What changes.** On a bank-transfer payment, a card refund now gets a credit
+note of its own in Xero, for exactly that refund, instead of being counted
+under the payment's first refund note: the card part of an approved refund
+appeal (including one the payment recovery job finishes later), a refund made
+in the Stripe dashboard, and a refund of a card payment captured after the
+booking was cancelled. Only refunds Stripe makes after the marker migration has
+run qualify.
+
+**After upgrading.** Nothing to do for card refunds made from now on. A card
+refund made before the upgrade is never given a note of its own: keep using the
+read-only query in
+[the deploy note](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230)
+to find those payments, and raise their notes by hand as that entry says.
+
+**Card refunds made in the switch window (#4312).** While the previous version
+still serves - between this migration and the switch, and again for as long as
+it serves after a rollback - it handles a refund of a card payment captured
+after the booking was cancelled as it always did: it counts the refund under the
+payment's first refund note. This version can later give that refund a note of
+its own (when Stripe next reports a refund of that captured payment, say), and
+an officer may already have raised one by hand for it. Nothing in the app
+records a credit note raised by hand in Xero, so a hand-raised note does not
+stop the app raising its own.
+
+Run this read-only query once this version serves alone. First replace
+`'SET-ME'` with that moment - the switch, or, after a rollback, the roll
+forward - written with its UTC offset, such as
+`TIMESTAMPTZ '2026-11-23 09:30:00+13'` (`+00` for UTC, `+13` for New Zealand
+daylight time); left as it is, the query refuses to run. Run it again after
+every roll forward. It lists each such refund made in the window - on a
+bank-transfer payment, of a card payment captured after its booking was
+cancelled that a treasurer held for a decision or that the app has noted
+against that captured payment - once for each note of its own this version
+raised or may still raise, or once with no `operationId` when it has none yet.
+The refund's time is stored in UTC with no zone, so the query reads the
+marker's finish and your timestamp in UTC too, in whole seconds as the app
+does, whatever time zone your database session uses; a refund recorded without
+Stripe's time is dated by when the app recorded it:
+
+```sql
+WITH own AS (
+  SELECT r.id AS "refundRowId", o.id, o.status, o."xeroObjectId", o."xeroObjectNumber", o."manuallyResolvedAt"
+  FROM "PaymentRefund" r
+  JOIN "XeroSyncOperation" o ON o."localId" = r."paymentId"
+    AND o."localModel" = 'Payment' AND o."entityType" = 'CREDIT_NOTE' AND o."operationType" = 'CREATE'
+    AND (o."requestPayload"->>'cardRefundId' = r."stripeRefundId" OR o."correlationKey" LIKE '%:card-refund:' || r."stripeRefundId" || ':%')
+)
+SELECT r."paymentId", p."bookingId", r."stripeRefundId", r."amountCents",
+  COALESCE(r."stripeCreatedAt", r."createdAt") AS "refundMadeAtUtc",
+  n.id AS "operationId", n.status, n."xeroObjectId" AS "creditNoteId", n."xeroObjectNumber" AS "creditNoteNumber"
+FROM "PaymentRefund" r
+JOIN "Payment" p ON p.id = r."paymentId" AND p.source = 'INTERNET_BANKING'
+LEFT JOIN own n ON n."refundRowId" = r.id
+  AND (n."xeroObjectId" IS NOT NULL OR (n.status NOT IN ('SUCCEEDED', 'CANCELLED') AND n."manuallyResolvedAt" IS NULL))
+  AND NOT (n."xeroObjectId" IS NULL AND n.status IN ('FAILED', 'PARTIAL')
+    AND EXISTS (SELECT 1 FROM own raised WHERE raised."refundRowId" = r.id AND raised."xeroObjectId" IS NOT NULL))
+WHERE r.status NOT IN ('failed', 'canceled')
+  AND (EXISTS (SELECT 1 FROM "ManualRefundTask" t WHERE t."lateCaptureApprovalIntentId" = r."stripePaymentIntentId")
+    OR EXISTS (SELECT 1 FROM "XeroSyncOperation" c WHERE c."localId" = r."paymentId"
+      AND c."localModel" = 'Payment' AND c."entityType" = 'CREDIT_NOTE' AND c."operationType" = 'CREATE'
+      AND c."requestPayload"->>'paymentIntentId' = r."stripePaymentIntentId"))
+  AND NOT EXISTS (SELECT 1 FROM own resolved WHERE resolved."refundRowId" = r.id AND resolved."manuallyResolvedAt" IS NOT NULL AND resolved.status <> 'CANCELLED')
+  AND date_trunc('second', COALESCE(r."stripeCreatedAt", r."createdAt")) >= (SELECT date_trunc('second', min(m."finished_at") AT TIME ZONE 'UTC')
+    FROM "_prisma_migrations" m WHERE m."migration_name" = '20261122010000_bt_card_refund_notes_cutover' AND m."rolled_back_at" IS NULL)
+  AND date_trunc('second', COALESCE(r."stripeCreatedAt", r."createdAt")) <= (TIMESTAMPTZ 'SET-ME' AT TIME ZONE 'UTC')
+ORDER BY p."bookingId", "refundMadeAtUtc", n.id;
+```
+
+For each row, look at the booking's invoice in Xero for a credit note an
+officer raised by hand for the same refund. Where there is one:
+
+- **A row with a `creditNoteId`**: the app's note is in Xero. Void the
+  hand-raised one and keep the app's.
+- **A row with no `creditNoteId`, status `PENDING` or `RUNNING`**: the next
+  Xero run raises the app's note. Keep the hand-raised note until then, and run
+  this query again: once the row shows a `creditNoteId`, void the hand-raised
+  one.
+- **A row with no `creditNoteId`, status `FAILED` or `PARTIAL`**: it raises
+  nothing until someone presses **Retry in background** on it in Xero
+  Operations. Don't retry it. The error may have come after Xero raised the
+  app's note, so look in Xero first for a credit note with the reference
+  `Refund against original credit card - Booking <first eight characters of bookingId>`,
+  dated the day of the refund, for the refund's amount or less, that no officer
+  raised. If there is one, it is the app's: void the hand-raised note and keep
+  the app's. Either way, press **Resolve (fixed in Xero)** on the row.
+- **A row with no `operationId`**: the app has no note of this refund's own
+  yet. If the previous version counted the refund under the payment's first
+  refund note, this version raises one the next time it notes that captured
+  payment: when Stripe reports another refund of it, a refund appeal on it is
+  approved, or its invoice for the kept payment reaches Xero. If the previous
+  version instead raised a note for the whole captured payment, which covers
+  the refund, it never does. Keep the hand-raised note, and run this query
+  again after any of those events on the booking: once the refund shows a
+  `creditNoteId`, void the hand-raised one. With no hand-raised note, leave it
+  for the app; if Xero should show the refund before then, you may raise one by
+  hand on the same terms.
+
+The query leaves out a refund that Stripe failed or cancelled, and one whose
+own note row was resolved by hand: the app counts that note as in Xero and asks
+for nothing more. Of a refund's note rows it leaves out one that will never
+raise a note - cancelled, or finished without raising one because other notes
+already covered it - and a failed one a later retry has already raised: the
+retry's row, with its `creditNoteId`, stands for it. Never resolve such a
+failed row: the app would then count the refund twice.
+
+**During the switch, and if you roll back.** The previous version's Xero worker
+treats a card refund's new credit-note row as the one note it would have used,
+so it either closes it as covered by the payment's first note or raises it as
+that first note - exactly what the previous version did with such refunds.
+Notes already raised per refund stay valid. Two gaps, both listed by the
+[#4230 deploy note's query](xero/ARCHITECTURE.md#a-later-refund-folded-into-the-first-note-4230):
+
+- **An approved refund appeal whose card refund was still waiting in the
+  payment recovery queue** when the previous version took over (after a
+  rollback, or while that version still ran the recovery job during the switch)
+  gets no credit note at all: this version's approval left the note to the
+  refund, and the previous version's recovery job does not raise one. Check the
+  payments that query lists and raise their notes by hand as it says.
+- **A card refund the previous version made during the window** stays counted
+  under the first note, as before - except a late-captured payment's refund,
+  which this version can later note on its own (the query above lists those).
+
+**If the marker migration is rolled back and applied again,** the cutover moves
+to the second run's finish: refunds made in between are treated as made before
+it and keep the previous behaviour. While it is rolled back (not applied), no
+card refund gets a note of its own and every approval takes the single note, as
+before.
+
+Details:
+[A card refund on a bank transfer gets its own note](xero/ARCHITECTURE.md#a-card-refund-on-a-bank-transfer-gets-its-own-note-4312).
 
 ### One-off correction of the starter privacy policy's audit-log retention (#4031)
 
@@ -2285,8 +2496,9 @@ install:
 3. Open **Admin → Xero → Setup** (the Integrations hub links here) and use the
    **Xero Credentials** section to re-enter the client id, client secret, and
    (optional) webhook key. Each write is Full-Admin only, encrypted at rest, and
-   audited (metadata only); values are never displayed back. The wrapped
-   token-encryption key auto-generates on first use.
+   audited (metadata only); values are never displayed back. (Releases from
+   #2079 to #3454 also generated a wrapped token-encryption key here; #3806
+   retired it.)
 4. **Reconnect Xero (OAuth)** so fresh tokens are stored under the new key. A
    client-credential write drops any stale stored tokens (verify-reset), so a
    reconnect is required after re-entry.

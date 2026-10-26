@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 /**
  * #4356: the real-PostgreSQL proof that two callers sharing one Xero operation
- * row never let a failure overwrite a recorded success (`INV-INT-028`)
+ * row never let a failure overwrite a recorded success (`INV-INT-029`)
  * self-skips without `RUN_CONCURRENCY_RACE_TESTS`, and hosted CI reaches it
  * only because the race harness imports it. Lose that import and the proof
  * silently becomes a no-op while every suite stays green - so the edge is

@@ -1,7 +1,7 @@
 # File-size allowances for #4372 (#4356) — a Xero operation's outcome never replaces a better one
 
 The rule lives in its own module, `src/lib/xero-operation-outcome-guard.ts`
-(`INV-INT-028`). What the outbox gains is the one place it already decides
+(`INV-INT-029`). What the outbox gains is the one place it already decides
 what a cooldown refusal did to its row being told about that rule.
 
 file: src/lib/xero-operation-outbox.ts

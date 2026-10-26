@@ -546,6 +546,16 @@ describe("listRecentPaymentIntentsMatching", () => {
     expect(found.complete).toBe(false);
   });
 
+  it("MUTATION: #4079 - an upper bound reaches both scans as Stripe's created.lte, so later intents are never read", async () => {
+    mockPaymentIntentsList.mockReturnValueOnce(listOf([])).mockReturnValueOnce(listOf([]));
+    const createdUntil = new Date("2026-07-01T00:01:00.500Z");
+    await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, createdUntil, customerId: "cus_1" });
+    for (const [args] of mockPaymentIntentsList.mock.calls) {
+      expect((args as { created: unknown }).created).toEqual({ gte: 1782864000, lte: 1782864060 });
+    }
+    expect(mockPaymentIntentsList).toHaveBeenCalledTimes(2);
+  });
+
   it("a window read to its end is complete", async () => {
     mockPaymentIntentsList.mockReturnValueOnce(listOf([{ id: "pi_1", amount: 6_000 }, { id: "pi_2", amount: 10 }]));
     const found = await listRecentPaymentIntentsMatching({ matches: matches as never, createdSince, maxScanned: 3 });
