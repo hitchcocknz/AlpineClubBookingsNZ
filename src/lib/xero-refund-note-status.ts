@@ -506,6 +506,20 @@ export function isCoveredByExistingNoteRow(row: { responsePayload: unknown }): b
 }
 
 /**
+ * #4265 (owner decision 26 Oct 2026, `INV-INT-025`): THE ONE RULE for which
+ * refund-note create rows count toward a payment's refund-note coverage. A
+ * row covers only its OWN note - never one it closed as covered by
+ * (`isCoveredByExistingNoteRow`, #4258) - and never a refund request's
+ * (`INV-PAY-118`: those notes answer the request, never the payment's refunds).
+ * The third part, LIVE, is read from the note's links (`refundNoteIdSets`), as
+ * every coverage reader does. Such a row still reports its key to the fences;
+ * its amount is never read.
+ */
+export function countsTowardRefundNoteCoverage(row: { requestPayload: unknown; responsePayload: unknown; correlationKey?: string | null; idempotencyKey?: string | null }): boolean {
+  return !isCoveredByExistingNoteRow(row) && readRefundRequestIdFromOperation(row) === null;
+}
+
+/**
  * #4162 (`INV-ADDPAY-042`): a refund note's recorded amount in cents - its
  * link's, else its raising row's - or null when neither records one. What the
  * nightly undo of a voided bank-transfer note takes back; null sends the note

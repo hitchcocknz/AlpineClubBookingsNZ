@@ -35,10 +35,11 @@ import logger from "@/lib/logger";
  * transaction, so no lock is held across the provider call - and checks it is
  * a sales credit note, AUTHORISED or PAID, for exactly the follow-up's amount,
  * for the payment's contact and allocated to no other invoice, and that no
- * other record here tracks it. A mismatch is refused with a plain-English
- * reason and nothing moves. A void that commits before the link write is
- * refused under the link's row lock (#4288); after the commit it is read once
- * more (`reconcileHandMadeNoteAfterCompletion`), so a later void is caught.
+ * other record here tracks it, nor a row resolved by hand records it (#4321).
+ * A mismatch is refused with a plain-English reason and nothing moves. A void
+ * that commits before the link write is refused under the link's row lock
+ * (#4288); after the commit it is read once more
+ * (`reconcileHandMadeNoteAfterCompletion`), so a later void is caught.
  *
  * On success the completion (`resolveManualRefundTask`, under its locks) puts
  * the money back on the payment as an ordinary hand-back completion does and
@@ -260,7 +261,8 @@ export async function prepareBankRefundVoidAnswer(input: {
 /**
  * Inside the completion's transaction, after its allocation: record the
  * checked note as the follow-up's tracked refund note. Refused (rolling the
- * completion back) when another record here already tracks that Xero note.
+ * completion back) when another record here already tracks that Xero note,
+ * or (#4321) a refund-note create resolved by hand in Xero records it.
  * The one exception (review, money 6): the note is tracked only by this
  * payment's own inactive, non-voided refund-note link - a duplicate the
  * single-note rule turned off - which is reactivated for the follow-up.
@@ -282,7 +284,19 @@ export async function recordHandMadeRefundNoteLink(
     link.role === "REFUND_CREDIT_NOTE" &&
     !link.active &&
     !isRefundCreditNoteLinkCancelledInXero(link.metadata);
-  if (!tracked.every(ownInactive)) {
+  // #4321 (#4265, `INV-INT-025`): nor a note a refund-note create resolved by
+  // hand in Xero records. With no live link, that row counts the note as its
+  // own refund's coverage, so it is no spare duplicate to reactivate.
+  const resolvedRow = await tx.xeroSyncOperation.findFirst({
+    where: {
+      entityType: "CREDIT_NOTE",
+      operationType: "CREATE",
+      manuallyResolvedAt: { not: null },
+      OR: [{ xeroObjectId: input.note.creditNoteId }, { xeroObjectNumber: input.note.creditNoteNumber }],
+    },
+    select: { id: true },
+  });
+  if (resolvedRow || !tracked.every(ownInactive)) {
     throw new ManualBookingPaymentError(
       `Credit note ${input.note.creditNoteNumber} is already recorded against another refund or booking here, so it cannot also record this one.`,
       409,
