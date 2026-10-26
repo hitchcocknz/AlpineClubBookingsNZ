@@ -122,6 +122,7 @@ import {
   outstandingSupplementaryInvoiceOperationsWhere,
   RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES,
   restatableSupplementaryInvoiceOperationsWhere,
+  stillWaitingOnIntentWhere,
   waitingSupplementaryInvoiceOperationsWhere,
 } from "@/lib/xero-supplementary-invoice-statuses";
 import { formatDateOnly } from "@/lib/date-only";
@@ -1841,8 +1842,7 @@ export async function releaseWaitingSupplementaryInvoiceOperations(
   const updateResult = await prisma.xeroSyncOperation.updateMany({
     where: {
       id: { in: queueOperationIds },
-      status: "WAITING_PAYMENT",
-      ...(paymentIntentId ? { requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId } } : {}),
+      ...(paymentIntentId ? stillWaitingOnIntentWhere(paymentIntentId) : { status: "WAITING_PAYMENT" }),
     },
     data: {
       status: "PENDING",

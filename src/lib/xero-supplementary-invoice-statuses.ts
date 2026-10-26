@@ -63,6 +63,20 @@ export function supplementaryInvoicesNamingIntentWhere(paymentIntentId: string):
 }
 
 /**
+ * #3403 review 2 (F4): a waiting invoice still parked on the capture it was
+ * read waiting on. Every write a capture makes to the invoices it read - the
+ * release, and the refusal that cancels one it does not cover - is guarded on
+ * this, so an invoice moved off that intent since (taken back by a superseded
+ * ask's own capture, or moved onto a carrier) is never that capture's to touch.
+ */
+export function stillWaitingOnIntentWhere(paymentIntentId: string): Prisma.XeroSyncOperationWhereInput {
+  return {
+    status: "WAITING_PAYMENT",
+    requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
+  };
+}
+
+/**
  * THE ENQUEUE'S QUESTION (`enqueueXeroSupplementaryInvoiceOperation`): an
  * invoice for this anchor that is still going to be sent - queued, waiting on a
  * payment, or being sent right now. Finding one, the enqueue raises it rather

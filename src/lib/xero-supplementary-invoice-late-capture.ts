@@ -18,6 +18,7 @@ import { sendAdminXeroSyncErrorAlert } from "@/lib/email";
 import { supplementaryInvoiceBilledCents } from "@/lib/xero-operation-outbox-payload";
 import {
   SUPPLEMENTARY_INVOICE_CREATE_WHERE,
+  stillWaitingOnIntentWhere,
   supplementaryInvoicesNamingIntentWhere,
 } from "@/lib/xero-supplementary-invoice-statuses";
 import { returnMovedInvoicesToCapturedIntent } from "@/lib/superseded-ask-invoice-return";
@@ -426,8 +427,10 @@ async function releaseWaitingInvoicesForCapture(
       billedCents += supplementaryInvoiceBilledCents(operation.requestPayload) ?? 0;
       continue;
     }
+    // Review 2 (F4): guarded on the intent too, as the release is - one taken
+    // back by a superseded ask's own capture since is not this capture's to refuse.
     const claimed = await prisma.xeroSyncOperation.updateMany({
-      where: { id: operation.id, status: "WAITING_PAYMENT" },
+      where: { id: operation.id, ...stillWaitingOnIntentWhere(paymentIntentId) },
       data: {
         status: "CANCELLED",
         completedAt: new Date(),
