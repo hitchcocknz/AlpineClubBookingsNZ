@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { balancedBrackets } from "./balanced-brackets";
+import { balancedBrackets, expressionAt } from "./balanced-brackets";
 
 describe("balancedBrackets", () => {
   it.each([
@@ -70,5 +70,35 @@ describe("balancedBrackets", () => {
 
   it.each(["(nested(value)", "{ nested: {}", "[[]"])("refuses an unclosed region %s", (source) => {
     expect(() => balancedBrackets(source, 0)).toThrow("Unbalanced brackets");
+  });
+});
+
+describe("expressionAt", () => {
+  it.each([
+    ["{ key: value, other: 2 }", " value", ","],
+    ["{ key: value }", " value ", "}"],
+    ["f({ key: a ? b : c })", " a ? b : c ", "}"],
+    ["{ key: build(a, b), not: x }", " build(a, b)", ","],
+    ["{ key: [1, 2], z }", " [1, 2]", ","],
+    ["{ key: c ? \"a,b)\" : 'x' } rest", " c ? \"a,b)\" : 'x' ", "}"],
+    ["{ key: `p:${id}:` , z }", " `p:${id}:` ", ","],
+    ["{ key: /* ) , */ v }", " /* ) , */ v ", "}"],
+  ] as const)("reads the value of %s", (source, text, terminator) => {
+    const read = expressionAt(source, source.indexOf(":") + 1);
+    expect(read.text).toBe(text);
+    expect(source[read.end]).toBe(terminator);
+  });
+
+  it("runs to the end of the source when nothing terminates it", () => {
+    expect(expressionAt("key: value", 4)).toEqual({ text: " value", end: 10 });
+  });
+
+  it("refuses an expression that opens a bracket it never closes", () => {
+    expect(() => expressionAt("{ key: f(a, b }", 6)).toThrow("Mismatched bracket");
+    expect(() => expressionAt("key: f(a, b", 4)).toThrow("Unbalanced brackets");
+  });
+
+  it("refuses a structure whose length differs from the source", () => {
+    expect(() => expressionAt("key: value", 4, "key: val")).toThrow("offset-preserving");
   });
 });
