@@ -171,4 +171,21 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("an event insert the database refuses rolls the close back");
     expect(suite).toContain("a dead row reads as stalled");
   });
+
+  // #4280: the proof that a reversal keeps a Paid another way close's bank cash rides the same harness.
+  it("wires the reversal floor's bank cash real-database proof the same way (#4280)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./card-refund-reversal-bank-cash-floor.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/card-refund-reversal-bank-cash-floor.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("late %s then %s: the total keeps the close's bank cash, and Refunds owed reads nothing");
+    expect(suite).toContain("refund first: the close reads it and refuses, so no bank cash is recorded");
+    expect(suite).toContain("two deliveries of the failure at once take it out once, write one row, and keep the close's cash");
+  });
 });
