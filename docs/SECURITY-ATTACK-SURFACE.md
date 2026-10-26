@@ -564,10 +564,12 @@ incident can rely on the following:
 **What the census can and cannot see.** It enumerates every DIRECT CALL of the
 three store mutators, found by walking the tree — not every function that
 ultimately causes a credential to change. A wrapper hides its own callers:
-`clearServerNzApiKey` appears, the admin route that calls it does not. That is
-sound rather than a gap, because a wrapper takes the actor as a REQUIRED
-parameter and so cannot supply one itself — the type is what covers its callers,
-and the census covers the wrapper. It is worth stating plainly because "every
+`setServerNzApiKey` appears, the credentials route that calls it does not;
+`clearServerNzApiKey` appears, `saveServerNzConnectionSettings` and the
+settings route above it do not. That is sound rather than a gap, because a
+wrapper takes the actor as a REQUIRED parameter and so cannot supply one
+itself — the type is what covers its callers, and the census covers the
+wrapper. It is worth stating plainly because "every
 writer" would be a stronger claim than the instrument makes.
 
 - **A database backup + the auth secret decrypts everything.** Anyone who holds
