@@ -4,7 +4,8 @@ import { pathToFileURL } from "node:url";
 
 import { ghJson } from "./lib/github-cli.mjs";
 
-const STALE_MS = 72 * 60 * 60 * 1000;
+const STALE_HOURS = 72;
+const STALE_MS = STALE_HOURS * 60 * 60 * 1000;
 
 /** Parse only a comment's opening workflow prefix, never quoted examples. */
 function event(comment) {
@@ -116,7 +117,7 @@ async function main() {
     throw new Error("Usage: pnpm run lanes:stale [owner/repo]");
   }
   const stale = staleReservations(await collectReservations(repo), Date.now());
-  console.log("Stale reservations (>72 hours). Report only; check the thread before asking the owner once.");
+  console.log(`Stale reservations (>${STALE_HOURS} hours). Report only; check the thread before asking the owner once.`);
   for (const row of stale) {
     console.log(`\n${row.kind} #${row.number} ${row.url}\nHolder: ${row.holder}\nLast activity: ${row.lastActivity}${row.pushWarning ? `\n${row.pushWarning}` : ""}\nOwner question: ${row.question}`);
   }
