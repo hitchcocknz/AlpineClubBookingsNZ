@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 /**
  * `computeAgeTier` is never called without its reference date (CT-4 group F1,
  * #2870, correctness review).
@@ -79,29 +80,15 @@ function callArgumentLists(code: string): string[] {
     // Skip a declaration rather than a call.
     const before = code.slice(Math.max(0, at - 30), at);
     if (/function\s+$/.test(before)) continue;
-    let depth = 1;
-    let i = from;
-    for (; i < code.length && depth > 0; i += 1) {
-      const ch = code[i];
-      if (ch === "(") depth += 1;
-      else if (ch === ")") depth -= 1;
-    }
-    calls.push(code.slice(from, i - 1));
+    const region = balancedBrackets(code, from - 1);
+    calls.push(region.text.slice(1, -1));
   }
   return calls;
 }
 
 /** Top-level commas only — a nested call's own commas do not separate arguments. */
 function countArguments(argumentList: string): number {
-  if (argumentList.trim() === "") return 0;
-  let depth = 0;
-  let count = 1;
-  for (const ch of argumentList) {
-    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
-    else if (ch === ")" || ch === "]" || ch === "}") depth -= 1;
-    else if (ch === "," && depth === 0) count += 1;
-  }
-  return count;
+  return balancedBrackets(`(${argumentList})`, 0).parts.length;
 }
 
 describe("computeAgeTier always receives an explicit reference date (#2870)", () => {

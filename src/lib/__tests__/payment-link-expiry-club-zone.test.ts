@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 /**
  * Whose civil day a payment link dies at the end of (CT-4, #2870;
  * `INV-CONFIG-002`).
@@ -462,22 +463,7 @@ function transactionCallbackSpans(
     at = masked.indexOf(NEEDLE, at + 1)
   ) {
     const open = at + NEEDLE.length - 1;
-    let depth = 0;
-    let end = -1;
-
-    for (let i = open; i < masked.length; i++) {
-      const c = masked[i];
-      if (c === "(") depth += 1;
-      else if (c === ")") {
-        depth -= 1;
-        if (depth === 0) {
-          end = i;
-          break;
-        }
-      }
-    }
-
-    if (end === -1) continue;
+    const { end } = balancedBrackets(masked, open, masked);
     spans.push({
       line: masked.slice(0, at).split("\n").length,
       body: masked.slice(open + 1, end),

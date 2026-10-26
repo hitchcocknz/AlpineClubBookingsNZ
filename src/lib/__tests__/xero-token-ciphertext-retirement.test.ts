@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 // #3806 R2 — no production code reads or writes `XeroToken.accessToken` or
 // `XeroToken.refreshToken` any more.
 //
@@ -96,20 +97,9 @@ function rawSqlNamesTable(source: string): boolean {
 
 /** The argument text of every `xeroToken.<method>(…)` call, balanced. */
 function xeroTokenDelegateCalls(source: string): string[] {
-  const calls: string[] = [];
-  const pattern = /\bxeroToken\s*\.\s*\w+\s*\(/g;
-  for (let match = pattern.exec(source); match; match = pattern.exec(source)) {
-    let depth = 1;
-    let i = match.index + match[0].length;
-    const start = i;
-    while (i < source.length && depth > 0) {
-      if (source[i] === "(") depth += 1;
-      else if (source[i] === ")") depth -= 1;
-      i += 1;
-    }
-    calls.push(source.slice(start, i - 1));
-  }
-  return calls;
+  return [...source.matchAll(/\bxeroToken\s*\.\s*\w+\s*\(/g)].map((match) =>
+    balancedBrackets(source, match.index + match[0].length - 1).text.slice(1, -1),
+  );
 }
 
 function delegateCallNamesCiphertext(args: string): boolean {

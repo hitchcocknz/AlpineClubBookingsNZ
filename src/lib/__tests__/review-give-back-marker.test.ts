@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 /**
  * The census tells a review's give-back from every other applied-credit row by
  * ONE marker: a `BOOKING_APPLIED` row that names its booking as
@@ -40,12 +41,7 @@ function enclosingFunction(text: string, index: number): string {
 
 /** The balanced `( … )` that opens at `start`. */
 function argumentsAt(text: string, start: number): string {
-  let depth = 0;
-  for (let index = start; index < text.length; index += 1) {
-    if (text[index] === "(") depth += 1;
-    else if (text[index] === ")" && (depth -= 1) === 0) return text.slice(start, index + 1);
-  }
-  return text.slice(start);
+  return balancedBrackets(text, start).text;
 }
 
 describe("only a review's give-back marks an applied-credit row with its source booking (#3791, #3583)", () => {

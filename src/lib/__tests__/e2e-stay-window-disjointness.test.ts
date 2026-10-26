@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 // #2779 — the Playwright suite's stay-window allocation, checked by machine
 // instead of by comment.
 //
@@ -67,18 +68,7 @@ function specFiles(): string[] {
 
 /** The first argument of the call whose `(` sits at `openParen`. */
 function firstArgument(source: string, openParen: number): string {
-  let depth = 0;
-  for (let i = openParen; i < source.length; i++) {
-    const c = source[i];
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") {
-      depth--;
-      if (depth === 0) return source.slice(openParen + 1, i).trim();
-    } else if (c === "," && depth === 1) {
-      return source.slice(openParen + 1, i).trim();
-    }
-  }
-  throw new Error("unterminated call argument list");
+  return balancedBrackets(source, openParen).parts[0] ?? "";
 }
 
 /** `const NAME = 10;` declarations in one file, for index constants. */

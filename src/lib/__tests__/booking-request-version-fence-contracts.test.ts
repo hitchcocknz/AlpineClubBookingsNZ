@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
@@ -70,16 +71,7 @@ function stripLineComments(source: string): string {
  * text up to and including its matching `)`. The Prisma calls contain no string
  * literals with parentheses, so naive depth counting is exact here. */
 function extractCall(source: string, openParenIdx: number): string {
-  let depth = 0;
-  for (let i = openParenIdx; i < source.length; i += 1) {
-    const ch = source[i];
-    if (ch === "(") depth += 1;
-    else if (ch === ")") {
-      depth -= 1;
-      if (depth === 0) return source.slice(openParenIdx, i + 1);
-    }
-  }
-  return source.slice(openParenIdx);
+  return balancedBrackets(source, openParenIdx).text;
 }
 
 interface CallSite {

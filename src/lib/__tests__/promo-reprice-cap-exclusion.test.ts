@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -552,17 +553,9 @@ function promoValidationCalls(source: string): Array<{ at: number; text: string 
   const calls: Array<{ at: number; text: string }> = [];
   let from = source.indexOf(marker);
   while (from !== -1) {
-    let depth = 0;
-    let index = from + marker.length - 1;
-    for (; index < source.length; index += 1) {
-      if (source[index] === "(") depth += 1;
-      else if (source[index] === ")") {
-        depth -= 1;
-        if (depth === 0) break;
-      }
-    }
-    calls.push({ at: from, text: source.slice(from, index + 1) });
-    from = source.indexOf(marker, index + 1);
+    const { end } = balancedBrackets(source, from + marker.length - 1);
+    calls.push({ at: from, text: source.slice(from, end + 1) });
+    from = source.indexOf(marker, end + 1);
   }
   return calls;
 }
@@ -580,17 +573,9 @@ function callsOf(source: string, name: string): Array<{ at: number; text: string
   const calls: Array<{ at: number; text: string }> = [];
   let from = source.indexOf(marker);
   while (from !== -1) {
-    let depth = 0;
-    let index = from + marker.length - 1;
-    for (; index < source.length; index += 1) {
-      if (source[index] === "(") depth += 1;
-      else if (source[index] === ")") {
-        depth -= 1;
-        if (depth === 0) break;
-      }
-    }
-    calls.push({ at: from, text: source.slice(from, index + 1) });
-    from = source.indexOf(marker, index + 1);
+    const { end } = balancedBrackets(source, from + marker.length - 1);
+    calls.push({ at: from, text: source.slice(from, end + 1) });
+    from = source.indexOf(marker, end + 1);
   }
   return calls;
 }

@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 // #2919 review — EVERY surface that puts a booking-message body on a screen
 // must render it through the booking-message renderer, never by hand.
 //
@@ -105,22 +106,9 @@ function clientRenderCalls(code: string): string[] {
   for (;;) {
     const start = code.indexOf(needle, from);
     if (start === -1) return calls;
-    const open = start + needle.length - 1;
-    let depth = 0;
-    for (let i = open; i < code.length; i++) {
-      if (code[i] === "(") depth++;
-      else if (code[i] === ")") {
-        depth--;
-        if (depth === 0) {
-          calls.push(code.slice(open, i + 1));
-          from = i + 1;
-          break;
-        }
-      }
-      if (i === code.length - 1) {
-        throw new Error("Unbalanced renderClientBookingMessage call");
-      }
-    }
+    const region = balancedBrackets(code, start + needle.length - 1);
+    calls.push(region.text);
+    from = region.end + 1;
   }
 }
 

@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -108,16 +109,7 @@ function collectSourceFiles(dir: string, out: string[]): string[] {
 
 /** The balanced `(...)` argument text starting at the `(` at `openIndex`. */
 function readCallArguments(masked: string, openIndex: number): string {
-  let depth = 0;
-  for (let i = openIndex; i < masked.length; i += 1) {
-    const ch = masked[i];
-    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
-    else if (ch === ")" || ch === "]" || ch === "}") {
-      depth -= 1;
-      if (depth === 0) return masked.slice(openIndex + 1, i);
-    }
-  }
-  return masked.slice(openIndex + 1);
+  return balancedBrackets(masked, openIndex, masked).text.slice(1, -1);
 }
 
 interface PropertyValue {

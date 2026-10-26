@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
@@ -114,15 +115,7 @@ function walk(dir: string, files: string[] = []): string[] {
 
 /** Extract the balanced-paren call-argument text starting at an opening "(". */
 function extractCallArgs(source: string, openParenIndex: number): string {
-  let depth = 0;
-  for (let i = openParenIndex; i < source.length; i++) {
-    if (source[i] === "(") depth++;
-    else if (source[i] === ")") {
-      depth--;
-      if (depth === 0) return source.slice(openParenIndex, i + 1);
-    }
-  }
-  return source.slice(openParenIndex);
+  return balancedBrackets(source, openParenIndex).text;
 }
 
 interface ProjectingCall {

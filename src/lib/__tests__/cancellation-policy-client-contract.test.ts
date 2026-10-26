@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 // #3110 — which Prisma client reads the cancellation and non-member-hold policy
 // set, read off the real source files.
 //
@@ -103,15 +104,7 @@ function readRepoFile(relativePath: string): string {
 
 /** Index of the `)` closing the `(` at `openIndex`, or -1. */
 function matchParen(source: string, openIndex: number): number {
-  let depth = 0;
-  for (let i = openIndex; i < source.length; i++) {
-    if (source[i] === "(") depth++;
-    else if (source[i] === ")") {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
+  return balancedBrackets(source, openIndex).end;
 }
 
 /** `[start, end]` character spans of every transaction callback in one file. */
@@ -168,21 +161,7 @@ function declaresClientParameter(params: string): boolean {
 
 /** Top-level (depth-0) argument count for a call whose `(` is at `openIndex`. */
 function argumentList(code: string, openIndex: number): string[] {
-  const close = matchParen(code, openIndex);
-  const inner = code.slice(openIndex + 1, close);
-  const args: string[] = [];
-  let depth = 0;
-  let current = "";
-  for (const ch of inner) {
-    if ("([{".includes(ch)) depth++;
-    else if (")]}".includes(ch)) depth--;
-    if (ch === "," && depth === 0) {
-      args.push(current);
-      current = "";
-    } else current += ch;
-  }
-  if (current.trim()) args.push(current);
-  return args.map((a) => a.trim()).filter((a) => a.length > 0);
+  return balancedBrackets(code, openIndex).parts;
 }
 
 /** Every non-test source file under `src/`, as repo-relative POSIX paths. */

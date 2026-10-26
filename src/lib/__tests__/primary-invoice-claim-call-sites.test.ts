@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -74,14 +75,8 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     for (const file of sourceFiles()) {
       const source = read(file);
       for (const match of source.matchAll(/\b\w+\.payment\.(update|updateMany|upsert|create|createMany)\(/g)) {
-        let depth = 1;
-        let index = match.index! + match[0].length;
-        while (depth > 0 && index < source.length) {
-          if (source[index] === "(") depth += 1;
-          else if (source[index] === ")") depth -= 1;
-          index += 1;
-        }
-        const call = source.slice(match.index!, index);
+        const { end } = balancedBrackets(source, match.index! + match[0].length - 1);
+        const call = source.slice(match.index!, end + 1);
         const data = call.slice(Math.max(0, call.indexOf("data")));
         const variable = /data: (\w+)\b/.exec(data)?.[1];
         const setsLink =
@@ -130,14 +125,8 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     for (const door of doors) {
       const source = read(door);
       for (const match of source.matchAll(/\b(queueXeroBookingEditSettlement|queueGuestRemovalXeroSettlement)\(/g)) {
-        let depth = 1;
-        let index = match.index! + match[0].length;
-        while (depth > 0 && index < source.length) {
-          if (source[index] === "(") depth += 1;
-          else if (source[index] === ")") depth -= 1;
-          index += 1;
-        }
-        const call = source.slice(match.index!, index);
+        const { end } = balancedBrackets(source, match.index! + match[0].length - 1);
+        const call = source.slice(match.index!, end + 1);
         expect(call, door).toMatch(/additionalPaymentIntentId/);
         expect(call, door).not.toMatch(/additionalPaymentIntentId: null\b/);
       }

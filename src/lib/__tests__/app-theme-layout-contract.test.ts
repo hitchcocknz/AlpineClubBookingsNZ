@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -48,26 +49,9 @@ const STRING_LITERAL = /(["'`])((?:\\.|(?!\1)[^\\])*)\1/g;
  * a human then triages — never toward silently missing a pairing.
  */
 function cnCallRegions(source: string): string[] {
-  const regions: string[] = [];
-
-  for (const match of source.matchAll(/\bcn\(/g)) {
-    const start = match.index + match[0].length - 1;
-    let depth = 0;
-    let index = start;
-    for (; index < source.length; index += 1) {
-      if (source[index] === "(") {
-        depth += 1;
-      } else if (source[index] === ")") {
-        depth -= 1;
-        if (depth === 0) {
-          break;
-        }
-      }
-    }
-    regions.push(source.slice(start, index + 1));
-  }
-
-  return regions;
+  return [...source.matchAll(/\bcn\(/g)].map((match) =>
+    balancedBrackets(source, match.index + match[0].length - 1).text,
+  );
 }
 
 /**

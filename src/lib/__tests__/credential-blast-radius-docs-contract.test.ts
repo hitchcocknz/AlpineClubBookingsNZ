@@ -1,3 +1,4 @@
+import { balancedBrackets } from "./support/balanced-brackets";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
@@ -90,15 +91,7 @@ function objectLiteralBody(source: string, name: string): string {
     );
   }
   const open = source.indexOf("{", declaration);
-  let depth = 0;
-  for (let index = open; index < source.length; index += 1) {
-    if (source[index] === "{") depth += 1;
-    else if (source[index] === "}") {
-      depth -= 1;
-      if (depth === 0) return source.slice(open + 1, index);
-    }
-  }
-  throw new Error(`${name} in ${CREDENTIALS_ROUTE} has no closing brace`);
+  return balancedBrackets(source, open).text.slice(1, -1);
 }
 
 /** `localName -> module specifier`, for every named import in `source`. */

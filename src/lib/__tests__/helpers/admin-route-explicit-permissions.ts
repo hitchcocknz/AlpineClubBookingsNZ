@@ -1,3 +1,4 @@
+import { balancedBrackets } from "../support/balanced-brackets";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -203,18 +204,7 @@ function scopeOf(code: string): ModuleScope {
 function requireAdminArgument(body: string): string | null {
   const marker = /\brequireAdmin\s*\(/.exec(body);
   if (!marker) return null;
-  let depth = 0;
-  let index = marker.index + marker[0].length - 1;
-  const start = index + 1;
-  for (; index < body.length; index += 1) {
-    const character = body[index];
-    if (character === "(") depth += 1;
-    else if (character === ")") {
-      depth -= 1;
-      if (depth === 0) return body.slice(start, index);
-    }
-  }
-  return null;
+  return balancedBrackets(body, marker.index + marker[0].length - 1).text.slice(1, -1);
 }
 
 /** The text of the `permission:` property inside an options-object literal. */
