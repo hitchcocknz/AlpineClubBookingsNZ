@@ -127,19 +127,24 @@ describe("#4374: a success landing after an officer resolved the operation in Xe
     expect(errorMessage).not.toMatch(/stays marked/);
   });
 
-  it("raises nothing when the success recorded no Xero object", async () => {
+  // An applied-credit run allocates through child operations and a deallocation
+  // records nothing, so a success with no object id can still have changed Xero.
+  it("still alerts when the success recorded no Xero object, and names no earlier object", async () => {
     const result = await completeXeroSyncOperation(xeroClaim(OPERATION_ID), { responsePayload: { skipped: true } });
     expect(result).toMatchObject({ status: "SUCCEEDED", xeroObjectId: null, manuallyResolvedReason: "Raised by hand" });
-    expect(result).not.toHaveProperty("deferredPostCommit");
-    expect(mocks.warn).not.toHaveBeenCalled();
-    expect(mocks.claim).not.toHaveBeenCalled();
-    expect(mocks.send).not.toHaveBeenCalled();
+    expect(mocks.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ operationId: OPERATION_ID, xeroObjectId: null }),
+      expect.stringContaining("hold the item twice"),
+    );
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    const { errorMessage } = mocks.send.mock.calls[0]![0] as { errorMessage: string };
+    expect(errorMessage).toContain("it recorded no Xero object id, but it may still have made or changed items in Xero");
   });
 
-  it("raises nothing on an injected transaction when the success recorded no Xero object", async () => {
+  it("hands an injected transaction's owner the alert when the success recorded no Xero object", async () => {
     const result = await completeXeroSyncOperation(xeroClaim(OPERATION_ID), {}, { store: store as never });
     expect(result?.status).toBe("SUCCEEDED");
-    expect(result).not.toHaveProperty("deferredPostCommit");
+    expect(result?.deferredPostCommit).toBeTypeOf("function");
   });
 
   it("says the credit ledger and Xero may disagree, not that anything was made by hand, on a row the app closed (#4219)", async () => {

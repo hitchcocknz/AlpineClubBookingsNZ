@@ -1644,13 +1644,13 @@ on `manuallyResolvedAt`.
   success: the status-guarded write lands on the resolved FAILED or PARTIAL
   row, leaves the mark as it finds it, and records its links, which are real
   Xero objects. The row is read back in the same transaction, under the
-  write's row lock. When it is SUCCEEDED, `isResolvedInXero` and records a
-  Xero object, a warning is logged and the officers get one **Xero Sync
+  write's row lock. When it is SUCCEEDED and `isResolvedInXero`, a warning is logged and the officers get one **Xero Sync
   Error** alert per operation (`XERO_SUCCESS_AFTER_RESOLUTION`,
   `sendAdminAlertOnceEver`, key
   `xero-success-after-resolution:<operation id>`), after commit and outside
   any transaction (`xero-success-after-resolution-alert.ts`). A success that
-  recorded no object made nothing to duplicate and raises nothing.
+  recorded no object still alerts: an applied-credit run allocates through
+  child operations, and a deallocation changes Xero without recording one.
   - **What it says.** On an officer's mark: Xero may hold the item twice, or
     the late call may have found and used the officer's own document by its
     reference, so check Xero before voiding. On a row the app closed because
