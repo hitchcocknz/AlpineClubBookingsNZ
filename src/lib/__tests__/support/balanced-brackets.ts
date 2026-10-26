@@ -8,7 +8,10 @@ const CLOSE_FOR: Readonly<Record<string, string>> = { "(": ")", "{": "}", "[": "
  * hold offset-preserving masked code pass it as `structure`: masking twice is
  * unsafe because a blanked regex has lost its closing slash.
  * `parts` splits on commas outside nested parentheses, braces and brackets.
- * An invalid opener or an unclosed region throws rather than hiding a site.
+ * An invalid opener or an unclosed region throws rather than hiding a site, so
+ * a call-site regex must run over masked text: a hit inside a comment or string
+ * is not a call, and its offset is not an opening bracket. `structure` must be
+ * the same length as `source`.
  */
 export function balancedBrackets(
   source: string,
@@ -20,8 +23,16 @@ export function balancedBrackets(
   parts: string[];
 } {
   const code = structure;
+  if (code.length !== source.length) {
+    throw new Error(
+      `structure must be offset-preserving: ${code.length} characters against a source of ${source.length}`,
+    );
+  }
   if (CLOSE_FOR[code[start] ?? ""] === undefined) {
-    throw new Error(`Expected opening bracket at offset ${start}`);
+    throw new Error(
+      `Expected opening bracket at offset ${start}; the offset may sit inside a comment or literal, ` +
+        "so match call sites over masked text (blankLiterals) rather than the raw source",
+    );
   }
 
   const stack: string[] = [];

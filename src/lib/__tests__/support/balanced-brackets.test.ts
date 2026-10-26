@@ -53,6 +53,17 @@ describe("balancedBrackets", () => {
     expect(() => balancedBrackets("(value)", start)).toThrow("Expected opening bracket");
   });
 
+  it("refuses a structure whose length differs from the source", () => {
+    expect(() => balancedBrackets("(value)", 0, "(value")).toThrow("offset-preserving");
+  });
+
+  it("says a non-opening offset may be inside a comment or literal", () => {
+    const source = "// a prior .booking.update( call\nreal()";
+    expect(() => balancedBrackets(source, source.indexOf("("))).toThrow(
+      "inside a comment or literal",
+    );
+  });
+
   it.each(["([)", "{]", "[(])"])("refuses mismatched brackets in %s", (source) => {
     expect(() => balancedBrackets(source, 0)).toThrow("Mismatched bracket");
   });
