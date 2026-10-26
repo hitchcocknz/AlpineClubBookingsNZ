@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
+import { balancedBrackets } from "./support/balanced-brackets";
 import {
   blankLiterals,
   blankLiteralsWithSpans,
@@ -1732,22 +1733,13 @@ const ADVISORY_LOCK_CALL = /pg_(?:try_)?advisory_xact_lock\(/g;
  * would score `SELECT pg_advisory_xact_lock(\n  1\n)` as a scoped key.
  */
 function firstLockArgument(text: string, openParenIndex: number): string | null {
-  let depth = 0;
-  const limit = Math.min(text.length, openParenIndex + 2000);
-  for (let i = openParenIndex; i < limit; i += 1) {
-    const character = text[i];
-    if (character === "(") {
-      depth += 1;
-      continue;
-    }
-    if (character === ")") {
-      depth -= 1;
-      if (depth === 0) return text.slice(openParenIndex + 1, i);
-      continue;
-    }
-    if (character === "," && depth === 1) return text.slice(openParenIndex + 1, i);
+  try {
+    // `text` is already masked (`maskedSource`), and a raw statement it restored
+    // must be read as code, so it is its own structure.
+    return balancedBrackets(text, openParenIndex, text).parts[0] ?? "";
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /**

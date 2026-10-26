@@ -74,6 +74,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { blankLiteralsWithSpans } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 const INVARIANT_ID = "INV-OPS-015";
 const REPO_ROOT = process.cwd();
@@ -197,28 +198,7 @@ function readable(source: string): Readable {
 
 /** The index of the bracket closing the one at `open`, read over blanked code. */
 function closing(code: string, open: number): number {
-  let depth = 0;
-  for (let index = open; index < code.length; index += 1) {
-    const char = code[index];
-    if (char === "(" || char === "[" || char === "{") depth += 1;
-    else if (char === ")" || char === "]" || char === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return code.length - 1;
-}
-
-/** The first comma at depth zero inside `code[from, to)`, or -1. */
-function topLevelComma(code: string, from: number, to: number): number {
-  let depth = 0;
-  for (let index = from; index < to; index += 1) {
-    const char = code[index];
-    if (char === "(" || char === "[" || char === "{") depth += 1;
-    else if (char === ")" || char === "]" || char === "}") depth -= 1;
-    else if (char === "," && depth === 0) return index;
-  }
-  return -1;
+  return balancedBrackets(code, open, code).end;
 }
 
 function lineOf(source: string, index: number): number {
@@ -326,7 +306,8 @@ export function seamMocks(
 
   for (const call of code.matchAll(/\bvi\s*\.\s*(?:mock|doMock)\s*\(/g)) {
     const open = (call.index ?? 0) + call[0].length - 1;
-    const close = closing(code, open);
+    const region = balancedBrackets(code, open, code);
+    const close = region.end;
     const specifier = text
       .slice(open + 1, close)
       .match(/^\s*(?:import\s*\(\s*)?(["'`])([^"'`]+)\1/)?.[2];
@@ -336,14 +317,14 @@ export function seamMocks(
     if (seams.length === 0) continue;
 
     const line = lineOf(source, call.index ?? 0);
-    const comma = topLevelComma(code, open + 1, close);
-    const factoryCode = comma === -1 ? "" : code.slice(comma + 1, close);
-    const factoryText = comma === -1 ? "" : text.slice(comma + 1, close);
+    // Everything after the specifier: the factory or options argument, if any.
+    const factoryCode = region.parts.slice(1).join(", ");
+    const factoryText = balancedBrackets(text, open, code).parts.slice(1).join(", ");
 
     for (const seam of seams) {
       let kind: MockKind | null = null;
       const spreads = objectSpreads(factoryCode, factoryText);
-      if (comma === -1 || factoryCode.trim() === "") kind = "automock";
+      if (factoryCode.trim() === "") kind = "automock";
       else if (/^\s*\{/.test(factoryCode)) {
         // An options object. `{ spy: true }` keeps the implementation only until
         // `vi.mocked(seam).mockResolvedValue(...)` replaces it, so it counts too.

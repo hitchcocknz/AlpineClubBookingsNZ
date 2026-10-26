@@ -20,7 +20,8 @@ import { join, relative } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { XeroSyncOperation } from "@prisma/client";
 import { matchesWhere } from "./support/prisma-where";
-import { stripComments } from "./support/strip-comments";
+import { blankLiterals, stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 import { xeroClaim } from "./helpers/xero-claim";
 
 const mocks = vi.hoisted(() => ({
@@ -243,23 +244,13 @@ function optionsAreReadable(options: string): boolean {
   return options === "" || (READABLE_OPTIONS.test(options) && !/\.\.\.\s*[\w$]/.test(options));
 }
 
-/** Top-level comma-separated arguments of the call whose `(` is at `open`; `close` is its `)`. */
-function callArguments(source: string, open: number): { args: string[]; close: number } {
-  const args: string[] = [];
-  let depth = 0;
-  let start = open + 1;
-  for (let i = open; i < source.length; i += 1) {
-    const char = source[i]!;
-    if ("([{".includes(char)) depth += 1;
-    else if (")]}".includes(char) && --depth === 0) {
-      args.push(source.slice(start, i));
-      return { args: args.map((arg) => arg.trim()).filter(Boolean), close: i };
-    } else if (char === "," && depth === 1) {
-      args.push(source.slice(start, i));
-      start = i + 1;
-    }
-  }
-  throw new Error("unbalanced call");
+function callArguments(
+  source: string,
+  open: number,
+  structure: string,
+): { args: string[]; close: number } {
+  const { parts: args, end: close } = balancedBrackets(source, open, structure);
+  return { args, close };
 }
 
 /** Every `completeXeroSyncOperation(...)` call under `src/`, outside tests. */
@@ -278,10 +269,13 @@ function completionSites(): CompletionSite[] {
   const sites: CompletionSite[] = [];
   for (const full of files) {
     const source = stripComments(readFileSync(full, "utf8"));
-    for (const match of source.matchAll(/\bcompleteXeroSyncOperation\s*\(/g)) {
+    if (!source.includes("completeXeroSyncOperation")) continue;
+    // Calls are found over masked text: one named in a string is not a call.
+    const structure = blankLiterals(source);
+    for (const match of structure.matchAll(/\bcompleteXeroSyncOperation\s*\(/g)) {
       if (/function\s+$/.test(source.slice(0, match.index))) continue;
       const open = match.index + match[0].length - 1;
-      const { args, close } = callArguments(source, open);
+      const { args, close } = callArguments(source, open, structure);
       // To the end of the enclosing top-level function.
       const end = source.indexOf("\n}\n", close);
       sites.push({
