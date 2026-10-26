@@ -3090,18 +3090,28 @@ settle legitimately overwrites `FAILED` → `SUCCEEDED`. `lock(1)` guarantees th
 two run whole-before-whole; it is not a veto on that transition.
 
 **#4442: an additional ask's queue excludes a capture of the balance it carries.**
-The inline mint (`withAdditionalAskQueueTransaction`), re-issue completion
-(`writeReissuedAskUnderRecovery`) and recovery claim
-(`holdAdditionalIntentRecoveryClaim`) take the existing global key before the
-Payment row and any recovery-row claim. Before writing the new intent's row
-and the superseded intents' durable cancellations, they re-read the live ask's
-mirrored unpaid balance through `sizeAdditionalAsk`. A changed balance refuses
-and rolls back the queue; recovery re-plans it. Folded waiting re-issues remain
-separate from that live balance. A capture first is therefore excluded from the
-replacement; a queue first leaves a cancellation record for the webhook's
-superseded-capture path. Stripe mint and cancellation calls stay outside these
-transactions. No new keyspace or capacity participant (`INV-LOCK-001` through
-`INV-LOCK-003`).
+A replacement ask carries the unpaid balance of the live ask it supersedes
+(`INV-PAY-098`), sized before its Stripe mint; its row and its supersede's
+cancel rows are written after. Every writer of that row - the inline mint
+(`withAdditionalAskQueueTransaction`: the edit doors, a review charge and the
+currency re-issue), the re-issue's completion (`writeReissuedAskUnderRecovery`)
+and the recovery runner's claim hold (`holdAdditionalIntentRecoveryClaim`) - first
+takes `lockAdditionalAskQueue`: the existing global key, then the `Payment`
+row, before any recovery-row claim (`INV-LOCK-002`; registered once,
+`lockAdditionalAskQueue#1`, `INV-LOCK-003`). Under them it re-reads the live
+balance through `outstandingAdditionalAskCents`, the rule the sizing used, and
+refuses on any change (`assertAdditionalAskSizingCurrent`), rolling back the
+whole queue: the minted secret was never offered, and the recovery row
+re-plans from the `Payment` as it then stands. The capture's settle
+(`markPaymentIntentTransactionSucceeded`) writes under the same `Payment` row,
+so a capture committed first is read and refused, and one landing later is
+owned by the cancel row the queue committed (the webhook's or the runner's
+superseded-capture hand-off refunds it). Folded waiting re-issues are not that
+live balance and stay owed. The recovery row's guarded claim is unchanged.
+Stripe mint and cancel calls stay outside these transactions; no new key
+(`INV-LOCK-001` through `INV-LOCK-003`). Proved against a real server in
+`superseded-ask-invoice-carry.realdb.test.ts`, including a capture committing
+while the queue waits on the global key.
 
 **#3653 adds the organiser child's refund out of the combined card payment
 (`INV-PAY-114`).** Three writers join this cohort and mint no keyspace. The edit
@@ -5221,7 +5231,9 @@ ordinary additional-ask replay holds (`holdAdditionalIntentRecoveryClaim`): the
 Stripe intent is minted first, outside every lock, under a key that names the
 release; the request's row, its audit row and the cancellation rows of the asks
 it supersedes are written in one claimed transaction; the supersede cancels run
-after it. It takes no advisory key of its own. A cancel that commits between the
+after it. It takes no advisory key of its own; since #4442 the claim hold it
+shares takes the global key, then the `Payment` row, before the recovery row
+(`lockAdditionalAskQueue`). A cancel that commits between the
 runner's ended-booking read and its row write is caught by the second read
 (`INV-ADDPAY-044`), which retires the request.
 
