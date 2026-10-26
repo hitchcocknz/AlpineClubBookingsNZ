@@ -645,5 +645,6 @@ export async function pullOtherLodges(
     ownLodges,
     ownLodgesRefused,
     deletedLodgeIds,
+    sentOn: identity,
   };
 }

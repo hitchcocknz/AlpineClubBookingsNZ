@@ -69,10 +69,31 @@ vi.mock("@/lib/servernz-api", () => ({
   pullOtherLodges: (...args: unknown[]) => mockPullOtherLodges(...args),
 }));
 
-const mockKeyStamp = vi.fn();
-vi.mock("@/lib/servernz-config", () => ({
-  readServerNzApiKeyStamp: (...args: unknown[]) => mockKeyStamp(...args),
-}));
+// THE CONNECTION FENCE (#4262 review): every download write runs through the
+// writer for the connection the pull was sent on (`serverNzAnswerWriter`).
+// `mockConnectionCurrent` answers, at the moment of EACH write, whether the
+// stored connection is still that one; a refusal throws having written
+// nothing, as the real fence does (servernz-connection-race.realdb.test.ts
+// forces the real one against PostgreSQL). `mockFence` counts the lock each
+// write takes.
+const mockConnectionCurrent = vi.fn();
+const mockAnswerWriter = vi.fn();
+const mockFence = vi.fn();
+vi.mock("@/lib/servernz-version-record", async () => {
+  const { prisma } = await import("@/lib/prisma");
+  class ServerNzConnectionChangedError extends Error {}
+  return {
+    ServerNzConnectionChangedError,
+    serverNzAnswerWriter: (identity: unknown) => {
+      mockAnswerWriter(identity);
+      return async (work: (tx: unknown) => Promise<unknown>) => {
+        mockFence(identity);
+        if (!(await mockConnectionCurrent(identity))) throw new ServerNzConnectionChangedError();
+        return work(prisma);
+      };
+    },
+  };
+});
 
 const mockLoggerWarn = vi.fn();
 
@@ -95,7 +116,6 @@ const mockRecordDownload = vi.fn();
 // The record step's options (#64: the keyed marker and the transaction client)
 // land here, so the cursor-and-owned-list assertions above them stay exact.
 const mockRecordOptions = vi.fn();
-const mockLockSettings = vi.fn();
 
 vi.mock("@/lib/servernz-settings", () => ({
   SERVERNZ_SETTINGS_ID: "default",
@@ -105,7 +125,6 @@ vi.mock("@/lib/servernz-settings", () => ({
     mockRecordOptions(options);
     return mockRecordDownload(cursor, lodges);
   },
-  lockServerNzSettings: (...args: unknown[]) => mockLockSettings(...args),
 }));
 
 import {
@@ -145,6 +164,9 @@ function ownAll<T extends { id: string; name: string; centralId?: string | null 
   }));
   return keyed;
 }
+
+/** The connection a pull was sent on (`OtherLodgesPullResult.sentOn`). */
+const SENT_ON = { baseUrl: "https://central.test", credentialVersion: "v-old" };
 
 /** A row as the central server sends it. */
 const REMOTE_UPDATED_AT = "2026-08-14T00:00:00.000Z";
@@ -256,18 +278,16 @@ beforeEach(() => {
   mockLoadSettings.mockResolvedValue({ ...SETTINGS });
   mockCreate.mockResolvedValue({ id: "ol_new" });
   mockAuditCreate.mockResolvedValue(undefined);
-  mockLockSettings.mockResolvedValue(undefined);
+  mockConnectionCurrent.mockResolvedValue(true);
   // Under the lock, the row reads back as this download loaded it, unless a
   // test says another writer got there first.
   mockSettingsRow.mockImplementation(async () => {
     const loaded = await mockLoadSettings();
     return {
-      baseUrl: loaded.baseUrl,
       otherLodgesCursor: loaded.otherLodgesCursor,
       otherLodgesKeyedAt: loaded.otherLodgesKeyedAt ? new Date(loaded.otherLodgesKeyedAt) : null,
     };
   });
-  mockKeyStamp.mockResolvedValue("2026-10-01T00:00:00.000Z");
   mockExecuteRaw.mockResolvedValue(0);
   mockUpdateMany.mockResolvedValue({ count: 1 });
   mockAmenityDeleteMany.mockResolvedValue({ count: 0 });
@@ -1930,16 +1950,18 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     expect(mockRecordDownload).toHaveBeenCalledWith("c-640", undefined);
   });
 
-  it("records the owned list under the settings lock, inside one transaction", async () => {
+  it("records the owned list through the connection fence, on the pull's own connection", async () => {
     registry([]);
-    pull([]);
+    pull([], { sentOn: SENT_ON });
 
     await downloadOtherClubsFromServer();
 
-    expect(mockLockSettings).toHaveBeenCalledTimes(1);
-    expect(mockLockSettings.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(mockAnswerWriter).toHaveBeenCalledWith(SENT_ON);
+    expect(mockFence).toHaveBeenCalledTimes(1);
+    expect(mockFence.mock.invocationCallOrder[0]).toBeLessThan(
       mockRecordDownload.mock.invocationCallOrder[0],
     );
+    expect(mockRecordOptions).toHaveBeenCalledWith(expect.objectContaining({ db: expect.anything() }));
   });
 
   it("re-keys a row whose id a WHOLE download shows is stale, instead of refusing the name", async () => {
@@ -2046,7 +2068,6 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     registry([]);
     mockLoadSettings.mockResolvedValue({ ...SETTINGS, otherLodgesKeyedAt: null, otherLodgesCursor: "c-1" });
     mockSettingsRow.mockResolvedValue({
-      baseUrl: SETTINGS.baseUrl,
       otherLodgesCursor: "c-2",
       otherLodgesKeyedAt: new Date("2026-10-14T00:00:00.000Z"),
     });
@@ -2067,17 +2088,62 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     expect(mockExecuteRaw).not.toHaveBeenCalled();
   });
 
-  it("records NOTHING when the API key was replaced while the download ran", async () => {
+  it("records NOTHING when the connection was replaced while the download ran", async () => {
     registry([]);
-    mockKeyStamp
-      .mockResolvedValueOnce("2026-10-01T00:00:00.000Z")
-      .mockResolvedValueOnce("2026-10-14T09:00:00.000Z");
+    mockConnectionCurrent.mockResolvedValue(false);
     pull([]);
 
     await downloadOtherClubsFromServer();
 
     expect(mockRecordDownload).not.toHaveBeenCalled();
     expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringMatching(/connection changed/i));
+  });
+
+  // #4262 review (P2): the deletions, hides and merges of an answer from a
+  // replaced connection are refused too, not only its metadata.
+  it("hides, unlinks, creates and renames NOTHING from an answer whose connection was replaced in flight", async () => {
+    const rows = registry([
+      row("ol_gone", "Gone Lodge", "c-gone"),
+      row("ol_2", "Old Name", "c-2"),
+    ]);
+    mockConnectionCurrent.mockResolvedValue(false);
+    pull([remoteLodge("New Name", { id: "c-2" }), remoteLodge("Brand New Lodge", { id: "c-new" })], {
+      deletedLodgeIds: ["c-gone"],
+      ownLodges: [],
+      sentOn: SENT_ON,
+    });
+
+    const result = await downloadOtherClubsFromServer();
+
+    expect(mockFence).toHaveBeenCalledWith(SENT_ON);
+    // The first write refused stops the download: nothing after it is tried.
+    expect(mockFence).toHaveBeenCalledTimes(1);
+    expect(mockExecuteRaw).not.toHaveBeenCalled();
+    expect(mockAuditCreate).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(mockUpdateMany).not.toHaveBeenCalled();
+    expect(mockRecordDownload).not.toHaveBeenCalled();
+    expect(rows.map((r) => [r.id, r.name, r.hiddenAt ?? null])).toEqual([
+      ["ol_gone", "Gone Lodge", null],
+      ["ol_2", "Old Name", null],
+    ]);
+    expect(result).toMatchObject({ hiddenLodges: [], created: 0, updated: 0, renamed: 0 });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringMatching(/connection changed/i));
+  });
+
+  it("stops at the first write after a replacement: what committed before it stands, nothing after it lands", async () => {
+    const rows = registry([row("ol_gone", "Gone Lodge", "c-gone"), row("ol_2", "Old Name", "c-2")]);
+    // Current for the hide, replaced before the first merge write.
+    mockConnectionCurrent.mockResolvedValueOnce(true).mockResolvedValue(false);
+    pull([remoteLodge("New Name", { id: "c-2" })], { deletedLodgeIds: ["c-gone"], ownLodges: [] });
+
+    const result = await downloadOtherClubsFromServer();
+
+    expect(rows.find((r) => r.id === "ol_gone")?.hiddenAt).toBeInstanceOf(Date);
+    expect(rows.find((r) => r.id === "ol_2")?.name).toBe("Old Name");
+    expect(result.hiddenLodges).toEqual(["Gone Lodge"]);
+    expect(result.renamed).toBe(0);
+    expect(mockRecordDownload).not.toHaveBeenCalled();
   });
 
   it("retries a create that lost a race for its central id, merging into the row the other writer made", async () => {
@@ -2098,16 +2164,6 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     expect(result.nameConflicts).toEqual([]);
   });
 
-  it("records NOTHING when the server address changed while the download ran", async () => {
-    registry([]);
-    mockSettingsRow.mockResolvedValue({ baseUrl: "https://other-central.test" });
-    pull([]);
-
-    await downloadOtherClubsFromServer();
-
-    expect(mockRecordDownload).not.toHaveBeenCalled();
-    expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringMatching(/connection changed/i));
-  });
 
   it("HIDES a lodge the server deleted, keeping the row, its data and its central id (#58)", async () => {
     const rows = registry([row("ol_1", "Gone Lodge", "c-gone"), row("ol_2", "Kept Lodge", "c-2")]);

@@ -2105,24 +2105,40 @@ mispricing a booking.
   the old identity. Both transaction boundaries allow a 150s timeout and 10s
   pool acquisition maxWait, including a bounded wait behind a lodge merge.
   The recorder alone can see an absent row and then records nothing. Other
-  settings writers take no credential lock, so cannot invert this order;
-  the download recorder proposed in open PR #4277 would share the same
-  settings-row protocol. No HTTP runs inside these transactions
+  settings writers take no credential lock, so cannot invert this order.
+  Since the #4262 review the fence is one helper,
+  `withCurrentServerNzConnection` (and `serverNzAnswerWriter`, which throws
+  `ServerNzConnectionChangedError` on a refusal), in the same module: the
+  version recorder and every write of the Other lodges download (below) run
+  through it, in the same order. No HTTP runs inside these transactions
   (`INV-INT-027`), and they remain disjoint from booking/capacity/credit and
   money clusters. The #4436 race suite forces a sync and address move in both
   orders, including a warmed old-key cache, and a sync holding the old address
   while the move and a new key's save queue behind it.
-- **Owned-lodge list writer** — `src/lib/servernz-settings.ts` (`lockServerNzSettings`, #64):
-  the Other lodges download's record step (`downloadOtherClubsFromServer`)
-  takes `$executeRaw`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE``
-  on the singleton settings row, then re-reads the connection (address and API
-  key stamp) and the cursor and keyed marker under it, so a download that ran
-  while the connection changed, or while another download recorded, writes
+- **Owned-lodge list writer, and every Other lodges download write** —
+  `src/lib/servernz-settings.ts` (`lockServerNzSettings`, #64), through the
+  connection fence above (#4262 review): `downloadOtherClubsFromServer` builds
+  one `serverNzAnswerWriter` for the identity its pull was sent on
+  (`OtherLodgesPullResult.sentOn`: the stored address and API-key credential
+  version captured before the request), and EVERY write it makes from the
+  answer goes through it: the hides of deleted lodges with their unlinks and
+  audit row (one transaction), each merge's create, keying and guarded update
+  (`mergeDistributedLodge`), and the record step. Each is one short
+  transaction that takes `$executeRaw`SELECT 1 FROM "ServerNzSettings" WHERE
+  "id" = $1 FOR UPDATE`` first, re-reads the address and credential version,
+  and writes only while both are unchanged; otherwise it throws having written
+  nothing and the download stops, recording nothing. So an answer from a
+  connection replaced while the request was in flight hides, unlinks, creates
+  or renames nothing, not only its cursor and owned list. Order: settings row,
+  credential read, then `OtherLodge`/`Amenity`/`Lodge` rows and the audit row;
+  the admin other-lodge and Central lodge writers take no settings lock, so
+  they cannot invert it. The record step also re-reads the cursor and keyed
+  marker under the lock, so a download that ran while another recorded writes
   nothing back. Since #69 the owned list is stored by central id as the server
   sent it, so an admin's rename of the club's own lodge no longer rewrites it
   and no longer takes this lock. Singleton-keyed; no advisory lock; disjoint
-  from the booking/capacity/credit and money clusters. A missing row (never
-  configured) locks nothing, and its first upsert is the only writer then.
+  from the booking/capacity/credit and money clusters. A missing settings row
+  refuses every fenced write (no stored address matches).
 - **Central lodge link writer** — `PUT /api/admin/lodges/[id]/central-lodge`
   (#62; #4262 review): takes `$executeRaw`SELECT 1 FROM "Lodge" WHERE "id" = $1
   FOR UPDATE`` as the first statement of its transaction, re-reads the link it

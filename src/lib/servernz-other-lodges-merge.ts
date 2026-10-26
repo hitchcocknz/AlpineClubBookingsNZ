@@ -12,8 +12,10 @@ import {
   replaceOtherLodgeAmenities,
   visibleOtherLodgeWhere,
 } from "@/lib/other-lodges";
+import { createAuditLog } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import type { OtherLodgesPullResult } from "@/lib/servernz-api";
+import type { ServerNzAnswerWrite } from "@/lib/servernz-version-record";
 
 /**
  * Merging ONE lodge from the central server's pull into the local Other
@@ -29,6 +31,13 @@ import type { OtherLodgesPullResult } from "@/lib/servernz-api";
  * this row in place, so its bookings, requests and amenities follow it. This
  * club's OWN lodge never takes its name from a download: the name is this
  * site's to change, and an upload carries it to the server (API 2.3).
+ *
+ * FENCED (#4262 review). Every write runs through `write`, the download's
+ * `serverNzAnswerWriter` for the connection the pull was sent on: one
+ * transaction under the settings row lock that writes only while that
+ * connection is still the stored one, and otherwise throws
+ * `ServerNzConnectionChangedError` having written nothing. The reads before
+ * it are only reads; a write never lands for a replaced connection.
  *
  * RETRIES. A write that loses a race with a concurrent writer (an admin's
  * save, or a second download creating the same central id) is DEFERRED; the
@@ -112,8 +121,12 @@ function isUniqueViolation(error: unknown): boolean {
  * different central server this site was pointed at, or a lodge since deleted
  * there — and may be matched by name and re-keyed, rather than treated as a
  * different central lodge holding the name.
+ *
+ * `write` is the fenced writer every write of this merge goes through (see
+ * FENCED above).
  */
 export async function mergeDistributedLodge(
+  write: ServerNzAnswerWrite,
   lodge: PulledLodge,
   owned: OwnedOtherLodges,
   final: boolean,
@@ -182,7 +195,7 @@ export async function mergeDistributedLodge(
     // after the rest of the pull, when the lookups above find the row that
     // writer made and merge into it.
     try {
-      await prisma.$transaction(async (tx) => {
+      await write(async (tx) => {
         const row = await tx.otherLodge.create({
           data: { name: lodge.name, centralId, ...data, ...stamp },
           select: { id: true },
@@ -213,11 +226,13 @@ export async function mergeDistributedLodge(
     let keyed = 0;
     try {
       keyed = (
-        await prisma.otherLodge.updateMany({
-          // `row.centralId` is null, or a stale id a whole download disowned.
-          where: { id: row.id, centralId: row.centralId, updatedAt: row.updatedAt, hiddenAt: null },
-          data: { centralId, updatedAt: row.updatedAt },
-        })
+        await write((tx) =>
+          tx.otherLodge.updateMany({
+            // `row.centralId` is null, or a stale id a whole download disowned.
+            where: { id: row.id, centralId: row.centralId, updatedAt: row.updatedAt, hiddenAt: null },
+            data: { centralId, updatedAt: row.updatedAt },
+          }),
+        )
       ).count;
     } catch (error) {
       if (!isUniqueViolation(error)) throw error;
@@ -251,7 +266,7 @@ export async function mergeDistributedLodge(
   // the upload watermark, so the edit would never be sent. A miss is the local
   // edit winning after all (keptLocal). The same write takes the row's lock, so
   // a concurrent amenity replacement on this lodge queues behind it.
-  const applied = await prisma.$transaction(async (tx) => {
+  const applied = await write(async (tx) => {
     const claimed = await tx.otherLodge.updateMany({
       where: { id: row.id, updatedAt: row.updatedAt, hiddenAt: null },
       data: { ...data, ...stamp, ...(renameTo !== null ? { name: renameTo } : {}) },
@@ -275,22 +290,61 @@ export async function mergeDistributedLodge(
  * (`null` when there is no such row, or it was already hidden: a repeated
  * deletion is a no-op), and how many club lodges it unlinked. Raw, so `updatedAt`
  * stays put: hiding is not an edit to upload.
+ *
+ * `db` is the download's FENCED transaction (`serverNzAnswerWriter`, #4262
+ * review): a deletion from a connection replaced while the pull was in flight
+ * hides and unlinks nothing.
  */
-export async function hideDeletedLodge(
+async function hideDeletedLodge(
+  db: Prisma.TransactionClient,
   centralId: string,
 ): Promise<{ hidden: string | null; unlinked: number }> {
   // A club lodge LINKED to the deleted central lodge (#62's "Central lodge")
   // points at nothing now: the link is cleared, and the club lodge answers
   // nothing until an administrator links it again (#4262: always explicitly).
   // Raw, like the hide: not an administrator's edit.
-  const unlinked = await prisma.$executeRaw`UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" = ${centralId}`;
-  const row = await prisma.otherLodge.findUnique({
+  const unlinked = await db.$executeRaw`UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" = ${centralId}`;
+  const row = await db.otherLodge.findUnique({
     where: { centralId },
     select: { id: true, name: true, hiddenAt: true },
   });
   if (!row || row.hiddenAt) return { hidden: null, unlinked };
   // The instant is the app's, as an administrator's Hide stamps it: the
   // database's NOW() would be read in its own time zone.
-  const hidden = await prisma.$executeRaw`UPDATE "OtherLodge" SET "hiddenAt" = ${new Date()} WHERE "id" = ${row.id} AND "centralId" = ${centralId} AND "hiddenAt" IS NULL`;
+  const hidden = await db.$executeRaw`UPDATE "OtherLodge" SET "hiddenAt" = ${new Date()} WHERE "id" = ${row.id} AND "centralId" = ${centralId} AND "hiddenAt" IS NULL`;
   return { hidden: hidden === 1 ? row.name : null, unlinked };
+}
+
+/**
+ * Hide every deleted lodge in `centralIds` (`hideDeletedLodge`) and write the
+ * download's ONE audit record of what it hid and unlinked, all on `db`: the
+ * download's fenced transaction (#4262 review), so the hides and their record
+ * commit together, and only for the connection the pull was sent on. Returns
+ * the names of the lodges this call hid.
+ */
+export async function hideDeletedLodges(
+  db: Prisma.TransactionClient,
+  centralIds: readonly string[],
+): Promise<string[]> {
+  const hidden: string[] = [];
+  let unlinked = 0;
+  for (const centralId of centralIds) {
+    const one = await hideDeletedLodge(db, centralId);
+    if (one.hidden !== null) hidden.push(one.hidden);
+    unlinked += one.unlinked;
+  }
+  if (hidden.length > 0 || unlinked > 0) {
+    await createAuditLog(
+      {
+        action: "alpine_server.other_lodges.hidden",
+        category: "lodge",
+        severity: "info",
+        outcome: "success",
+        summary: "Lodges deleted on the Alpine Central Server were hidden",
+        details: `hidden ${hidden.length}${hidden.length ? ` (${hidden.join(", ")})` : ""}; club lodges unlinked from them ${unlinked}`,
+      },
+      db,
+    );
+  }
+  return hidden;
 }

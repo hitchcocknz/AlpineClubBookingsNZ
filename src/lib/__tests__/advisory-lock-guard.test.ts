@@ -1440,18 +1440,19 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // `recordServerVersionIfCurrent` re-reads the connection (address and API-key
   // credential version) under it before it records the server's answer; a
   // connection change and request capture now take the same fence before
-  // touching credentials (settings -> credential -> audit). Open PR #4277
-  // would add a second caller of the same one statement (the download record
-  // step). No advisory key; disjoint from booking/money writers. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> "Alpine Central Server connection and
-  // version recorder".
-  // Alpine Central Server download record step (triyder/AlpineClubBookingsNZ#64,
-  // #69): `lockServerNzSettings` locks the singleton settings row (`SELECT 1 …
-  // FOR UPDATE`) so the download re-reads the connection and the owned-lodge
-  // list under the lock before it records the merge; it is the only caller
-  // since the owned list became the server's own ids and names. No advisory
-  // key; disjoint from booking/money writers. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> "Owned-lodge list writers".
+  // touching credentials (settings -> credential -> audit). No advisory key;
+  // disjoint from booking/money writers. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // "Alpine Central Server connection and version recorder".
+  // Other lodges download writes (triyder/AlpineClubBookingsNZ#64, #69; #4262
+  // review): the same one statement, reached through the same fence
+  // (`withCurrentServerNzConnection` / `serverNzAnswerWriter`), takes the
+  // settings row before EVERY write the download makes from an answer (hides
+  // and unlinks, each merge write, the record step) and re-reads the address
+  // and credential version under it, so an answer from a connection replaced
+  // in flight writes nothing. Order: settings -> credential read -> OtherLodge/
+  // Amenity/Lodge rows -> audit. No advisory key; disjoint from booking/money
+  // writers. See docs/CONCURRENCY_AND_LOCKING.md -> "Owned-lodge list writer,
+  // and every Other lodges download write".
   "src/lib/servernz-settings.ts": 1,
   // Adult-member-hosting queue participants (#2597): the shared helper mints
   // one reviewed `FOR UPDATE` protocol for member merge over master, loser and

@@ -15,6 +15,7 @@ import {
   withRatesFromServer,
   type ServerRates,
 } from "@/lib/servernz-rate";
+import type { ServerNzConnectionIdentity } from "@/lib/servernz-version-record";
 
 /**
  * The Alpine Central Server's WIRE SHAPES, as `servernz-api.ts` validates them
@@ -189,6 +190,13 @@ export interface OtherLodgesPullResult {
    * which hides nothing here. An entry that failed its bounds is left out.
    */
   deletedLodgeIds: string[] | undefined;
+  /**
+   * The connection this answer came from, captured before the request (#4262
+   * review). Every write the download makes from the answer is fenced on it
+   * (`serverNzAnswerWriter`), so an answer from a connection replaced while the
+   * request was in flight changes nothing.
+   */
+  sentOn: ServerNzConnectionIdentity;
 }
 
 /** The column's VarChar(16): the bound on any version string taken off the wire. */
