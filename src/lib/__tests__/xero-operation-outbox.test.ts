@@ -3870,6 +3870,8 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
       });
       expect(retireCall()).toBeUndefined();
       expect(result.reaped).toBe(0);
+      // #3403 review (nit): counted as moved.
+      expect(result.moved).toBe(1);
     });
 
     it("retires it when nothing carries it, as before", async () => {
@@ -3898,6 +3900,10 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
       // The cancel step moves it between the verdict and the reap: the guarded
       // write matches nothing.
       mocks.updateManyOperation.mockResolvedValue({ count: 0 });
+      // Review X5: the re-read of what this run cancelled finds nothing.
+      mocks.findManyOperations.mockImplementation(async (args: { where: { requestPayload?: unknown; lastErrorCode?: unknown } }) =>
+        args.where.lastErrorCode || args.where.requestPayload ? [] : waiting,
+      );
 
       const result = await reapStaleWaitingPaymentXeroOutboxOperations();
 
@@ -3910,6 +3916,8 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
         data: expect.objectContaining({ lastErrorCode: "STALE_WAITING_PAYMENT" }),
       });
       expect(result.reaped).toBe(0);
+      // Review X5: it reports only what it cancelled.
+      expect(result.queueOperationIds).toEqual([]);
     });
   });
 
