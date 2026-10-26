@@ -272,6 +272,28 @@ function groupByIntent(
  * again), and only Stripe can tell which. A PENDING or PROCESSING ask is kept on
  * the local rows alone.
  */
+/**
+ * #3403: the backstop for the move at supersession. A superseded ask's balance
+ * is carried by a later request, so its invoice is moved there first; only one
+ * still waiting on this intent after that is retired.
+ */
+async function moveToCarrierOrRetire(
+  params: { operationId: string; paymentIntentId: string },
+  paymentId: string,
+): Promise<"moved" | "retire"> {
+  const carried = await followSupersededAskInvoicesSafely({ paymentId });
+  if (!carried || carried.moved === 0) return "retire";
+  const stillHere = await prisma.xeroSyncOperation.findFirst({
+    where: {
+      id: params.operationId,
+      status: "WAITING_PAYMENT",
+      requestPayload: { path: ["paymentIntentId"], equals: params.paymentIntentId },
+    },
+    select: { id: true },
+  });
+  return stillHere ? "retire" : "moved";
+}
+
 async function decideWaitingOperation(params: {
   operationId: string;
   paymentIntentId: string;
@@ -295,16 +317,17 @@ async function decideWaitingOperation(params: {
   // failed and the webhook never arrived, or the intent was attached after the
   // capture). Released only when the club KEEPS the money; a refunded capture
   // (an approved treasurer task, or with no task a cancelled booking or a
-  // superseded intent, whose capture is refunded - #3403 moves an invoice off
-  // a FAILED superseded ask only) is retired; one a treasurer is still
-  // deciding (#3635) is kept waiting, whatever its age.
+  // superseded intent, whose capture is refunded) is moved to the request
+  // carrying its balance where there is one (#3403 review 2, F1), else
+  // retired; one a treasurer is still deciding (#3635) is kept waiting,
+  // whatever its age.
   if (transaction && isCapturedTransactionStatus(transaction.status)) {
     const refundState = await lateCaptureRefundState({
       paymentIntentId: params.paymentIntentId,
       bookingStatus: transaction.payment?.booking?.status,
     });
     if (refundState === "awaiting-decision") return "keep";
-    return refundState === "refunded" ? "retire" : "captured";
+    return refundState === "refunded" ? moveToCarrierOrRetire(params, transaction.paymentId) : "captured";
   }
 
   const failed = transaction?.status === "FAILED";
@@ -333,21 +356,7 @@ async function decideWaitingOperation(params: {
   // by a later request, so its invoice is moved there first - the backstop for
   // the cancel step and the minter, which move it at supersession - and only
   // an invoice still waiting on this intent after that is retired.
-  if (!payment) {
-    const carried = transaction
-      ? await followSupersededAskInvoicesSafely({ paymentId: transaction.paymentId })
-      : null;
-    if (!carried || carried.moved === 0) return "retire";
-    const stillHere = await prisma.xeroSyncOperation.findFirst({
-      where: {
-        id: params.operationId,
-        status: "WAITING_PAYMENT",
-        requestPayload: { path: ["paymentIntentId"], equals: params.paymentIntentId },
-      },
-      select: { id: true },
-    });
-    return stillHere ? "retire" : "moved";
-  }
+  if (!payment) return transaction ? moveToCarrierOrRetire(params, transaction.paymentId) : "retire";
   const door: AdditionalPaymentDoorInput = {
     bookingStatus: payment.booking.status,
     bookingDeletedAt: payment.booking.deletedAt,

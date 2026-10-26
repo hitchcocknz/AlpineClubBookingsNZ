@@ -678,6 +678,45 @@ function deferred() {
       });
     });
 
+    describe("review 2 (9a0c129d4)", () => {
+      it("F1: A moved to B, then B captured late while C supersedes - both invoices follow on to C, never stranded on the refunded B", async () => {
+        await seedPaidBooking();
+        const a = await priceIncrease(MOD_A, A_CENTS);
+        await declineCard(a);
+        const b = await priceIncrease(MOD_B, B_CENTS);
+        expect(await invoiceFor(MOD_A)).toMatchObject({ waitsOn: b, parkedFrom: a });
+
+        // Stripe is down for C's inline cancel of B: B stays confirmable, its cancel queued.
+        stripe.failCancels = 1;
+        const c = await priceIncrease(MOD_C, C_CENTS);
+        expect(stripe.intents.get(c)?.amount).toBe(A_CENTS + B_CENTS + C_CENTS);
+        expect((await invoices()).map((row) => [row.change, row.waitsOn])).toEqual([
+          [MOD_A, b],
+          [MOD_B, b],
+          [MOD_C, c],
+        ]);
+
+        // B is paid from its old tab before its cancel lands: a late capture, refunded.
+        await payWithCard(b);
+        await drainCancels();
+
+        expect((await invoices()).map((row) => [row.change, row.status, row.waitsOn, row.parkedFrom ?? null])).toEqual([
+          [MOD_A, "WAITING_PAYMENT", c, a],
+          [MOD_B, "WAITING_PAYMENT", c, b],
+          [MOD_C, "WAITING_PAYMENT", c, null],
+        ]);
+
+        await payWithCard(c);
+        const all = await invoices();
+        expect(all.map((row) => [row.status, row.cents])).toEqual([
+          ["PENDING", A_CENTS],
+          ["PENDING", B_CENTS],
+          ["PENDING", C_CENTS],
+        ]);
+        expect(all.reduce((sum, row) => sum + row.cents, 0)).toBe(await captured(c));
+      });
+    });
+
     describe("the move against a price reduction's retire (`retireUnpaidAskChain`)", () => {
       it("the reduction first, the move queued on A's anchor: A's invoice is retired, counted once, and never moved", async () => {
         await seedPaidBooking();

@@ -216,10 +216,18 @@ describe("which request carries which (`supersededAskCarriers`)", () => {
     ]);
   });
 
-  it("a row a superseded-intent operation names (being cancelled, or captured late and refunded) passes it on", () => {
-    const rows = [row("a", "FAILED"), row("b", "REFUNDED"), row("c", "PENDING")];
+  it("a row a superseded-intent operation names, still being cancelled, passes it on and is not carried yet", () => {
+    const rows = [row("a", "FAILED"), row("b", "PENDING"), row("c", "PENDING")];
     expect(read(rows, ["pi_b"])).toEqual([["txn_c", ["txn_a"]]]);
   });
+
+  it.each(["SUCCEEDED", "REFUNDED"])(
+    "a superseded row captured late (%s) is CARRIED with what moved onto it, never stranded (review 2, F1)",
+    (status) => {
+      const rows = [row("a", "FAILED"), row("b", status), row("c", "PENDING")];
+      expect(read(rows, ["pi_b"])).toEqual([["txn_c", ["txn_a", "txn_b"]]]);
+    },
+  );
 
   it.each([
     ["FAILED (declined, or itself superseded)", "FAILED", {}],

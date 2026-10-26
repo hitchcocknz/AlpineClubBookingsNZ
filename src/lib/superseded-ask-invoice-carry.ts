@@ -18,7 +18,9 @@
  * - the supersede's durable cancel step, both of its terminal branches
  *   (`processCancelPaymentIntentOperation`, and the Stripe webhook's
  *   `completeCanceledSupersededPaymentIntentRecovery`), after A is FAILED and
- *   before the recovery row completes, so a crash replays it;
+ *   before the recovery row completes, so a crash replays it - and, where A
+ *   was captured instead, its hand-off to the refund
+ *   (`handoffSucceededSupersededIntentToRefund`, review 2 F1);
  * - every superseding minter, after its cancels and before the new client
  *   secret is returned (`cancelSupersededAdditionalIntentsNow` with the new
  *   intent named), which also covers an A whose card was DECLINED - a FAILED
@@ -33,9 +35,9 @@
  *
  * WHAT MOVES, and what is refused (each refusal leaves the row exactly as it
  * was, to the reaper and the booking-vs-Xero repair pass as before):
- * - the CARRIER of a FAILED, unwithdrawn ask is the first later ADDITIONAL card
- *   row that can carry money - still payable, or captured - and that no
- *   superseded-intent operation names (`supersededAskCarriers`), on a booking
+ * - the CARRIER of a FAILED (or superseded and captured late), unwithdrawn ask
+ *   is the first later ADDITIONAL card row that can carry money - still
+ *   payable, or captured - and that no superseded-intent operation names (`supersededAskCarriers`), on a booking
  *   that has not ended (CANCELLED or BUMPED) or been deleted; a caller naming
  *   its new intent must be naming the payment's newest row;
  * - the INVOICES are supplementary-invoice creates anchored on a booking
@@ -149,11 +151,16 @@ export type CarriedChain = { carrier: LedgerRow; superseded: LedgerRow[] };
  * (`INV-PAY-098`). Each FAILED ask it passes on the way is carried there too:
  * a request superseded in turn hands its whole carried balance on.
  *
+ * A row a superseded-intent operation names (`supersededIntentIds`) never
+ * carries: the money it asked for is carried by the request after it. Once
+ * captured late - and so refunded (`lateCaptureRefundState`) - it is CARRIED
+ * like a FAILED one, with whatever was already moved onto it (review 2, F1);
+ * while its cancel is still in flight it is passed over, and the cancel
+ * step's two terminal branches (FAILED, or the captured hand-off to its
+ * refund) run the move once it lands.
+ *
  * Passed over, neither carrying nor carried: a row a price reduction withdrew
- * (`retireUnpaidAskChain` retires and counts its own invoices), and a row a
- * superseded-intent operation names (`supersededIntentIds`) - being cancelled,
- * or captured late and so refunded (`lateCaptureRefundState`), so the money it
- * asked for is carried by the request after it.
+ * (`retireUnpaidAskChain` retires and counts its own invoices).
  *
  * Not `unpaidChain` (`additional-ask-reduction.ts`, review S3): that asks what
  * the payment still owes NOW (the rows after the last capture, ending in the
@@ -168,12 +175,16 @@ export function supersededAskCarriers(
   let carried: LedgerRow[] = [];
   for (const row of rows) {
     if (row.withdrawnAt || !row.stripePaymentIntentId) continue;
-    if (row.status === PaymentStatus.FAILED) {
+    const superseded = supersededIntentIds.has(row.stripePaymentIntentId);
+    // Review 2 (F1): a superseded row captured late is refunded, and the
+    // request after it carries its balance - with every invoice already moved
+    // onto it - exactly as for one whose cancel landed FAILED.
+    if (row.status === PaymentStatus.FAILED || (superseded && isCapturedTransactionStatus(row.status))) {
       carried.push(row);
       continue;
     }
     const canCarry = isOpenIntentTransactionStatus(row.status) || isCapturedTransactionStatus(row.status);
-    if (!canCarry || supersededIntentIds.has(row.stripePaymentIntentId)) continue;
+    if (!canCarry || superseded) continue;
     if (carried.length > 0) chains.push({ carrier: row, superseded: carried });
     carried = [];
   }

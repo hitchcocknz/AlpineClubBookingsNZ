@@ -1777,6 +1777,8 @@ async function handoffSucceededSupersededIntentToRefund({
     );
     return false;
   }
+  // #3403 review 2 (F1, `INV-PAY-140`): captured late, it is refunded and the request after it carries its balance.
+  await followSupersededAskInvoicesSafely({ paymentId: operation.paymentId });
 
   // #3639: on a CANCELLED booking this capture is a late capture, so it follows
   // the club's setting like every other - held for a treasurer, no refund.
