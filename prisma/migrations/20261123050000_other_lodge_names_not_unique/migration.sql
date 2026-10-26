@@ -5,13 +5,16 @@
 --
 -- One index swap. NO DML.
 --
--- OLD-CODE COMPATIBLE: the draining colour speaks central server API 2.4, so
--- against a 2.5 server its sync is paused and it neither uploads nor
--- downloads. Its other writers (an administrator's edit, Hide) never rely on
--- the index; a rename onto a taken name simply succeeds instead of answering
--- 409. The new colour no longer reads "ServerNzSettings"."otherLodgesOwnedNames"
--- but leaves it as last written, so the draining colour's owned-lodge answer
--- (its edit route and committee booking-officer sync) stays as it was.
+-- WINDOWED, NOT OLD-CODE COMPATIBLE (docs/BLUE_GREEN_MIGRATION_SAFETY.tsv;
+-- owner decision, 24 Oct 2026, #4262), in ONE window with
+-- 20261123040000_other_lodge_hidden_at and never applied apart from it. The
+-- previous release relies on one lodge per name: its download's upsert keys
+-- on the name, and its owned-lodge answer is by name, so once two rows share a
+-- name its admin edit route and committee booking-officer sync would treat
+-- another club's lodge of that name as this club's. The old web colour and
+-- every old worker are stopped, and their connections drained, before this
+-- runs. Reverse: rollback.sql beside this file, FIRST; it refuses while two
+-- visible lodges share a name.
 --
 -- LOCK IMPACT: brief ACCESS EXCLUSIVE locks on "OtherLodge", a small admin
 -- registry, not a hot table; the new index builds over its few hundred rows.
