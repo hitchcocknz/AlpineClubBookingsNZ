@@ -4,8 +4,8 @@
   at once, then reminded every 7 days, four reminders after the request (five
   emails at most); after that only the officers' queues chase it, and the
   reminders carry on after the stay has ended. Where the club has written its bank
-  details (a new "Bank transfer details for a payment
-  request" message under Admin → Booking messages), the email offers a bank
+  details (a new "Bank transfer details for a payment request" message under
+  Admin → Booking messages), the email offers a bank
   transfer as well as card, quoting the booking's Xero invoice number as the
   payment reference, and the request closes when Xero shows the invoice paid. The
   transfer is offered only when it would pay exactly what is asked; if Xero shows the

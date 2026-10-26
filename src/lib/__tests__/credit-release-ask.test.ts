@@ -205,7 +205,7 @@ describe("processCreditReleaseAskOperation", () => {
     expect(deps.complete).not.toHaveBeenCalled();
     expect(mocks.createIntent).not.toHaveBeenCalled();
     expect(mocks.signalOfficers).toHaveBeenCalledWith(
-      expect.objectContaining({ bookingId: operation.bookingId, reason: "waiting-on-edit-request", key: `waiting-on-edit-request:${operation.id}` }),
+      expect.objectContaining({ bookingId: "bk-1", reason: "waiting-on-edit-request", key: "waiting-on-edit-request:op-1" }),
     );
   });
 
