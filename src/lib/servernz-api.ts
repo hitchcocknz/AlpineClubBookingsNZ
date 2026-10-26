@@ -58,6 +58,7 @@ import {
  */
 
 const REQUEST_TIMEOUT_MS = 10_000;
+const CONNECTION_CHANGED = Symbol("connection changed");
 
 export class ServerNzNotConfiguredError extends Error {
   constructor(message: string) {
@@ -118,10 +119,12 @@ interface ServerNzConnection {
  * inline check first so a deployment that upgraded before its nightly sync, or a
  * key saved a moment ago, learns the answer on its first request rather than
  * syncing blind until 03:00. A check that FAILS leaves the row `null` and lets
- * the request through: a failed check never pauses syncing.
+ * the request through: a failed check never pauses syncing. An answer dropped
+ * after a connection change instead resolves and gates the current connection
+ * once more; a second drop fails with a retryable 503.
  */
 async function resolveConnection(
-  options: { skipVersionGate?: boolean } = {},
+  options: { skipVersionGate?: boolean; retriedConnection?: boolean } = {},
 ): Promise<ServerNzConnection> {
   const [credential, settings] = await Promise.all([
     getOperationalServerNzCredential(),
@@ -156,11 +159,18 @@ async function resolveConnection(
 
   let stored = settings.serverVersion;
   if (stored === null) {
-    // Self-heal: ask once, inline. `refreshStoredServerVersion` returns null
+    // Self-heal: ask once, inline. `refreshServerVersionAnswer` returns null
     // for a call that FAILED, which allows the request (default 1); a record
     // that fails after a received answer throws, like any other database
     // failure on a server-bound path.
-    stored = await refreshStoredServerVersion(connection);
+    const answer = await refreshServerVersionAnswer(connection);
+    if (answer === CONNECTION_CHANGED) {
+      if (options.retriedConnection) {
+        throw new ServerNzApiError(503, "The Alpine Central Server connection changed during its version check; retry the request.");
+      }
+      return resolveConnection({ retriedConnection: true });
+    }
+    stored = answer;
   }
   if (isStoredServerVersionMismatch(stored)) {
     throw new ServerNzVersionMismatchError(
@@ -228,20 +238,20 @@ export async function fetchServerVersion(
  * clear a pause on, a connection it never described. The credential version,
  * not the key, is compared, so a key saved again with the same value
  * (A -> B -> A) is still a different connection. Returns what was recorded, or
- * null when the answer was dropped for that reason. A record that fails
+ * CONNECTION_CHANGED when the answer was dropped for that reason. A record that fails
  * throws: a RECEIVED mismatch must never read as "could not check".
  */
 async function recordServerAnswer(
   raw: string,
   identity: ServerNzConnectionIdentity,
-): Promise<string | null> {
+): Promise<string | typeof CONNECTION_CHANGED> {
   const version = storableServerVersion(raw);
   if (!(await recordServerVersionIfCurrent(identity, version))) {
     logger.info(
       { expected: SERVERNZ_EXPECTED_SERVER_VERSION, serverVersion: version },
       "Dropped a late Alpine Central Server version answer: the connection changed while it was in flight",
     );
-    return null;
+    return CONNECTION_CHANGED;
   }
   if (version !== SERVERNZ_EXPECTED_SERVER_VERSION) {
     logger.info(
@@ -266,6 +276,13 @@ async function recordServerAnswer(
 export async function refreshStoredServerVersion(
   connection?: ServerNzConnection,
 ): Promise<string | null> {
+  const answer = await refreshServerVersionAnswer(connection);
+  return answer === CONNECTION_CHANGED ? null : answer;
+}
+
+async function refreshServerVersionAnswer(
+  connection?: ServerNzConnection,
+): Promise<string | null | typeof CONNECTION_CHANGED> {
   const resolved =
     connection ?? (await resolveConnection({ skipVersionGate: true }));
   let version: string;
@@ -347,7 +364,7 @@ async function refuse(
     const stored = await recordServerAnswer(body.serverVersion, sentOn);
     throw new ServerNzVersionMismatchError(
       SERVERNZ_EXPECTED_SERVER_VERSION,
-      stored ?? storableServerVersion(body.serverVersion),
+      stored === CONNECTION_CHANGED ? storableServerVersion(body.serverVersion) : stored,
     );
   }
   throw new ServerNzApiError(res.status, remoteErrorMessage(res.status, body));

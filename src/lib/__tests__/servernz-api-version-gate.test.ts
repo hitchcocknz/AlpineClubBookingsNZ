@@ -460,6 +460,48 @@ describe("a never-asked row self-heals with ONE inline check (default 1)", () =>
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(mocks.recordServerVersionCheck).not.toHaveBeenCalled();
   });
+
+  it("re-resolves a stale cached credential and never sends a gated request after mismatching inline answers", async () => {
+    settings(null);
+    mocks.stored.credentialVersion = "cred-v2";
+    mocks.getOperationalServerNzCredential.mockResolvedValueOnce({ apiKey: "stale-key-a", version: "cred-v1" });
+    fetchMock.mockImplementation(async () => respond(200, { version: "3.0", match: false }));
+
+    await expect(uploadOtherLodges([])).rejects.toBeInstanceOf(ServerNzVersionMismatchError);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith("/api/v1/version"))).toBe(true);
+    expect(mocks.getOperationalServerNzCredential).toHaveBeenCalledTimes(2);
+    expect(mocks.invalidateProviderCredentialCache).toHaveBeenCalledTimes(1);
+    expect(mocks.recordServerVersionCheck).toHaveBeenCalledTimes(1);
+    expectRecorded("3.0");
+  });
+
+  it("re-runs the gate with the current key before sending a gated request", async () => {
+    settings(null);
+    mocks.stored.credentialVersion = "cred-v2";
+    mocks.getOperationalServerNzCredential.mockResolvedValueOnce({ apiKey: "stale-key-a", version: "cred-v1" });
+    fetchMock
+      .mockResolvedValueOnce(respond(200, { version: "3.0", match: false }))
+      .mockResolvedValueOnce(respond(200, { version: SERVERNZ_EXPECTED_SERVER_VERSION, match: true }))
+      .mockResolvedValueOnce(respond(200, { lodges: [], cursor: null, count: 0 }));
+
+    await expect(pullOtherLodges(null)).resolves.toMatchObject({ count: 0 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer stale-key-a");
+    expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe("Bearer acs_key");
+    expectRecorded(SERVERNZ_EXPECTED_SERVER_VERSION);
+  });
+
+  it("throws a retryable error after a second dropped inline answer, without sending a gated request", async () => {
+    settings(null);
+    mocks.readServerNzCredentialVersion.mockResolvedValueOnce("cred-v2").mockResolvedValueOnce("cred-v3");
+    fetchMock.mockImplementation(async () => respond(200, { version: "3.0", match: false }));
+
+    await expect(uploadOtherLodges([])).rejects.toMatchObject({ name: "ServerNzApiError", status: 503 });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([url]) => String(url).endsWith("/api/v1/version"))).toBe(true);
+    expect(mocks.recordServerVersionCheck).not.toHaveBeenCalled();
+  });
 });
 
 describe("every request names this site's version", () => {

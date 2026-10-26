@@ -7,4 +7,6 @@
 
   Each answer is now recorded only if the address and the saved key it was
   sent with are still the ones stored. Otherwise it is dropped, and the next
-  check asks the current server. You do not need to do anything.
+  check asks the current server. An in-flight sync rechecks the current
+  connection once before sending anything; if the connection changes again,
+  retry the sync. You do not need to change any settings.
