@@ -22,7 +22,7 @@ import {
 } from "./fragility-lib.mjs";
 import { AREAS, areasForPair } from "./fragility-areas.mjs";
 import { chainsOf, describeSide, rankAreas, renderRanking, replaceGenerated, screenCandidate, validateVerdicts, withTitles } from "./fragility-rank.mjs";
-import { buildRepeats } from "./fragility-signals.mjs";
+import { buildRepeats, githubAsOf, githubUntilFromArgs } from "./fragility-signals.mjs";
 
 /**
  * The fragility review's evidence rules: which merges are fixes, which issue
@@ -545,5 +545,38 @@ describe("ranking by confirmed repeats", () => {
     expect(doc.endsWith("\n\n## Method\n")).toBe(true);
     expect(doc).toContain("| 1 | [Email and notifications]");
     expect(doc).toContain("[code-history overlap](https://example.test/e). same bug");
+  });
+});
+
+describe("GitHub evidence as of a time", () => {
+  const github = {
+    issues: [
+      { number: 1, createdAt: "2026-10-11T10:00:00Z" },
+      { number: 2, createdAt: "2026-10-11T16:33:34Z" },
+    ],
+    comments: [
+      { issue: 1, createdAt: "2026-10-11T16:33:33Z" },
+      { issue: 1, createdAt: "2026-10-12T00:00:00Z" },
+    ],
+    reopened: [{ issue: 1, createdAt: "2026-10-13T00:00:00Z" }],
+  };
+
+  it("drops issues, comments and reopens created after the bound, keeping the bound itself", () => {
+    const bounded = githubAsOf(github, "2026-10-11T16:33:33Z");
+    expect(bounded.issues.map((issue) => issue.number)).toEqual([1]);
+    expect(bounded.comments).toEqual([github.comments[0]]);
+    expect(bounded.reopened).toEqual([]);
+  });
+
+  it("leaves the evidence unchanged without a bound, and refuses a bound that is not a time", () => {
+    expect(githubAsOf(github, null)).toBe(github);
+    expect(() => githubAsOf(github, "yesterday")).toThrow(/ISO time/);
+  });
+
+  it("reads --github-until in either form", () => {
+    expect(githubUntilFromArgs([])).toBeNull();
+    expect(githubUntilFromArgs(["--github-until", "2026-10-11T16:33:33Z"])).toBe("2026-10-11T16:33:33Z");
+    expect(githubUntilFromArgs(["--github-until=2026-10-11T16:33:33Z"])).toBe("2026-10-11T16:33:33Z");
+    expect(() => githubUntilFromArgs(["--github-until"])).toThrow(/ISO time/);
   });
 });

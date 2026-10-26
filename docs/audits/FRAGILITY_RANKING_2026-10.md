@@ -54,7 +54,7 @@ Ranked by confirmed repeat pairs across all history (since 2026-04-03). "Since 8
 | 14 | [Concurrency and locking](#14-concurrency-and-locking--2-confirmed-1-since-8-aug) | 2 | 1 | 2 |
 | 15 | [Booking creation, pricing and the member booking screens](#15-booking-creation-pricing-and-the-member-booking-screens--1-confirmed-0-since-8-aug) | 1 | 0 | 1 |
 
-622 candidate pairs from the signals; 317 screened out as known noise; 305 reviewed by hand: 142 confirmed, 163 rejected.
+621 candidate pairs from the signals; 316 screened out as known noise; 305 reviewed by hand: 142 confirmed, 163 rejected.
 
 ## Repeats by area
 
@@ -468,16 +468,16 @@ Each chain is one problem coming back: every line is an earlier fix → the late
    6,783 comments, PR bodies included), and every fix on `main`: 513 fix units,
    one per merged fix PR plus each `fix…` commit made straight on `main`.
 2. **Find candidate pairs.** Four signals each propose earlier fix → later
-   fix (or later issue) pairs, 622 in all (a pair more than one signal
+   fix (or later issue) pairs, 621 in all (a pair more than one signal
    found counts under each, so the four counts add up to more):
    - **code-history overlap** (224): the later fix rewrote at least five lines
      that `git blame` says an earlier fix, for a different issue, had written;
-   - **text citation** (398): an issue, PR body or comment cites an earlier,
+   - **text citation** (397): an issue, PR body or comment cites an earlier,
      already-fixed issue or PR in the same sentence as "again", "regressed",
      "reintroduced", "came back", "still" and similar;
    - **re-fix of the same issue** (29): one issue needed a second fix unit;
    - **revert** (1): a fix commit was reverted.
-3. **Screen out known noise** (317 pairs): citations whose only repeat word is
+3. **Screen out known noise** (316 pairs): citations whose only repeat word is
    "still", and re-fixes landing under three days after the first fix. Part 1's
    spot checks found both are nearly always incidental or one issue delivered
    over several PRs.
@@ -535,15 +535,30 @@ Each chain is one problem coming back: every line is an earlier fix → the late
 
 ## Reproducing it
 
-Run against `main` at `3ca2f399d` (12 Oct 2026 NZ) over the full history:
+Measured at `main` `3ca2f399deaded6f263300b7e299f0e0310a2503` (12 Oct 2026
+NZ), over the full history, with GitHub issues, PRs and comments as they stood
+at 2026-10-11T16:33:33Z (the moment the run read them: 4,031 issues and PRs,
+6,783 comments). This regenerates the generated block above exactly:
 
 ```
-pnpm run audit:fragility:collect -- --anonymous   # or GITHUB_TOKEN=… for reopen events too
-pnpm run audit:fragility:signals
+pnpm run audit:fragility:collect -- --anonymous --ref 3ca2f399deaded6f263300b7e299f0e0310a2503
+pnpm run audit:fragility:signals -- --github-until 2026-10-11T16:33:33Z
 pnpm run audit:fragility:rank -- candidates       # tmp/fragility/candidates.json, for judging
 pnpm run audit:fragility:rank                     # rewrites the generated block from the verdicts
 ```
 
-The last step refuses to run while any screened candidate has no verdict, so a
-rerun on a newer `main` first needs verdicts for its new pairs. Output lands in
-`tmp/fragility/` (git-ignored).
+- **Re-checked on 27 Oct 2026** with the scripts as merged with `main` at
+  `56fceba35f27`: every ranked count, all 305 judged pairs and the 142/163
+  split came out identical. The original 12 Oct run counted one more
+  text-citation pair (622 candidates, 398 citations, 317 screened out); that
+  pair was screened out as noise, never judged, and its text has since been
+  edited or deleted on GitHub, so the figures here are the ones a rerun
+  produces.
+- **Use `--anonymous`, not a token, to reproduce.** A token also collects
+  reopen events, which adds two `reopened` pairs this run never judged
+  (`pr-1480->issue-1479`, `pr-1919->pr-1921`), and the last step then refuses
+  to run until they have verdicts. The anonymous collection takes about two
+  hours.
+- The last step refuses to run while any screened candidate has no verdict, so
+  a rerun on a newer `main` (or without `--github-until`) first needs verdicts
+  for its new pairs. Output lands in `tmp/fragility/` (git-ignored).
