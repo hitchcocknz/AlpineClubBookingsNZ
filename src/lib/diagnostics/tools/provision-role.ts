@@ -877,8 +877,28 @@ export function quoteLiteral(value: string): string {
       );
     }
   }
+  // #4453 review (S-F7): doubling single quotes is only a complete escape while
+  // `standard_conforming_strings` is on. On a server that turned it off, a
+  // backslash before the closing quote would end the literal early and let the
+  // rest of a password run as SQL. Refused rather than escaped, so the literal is
+  // correct whatever the setting, and the statement text stays the same.
+  if (value.includes("\\")) {
+    throw new Error(
+      "Refusing to build provisioning SQL for a value containing a backslash.",
+    );
+  }
   return `'${value.replace(/'/g, "''")}'`;
 }
+
+/**
+ * The attributes every least-privilege LOGIN role is pinned to, whether it was
+ * just created or has drifted: not a superuser, no role or database creation,
+ * no replication, row-level security applies, and NOINHERIT, so a future
+ * accidental role grant does not silently take effect. ONE definition for the AI
+ * Diagnostics role and the #4453 application roles (`INV-SSOT`).
+ */
+export const LEAST_PRIVILEGE_ROLE_ATTRIBUTES =
+  "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS";
 
 /**
  * Create a LOGIN role if it is absent. `DO` rather than `CREATE ROLE IF NOT
@@ -979,7 +999,7 @@ export function buildAiDiagnosticsRoleSql(
     //    replication, and NOBYPASSRLS so row-level security still applies.
     //    NOINHERIT means a future accidental role grant does not silently take
     //    effect. The password is (re)set here, which is the rotation path.
-    `ALTER ROLE ${role} WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS CONNECTION LIMIT ${input.connectionLimit} PASSWORD ${passwordLiteral};`,
+    `ALTER ROLE ${role} WITH ${LEAST_PRIVILEGE_ROLE_ATTRIBUTES} CONNECTION LIMIT ${input.connectionLimit} PASSWORD ${passwordLiteral};`,
 
     // 3. Server-side defaults, so the restrictions hold even for a connection
     //    that forgets to open a READ ONLY transaction (a psql session an

@@ -15,8 +15,15 @@
  * WHY A SCRIPT, NOT A MIGRATION — the same reasons as the AI Diagnostics role
  * (`scripts/diagnostics/provision-ai-diagnostics-role.ts`, ADR-007): a role is
  * cluster state, it needs secrets the schema must never contain, and a migration
- * runs as the role this script narrows. It is idempotent and safe to run against
- * a live database at any time; a re-run is the repair and password-rotation path.
+ * runs as the role this script narrows. It is idempotent; a re-run is the repair
+ * path, and — because every `--apply` resets all three passwords — the rotation
+ * path, so deploy straight after one.
+ *
+ * LOCKS. The FIRST `--apply` on a database hands every table to the migration
+ * role, and `ALTER … OWNER TO` holds ACCESS EXCLUSIVE until COMMIT: run it in a
+ * quiet window. The statement list bounds every wait (`lock_timeout`), so a
+ * long-open reader stops the run with nothing changed instead of freezing the
+ * app. Later runs only GRANT and REVOKE, which wait on nothing an app holds.
  *
  * WHAT IT NEEDS. A connection as the OPERATOR — a superuser, or a role that may
  * create roles and change object owners: `DB_ROLES_PROVISION_DATABASE_URL`, or
@@ -31,6 +38,7 @@ import { Client } from "pg";
 
 import {
   buildDatabaseRolesSql,
+  CONNECTION_STRING_UNSAFE_PASSWORD,
   DEFAULT_DATABASE_ROLE_NAMES,
   type DatabaseRoleCredential,
   type DatabaseRoleKind,
@@ -43,8 +51,9 @@ import {
 
 const DRY_RUN_PASSWORD = "REDACTED-DRY-RUN-PLACEHOLDER";
 const MINIMUM_PASSWORD_LENGTH = 20;
-/** The characters `docker-compose.yml` cannot carry unencoded in a connection string. */
-const URL_UNSAFE_PASSWORD = /[@/:?#%\s]/;
+/** SQLSTATEs of a bounded wait that ran out: try again when the database is quiet. */
+const LOCK_NOT_AVAILABLE = "55P03";
+const QUERY_CANCELED = "57014";
 
 /** Which variables name each role and carry its password. */
 const ROLE_ENV: Record<DatabaseRoleKind, { user: string; password: string; label: string }> = {
@@ -115,7 +124,7 @@ function main(): void {
     if (apply && password.length < MINIMUM_PASSWORD_LENGTH) {
       fail(`${env.password} must be at least ${MINIMUM_PASSWORD_LENGTH} characters.`);
     }
-    if (apply && URL_UNSAFE_PASSWORD.test(password)) {
+    if (apply && CONNECTION_STRING_UNSAFE_PASSWORD.test(password)) {
       fail(
         `${env.password} contains a character a connection string cannot carry unencoded (@ / : ? # % or whitespace). Use a hex secret, e.g. \`openssl rand -hex 24\`.`,
       );
@@ -170,6 +179,12 @@ async function run(
   } catch (err) {
     await client.query("ROLLBACK").catch(() => {});
     // The statement list is not echoed: it holds the password literals.
+    const code = (err as { code?: string }).code;
+    if (code === LOCK_NOT_AVAILABLE || code === QUERY_CANCELED) {
+      console.error(
+        "[provision-database-roles] Another session held a lock this run needed, so it stopped within its timeout and was rolled back: nothing changed. Retry in a quiet window (no long-running report, merge or open psql transaction).",
+      );
+    }
     console.error(
       `[provision-database-roles] Provisioning failed and was rolled back: ${
         err instanceof Error ? err.message : String(err)

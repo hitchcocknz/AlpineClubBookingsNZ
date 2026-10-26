@@ -15,7 +15,12 @@ import {
   buildDatabaseRolesSql,
   DEFAULT_DATABASE_ROLE_NAMES,
   MIGRATION_HISTORY_RELATION,
+  PROVISIONING_LOCK_TIMEOUT,
+  SECURITY_DEFINER_ROUTINE_ALLOWLIST,
 } from "@/lib/database-roles";
+import { LEAST_PRIVILEGE_ROLE_ATTRIBUTES } from "@/lib/diagnostics/tools/provision-role";
+
+import { appEnvironmentAnchor, BASE_COMPOSE, composeServices, readRepoFile } from "./helpers/compose";
 
 const INPUT = {
   databaseName: "tacbookings",
@@ -104,11 +109,52 @@ describe("buildDatabaseRolesSql (#4453)", () => {
     );
   });
 
+  it("bounds every lock wait before it touches anything (#4453 review, O-F1)", () => {
+    expect(statements[0]).toBe(`SET LOCAL lock_timeout = '${PROVISIONING_LOCK_TIMEOUT}';`);
+    expect(statements[1]).toMatch(/^SET LOCAL statement_timeout = '\d+s';$/);
+  });
+
+  it("pins the shared role attributes, one definition with the AI Diagnostics role", () => {
+    expect(sql).toContain(`ALTER ROLE "tac_app" WITH ${LEAST_PRIVILEGE_ROLE_ATTRIBUTES} PASSWORD`);
+  });
+
+  it("grants TEMPORARY to the migration and application roles only (S-F10)", () => {
+    expect(sql).toContain(`GRANT TEMPORARY ON DATABASE "tacbookings" TO "tac_migrator";`);
+    expect(sql).toContain(`GRANT TEMPORARY ON DATABASE "tacbookings" TO "tac_app";`);
+    expect(sql).not.toContain(`GRANT TEMPORARY ON DATABASE "tacbookings" TO "tac_audit_retention";`);
+  });
+
+  it("leaves views SELECT-only for the application (S-F3)", () => {
+    const narrow = indexOf(statements, "REVOKE UPDATE, DELETE, TRUNCATE");
+    expect(statements[narrow]).toContain("c.relkind IN ('v', 'm')");
+    expect(statements[narrow]).toContain("REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE %s FROM %s");
+  });
+
+  it("refuses SECURITY DEFINER routines outside an empty allowlist, and writable views or rules over the ledger", () => {
+    expect(SECURITY_DEFINER_ROUTINE_ALLOWLIST).toEqual([]);
+    const last = statements.at(-1) ?? "";
+    expect(last).toContain("p.prosecdef");
+    expect(last).toContain("pg_catalog.pg_rewrite");
+    expect(last).toContain("append-only relation % is missing");
+  });
+
   it("re-checks the result last, and refuses to commit a breach", () => {
     const last = statements.at(-1) ?? "";
     expect(last).toContain("Refusing to commit");
     for (const relation of APPEND_ONLY_RELATIONS) {
       expect(last).toContain(`can still change rows of %.', '${relation}'`);
+    }
+  });
+});
+
+describe("AUDIT_RETENTION_DATABASE_URL reaches the cron leader only (#4453 review, S-F4/O-F3)", () => {
+  it("is on the `app` service and in no shared anchor or web slot", () => {
+    const compose = readRepoFile(BASE_COMPOSE);
+    expect(appEnvironmentAnchor(compose) ?? "").not.toContain("AUDIT_RETENTION_DATABASE_URL");
+    const services = composeServices(BASE_COMPOSE);
+    expect(services.get("app")).toContain("AUDIT_RETENTION_DATABASE_URL: ${AUDIT_RETENTION_DATABASE_URL:-}");
+    for (const [name, body] of services) {
+      if (name !== "app") expect(body, name).not.toContain("AUDIT_RETENTION_DATABASE_URL");
     }
   });
 });
@@ -153,6 +199,12 @@ describe("pnpm run db:provision-roles (#4453)", () => {
     const result = cli([], { AUDIT_RETENTION_DB_USER: "ai_diagnostics_ro" });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("ADR-007");
+  });
+
+  it("refuses a backslash in a password, which could end a literal early (S-F7)", () => {
+    const result = cli(["--apply"], { ...passwords, APP_DB_PASSWORD: "a".repeat(20) + "\\" });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("backslash");
   });
 
   it("with --apply, refuses a missing, short or URL-unsafe password before connecting", () => {

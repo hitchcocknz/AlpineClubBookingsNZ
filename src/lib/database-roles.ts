@@ -4,13 +4,27 @@
  *
  * Three roles replace the one superuser the stock Compose stack connects as:
  *
- *  - the OPERATOR — the existing superuser (`POSTGRES_USER`). Humans only:
- *    provisioning, restores, hand repairs. No application process holds it.
+ *  - the OPERATOR — the existing superuser (`POSTGRES_USER`), for people:
+ *    provisioning, restores, hand repairs. No application process needs it once
+ *    the roles are split; the deployment guide tells operators never to give the
+ *    app a superuser connection string, including for backup restore-validation.
  *  - the MIGRATION role — owns every object in schema `public`, so it can run
  *    `prisma migrate deploy`. Not a superuser, and a member of no role.
  *  - the APPLICATION role — SELECT, INSERT, UPDATE and DELETE on ordinary tables,
- *    but only INSERT and SELECT on the append-only relations below, SELECT only on
- *    the migration history, and nothing that is not a table or sequence right.
+ *    only SELECT on views, only INSERT and SELECT on the append-only relations
+ *    below, SELECT only on the migration history, and nothing that is not a
+ *    table, sequence or TEMPORARY right.
+ *
+ * WHAT "APPEND-ONLY" MEANS HERE, exactly. No statement the application role
+ * runs can UPDATE a ledger line or an audit row, and no route can either: not a
+ * view or rule over them (the re-check below refuses one), not a SECURITY
+ * DEFINER routine (refused unless allow-listed), and not a parent-key UPDATE (the
+ * ledger's foreign keys are `ON UPDATE RESTRICT`, migration
+ * `20261125010000_restrict_booking_ledger_key_updates`). ONE route deletes ledger
+ * lines on purpose: deleting a booking removes its lines through
+ * `BookingLedgerLine.bookingId`'s `ON DELETE CASCADE`, which runs with the table
+ * owner's rights. Whether that should change belongs to the ledger design, not to
+ * this grant.
  *
  * plus a fourth, narrow AUDIT-RETENTION role for the one job that must change
  * audit rows: `runAuditLogRetentionJob` anonymises request data after 90 days and
@@ -42,6 +56,7 @@ import { AUDIT_ANONYMISED_REQUEST_COLUMNS } from "./audit-retention-classes";
 import {
   buildCreateLoginRoleIfAbsentSql,
   buildStripAllRoleMembershipsSql,
+  LEAST_PRIVILEGE_ROLE_ATTRIBUTES,
   quoteIdentifier,
   quoteLiteral,
 } from "./diagnostics/tools/provision-role";
@@ -53,8 +68,9 @@ export const APPLICATION_SCHEMA = "public";
  * Relations the application role may only INSERT into and SELECT from. A row in
  * one of these is a fact that is corrected by appending another row, never by
  * rewriting it: the booking ledger (`docs/design/booking-ledger.md` §4) and the
- * audit log. Adding a relation here is a release that asks every deployment to
- * re-run `pnpm run db:provision-roles --apply`, and the upgrade note says so.
+ * audit log. Adding a relation here — or a column to
+ * `AUDIT_ANONYMISED_REQUEST_COLUMNS` — is a release that asks every deployment to
+ * re-run `pnpm run db:provision-roles --apply`, and its upgrade note says so.
  */
 export const APPEND_ONLY_RELATIONS = ["BookingLedgerLine", "AuditLog"] as const;
 
@@ -69,6 +85,34 @@ export const AUDIT_RETENTION_RELATION = "AuditLog";
 
 /** Table rights the application role holds on an ordinary relation. */
 export const APPLICATION_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE";
+
+/**
+ * SECURITY DEFINER routines the re-check tolerates in the application schema, as
+ * `regprocedure` text. EMPTY: such a routine runs as its owner — the migration
+ * role, which owns the ledger — so one that writes an append-only relation would
+ * hand that power to anyone with EXECUTE, which PUBLIC has by default. A release
+ * that needs one adds it here with its reason, in the same pull request.
+ */
+export const SECURITY_DEFINER_ROUTINE_ALLOWLIST: readonly string[] = [];
+
+/**
+ * How long the provisioning transaction waits for a lock, and for any one
+ * statement. The first run hands every table to the migration role, and
+ * `ALTER … OWNER TO` takes ACCESS EXCLUSIVE until COMMIT, so a long-open reader
+ * would otherwise freeze every table already transferred behind it. Five seconds
+ * is the migrate service's own bound (#3377). The CLI reports a timeout as
+ * "retry in a quiet window".
+ */
+export const PROVISIONING_LOCK_TIMEOUT = "5s";
+export const PROVISIONING_STATEMENT_TIMEOUT = "120s";
+
+/**
+ * The characters a role password must not contain, because Compose interpolates
+ * it into a connection string unencoded. The deploy script's
+ * `require_safe_database_password` refuses the same set
+ * (`database-roles-password-charset.test.ts` pins the two equal).
+ */
+export const CONNECTION_STRING_UNSAFE_PASSWORD = /[@/:?#%\s]/;
 
 /** The stock role names. A deployment may choose its own. */
 export const DEFAULT_DATABASE_ROLE_NAMES = {
@@ -92,9 +136,6 @@ export interface DatabaseRolesProvisionInput {
   app: DatabaseRoleCredential;
   auditRetention: DatabaseRoleCredential;
 }
-
-const ROLE_ATTRIBUTES =
-  "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS";
 
 /** A relation name in the application schema, quoted for SQL text. */
 function relation(name: string): string {
@@ -209,6 +250,17 @@ function buildRelationNarrowingSql(
     RAISE NOTICE 'Relation % does not exist yet: re-run provisioning after the migrations so the application role is narrowed on it.', ${quoteLiteral(name)};
   END IF;`);
   }
+  // Views and materialised views: SELECT only. An auto-updatable view runs its
+  // DML with the VIEW OWNER's rights, so UPDATE on a view over the ledger would
+  // be UPDATE on the ledger (#4453 review, S-F3).
+  lines.push(`  FOR view_name IN
+    SELECT c.oid::regclass::text FROM pg_catalog.pg_class c
+    JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = ${quoteLiteral(APPLICATION_SCHEMA)} AND c.relkind IN ('v', 'm')
+    ORDER BY 1
+  LOOP
+    EXECUTE format('REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE %s FROM %s', view_name, ${quoteLiteral(app)});
+  END LOOP;`);
   lines.push(`  IF to_regclass(${regclassLiteral(MIGRATION_HISTORY_RELATION)}) IS NOT NULL THEN
     EXECUTE ${quoteLiteral(`REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE ${relation(MIGRATION_HISTORY_RELATION)} FROM ${app}`)};
   END IF;`);
@@ -220,6 +272,8 @@ function buildRelationNarrowingSql(
     RAISE NOTICE 'Relation % does not exist yet: re-run provisioning after the migrations so the audit-retention role can maintain it.', ${quoteLiteral(AUDIT_RETENTION_RELATION)};
   END IF;`);
   return `DO $$
+DECLARE
+  view_name text;
 BEGIN
 ${lines.join("\n")}
 END
@@ -249,6 +303,11 @@ function buildVerificationSql(input: {
   END IF;`,
   ).join("\n");
   const anonymised = AUDIT_ANONYMISED_REQUEST_COLUMNS.map(quoteLiteral).join(", ");
+  const appendOnlyList = APPEND_ONLY_RELATIONS.map(regclassLiteral).join(", ");
+  const appendOnlyPresent = APPEND_ONLY_RELATIONS.map(
+    (name) => `(${regclassLiteral(name)}, to_regclass(${regclassLiteral(name)}))`,
+  ).join(", ");
+  const secdefAllowlist = `ARRAY[${SECURITY_DEFINER_ROUTINE_ALLOWLIST.map(quoteLiteral).join(", ")}]::text[]`;
   return `DO $$
 DECLARE
   offending text;
@@ -272,7 +331,42 @@ BEGIN
     RAISE EXCEPTION 'Refusing to commit: the application or retention role may create objects in schema %.', ${quoteLiteral(APPLICATION_SCHEMA)};
   END IF;
 
+  -- A migrated schema without an append-only relation means provisioning ran
+  -- against something it does not understand; narrowing nothing would pass.
+  IF to_regclass(${regclassLiteral(MIGRATION_HISTORY_RELATION)}) IS NOT NULL THEN
+    SELECT string_agg(expected.name, ', ' ORDER BY expected.name) INTO offending
+      FROM (VALUES ${appendOnlyPresent}) AS expected(name, found)
+      WHERE expected.found IS NULL;
+    IF offending IS NOT NULL THEN
+      RAISE EXCEPTION 'Refusing to commit: the schema is migrated but append-only relation % is missing.', offending;
+    END IF;
+  END IF;
+
 ${appendOnlyChecks}
+
+  -- A view or rule that reads an append-only relation and that the application
+  -- may write through: its DML would run with the owner's rights (S-F3).
+  SELECT string_agg(DISTINCT r.ev_class::regclass::text || ' (' || r.rulename || ')', ', ') INTO offending
+    FROM pg_catalog.pg_rewrite r
+    JOIN pg_catalog.pg_depend d
+      ON d.classid = 'pg_catalog.pg_rewrite'::regclass AND d.objid = r.oid
+     AND d.refclassid = 'pg_catalog.pg_class'::regclass
+    WHERE d.refobjid IN (SELECT to_regclass(x) FROM unnest(ARRAY[${appendOnlyList}]) AS x)
+      AND pg_catalog.has_table_privilege(${app}, r.ev_class, 'INSERT, UPDATE, DELETE');
+  IF offending IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to commit: the application role may write through a view or rule over an append-only relation: %.', offending;
+  END IF;
+
+  -- A SECURITY DEFINER routine runs as its owner, which owns the ledger.
+  SELECT string_agg(p.oid::regprocedure::text, ', ' ORDER BY p.oid::regprocedure::text) INTO offending
+    FROM pg_catalog.pg_proc p
+    JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = ${quoteLiteral(APPLICATION_SCHEMA)}
+      AND p.prosecdef
+      AND NOT (p.oid::regprocedure::text = ANY (${secdefAllowlist}));
+  IF offending IS NOT NULL THEN
+    RAISE EXCEPTION 'Refusing to commit: SECURITY DEFINER routine % is not on SECURITY_DEFINER_ROUTINE_ALLOWLIST.', offending;
+  END IF;
 
   IF to_regclass(${auditRelation}) IS NOT NULL THEN
     SELECT string_agg(c.relname, ', ' ORDER BY c.relname) INTO offending
@@ -330,7 +424,14 @@ export function buildDatabaseRolesSql(input: DatabaseRolesProvisionInput): strin
   const retention = quoteIdentifier(input.auditRetention.roleName);
   const all = [input.migrator, input.app, input.auditRetention];
 
-  const statements: string[] = [];
+  const statements: string[] = [
+    // 0. Bound every wait (#4453 review, O-F1). The first run takes ACCESS
+    //    EXCLUSIVE on each table it hands over, held to COMMIT; a lock it cannot
+    //    get in time stops the run with nothing changed, rather than freezing the
+    //    app behind a long-open reader. `LOCAL`: the CLI runs one transaction.
+    `SET LOCAL lock_timeout = ${quoteLiteral(PROVISIONING_LOCK_TIMEOUT)};`,
+    `SET LOCAL statement_timeout = ${quoteLiteral(PROVISIONING_STATEMENT_TIMEOUT)};`,
+  ];
 
   // 1. Create each role if it is absent, then pin its attributes and password
   //    whether it was just created or had drifted. Not a superuser, no role or
@@ -338,7 +439,7 @@ export function buildDatabaseRolesSql(input: DatabaseRolesProvisionInput): strin
   for (const credential of all) {
     statements.push(
       buildCreateLoginRoleIfAbsentSql(credential.roleName),
-      `ALTER ROLE ${quoteIdentifier(credential.roleName)} WITH ${ROLE_ATTRIBUTES} PASSWORD ${quoteLiteral(credential.password)};`,
+      `ALTER ROLE ${quoteIdentifier(credential.roleName)} WITH ${LEAST_PRIVILEGE_ROLE_ATTRIBUTES} PASSWORD ${quoteLiteral(credential.password)};`,
     );
   }
 
@@ -351,8 +452,10 @@ export function buildDatabaseRolesSql(input: DatabaseRolesProvisionInput): strin
 
   // 3. Database and schema. CONNECT for all three; the migration role also gets
   //    CREATE on the database (a migration's `CREATE EXTENSION` of a trusted
-  //    extension needs it) and USAGE, CREATE on the schema. Nothing is revoked
-  //    from PUBLIC.
+  //    extension needs it) and USAGE, CREATE on the schema. The migration and
+  //    application roles get TEMPORARY explicitly: AI Diagnostics provisioning
+  //    revokes it from PUBLIC, and migrations already use `CREATE TEMP TABLE`
+  //    (#4453 review, S-F10/O-F5). Nothing is revoked from PUBLIC here.
   for (const role of [migrator, app, retention]) {
     statements.push(
       `REVOKE ALL PRIVILEGES ON DATABASE ${database} FROM ${role};`,
@@ -362,6 +465,8 @@ export function buildDatabaseRolesSql(input: DatabaseRolesProvisionInput): strin
   }
   statements.push(
     `GRANT CREATE ON DATABASE ${database} TO ${migrator};`,
+    `GRANT TEMPORARY ON DATABASE ${database} TO ${migrator};`,
+    `GRANT TEMPORARY ON DATABASE ${database} TO ${app};`,
     `GRANT USAGE, CREATE ON SCHEMA ${schema} TO ${migrator};`,
     `GRANT USAGE ON SCHEMA ${schema} TO ${app};`,
     `GRANT USAGE ON SCHEMA ${schema} TO ${retention};`,
