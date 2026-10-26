@@ -733,6 +733,14 @@ function deferred() {
       expect(await prisma.paymentTransaction.findUnique({ where: { stripePaymentIntentId: refused } })).toBeNull();
       expect(await captured(a)).toBe(A_CENTS);
       expect(await prisma.paymentRecoveryOperation.count({ where: { paymentIntentId: a, type: "CANCEL_PAYMENT_INTENT" } })).toBe(0);
+
+      // A second attempt must not accept the old A+B amount just because its
+      // new balance snapshot is now zero. No provenance can separate A from B.
+      const minted = stripe.created.length;
+      expect(await runAskRecovery()).toBe("failed");
+      expect(stripe.created).toHaveLength(minted);
+      expect(await prisma.paymentTransaction.findUnique({ where: { stripePaymentIntentId: refused } })).toBeNull();
+      expect(await captured(a)).toBe(A_CENTS);
     });
 
     it("A -> B -> B captured: both invoices go out, each for its own amount, and their payments sum to the capture", async () => {
