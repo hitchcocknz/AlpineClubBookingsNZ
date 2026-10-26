@@ -284,8 +284,8 @@ const verification: DataMigrationVerification = {
       name: "keep the connection when the last XeroToken row goes",
       harm:
         "After the old release disconnects, the new one still reports Xero connected over tokens that no longer exist.",
-      find: `    DELETE FROM "XeroConnection";`,
-      replace: ``,
+      find: `     WHERE NOT EXISTS (SELECT 1 FROM "XeroToken")`,
+      replace: `     WHERE false`,
     },
     {
       name: "fire only on insert and update",
@@ -304,20 +304,20 @@ const verification: DataMigrationVerification = {
       name: "clear the new release's lease when the old release writes",
       harm:
         "A refresh the new release is part-way through loses its lease, so the old release can claim and spend the same rotating refresh token.",
-      find: `         "updatedAt" = stamp
-   WHERE "id" = 'default'`,
-      replace: `         "updatedAt" = stamp,
-         "refreshInProgressUntil" = NULL
-   WHERE "id" = 'default'`,
+      find: `           "updatedAt" = stamp
+      FROM latest`,
+      replace: `           "updatedAt" = stamp,
+           "refreshInProgressUntil" = NULL
+      FROM latest`,
     },
     {
       name: "rewrite the connection on every XeroToken write",
       harm:
         "Every lease claim on XeroToken also locks and rewrites the connection row, widening the lock footprint the refresh lease relies on staying small.",
       find: `
-     AND ("tenantId" IS DISTINCT FROM latest."tenantId"
-          OR "expiresAt" IS DISTINCT FROM latest."expiresAt");`,
-      replace: `;`,
+       AND (connection."tenantId" IS DISTINCT FROM latest."tenantId"
+            OR connection."expiresAt" IS DISTINCT FROM latest."expiresAt")`,
+      replace: ``,
     },
     {
       name: "stamp session-local time",
@@ -331,6 +331,13 @@ const verification: DataMigrationVerification = {
       harm:
         "The new release, which cannot name the column, can no longer create the XeroToken row, so connecting Xero fails.",
       find: `ALTER TABLE "XeroToken" ALTER COLUMN "accessToken" SET DEFAULT '';`,
+      replace: ``,
+    },
+    {
+      name: "no default for the refresh-token ciphertext",
+      harm:
+        "The new release, which cannot name the column, can no longer create the XeroToken row, so connecting Xero fails.",
+      find: `ALTER TABLE "XeroToken" ALTER COLUMN "refreshToken" SET DEFAULT '';`,
       replace: ``,
     },
   ],

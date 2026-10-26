@@ -19,7 +19,8 @@
  *     columns current, and the #3454 code's own read takes the store copy, so
  *     the two releases never disagree about the live refresh token;
  *   - the #3454 code's connect, refresh and disconnect reach R2 through the
- *     trigger;
+ *     trigger, and a trigger run that waited while one of them committed never
+ *     writes back what it would have read before the wait;
  *   - a refresh whose store compare-and-set loses rolls everything back.
  *
  * The previous release is `support/xero-3454-release.ts`: its statements, as
@@ -36,7 +37,9 @@
  *   CONCURRENCY_RACE_DATABASE_URL=postgresql://user:pass@127.0.0.1:55442/concurrency_race_1881 \
  *   pnpm exec vitest run src/lib/__tests__/xero-token-credential-store.realdb.test.ts
  */
+import { Client } from "pg";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { realElapsedMs } from "./helpers/clock";
 import * as raceDbUrl from "./support/race-db-url";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
@@ -475,6 +478,126 @@ const TENANT = "race-3806-tenant";
 
       expect((await store.loadXeroTokens())?.refreshToken).toBe(live);
       expect((await release3454.read3454(prisma))?.refreshToken).toBe(live);
+    });
+
+    // -----------------------------------------------------------------------
+    // The trigger reads ONE snapshot: a write committing while it waits is
+    // never half-seen and written back stale (#3806 review)
+    // -----------------------------------------------------------------------
+
+    /**
+     * Four sessions force the interleaving without a sleep. `writer` holds an
+     * uncommitted write to `XeroConnection` (its own `XeroToken` statement's
+     * trigger made it); `gate` queues for a SHARE lock on that table behind it;
+     * `victim`'s `XeroToken` statement then fires the trigger, whose write to
+     * `XeroConnection` queues behind `gate`. `writer` commits, `gate` lets go,
+     * and only then does the trigger's write run. A trigger that read
+     * `XeroToken` before it queued writes what it read back over the commit.
+     */
+    // Timestamps go to `pg` as ISO strings: the columns are `timestamp without
+    // time zone` holding UTC, and a Date would be sent in the process's zone.
+    async function withSessions(
+      work: (sessions: Record<"writer" | "gate" | "victim", { client: Client; pid: number }> & {
+        waitUntilBlocked: (pid: number) => Promise<void>;
+      }) => Promise<void>,
+    ): Promise<void> {
+      const open = async () => {
+        const client = new Client({ connectionString: RACE_DB_URL });
+        await client.connect();
+        const { rows } = await client.query<{ pid: number }>("SELECT pg_backend_pid() AS pid");
+        return { client, pid: rows[0]!.pid };
+      };
+      const [writer, gate, victim, observer] = await Promise.all([open(), open(), open(), open()]);
+      const waitUntilBlocked = async (pid: number) => {
+        const started = process.hrtime.bigint();
+        while (realElapsedMs(started) < 5_000) {
+          const { rows } = await observer.client.query<{ waiting: number }>(
+            "SELECT count(*)::int AS waiting FROM pg_locks WHERE pid = $1 AND NOT granted",
+            [pid],
+          );
+          if (rows[0]!.waiting > 0) return;
+          await new Promise((done) => setTimeout(done, 10));
+        }
+        throw new Error(`session ${pid} never waited on a lock`);
+      };
+      try {
+        await work({ writer, gate, victim, waitUntilBlocked });
+      } finally {
+        for (const session of [writer, gate, victim, observer]) {
+          await session.client.query("ROLLBACK").catch(() => {});
+          await session.client.end().catch(() => {});
+        }
+      }
+    }
+
+    async function connectionRows() {
+      return prisma.xeroConnection.findMany({ select: { tenantId: true, expiresAt: true } });
+    }
+
+    it("a losing lease claim never writes back the expiry a refresh committed while its trigger waited", async () => {
+      await release3454.connect3454(tokens("c1"), ADMIN);
+      const { id } = await prisma.xeroToken.findFirstOrThrow({ select: { id: true } });
+      const refreshedExpiry = new Date(Date.now() + 1_800_000);
+
+      await withSessions(async ({ writer, gate, victim, waitUntilBlocked }) => {
+        await writer.client.query("BEGIN");
+        // The previous release's refresh save, uncommitted: its trigger has
+        // already moved XeroConnection's expiry and holds that row.
+        await writer.client.query(
+          `UPDATE "XeroToken" SET "expiresAt" = $1, "updatedAt" = $2 WHERE "id" = $3`,
+          [refreshedExpiry.toISOString(), new Date().toISOString(), id],
+        );
+        await gate.client.query("BEGIN");
+        const gateLocked = gate.client.query(`LOCK TABLE "XeroConnection" IN SHARE MODE`);
+        await waitUntilBlocked(gate.pid);
+
+        // A claim that loses: it matches no row, and its statement trigger runs anyway.
+        const claim = victim.client.query(
+          `UPDATE "XeroToken" SET "refreshInProgressUntil" = $1
+            WHERE "id" = $2 AND "refreshInProgressUntil" > $1`,
+          [new Date(Date.now() + 120_000).toISOString(), id],
+        );
+        await waitUntilBlocked(victim.pid);
+
+        await writer.client.query("COMMIT");
+        await gateLocked;
+        await gate.client.query("COMMIT");
+        await claim;
+      });
+
+      expect(await connectionRows()).toEqual([
+        { tenantId: TENANT, expiresAt: refreshedExpiry },
+      ]);
+    });
+
+    it("a disconnect that finds no row never deletes the connection a first connect committed while its trigger waited", async () => {
+      const expiresAt = new Date(Date.now() + 1_800_000);
+
+      await withSessions(async ({ writer, gate, victim, waitUntilBlocked }) => {
+        await writer.client.query("BEGIN");
+        // The previous release's first connect, uncommitted: its trigger has
+        // already inserted the XeroConnection row.
+        await writer.client.query(
+          `INSERT INTO "XeroToken" ("id", "accessToken", "refreshToken", "expiresAt", "tenantId", "updatedAt")
+           VALUES ('race-3806-first', 'a', 'r', $1, $2, $3)`,
+          [expiresAt.toISOString(), TENANT, new Date().toISOString()],
+        );
+        await gate.client.query("BEGIN");
+        const gateLocked = gate.client.query(`LOCK TABLE "XeroConnection" IN SHARE MODE`);
+        await waitUntilBlocked(gate.pid);
+
+        // A disconnect that starts before the connect commits: it deletes no row.
+        const disconnect = victim.client.query(`DELETE FROM "XeroToken"`);
+        await waitUntilBlocked(victim.pid);
+
+        await writer.client.query("COMMIT");
+        await gateLocked;
+        await gate.client.query("COMMIT");
+        await disconnect;
+      });
+
+      expect(await prisma.xeroToken.count()).toBe(1);
+      expect(await connectionRows()).toEqual([{ tenantId: TENANT, expiresAt }]);
     });
 
     // -----------------------------------------------------------------------

@@ -25,12 +25,19 @@ BEGIN;
 --    leave this table saying something else: a phantom connection after it
 --    disconnects, the old tenant after it reconnects to another organisation,
 --    or no connection at all after a first connect. The trigger makes the new
---    table follow the most recently written `XeroToken` row (the order the
---    application's `XERO_TOKEN_ROW_ORDER` uses, with the id as a tie-break):
---    no row deletes the connection; otherwise it copies `tenantId` and
---    `expiresAt`. It never touches the lease column, which only this release's
---    code writes. It writes only when a value changes, so a lease claim on
---    `XeroToken` takes no lock on `XeroConnection`.
+--    table follow the most recently written `XeroToken` row (`updatedAt`,
+--    then `id`, descending: this release's `XERO_TOKEN_ROW_ORDER`): no row
+--    deletes the connection; otherwise it copies `tenantId` and `expiresAt`.
+--    It never touches the lease column, which only this release's code writes.
+--    The function is ONE statement, so it reads one snapshot, taken once its
+--    lock on `XeroConnection` is granted: a refresh or connect committing
+--    while it runs is either wholly seen or wholly unseen, never half. It
+--    writes only a row whose value differs, so a lease claim on `XeroToken`,
+--    which changes neither value, writes nothing here and waits on no
+--    `XeroConnection` writer. It takes the table's ROW EXCLUSIVE lock, which
+--    conflicts only with DDL and explicit table locks; it waits for another
+--    transaction only to change a row that transaction is writing, or to
+--    insert the row another transaction is inserting at the same moment.
 --
 -- 5. The backfill: one call of the same function, so the row this migration
 --    writes and the row every later write produces come from one definition.
@@ -69,33 +76,37 @@ RETURNS void
 LANGUAGE plpgsql
 AS $xero_connection_follow_token$
 DECLARE
-  latest RECORD;
   stamp TIMESTAMP(3) := timezone('UTC', statement_timestamp());
 BEGIN
-  SELECT "tenantId", "expiresAt"
-    INTO latest
-    FROM "XeroToken"
-   ORDER BY "updatedAt" DESC, "id" DESC
-   LIMIT 1;
-
-  IF NOT FOUND THEN
-    DELETE FROM "XeroConnection";
-    RETURN;
-  END IF;
-
-  UPDATE "XeroConnection"
-     SET "tenantId" = latest."tenantId",
-         "expiresAt" = latest."expiresAt",
-         "updatedAt" = stamp
-   WHERE "id" = 'default'
-     AND ("tenantId" IS DISTINCT FROM latest."tenantId"
-          OR "expiresAt" IS DISTINCT FROM latest."expiresAt");
-
-  IF NOT FOUND THEN
-    INSERT INTO "XeroConnection" ("id", "tenantId", "expiresAt", "createdAt", "updatedAt")
-    VALUES ('default', latest."tenantId", latest."expiresAt", stamp, stamp)
-    ON CONFLICT ("id") DO NOTHING;
-  END IF;
+  -- ONE statement, so every part of it reads one snapshot, taken after its lock
+  -- on "XeroConnection" is granted. Separate statements would each read their
+  -- own, and a write committing between them would be overwritten by the
+  -- earlier read: a stale tenant or expiry, or a just-made connection deleted.
+  WITH latest AS (
+    SELECT "tenantId", "expiresAt"
+      FROM "XeroToken"
+     ORDER BY "updatedAt" DESC, "id" DESC
+     LIMIT 1
+  ),
+  disconnected AS (
+    DELETE FROM "XeroConnection"
+     WHERE NOT EXISTS (SELECT 1 FROM "XeroToken")
+  ),
+  followed AS (
+    UPDATE "XeroConnection" AS connection
+       SET "tenantId" = latest."tenantId",
+           "expiresAt" = latest."expiresAt",
+           "updatedAt" = stamp
+      FROM latest
+     WHERE connection."id" = 'default'
+       AND (connection."tenantId" IS DISTINCT FROM latest."tenantId"
+            OR connection."expiresAt" IS DISTINCT FROM latest."expiresAt")
+  )
+  INSERT INTO "XeroConnection" ("id", "tenantId", "expiresAt", "createdAt", "updatedAt")
+  SELECT 'default', latest."tenantId", latest."expiresAt", stamp, stamp
+    FROM latest
+   WHERE NOT EXISTS (SELECT 1 FROM "XeroConnection")
+  ON CONFLICT ("id") DO NOTHING;
 END
 $xero_connection_follow_token$;
 
