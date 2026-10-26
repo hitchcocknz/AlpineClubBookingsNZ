@@ -21,6 +21,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { XeroSyncOperation } from "@prisma/client";
 import { matchesWhere } from "./support/prisma-where";
 import { stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 import { xeroClaim } from "./helpers/xero-claim";
 
 const mocks = vi.hoisted(() => ({
@@ -243,23 +244,9 @@ function optionsAreReadable(options: string): boolean {
   return options === "" || (READABLE_OPTIONS.test(options) && !/\.\.\.\s*[\w$]/.test(options));
 }
 
-/** Top-level comma-separated arguments of the call whose `(` is at `open`; `close` is its `)`. */
 function callArguments(source: string, open: number): { args: string[]; close: number } {
-  const args: string[] = [];
-  let depth = 0;
-  let start = open + 1;
-  for (let i = open; i < source.length; i += 1) {
-    const char = source[i]!;
-    if ("([{".includes(char)) depth += 1;
-    else if (")]}".includes(char) && --depth === 0) {
-      args.push(source.slice(start, i));
-      return { args: args.map((arg) => arg.trim()).filter(Boolean), close: i };
-    } else if (char === "," && depth === 1) {
-      args.push(source.slice(start, i));
-      start = i + 1;
-    }
-  }
-  throw new Error("unbalanced call");
+  const { parts: args, end: close } = balancedBrackets(source, open);
+  return { args, close };
 }
 
 /** Every `completeXeroSyncOperation(...)` call under `src/`, outside tests. */

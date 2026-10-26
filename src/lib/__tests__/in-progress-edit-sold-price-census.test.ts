@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { toSeasonRateData } from "@/lib/policies/booking-route-decisions";
 
 import { stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * Census: every loader that feeds an in-progress edit must select the column
@@ -126,29 +127,8 @@ const NIGHTS_SELECT = /nights:\s*\{\s*select:\s*\{([^}]*)\}/g;
  */
 const PLAN_BUILDER_CALL = /(?<!function\s)\bbuildInProgressGuestRangePlan\s*\(/g;
 
-/**
- * The balanced `( … )` starting at `openIndex` (the index OF the `(`).
- *
- * Brace-matched by hand rather than by regex: the argument is a nested object
- * literal several levels deep, so `[^)]*` stops at the first inner `)` and would
- * report a caller that passes the config as one that does not. Strings and
- * comments are not tracked, because neither appears with an unbalanced bracket in
- * these two call sites and a false FAILURE here is cheap to diagnose while a
- * false pass is the thing being guarded against.
- */
 function balancedArgumentList(source: string, openIndex: number): string {
-  let depth = 0;
-  for (let index = openIndex; index < source.length; index++) {
-    const character = source[index];
-    if (character === "(") depth += 1;
-    if (character === ")") {
-      depth -= 1;
-      if (depth === 0) {
-        return source.slice(openIndex, index + 1);
-      }
-    }
-  }
-  throw new Error(`unbalanced argument list at index ${openIndex}`);
+  return balancedBrackets(source, openIndex).text;
 }
 
 /**

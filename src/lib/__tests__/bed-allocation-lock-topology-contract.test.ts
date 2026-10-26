@@ -2,6 +2,7 @@ import fs, { readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 import { stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 function source(relativePath: string): string {
   return readFileSync(path.resolve(process.cwd(), relativePath), "utf8");
@@ -29,27 +30,8 @@ function isTestFile(relPath: string): boolean {
   );
 }
 
-/**
- * The balanced `open`..`close` region starting at `openIndex`, so a nested
- * object or call inside a payload cannot end the match early. A substring
- * window would read the NEXT call's `data:` block as part of this one.
- */
-function balancedFrom(
-  text: string,
-  openIndex: number,
-  open: string,
-  close: string,
-): string {
-  let depth = 0;
-  for (let i = openIndex; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === open) depth += 1;
-    else if (char === close) {
-      depth -= 1;
-      if (depth === 0) return text.slice(openIndex, i + 1);
-    }
-  }
-  return text.slice(openIndex);
+function balancedFrom(text: string, openIndex: number): string {
+  return balancedBrackets(text, openIndex).text;
 }
 
 /**
@@ -71,7 +53,7 @@ function functionBody(source: string, signature: string): string {
   const at = source.indexOf(signature);
   expect(at, `${signature} is not in this file`).toBeGreaterThanOrEqual(0);
   const parensAt = source.indexOf("(", at);
-  const params = balancedFrom(source, parensAt, "(", ")");
+  const params = balancedFrom(source, parensAt);
 
   let angle = 0;
   let bodyAt = -1;
@@ -85,7 +67,7 @@ function functionBody(source: string, signature: string): string {
     }
   }
   expect(bodyAt, `${signature} has no body`).toBeGreaterThan(parensAt);
-  return balancedFrom(source, bodyAt, "{", "}");
+  return balancedFrom(source, bodyAt);
 }
 
 function between(text: string, start: string, end: string): string {
@@ -409,7 +391,7 @@ describe("bed allocation lock topology", () => {
         // The transaction the call runs in: the nearest enclosing
         // `$transaction(` callback, or the settle's tx-taking function.
         const txAt = text.lastIndexOf("$transaction(", at);
-        let region = txAt >= 0 ? balancedFrom(text, text.indexOf("(", txAt), "(", ")") : "";
+        let region = txAt >= 0 ? balancedFrom(text, text.indexOf("(", txAt)) : "";
         let offset = txAt;
         if (txAt < 0 || txAt + region.length < at) {
           const fnAt = text.lastIndexOf("async function settleBookingPaymentInTransaction(", at);
@@ -638,7 +620,7 @@ describe("bed allocation lock topology", () => {
       const writeCall = /\.booking\.(update|updateMany|upsert)\(/g;
       let call: RegExpExecArray | null;
       while ((call = writeCall.exec(text)) !== null) {
-        const args = balancedFrom(text, text.indexOf("(", call.index), "(", ")");
+        const args = balancedFrom(text, text.indexOf("(", call.index));
         const payloadKey = /(?:^|[\s,{])(data|create|update)\s*:/g;
         let payloadMatch: RegExpExecArray | null;
         while ((payloadMatch = payloadKey.exec(args)) !== null) {
@@ -647,7 +629,7 @@ describe("bed allocation lock topology", () => {
             payloadMatch.index + payloadMatch[0].length - 1,
           );
           if (braceStart === -1) continue;
-          const payload = balancedFrom(args, braceStart, "{", "}");
+          const payload = balancedFrom(args, braceStart);
           if (/(?:^|[\s,{])lodgeId\s*:/.test(payload)) {
             offenders.push(
               `${rel}: .booking.${call[1]}() ${payloadMatch[1]} block writes lodgeId`,

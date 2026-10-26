@@ -1,0 +1,60 @@
+import { describe, expect, it } from "vitest";
+import { balancedBrackets } from "./balanced-brackets";
+
+describe("balancedBrackets", () => {
+  it.each([
+    ["(one({ nested: [two(3)] }), four)", ["one({ nested: [two(3)] })", "four"]],
+    ["{ data: { value: 1 }, select: [2, 3] }", ["data: { value: 1 }", "select: [2, 3]"]],
+    ["[first, [second, third]]", ["first", "[second, third]"]],
+    ["()", []],
+    ["(first, second,)", ["first", "second"]],
+  ] as const)("reads %s without absorbing the next call", (text, parts) => {
+    const prefix = "before ";
+    expect(balancedBrackets(`${prefix}${text}; next()`, prefix.length)).toEqual({
+      text,
+      end: prefix.length + text.length - 1,
+      parts: [...parts],
+    });
+  });
+
+  it.each([
+    '("),", next)',
+    "('escaped\\\' ),', next)",
+    '(first /* ), } ] */ , next)',
+    '(first // ), } ]\n, next)',
+    '(/[,)]/.test(value), next)',
+    '(`text ), ${nested({ value: `inner ), ${call(1)}` })}`, next)',
+  ])("ignores literal and comment brackets in %s", (text) => {
+    const region = balancedBrackets(`${text}; unrelated()`, 0);
+    expect(region.text).toBe(text);
+    expect(region.end).toBe(text.length - 1);
+    expect(region.parts).toHaveLength(2);
+    expect(region.parts[1]).toBe("next");
+  });
+
+  it("accepts already masked structure without lexing a blanked regex again", () => {
+    const source = "expect(message).toMatch(/owed \\(/); next()";
+    const structure = "expect(message).toMatch(/        ); next()";
+    const open = source.indexOf("(", source.indexOf("toMatch"));
+    const region = balancedBrackets(source, open, structure);
+    expect(region.text).toBe("(/owed \\(/)");
+    expect(region.end).toBe(source.indexOf("; next") - 1);
+  });
+
+  it("preserves the original spacing and literal text", () => {
+    expect(balancedBrackets('prefix(  "one,two", { label: ")" } )suffix', 6).parts)
+      .toEqual(['"one,two"', '{ label: ")" }']);
+  });
+
+  it.each([-1, 1, 99])("refuses a non-opening offset %s", (start) => {
+    expect(() => balancedBrackets("(value)", start)).toThrow("Expected opening bracket");
+  });
+
+  it.each(["([)", "{]", "[(])"])("refuses mismatched brackets in %s", (source) => {
+    expect(() => balancedBrackets(source, 0)).toThrow("Mismatched bracket");
+  });
+
+  it.each(["(nested(value)", "{ nested: {}", "[[]"])("refuses an unclosed region %s", (source) => {
+    expect(() => balancedBrackets(source, 0)).toThrow("Unbalanced brackets");
+  });
+});

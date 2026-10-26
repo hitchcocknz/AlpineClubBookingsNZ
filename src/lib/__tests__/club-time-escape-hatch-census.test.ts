@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * CT-6 (#2991) — the final escape-hatch census, as a RATCHET.
@@ -90,26 +91,7 @@ export function findDefaultedZoneCalls(source: string): DefaultedCall[] {
       const before = source.slice(Math.max(0, match.index - 40), match.index);
       if (/\b(function|import|export)\s[^\n]*$/.test(before)) continue;
 
-      let index = match.index + match[0].length;
-      let depth = 1;
-      let current = "";
-      const parts: string[] = [];
-      while (index < source.length && depth > 0) {
-        const character = source[index];
-        if ("([{".includes(character)) depth++;
-        else if (")]}".includes(character)) {
-          depth--;
-          if (depth === 0) break;
-        }
-        if (character === "," && depth === 1) {
-          parts.push(current);
-          current = "";
-        } else current += character;
-        index++;
-      }
-      if (current.trim() !== "") parts.push(current);
-
-      const arity = parts.filter((part) => part.trim() !== "").length;
+      const arity = balancedBrackets(source, match.index + match[0].length - 1).parts.length;
       const zoneGiven = ZONE_IS_FIRST_ARGUMENT.has(helper)
         ? arity >= 1
         : arity >= 2;
@@ -160,25 +142,8 @@ export function findLocalMidnightConstruction(source: string): number {
   const pattern = /new\s+Date\s*\(/g;
   let match: RegExpExecArray | null;
   while ((match = pattern.exec(source)) !== null) {
-    let index = match.index + match[0].length;
-    let depth = 1;
-    let current = "";
-    const parts: string[] = [];
-    while (index < source.length && depth > 0) {
-      const character = source[index];
-      if ("([{".includes(character)) depth++;
-      else if (")]}".includes(character)) {
-        depth--;
-        if (depth === 0) break;
-      }
-      if (character === "," && depth === 1) {
-        parts.push(current);
-        current = "";
-      } else current += character;
-      index++;
-    }
-    if (current.trim() !== "") parts.push(current);
-    if (parts.filter((part) => part.trim() !== "").length >= 3) found++;
+    const { parts } = balancedBrackets(source, match.index + match[0].length - 1);
+    if (parts.length >= 3) found++;
   }
   return found;
 }

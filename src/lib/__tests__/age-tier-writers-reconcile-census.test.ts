@@ -33,6 +33,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 const SRC_DIR = join(import.meta.dirname, "..", "..");
 
@@ -57,27 +58,15 @@ function executableCode(source: string): string {
   return stripComments(source);
 }
 
-/**
- * The `{...}` object that opens at or after `from`, brace-balanced. Returns
- * `null` when there is no `{` left. Strings/regexes are not tokenised, which is
- * safe here: the census reads real member-write call sites, none of which carry
- * a `{` or `}` inside a string literal between the call and its `data` object.
- */
+/** The object opening at or after `from`, or null when no object follows. */
 function balancedObject(
   code: string,
   from: number,
 ): { start: number; end: number; text: string } | null {
   const start = code.indexOf("{", from);
   if (start === -1) return null;
-  let depth = 0;
-  for (let i = start; i < code.length; i++) {
-    if (code[i] === "{") depth++;
-    else if (code[i] === "}") {
-      depth--;
-      if (depth === 0) return { start, end: i, text: code.slice(start, i + 1) };
-    }
-  }
-  return null;
+  const { text, end } = balancedBrackets(code, start);
+  return { start, text, end };
 }
 
 /**

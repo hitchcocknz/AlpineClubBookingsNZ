@@ -15,6 +15,8 @@ import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { balancedBrackets } from "./support/balanced-brackets";
+
 const ROOT = path.resolve(__dirname, "../../..");
 
 function sourceFiles(dir: string): string[] {
@@ -35,19 +37,14 @@ function sourceFiles(dir: string): string[] {
  */
 function readCalls(source: string): string[] {
   const calls: string[] = [];
-  const shapes: Array<[RegExp, string, string]> = [
-    [/manualRefundTask\.(?:findFirst|findMany|count|aggregate|groupBy)\(/g, "(", ")"],
-    [/manualRefundTasks:\s*\{/g, "{", "}"],
+  const shapes = [
+    /manualRefundTask\.(?:findFirst|findMany|count|aggregate|groupBy)\(/g,
+    /manualRefundTasks:\s*\{/g,
   ];
-  for (const [re, open, close] of shapes) {
+  for (const re of shapes) {
     for (let match = re.exec(source); match; match = re.exec(source)) {
-      let depth = 1;
-      let i = match.index + match[0].length;
-      for (; i < source.length && depth > 0; i += 1) {
-        if (source[i] === open) depth += 1;
-        else if (source[i] === close) depth -= 1;
-      }
-      calls.push(source.slice(match.index, i));
+      const { end } = balancedBrackets(source, match.index + match[0].length - 1);
+      calls.push(source.slice(match.index, end + 1));
     }
   }
   return calls;

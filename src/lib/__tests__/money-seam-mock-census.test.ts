@@ -74,6 +74,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { blankLiteralsWithSpans } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 const INVARIANT_ID = "INV-OPS-015";
 const REPO_ROOT = process.cwd();
@@ -179,16 +180,7 @@ function readable(source: string): Readable {
 
 /** The index of the bracket closing the one at `open`, read over blanked code. */
 function closing(code: string, open: number): number {
-  let depth = 0;
-  for (let index = open; index < code.length; index += 1) {
-    const char = code[index];
-    if (char === "(" || char === "[" || char === "{") depth += 1;
-    else if (char === ")" || char === "]" || char === "}") {
-      depth -= 1;
-      if (depth === 0) return index;
-    }
-  }
-  return code.length - 1;
+  return balancedBrackets(code, open, code).end;
 }
 
 /** The first comma at depth zero inside `code[from, to)`, or -1. */

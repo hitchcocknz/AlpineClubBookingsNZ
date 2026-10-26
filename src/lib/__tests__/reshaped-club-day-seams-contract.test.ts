@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
 import { stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * #3123, the SIGNATURE-RESHAPE group: seven modules whose civil-day authority
@@ -175,31 +176,14 @@ function callArguments(code: string, name: string): string[] {
       from = at + needle.length;
       continue;
     }
-    let depth = 0;
-    let index = at + needle.length - 1;
-    for (; index < code.length; index += 1) {
-      if (code[index] === "(") depth += 1;
-      else if (code[index] === ")") {
-        depth -= 1;
-        if (depth === 0) break;
-      }
-    }
-    out.push(code.slice(at + needle.length, index));
-    from = index + 1;
+    const region = balancedBrackets(code, at + needle.length - 1);
+    out.push(region.text.slice(1, -1));
+    from = region.end + 1;
   }
 }
 
-/** Top-level (depth-zero) comma count + 1, or 0 for an empty argument list. */
 function argumentCount(args: string): number {
-  if (args.trim() === "") return 0;
-  let depth = 0;
-  let count = 1;
-  for (const character of args) {
-    if ("([{".includes(character)) depth += 1;
-    else if (")]}".includes(character)) depth -= 1;
-    else if (character === "," && depth === 0) count += 1;
-  }
-  return count;
+  return balancedBrackets(`(${args})`, 0).parts.length;
 }
 
 describe("#3123 reshaped seams keep their required club day", () => {

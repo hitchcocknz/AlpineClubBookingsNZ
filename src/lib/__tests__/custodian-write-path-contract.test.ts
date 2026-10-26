@@ -1,4 +1,5 @@
 import { readFileSync, readdirSync } from "fs";
+import { balancedBrackets } from "./support/balanced-brackets";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
@@ -236,33 +237,8 @@ function containsEvidence(source: string, evidence: string): boolean {
   return squash(source).includes(squash(evidence));
 }
 
-/**
- * The balanced `open`..`close` region starting at `openIndex`.
- *
- * The same helper `bed-allocation-lock-topology-contract.test.ts` uses, and for
- * the same reason: a fixed-width window is not a call. The detector below used
- * a 400-character lazy window, and four of the nine declared sites are longer
- * than that — including `bedAllocation.upsert`, which is THE manual-placement
- * funnel this whole contract is about. Those four were invisible to the scan
- * that claims to enumerate the tree (#2688 review F3). Balancing the call's own
- * parentheses reaches all nine, whatever their size.
- */
-function balancedFrom(
-  text: string,
-  openIndex: number,
-  open: string,
-  close: string,
-): string {
-  let depth = 0;
-  for (let i = openIndex; i < text.length; i += 1) {
-    const char = text[i];
-    if (char === open) depth += 1;
-    else if (char === close) {
-      depth -= 1;
-      if (depth === 0) return text.slice(openIndex, i + 1);
-    }
-  }
-  return text.slice(openIndex);
+function balancedFrom(text: string, openIndex: number): string {
+  return balancedBrackets(text, openIndex).text;
 }
 
 /**
@@ -286,8 +262,6 @@ function countPlacementStatements(
     const args = balancedFrom(
       source,
       source.indexOf("(", match.index),
-      "(",
-      ")",
     );
     const placesABed = statement !== "updateMany" ? true : /bedId:/.test(args);
     if (!placesABed) continue;
@@ -323,7 +297,7 @@ function functionBody(source: string, signature: string): string {
   const at = source.indexOf(signature);
   expect(at, `${signature} is not in this file`).toBeGreaterThanOrEqual(0);
   const parensAt = source.indexOf("(", at);
-  const params = balancedFrom(source, parensAt, "(", ")");
+  const params = balancedFrom(source, parensAt);
 
   let angle = 0;
   let bodyAt = -1;
@@ -337,7 +311,7 @@ function functionBody(source: string, signature: string): string {
     }
   }
   expect(bodyAt, `${signature} has no body`).toBeGreaterThan(parensAt);
-  return balancedFrom(source, bodyAt, "{", "}");
+  return balancedFrom(source, bodyAt);
 }
 
 /** Every token in `tokens`, in this order, within `text`. */
@@ -675,10 +649,8 @@ describe("custodian write-path contract (#2286)", () => {
       const custodianCall = balancedFrom(
         source,
         source.indexOf("(", custodianAt),
-        "(",
-        ")",
       );
-      const holdCall = balancedFrom(source, source.indexOf("(", holdAt), "(", ")");
+      const holdCall = balancedFrom(source, source.indexOf("(", holdAt));
 
       for (const [label, call] of [
         ["custodian expansion", custodianCall],

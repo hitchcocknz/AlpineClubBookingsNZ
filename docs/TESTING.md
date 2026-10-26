@@ -1247,6 +1247,12 @@ So:
    raises a conflict and a human classifies both — which is exactly the review a
    bare integer skipped.
 
+Censuses reading balanced call arguments or object bodies share
+[`balancedBrackets`](../src/lib/__tests__/support/balanced-brackets.ts).
+It returns original text, the inclusive closing offset and top-level comma-separated
+parts, using the shared literal masker so comments and quoted brackets cannot
+end a region early. An invalid opener or unclosed region fails the scan.
+
 ### Running the fast censuses on a composed tree
 
 `pnpm run ci:fast-censuses` runs the tree-wide censuses that compositions have
