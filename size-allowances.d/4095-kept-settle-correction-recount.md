@@ -13,3 +13,14 @@ reason: the settle's per-payment loop records which applied invoice corrections
   receipt decision, which counts an applied correction already synced in the
   keep's own transaction, and imports the kept receipt's reason constant from
   `settle-from-cash.ts` instead of spelling it out (`INV-SSOT`).
+
+file: src/lib/xero-inbound/credit-note-repairs.ts
+lines: 1194
+reason: review round 2 (L1) makes the refunded-total repair sum a payment's
+  modification notes by the same per-note-and-invoice, newest-wins rule the kept
+  settle applies. The rule itself lives once in `amounts.ts`
+  (`sumAppliedCentsByCreditNote`, `INV-SSOT`); what stays here is the link
+  ordering and the allocation key the repair already reads its links for, and
+  the null note id a recount with no note being synced passes. Moving that
+  into another module would split the repair's one read of its links from the
+  loop that uses them.
