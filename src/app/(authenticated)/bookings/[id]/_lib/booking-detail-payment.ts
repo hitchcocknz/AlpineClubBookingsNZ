@@ -80,7 +80,9 @@ export function resolveBookingDetailPayment({
     !internetBankingPayment &&
     booking.status === "PAYMENT_PENDING" &&
     !booking.organiserSettled &&
-    booking.finalPriceCents > 0;
+    // #4357 (`INV-PAY-119`): a $0 booking still owing a recorded change fee
+    // can switch too.
+    bookingWorthCents({ finalPriceCents: booking.finalPriceCents, changeFeeCents: booking.payment?.changeFeeCents ?? null }) > 0;
   // #3924: a payment of money (`hasCapturedPayment`) that Net Collected's
   // capture rule also says took it (`netCollectedPaymentTookMoney`), the rule
   // the retained line below reads - not the status alone. A never-paid
@@ -89,7 +91,7 @@ export function resolveBookingDetailPayment({
   const originalPaymentCaptured =
     booking.payment !== null &&
     hasCapturedPayment(booking.payment) &&
-    netCollectedPaymentTookMoney(booking.payment);
+    netCollectedPaymentTookMoney({ ...booking.payment, booking }); // #3949: whose payment, for an organiser's settle mirror
   // #3811: what the club kept of what was paid is this booking's cash part of
   // Net Collected (`getNetCollectedCashParts`), so it can never read higher
   // than Net Collected counts: an open hand-back refund is taken off straight

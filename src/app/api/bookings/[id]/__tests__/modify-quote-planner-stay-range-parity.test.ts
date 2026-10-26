@@ -148,7 +148,7 @@ vi.mock("@/lib/membership-type-policy", () => ({
   getMembershipTypeBookingPolicyErrorBody: (e: Error) => ({ error: e.message }),
 }));
 // The REAL barrel, so `resolveGuestMemberLinks`, `resolveGuestNameUpdates` and
-// `lockedNightPricesForGuest` behave identically on both sides of the
+// `editedGuestPricingLocks` behave identically on both sides of the
 // comparison. Only the settlement read (a Xero/payment surface irrelevant to
 // stay ranges) is stubbed.
 vi.mock("@/lib/booking-modify", async (importOriginal) => {
@@ -1770,6 +1770,8 @@ function promoPreviewParty(
         memberId: guest.memberId,
         stayStart: guest.stayStart,
         stayEnd: guest.stayEnd,
+        // #4317: the preview reads the stored total to value the held nights.
+        priceCents: guest.priceCents,
         nights: guest.nights,
       })),
     } : null,
@@ -1950,6 +1952,9 @@ describe("#2563 exactly one stay-range resolution exists, and the route calls it
     // `resolveModificationStayRanges<Guest ...`, so only callers match.
     expect(sourceFilesNaming("resolveModificationStayRanges(")).toEqual([
       ROUTE_FILE,
+      // #4203: the change-request card's estimate counts the party on the
+      // nights the whole proposal gives each guest, as approval's planner would.
+      "src/lib/booking-change-request-estimate.ts",
       // #4030 round 7 (F2): a change request that moves a date the named nights
       // do not reach is refused, by asking this resolution where the nights put
       // the stay rather than restating range mode.

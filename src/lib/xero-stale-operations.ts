@@ -1,5 +1,9 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
+import { XERO_ORPHANED_STALE_RUNNING_ERROR_CODE } from "@/lib/xero-operation-error-codes";
+
+// #4278: re-exported so existing importers keep one name; the definition is in the client-safe module.
+export { XERO_ORPHANED_STALE_RUNNING_ERROR_CODE };
 
 // Issue #819: an outbox operation is claimed by flipping it to RUNNING and
 // stamping startedAt. If the worker dies (or an unexpected dispatch-level error
@@ -10,18 +14,6 @@ import { prisma } from "@/lib/prisma";
 export const STALE_RUNNING_XERO_OPERATION_MINUTES = 15;
 
 /**
- * THE ERROR CODE a stale-RUNNING reset stamps on the row it fails (#3001).
- *
- * One home, because three places depend on the exact string: the operator reset
- * route writes it, the contact-create recovery reads it back, and the booking
- * page's invoice warning uses it to tell an operation that FAILED from an
- * operation that was never seen through — a worker killed mid-invoice leaves no
- * evidence either way, so the honest reading of such a row is that the invoice
- * state is UNKNOWN rather than that no invoice was raised.
- */
-export const XERO_ORPHANED_STALE_RUNNING_ERROR_CODE = "ORPHANED_STALE_RUNNING";
-
-/**
  * #4256: the code a retry's claim stamps on a PARTIAL row it is REPAIRING
  * (`runWithClaimedOriginal` in `xero-operation-retry.ts`). The repair's own
  * completion or give-back replaces it. A repair that died instead leaves it on
@@ -30,6 +22,25 @@ export const XERO_ORPHANED_STALE_RUNNING_ERROR_CODE = "ORPHANED_STALE_RUNNING";
  * invoice replay, which finds the invoice and records no payment.
  */
 export const XERO_PARTIAL_REPAIR_RUNNING_CODE = "PARTIAL_REPAIR_RUNNING";
+
+/**
+ * #4356: the code the FAILED refund-note repair's claim stamps
+ * (`runWithClaimedOriginal`). Its completion or give-back replaces it; a stale
+ * reset of a dead run sends the row to FAILED, where it came from.
+ */
+export const XERO_REFUND_NOTE_REPAIR_RUNNING_CODE = "REFUND_NOTE_REPAIR_RUNNING";
+
+/**
+ * #4356 (`INV-INT-029`): the repair claims whose RUNNING row no other caller's
+ * PARTIAL, FAILED or CANCELLED outcome may land on (`outcomeWriteGuard`). Each
+ * repair completes onto its own claim (`retryClaim`), so a late
+ * outcome from a caller sharing the row would replace the payload the repair
+ * reads and make its give-back lose.
+ */
+export const XERO_REPAIR_CLAIM_RUNNING_CODES = [
+  XERO_PARTIAL_REPAIR_RUNNING_CODE,
+  XERO_REFUND_NOTE_REPAIR_RUNNING_CODE,
+] as const;
 
 const STALE_PARTIAL_REPAIR_RESET_MESSAGE =
   "A repair of this partly completed operation was stuck RUNNING past the staleness threshold and was returned to PARTIAL by an operator. Retry it to repair it again.";

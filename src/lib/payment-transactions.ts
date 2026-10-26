@@ -804,6 +804,7 @@ export async function recordStripeRefundsAgainstTransaction({
     let createdRefundsCount = 0;
     let createdRefundAmountCents = 0;
     let newlyCountedCents = 0;
+    const newlyCountedRefundIds: string[] = []; // #4312: which refunds those are, for a bank transfer's own notes
     let reversedCents = 0;
     const ordered = [...refunds].sort((a, b) => compareOrdinal(a.id, b.id));
     for (const refund of ordered) {
@@ -825,6 +826,7 @@ export async function recordStripeRefundsAgainstTransaction({
       // An undated refund counts as new here: only a dated pre-ledger one was already folded in.
       if (isRecordedRefundStatus(recorded.status) && !predatesRefundLedger(refund.created, ledgerStartSeconds, "since-ledger")) {
         newlyCountedCents += recorded.amountCents;
+        newlyCountedRefundIds.push(refund.id);
       }
     }
 
@@ -882,6 +884,7 @@ export async function recordStripeRefundsAgainstTransaction({
       ledgerRefundedAmountCents,
       refundedAmountCents: nextCents,
       appliedCents: nextCents - previousCents,
+      newlyCountedRefundIds,
       failedLaterDebts,
       /** #4104: refunds its caller was told counted that a row it is moving owns; the caller reads them as refused. */
       readAsRefused,
@@ -922,8 +925,10 @@ export async function foldIntoTransactionRefundedAmount({
 export const sumRecordedRefundsForTransaction = (store: RefundRowStore, paymentTransactionId: string) => sumRecordedRefundRows(store, { paymentTransactionId });
 /** #4154 review (M2): the same, over every charge on one payment. */
 export const sumRecordedRefundsForPayment = (store: RefundRowStore, paymentId: string) => sumRecordedRefundRows(store, { paymentId });
+/** #4285 review: the same, on one capture by row OR intent. What its CARD still holds is its amount less this: `refundedAmountCents` also counts account credit and by-hand refunds. */
+export const sumRecordedRefundsForCapture = (store: RefundRowStore, capture: { id: string; paymentIntentId: string }) => sumRecordedRefundRows(store, { OR: [{ paymentTransactionId: capture.id }, { stripePaymentIntentId: capture.paymentIntentId }] });
 type RefundRowStore = Pick<PaymentStore, "paymentRefund">;
-async function sumRecordedRefundRows(store: RefundRowStore, where: { paymentTransactionId: string } | { paymentId: string }): Promise<number> {
+async function sumRecordedRefundRows(store: RefundRowStore, where: Prisma.PaymentRefundWhereInput): Promise<number> {
   const recorded = await store.paymentRefund.aggregate({ where: { ...where, status: { notIn: EXCLUDED_LEDGER_REFUND_STATUSES } }, _sum: { amountCents: true } });
   return recorded._sum.amountCents ?? 0;
 }
@@ -1239,6 +1244,8 @@ export async function syncRefundsFromStripeCharge({
     transactionId: transaction.id,
     createdRefundsCount: recorded.createdRefundsCount,
     createdRefundAmountCents: recorded.createdRefundAmountCents,
+    /** #4312: the refunds this sync was the first to record and count. */
+    newlyCountedRefundIds: recorded.newlyCountedRefundIds,
     ledgerRefundedAmountCents: recorded.ledgerRefundedAmountCents,
     /** #4104: alerted already unless `store` was the caller's transaction. */
     failedLaterDebts: recorded.failedLaterDebts,

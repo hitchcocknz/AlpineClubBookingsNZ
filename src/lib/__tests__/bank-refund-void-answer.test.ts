@@ -18,13 +18,20 @@ vi.mock("@/lib/xero-api-client", async (importOriginal) => ({
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: { manualRefundTask: { findUnique } } }));
 vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
+const reconcileXeroCreditNote = vi.fn();
+const notifyXeroSyncError = vi.fn();
+vi.mock("@/lib/xero-inbound/credit-note", () => ({ reconcileXeroCreditNote: (id: string) => reconcileXeroCreditNote(id) }));
+vi.mock("@/lib/xero-error-alert", () => ({ notifyXeroSyncError: (input: unknown) => notifyXeroSyncError(input) }));
 
-const { prepareBankRefundVoidAnswer, verifyHandMadeRefundNote } = await import("@/lib/bank-refund-void-answer");
+const { prepareBankRefundVoidAnswer, reconcileHandMadeNoteAfterRecording, recordHandMadeRefundNoteLink, verifyHandMadeRefundNote } = await import(
+  "@/lib/bank-refund-void-answer"
+);
 const { CLUB_FORMAT_TEST } = await import("@/lib/__tests__/support/club-format-fixture");
 const copy = await import("@/lib/bank-refund-void-follow-up-copy");
 
 const live = {
   creditNoteID: "cn-hand", creditNoteNumber: "CN-0123", status: "AUTHORISED", type: "ACCRECCREDIT", total: 200,
+  updatedDateUTC: new Date("2026-06-30T21:15:04.123Z"),
   contact: { contactID: "contact-sam" }, allocations: [{ invoice: { invoiceID: "inv-1" } }],
 };
 const verify = (number = "CN-0123", over: Partial<{ xeroInvoiceId: string | null; ownerXeroContactId: string | null }> = {}) =>
@@ -38,7 +45,11 @@ describe("verifyHandMadeRefundNote (#4162)", () => {
 
   it("finds the note by its number and accepts an approved sales note for the amount, the invoice's contact and that invoice", async () => {
     getCreditNotes.mockResolvedValue({ body: { creditNotes: [live] } });
-    await expect(verify(" CN-0123 ")).resolves.toEqual({ creditNoteId: "cn-hand", creditNoteNumber: "CN-0123", amountCents: 20_000, status: "AUTHORISED", total: 200 });
+    await expect(verify(" CN-0123 ")).resolves.toEqual({
+      creditNoteId: "cn-hand", creditNoteNumber: "CN-0123", amountCents: 20_000, status: "AUTHORISED", total: 200,
+      // #4288: the reading's own Xero timestamp, carried to the link write that orders it.
+      updatedDateUTC: "2026-06-30T21:15:04.123Z",
+    });
     expect(getCreditNotes).toHaveBeenCalledWith("tenant", undefined, 'CreditNoteNumber=="CN-0123"');
     expect(getInvoice).toHaveBeenCalledWith("tenant", "inv-1");
     // Security 4: a person waits on these reads - one retry, a 5-second wait.
@@ -131,6 +142,85 @@ describe("verifyHandMadeRefundNote (#4162)", () => {
   });
 });
 
+describe("recordHandMadeRefundNoteLink under the link's own row lock (#4288)", () => {
+  const note = { creditNoteId: "cn-hand", creditNoteNumber: "CN-0123", amountCents: 20_000, status: "AUTHORISED", total: 200, updatedDateUTC: "2026-06-30T21:15:04.123Z" };
+  /**
+   * A transaction client for the real link funnel. `tracked` is what the
+   * unlocked check reads; `stored` is the row as the funnel reads it under its
+   * lock - a void that committed in between shows only there.
+   */
+  function fakeTx(stored: { metadata: unknown; active: boolean } | null, resolvedRow: { id: string } | null = null) {
+    const upsert = vi.fn(async (args: { update: { active: boolean; metadata: unknown } }) => ({ active: args.update.active, metadata: args.update.metadata }));
+    const findResolvedRow = vi.fn(async () => resolvedRow);
+    const tx = {
+      $executeRaw: vi.fn(async () => 1),
+      xeroSyncOperation: { findFirst: findResolvedRow },
+      payment: { findUnique: vi.fn(async () => ({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null })), updateMany: vi.fn() },
+      xeroObjectLink: {
+        findMany: vi.fn(async () => []),
+        createMany: vi.fn(async () => ({ count: 0 })),
+        findUnique: vi.fn(async () => stored),
+        updateMany: vi.fn(),
+        upsert,
+      },
+    };
+    return { tx: tx as never, upsert, findResolvedRow };
+  }
+  const record = (tx: never) => recordHandMadeRefundNoteLink(tx, { paymentId: "pay-1", taskId: "task-1", amountCents: 20_000, note });
+
+  it("MUTATION (#4321): a note a credit-note create row records, resolved by hand or not yet SUCCEEDED, is refused, and nothing is written", async () => {
+    const { tx, upsert, findResolvedRow } = fakeTx(null, { id: "op-resolved" });
+    await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("CN-0123 is already recorded against another refund") });
+    expect(upsert).not.toHaveBeenCalled();
+    // Any payment's credit-note create naming the note by its id - never its
+    // number (an old organisation's, or a reused one) - that a resolve could
+    // still flip, or already has.
+    expect(findResolvedRow).toHaveBeenCalledWith({
+      where: {
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn-hand",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        OR: [{ manuallyResolvedAt: { not: null } }, { status: { not: "SUCCEEDED" } }],
+      },
+      select: { id: true },
+    });
+  });
+
+  it("records the checked note live, stamped with its Xero timestamp", async () => {
+    const { tx, upsert } = fakeTx(null);
+    await record(tx);
+    expect(upsert).toHaveBeenCalledWith(expect.objectContaining({
+      update: expect.objectContaining({
+        active: true,
+        metadata: expect.objectContaining({ status: "AUTHORISED", providerUpdatedAt: "2026-06-30T21:15:04.123Z", perDelta: true, handBackTaskId: "task-1" }),
+      }),
+    }));
+  });
+
+  it("MUTATION (re-check): a void that committed after the check is refused under the lock, so the completion rolls back", async () => {
+    // Stamped earlier or not at all: a recorded void always wins over a live reading.
+    for (const providerUpdatedAt of ["2026-06-30T22:00:00.000Z", undefined]) {
+      const { tx } = fakeTx({ metadata: { status: "VOIDED", total: 200, ...(providerUpdatedAt ? { providerUpdatedAt } : {}) }, active: false });
+      await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("CN-0123 was voided in Xero while this answer was being recorded") });
+    }
+  });
+
+  it("a newer reading recorded meanwhile that leaves the link inactive is refused too", async () => {
+    const { tx } = fakeTx({ metadata: { status: "PAID", total: 200, providerUpdatedAt: "2026-06-30T22:00:00.000Z" }, active: false });
+    await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("changed in Xero") });
+  });
+
+  it("MUTATION (review 4): a newer reading kept on an ACTIVE row is refused too - the answer's keys were never written", async () => {
+    // The stored row is live and active (an inbound reading newer than the
+    // treasurer's check): the funnel keeps it whole, so `handBackTaskId` and
+    // the other keys of this answer would be silently lost.
+    const { tx, upsert } = fakeTx({ metadata: { status: "PAID", total: 200, providerUpdatedAt: "2026-06-30T22:00:00.000Z" }, active: true });
+    await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("changed in Xero") });
+    expect(upsert.mock.calls[0]![0].update.metadata).not.toHaveProperty("handBackTaskId");
+  });
+});
+
 describe("the follow-up's copy (#4162)", () => {
   it("round-trips the context it stores, and refuses a partial one", () => {
     const context = {
@@ -172,5 +262,40 @@ describe("the refund list's payload marks a bank refund to re-confirm (#4162)", 
       editRefundHandBack: false,
     });
     expect(toOpenManualRefundTaskPayload({ ...row, occurrenceKey: "edit-refund-hand-back:m", reviewContext: null } as never, null, []).bankRefundVoidFollowUp).toBeNull();
+  });
+});
+
+describe("reconcileHandMadeNoteAfterRecording (#4162, #4421)", () => {
+  const note = { creditNoteId: "cn-hand", creditNoteNumber: "CN-0123" };
+  const context = { alertKey: "bank-refund-void-hand-made-note", recordedFor: "a re-confirmed bank refund" };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    notifyXeroSyncError.mockResolvedValue(undefined);
+  });
+
+  it("raises nothing when the re-read and its recount both finish", async () => {
+    reconcileXeroCreditNote.mockResolvedValue({ handled: true, kind: "CREDIT_NOTE" });
+    await reconcileHandMadeNoteAfterRecording(note, context);
+    expect(reconcileXeroCreditNote).toHaveBeenCalledWith("cn-hand");
+    expect(notifyXeroSyncError).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: alerts a person when the re-read's refunded-total recount was left unwritten, which nothing retries (#4095 review, item 4)", async () => {
+    reconcileXeroCreditNote.mockResolvedValue({ handled: true, kind: "CREDIT_NOTE", recountLeftUnsettled: "lost its claim twice" });
+    await reconcileHandMadeNoteAfterRecording(note, context);
+    expect(notifyXeroSyncError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        errorType: "refund-ledger-divergence",
+        operation: "bank-refund-void-hand-made-note:recount:cn-hand",
+        errorMessage: expect.stringContaining("CN-0123"),
+      }),
+    );
+  });
+
+  it("alerts a person when the re-read fails, never the caller", async () => {
+    reconcileXeroCreditNote.mockRejectedValue(new Error("Xero down"));
+    await expect(reconcileHandMadeNoteAfterRecording(note, context)).resolves.toBeUndefined();
+    expect(notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({ operation: "bank-refund-void-hand-made-note:cn-hand" }));
   });
 });

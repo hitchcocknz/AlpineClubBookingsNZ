@@ -71,6 +71,10 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
     "defaultSubject": "Payment Still Needed - {{CLUB_LODGE_NAME}}",
     "defaultBody": "Payment Still Needed\n\nHi {{firstName}}, a change to your lodge booking increased the total, and the extra amount has not been paid yet.\n\nAmount still to pay: {{additionalAmount}}\nRequested on: {{requestedOn}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nOpen your booking and complete the outstanding payment. If you have already paid, or you think this is wrong, please contact the club.\n\nPay Now: {{BASE_URL}}/bookings"
   },
+  "credit-released-payment-request": {
+    "defaultSubject": "Payment needed for your lodge booking",
+    "defaultBody": "Payment Needed\n\nHi {{firstName}}, the account credit applied to your booking was used elsewhere in the club's accounts, so {{additionalAmount}} of your booking has not been paid.\n\nAmount still to pay: {{additionalAmount}}\nRequested on: {{requestedOn}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\n\nOpen your booking to pay by card. If you have already paid, or think this is wrong, contact the club.\n\nPay Now: {{BASE_URL}}/bookings"
+  },
   "chore-roster": {
     "defaultSubject": "Your chore roster for {{formattedDate}} - {{CLUB_LODGE_NAME}}",
     "defaultBody": "Chore Roster\n\nHi {{guestName}},\n\nHere are your assigned chores for {{formattedDate}} at the lodge:\n\n{{choreListNote}}{{choreLinkNote}}Last person to bed: Check heaters and fire are safe and doors are secure.\n\nThanks for helping keep the lodge running smoothly!"
@@ -311,6 +315,18 @@ const EMAIL_AUDIT_DEFAULTS_BASE = {
   "admin-bank-transfer-settlement-figure": {
     "defaultSubject": "Bank transfer amount needs checking: {{memberName}}",
     "defaultBody": "Bank Transfer Amount Needs Checking\n\nXero reports this booking's bank-transfer invoice paid, and the payment has been recorded. The amount needs a person to check it.\n\n{{settlementFigureNote}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nAmount recorded: {{amount}}\nCash Xero shows: {{paidAmount}}\nBooking owes: {{amountOwing}}\nXero invoice: {{xeroInvoiceNumber}}\nOpen the invoice in Xero: {{xeroObjectUrl}}\n\nOpen Booking: {{bookingUrl}}\nView Payments: {{reviewUrl}}"
+  },
+  // #4211 (`INV-PAY-043`): a card capture kept on a paid booking with no usable
+  // record of which payment settled it; nothing refunded, a person decides.
+  "admin-duplicate-capture-kept": {
+    "defaultSubject": "Booking may have been paid twice — check by hand: {{memberName}}",
+    "defaultBody": "Booking May Have Been Paid Twice — Check By Hand\n\nA card payment was kept on a booking that was already paid — please check it by hand.\n\n{{duplicateCaptureKeptNote}}\n\n{{duplicateCaptureKeptAction}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nStill held by this payment: {{amount}}\nStripe PI: {{paymentIntentId}}\n\nOpen Booking: {{bookingUrl}}\nView Payments: {{reviewUrl}}"
+  },
+  // #4300 (`INV-PAY-138`): a card capture the settle refused because an edit had
+  // replaced the payment it was made on; the superseded machinery returns it.
+  "admin-superseded-capture-refused": {
+    "defaultSubject": "Card payment on a replaced payment — not applied: {{memberName}}",
+    "defaultBody": "Card Payment On A Replaced Payment — Not Applied\n\nA card payment was taken on a payment that a later change to this booking had replaced, so it was not applied to the booking.\n\n{{supersededCaptureNote}}\n\n{{supersededCaptureAction}}\n\nMember: {{memberName}}\nCheck-in: {{checkIn}}\nCheck-out: {{checkOut}}\nBooking: {{bookingId}}\nPayment not applied: {{amount}}\nStripe PI: {{paymentIntentId}}\n\nOpen Booking: {{bookingUrl}}\nView Payments: {{reviewUrl}}"
   },
   "admin-manual-refund-task": {
     "defaultSubject": "Manual refund needed - {{handBackLabel}}: {{memberName}}",

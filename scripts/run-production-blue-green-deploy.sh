@@ -1287,6 +1287,10 @@ require_env_key() {
 # exact -- `services:` at column 0, the service name at two, its keys at four,
 # and its environment entries at six -- and a line at any other depth cannot be
 # mistaken for one of them.
+#
+# READS TO THE END (#4416): the first match is kept, but awk never exits early.
+# An early `exit` closed the pipe while `printf` was still writing a large
+# render, and under `pipefail` its SIGPIPE turned a found value into a failure.
 compose_service_environment_value() {
   local rendered="$1"
   local service="$2"
@@ -1303,12 +1307,12 @@ compose_service_environment_value() {
     in_service && /^    [^[:space:]]/ {
       in_env = ($0 == "    environment:"); next
     }
-    in_env && index($0, prefix) == 1 {
+    in_env && !found && index($0, prefix) == 1 {
       value = substr($0, length(prefix) + 1)
       sub(/^[[:space:]]+/, "", value)
-      print value
-      exit
+      found = 1
     }
+    END { if (found) print value }
   '
 }
 
@@ -2441,21 +2445,31 @@ prune_stale_docker_assets() {
 
 get_service_image_ref() {
   local service="$1"
-  local project_name
+  local rendered
   local image_ref
 
-  project_name="${COMPOSE_PROJECT_NAME:-$(basename "$PROJECT_DIR" | tr '[:upper:]' '[:lower:]')}"
-  case "$service" in
-    "$CRON_SERVICE"|"$BLUE_SERVICE"|"$GREEN_SERVICE")
-      image_ref="${APP_IMAGE:-${project_name}-app:local}"
-      ;;
-    "$MIGRATE_SERVICE")
-      image_ref="${MIGRATE_IMAGE:-${project_name}-migrate:local}"
-      ;;
-    *)
-      image_ref="${project_name}-${service}:latest"
-      ;;
-  esac
+  # Compose owns project-name normalization, .env precedence and explicit
+  # image overrides. --images also lists dependencies, so read this service's
+  # image field from the canonical render, never the first image in that list.
+  if ! rendered="$(docker compose --profile "*" config -- "$service")"; then
+    echo "Unable to resolve image for service $service: Compose configuration failed" >&2
+    return 1
+  fi
+  image_ref="$(printf '%s\n' "$rendered" | awk -v service="$service" '
+    /^[^[:space:]]/ { in_services = ($0 == "services:"); in_service = 0; next }
+    in_services && /^  [^[:space:]]/ { in_service = ($0 == "  " service ":"); next }
+    in_service && /^    image:/ {
+      sub(/^    image:[[:space:]]*/, "")
+      gsub(/^["\047]|["\047]$/, "")
+      print
+      # Keep consuming input: exiting early can SIGPIPE printf on a large render.
+      in_service = 0
+    }
+  ')" || return 1
+  if [ -z "$image_ref" ]; then
+    echo "Unable to resolve image for service $service: Compose returned no image" >&2
+    return 1
+  fi
   docker image inspect "$image_ref" >/dev/null 2>&1 || {
     echo "Unable to inspect image: $image_ref" >&2
     return 1

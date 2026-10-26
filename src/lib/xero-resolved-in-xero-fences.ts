@@ -6,7 +6,7 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
-import { refundNoteIdSets } from "@/lib/xero-refund-note-status";
+import { countsTowardRefundNoteCoverage, refundNoteIdSets } from "@/lib/xero-refund-note-status";
 import { sumCoveredRefundCreditNoteCents } from "@/lib/xero-sync";
 
 type OperationReader = Pick<Prisma.TransactionClient, "xeroSyncOperation">;
@@ -49,9 +49,46 @@ function toResolved(
  * re-raise's key can equal it when the note's executed watermark differs from
  * its queued one, so a key fence would refuse the re-raise every night.
  *
+ * #4265 (owner decision 26 Oct 2026, `INV-INT-025`): nor does a row that is
+ * no coverage of its own (`countsTowardRefundNoteCoverage`): a refund
+ * request's note (`INV-PAY-118`), live or voided, or a row closed as covered
+ * by another note. Its key and id are still reported, so the request's own
+ * fence holds; its amount is never read, so an unreadable one refuses nothing.
+ *
  * A resolved row whose amount cannot be read is reported in
  * `unreadableOperationIds`; callers must refuse loudly on it rather than guess.
  */
+/**
+ * #4421 (`INV-SSOT`, `INV-INT-028`): THE refund-note create rows the resolved
+ * coverage reader reads - an outbound credit-note create on a payment, queued
+ * as a refund note or with no recorded queue type (a legacy row, whose payload
+ * says whether it was a refund or an account-credit note). One spelling for
+ * this module's queries and for the "Resolve by hand" shape
+ * (`refundNoteResolveShape`), so the rows a resolve asks a note number of are
+ * exactly the rows whose resolve counts toward coverage.
+ */
+export const REFUND_NOTE_CREATE_ROW = {
+  direction: "OUTBOUND",
+  entityType: "CREDIT_NOTE",
+  operationType: "CREATE",
+  localModel: "Payment",
+} as const;
+export const REFUND_NOTE_CREATE_QUEUE_TYPES = [XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE, null] as const;
+
+/** The same population, asked of a row already read. */
+export function isRefundNoteCreateRow(row: {
+  direction: string;
+  entityType: string;
+  operationType: string;
+  localModel: string | null;
+  queueType: string | null;
+}): boolean {
+  return (
+    (Object.keys(REFUND_NOTE_CREATE_ROW) as Array<keyof typeof REFUND_NOTE_CREATE_ROW>).every((key) => row[key] === REFUND_NOTE_CREATE_ROW[key]) &&
+    (REFUND_NOTE_CREATE_QUEUE_TYPES as readonly (string | null)[]).includes(row.queueType)
+  );
+}
+
 export interface ResolvedRefundCreditNoteCoverage {
   coveredCents: number;
   correlationKeys: string[];
@@ -67,19 +104,16 @@ export async function readResolvedRefundCreditNoteCoverage(
 ): Promise<ResolvedRefundCreditNoteCoverage> {
   const rows = await db.xeroSyncOperation.findMany({
     where: {
-      direction: "OUTBOUND",
-      entityType: "CREDIT_NOTE",
-      operationType: "CREATE",
-      localModel: "Payment",
+      ...REFUND_NOTE_CREATE_ROW,
       localId: paymentId,
       manuallyResolvedAt: { not: null },
       // A legacy row with no recorded queue type is read too; its payload
       // says whether it was a refund or an account-credit note.
-      OR: [{ queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE }, { queueType: null }],
+      OR: REFUND_NOTE_CREATE_QUEUE_TYPES.map((queueType) => ({ queueType })),
       ...(rowsWhere ? { AND: [rowsWhere] } : {}),
     },
     orderBy: { createdAt: "asc" },
-    select: { id: true, correlationKey: true, requestPayload: true, xeroObjectId: true },
+    select: { id: true, correlationKey: true, idempotencyKey: true, requestPayload: true, responsePayload: true, xeroObjectId: true },
   });
   const noteIds = [...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId ? [row.xeroObjectId] : [])))];
   // #4250 review (concurrency F1): which notes are live and which Xero voided,
@@ -93,12 +127,26 @@ export async function readResolvedRefundCreditNoteCoverage(
   };
   // `operationIds[i]` is the row of `correlationKeys[i]`; rows with no key reported follow.
   const unkeyedOperationIds: string[] = [];
+  const report = (row: { id: string; correlationKey: string | null }) => {
+    if (row.correlationKey) {
+      coverage.operationIds.push(row.id);
+      coverage.correlationKeys.push(row.correlationKey);
+    } else {
+      unkeyedOperationIds.push(row.id);
+    }
+  };
   for (const row of rows ?? []) {
     const recorded = parsePaymentCreditNoteRetryInput(row);
     if (row.xeroObjectId && links?.cancelled.has(row.xeroObjectId)) {
       if (recorded && recorded.kind !== "refund") continue;
       // #4250 review (money P2): no key - a re-raise's key can equal it.
       unkeyedOperationIds.push(row.id);
+      continue;
+    }
+    // #4265: a refund request's note, or a row closed as covered by another
+    // note, covers nothing here; the fences still see its key.
+    if (!countsTowardRefundNoteCoverage(row)) {
+      if (!recorded || recorded.kind === "refund") report(row);
       continue;
     }
     if (!recorded) {
@@ -109,12 +157,7 @@ export async function readResolvedRefundCreditNoteCoverage(
     if (!row.xeroObjectId || !links?.active.has(row.xeroObjectId)) {
       coverage.coveredCents += recorded.amountCents;
     }
-    if (row.correlationKey) {
-      coverage.operationIds.push(row.id);
-      coverage.correlationKeys.push(row.correlationKey);
-    } else {
-      unkeyedOperationIds.push(row.id);
-    }
+    report(row);
   }
   coverage.operationIds.push(...unkeyedOperationIds);
   return coverage;
@@ -145,8 +188,11 @@ export async function sumRefundCreditNoteCoverageCents(
  * Counted exactly as `sumRefundCreditNoteCoverageCents` counts the payment: the
  * active link of each note those rows raised, plus the recorded amount of a row
  * resolved by hand whose note has no link and was not voided in Xero (#4250).
- * So what those notes cover here is exactly their share of the payment's coverage, never more and never less. A
- * resolved row whose amount cannot be read covers nothing, as there.
+ * #4265: only rows that count (`countsTowardRefundNoteCoverage`) - a row closed
+ * as covered by another refund's note counts nothing of that note (#4258), nor
+ * does a refund request's. So what those notes cover here is exactly their
+ * share of the payment's coverage, never more and never less. A resolved row
+ * whose amount cannot be read covers nothing, as there.
  */
 export async function sumRefundCreditNoteCoverageOfRowsCents(
   paymentId: string,
@@ -155,16 +201,15 @@ export async function sumRefundCreditNoteCoverageOfRowsCents(
 ): Promise<number> {
   const rows = await db.xeroSyncOperation.findMany({
     where: {
-      direction: "OUTBOUND",
-      entityType: "CREDIT_NOTE",
-      operationType: "CREATE",
-      localModel: "Payment",
+      ...REFUND_NOTE_CREATE_ROW,
       localId: paymentId,
       AND: [rowsWhere],
     },
-    select: { xeroObjectId: true },
+    select: { xeroObjectId: true, correlationKey: true, idempotencyKey: true, requestPayload: true, responsePayload: true },
   });
-  const noteIds = [...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId ? [row.xeroObjectId] : [])))];
+  const noteIds = [
+    ...new Set((rows ?? []).flatMap((row) => (row.xeroObjectId && countsTowardRefundNoteCoverage(row) ? [row.xeroObjectId] : []))),
+  ];
   const linkedCents = await sumCoveredRefundCreditNoteCents(paymentId, db, noteIds);
   const resolved = await readResolvedRefundCreditNoteCoverage(paymentId, db, rowsWhere);
   return linkedCents + resolved.coveredCents;

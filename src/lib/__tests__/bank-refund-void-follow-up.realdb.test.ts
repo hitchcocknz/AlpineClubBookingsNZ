@@ -26,6 +26,7 @@
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedBankRefundVoidAnswer } from "@/lib/bank-refund-void-answer";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
@@ -647,18 +648,30 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         return aggregate(args);
       }) as never);
       const reads = vi.spyOn(prisma.payment, "findMany");
-      const claims = vi.spyOn(prisma.payment, "updateMany");
-
-      await repairRefundedPaymentBusinessState({
-        creditNoteId: `${P}-v`,
-        creditNote: { status: "VOIDED", total: 150, appliedAmount: 0, remainingCredit: 0 } as never,
-        directPaymentIds: [PAYMENT_ID],
-        modificationRefundAmountsByPaymentId: new Map(),
+      // #4288: a payment holding the note's own refund-note row is claimed under
+      // its row lock, on that transaction's client: observe the claims there.
+      const claimed: Array<{ count: number }> = [];
+      const { interceptTransactionPaymentClaims } = await import("./support/transaction-payment-claims");
+      const lockSpy = interceptTransactionPaymentClaims(prisma, async (_args, run) => {
+        const result = await run();
+        claimed.push(result);
+        return result;
       });
+
+      try {
+        await repairRefundedPaymentBusinessState({
+          creditNoteId: `${P}-v`,
+          creditNote: { status: "VOIDED", total: 150, appliedAmount: 0, remainingCredit: 0 } as never,
+          directPaymentIds: [PAYMENT_ID],
+          modificationRefundAmountsByPaymentId: new Map(),
+        });
+      } finally {
+        lockSpy.mockRestore();
+      }
 
       expect(paused).toBe(true);
       // The claim on the row as first read was lost, and the recount ran again from scratch.
-      expect(await Promise.all(claims.mock.results.map((result) => result.value))).toContainEqual({ count: 0 });
+      expect(claimed).toContainEqual({ count: 0 });
       expect(reads.mock.calls.length).toBeGreaterThanOrEqual(2);
       expect(await money()).toMatchObject({ payment: { refundedAmountCents: 5_000 }, detailCents: 5_000 });
     });
@@ -765,6 +778,63 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       // Tracked from now on: its own void is undone again by the follow-up.
       expect(await followUp.followUpVoidedBankRefundNote(handLink.id)).toMatchObject({ outcome: "undone" });
       expect(await money()).toMatchObject({ payment: { refundedAmountCents: 0 }, detailCents: 0 });
+    });
+
+    it("MUTATION (#4288): a void that commits between the hand-made check and the link write is refused under the lock, and nothing moves", async () => {
+      await paidBankTransfer();
+      await handBackNoted(`${P}-v`, PAID_CENTS);
+      const linkId = await voidInXero(`${P}-v`, PAID_CENTS);
+      const followUpId = (await followUp.followUpVoidedBankRefundNote(linkId))!.followUpTaskId!;
+      const { prepareBankRefundVoidAnswer } = await import("@/lib/bank-refund-void-answer");
+      const handMade = {
+        creditNoteID: `${P}-hand-race`, creditNoteNumber: "CN-HAND-RACE", status: "AUTHORISED", type: "ACCRECCREDIT", total: 200,
+        updatedDateUTC: new Date("2026-06-30T11:00:00.000Z"), contact: { contactID: CONTACT_ID }, allocations: [],
+      };
+      const answer = await withXeroCreditNotes([handMade], () =>
+        prepareBankRefundVoidAnswer({ taskId: followUpId, answer: { answer: "recorded-in-xero", creditNoteNumber: "CN-HAND-RACE" }, format: CLUB_FORMAT_TEST }),
+      );
+      const before = await money();
+
+      // The inbound void's first write of the note's mirror, held open on its
+      // own connection: the completion's unlocked check cannot see it.
+      const { upsertXeroObjectLink } = await import("@/lib/xero-sync");
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      let written!: (pid: number) => void;
+      const holderPid = new Promise<number>((resolve) => (written = resolve));
+      const voided = prisma.$transaction(async (tx) => {
+        await upsertXeroObjectLink({
+          localModel: "Payment", localId: PAYMENT_ID, xeroObjectType: "CREDIT_NOTE", xeroObjectId: `${P}-hand-race`, xeroObjectNumber: "CN-HAND-RACE",
+          role: "REFUND_CREDIT_NOTE", metadata: { status: "VOIDED", total: 200, providerUpdatedAt: "2026-06-30T12:00:00.000Z" }, mergeMetadata: true,
+        }, { store: tx });
+        const [{ pid }] = await tx.$queryRaw<Array<{ pid: number }>>`SELECT pg_backend_pid() AS "pid"`;
+        written(pid);
+        await released;
+      }, { timeout: 30_000 });
+      const completion = complete(followUpId, answer);
+      void completion.catch(() => undefined);
+      try {
+        const pid = await Promise.race([holderPid, voided.then(() => { throw new Error("The void ended before reporting its lock"); })]);
+        const startedAt = process.hrtime.bigint();
+        for (;;) {
+          const rows = await prisma.$queryRaw<Array<{ count: number }>>`
+            SELECT COUNT(*)::int AS "count" FROM pg_stat_activity
+            WHERE datname = current_database() AND ${pid}::int = ANY(pg_blocking_pids(pid))`;
+          if ((rows[0]?.count ?? 0) >= 1) break;
+          if (realElapsedMs(startedAt) > 10_000) throw new Error("The completion's link write never queued behind the void");
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      } finally {
+        release();
+      }
+      await voided;
+
+      // Before #4288 the answer wrote the voided note's mirror live and the money moved.
+      await expect(completion).rejects.toMatchObject({ status: 409, message: expect.stringContaining("CN-HAND-RACE was voided in Xero while this answer was being recorded") });
+      expect(await money()).toEqual(before);
+      expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: followUpId }, select: { status: true } })).toEqual({ status: "OPEN" });
+      const link = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-hand-race` }, select: { active: true, metadata: true } });
+      expect(link).toEqual({ active: false, metadata: { status: "VOIDED", total: 200, providerUpdatedAt: "2026-06-30T12:00:00.000Z" } });
     });
 
     it("MUTATION (money 6): a hand-made note tracked only by this payment's own inactive, live link is reactivated for the follow-up", async () => {

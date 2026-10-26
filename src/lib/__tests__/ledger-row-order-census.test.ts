@@ -84,7 +84,7 @@ const UNORDERED_ROW_SETS: Record<string, string> = {
     "the settlement sync posts one line per captured row and per refund, keyed by the row's id " +
     "(planSettlementLines); the set of lines, not their order, is what is posted.",
   "src/lib/booking-payment-cleanup.ts > queueSupersededAdditionalIntentCancellationRows":
-    "queues a durable cancellation for EVERY superseded pending ADDITIONAL intent; each is keyed by its " +
+    "queues a durable cancellation for EVERY superseded pending or declined ADDITIONAL intent; each is keyed by its " +
     "own intent, so the order only changes the order they are queued in.",
   "src/lib/booking-payment-cleanup.ts > queueSupersededPrimaryIntentCancellations":
     "queues a durable cancellation for EVERY superseded pending PRIMARY intent; each is keyed by its own " +
@@ -109,9 +109,12 @@ const UNORDERED_ROW_SETS: Record<string, string> = {
   "src/lib/refund-allocation-unwind.ts > unwindableHandBackCents":
     "#4162: sums each row's refunded total less its card refunds; a sum does not depend on the order " +
     "(the unwind itself orders its rows, oldest first).",
-  "src/lib/payment-reconciliation.ts > enqueueManualSettlementIntentCancellations":
+  "src/lib/manual-settlement-intent-hygiene.ts > enqueueManualSettlementIntentCancellations":
     "cancels EVERY live Stripe intent on the payment except the one named to spare (an intent id, unique); " +
-    "the order only changes the order the cancellations are queued in.",
+    "the order only changes the order the cancellations are queued in, and the adopted ones it records are a set (#4320).",
+  "src/lib/manual-settlement-intent-hygiene.ts > withdrawManualSettlementIntentCancellations":
+    "#4320: reads the payable intents' ids only as a set for the recovery-row read's `in` filter; the rows it " +
+    "deletes are read ordered (createdAt) from the recovery table.",
   "src/lib/xero-applied-credit-ledger-state.ts > appliedCreditSettledByCancel":
     "reads only each row's status for paymentHasCaptureEvidence, which asks whether ANY row was captured.",
   "src/lib/xero-inbound/modification-note-refunds.ts > paymentsCountingInvoiceCorrections":
@@ -171,10 +174,14 @@ const EXISTENCE_READS: Record<string, string> = {
  * fails closed even if its TypeScript spelling looks like a string id.
  */
 const UNIQUE_EXPRESSION_READS: Record<string, string> = {
-  "src/lib/booking-cancel.ts > performBookingCancellation > additionalTransaction":
-    "stripePaymentIntentId uses payment.additionalPaymentIntentId inside if (payment.additionalPaymentIntentId), excluding null.",
+  "src/lib/credit-release-ask-close.ts > closeCreditReleaseAsksPaidInXero > ask":
+    "stripePaymentIntentId uses payment.additionalPaymentIntentId after the !additionalPaymentIntentId branch continues, excluding null (#4253).",
+  "src/lib/booking-payment-cleanup.ts > failOutstandingAdditionalAskInClaim > additionalTransaction":
+    "stripePaymentIntentId uses paymentIntentId after the !paymentIntentId branch returns, excluding null (#4316: moved from the cancel's claim).",
   "src/lib/card-refund-paid-another-way-xero.ts > paidAnotherWayXeroRoute > capture":
     "stripePaymentIntentId uses lateCaptureIntent after the lateCaptureIntent === null branch returns.",
+  "src/lib/duplicate-capture-guard.ts > judgeCaptureOnPaidBooking > recordedSettler":
+    "id uses input.recordedSettlerId inside its own truthiness ternary, so the read runs only on a non-null primary key (#4211).",
   "src/lib/late-capture-refund-credit-note.ts > creditBackLateCaptureRefunds > capture":
     "stripePaymentIntentId uses the function's required paymentIntentId: string parameter, never a nullable value.",
   "src/lib/late-capture-repair-refund-record.ts > recordAndNoteRepairedLateCaptureRefunds > transaction":

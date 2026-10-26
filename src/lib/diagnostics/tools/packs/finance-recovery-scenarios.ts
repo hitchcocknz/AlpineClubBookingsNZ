@@ -11,6 +11,7 @@ import {
   BOOKING_MODIFICATION_REFUND_RECOVERY_PREFIX,
   CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX,
   CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX,
+  CREDIT_RELEASE_ASK_RECOVERY_PREFIX,
   DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX,
   EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
   EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX,
@@ -102,6 +103,11 @@ export const RECOVERY_SCENARIO_CATALOGUE = [
     prefix: EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX,
     code: "edit_financial_review_additional_intent",
     label: "the card payment request an officer raised after reviewing a booking edit",
+  },
+  {
+    prefix: CREDIT_RELEASE_ASK_RECOVERY_PREFIX,
+    code: "credit_release_ask",
+    label: "the card payment request for credit that was used in Xero",
   },
   {
     prefix: LATE_CAPTURE_APPROVAL_REFUND_RECOVERY_PREFIX,
