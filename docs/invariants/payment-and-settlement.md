@@ -339,7 +339,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     as `finalPrice + changeFee = net paid + credit + uncollected ask`.
   - **An ask is sized so the mirror still holds after it.** Minting a replacement
     ADDITIONAL PaymentIntent RETIRES every other outstanding ask on the payment
-    (`queueSupersededAdditionalIntentCancellations`), so an ask sized on one
+    (`queueSupersededAdditionalIntentCancellationRows`), so an ask sized on one
     edit's own delta deletes the unpaid balance of the ask it replaces. Two
     consecutive +$70 edits on a $130 paid booking asked $70 and lost $70,
     permanently and silently. The ask is therefore the edit's own net PLUS the unpaid balance of the ask it
@@ -2365,22 +2365,19 @@ _Legacy: settles tasks raised before #4317._
   ADDITIONAL PaymentIntent cancels every other live one on the payment
   ([INV-ADDPAY-023]). [INV-PAY-047] sizes an ordinary edit's ask accordingly; a
   settled review's charge is the SAME rule over its own figure, that edit's
-  settled shares ([INV-PAY-062]). Until #3371 it passed the bare sum, deleting
-  an earlier change's unpaid extra.
+  settled shares ([INV-PAY-062]).
   - **The carried amount is its own stored fact**,
     `PaymentTransaction.carriedAskCents`, and is a PART of `amountCents`, never
-    an addition. Once the retired row is cancelled nothing can derive it, so
-    recording it is provenance, not duplication.
+    an addition: once the retired row is cancelled nothing can derive it.
   - **It never joins the derived share total.** [INV-PAY-062]'s refuse-to-lower
     rule is safe only because that sum never decreases, and that monotonicity is
     why this path can refuse a stale lowering with no lock across a provider
     call ([`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md)). Two
     concurrent raises are ordered by [INV-PAY-112]'s claim, not by it.
-  - **A later share reads it off the row, never off the payment**, which mirrors
+  - **A later share reads it off the row, never the payment**, which mirrors
     this request by then.
   - **The accounting leg never sees it.** [INV-PAY-070] bills one invoice per
-    edit, and this is not that edit's money, so every figure handed to that leg
-    has the carried part taken out.
+    edit, so every figure handed to that leg has the carried part taken out.
   - **The obligation is structural.** `AdditionalAsk`
     (`src/lib/additional-payment-ask.ts`) is a module-private class holding the
     carried part in a `#private` field, so it can be neither built nor spread
@@ -2389,6 +2386,10 @@ _Legacy: settles tasks raised before #4317._
     refuses a deliberate assertion, so the call-site census refuses it.
   - **A FAILED mint carries nothing**: it retired nothing, so the earlier ask is
     still live for the replay to read.
+  - **Re-checked before it is written** (#4442): its queue re-reads the carried
+    live balance under the global key, then the `Payment` row, and refuses any
+    change (`assertAdditionalAskSizingCurrent`;
+    `superseded-ask-invoice-carry.realdb.test.ts`).
 
 ## INV-PAY-112
 
