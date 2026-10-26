@@ -4412,6 +4412,29 @@ describe("processStoredXeroInboundEvents", () => {
       keptReason: "cash-incomplete",
       recordedCents: 12345,
     });
+    // The primary-invoice link records the allocation for the settled-cash audit.
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "PRIMARY_INVOICE",
+        metadata: { overpaymentOrPrepaymentAllocations: 1 },
+        mergeMetadata: true,
+      }),
+    );
+  });
+
+  it("clears the primary-invoice allocation count once Xero lists none, so the audit judges the receipt again (#4095 item 9)", async () => {
+    mockPendingInternetBankingInboundEvent({ amountPaid: 123.45 });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toMatchObject({ succeeded: 1, failed: 0 });
+
+    // Written as none, merged over whatever an earlier sync recorded.
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      expect.objectContaining({
+        role: "PRIMARY_INVOICE",
+        metadata: { overpaymentOrPrepaymentAllocations: 0 },
+        mergeMetadata: true,
+      }),
+    );
   });
 
   // #3979 (`INV-PAY-125`): the receipt is the cash the paid invoice collected.

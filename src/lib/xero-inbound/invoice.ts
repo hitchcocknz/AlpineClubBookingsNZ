@@ -110,7 +110,10 @@ export async function reconcileXeroInvoice(
 
   // #3979: an invoice paid by an applied overpayment or prepayment leaves no
   // payment record to link, so its primary-invoice link says so: the settled-
-  // cash audit cannot judge such a receipt from local data.
+  // cash audit cannot judge such a receipt from local data. The count is
+  // written every sync, none included, so an allocation Xero has since removed
+  // clears it, and the audit can tell a recorded none from an older sync's
+  // silence (#4095 items 9 and 13).
   const cashAllocationCount =
     (invoice.overpayments?.length ?? 0) + (invoice.prepayments?.length ?? 0);
   for (const link of relatedLinks) {
@@ -121,7 +124,7 @@ export async function reconcileXeroInvoice(
       xeroObjectId: invoice.invoiceID,
       xeroObjectNumber: invoice.invoiceNumber ?? null,
       xeroObjectUrl: invoiceUrl,
-      ...(cashAllocationCount > 0 && link.role === "PRIMARY_INVOICE"
+      ...(link.role === "PRIMARY_INVOICE"
         ? { metadata: { [PRIMARY_INVOICE_CASH_ALLOCATIONS_KEY]: cashAllocationCount }, mergeMetadata: true }
         : {}),
       role: link.role,
