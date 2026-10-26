@@ -1,8 +1,14 @@
 # Sekreton Orchestrator
 
-**Audience: Agent.** Last reviewed **26 Oct 2026** (owner decisions: #4429, #4404). Any agent (Claude Code, Codex, or a fresh session) acting as the
-orchestrator for the Sekreton lane on `thatskiff33/AlpineClubBookingsNZ`. AGENTS.md and
-[`COORDINATION.md`](COORDINATION.md) win wherever this page disagrees with them.
+**Audience: agent.**
+
+Last reviewed **26 Oct 2026**. Owner decisions: #4429; the parallel level comes from #4404.
+
+This page is for any agent (Claude Code, Codex, or a fresh session) acting as the
+orchestrator for the Sekreton lane on `thatskiff33/AlpineClubBookingsNZ`.
+[`AGENTS.md`](../../AGENTS.md) and [`COORDINATION.md`](COORDINATION.md) win wherever
+this page disagrees with them. The only exceptions are the ones #4429 records, which
+those two files name.
 
 ## Goal (owner, 26 Oct 2026, #4429)
 
@@ -25,11 +31,15 @@ moving**, with no owner input outside the owner's two daily review windows.
 
 - Use `gh` as **`thatskiff33-agents` only**. Never act as `thatskiff33` (the owner),
   even if that login is present. Never write approval wording.
-- Sign GitHub comments `Sekreton lane (orchestrator)`.
+- Sign every GitHub comment `Sekreton lane (orchestrator)`, and open claims and
+  checkpoints with the usual `CLAIM:` / `LANE-SYNC:` prefix
+  ([`ISSUE_WORKFLOW.md`](ISSUE_WORKFLOW.md)). Other lanes tell this lane apart by that
+  signature, not by the GitHub author.
 
 ## Owner decisions in force
 
-Read each one at source on #4429 and #4404:
+Read each one at source. #4429 replaces the owner-decisions part of #4404's 26 Oct
+record. Only #4404's parallel level still applies.
 
 - Up to **3** Sekreton implementation tasks at once, on units that don't overlap.
   One writer per shared financial invariant. One heavy local job (typecheck, full
@@ -59,19 +69,15 @@ scheduler. The contract is this page.
    conflicted, or quiet long enough to look stalled (`get_activity`): read why. Then
    retry, `request_changes` with a concrete fix, or finish the work locally. Exit 137
    or out-of-memory: don't blindly retry. Shrink the task or run that step locally.
-3. **Land PRs.** For each Sekreton-lane PR:
-   - local validation (above);
-   - review lenses chosen for its risk (AGENTS.md "Orchestration Model"), with every
-     finding fixed or rejected with reasons;
-   - the PR body passes `pr:check`;
-   - green on its exact head, not a draft, no conflicts;
-   - Ready-to-Merge comment on the issue and the PR;
-   - `gh pr merge --merge`;
-   - plain-English close-out on the issue;
-   - close the Sekreton task, delete the branch, `pnpm run stale-containers`.
+3. **Land PRs.** Take each Sekreton-lane PR through AGENTS.md "Per-issue pipeline"
+   and "Completion and Merge" steps 1–6, exactly as written there. The local checks
+   in the gap table above are the ones Sekreton's sandbox can't run. After the merge,
+   close the Sekreton task.
 4. **Fill slots.** Keep 3 units running. Pick from the board reconcile, in order:
    MERGE-READY, FINISH-PR, BLOCKED-now-unblocked, FRESH-BUILD, INVESTIGATE. Before
-   starting, re-read the issue thread for a new CLAIM or decision. Prefer a Sekreton
+   starting, read the whole thread for a claim or decision. Post the `CLAIM:` (signed
+   as above), then check it held, as COORDINATION.md "Checking a claim held"
+   describes. Prefer a Sekreton
    task (approve its plan, or create it with a complete brief). Finish a released PR
    locally when only its existing branch can carry the work. Close stale Sekreton tasks
    whose issue is already closed, with a reason.
@@ -87,6 +93,9 @@ scheduler. The contract is this page.
    nothing changed, write one line and stop.
 
 ## Owner queue digest (05:45 and 20:45 NZ)
+
+This short list takes the place of decision pop-ups for an unattended lane (#4429). It
+is a list of links, not a document to read.
 
 Rewrite the pinned issue **"Owner queue (Sekreton orchestrator)"** with these sections:
 
@@ -104,11 +113,15 @@ Email the owner a link to it, with the counts.
 - Never push to `main`, squash, rebase-merge or force-push.
 - Never touch production, live Stripe/Xero/SES, real credentials or production data.
   Production operations are the owner's alone.
-- Respect any new external CLAIM (it wins). Don't take issues the owner has
-  explicitly reserved.
-- Usage: the owner runs several plans and accepts the spend (26 Oct). When a pass hits
-  a usage limit, it stops cleanly: push work in progress, update `state/HANDOFF.md`,
-  and log the limit. The owner resumes with another agent or plan.
+- Another lane's claim is handled under COORDINATION.md "Checking a claim held": the
+  earlier claim on GitHub holds. Don't take issues the owner has explicitly reserved.
+- Usage limits aren't a throttle (#4429). A pass that hits one stops cleanly:
+  - commit work in progress, and push it only if the pre-push checks pass
+    (COORDINATION.md "When the pre-push checks cannot pass");
+  - post a `LANE-SYNC:` checkpoint on each unit's issue;
+  - update `state/HANDOFF.md`, and log the limit.
+
+  The owner resumes with another agent or plan.
 
 ## Resuming: any agent, any plan
 

@@ -167,6 +167,10 @@ Coordination is on demand: GitHub and deterministic commands hold the work
 state, and no model-powered supervisor runs between tasks. A coordinator session runs
 only for a bounded decision, assignment or integration, records the result on
 the issue and stops ([`COORDINATION.md`](docs/agents/COORDINATION.md)).
+Exception: the Sekreton lane's standing orchestrator (#4429) runs unattended
+passes, asks the owner through a twice-daily queue instead of pop-ups, and
+does not hold the 25% weekly reserve
+([`SEKRETON_ORCHESTRATOR.md`](docs/agents/SEKRETON_ORCHESTRATOR.md)).
 
 - **Lane** (the session that posted an issue's `CLAIM:`; its main session is
   the orchestrator) owns its claim, worktree, branch, GitHub writes, PR, CI

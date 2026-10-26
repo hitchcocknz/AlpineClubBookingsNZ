@@ -53,7 +53,8 @@ authorised work end to end: worktree, branch, commits, push, PR, CI, review,
 ready comment and the merge gate. Implementor and reviewer subagents inside the
 lane stay within their roles (`AGENTS.md` → "Orchestration Model").
 
-A Sekreton lane (branches `sekreton/<org>/alp-<n>`, writing as `sekreton[bot]`)
+A Sekreton lane (branches `sekreton/<org>/alp-<n>`, writing as `sekreton[bot]`,
+or as `thatskiff33-agents` signed `Sekreton lane (orchestrator)`)
 is a lane like any other, and runs the whole pipeline itself (owner decision,
 26 Oct 2026, #4392): its own `CLAIM:` before work starts, a PR body from
 `.github/pull_request_template.md` with `Closes #<n>` that passes
