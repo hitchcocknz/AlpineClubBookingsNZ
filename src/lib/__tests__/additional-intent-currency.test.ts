@@ -111,7 +111,7 @@ describe("intentCurrencyDiffers", () => {
 });
 
 describe("reissueAdditionalIntentInClubCurrency", () => {
-  const ask = restateAdditionalAsk({ amountCents: 4500, carriedAskCents: 1500 });
+  const ask = restateAdditionalAsk({ amountCents: 4500, carriedAskCents: 1500 }, { additionalAmountCents: 4500, additionalPaymentStatus: "PENDING" });
   const reissue = () =>
     reissueAdditionalIntentInClubCurrency({
       format: CLUB_FORMAT_TEST_OTHER,
@@ -305,7 +305,7 @@ describe("reissueAdditionalIntentInClubCurrency", () => {
 });
 
 describe("reissueRaisedAskIfCurrencyChanged", () => {
-  const ask = restateAdditionalAsk({ amountCents: 4500, carriedAskCents: 0 });
+  const ask = restateAdditionalAsk({ amountCents: 4500, carriedAskCents: 0 }, { additionalAmountCents: 4500, additionalPaymentStatus: "PENDING" });
   const params = {
     format: CLUB_FORMAT_TEST_OTHER,
     bookingId: "bk1",
@@ -388,7 +388,7 @@ describe("reissueRaisedAskIfCurrencyChanged never supersedes a paid, paying or c
     bookingId: "bk1",
     paymentId: "p1",
     staleIntentId: "pi_live",
-    ask: restateAdditionalAsk({ amountCents: 4500, carriedAskCents: 0 }),
+    ask: restateAdditionalAsk({ amountCents: 4500, carriedAskCents: 0 }, { additionalAmountCents: 4500, additionalPaymentStatus: "PENDING" }),
     reason: "edit_financial_review_charge",
   };
   it.each(["succeeded", "processing", "canceled"])(

@@ -37,19 +37,6 @@ vi.mock("@/lib/booking-ledger-modification-sync", () => ({
   postModificationLedgerLines: vi.fn().mockResolvedValue(undefined),
   postReviewClosureLedgerLines: vi.fn().mockResolvedValue(undefined),
 }));
-// #4442: the mint's queue fence (lock, re-read, refuse) is proved by its own unit
-// suite and against a real server (`superseded-ask-invoice-carry.realdb.test.ts`).
-// This suite is about the route, so the queue runs its writes on the global
-// double, where these cases' supersede reads were written.
-vi.mock("@/lib/additional-ask-queue-transaction", async () => {
-  const { prisma } = await import("@/lib/prisma");
-  return {
-    lockAdditionalAskQueue: async () => undefined,
-    assertAdditionalAskSizingCurrent: async () => undefined,
-    withAdditionalAskQueueTransaction: (_paymentId: string, _ask: unknown, write: (store: unknown) => unknown) =>
-      write(prisma),
-  };
-});
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: (...args: unknown[]) => {
@@ -188,6 +175,8 @@ vi.mock("@/lib/payment-transactions", () => ({
   },
   refundPaymentTransactions: (...args: unknown[]) =>
     mockRefundPaymentTransactions(...args),
+  // #4442: the mint's queue takes the Payment row; nothing to wait on here.
+  lockPaymentForRefundedTotal: vi.fn(),
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
     mockUpsertPaymentIntentTransaction(...args),
 }));
@@ -561,6 +550,8 @@ function makeTx(booking: ReturnType<typeof makeBooking>) {
       // #3980: an edit that read no invoice link claims the payment row.
       updateMany: vi.fn(async () => ({ count: 1 })),
       upsert: vi.fn().mockResolvedValue({ id: "p1" }),
+      // #4442: the mint's queue re-reads the live ask it carries on this transaction - the fixture's own mirror.
+      findUnique: vi.fn(async () => booking.payment ?? null),
     },
     paymentTransaction: {
       findMany: vi.fn().mockResolvedValue([]),

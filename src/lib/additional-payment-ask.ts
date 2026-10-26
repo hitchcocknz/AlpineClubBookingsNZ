@@ -17,7 +17,7 @@
  *
  * 2. **How big is the ask a price increase raises?** `sizeAdditionalAsk`.
  *    Minting an ADDITIONAL PaymentIntent retires every other outstanding ask on
- *    the payment (`queueSupersededAdditionalIntentCancellations`), so an ask
+ *    the payment (`queueSupersededAdditionalIntentCancellationRows`), so an ask
  *    sized on this edit's delta alone DELETES the unpaid balance of the ask it
  *    replaces. That is how a $130 booking with $130 paid, then +$70 unpaid, then
  *    +$70 again, ended up asking for $70 and never for the other $70: the first
@@ -162,7 +162,7 @@ class AdditionalAskValue {
    */
   readonly #carriedCents: number;
 
-  /** #4442: the live ask's unpaid balance it was sized on (not a folded re-issue's), else null. Private as `#carriedCents` is. */
+  /** #4442: the live ask's unpaid balance (`outstandingAdditionalAskCents`) of the `Payment` it was sized on, else null. Private as `#carriedCents` is. */
   readonly #paymentBalanceCents: number | null;
 
   /**
@@ -173,9 +173,9 @@ class AdditionalAskValue {
    */
   readonly #reissuesUnpaidAsk: boolean;
 
-  constructor(params: { ownCents: number; carriedCents: number; reissuesUnpaidAsk?: boolean; paymentBalanceCents?: number }) {
+  constructor(params: { ownCents: number; carriedCents: number; reissuesUnpaidAsk?: boolean; sizedOn?: AdditionalAskPayment | null }) {
     this.amountCents = params.ownCents + params.carriedCents;
-    this.#paymentBalanceCents = params.paymentBalanceCents ?? null;
+    this.#paymentBalanceCents = params.sizedOn === undefined ? null : outstandingAdditionalAskCents(params.sizedOn);
     this.#carriedCents = params.carriedCents;
     this.#reissuesUnpaidAsk = params.reissuesUnpaidAsk ?? false;
   }
@@ -249,7 +249,7 @@ export function sizeAdditionalAsk({
   return buildAdditionalAsk({
     ownCents: priceDiffCents + changeFeeCents,
     carriedCents: outstandingAdditionalAskCents(payment) + Math.max(0, waitingReissuedAskCents),
-    paymentBalanceCents: outstandingAdditionalAskCents(payment),
+    sizedOn: payment ?? null,
   });
 }
 
@@ -284,7 +284,7 @@ export function sizeReviewChargeAsk({
   return buildAdditionalAsk({
     ownCents: shareTotalCents,
     carriedCents: outstandingAdditionalAskCents(payment),
-    paymentBalanceCents: outstandingAdditionalAskCents(payment),
+    sizedOn: payment ?? null,
   });
 }
 
@@ -314,18 +314,13 @@ export function sizeReviewChargeAsk({
  * `edit-financial-review-charge-raise-claim.ts`), and monotonicity is what makes taking
  * over an abandoned claim safe.
  */
-export function raiseReviewChargeAsk({
-  shareTotalCents,
-  request,
-}: {
+export function raiseReviewChargeAsk({ shareTotalCents, request, payment }: {
   shareTotalCents: number;
   request: CarriedAskRecord;
+  /** #4442: the `Payment` read with the request, whose live ask a re-issue of the raise carries. */
+  payment: AdditionalAskPayment | null;
 }): AdditionalAsk {
-  return buildAdditionalAsk({
-    ownCents: shareTotalCents,
-    carriedCents: request.carriedAskCents,
-    paymentBalanceCents: request.amountCents,
-  });
+  return buildAdditionalAsk({ ownCents: shareTotalCents, carriedCents: request.carriedAskCents, sizedOn: payment });
 }
 
 /**
@@ -333,11 +328,11 @@ export function raiseReviewChargeAsk({
  * the club's currency changed since it was minted (#3567). The figure and its
  * carried part come back off the row: nothing new is asked for or absorbed.
  */
-export function restateAdditionalAsk(request: CarriedAskRecord): AdditionalAsk {
+export function restateAdditionalAsk(request: CarriedAskRecord, payment: AdditionalAskPayment | null): AdditionalAsk {
   return buildAdditionalAsk({
     ownCents: request.amountCents - request.carriedAskCents,
     carriedCents: request.carriedAskCents,
-    paymentBalanceCents: request.amountCents,
+    sizedOn: payment,
   });
 }
 
@@ -456,8 +451,7 @@ export function reissueUnpaidAdditionalAsk({ askLeftCents, payment }: {
   payment?: AdditionalAskPayment | null;
 }): AdditionalAsk {
   if (askLeftCents <= 0) return NO_ADDITIONAL_ASK;
-  const paymentBalanceCents = payment === undefined ? undefined : outstandingAdditionalAskCents(payment);
-  return buildAdditionalAsk({ ownCents: 0, carriedCents: askLeftCents, reissuesUnpaidAsk: true, paymentBalanceCents });
+  return buildAdditionalAsk({ ownCents: 0, carriedCents: askLeftCents, reissuesUnpaidAsk: true, sizedOn: payment });
 }
 
 /**

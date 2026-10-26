@@ -209,7 +209,7 @@ vi.mock("@/lib/edit-financial-review-charge-raise-claim", () => ({
 }));
 /*
   THE ONE PLACE A CHARGE IS MINTED RUNS FOR REAL (#3341, `INV-OPS-015`), and so
-  does `queueSupersededAdditionalIntentCancellations` behind it. Both used to be
+  does `queueSupersededAdditionalIntentCancellationRows` behind it. Both used to be
   a single stub here, and the review charge's whole #3371 rule - that the ask
   CARRIES the unpaid balance of the one it retires - was asserted against the
   figure the completion HANDED that stub, never against what was minted or

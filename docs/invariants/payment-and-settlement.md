@@ -339,7 +339,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     as `finalPrice + changeFee = net paid + credit + uncollected ask`.
   - **An ask is sized so the mirror still holds after it.** Minting a replacement
     ADDITIONAL PaymentIntent RETIRES every other outstanding ask on the payment
-    (`queueSupersededAdditionalIntentCancellations`), so an ask sized on one
+    (`queueSupersededAdditionalIntentCancellationRows`), so an ask sized on one
     edit's own delta deletes the unpaid balance of the ask it replaces. Two
     consecutive +$70 edits on a $130 paid booking asked $70 and lost $70,
     permanently and silently. The ask is therefore the edit's own net PLUS the unpaid balance of the ask it

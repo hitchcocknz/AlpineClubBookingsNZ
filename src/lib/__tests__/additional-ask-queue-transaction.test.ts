@@ -14,7 +14,11 @@ import {
   sizeReviewChargeAsk,
 } from "@/lib/additional-payment-ask";
 import { sizeReissuedAskReplay } from "@/lib/additional-ask-recovery-replay";
-import { lockAdditionalAskQueue, withAdditionalAskQueueTransaction } from "@/lib/additional-ask-queue-transaction";
+import {
+  CarriedAskChangedError,
+  lockAdditionalAskQueue,
+  withAdditionalAskQueueTransaction,
+} from "@/lib/additional-ask-queue-transaction";
 
 const unpaid = { additionalAmountCents: 7000, additionalPaymentStatus: PaymentStatus.PENDING };
 const captured = { ...unpaid, additionalPaymentStatus: PaymentStatus.SUCCEEDED };
@@ -33,8 +37,8 @@ const CARRYING_ASKS = [
   ["ordinary increase", () => sizeAdditionalAsk({ priceDiffCents: 3000, changeFeeCents: 0, payment: unpaid })],
   ["review charge", () => sizeReviewChargeAsk({ shareTotalCents: 3000, payment: unpaid })],
   ["re-issued reduction", () => sizeReissuedAskReplay({ frozenAmountCents: 3000, payment: unpaid })],
-  ["currency re-issue", () => restateAdditionalAsk({ amountCents: 7000, carriedAskCents: 2000 })],
-  ["raised ask currency re-issue", () => raiseReviewChargeAsk({ shareTotalCents: 6000, request: { amountCents: 7000, carriedAskCents: 2000 } })],
+  ["currency re-issue", () => restateAdditionalAsk({ amountCents: 7000, carriedAskCents: 2000 }, unpaid)],
+  ["raised ask currency re-issue", () => raiseReviewChargeAsk({ shareTotalCents: 6000, request: { amountCents: 7000, carriedAskCents: 2000 }, payment: unpaid })],
 ] as const;
 
 describe("additional ask queue's sizing fence (#4442)", () => {
@@ -65,6 +69,24 @@ describe("additional ask queue's sizing fence (#4442)", () => {
     const ask = sizeAdditionalAsk({ priceDiffCents: 3000, changeFeeCents: 0, payment: unpaid });
     await withAdditionalAskQueueTransaction("payment", ask, async () => { order.push("write-and-queue"); });
     expect(order).toEqual(["global", "payment", "read", "write-and-queue"]);
+  });
+
+  it("sizes a re-issue's balance from the Payment mirror, not the intent's own figure (review M1, M3)", async () => {
+    // The intent asks 7500 while the mirror reads 7000: the re-issue keeps the
+    // intent's figure, and its queue compares the mirror with the mirror.
+    const ask = restateAdditionalAsk({ amountCents: 7500, carriedAskCents: 0 }, unpaid);
+    expect(ask.amountCents).toBe(7500);
+    expect(ask.paymentBalanceCents).toBe(7000);
+    const write = vi.fn().mockResolvedValue("queued");
+    await expect(withAdditionalAskQueueTransaction("payment", ask, write)).resolves.toBe("queued");
+  });
+
+  it("refuses with the typed error a door can answer", async () => {
+    const ask = sizeAdditionalAsk({ priceDiffCents: 3000, changeFeeCents: 0, payment: unpaid });
+    mocks.read.mockResolvedValue(captured);
+    const refusal = await withAdditionalAskQueueTransaction("payment", ask, vi.fn()).catch((err: unknown) => err);
+    expect(refusal).toBeInstanceOf(CarriedAskChangedError);
+    expect(refusal).toMatchObject({ code: "CARRIED_ASK_CHANGED" });
   });
 
   it("lockAdditionalAskQueue takes the global key, then the Payment row", async () => {

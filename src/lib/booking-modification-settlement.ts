@@ -632,7 +632,7 @@ export async function createModificationAdditionalPaymentIntent(
     // risen reading the superseded figure with no live instrument behind it.
     //
     // Writing the row first cannot select itself for cancellation: the
-    // `findMany` in `queueSupersededAdditionalIntentCancellations` excludes
+    // `findMany` in `queueSupersededAdditionalIntentCancellationRows` excludes
     // `newPaymentIntentId` explicitly. The cost is one database upsert of
     // latency before the old secret dies, which is far inside the window the
     // synchronous cancel exists to close.

@@ -36,6 +36,19 @@ export async function lockAdditionalAskQueue(store: Prisma.TransactionClient, pa
 }
 
 /**
+ * #4442: the queue's refusal, typed so a door can answer it (the pay page's
+ * 409, reload) rather than fail. Nothing was written when it is thrown.
+ */
+export class CarriedAskChangedError extends Error {
+  readonly code = "CARRIED_ASK_CHANGED" as const;
+
+  constructor(paymentId: string) {
+    super(`The carried additional ask on payment ${paymentId} changed while its replacement was being minted; retry and re-plan`);
+    this.name = "CarriedAskChangedError";
+  }
+}
+
+/**
  * Refuse the queue when the carried balance moved since sizing. Called under
  * `lockAdditionalAskQueue`, before the new ask's row is written. The balance is
  * re-read through `outstandingAdditionalAskCents`, the one rule the sizing used
@@ -58,7 +71,7 @@ export async function assertAdditionalAskSizingCurrent(
   });
   if (!payment) throw new Error(`Payment ${paymentId} not found while checking the carried ask`);
   if (outstandingAdditionalAskCents(payment) !== ask.paymentBalanceCents) {
-    throw new Error("The carried additional ask changed while its replacement was being minted; retry and re-plan");
+    throw new CarriedAskChangedError(paymentId);
   }
 }
 
