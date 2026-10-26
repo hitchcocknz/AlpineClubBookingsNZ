@@ -305,6 +305,19 @@ describe("Resolve by hand records the officer's note on a refund credit-note cre
     expect(mocks.createAuditLog).not.toHaveBeenCalled();
   });
 
+  it("MUTATION: refuses when the row's amount under the lock is not the amount the note was checked against, and writes nothing", async () => {
+    state.rows.set("op_note", refundNoteRow({ requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 15_000 } }));
+    const findUnique = vi.spyOn(fakeDb.prisma.xeroSyncOperation, "findUnique");
+    findUnique.mockResolvedValueOnce(refundNoteRow() as never);
+
+    const response = await resolve(withNumber);
+    findUnique.mockRestore();
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/amount changed while you were resolving it/);
+    expect(state.rows.get("op_note")).toMatchObject({ manuallyResolvedAt: null, xeroObjectId: null });
+  });
+
   it("MUTATION: the claim's own guard holds even past the re-read: it writes only an unresolved FAILED/PARTIAL row naming no note", async () => {
     state.rows.set("op_note", refundNoteRow());
     const updateMany = vi.spyOn(fakeDb.prisma.xeroSyncOperation, "updateMany");
