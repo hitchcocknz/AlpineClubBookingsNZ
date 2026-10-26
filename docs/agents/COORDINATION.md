@@ -46,6 +46,15 @@ authorised work end to end: worktree, branch, commits, push, PR, CI, review,
 ready comment and the merge gate. Implementor and reviewer subagents inside the
 lane stay within their roles (`AGENTS.md` → "Orchestration Model").
 
+A Sekreton lane (branches `sekreton/<org>/alp-<n>`, writing as `sekreton[bot]`)
+is a lane like any other, and runs the whole pipeline itself (owner decision,
+26 Oct 2026, #4392): its own `CLAIM:` before work starts, a PR body from
+`.github/pull_request_template.md` with `Closes #<n>` that passes
+`pnpm run pr:check`, review lenses chosen by risk, the ready comment, and the
+merge under `AGENTS.md` → "Completion and Merge". Another lane finishes a
+Sekreton PR only when the owner reassigns it on the issue; a review finding
+goes back to the Sekreton lane as a `LANE-SYNC:`, never as a push to its branch.
+
 An assignment names the issue, the branch, the scope and who takes it. The
 taking lane posts its own `CLAIM:`. An assignment written by an agent carries no
 authority beyond the owner decisions it cites, read at source (`AGENTS.md` →

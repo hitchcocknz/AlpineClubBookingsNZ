@@ -436,6 +436,22 @@ describe("POST /api/payments/charge-saved-method", () => {
     expect(releaseCall()).toBeUndefined();
   });
 
+  it("#4357: charges the booking's worth - its price plus a change fee recorded on its payment - as the cron does", async () => {
+    primeBooking(makeBooking({ payment: { ...makeBooking().payment, changeFeeCents: 2500 } }));
+    mockChargePaymentMethod.mockResolvedValue({ id: "pi_worth_1", status: "succeeded", amount: 15000 });
+
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockChargePaymentMethod).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 15000 }));
+    expect(mockPaymentTransactionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ amountCents: 15000 }) }),
+    );
+    expect(mockMarkBookingPaymentSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({ paymentIntentId: "pi_worth_1", amountCents: 15000 }),
+    );
+  });
+
   it("#4300: a charge the settle refuses as superseded answers not paid, queues no invoice and releases the claim", async () => {
     mockChargePaymentMethod.mockResolvedValue({ id: "pi_superseded", status: "succeeded", amount: 12500 });
     mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });
@@ -925,6 +941,24 @@ describe("POST /api/payments/charge-saved-method", () => {
       expect(body.error).toMatch(/refund has not started yet/);
       expect(mockChargePaymentMethod).not.toHaveBeenCalled();
       expect(supersededDoor.handOff).toHaveBeenCalledWith(expect.objectContaining({ why: "superseded_capture_returning", paymentIntentId: "pi_superseded", supersededIntentsToHandOff: ["pi_superseded"] }));
+    } finally {
+      supersededDoor.owned.clear();
+    }
+  });
+
+  it("#4357: a refused charge's alert names the booking's worth, change fee included", async () => {
+    primeBooking(makeBooking({ payment: { ...makeBooking().payment, changeFeeCents: 2500 } }));
+    mockPaymentTransactionFindMany.mockResolvedValue([
+      { id: "txn_superseded", status: "SUCCEEDED", amountCents: 15000, refundedAmountCents: 0, paymentMethodId: "pm_123", stripePaymentIntentId: "pi_superseded", reference: null, reason: null },
+    ]);
+    supersededDoor.owned.add("pi_superseded");
+    try {
+      const response = await POST(makeRequest());
+      expect(response.status).toBe(409);
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 15000, paymentIntentId: "pi_superseded" }),
+        CLUB_FORMAT_TEST,
+      );
     } finally {
       supersededDoor.owned.clear();
     }

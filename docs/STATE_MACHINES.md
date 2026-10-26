@@ -2205,8 +2205,10 @@ in one transaction under the `Payment` row, which the reversal holds from its
 first makes the reversal refuse, and a reversal that commits first leaves the
 hand-off nothing to claim, so the capture settles the booking. A worker that
 claimed a row before the reversal may still reach Stripe's cancel after it
-commits: the member's open tab then fails, and the pay step mints a fresh
-intent. No money moves.
+commits: the member's open tab then fails. The pay step does not mint a fresh
+intent: the reversal leaves the payment on internet banking, so both card doors
+refuse before reaching Stripe (#4348), and the member pays by bank transfer. No
+money moves.
 
 The FAILED row is why #4320 exists: a mark-paid's cancel that met a Stripe
 outage waits FAILED to retry, and while the reversal deleted only

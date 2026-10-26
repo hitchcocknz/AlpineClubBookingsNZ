@@ -197,12 +197,12 @@ For each row:
   cancellation is right: leave it;
 - otherwise, cancel that payment intent (`paymentIntentId`) in the Stripe
   dashboard, and do it promptly. The cancellation then closes itself and the
-  member's open payment page stops working. For a `PRIMARY` row their next
-  visit to the pay step starts a fresh card payment; an `ADDITIONAL` row's
-  payment was the member's only card door to the extra, so collect the extra
-  another way, such as by internet banking. No money moves. If Stripe shows the
-  intent already succeeded, the app is refunding it: check the booking and ask
-  the member to pay again.
+  member's open payment page stops working. The reversed payment stays on
+  internet banking, so the pay step will not start a fresh card payment
+  (#4348): collect what is owed by internet banking. For an `ADDITIONAL` row,
+  the cancelled payment was the member's only card door to the extra. No money
+  moves. If Stripe shows the intent already succeeded, the app is refunding it:
+  check the booking and ask the member to pay again.
 
 Do not wait for the cancellation to finish on its own. Until its retry runs, a
 member who pays from a page they still have open is charged and then refunded,

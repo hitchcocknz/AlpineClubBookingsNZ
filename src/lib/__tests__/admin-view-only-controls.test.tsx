@@ -2512,7 +2512,7 @@ describe("ConfirmPendingGuestsButton view-only gating (#1997, bookings)", () => 
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod={false}
-        finalPriceCents={0}
+        savedCardChargeCents={0}
       />,
     );
 
@@ -2527,7 +2527,7 @@ describe("ConfirmPendingGuestsButton view-only gating (#1997, bookings)", () => 
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod={false}
-        finalPriceCents={0}
+        savedCardChargeCents={0}
       />,
     );
 

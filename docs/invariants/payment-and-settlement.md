@@ -3638,7 +3638,8 @@ _Split from `INV-PAY-057` (#3220)._
   payment (#4010).
 - Limits: a capture is not re-checked against a later fee; an invoice linked
   without stored figures is unchecked.
-- Pinned by `amount-owed-one-home.test.ts`,
+- Pinned by `amount-owed-one-home.test.ts` (each saved-card door charges
+  `savedCardChargeCents`, #4357), `saved-card-charge-worth.realdb.test.ts`,
   `booking-detail-history-amount-owed.test.ts`,
   `booking-change-request-execution.realdb.test.ts`,
   `xero-primary-invoice-fee-gap.test.ts` and

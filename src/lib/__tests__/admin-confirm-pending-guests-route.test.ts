@@ -830,6 +830,41 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     expect(mocks.upsertPaymentIntentTransaction).not.toHaveBeenCalled();
   });
 
+  it("#4357: charges the booking's worth - its price plus a change fee recorded on its payment - as the cron does", async () => {
+    const booking = makeBooking();
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.chargePaymentMethod.mockResolvedValue({ id: "pi_1", status: "succeeded", amount: 12500, payment_method: "pm_1" });
+    mocks.markBookingPaymentSucceeded.mockResolvedValue({ outcome: "paid" });
+
+    const res = await POST(makeRequest(), { params });
+
+    expect(res.status).toBe(200);
+    expect(mocks.chargePaymentMethod).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 12500 }));
+    expect(mocks.paymentUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ amountCents: 12500 }),
+        update: expect.objectContaining({ amountCents: 12500 }),
+      }),
+    );
+    expect(mocks.paymentTransactionCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ amountCents: 12500 }) }),
+    );
+  });
+
+  it("#4357: a declined charge's alert names the worth it asked for", async () => {
+    const booking = makeBooking();
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.chargePaymentMethod.mockRejectedValue(new Error("card_declined"));
+
+    const res = await POST(makeRequest(), { params });
+
+    expect(res.status).toBe(502);
+    expect(mocks.sendPaymentFailureAlert).toHaveBeenCalledWith(
+      expect.objectContaining({ amountCents: 12500, errorMessage: "card_declined" }),
+      CLUB_FORMAT_TEST,
+    );
+  });
+
   it("alerts with the amount that was CHARGED, not the pre-lock snapshot's: a price that moved between the two reads (#3267 fix round 2)", async () => {
     // The charge already used the claim's post-lock amount; the failure alert
     // used the pre-lock one, so an operator could be told about a figure
@@ -1187,6 +1222,73 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
     } finally {
       supersededDoor.owned.clear();
     }
+  });
+
+  it("#4357: a refused charge's alert names the booking's worth, change fee included", async () => {
+    const booking = makeBooking();
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { id: "txn_superseded", status: "SUCCEEDED", amountCents: 12500, refundedAmountCents: 0, paymentMethodId: "pm_1", stripePaymentIntentId: "pi_superseded", reference: null, reason: null, createdAt: new Date(), updatedAt: new Date() },
+    ]);
+    supersededDoor.owned.add("pi_superseded");
+    try {
+      const res = await POST(makeRequest(), { params });
+      expect(res.status).toBe(409);
+      expect(mocks.sendPaymentFailureAlert).toHaveBeenCalledWith(
+        expect.objectContaining({ amountCents: 12500, paymentIntentId: "pi_superseded" }),
+        CLUB_FORMAT_TEST,
+      );
+    } finally {
+      supersededDoor.owned.clear();
+    }
+  });
+
+  it("#4357: the confirmation email after a charge quotes the worth charged", async () => {
+    const booking = makeBooking();
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.chargePaymentMethod.mockResolvedValue({ id: "pi_1", status: "succeeded", amount: 12500, payment_method: "pm_1" });
+    mocks.markBookingPaymentSucceeded.mockResolvedValue({ outcome: "paid" });
+
+    const res = await POST(makeRequest(), { params });
+
+    expect(res.status).toBe(200);
+    expect(mocks.sendConfirmedEmail).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(),
+      12500,
+      CLUB_FORMAT_TEST,
+      expect.anything(),
+    );
+  });
+
+  it("#4357: a $0 price carrying a recorded change fee charges the fee, never confirms at no charge", async () => {
+    const booking = makeBooking({ finalPriceCents: 0 });
+    mocks.bookingFindUnique.mockResolvedValue({ ...booking, payment: { ...booking.payment, changeFeeCents: 2500 } });
+    mocks.chargePaymentMethod.mockResolvedValue({ id: "pi_1", status: "succeeded", amount: 2500, payment_method: "pm_1" });
+    mocks.markBookingPaymentSucceeded.mockResolvedValue({ outcome: "paid" });
+
+    const res = await POST(makeRequest(), { params });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ status: "PAID", charged: true });
+    expect(mocks.chargePaymentMethod).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2500 }));
+  });
+
+  it("#4357: the $0 branch re-checks worth under its locks, and refuses a fee recorded since the first read", async () => {
+    const before = makeBooking({ finalPriceCents: 0 });
+    mocks.bookingFindUnique.mockImplementation(
+      async ({ include }: { include?: Record<string, unknown> }) =>
+        include && !("member" in include)
+          ? { ...before, payment: { ...before.payment, changeFeeCents: 2500 } }
+          : before,
+    );
+
+    const res = await POST(makeRequest(), { params });
+
+    expect(res.status).toBe(409);
+    expect((await res.json()).error).toMatch(/amount changed/);
+    expect(mocks.bookingUpdateMany).not.toHaveBeenCalled();
+    expect(mocks.paymentUpsert).not.toHaveBeenCalled();
+    expect(mocks.chargePaymentMethod).not.toHaveBeenCalled();
   });
 
   it("moves a no-card (request-origin) booking to payment-owed without charging or capacity gate", async () => {
