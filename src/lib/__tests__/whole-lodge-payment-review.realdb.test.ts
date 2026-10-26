@@ -81,15 +81,15 @@ async function clean() {
   expect(errors, "All post-commit Xero work was drained before fixture deletion").toEqual([]);
 }
 
-async function approve(appliedCreditCents = 80_000, priceCents = 100_000) {
+async function approve(appliedCreditCents = 80_000, priceCents = 100_000, guestCount = 1) {
   if (appliedCreditCents > 0) await prisma.memberCredit.create({ data: { memberId: OWNER, amountCents: appliedCreditCents, type: "ADMIN_ADJUSTMENT", description: "synthetic opening balance" } });
   await prisma.bookingRequest.create({ data: {
     id: REQUEST, lodgeId: LODGE, type: "GENERAL", status: "VERIFIED", requestedByMemberId: OWNER,
     exclusivityRequested: true, applyAccountCredit: true, checkIn: CHECK_IN, checkOut: CHECK_OUT,
     contactFirstName: "Whole", contactLastName: "Lodge", contactEmail: "race-4019-owner@example.invalid",
-    guests: [{ firstName: "Guest 1", lastName: "Proof", ageTier: "ADULT" }],
+    guests: Array.from({ length: guestCount }, (_, i) => ({ firstName: `Guest ${i + 1}`, lastName: "Proof", ageTier: "ADULT" })),
   } });
-  const approved = await approval.approveMemberWholeLodgeRequest({ requestId: REQUEST, adminMemberId: OFFICER, override: { priceOverrideCents: priceCents, pricedHeadcount: 1 } });
+  const approved = await approval.approveMemberWholeLodgeRequest({ requestId: REQUEST, adminMemberId: OFFICER, override: { priceOverrideCents: priceCents, pricedHeadcount: guestCount } });
   if (approved.type !== "approved") throw new Error("Synthetic approval unexpectedly exceeded capacity");
   bookingId = approved.bookingId;
   expect(approved.invoiceMode).toBe(appliedCreditCents === priceCents ? "paid" : "member");
@@ -283,6 +283,46 @@ async function readBooking() {
     expect(await readBooking()).toEqual(before);
     expect(await credit.deriveBookingAppliedCreditCents(bookingId!)).toBe(80_000);
     expect(await credit.getMemberCreditBalance(OWNER)).toBe(0);
+  }, 60_000);
+
+  // #4019 review finding 4: the date and guest-removal doors each post the
+  // confirmation lines after a whole-lodge $0 PAID. Both refuse a booking
+  // priced from a request (the guard above), so the booking is detached from
+  // its request first: the shape of a CONFIRMED booking an officer put an
+  // exclusive hold on outside any request. The abandoned card attempt is real.
+  it.each(["dates", "guest-removal"])("the %s door posts the confirmation charge when credit settles an abandoned card attempt at zero cash", async (door) => {
+    await approve(80_000, 100_000, door === "guest-removal" ? 2 : 1);
+    await startCard();
+    await prisma.bookingRequest.update({ where: { id: REQUEST }, data: { convertedBookingId: null, heldBookingId: null } });
+    const before = await readBooking();
+    expect(before.status).toBe("CONFIRMED");
+    expect(flow.isUnpaidConfirmedWholeLodge(before), "the abandoned attempt still reads as unpaid").toBe(true);
+    expect(await prisma.bookingLedgerLine.count({ where: { bookingId: bookingId!, side: "CHARGE" } }), "an unpaid approval posts no confirmation charge").toBe(0);
+    const todayAtClub = (await clubTime.clubTime()).today();
+    if (door === "dates") {
+      await dates.modifyBookingDates({ bookingId: bookingId!, actor: { id: OFFICER, role: Role.ADMIN }, input: { checkOut: "2027-09-04" }, ipAddress: "127.0.0.1" });
+    } else {
+      const removal = await import("@/lib/booking-guest-removal-service");
+      const { dateOnlyInstantOf } = await import("@/lib/club-time");
+      const guest = await prisma.bookingGuest.findFirstOrThrow({ where: { bookingId: bookingId!, firstName: "Guest 2" } });
+      await prisma.$transaction((tx) => removal.removeBookingGuestInTransaction({
+        tx, bookingId: bookingId!, guestId: guest.id, actorMemberId: OFFICER, actorRole: "ADMIN",
+        today: dateOnlyInstantOf(todayAtClub), format: CLUB_FORMAT_TEST,
+      }), { timeout: 30_000 });
+    }
+    const recovery = await import("@/lib/payment-recovery");
+    const retirements = await prisma.paymentRecoveryOperation.findMany({ where: { bookingId: bookingId!, status: "PENDING" } });
+    for (const operation of retirements) expect(await recovery.runPaymentRecoveryOperationNow(operation.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+    const current = await readBooking();
+    expect(current).toMatchObject({ status: "PAID", finalPriceCents: door === "dates" ? 60_000 : 50_000 });
+    expect(current.payment).toMatchObject({ amountCents: 0, status: "SUCCEEDED" });
+    const { bookingLedgerBalance } = await import("@/lib/booking-ledger-balance");
+    const lines = await prisma.bookingLedgerLine.findMany({ where: { bookingId: bookingId! } });
+    const shown = JSON.stringify(lines.map(({ side, kind, amountCents, anchorKind }) => ({ side, kind, amountCents, anchorKind })));
+    expect(lines.filter((line) => line.kind === "CARD_CAPTURE" || line.kind === "BANK_RECEIPT" || line.kind === "CASH_RECORDED"), "No cash was captured by an abandoned card attempt").toEqual([]);
+    // Without the door's poster the PAID booking would carry its credit
+    // settlement against no charge: owed would read negative, not zero.
+    expect(bookingLedgerBalance(lines), shown).toMatchObject({ chargedCents: current.finalPriceCents, owedCents: 0 });
   }, 60_000);
 
   it("the SQL queue includes abandoned zero-credit card entry and excludes a capture even with a stale mirror", async () => {

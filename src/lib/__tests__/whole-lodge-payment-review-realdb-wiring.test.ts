@@ -12,5 +12,7 @@ describe("INV-PAY-140 / INV-LOCK-002 composed whole-lodge proofs reach CI", () =
     expect(suite).toContain("a sanctioned placeholder link returns excess credit after actual approval/card attachment");
     expect(suite).toContain("preserves the negotiated-price guard for structural edits after card entry");
     expect(suite).toContain("two pre-read switch requests create one receivable and one receipt posting");
+    // #4019 review finding 4: the date and guest-removal doors' confirmation posters.
+    expect(suite).toContain('it.each(["dates", "guest-removal"])("the %s door posts the confirmation charge when credit settles an abandoned card attempt at zero cash"');
   });
 });
