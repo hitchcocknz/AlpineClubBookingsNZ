@@ -66,6 +66,19 @@ export type BankRefundVoidAnswer = (typeof BANK_REFUND_VOID_ANSWERS)[number];
 /** The longest credit-note number the "already in Xero" answer accepts (Xero's own limit is 255). */
 export const HAND_MADE_CREDIT_NOTE_NUMBER_MAX = 255;
 
+/** #4421: the one example credit-note number every hand-made-note prompt, placeholder and message shows. */
+export const EXAMPLE_CREDIT_NOTE_NUMBER = "CN-0123";
+
+/**
+ * #4421 (`INV-SSOT`, `INV-INT-028`): THE refusal of a hand-made note that a
+ * create row or link here already records - one note, one refund. Shared by
+ * the #4162 answer (`recordHandMadeRefundNoteLink`) and "Resolve by hand"
+ * (`claimResolveRecordingRefundNote`), so both say it the same way.
+ */
+export function handMadeNoteAlreadyRecordedMessage(creditNoteNumber: string): string {
+  return `Credit note ${creditNoteNumber} is already recorded against another refund or booking here, so it cannot also record this one. Check the number, or make a separate credit note in Xero for this refund.`;
+}
+
 /** The one question the refund list asks of a follow-up. Takes formatted parts. */
 export function bankRefundVoidQuestion(parts: {
   bookingReference: string;
@@ -103,4 +116,58 @@ export function bankRefundVoidCompletionMessage(answer: BankRefundVoidAnswer, cr
   return answer === "fresh-note"
     ? "Refund recorded as paid back again. One fresh credit note is queued for Xero, dated today."
     : `Refund recorded as paid back again, against credit note ${creditNoteNumber ?? "the one you made"} in Xero, which the app now tracks.`;
+}
+
+// #4421 (`INV-INT-028`, `INV-SSOT`): what "Resolve by hand" on the Xero
+// operations panel says and accepts for a refund credit note, here beside the
+// #4162 answer's hand-made-note words (one client-safe home the resolve
+// route's schema, the resolve module and the panel's dialogs all read).
+
+/** The refusal when a refund credit note is resolved without the number of the note made in Xero. */
+export const RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE = `This is a refund credit note. Type the number of the credit note you made in Xero (for example ${EXAMPLE_CREDIT_NOTE_NUMBER}), so the app can check it and record which note it is.`;
+
+/**
+ * The refusal of a refund credit note whose amount the app cannot read: no
+ * note can be checked against it, and Retry refuses it too. Mark
+ * non-replayable stops anything re-running it (it does not take it off the
+ * failure list), and the treasurer decides what Xero needs (review: money F2,
+ * security F5).
+ */
+export const RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE =
+  "The app cannot read this refund credit note's amount, so it cannot check a credit note made in Xero against it, and it cannot retry it either. Use Mark non-replayable on it, and ask the treasurer what this refund needs in Xero. Don't also make a credit note by hand.";
+
+/**
+ * The refusal of a FAILED refund credit note a later run already raised
+ * (review round 2: a retry, or another run of the same note, SUCCEEDED or
+ * PARTIAL): the note it made stands for the refund, so no hand-made one may
+ * be recorded beside it.
+ */
+export const RESOLVE_NOTE_SUPERSEDED_MESSAGE =
+  "A later run of this refund credit note already made its note in Xero, so this job needs no credit note made by hand and is not resolved here. If you made one by hand as well, don't record it: ask the treasurer whether to void it. If that earlier note was later voided in Xero, follow the voided-note task on the treasurer's refund list instead.";
+
+/**
+ * The refusal of a part-done (PARTIAL) refund credit note that names no note
+ * (review round 2): the app cannot tell which note records the refund, so it
+ * neither asks for one nor resolves it as if covered.
+ */
+export const RESOLVE_NOTE_PARTIAL_NO_NOTE_MESSAGE =
+  "This refund credit note is part-done but names no credit note, so the app cannot tell which note records the refund. Retry it, or ask the treasurer. Don't make a credit note by hand for it.";
+
+/** What the officer is told when a retry ran beside the resolve and the note it recorded could not be taken back (review round 2). */
+export const RESOLVE_NOTE_WITHDRAW_FAILED_MESSAGE =
+  "A retry of this refund credit note is running, and the app could not take back the credit note it had just recorded. An alert has been raised. Check Xero and ask the treasurer before doing anything else with this refund.";
+
+/** The refusal of a note number sent for a row that takes none (review: money F5). */
+export const RESOLVE_NOTE_NOT_ASKED_MESSAGE =
+  "This job already names its credit note, or doesn't take a credit note number. Reload it and check before resolving.";
+
+/** The refusal when a retry of the job ran or is running beside the resolve (review: concurrency F1). */
+export const RESOLVE_NOTE_RETRY_RAN_MESSAGE =
+  "A retry of this refund credit note ran while you were resolving it, and it may have made a credit note in Xero. Nothing was recorded. Wait for the retry to finish and check Xero before resolving again.";
+
+/** What a second officer is told when the job was resolved first by someone else (review: concurrency F6). */
+export function alreadyResolvedWithNoteMessage(recordedNumber: string | null): string {
+  return recordedNumber
+    ? `This refund credit note was already resolved, recording credit note ${recordedNumber}. Check Xero: if that is not the note for this refund, ask the treasurer.`
+    : "This refund credit note was already resolved, with no credit note number recorded. Check Xero and ask the treasurer before making any other note for it.";
 }

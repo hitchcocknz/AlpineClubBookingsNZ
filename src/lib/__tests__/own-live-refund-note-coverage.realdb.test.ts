@@ -19,8 +19,8 @@
  *   or not yet SUCCEEDED so a resolve could still flip it - in sequence and
  *   with the resolve committing while the completion holds its locks - and
  *   still takes a note no row records. A row resolved after the officer made
- *   its note by hand records no note id (the resolve route writes none), so
- *   that case is out of this proof's reach (#4421).
+ *   its note by hand records that note since #4421, proven by
+ *   `resolve-records-refund-note.realdb.test.ts`.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which

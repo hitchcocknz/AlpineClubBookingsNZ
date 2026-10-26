@@ -586,6 +586,14 @@ import "./own-live-refund-note-coverage.realdb.test";
 // row and then refuses rather than writing over the forget. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans the singleton settings row.
 import "./servernz-version-record-race.realdb.test";
+// #4421 reuses it to prove "Resolve by hand" on a refund-note create that
+// names no note records the officer's note, and that note then records no
+// other refund: the real resolve route and the real hand-made answer, in
+// sequence both ways and each holding lock(1) past its check while the other
+// queues, and an inbound void of the recorded note undone by the nightly
+// follow-up through the link the resolve wrote. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4421-` fixtures.
+import "./resolve-records-refund-note.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
