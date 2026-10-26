@@ -28,8 +28,14 @@
  *  - two bank-transfer edits: nothing waits, nothing moves;
  *  - review round: a declined A paid from a stale tab takes its invoice back
  *    (M1); a capture between A and a newer request carries A (C4); the move
- *    queues behind the captured carrier's key (C2); B's capture landing while
- *    the move waits on A's key (C5).
+ *    against the captured carrier's own receipt deciding on the carrier's key,
+ *    both orders, one recorder (C2, review 2 F5); B's capture landing while
+ *    the move waits on A's key (C5);
+ *  - review 2: B captured late while C supersedes it carries A's moved invoice
+ *    on to C (F1); A's stale-tab capture between an unpaid move and its
+ *    release takes the invoice back paid (F2); A and B both paid and kept,
+ *    both orders - each captured dollar recorded once, the double payment
+ *    alerted once (F3).
  *
  * Envelope: identical to `concurrency-lock-races.realdb.test.ts`, which imports
  * this file; the describe runs ONLY when `RUN_CONCURRENCY_RACE_TESTS=1`,
@@ -669,26 +675,88 @@ function deferred() {
         expect(onB.reduce((sum, row) => sum + row.cents, 0)).toBe(await captured(b));
       });
 
-      it("C2: the move onto a captured carrier queues behind the CARRIER's key, where its receipt decides, then releases", async () => {
-        await seedPaidBooking();
-        const a = await priceIncrease(MOD_A, A_CENTS);
-        stripe.failCancels = 1;
-        const b = await priceIncrease(MOD_B, B_CENTS);
-        await payWithCard(b);
-
-        const release = deferred();
-        const { pid, holder } = await holdAnchor(MOD_B, release.promise);
-        let cancel: Promise<void> | undefined;
-        try {
-          cancel = drainCancels();
-          await waitForQueue(pid, 1, "the move behind the carrier's key");
+      describe("C2 (review 2, F5): the move onto a captured carrier against that carrier's REAL receipt deciding, on the carrier's key", () => {
+        /**
+         * B has no invoice of its own, so its capture queues its own receipt
+         * (`enqueueAdditionalCaptureReceiptOperation`); the outbox claims it and
+         * the real worker plans it, storing its decision under B's change key.
+         * A's durable cancel runs the move onto B under the same key. Xero is a
+         * fake that reads the primary with room for B and stops at the payment.
+         */
+        async function race(first: "receipt" | "move") {
+          await seedPaidBooking();
+          const a = await priceIncrease(MOD_A, A_CENTS);
+          stripe.failCancels = 1;
+          const b = await priceIncrease(MOD_B, B_CENTS, { xeroLeg: false });
+          await payWithCard(b);
           expect(await invoiceFor(MOD_A)).toMatchObject({ status: "WAITING_PAYMENT", waitsOn: a });
-        } finally {
-          release.resolve();
-          await holder;
-          await cancel;
+          const [receipt] = await receiptsFor(b);
+          if (!receipt) throw new Error("race-3403: B's capture queued no receipt");
+          const [{ claimXeroSyncOperationToRunning }, worker, busy] = await Promise.all([
+            import("@/lib/xero-operation-claim"),
+            import("@/lib/additional-capture-xero-receipt"),
+            import("@/lib/xero-applied-credit-operation-serialization"),
+          ]);
+          expect(await claimXeroSyncOperationToRunning(receipt.id, { localModel: { in: ["PaymentTransaction"] } })).toBe(true);
+          const runReceipt = () =>
+            worker.recordAdditionalCaptureReceipt(
+              { syncOperationId: receipt.id },
+              {
+                getAuthenticatedXeroClient: (async () => ({ xero: {}, tenantId: "tenant_race_3403" })) as never,
+                callXeroApi: (async () => ({
+                  body: { invoices: [{ invoiceID: "inv_race_3403_primary", status: "AUTHORISED", amountDue: 1_000, payments: [] }] },
+                })) as never,
+                createXeroPaymentForInvoice: async () => {
+                  throw new busy.XeroAppliedCreditOperationBusyError("test: stop at the Xero payment");
+                },
+                readStripeCaptureDocumentDate: async () => null,
+              },
+            );
+
+          const release = deferred();
+          const { pid, holder } = await holdAnchor(MOD_B, release.promise);
+          const started: Promise<unknown>[] = [];
+          try {
+            if (first === "receipt") {
+              started.push(runReceipt());
+              await waitForQueue(pid, 1, "the receipt's decision behind B's key");
+              started.push(drainCancels());
+              await waitForQueue(pid, 2, "the move behind the receipt");
+            } else {
+              started.push(drainCancels());
+              await waitForQueue(pid, 1, "the move behind B's key");
+              started.push(runReceipt());
+              await waitForQueue(pid, 2, "the receipt's decision behind the move");
+            }
+            expect(await invoiceFor(MOD_A)).toMatchObject({ status: "WAITING_PAYMENT", waitsOn: a });
+          } finally {
+            release.resolve();
+            await holder;
+          }
+          const [receiptRun] = await Promise.allSettled(first === "receipt" ? started : [...started].reverse());
+          const stored = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: receipt.id }, select: { requestPayload: true } });
+          return { a, b, receiptRun, plan: (stored.requestPayload as Record<string, unknown>).plan ?? null };
         }
-        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: b, parkedFrom: a, recordPayment: true });
+
+        it("the receipt decides first: it records B, and A's invoice moved onto B goes out unpaid", async () => {
+          const { a, b, plan } = await race("receipt");
+          expect(plan).toMatchObject({ target: "PRIMARY_INVOICE", invoiceId: "inv_race_3403_primary", capturedCents: await captured(b) });
+          expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: b, parkedFrom: a, recordPayment: false });
+          // Exactly one recorder of B's capture: its receipt.
+          expect(await recordersOf(b)).toEqual({ invoicedCents: 0, receipts: 1 });
+        });
+
+        it("the move decides first: the receipt already running counts, so A's invoice still goes out unpaid and the receipt records B against it", async () => {
+          const { a, b, receiptRun, plan } = await race("move");
+          expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: b, parkedFrom: a, recordPayment: false });
+          // Its decision, read again under the key, finds the invoice it now belongs to: nothing stored, decided next run.
+          expect(plan).toBeNull();
+          expect(receiptRun).toMatchObject({ status: "rejected" });
+          const { readCaptureRecorder } = await import("@/lib/additional-capture-recorder");
+          const recorder = await readCaptureRecorder({ bookingId: BOOKING_ID, primaryInvoiceId: "inv_race_3403_primary", paymentIntentId: b, bookingModificationId: MOD_B });
+          expect(recorder).toMatchObject({ kind: "receipt", target: { kind: "CHANGE_INVOICE", operation: { id: (await invoiceFor(MOD_A)).id } } });
+          expect(await recordersOf(b)).toEqual({ invoicedCents: 0, receipts: 1 });
+        });
       });
 
       it("C5: B's capture lands while the move waits on A's key - the move, reading under the key, releases A's invoice itself", async () => {
