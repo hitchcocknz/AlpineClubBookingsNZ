@@ -60,7 +60,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { PRISMA_CLIENT_GLOBAL_OMIT } from "@/lib/prisma-global-omit";
-import { stripComments } from "@/lib/__tests__/support/strip-comments";
+import { blankLiterals, stripComments } from "@/lib/__tests__/support/strip-comments";
 import { balancedBrackets } from "./support/balanced-brackets";
 
 const INVARIANT_ID = "INV-PRIV-022";
@@ -405,8 +405,11 @@ type Finding = { rule: string; file: string; detail: string };
 
 /** Every `new …PrismaClient(` call, including aliased and namespaced ones. */
 function prismaConstructorStarts(code: string): number[] {
+  // Read over masked text, so a constructor named in a string is not one and
+  // `constructorArguments` is never handed an offset that is not a bracket.
+  const structure = blankLiterals(code);
   const names = ["PrismaClient"];
-  for (const match of code.matchAll(/\bPrismaClient\s+as\s+([A-Za-z_$][\w$]*)/g)) {
+  for (const match of structure.matchAll(/\bPrismaClient\s+as\s+([A-Za-z_$][\w$]*)/g)) {
     names.push(match[1]!);
   }
   const alternation = names
@@ -416,7 +419,7 @@ function prismaConstructorStarts(code: string): number[] {
     String.raw`\bnew\s+(?:[A-Za-z_$][\w$]*\s*\.\s*)*(?:${alternation})\s*\(`,
     "g",
   );
-  return [...code.matchAll(pattern)].map((match) => match.index! + match[0].length);
+  return [...structure.matchAll(pattern)].map((match) => match.index! + match[0].length);
 }
 
 /** Pure scanner, so the mutation block below can seed it without the tree. */

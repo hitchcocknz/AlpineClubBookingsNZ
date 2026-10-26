@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { stripComments } from "@/lib/__tests__/support/strip-comments";
+import { blankLiterals, stripComments } from "@/lib/__tests__/support/strip-comments";
 import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
@@ -120,8 +120,8 @@ function occurrences(haystack: string, needle: string): number[] {
   }
 }
 
-function callArguments(source: string, open: number): string {
-  return balancedBrackets(source, open).text;
+function callArguments(source: string, open: number, structure: string): string {
+  return balancedBrackets(source, open, structure).text;
 }
 
 /** `[start, end)` of the chokepoint's body, by brace balance from its opener. */
@@ -186,11 +186,14 @@ describe("INV-PAY-056: one terminal-failure transition, census", () => {
         offenders.push(`${relative} (anywhere in the module)`);
       }
 
+      // Call sites are found over masked text: a call named in a string is not
+      // one. The arguments are read from the original, which keeps the raw string.
+      const structure = blankLiterals(source);
       for (const method of WRITE_METHODS) {
         const call = `${RECOVERY_DELEGATE}.${method}(`;
-        for (const at of occurrences(source, call)) {
+        for (const at of occurrences(structure, call)) {
           const open = at + call.length - 1;
-          if (RAW_STATUS.test(callArguments(source, open))) {
+          if (RAW_STATUS.test(callArguments(source, open, structure))) {
             offenders.push(`${relative} (${RECOVERY_DELEGATE}.${method})`);
           }
         }

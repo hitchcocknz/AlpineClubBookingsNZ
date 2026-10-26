@@ -212,8 +212,9 @@ function taintedLocals(code: string, fields: readonly string[]): Set<string> {
   return tainted;
 }
 
+/** `code` is already masked (`stripCommentsAndStrings`), so it is its own structure. */
 function balancedArgument(code: string, openParenIndex: number): string {
-  return balancedBrackets(code, openParenIndex).text.slice(1, -1);
+  return balancedBrackets(code, openParenIndex, code).text.slice(1, -1);
 }
 
 function lineOf(code: string, index: number): number {
