@@ -179,6 +179,41 @@ let sync: typeof import("@/lib/xero-sync");
       vi.restoreAllMocks();
     });
 
+    it("#4374: W fails, an officer resolves by hand, then L succeeds: retain the link and alert once", async () => {
+      const email = await import("@/lib/email");
+      const send = vi.spyOn(email, "sendAdminXeroSyncErrorAlert").mockResolvedValue({
+        deliveryAllowed: true, recipients: 1, sent: 1, queuedForRetry: 0,
+      });
+      const wCall = scripted({ error: "Xero 429" });
+      const lCall = scripted({ paymentId: "race-4356-xero-payment-late" });
+      const { w, l, operationId } = await startBothOnOneRow(wCall, lCall);
+      const key = `xero-success-after-manual-resolution:${operationId}`;
+      try {
+        wCall.gate.resolve();
+        await expect(w).rejects.toThrow("Xero 429");
+        const failed = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } });
+        expect(failed.status).toBe("FAILED");
+        await prisma.xeroSyncOperation.update({
+          where: { id: operationId },
+          data: { manuallyResolvedAt: new Date(), manuallyResolvedReason: "Raised by hand" },
+        });
+        lCall.gate.resolve();
+        await l;
+        const landed = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } });
+        expect(landed).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "race-4356-xero-payment-late", manuallyResolvedReason: "Raised by hand" });
+        expect(await prisma.xeroObjectLink.count({ where: { localId: LOCAL_ID, xeroObjectId: landed.xeroObjectId! } })).toBe(1);
+        await sync.completeXeroSyncOperation({ id: operationId, startedAt: failed.startedAt }, { xeroObjectId: landed.xeroObjectId });
+        expect(send).toHaveBeenCalledTimes(1);
+        expect(await prisma.alertCooldown.count({ where: { key } })).toBe(1);
+      } finally {
+        wCall.gate.resolve();
+        lCall.gate.resolve();
+        await Promise.allSettled([w, l]);
+        await prisma.alertCooldown.deleteMany({ where: { key } });
+      }
+    });
+
+
     afterAll(async () => {
       if (prisma) await clearFixtures();
     });

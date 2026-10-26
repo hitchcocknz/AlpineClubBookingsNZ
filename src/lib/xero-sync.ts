@@ -1,5 +1,5 @@
 import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
-import { PaymentSource, Prisma } from "@prisma/client";
+import { PaymentSource, Prisma, type XeroSyncOperation } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
 import { asRecord, readString } from "./xero-json";
@@ -930,7 +930,7 @@ export async function completeXeroSyncOperation(
   // #4356 (`INV-INT-029`): no PARTIAL, FAILED or CANCELLED completion lands on a recorded success or a repair's claim; null then.
   // #4256: `retryClaim` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
   options?: { store?: Prisma.TransactionClient; retryClaim?: true; alert?: false },
-) {
+): Promise<(XeroSyncOperation & { deferredPostCommit?: () => Promise<void> }) | null> {
   const operationId = claim.id;
   // #2314: organisation-agnostic in the column, organisation applied on read —
   // see the note on the object-link funnel above.
@@ -978,6 +978,34 @@ export async function completeXeroSyncOperation(
   const operation = options?.store
     ? await completeWithClient(options.store)
     : await prisma.$transaction(completeWithClient);
+
+  // The guarded write holds the row lock until commit. It leaves the manual
+  // resolution stamp untouched, so this is the stamp the success landed on.
+  if (operation?.status === "SUCCEEDED" && operation.manuallyResolvedAt) {
+    const deferredPostCommit = async () => {
+      const context = { operationId, localModel: operation.localModel, localId: operation.localId };
+      logger.warn(context, "Xero success landed after manual resolution; Xero may now hold two documents");
+      const { sendAdminAlertOnceEver } = await import("./admin-alert-once");
+      await sendAdminAlertOnceEver({
+        key: `xero-success-after-manual-resolution:${operationId}`,
+        label: "Xero success after manual resolution alert",
+        context,
+        send: async () => {
+          const { sendAdminXeroSyncErrorAlert } = await import("./email");
+          return sendAdminXeroSyncErrorAlert({
+            errorType: "Success after manual resolution",
+            operation: `${operation.operationType} ${operation.entityType} (${operation.localModel ?? "operation"} ${operation.localId ?? operationId})`,
+            errorMessage: "A Xero call succeeded after this item was marked resolved in Xero by hand. Xero may now hold two documents for this item. Check both documents in Xero and void one if they are duplicates.",
+            timestamp: new Date(),
+          });
+        },
+      });
+    };
+    // An injected store belongs to an enclosing transaction; its owner must
+    // run this thunk only after that transaction commits.
+    if (options?.store) return { ...operation, deferredPostCommit };
+    await deferredPostCommit();
+  }
 
   if (operation?.status === "PARTIAL" && options?.alert !== false) {
     try {
