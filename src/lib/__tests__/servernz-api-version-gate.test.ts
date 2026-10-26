@@ -478,7 +478,24 @@ describe("a never-asked row self-heals with ONE inline check (default 1)", () =>
     expectRecorded("3.0");
   });
 
-  it("re-runs the gate with the current key before sending a gated request", async () => {
+  it("returns 503 without another HTTP call when a dropped inline answer follows a base URL change", async () => {
+    settings(null);
+    const release = deferredResponse();
+    const pending = pullOtherLodges(null);
+    const rejected = expect(pending).rejects.toMatchObject({ name: "ServerNzApiError", status: 503 });
+    await untilSent();
+
+    mocks.stored.baseUrl = "https://replacement.test";
+    release(respond(200, { version: SERVERNZ_EXPECTED_SERVER_VERSION, match: true }));
+
+    await rejected;
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0][0])).toBe("https://central.test/api/v1/version");
+    expect(mocks.stored.apiKey).toBe("acs_key");
+    expect(mocks.recordServerVersionCheck).not.toHaveBeenCalled();
+  });
+
+  it("re-runs the gate exactly once with the current key at the same base URL before sending a gated request", async () => {
     settings(null);
     mocks.stored.credentialVersion = "cred-v2";
     mocks.getOperationalServerNzCredential.mockResolvedValueOnce({ apiKey: "stale-key-a", version: "cred-v1" });
@@ -489,7 +506,11 @@ describe("a never-asked row self-heals with ONE inline check (default 1)", () =>
 
     await expect(pullOtherLodges(null)).resolves.toMatchObject({ count: 0 });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith("/api/v1/version"))).toHaveLength(2);
+    expect(fetchMock.mock.calls.every(([url]) => new URL(String(url)).origin === "https://central.test")).toBe(true);
+    expect(mocks.getOperationalServerNzCredential).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe("Bearer stale-key-a");
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe("Bearer acs_key");
     expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe("Bearer acs_key");
     expectRecorded(SERVERNZ_EXPECTED_SERVER_VERSION);
   });

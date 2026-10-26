@@ -121,15 +121,19 @@ interface ServerNzConnection {
  * syncing blind until 03:00. A check that FAILS leaves the row `null` and lets
  * the request through: a failed check never pauses syncing. An answer dropped
  * after a connection change instead resolves and gates the current connection
- * once more; a second drop fails with a retryable 503.
+ * once more only at the same base URL; a changed URL or second drop fails
+ * with a retryable 503.
  */
 async function resolveConnection(
-  options: { skipVersionGate?: boolean; retriedConnection?: boolean } = {},
+  options: { skipVersionGate?: boolean; retriedConnection?: ServerNzConnectionIdentity } = {},
 ): Promise<ServerNzConnection> {
   const [credential, settings] = await Promise.all([
     getOperationalServerNzCredential(),
     loadServerNzSettings(),
   ]);
+  if (options.retriedConnection && settings.baseUrl !== options.retriedConnection.baseUrl) {
+    throw new ServerNzApiError(503, "The Alpine Central Server connection changed during its version check; retry the request.");
+  }
   if (!settings.baseUrl) {
     throw new ServerNzNotConfiguredError(
       "The Alpine Central Server base URL is not set.",
@@ -168,7 +172,7 @@ async function resolveConnection(
       if (options.retriedConnection) {
         throw new ServerNzApiError(503, "The Alpine Central Server connection changed during its version check; retry the request.");
       }
-      return resolveConnection({ retriedConnection: true });
+      return resolveConnection({ retriedConnection: connection.identity });
     }
     stored = answer;
   }
