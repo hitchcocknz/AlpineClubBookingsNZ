@@ -11,13 +11,19 @@
  *
  * For each captured payment:
  *
- *   expected floor = min(captured, counted card refunds + account-credit dispositions)
+ *   expected floor = min(captured, counted card refunds + account-credit dispositions
+ *                        + "Paid another way" bank cash)
  *   shortfall      = expected floor - stored refunded total   (reported when > 0)
  *
  * - Counted card refunds: the payment's `PaymentRefund` rows in a counted status
  *   (`isRecordedRefundStatus`), the same rows the mirror's own writer counts.
  * - Account-credit dispositions: `ACCOUNT_CREDIT_DISPOSITION_WHERE`, the one
  *   definition `stripe-cash-refund-evidence.ts` also reads.
+ * - #4280: the bank cash "Paid another way" closes recorded
+ *   (`readPaidAnotherWayCloseBankCashByPayment`), the one reader the card-refund
+ *   writer's floor also reads. Before #4280 a late card refund's failure could
+ *   take it out of the total; such a payment is listed here, short for another
+ *   reason, and never rewritten by code.
  *
  * It is a FLOOR, not an identity: the mirror also carries value no row records
  * (pre-ledger card refunds, #1491's folded modification credit notes), so a
@@ -39,8 +45,13 @@
  * reading, not the #3640 repair.
  *
  * REPORT ONLY - IT NEVER WRITES AND NEVER REPAIRS. It issues typed SELECTs
- * through Prisma (`INV-OPS-001`), and calls no provider.
+ * through Prisma (`INV-OPS-001`), and calls no provider. #4280: in ONE
+ * read-only snapshot (`withReadOnlySnapshot`), so a refund, credit or close
+ * committing between its reads cannot pair a stored total from before it with
+ * evidence from after it and report a shortfall that never was.
  */
+import type { Prisma } from "@prisma/client";
+
 import { CAPTURED_PAYMENT_STATUS_LIST } from "@/lib/booking-payment-state";
 import type { ClubFormat } from "@/lib/club-format";
 import {
@@ -48,6 +59,8 @@ import {
   isRecordedRefundStatus,
 } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
+import { readPaidAnotherWayCloseBankCashByPayment } from "@/lib/card-refund-paid-another-way-cash";
+import { withReadOnlySnapshot } from "@/lib/read-only-snapshot";
 import { ACCOUNT_CREDIT_DISPOSITION_WHERE } from "@/lib/stripe-cash-refund-evidence";
 import { formatCents } from "@/lib/utils";
 
@@ -60,6 +73,8 @@ export interface RefundedTotalShortfallRow {
   cardRefundCents: number;
   /** Account-credit dispositions sourced from the payment's booking. */
   accountCreditCents: number;
+  /** #4280: bank cash the payment's "Paid another way" closes recorded. */
+  paidAnotherWayCents: number;
 }
 
 export interface RefundedTotalShortfallFinding extends RefundedTotalShortfallRow {
@@ -102,8 +117,11 @@ export function deriveRefundedTotalShortfall(
 export async function auditRefundedTotalShortfalls(options?: {
   db?: typeof prisma;
 }): Promise<RefundedTotalShortfallAuditResult> {
-  const db = options?.db ?? prisma;
+  // A whole-table read: give it room, and fail rather than queue forever.
+  return withReadOnlySnapshot(options?.db ?? prisma, auditInSnapshot, { maxWait: 10_000, timeout: 120_000 });
+}
 
+async function auditInSnapshot(db: Prisma.TransactionClient): Promise<RefundedTotalShortfallAuditResult> {
   const payments = await db.payment.findMany({
     where: {
       // A payment that has captured money, and so can have a refunded total
@@ -148,6 +166,8 @@ export async function auditRefundedTotalShortfalls(options?: {
     );
   }
 
+  const paidAnotherWayCentsByPayment = await readPaidAnotherWayCloseBankCashByPayment(db, "all");
+
   const result: RefundedTotalShortfallAuditResult = {
     scannedPayments: payments.length,
     findings: [],
@@ -162,6 +182,7 @@ export async function auditRefundedTotalShortfalls(options?: {
       refundedAmountCents: payment.refundedAmountCents,
       cardRefundCents: cardRefundCentsByPayment.get(payment.id) ?? 0,
       accountCreditCents: accountCreditCentsByBooking.get(payment.bookingId) ?? 0,
+      paidAnotherWayCents: paidAnotherWayCentsByPayment.get(payment.id) ?? 0,
     });
     if (finding) {
       result.findings.push(finding);
@@ -186,7 +207,8 @@ export function formatRefundedTotalShortfallReport(
   const other = result.findings.filter((finding) => finding.unattributedCents > 0);
   const describe = (finding: RefundedTotalShortfallFinding) =>
     `(captured ${formatCents(finding.amountCents, format)}, stored refunded ${formatCents(finding.refundedAmountCents, format)},` +
-    ` card refunds ${formatCents(finding.cardRefundCents, format)}, account credit ${formatCents(finding.accountCreditCents, format)})`;
+    ` card refunds ${formatCents(finding.cardRefundCents, format)}, account credit ${formatCents(finding.accountCreditCents, format)},` +
+    ` paid another way ${formatCents(finding.paidAnotherWayCents, format)})`;
 
   const lines = [
     "Refunded-total shortfall audit (#3640, INV-PAY-103) - read only",
@@ -209,7 +231,8 @@ export function formatRefundedTotalShortfallReport(
       "## Short for another reason - read before acting",
       "  Either a credit here was never folded into the refunded total (a credit minted with no",
       "  payment, or internet-banking cash that became credit on a cancelled booking), or a card",
-      "  refund the old arithmetic never added later failed and was taken out."
+      "  refund the old arithmetic never added later failed and was taken out, or (#4280) a late",
+      "  card refund failed after a Paid another way close and took the close's bank cash with it."
     );
     for (const finding of other) {
       lines.push(
