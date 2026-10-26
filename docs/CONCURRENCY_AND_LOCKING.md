@@ -2046,7 +2046,7 @@ mispricing a booking.
   reported API version, from the version check and from a request the server
   refused for version (409), runs AFTER the HTTP call in one short
   transaction. It takes `lockServerNzSettings`
-  (`$executeRaw`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE``),
+  (`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE`),
   then re-reads the stored base URL and the API key's credential version and
   records only if both still equal what the request was built from. The
   credential version is the stored row's hash (fresh IV on every write), so a
