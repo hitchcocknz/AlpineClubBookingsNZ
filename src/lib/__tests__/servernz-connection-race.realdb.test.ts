@@ -154,12 +154,12 @@ function latch() {
       await Promise.race([changedAddress.promise, move.then(() => { throw new Error("Move escaped the write barrier."); })]);
       sync = api.pullOtherLodges();
       // Attach the rejection handler immediately so cleanup cannot leak a rejection.
-      const refused = expect(sync).rejects.toBeInstanceOf(api.ServerNzNotConfiguredError);
+      const outcome = sync.then(() => ({ error: null }), (error: unknown) => ({ error }));
       await waitForBlockedConnection();
       expect(fetchMock).not.toHaveBeenCalled();
       resumeWriter.release();
       await move;
-      await refused;
+      expect((await outcome).error).toBeInstanceOf(api.ServerNzNotConfiguredError);
       expect(fetchMock).not.toHaveBeenCalled();
       expect(await prisma.integrationCredential.count({ where: { provider: "servernz", key: "api_key" } })).toBe(0);
       expect(await prisma.serverNzSettings.findUnique({ where: { id: "default" } })).toMatchObject({
