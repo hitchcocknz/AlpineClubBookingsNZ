@@ -462,9 +462,10 @@ services:
       # CONFIGURATION.md.
       CADDY_TLS_MODE: ${CADDY_TLS_MODE:-acme}
       # The proxy's address or CIDR, which Caddy trusts for the visitor's IP in
-      # local mode (deploy/caddy/tls-local.caddy). No default: the deploy
-      # refuses CADDY_TLS_MODE=local without it. Unused in acme mode.
-      CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-}
+      # local mode (deploy/caddy/tls-local.caddy). No usable default: unset, it
+      # is a placeholder Caddy rejects, and the deploy refuses local mode at
+      # step 3 without it. Unused in acme mode.
+      CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-set-CADDY_TRUSTED_PROXIES-for-local-mode}
     # Lets the Caddy container reach a MiroTalk started with its own `docker run`
     # via host.docker.internal (Linux needs this mapping).
     extra_hosts:

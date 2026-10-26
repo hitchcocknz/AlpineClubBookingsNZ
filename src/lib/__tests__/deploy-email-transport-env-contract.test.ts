@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -133,7 +133,10 @@ type EnvMap = Record<string, string>;
 
 /** A value spelled as `docker compose config` writes it: YAML-quoted where YAML would read it as something else. */
 function yamlScalar(value: string): string {
-  return value === "" || /^(true|false|yes|no|on|off|null|~|[0-9.]+)$/i.test(value) ? `"${value}"` : value;
+  // YAML also quotes a string with leading or trailing whitespace.
+  return value === "" || value.trim() !== value || /^(true|false|yes|no|on|off|null|~|[0-9.]+)$/i.test(value)
+    ? `"${value}"`
+    : value;
 }
 
 const SES_ENV: EnvMap = {
@@ -169,7 +172,7 @@ const CADDY_ENV: EnvMap = {
   MEET_HOST: "meet.club.test",
   MIROTALK_UPSTREAM: "host.docker.internal:3010",
   CADDY_TLS_MODE: "acme",
-  CADDY_TRUSTED_PROXIES: "192.168.1.101/32",
+  CADDY_TRUSTED_PROXIES: "10.0.0.2/32",
 };
 const POSTGRES_COMMAND = ["postgres", "-c", "shared_buffers=128MB", "-c", "max_connections=40"];
 
@@ -209,10 +212,14 @@ function render(
   ].join("\n");
 }
 
+/** What docker-compose.yml hands Caddy when .env leaves CADDY_TRUSTED_PROXIES unset. */
+const TRUSTED_PROXIES_SENTINEL = "set-CADDY_TRUSTED_PROXIES-for-local-mode";
+
 const ENGINE_HARNESS = `set -Eeuo pipefail
 CRON_SERVICE=app BLUE_SERVICE=app_blue GREEN_SERVICE=app_green MIGRATE_SERVICE=migrate
 CADDY_SERVICE=caddy POSTGRES_SERVICE=postgres
 ${exactLine("POSTGRES_MAX_CONNECTIONS_MAX=1000")}
+${exactLine(`CADDY_TRUSTED_PROXIES_UNSET="${TRUSTED_PROXIES_SENTINEL}"`)}
 VALIDATED_ENVIRONMENT_ROLE="$ROLE"
 PROJECT_DIR="$PWD"
 ${lift([
@@ -371,8 +378,9 @@ describe("step 3 checks the email transport each app service would receive (#427
  * provider's settings present so only the flags decide. One bash process walks
  * every render, so the matrix costs one spawn rather than sixty-four.
  */
-describe("the preflight's provider rule agrees with the app's (#4276 review)", { timeout: 120_000 }, () => {
-  const FLAG_VALUES = ["", "true", "FALSE", "yes"];
+describe("the preflight's provider rule agrees with the app's (#4276 review)", { timeout: 240_000 }, () => {
+  // `" true "` and `"  "` because the app's parseBooleanFlag trims.
+  const FLAG_VALUES = ["", "true", "FALSE", "yes", " true ", "  "];
   const ALL_SETTINGS: EnvMap = {
     ...SES_ENV,
     EMAIL_SERVER_HOST: "mailpit",
@@ -408,20 +416,41 @@ done
 
   type Case = { label: string; env: EnvMap };
 
-  function verdicts(cases: Case[]): Map<string, boolean> {
-    const dir = mkdtempSync(path.join(ROOT, "parity-"));
-    mkdirSync(path.join(dir, "renders"));
-    cases.forEach((entry, index) =>
-      writeFileSync(path.join(dir, "renders", `${String(index).padStart(3, "0")}.yml`), render({ app: entry.env }), "utf8"),
+  /** Only the service the rule reads, so each render is small. */
+  function appRender(env: EnvMap): string {
+    const lines = Object.keys(env)
+      .sort()
+      .map((key) => `      ${key}: ${yamlScalar(env[key])}`);
+    return ["name: resolved", "services:", "  app:", "    environment:", ...lines, "    image: app:local", ""].join("\n");
+  }
+
+  /** One bash process per chunk, run concurrently: the matrix is a few hundred renders. */
+  async function verdicts(cases: Case[]): Promise<Map<string, boolean>> {
+    const CHUNKS = 8;
+    const chunks = Array.from({ length: CHUNKS }, (_, chunk) =>
+      cases.map((entry, index) => ({ entry, index })).filter(({ index }) => index % CHUNKS === chunk),
+    ).filter((chunk) => chunk.length > 0);
+    const outputs = await Promise.all(
+      chunks.map(
+        (chunk) =>
+          new Promise<string>((resolve, reject) => {
+            const dir = mkdtempSync(path.join(ROOT, "parity-"));
+            mkdirSync(path.join(dir, "renders"));
+            for (const { entry, index } of chunk) {
+              writeFileSync(path.join(dir, "renders", `${String(index).padStart(3, "0")}.yml`), appRender(entry.env), "utf8");
+            }
+            writeFileSync(path.join(dir, "harness.sh"), PARITY_HARNESS, "utf8");
+            const child = spawn("bash", bashGateArgs(bashFixturePath(path.join(dir, "harness.sh"), dir)), { cwd: dir });
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (data: Buffer) => (stdout += data.toString("utf8")));
+            child.stderr.on("data", (data: Buffer) => (stderr += data.toString("utf8")));
+            child.on("error", reject);
+            child.on("close", (code) => (code === 0 ? resolve(stdout) : reject(new Error(`parity harness exited ${code}: ${stderr}`))));
+          }),
+      ),
     );
-    writeFileSync(path.join(dir, "harness.sh"), PARITY_HARNESS, "utf8");
-    const result = spawnSync("bash", bashGateArgs(bashFixturePath(path.join(dir, "harness.sh"), dir)), {
-      cwd: dir,
-      encoding: "utf8",
-      timeout: 110_000,
-    });
-    expect(result.status, result.stderr).toBe(0);
-    const lines = result.stdout.trim().split("\n");
+    const lines = outputs.flatMap((output) => output.trim().split("\n"));
     expect(lines).toHaveLength(cases.length);
     return new Map(
       lines.map((line) => {
@@ -435,7 +464,7 @@ done
     return resolveEmailDeliveryConfigFromEnv({ ...env, EMAIL_FROM: "bookings@club.test" }).ok;
   }
 
-  it("accepts exactly the flag combinations the app accepts", () => {
+  it("accepts exactly the flag combinations the app accepts", async () => {
     const cases: Case[] = [];
     for (const ses of FLAG_VALUES)
       for (const relay of FLAG_VALUES)
@@ -444,7 +473,7 @@ done
             label: `USE_AWS_SES=${ses} USE_SMTP_RELAY=${relay} USE_LOCAL_CAPTURE=${capture}`,
             env: { ...ALL_SETTINGS, USE_AWS_SES: ses, USE_SMTP_RELAY: relay, USE_LOCAL_CAPTURE: capture },
           });
-    const bash = verdicts(cases);
+    const bash = await verdicts(cases);
     const disagreements = cases
       .filter((entry) => bash.get(entry.label) !== appAccepts(entry.env))
       .map((entry) => `${entry.label}: preflight ${bash.get(entry.label) ? "passes" : "refuses"}, app ${appAccepts(entry.env) ? "accepts" : "refuses"}`);
@@ -453,7 +482,7 @@ done
     expect(new Set(bash.values()).size).toBe(2);
   });
 
-  it("refuses wherever the app refuses for a missing setting of the selected provider", () => {
+  it("refuses wherever the app refuses for a missing setting of the selected provider", async () => {
     const modes: Array<[string, EnvMap, string[]]> = [
       ["aws-ses", { USE_AWS_SES: "true", USE_SMTP_RELAY: "false", USE_LOCAL_CAPTURE: "false" }, ["AWS_SES_ACCESS_KEY_ID", "AWS_SES_SECRET_ACCESS_KEY"]],
       ["smtp-relay", { USE_AWS_SES: "false", USE_SMTP_RELAY: "true", USE_LOCAL_CAPTURE: "false" }, ["EMAIL_SERVER_HOST", "EMAIL_SERVER_PORT", "EMAIL_SERVER_USER", "EMAIL_SERVER_PASSWORD"]],
@@ -463,7 +492,7 @@ done
       keys.map((key) => ({ label: `${mode} without ${key}`, env: { ...ALL_SETTINGS, ...flags, [key]: "" } })),
     );
     for (const entry of cases) expect(appAccepts(entry.env), entry.label).toBe(false);
-    const bash = verdicts(cases);
+    const bash = await verdicts(cases);
     for (const entry of cases) expect(bash.get(entry.label), entry.label).toBe(false);
   });
 });
@@ -544,19 +573,48 @@ describe("Caddy is validated with the TLS mode and settings it will run with (#4
         "require_resolved_caddy_trusted_proxies",
         render({ caddy: { CADDY_TLS_MODE: mode, CADDY_TRUSTED_PROXIES: value } }),
       );
-    expect(proxies("local", "192.168.1.101/32").passed).toBe(true);
-    expect(proxies("local", "10.0.0.5 192.168.1.101/32").passed).toBe(true);
+    expect(proxies("local", "10.0.0.2/32").passed).toBe(true);
+    expect(proxies("local", "10.0.0.5 10.0.0.2/32").passed).toBe(true);
     // Unused in acme mode, so nothing is demanded there.
     expect(proxies("acme", "").passed).toBe(true);
     const missing = proxies("local", "");
     expect(missing.passed).toBe(false);
     expect(missing.stderr).toContain("CADDY_TLS_MODE=local needs CADDY_TRUSTED_PROXIES");
     expect(missing.stderr).toContain("set in .env");
-    for (const everything of ["0.0.0.0/0", "192.168.1.101/32 ::/0"]) {
+    // What Compose hands Caddy when .env leaves it unset.
+    const sentinel = proxies("local", TRUSTED_PROXIES_SENTINEL);
+    expect(sentinel.passed).toBe(false);
+    expect(sentinel.stderr).toContain("CADDY_TLS_MODE=local needs CADDY_TRUSTED_PROXIES");
+    for (const everything of [
+      "0.0.0.0/0",
+      "10.0.0.2/32 ::/0",
+      "0::/0",
+      "::0/0",
+      "0:0:0:0:0:0:0:0/0",
+      "10.0.0.2/32 0.0.0.0/00",
+    ]) {
       const result = proxies("local", everything);
       expect(result.passed, everything).toBe(false);
       expect(result.stderr).toContain("not every address");
     }
+    for (const notAnAddress of ["10.0.0.2/32 }", "10.0.0.2/32,10.0.0.3/32", "proxy.lan", "10.0.0.2\\n10.0.0.3"]) {
+      const result = proxies("local", notAnAddress);
+      expect(result.passed, notAnAddress).toBe(false);
+      expect(result.stderr).toContain("must be IP addresses or CIDRs");
+    }
+    for (const broad of ["private_ranges", "10.0.0.2/32 private_ranges"]) {
+      const result = proxies("local", broad);
+      expect(result.passed, broad).toBe(false);
+      expect(result.stderr).toContain("not private_ranges");
+    }
+  });
+
+  it("gives an unset trusted-proxy list a placeholder Caddy rejects, not an empty list", () => {
+    // Set-but-empty would validate and trust no proxy; Caddy's own default
+    // applies only when the variable is unset, which Compose never leaves it.
+    expect(readRepoFile("docker-compose.yml")).toContain(
+      `CADDY_TRUSTED_PROXIES: \${CADDY_TRUSTED_PROXIES:-${TRUSTED_PROXIES_SENTINEL}}`,
+    );
   });
 
   it("refuses a render whose caddy service has no DOMAIN", () => {
@@ -571,7 +629,7 @@ describe("Caddy is validated with the TLS mode and settings it will run with (#4
       render({
         caddy: {
           CADDY_TLS_MODE: "local",
-          CADDY_TRUSTED_PROXIES: "192.168.1.10/32",
+          CADDY_TRUSTED_PROXIES: "10.0.0.3/32",
           MEET_HOST: "",
           // As the render writes them: Compose's `$$` for a literal `$`, and a
           // double-quoted scalar with an escaped quote.
@@ -585,7 +643,7 @@ describe("Caddy is validated with the TLS mode and settings it will run with (#4
     expect(envFile.sort()).toEqual(
       [
         "CADDY_TLS_MODE=local",
-        "CADDY_TRUSTED_PROXIES=192.168.1.10/32",
+        "CADDY_TRUSTED_PROXIES=10.0.0.3/32",
         "DOMAIN=bookings.club.test",
         'EXTRA_SETTING=say "hi"',
         "MEET_HOST=",
@@ -596,7 +654,7 @@ describe("Caddy is validated with the TLS mode and settings it will run with (#4
     // listing would show it.
     const args = readFileSync(path.join(result.dir, "docker.args"), "utf8").trimEnd().split("\n");
     expect(args).not.toContain("-e");
-    expect(args.join(" ")).not.toContain("192.168.1.10/32");
+    expect(args.join(" ")).not.toContain("10.0.0.3/32");
     expect(args.slice(-3)).toEqual(["validate", "--config", "/etc/caddy/Caddyfile"]);
     // Removed once validated, and private while it existed.
     expect(result.stdout).not.toContain("LEFTOVER-ENV-FILE");
@@ -705,7 +763,7 @@ describe("the remaining #4275 settings", () => {
     // Both generators of the active snippet (the wrapper's and the engine's).
     expect(SCRIPT.split(`echo "  ${forward}"`).length - 1).toBe(2);
     expect(readRepoFile("docker-compose.yml")).toContain(
-      "CADDY_TRUSTED_PROXIES: ${CADDY_TRUSTED_PROXIES:-}",
+      `CADDY_TRUSTED_PROXIES: \${CADDY_TRUSTED_PROXIES:-${TRUSTED_PROXIES_SENTINEL}}`,
     );
   });
 });

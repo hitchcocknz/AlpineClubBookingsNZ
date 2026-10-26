@@ -16,11 +16,14 @@ local_certs
 # which `{client_ip}` then carries to the app (see `header_up` in
 # deploy/caddy/tacbookings-active.caddy).
 #
-# CADDY_TRUSTED_PROXIES is the proxy's own address or CIDR, and has no default:
+# CADDY_TRUSTED_PROXIES is the proxy's own address or CIDR, with no usable
+# default: unset, docker-compose.yml supplies a placeholder Caddy rejects, and
 # the deploy refuses local mode without it (DEPLOYMENT.md, "Client IPs behind
 # the proxy"). `trusted_proxies_strict` reads X-Forwarded-For from the right,
 # skipping only addresses on that list, so the address Caddy uses is the one
-# the trusted proxy itself appended.
+# the trusted proxy put there. The proxy must append the connecting address to
+# X-Forwarded-For or overwrite the header; one that passes the client's header
+# through unchanged is not suitable for local mode.
 servers {
 	trusted_proxies static {$CADDY_TRUSTED_PROXIES}
 	trusted_proxies_strict

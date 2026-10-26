@@ -1670,25 +1670,46 @@ require_resolved_caddy_tls_mode() {
 # In local mode Caddy believes the client address a trusted proxy forwards, so
 # the proxies it trusts are an explicit setting (#4275): CADDY_TRUSTED_PROXIES,
 # the address or CIDR of the proxy in front, as the caddy service would receive
-# it. There is no default, because the only general one, `private_ranges`,
-# trusts every private address rather than the proxy. Unused in acme mode.
+# it. Unused in acme mode, which never imports tls-local.caddy.
+#
+# It has no usable default. docker-compose.yml hands Caddy the sentinel below
+# when .env does not set it, which Caddy rejects as an address, so a Caddy
+# recreated by hand without the setting stops instead of trusting nothing;
+# this check refuses the sentinel and an empty value first, with the reason.
+# Each entry must be a plain IP address or CIDR, never a whole address family
+# (any `/0`), and never `private_ranges`: the setting exists to name the proxy.
+CADDY_TRUSTED_PROXIES_UNSET="set-CADDY_TRUSTED_PROXIES-for-local-mode"
 require_resolved_caddy_trusted_proxies() {
   local mode
   local value
   local entry
+  local -a entries=()
 
   mode="$(resolved_service_env_value "$CADDY_SERVICE" CADDY_TLS_MODE)"
   [ "$mode" = "local" ] || return 0
   value="$(resolved_service_env_value "$CADDY_SERVICE" CADDY_TRUSTED_PROXIES)"
-  if [ -z "$value" ]; then
-    echo "CADDY_TLS_MODE=local needs CADDY_TRUSTED_PROXIES: the address or CIDR of the proxy in front of Caddy (for example 192.168.1.101/32), set in .env. There is no default, because trusting every private address (private_ranges) is broader than the one proxy Caddy should believe. See DEPLOYMENT.md, \"Client IPs behind the proxy\"." >&2
+  if [ -z "$value" ] || [ "$value" = "$CADDY_TRUSTED_PROXIES_UNSET" ]; then
+    echo "CADDY_TLS_MODE=local needs CADDY_TRUSTED_PROXIES: the address or CIDR of the proxy in front of Caddy (for example 10.0.0.2/32), set in .env. It has no default: the setting exists to name the one proxy Caddy should believe. See DEPLOYMENT.md, \"Client IPs behind the proxy\"." >&2
     return 1
   fi
-  for entry in $value; do
+  read -r -a entries <<< "$value"
+  for entry in "${entries[@]}"; do
+    if [ "$entry" = "private_ranges" ]; then
+      echo "CADDY_TRUSTED_PROXIES must name the proxy in front of Caddy, not private_ranges, which trusts every private address: the setting exists to make that trust explicit. Set the proxy's address or CIDR in .env." >&2
+      return 1
+    fi
     case "$entry" in
-      0.0.0.0/0|::/0)
-        echo "CADDY_TRUSTED_PROXIES must name the proxy in front of Caddy, not every address ($(printable_deploy_value "$entry")). Set it in .env." >&2
+      *[!0-9A-Fa-f:./]*)
+        echo "CADDY_TRUSTED_PROXIES entries must be IP addresses or CIDRs separated by spaces; '$(printable_deploy_value "$entry")' is not. Set it in .env." >&2
         return 1
+        ;;
+    esac
+    case "$entry" in
+      */*)
+        if [ -z "$(printf '%s' "${entry##*/}" | tr -d '0')" ]; then
+          echo "CADDY_TRUSTED_PROXIES must name the proxy in front of Caddy, not every address ($(printable_deploy_value "$entry")). Set it in .env." >&2
+          return 1
+        fi
         ;;
     esac
   done
@@ -2091,9 +2112,11 @@ require_resolved_email_transport_for_service() {
   local service="$1"
   local use_ses use_relay use_capture enabled_count=0 key
 
-  use_ses="$(resolved_service_env_value "$service" USE_AWS_SES)"
-  use_relay="$(resolved_service_env_value "$service" USE_SMTP_RELAY)"
-  use_capture="$(resolved_service_env_value "$service" USE_LOCAL_CAPTURE)"
+  # Trimmed after decoding, as the app's parseBooleanFlag trims: a quoted
+  # `" true "` reaches the container with its spaces.
+  use_ses="$(trim_whitespace "$(resolved_service_env_value "$service" USE_AWS_SES)")"
+  use_relay="$(trim_whitespace "$(resolved_service_env_value "$service" USE_SMTP_RELAY)")"
+  use_capture="$(trim_whitespace "$(resolved_service_env_value "$service" USE_LOCAL_CAPTURE)")"
   require_email_flag_is_boolean "$service" USE_AWS_SES "$use_ses" || return 1
   require_email_flag_is_boolean "$service" USE_SMTP_RELAY "$use_relay" || return 1
   require_email_flag_is_boolean "$service" USE_LOCAL_CAPTURE "$use_capture" || return 1

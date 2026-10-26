@@ -844,8 +844,9 @@ cd "$workspace" && docker compose --project-name <project> up -d --no-deps caddy
 `<project>` is the deploy's Compose project (by default the checkout's
 directory name, lower-cased); without `--project-name` Compose names a new
 project after the workspace directory and starts a second Caddy. This route
-skips the step-4 validation, so a mistyped value stops Caddy instead of the
-deploy.
+skips the step-3 and step-4 checks, so a mistyped or missing value stops Caddy
+instead of the deploy: an unset `CADDY_TRUSTED_PROXIES` reaches Caddy as a
+placeholder it rejects.
 
 Do **not** edit `Caddyfile` on the host for this: the deploy refuses a dirty
 checkout, and the workspace it builds is a clean `git archive` that would drop
@@ -864,17 +865,19 @@ with `trusted_proxies_strict`, and reads the visitor's address from the
 proxy's `X-Forwarded-For`; the app's `reverse_proxy` then sends that resolved
 address as the one `X-Forwarded-For` value the app reads.
 
-`CADDY_TRUSTED_PROXIES` is **required** in local mode and has no default: the
-step-3 preflight refuses `CADDY_TLS_MODE=local` without it, and refuses
-`0.0.0.0/0` or `::/0`. Pin it to the proxy's own address or CIDR, for example
-`192.168.1.101/32`. Caddy believes the forwarded address from any peer on the
-list, so the list should be the proxy and nothing else; `private_ranges`,
-which Caddy accepts, trusts every private address on the network, including
-other hosts and anything that reaches Caddy from one, and is broader than any
-single proxy needs. With `trusted_proxies_strict`, Caddy reads
-`X-Forwarded-For` from the right and takes the first address not on the list,
-which is the one the trusted proxy itself appended. The proxy must set
-`X-Forwarded-For` (Nginx Proxy Manager does by default).
+`CADDY_TRUSTED_PROXIES` is **required** in local mode and has no usable
+default: left unset, Compose hands Caddy a placeholder that Caddy rejects. Set
+it to the proxy's own IP address or CIDR, for example `10.0.0.2/32`. Caddy
+believes the forwarded address from any peer on the list, so the list should
+be the proxy and nothing else. The step-3 preflight refuses local mode without
+it, and refuses `private_ranges` (it trusts every private address on the
+network, and the setting exists to make the trust explicit), any `/0` range,
+and any entry that is not an IP address or CIDR. With
+`trusted_proxies_strict`, Caddy reads `X-Forwarded-For` from the right and
+takes the first address not on the list. The proxy must therefore append the
+connecting address to `X-Forwarded-For` (Nginx Proxy Manager's default) or
+overwrite the header; a proxy that passes the client's header through
+unchanged is not suitable for local mode.
 
 
 ### Keep-alive windows must stay ordered (#3293)
