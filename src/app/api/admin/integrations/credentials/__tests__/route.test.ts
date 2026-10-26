@@ -251,6 +251,31 @@ describe("POST /api/admin/integrations/credentials", () => {
     expect(mocks.forgetServerConnectionAnswers).not.toHaveBeenCalled();
   });
 
+  it("fences the ServerNZ API key by key, not by provider alone (#4436)", async () => {
+    // Only the API key pairs with the server address, so the branch names it.
+    // The allowlist holds that key alone today (its type says so); widen it
+    // here to prove another ServerNZ key would not borrow the key's fence.
+    asFullAdmin();
+    vi.resetModules();
+    vi.doMock("@/lib/servernz-config", async (importOriginal) => ({
+      ...((await importOriginal()) as typeof import("@/lib/servernz-config")),
+      SERVERNZ_WRITABLE_CREDENTIAL_KEYS: ["api_key", "future_key"],
+    }));
+    try {
+      const { POST: widenedPost } = await import("../route");
+      const res = await widenedPost(makeRequest({ provider: "servernz", key: "future_key", value: "not-the-api-key" }));
+      expect(res.status).toBe(200);
+      expect(mocks.lockServerNzSettings).not.toHaveBeenCalled();
+      expect(mocks.forgetServerConnectionAnswers).not.toHaveBeenCalled();
+      expect(mocks.setIntegrationCredential).toHaveBeenCalledTimes(1);
+      expect(mocks.setIntegrationCredential.mock.calls[0]![0]).toMatchObject({ provider: "servernz", key: "future_key" });
+      expect(mocks.setIntegrationCredential.mock.calls[0]![0]).not.toHaveProperty("tx");
+    } finally {
+      vi.doUnmock("@/lib/servernz-config");
+      vi.resetModules();
+    }
+  });
+
   it("accepts the Stripe secret key via the extended allowlist", async () => {
     asFullAdmin();
     mocks.setIntegrationCredential.mockResolvedValue({

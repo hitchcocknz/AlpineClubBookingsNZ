@@ -48,6 +48,7 @@ import {
 } from "@/lib/ai-diagnostics-config";
 import {
   setServerNzApiKey,
+  SERVERNZ_CREDENTIAL_KEYS,
   SERVERNZ_PROVIDER,
   SERVERNZ_WRITABLE_CREDENTIAL_KEYS,
 } from "@/lib/servernz-config";
@@ -262,8 +263,8 @@ export async function POST(request: Request) {
     // The request context travels in so the row keeps its id, IP and user agent.
     // The form posts the value it wants stored; there is no read-modify-write
     // here for a second Full Admin to make stale, so both writes expect `any`.
-    // ServerNZ's one writable key is its API key, saved under the connection fence.
-    result = provider === SERVERNZ_PROVIDER
+    // ServerNZ's API key (its one writable key) is saved under the connection fence.
+    result = provider === SERVERNZ_PROVIDER && key === SERVERNZ_CREDENTIAL_KEYS.apiKey
       ? await setServerNzApiKey(value, { kind: "admin", memberId: guard.memberId }, requestContext)
       : credentialWriteResetsXeroTokens(provider, key)
       ? await withXeroVerifyReset(

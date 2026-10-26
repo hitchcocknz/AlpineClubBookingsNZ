@@ -52,10 +52,16 @@ export const SERVERNZ_CREDENTIAL_KEYS = {
   apiKey: "api_key",
 } as const;
 
-/** The write-capturable ServerNZ credential keys (setup form + API allowlist). */
-export const SERVERNZ_WRITABLE_CREDENTIAL_KEYS = [
-  SERVERNZ_CREDENTIAL_KEYS.apiKey,
-] as const;
+/**
+ * The write-capturable ServerNZ credential keys (setup form + API allowlist).
+ * Typed as exactly the API key (#4436): the credentials route saves that key
+ * through `setServerNzApiKey`'s connection fence, so a second writable key
+ * must first decide its own route there, and this type makes adding one a
+ * deliberate edit rather than a one-line append.
+ */
+export const SERVERNZ_WRITABLE_CREDENTIAL_KEYS: readonly [
+  typeof SERVERNZ_CREDENTIAL_KEYS.apiKey,
+] = [SERVERNZ_CREDENTIAL_KEYS.apiKey];
 
 /**
  * The operational ServerNZ API key together with the version token of the row
