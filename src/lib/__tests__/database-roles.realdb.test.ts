@@ -833,10 +833,14 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
             `CREATE FUNCTION tac4453_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'`,
             // O-F8: a migrated schema missing an append-only relation.
             `ALTER TABLE "AuditLog" RENAME TO "Tac4453AuditLogMoved"`,
+            // N10: a database still on a release before the ledger existed.
+            `DROP TABLE "BookingLedgerLine" CASCADE; DELETE FROM "_prisma_migrations" WHERE migration_name = '20261006010000_add_booking_ledger_line'`,
           ]) {
             await client.query("BEGIN");
             await client.query(breach);
-            await expect(client.query(verification), breach).rejects.toThrow(/Refusing to commit/);
+            await expect(client.query(verification), breach).rejects.toThrow(
+              breach.startsWith("DROP TABLE") ? /older release\. Deploy this release's migrations first/ : /Refusing to commit/,
+            );
             await client.query("ROLLBACK");
           }
           // And the same statement commits cleanly on the provisioned state.

@@ -78,6 +78,13 @@ export const APPEND_ONLY_RELATIONS = ["BookingLedgerLine", "AuditLog"] as const;
 export const MIGRATION_HISTORY_RELATION = "_prisma_migrations";
 
 /**
+ * The migration that creates `BookingLedgerLine`, the newer of the two
+ * append-only relations. A database whose history lacks it runs an older
+ * release, and provisioning asks for this release's migrations first.
+ */
+export const APPEND_ONLY_SCHEMA_MIGRATION = "20261006010000_add_booking_ledger_line";
+
+/**
  * The audit relation the retention role maintains. It may UPDATE only
  * `AUDIT_ANONYMISED_REQUEST_COLUMNS`, the list the job itself clears.
  */
@@ -98,10 +105,12 @@ export const SECURITY_DEFINER_ROUTINE_ALLOWLIST: readonly string[] = [];
 /**
  * How long the provisioning transaction waits for a lock, and for any one
  * statement. The first run hands every table to the migration role, and
- * `ALTER … OWNER TO` takes ACCESS EXCLUSIVE until COMMIT, so a long-open reader
- * would otherwise freeze every table already transferred behind it. Five seconds
- * is the migrate service's own bound (#3377). The CLI reports a timeout as
- * "retry in a quiet window".
+ * `ALTER … OWNER TO` takes ACCESS EXCLUSIVE until COMMIT, so without a bound a
+ * long-open reader would hold every table already transferred behind it for as
+ * long as it stays open. Five seconds is the migrate service's own bound (#3377).
+ * The bound is per wait: the ownership loop is ONE statement, so the tables it has
+ * transferred stay locked for up to `PROVISIONING_STATEMENT_TIMEOUT` in the worst
+ * case. The CLI reports a timeout as "retry in a quiet window".
  */
 export const PROVISIONING_LOCK_TIMEOUT = "5s";
 export const PROVISIONING_STATEMENT_TIMEOUT = "120s";
@@ -365,6 +374,12 @@ BEGIN
       FROM (VALUES ${appendOnlyPresent}) AS expected(name, found)
       WHERE expected.found IS NULL;
     IF offending IS NOT NULL THEN
+      IF NOT EXISTS (
+        SELECT 1 FROM ${relation(MIGRATION_HISTORY_RELATION)}
+        WHERE migration_name = ${quoteLiteral(APPEND_ONLY_SCHEMA_MIGRATION)} AND finished_at IS NOT NULL
+      ) THEN
+        RAISE EXCEPTION 'Refusing to commit: append-only relation % is missing because this database runs an older release. Deploy this release''s migrations first, then re-run provisioning.', offending;
+      END IF;
       RAISE EXCEPTION 'Refusing to commit: the schema is migrated but append-only relation % is missing.', offending;
     END IF;
   END IF;
@@ -454,8 +469,9 @@ export function buildDatabaseRolesSql(input: DatabaseRolesProvisionInput): strin
   const statements: string[] = [
     // 0. Bound every wait (#4453 review, O-F1). The first run takes ACCESS
     //    EXCLUSIVE on each table it hands over, held to COMMIT; a lock it cannot
-    //    get in time stops the run with nothing changed, rather than freezing the
-    //    app behind a long-open reader. `LOCAL`: the CLI runs one transaction.
+    //    get in 5 s stops the run with nothing changed, rather than waiting on a
+    //    long-open reader indefinitely; the whole run, and so its locks, is
+    //    bounded by the statement timeout. `LOCAL`: the CLI runs one transaction.
     `SET LOCAL lock_timeout = ${quoteLiteral(PROVISIONING_LOCK_TIMEOUT)};`,
     `SET LOCAL statement_timeout = ${quoteLiteral(PROVISIONING_STATEMENT_TIMEOUT)};`,
   ];

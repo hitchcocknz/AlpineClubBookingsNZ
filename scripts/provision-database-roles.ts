@@ -21,9 +21,12 @@
  *
  * LOCKS. The FIRST `--apply` on a database hands every table to the migration
  * role, and `ALTER … OWNER TO` holds ACCESS EXCLUSIVE until COMMIT: run it in a
- * quiet window. The statement list bounds every wait (`lock_timeout`), so a
- * long-open reader stops the run with nothing changed instead of freezing the
- * app. Later runs only GRANT and REVOKE, which wait on nothing an app holds.
+ * quiet window. Each lock wait is bounded at 5 s (`lock_timeout`), so a
+ * long-open reader stops the run, with nothing changed, rather than leaving it
+ * queued. The tables already handed over stay locked until the run ends, though,
+ * and the ownership loop is one statement, so that can last up to its 120 s
+ * `statement_timeout` on a slow server; app requests touching those tables wait
+ * meanwhile. Later runs only GRANT and REVOKE, which wait on nothing an app holds.
  *
  * WHAT IT NEEDS. A connection as the OPERATOR — a superuser, or a role that may
  * create roles and change object owners: `DB_ROLES_PROVISION_DATABASE_URL`, or
@@ -127,6 +130,11 @@ function main(): void {
     if (apply && CONNECTION_STRING_UNSAFE_PASSWORD.test(password)) {
       fail(
         `${env.password} contains a character a connection string cannot carry unencoded (@ / : ? # % or whitespace). Use a hex secret, e.g. \`openssl rand -hex 24\`.`,
+      );
+    }
+    if (apply && password.includes("\\")) {
+      fail(
+        `${env.password} contains a backslash, which could end a SQL string literal early. Use a hex secret, e.g. \`openssl rand -hex 24\`.`,
       );
     }
     credentials[kind] = { roleName, password };

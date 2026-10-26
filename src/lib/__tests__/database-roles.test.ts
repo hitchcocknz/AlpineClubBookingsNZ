@@ -204,7 +204,7 @@ describe("pnpm run db:provision-roles (#4453)", () => {
   it("refuses a backslash in a password, which could end a literal early (S-F7)", () => {
     const result = cli(["--apply"], { ...passwords, APP_DB_PASSWORD: "a".repeat(20) + "\\" });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("backslash");
+    expect(result.stderr).toContain("APP_DB_PASSWORD contains a backslash");
   });
 
   it("with --apply, refuses a missing, short or URL-unsafe password before connecting", () => {

@@ -150,16 +150,21 @@ stack in [Staging](#staging)), then repeat on production.
 
 1. **Choose three passwords**, hex so they need no URL encoding:
    `openssl rand -hex 24`. Put them in `.env` as `MIGRATION_DB_PASSWORD`,
-   `APP_DB_PASSWORD` and `AUDIT_RETENTION_DB_PASSWORD`. Set the role names there
-   too, if you want names other than the defaults: `APP_DB_USER`,
-   `MIGRATION_DB_USER` and `AUDIT_RETENTION_DB_USER`.
+   `APP_DB_PASSWORD` and `AUDIT_RETENTION_DB_PASSWORD`. A password alone switches
+   nothing. **Do not set `APP_DB_USER` or `MIGRATION_DB_USER` in `.env` yet**: they
+   are the switch (step 3). If you want role names other than the defaults
+   (`tac_app`, `tac_migrator`, `tac_audit_retention`), export them in the shell for
+   step 2 only.
 2. **Preview, then provision, in a quiet window**, as the operator. The first
    `--apply` hands every table to the migration role, and `ALTER … OWNER TO` holds
    an exclusive lock on each table until the run commits. So run it when no long
    report, merge or open `psql` transaction is going. Each lock wait is bounded at
    5 seconds. A run that cannot get a lock stops with nothing changed and says
-   "retry in a quiet window". Later runs only grant and revoke, and wait on nothing
-   the app holds. Nothing connects without `--apply`.
+   "retry in a quiet window". The tables it has already handed over stay locked
+   until the run ends, which on a slow server can take up to its 120-second
+   statement bound; app requests that touch them wait meanwhile. Later runs only
+   grant and revoke, and wait on nothing the app holds. Nothing connects without
+   `--apply`.
 
    Export the values in the shell first. Docker then reads each bare `-e NAME` from
    that environment, so no password appears on the command line or in a process
@@ -169,7 +174,7 @@ stack in [Staging](#staging)), then repeat on production.
    export DB_ROLES_PROVISION_DATABASE_URL="postgresql://tac:<your-operator-password>@postgres:5432/tacbookings"
    export MIGRATION_DB_PASSWORD=<your-migration-password> APP_DB_PASSWORD=<your-app-password> \
      AUDIT_RETENTION_DB_PASSWORD=<your-retention-password>
-   # and APP_DB_USER, MIGRATION_DB_USER, AUDIT_RETENTION_DB_USER if you chose names
+   # and, only if you chose other names: export APP_DB_USER=… MIGRATION_DB_USER=… AUDIT_RETENTION_DB_USER=…
    docker compose --profile migrate run --rm --no-deps \
      -e DB_ROLES_PROVISION_DATABASE_URL \
      -e MIGRATION_DB_PASSWORD -e APP_DB_PASSWORD -e AUDIT_RETENTION_DB_PASSWORD \
