@@ -23,6 +23,7 @@ import { resolveMemberIdsForContact } from "./contact";
 import { refreshLinkedSubscriptionsForInvoice, syncLinkedPaymentInvoiceMetadata } from "./payment";
 import { syncGroupSettlementForPaidInvoice, syncInternetBankingPaymentsForPaidInvoice } from "./invoice-paid-effects";
 import { failIfRecountLeftUnsettled } from "./recount-left-unsettled";
+import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -283,10 +284,11 @@ export async function reconcileXeroInvoice(
     refreshedSubscriptions: refreshedSubscriptions.size,
     relatedLinksUpdated: relatedLinks.length,
     looksLikeSubscriptionInvoice,
-    // #4095: a stored event fails on a correction its settle could not recount.
+    // #4095: a correction its settle could not recount. A stored event fails on
+    // it and is retried; the incremental invoice reconciliation alerts a person.
     ...(internetBankingPaymentSync.unrecountedCorrectionNoteIds.length > 0
       ? {
-          recountLeftUnsettled: `Invoice ${invoice.invoiceID} was settled, but correction note(s) ${internetBankingPaymentSync.unrecountedCorrectionNoteIds.join(", ")} could not be recounted against its receipt; the event is retried to recount them.`,
+          recountLeftUnsettled: `Invoice ${invoice.invoiceID} was settled, but correction note(s) ${internetBankingPaymentSync.unrecountedCorrectionNoteIds.join(", ")} could not be recounted against its receipt.`,
         }
       : {}),
   };
@@ -315,8 +317,19 @@ export async function runIncrementalInvoiceReconciliation(options: {
     processed += 1;
 
     try {
-      // #4095: a recount its settle left unwritten fails the invoice, as it fails a stored event.
-      failIfRecountLeftUnsettled(await reconcileXeroInvoice(invoiceId, format, { skipSubscriptionRefresh: true }));
+      const reconciled = await reconcileXeroInvoice(invoiceId, format, { skipSubscriptionRefresh: true });
+      // #4095 (PR #4437 review, L2): a recount its settle left unwritten. Unlike
+      // a stored event, nothing retries this invoice: the membership cursor has
+      // already moved past it, and no caller reads `failed`. So a person is
+      // alerted, and the invoice is reported failed.
+      if ("recountLeftUnsettled" in reconciled && reconciled.recountLeftUnsettled) {
+        await notifyXeroSyncError({
+          errorType: "refund-ledger-divergence",
+          operation: `incremental-invoice-reconciliation:recount:${invoiceId}`,
+          errorMessage: `${reconciled.recountLeftUnsettled} Nothing retries it on its own; check the payment's refunded total against Xero, or replay the invoice's inbound event.`,
+        });
+      }
+      failIfRecountLeftUnsettled(reconciled);
       succeeded += 1;
     } catch (error) {
       failed += 1;

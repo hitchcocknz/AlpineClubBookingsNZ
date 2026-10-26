@@ -211,6 +211,11 @@ vi.mock("@/lib/logger", () => ({
   },
 }));
 
+// #4095 (PR #4437 review, L2): the alert the incremental invoice reconciliation
+// raises for a recount nothing retries.
+const xeroSyncErrorAlert = vi.hoisted(() => ({ notifyXeroSyncError: vi.fn() }));
+vi.mock("@/lib/xero-error-alert", () => xeroSyncErrorAlert);
+
 vi.mock("@/lib/xero-applied-credit-allocation-repair", () => ({
   repairLegacyAppliedCreditNoteAllocationsForBooking:
     mocks.repairLegacyAppliedCreditNoteAllocationsForBooking,
@@ -4702,7 +4707,7 @@ describe("processStoredXeroInboundEvents", () => {
       return recountReads;
     }
 
-    it("the incremental invoice reconciliation reports an invoice whose kept settle left its recount unwritten as failed (#4095 review, item 3)", async () => {
+    it("MUTATION: the incremental invoice reconciliation alerts a person about an invoice whose kept settle left its recount unwritten, and reports it failed (#4095 review, item 3 and L2)", async () => {
       const recountReads = await arrangeKeptSettleWhoseRecountFails();
 
       const result = await runIncrementalInvoiceReconciliation({
@@ -4715,6 +4720,14 @@ describe("processStoredXeroInboundEvents", () => {
         succeeded: 0,
         failed: 1,
         errorDetails: [{ invoiceId: "inv_ib_gate", error: expect.stringContaining("correction note(s) cn_correction could not be recounted") }],
+      });
+      // Nothing retries it (the membership cursor has moved on, and no caller
+      // reads `failed`), so a person is told.
+      expect(xeroSyncErrorAlert.notifyXeroSyncError).toHaveBeenCalledTimes(1);
+      expect(xeroSyncErrorAlert.notifyXeroSyncError).toHaveBeenCalledWith({
+        errorType: "refund-ledger-divergence",
+        operation: "incremental-invoice-reconciliation:recount:inv_ib_gate",
+        errorMessage: expect.stringMatching(/correction note\(s\) cn_correction could not be recounted.*Nothing retries it on its own/),
       });
     });
 
@@ -4734,6 +4747,8 @@ describe("processStoredXeroInboundEvents", () => {
           errorMessage: expect.stringContaining("correction note(s) cn_correction could not be recounted"),
         }),
       });
+      // The stored event is retried, so no person is alerted.
+      expect(xeroSyncErrorAlert.notifyXeroSyncError).not.toHaveBeenCalled();
     });
 
     it("keeps a fold the invoice's correction notes do not exactly explain (#3979 review A)", async () => {
