@@ -1,5 +1,8 @@
 import {
+  PaymentRecoveryOperationStatus,
+  PaymentRecoveryOperationType,
   PaymentSource,
+  PaymentStatus,
   PaymentTransactionKind,
   type Prisma,
 } from "@prisma/client";
@@ -106,8 +109,8 @@ export async function queueSupersededPrimaryIntentCancellations(
 
 /**
  * Before issuing a new ADDITIONAL PaymentIntent for a booking
- * modification, cancel any existing PENDING/PROCESSING ADDITIONAL
- * transactions on the same payment whose PaymentIntent id differs from
+ * modification, cancel any existing PENDING/PROCESSING - or declined (#4422) -
+ * ADDITIONAL transactions on the same payment whose PaymentIntent id differs from
  * the new one. Without this, an abandoned previous additional intent
  * (member closed the browser before confirming) lingers as PENDING
  * locally until Stripe's 24h auto-cancel and the webhook delivery hit,
@@ -146,6 +149,32 @@ export type QueuedSupersededIntentCancellation = {
 };
 
 /**
+ * WHICH OTHER ASKS A SUPERSEDE CANCELS AT STRIPE (#4422, `INV-ADDPAY-023`).
+ *
+ * An open ask, and a DECLINED one. A declined card fails the local row but
+ * leaves the intent confirmable at Stripe (`requires_payment_method`), so a
+ * stale tab could still pay it after a later request was paid - the member
+ * charged twice, and once the later request's invoice was released, one of the
+ * two captures recorded nowhere in Xero. The local row cannot tell a decline
+ * from a cancel, so every FAILED ask is queued until a cancel of it has
+ * SUCCEEDED; one already cancelled at Stripe costs the runner one retrieve,
+ * which then completes its row and drops it from here. A capture that wins the
+ * race takes the superseded-capture path, as an open ask's does.
+ */
+const SUPERSEDABLE_ADDITIONAL_ASK_STATUS_WHERE = [
+  { status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] } },
+  {
+    status: PaymentStatus.FAILED,
+    recoveryOperations: {
+      none: {
+        type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+        status: PaymentRecoveryOperationStatus.SUCCEEDED,
+      },
+    },
+  },
+] as const satisfies readonly Prisma.PaymentTransactionWhereInput[];
+
+/**
  * The DURABLE half of `queueSupersededAdditionalIntentCancellations`: find the
  * other outstanding ADDITIONAL intents and queue each one's cancellation - no
  * provider call. On `store` so a minter that must decide "write my row and
@@ -169,7 +198,7 @@ export async function queueSupersededAdditionalIntentCancellationRows(options: {
       paymentId: options.paymentId,
       kind: PaymentTransactionKind.ADDITIONAL,
       source: PaymentSource.STRIPE,
-      status: { in: [...OPEN_INTENT_TRANSACTION_STATUS_LIST] },
+      OR: [...SUPERSEDABLE_ADDITIONAL_ASK_STATUS_WHERE],
       stripePaymentIntentId: { not: options.newPaymentIntentId },
       amountCents: { gt: 0 },
     },
@@ -211,9 +240,10 @@ export async function queueSupersededAdditionalIntentCancellationRows(options: {
  * #3403 (`INV-PAY-140`): a minter names the intent it just wrote
  * (`newPaymentIntentId`), and the superseded asks' waiting Xero supplementary
  * invoices are then moved onto it, before the minter returns its secret. Here
- * as well as in the cancel step because an ask whose card was DECLINED is
- * carried but never cancelled again, so no cancel step runs for it. A writer
- * that retires an ask without replacing it (a booking cancel) names none.
+ * as well as in the cancel step because a cancel that did not finish (a Stripe
+ * outage, a backoff) or an ask already cancelled runs no cancel step now. A
+ * declined ask is cancelled here too (#4422). A writer that retires an ask
+ * without replacing it (a booking cancel) names none.
  */
 export async function cancelSupersededAdditionalIntentsNow(options: {
   bookingId: string;
