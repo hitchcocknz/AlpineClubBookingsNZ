@@ -233,13 +233,6 @@ x-app-environment: &app-environment
   # src/lib/audit-retention.ts (empty = archive to the primary database).
   AUDIT_ARCHIVE_DATABASE_URL: ${AUDIT_ARCHIVE_DATABASE_URL:-}
   AUDIT_LOG_ARCHIVE_DATABASE_URL: ${AUDIT_LOG_ARCHIVE_DATABASE_URL:-}
-  # Optional PRIMARY-database connection for the nightly audit retention job
-  # (#4453), as the audit-retention role `pnpm run db:provision-roles` creates:
-  # under the least-privilege roles the app role may only INSERT/SELECT AuditLog,
-  # so the anonymise and delete steps need this. Empty = the app's own
-  # DATABASE_URL, as before. Only the cron leader runs the job; its pool is used
-  # for minutes a night, so keep connection_limit=2.
-  AUDIT_RETENTION_DATABASE_URL: ${AUDIT_RETENTION_DATABASE_URL:-}
   # Where Admin > System Health asks the cron leader for its runtime status —
   # src/app/api/admin/health/route.ts, which defaults to the compose-internal
   # http://app:3000/api/deploy/runtime-status when this is empty. `.env.example`
@@ -431,6 +424,15 @@ services:
       # background jobs, not the concurrent web burst the slots above size for.
       # Holding it at 5 keeps the total within max_connections=40 (#1884, F17).
       DATABASE_URL: postgresql://${APP_DB_USER:-tac}:${APP_DB_PASSWORD:-${DB_PASSWORD:?DB_PASSWORD is required}}@postgres:5432/tacbookings?connection_limit=5&pool_timeout=10
+      # Optional PRIMARY-database connection for the nightly audit retention job
+      # (#4453), as the audit-retention role `pnpm run db:provision-roles`
+      # creates: under the least-privilege roles the app role may only
+      # INSERT/SELECT AuditLog, so the anonymise and delete steps need this.
+      # Empty = this service's own DATABASE_URL, as before. On THIS service only,
+      # deliberately not in x-app-environment: only the cron leader runs the job,
+      # and a web slot has no use for a credential that may delete audit rows.
+      # Its pool is used for minutes a night, so keep connection_limit=2.
+      AUDIT_RETENTION_DATABASE_URL: ${AUDIT_RETENTION_DATABASE_URL:-}
 
   app_blue:
     <<: *app-service

@@ -1211,6 +1211,23 @@ jobs:
           RUN_CONCURRENCY_RACE_TESTS: "1"
         run: pnpm exec vitest run src/lib/__tests__/ai-diagnostics-select-only-role.realdb.test.ts
 
+      # #4453: PROVE the least-privilege database roles. The application role must
+      # not UPDATE or DELETE a ledger line or an audit row by any route, every
+      # migration must run as the migration role, and pg_dump and the restore
+      # paths must still work — all claims about PostgreSQL's own privilege checks,
+      # so only a real server can establish them. The suite provisions the roles
+      # with the SHIPPED statements and CLI in scratch databases of its own (roles
+      # are cluster-global, so each run carries a random prefix and drops them),
+      # and needs pg_dump and psql from the runner. A required step, like the
+      # diagnostics proof above, so a broken grant blocks the merge; the advisory
+      # realdb-all job runs the same file too. It describe.skip's itself without
+      # the env vars, so this step MUST stay wired —
+      # `review-findings-contracts.test.ts` fails if it goes missing.
+      - name: Prove the least-privilege database roles against dedicated PostgreSQL
+        env:
+          RUN_CONCURRENCY_RACE_TESTS: "1"
+        run: pnpm exec vitest run src/lib/__tests__/database-roles.realdb.test.ts
+
       # E8 (#1934): real-Postgres behavior of the member-grouping cutover
       # migration (legacy-rule deactivation, shape-dedupe, backfill, mode seed,
       # idempotent re-run). Self-provisions a throwaway schema (needs PG 15+
