@@ -57,6 +57,9 @@ const JAVASCRIPT_VITEST_TESTS = [
   // same reason every other entry here does. It arrived on `main`, whose copy of
   // this contract has no such list, so nothing there asked for the entry.
   "scripts/ci/audit-dependencies.test.mjs",
+  // #4425: the change-scope classifier the scoped required jobs run under
+  // bare node, before any install; its suite stays JavaScript like e2e-scope's.
+  "scripts/ci/change-scope.test.mjs",
   // #3843: the audit's MITIGATED verdict lives in its own `.mjs` module beside
   // the wrapper, and its suite is JavaScript for the same reason.
   "scripts/ci/dependency-mitigation.test.mjs",
@@ -74,6 +77,10 @@ const JAVASCRIPT_VITEST_TESTS = [
   "scripts/ci/check-website-prerender-manifest.test.mjs",
   "scripts/ci/check-website-render-modes.test.mjs",
   "scripts/ci/check-workflow-suite-checkout-depth.test.mjs",
+  // #4397: the E2E scope and shard helpers run under bare node in CI, so
+  // their suites stay JavaScript under the same convention.
+  "scripts/ci/e2e-scope.test.mjs",
+  "scripts/ci/e2e-spec-shard.test.mjs",
   // #3721: the suite of the `.mjs` hand-sync description tool, which runs
   // before any install alongside the renderer it extends.
   "scripts/ci/epic-sync-body.test.mjs",
@@ -84,6 +91,7 @@ const JAVASCRIPT_VITEST_TESTS = [
   // deliberately remains JavaScript under the same convention.
   "scripts/ci/run-fast-censuses.test.mjs",
   "scripts/ci/server-only-boundary-selftest.test.mjs",
+  "scripts/ci/wait-for-run-artifacts.test.mjs",
   // ALP-4 (#4024): the fragility audit is a set of bare-node `.mjs` tools;
   // their shared suite stays JavaScript under the same convention.
   "scripts/audit/fragility.test.mjs",

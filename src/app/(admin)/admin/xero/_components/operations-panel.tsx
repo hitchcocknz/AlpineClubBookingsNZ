@@ -36,18 +36,7 @@ import { xeroSectionId } from "./types"
 import type { XeroOperation } from "./types"
 import { useClubFormat } from "@/components/club-format-provider"
 import { XeroFailureExplanation } from "@/components/admin/xero-failure-explanation"
-
-/**
- * The resolve dialog's text. A credit note's adds the owner's rule (#4250,
- * 21 Oct 2026): a voided card refund note is raised again overnight, even one
- * resolved here, so a replacement made by hand as well would duplicate it.
- */
-export function resolveDialogDescription(entityType: string): string {
-  const base = "How was this resolved in Xero? This drops it off the active failure list."
-  return entityType === "CREDIT_NOTE"
-    ? `${base} If you later void a card refund's credit note in Xero, don't make a replacement by hand: the app raises a fresh one overnight.`
-    : base
-}
+import { useResolveOperation } from "./use-resolve-operation"
 
 export function OperationsPanel({
   connected,
@@ -254,6 +243,15 @@ export function OperationsPanel({
     statusFilter,
   ])
 
+  const { resolveOperation, resolveWithNoteDialog } = useResolveOperation({
+    prompt,
+    setError,
+    onMessage,
+    setResolvingOperationId,
+    fetchOperations,
+    onRefreshDiagnostics,
+  })
+
   useEffect(() => {
     if (connected && open) void fetchOperations()
   }, [connected, fetchOperations, open])
@@ -319,34 +317,6 @@ export function OperationsPanel({
       setError(err instanceof Error ? err.message : "Failed to queue failed Xero operations")
     } finally {
       setRetryingAllFailed(false)
-    }
-  }
-
-  const resolveOperation = async (operationId: string, entityType: string) => {
-    const reason = await prompt({
-      title: "Resolve this Xero operation?",
-      description: resolveDialogDescription(entityType),
-      inputLabel: "Reason",
-      defaultValue: "Resolved manually in Xero",
-      confirmLabel: "Resolve",
-    })
-    if (reason === null) return
-    setResolvingOperationId(operationId)
-    setError("")
-    onMessage("")
-    try {
-      const data = await postJson<{ message?: string }>(
-        `/api/admin/xero/operations/${operationId}/resolve`,
-        { reason },
-        "Failed to resolve Xero operation"
-      )
-      onMessage(data.message || "Xero operation marked resolved.")
-      await fetchOperations()
-      onRefreshDiagnostics()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to resolve Xero operation")
-    } finally {
-      setResolvingOperationId(null)
     }
   }
 
@@ -438,6 +408,7 @@ export function OperationsPanel({
     >
       <div className="space-y-4">
         {confirmDialog}
+        {resolveWithNoteDialog}
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <details className="rounded-md border bg-muted p-3 text-xs text-muted-foreground">
           <summary className="cursor-pointer font-medium text-foreground">What do these statuses mean?</summary>
@@ -512,7 +483,7 @@ export function OperationsPanel({
                 markingFailed={markingFailedOperationId === operation.id}
                 onRetry={() => void retryOperation(operation.id)}
                 onMarkNonReplayable={() => void markNonReplayable(operation.id)}
-                onResolve={() => void resolveOperation(operation.id, operation.entityType)}
+                onResolve={() => void resolveOperation(operation)}
                 onMarkFailed={() => void markFailed(operation.id)}
               />
             ))}

@@ -7,10 +7,12 @@ import {
 import { prisma } from "@/lib/prisma";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import {
+  cardRefundNoteRowsWhere,
   paidAnotherWayCloseNoteRowsWhere,
   readPaidAnotherWayCloseShare,
 } from "@/lib/card-refund-paid-another-way-cash";
 import { claimXeroSyncOperationToRunning } from "@/lib/xero-operation-claim";
+import { cardRefundNoteKey, readCardRefundNoteShare } from "@/lib/card-refund-own-note-share";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { clubSeasonYear } from "@/lib/financial-year";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
@@ -120,6 +122,7 @@ import {
   outstandingSupplementaryInvoiceOperationsWhere,
   RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES,
   restatableSupplementaryInvoiceOperationsWhere,
+  stillWaitingOnIntentWhere,
   waitingSupplementaryInvoiceOperationsWhere,
 } from "@/lib/xero-supplementary-invoice-statuses";
 import { formatDateOnly } from "@/lib/date-only";
@@ -861,6 +864,12 @@ export async function enqueueXeroRefundCreditNoteOperation(
      * (`bank-refund-void-scan.ts`).
      */
     handBackTaskId?: string;
+    /**
+     * #4312 (`INV-ADDPAY-047`): the card refund (its `stripeRefundId`) on a
+     * bank-transfer payment this note answers. Keyed and sized on that refund
+     * alone (`readCardRefundNoteShare`), as a close's note is on its record.
+     */
+    cardRefundId?: string;
   }
 ) {
   // Optional transaction client (#1357) so callers (e.g. the Internet Banking
@@ -930,7 +939,10 @@ export async function enqueueXeroRefundCreditNoteOperation(
   const stepped =
     payment.source === PaymentSource.STRIPE ||
     Boolean(options?.reviewTaskId) ||
-    Boolean(options?.paidAnotherWayTaskId);
+    Boolean(options?.paidAnotherWayTaskId) ||
+    Boolean(options?.cardRefundId);
+  // #4312: what a card refund's own notes already cover, which keys its note.
+  let cardRefundCoveredCents: number | null = null;
   if (stepped) {
     // Stripe payments can be refunded in several steps, and each step needs
     // its own credit note for the still-uncovered delta. The cumulative total
@@ -963,6 +975,12 @@ export async function enqueueXeroRefundCreditNoteOperation(
       // of a refund Stripe failed later asks only for what the card refund
       // note already in Xero does not answer (`queuePaidAnotherWayXero`).
       noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
+    } else if (options?.cardRefundId) {
+      // #4312 (`INV-ADDPAY-047`): sized by the refund alone, never the payment-wide gap.
+      const share = await readCardRefundNoteShare(db, paymentId, options.cardRefundId);
+      if (!share) throw new Error(`Refusing to queue a Xero refund note for payment ${paymentId}: its card refund ${options.cardRefundId} is not on this payment`);
+      noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
+      cardRefundCoveredCents = share.coveredCents;
     } else {
       // #3635 round-3 R1: the cash a note may answer, which leaves out refunds of
       // late captures the app never recorded in Xero (`INV-PAY-110`).
@@ -984,6 +1002,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
         queueOperationId: null,
         message: options?.paidAnotherWayTaskId
           ? "This paid-another-way close's own refund credit notes already cover what it paid back."
+          : options?.cardRefundId
+          ? "This card refund's own refund credit notes already cover it, or it gets no note of its own."
           : "No provider-backed Stripe cash refund remains uncovered by refund credit notes for this payment.",
       };
     }
@@ -1020,7 +1040,9 @@ export async function enqueueXeroRefundCreditNoteOperation(
   // The cumulative watermark distinguishes equal-amount Stripe deltas so each one
   // gets its own note, while replays of the same state produce the same key and
   // collide into the PENDING/RUNNING dedupe just below.
-  const correlationKey = buildXeroIdempotencyKey(
+  const correlationKey = options?.cardRefundId && cardRefundCoveredCents !== null
+    ? await cardRefundNoteKey(paymentId, options.cardRefundId, cardRefundCoveredCents, db) // #4312: one row per refund
+    : buildXeroIdempotencyKey(
     "payment", paymentId, "refund-credit-note", stepped ? watermarkCents : noteAmountCents, stepped ? "v2" : "v1",
     ...reviewTaskKeyParts(options?.reviewTaskId),
     ...(options?.paidAnotherWayTaskId ? ["paid-another-way", options.paidAnotherWayTaskId] : []),
@@ -1051,6 +1073,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
     where: {
       ...(options?.paidAnotherWayTaskId
         ? paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId)
+        : options?.cardRefundId
+        ? cardRefundNoteRowsWhere(paymentId, options.cardRefundId)
         : {
             correlationKey,
             direction: "OUTBOUND",
@@ -1087,7 +1111,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
     requestPayload: {
       queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
       refundAmountCents: noteAmountCents,
-      watermarkCents,
+      // #4312: none on a card refund's own row - an older release's worker then runs it as the one note it would fold into.
+      ...(options?.cardRefundId && cardRefundCoveredCents !== null ? {} : { watermarkCents }),
       ...(options?.refundMethod ? { refundMethod: options.refundMethod } : {}),
       // Normalised at write time too (a cast or untyped caller): cash wording
       // is stored only with the internet-banking method (`readRefundNoteWording`).
@@ -1098,6 +1123,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
       ...(options?.paidAnotherWayTaskId ? { paidAnotherWayTaskId: options.paidAnotherWayTaskId } : {}),
       ...(options?.creditsInvoiceId ? { creditsInvoiceId: options.creditsInvoiceId } : {}),
       ...(options?.handBackTaskId ? { handBackTaskId: options.handBackTaskId } : {}),
+      ...(options?.cardRefundId ? { cardRefundId: options.cardRefundId } : {}),
     },
     createdByMemberId: options?.createdByMemberId ?? null,
     store: db,
@@ -1809,16 +1835,14 @@ export async function releaseXeroSupplementaryInvoiceOperationsForPaymentIntent(
  */
 export async function releaseWaitingSupplementaryInvoiceOperations(
   queueOperationIds: string[],
+  /** #3403 review: the capture they were read waiting on; one moved off it since is not its to release. */
+  paymentIntentId?: string,
 ): Promise<{ released: number; queueOperationIds: string[] }> {
-  if (queueOperationIds.length === 0) {
-    return { released: 0, queueOperationIds: [] };
-  }
+  if (queueOperationIds.length === 0) return { released: 0, queueOperationIds: [] };
   const updateResult = await prisma.xeroSyncOperation.updateMany({
     where: {
-      id: {
-        in: queueOperationIds,
-      },
-      status: "WAITING_PAYMENT",
+      id: { in: queueOperationIds },
+      ...(paymentIntentId ? stillWaitingOnIntentWhere(paymentIntentId) : { status: "WAITING_PAYMENT" }),
     },
     data: {
       status: "PENDING",
@@ -1828,10 +1852,7 @@ export async function releaseWaitingSupplementaryInvoiceOperations(
     },
   });
 
-  return {
-    released: updateResult.count,
-    queueOperationIds,
-  };
+  return { released: updateResult.count, queueOperationIds };
 }
 
 /**
@@ -2002,6 +2023,8 @@ export async function restatePendingSupplementaryInvoiceAmount({
       where: {
         id: operation.id,
         status: { in: [...RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES] },
+        // #3403 review (C1): still waiting on the request it was read on; an invoice a supersession moved since is not written back.
+        ...(typeof payload.paymentIntentId === "string" ? { requestPayload: { path: ["paymentIntentId"], equals: payload.paymentIntentId } } : {}),
       },
       data: {
         requestPayload: {
@@ -2854,6 +2877,7 @@ export interface ProcessQueuedXeroOutboxOperationsResult {
   succeeded: number;
   failed: number;
   skipped: number;
+  cooldownDeferred?: number; // #4375: of `skipped`, refused before any call; set only when non-zero
 }
 
 export async function kickQueuedXeroOutboxOperationsIfConnected(options?: {
@@ -3063,6 +3087,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
             ...(payload.creditsInvoiceId ? { creditsInvoiceId: payload.creditsInvoiceId } : {}),
             // #4162: the hand-back this note records rides the executed row.
             ...(payload.handBackTaskId ? { handBackTaskId: payload.handBackTaskId } : {}),
+            ...(payload.cardRefundId ? { cardRefundId: payload.cardRefundId } : {}), // #4312: the card refund it answers
             // #3827 (D-3813-8): a refund request's own note (`refund-request-credit-note.ts`).
             ...(readRefundRequestIdFromPayload(queuedOperation.requestPayload)
               ? { refundRequestId: readRefundRequestIdFromPayload(queuedOperation.requestPayload)! }
@@ -3274,6 +3299,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
             "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
           );
           result.skipped += 1;
+          result.cooldownDeferred = (result.cooldownDeferred ?? 0) + 1;
           continue;
         }
         // The row was in neither RUNNING nor FAILED (e.g. a concurrent worker

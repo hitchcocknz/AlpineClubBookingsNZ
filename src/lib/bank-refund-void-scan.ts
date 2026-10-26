@@ -24,8 +24,9 @@
  * - `unmatched`: the note's amount cannot be read, the payment's ledger holds
  *   no single live hand-back line for it, its detail no longer holds it, or it
  *   recorded a card refund's record (a "Paid another way" close or shortfall,
- *   whose note the card refund pipeline re-raises), or a person has picked part
- *   of it. Nothing moves by itself: a person picks the bank refunds it recorded
+ *   whose note the card refund pipeline re-raises), or it recorded a card
+ *   refund itself (#4312: a note keyed on its `PaymentRefund`, `cardRefundId`),
+ *   or a person has picked part of it. Nothing moves by itself: a person picks the bank refunds it recorded
  *   on Stuck States, one at a time until the picks add up to its amount, and
  *   the same undo runs for each (owner decision 18 Oct 2026, `resolvePickedUndo`).
  * - `spare`: the payment's live refund notes, plus notes resolved by hand in
@@ -68,6 +69,7 @@ import {
   bankRefundVoidPickKeyPrefix,
 } from "@/lib/bank-refund-void-follow-up-key";
 import { readPaidAnotherWayCash } from "@/lib/card-refund-paid-another-way-cash";
+import { cardRefundIdOfNoteRow } from "@/lib/card-refund-own-note-share";
 import { unwindableHandBackCents } from "@/lib/refund-allocation-unwind";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import { decodeRawRows } from "@/lib/raw-sql-rows";
@@ -76,7 +78,6 @@ import { asRecord, readString } from "@/lib/xero-json";
 import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-link-repair";
 import {
   CANCELLED_CREDIT_NOTE_STATUSES,
-  isCoveredByExistingNoteRow,
   isRefundCreditNoteLinkCancelledInXero,
   readRefundNoteRaisingRow,
   recordedRefundNoteAmountCents,
@@ -181,6 +182,8 @@ export type VoidedLink = Prisma.XeroObjectLinkGetPayload<{ select: typeof VOIDED
  * Why a voided note goes to a person. `paid-another-way`: it recorded a card
  * refund the club paid back another way (or a card refund shortfall), whose
  * record and note stay with the card refund pipeline - never undone here.
+ * `card-refund` (#4312, `INV-ADDPAY-047`): it recorded a card refund made
+ * through Stripe, keyed on its refund - no bank refund to take back.
  * `coverage-unknown`: a note resolved by hand in Xero has no readable amount.
  * `partly-picked`: a person has picked some of the refunds it recorded, and
  * the rest of its amount is still to pick.
@@ -191,6 +194,7 @@ export type BankRefundVoidUnmatchedReason =
   | "ambiguous"
   | "detail-short"
   | "paid-another-way"
+  | "card-refund"
   | "coverage-unknown"
   | "partly-picked";
 
@@ -278,6 +282,17 @@ async function refundNoteHandBackTasks(db: Reader, paymentId: string): Promise<M
     if (counts) out.set(task.id, { cardRecord: isCardRefundPaidAnotherWayTask(task) || isCancelCardShortfallTask(task) });
   }
   return out;
+}
+
+/** #4312: the reasons a voided note has no bank refund for a person to pick - it recorded card money. */
+export function isCardMoneyVoidReason(reason: BankRefundVoidUnmatchedReason | "deferred"): boolean {
+  return reason === "paid-another-way" || reason === "card-refund";
+}
+
+/** #4312: whether the note's raising row recorded a card refund of its own (`cardRefundIdOfNoteRow`). */
+async function noteRecordsCardRefund(db: Reader, paymentId: string, link: VoidedLink): Promise<boolean> {
+  const row = await readRefundNoteRaisingRow(paymentId, link.xeroObjectId, db);
+  return row !== null && cardRefundIdOfNoteRow(row) !== null;
 }
 
 /** The task a note names as the hand-back it records, or null (a note from before #4162). */
@@ -413,6 +428,8 @@ export async function classifyVoidedBankRefundNote(db: Reader, linkId: string): 
     return result({ kind: "spare", amountCents, coverageCents, requiredCents }, base);
   }
 
+  // #4312: a card refund's own note recorded no bank refund, so it is never matched to one by amount.
+  if (await noteRecordsCardRefund(db, paymentId, link)) return unmatched("card-refund");
   const taskId = await noteHandBackTaskId(db, paymentId, link);
   // A card refund's record (a "Paid another way" close, a shortfall) is the
   // card refund pipeline's: its note is re-raised there, never undone here.
@@ -471,21 +488,15 @@ const NOTE_TASK_KEYS = ["handBackTaskId", "reviewTaskId", "paidAnotherWayTaskId"
  * hand-back's refund - the notes whose create rows name its task, counted as
  * the payment's coverage counts them (`sumRefundCreditNoteCoverageOfRowsCents`,
  * never a row resolved by hand whose own note Xero voided, nor a row closed as
- * covered by another hand-back's note, `isCoveredByExistingNoteRow`), plus a note made by
+ * covered by another hand-back's note, `countsTowardRefundNoteCoverage`), plus a note made by
  * hand and linked to it (`handBackTaskId` on an active link whose create row,
  * if any, does not already name it). A line those notes still cover was not
  * the voided note's, so it is never picked.
  */
 async function taskNoteCoverageCents(db: Reader, paymentId: string, taskId: string): Promise<number> {
   const namesTask: Prisma.XeroSyncOperationWhereInput = { OR: NOTE_TASK_KEYS.map((key) => ({ requestPayload: { path: [key], equals: taskId } })) };
-  // A row closed as covered by another hand-back's note minted nothing: that note is not this task's.
-  const namingRows = (await db.xeroSyncOperation.findMany({ where: { localModel: "Payment", localId: paymentId, ...namesTask }, select: { id: true, responsePayload: true } })) ?? [];
-  const coveredByOtherIds = namingRows.filter(isCoveredByExistingNoteRow).map((row) => row.id);
-  const rowsWhere: Prisma.XeroSyncOperationWhereInput = {
-    ...namesTask,
-    ...(coveredByOtherIds.length > 0 ? { AND: [{ id: { notIn: coveredByOtherIds } }] } : {}),
-  };
-  const fromRows = await sumRefundCreditNoteCoverageOfRowsCents(paymentId, rowsWhere, db);
+  // A row closed as covered by another hand-back's note minted nothing: the shared sum leaves it out (#4265).
+  const fromRows = await sumRefundCreditNoteCoverageOfRowsCents(paymentId, namesTask, db);
   const handMade =
     (await db.xeroObjectLink.findMany({
       where: {
@@ -584,7 +595,7 @@ export async function resolvePickedUndo(
   lineId: string,
 ): Promise<{ undo: BankRefundVoidUndo; remainingCents: number | null } | { refusal: PickRefusal }> {
   const c = note.classification;
-  if (c.kind !== "unmatched" || c.reason === "paid-another-way" || !note.bookingId) {
+  if (c.kind !== "unmatched" || isCardMoneyVoidReason(c.reason) || !note.bookingId) {
     return { refusal: "not-unmatched" };
   }
   const { undoableLines } = await readPaymentHandBacks(db, note.paymentId, note.bookingId);
@@ -665,11 +676,11 @@ export async function listBankRefundVoidsForAPerson(db: Reader, now: Date = new 
       foundVoidedAt: note.link.updatedAt.toISOString(),
       reason: c.kind === "unmatched" ? c.reason : "deferred",
       pickableLines:
-        c.kind === "unmatched" && c.reason !== "paid-another-way"
+        c.kind === "unmatched" && !isCardMoneyVoidReason(c.reason)
           ? await readPickableHandBackLines(db, note.paymentId, note.bookingId, c.remainingCents)
           : [],
       partlyCoveredLines:
-        c.kind === "unmatched" && c.reason !== "paid-another-way" ? await readPartlyCoveredHandBackLines(db, note.paymentId, note.bookingId) : [],
+        c.kind === "unmatched" && !isCardMoneyVoidReason(c.reason) ? await readPartlyCoveredHandBackLines(db, note.paymentId, note.bookingId) : [],
     });
   }
   return items;

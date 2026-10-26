@@ -12,6 +12,7 @@ import {
   runPaymentRecoveryOperationNow,
 } from "@/lib/payment-recovery";
 import type { ClubFormat } from "@/lib/club-format";
+import { followSupersededAskInvoicesSafely } from "@/lib/superseded-ask-invoice-carry";
 
 export type SupersededPrimaryPaymentIntent = {
   paymentTransactionId: string;
@@ -40,6 +41,11 @@ export async function queueSupersededPrimaryIntentCancellations(
      * keep an intent that would charge the old currency.
      */
     wrongCurrencyPaymentIntentId?: string | null;
+    /**
+     * #4320: only the rows this filter matches, so a caller can judge one
+     * class of row against its own figure (a saved-card charge attempt's).
+     */
+    rows?: Prisma.PaymentTransactionWhereInput;
   },
 ): Promise<SupersededPrimaryPaymentIntent[]> {
   const pendingPrimaryTransactions = await tx.paymentTransaction.findMany({
@@ -63,6 +69,7 @@ export async function queueSupersededPrimaryIntentCancellations(
             ],
           }
         : { amountCents: { gt: 0, not: options.newFinalPriceCents } }),
+      ...(options.rows ? { AND: [options.rows] } : {}),
     },
     select: {
       id: true,
@@ -149,7 +156,11 @@ export type QueuedSupersededIntentCancellation = {
 export async function queueSupersededAdditionalIntentCancellationRows(options: {
   bookingId: string;
   paymentId: string;
-  newPaymentIntentId: string;
+  /**
+   * The one ADDITIONAL intent to keep. Null keeps none: a manual mark-paid's
+   * reversal re-applying this rule to a payment with no live ask (#4320).
+   */
+  newPaymentIntentId: string | null;
   store?: Prisma.TransactionClient;
 }): Promise<QueuedSupersededIntentCancellation[]> {
   const store = options.store ?? prisma;
@@ -196,12 +207,21 @@ export async function queueSupersededAdditionalIntentCancellationRows(options: {
  * The LATENCY half: cancel each queued intent at Stripe now. The durable rows
  * are the guarantee; this closes the window in which an old client secret is
  * still confirmable (#3340).
+ *
+ * #3403 (`INV-PAY-140`): a minter names the intent it just wrote
+ * (`newPaymentIntentId`), and the superseded asks' waiting Xero supplementary
+ * invoices are then moved onto it, before the minter returns its secret. Here
+ * as well as in the cancel step because an ask whose card was DECLINED is
+ * carried but never cancelled again, so no cancel step runs for it. A writer
+ * that retires an ask without replacing it (a booking cancel) names none.
  */
 export async function cancelSupersededAdditionalIntentsNow(options: {
   bookingId: string;
   paymentId: string;
   queued: readonly QueuedSupersededIntentCancellation[];
   format: ClubFormat;
+  /** The request that now carries the superseded asks' balance; absent, no invoice moves. */
+  newPaymentIntentId?: string | null;
 }): Promise<void> {
   for (const entry of options.queued) {
     // The durable row above is the guarantee; this is latency only (#3340).
@@ -245,6 +265,12 @@ export async function cancelSupersededAdditionalIntentsNow(options: {
         "A superseded additional PaymentIntent was not cancelled immediately; it stays confirmable until the queued recovery operation runs",
       );
     }
+  }
+  if (options.newPaymentIntentId) {
+    await followSupersededAskInvoicesSafely({
+      paymentId: options.paymentId,
+      carrierPaymentIntentId: options.newPaymentIntentId,
+    });
   }
 }
 
