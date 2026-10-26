@@ -1432,8 +1432,7 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // connection change and request capture now take the same fence before
   // touching credentials (settings -> credential -> audit). Open PR #4277
   // would add a second caller of the same one statement (the download record
-  // step). No
-  // advisory key; disjoint from booking/money writers. See
+  // step). No advisory key; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md -> "Alpine Central Server connection and
   // version recorder".
   "src/lib/servernz-settings.ts": 1,
