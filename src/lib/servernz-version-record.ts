@@ -8,6 +8,7 @@ import {
 } from "@/lib/servernz-config";
 import {
   SERVERNZ_SETTINGS_ID,
+  SERVERNZ_TRANSACTION_OPTIONS,
   lockServerNzSettings,
   recordServerVersionCheck,
 } from "@/lib/servernz-settings";
@@ -33,13 +34,11 @@ export interface ServerNzConnectionIdentity {
  * row lock (`lockServerNzSettings`), re-reading the address and the credential
  * version after the lock is held:
  *
- *   - a new address (`updateServerNzSettings`) and the forget that follows any
- *     key change or removal (`forgetServerConnectionAnswers`) both write the
- *     row, so they queue behind a recorder holding the lock. The address write
- *     does not clear answers; the settings route's subsequent key removal and
- *     separate forget clear any answer recorded for the old connection;
- *   - a recorder that queues behind them re-reads what they committed, sees a
- *     different address or credential version, and records nothing.
+ * Connection replacements (#4436) take the same lock before reading or
+ * writing the address/key and reset the old answers in that transaction. A
+ * recorder first either commits before the replacement clears its answer, or
+ * waits for the replacement and rejects the old identity. Request builders
+ * capture the address and uncached credential together under the same fence.
  *
  * A refused answer also drops this process's cached ServerNZ credential: the
  * key it was sent with may be a cached copy a write elsewhere has replaced, and
@@ -72,7 +71,7 @@ export async function recordServerVersionIfCurrent(
       return true;
     },
     // Allow a bounded wait behind a lodge merge holding the shared settings row.
-    { timeout: 150_000, maxWait: 10_000 },
+    SERVERNZ_TRANSACTION_OPTIONS,
   );
   if (!recorded) invalidateProviderCredentialCache(SERVERNZ_PROVIDER);
   return recorded;
