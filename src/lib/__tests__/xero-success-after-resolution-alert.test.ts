@@ -10,8 +10,10 @@
  * a repeat is refused as `sendAdminAlertOnceEver` would refuse it.
  *
  * The census at the end pins every caller that hands the writer its own
- * transaction (`store`): each either runs the returned `deferredPostCommit`
- * after its commit or writes no SUCCEEDED outcome.
+ * transaction (`store`, in any spelling, the shorthand `{ store }` included):
+ * each either runs the returned `deferredPostCommit` after its commit or writes
+ * no SUCCEEDED outcome. It refuses options it cannot read as text - a
+ * variable, a call, a spread of a name - since those could carry `store` unseen.
  */
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -215,8 +217,48 @@ describe("#4374: a success landing after an officer resolved the operation in Xe
   });
 });
 
-/** Every `completeXeroSyncOperation(...)` call under `src/` that passes `store`. */
-function storeCompletionSites(): Array<{ file: string; args: string; after: string; returned: boolean }> {
+interface CompletionSite {
+  file: string;
+  /** The third argument, trimmed, or "" when there is none. */
+  options: string;
+  /** The whole argument list, to tell a CANCELLED-only completion. */
+  args: string;
+  after: string;
+  returned: boolean;
+}
+
+/**
+ * The options argument is read as text, so it must be one the census can read: an object literal with no spread of
+ * a name, or a conditional choosing between such literals and `undefined`. Anything else - a variable, a call, a
+ * spread of a name - could carry `store` unseen, so the census refuses it.
+ */
+const OPTIONS_LITERAL = String.raw`(?:\{[^{}]*\}|undefined)`;
+const READABLE_OPTIONS = new RegExp(String.raw`^(?:\{[^{}]*\}|[\w.!\s]+\?\s*${OPTIONS_LITERAL}\s*:\s*${OPTIONS_LITERAL})$`);
+function optionsAreReadable(options: string): boolean {
+  return options === "" || (READABLE_OPTIONS.test(options) && !/\.\.\.\s*[\w$]/.test(options));
+}
+
+/** Top-level comma-separated arguments of the call whose `(` is at `open`; `close` is its `)`. */
+function callArguments(source: string, open: number): { args: string[]; close: number } {
+  const args: string[] = [];
+  let depth = 0;
+  let start = open + 1;
+  for (let i = open; i < source.length; i += 1) {
+    const char = source[i]!;
+    if ("([{".includes(char)) depth += 1;
+    else if (")]}".includes(char) && --depth === 0) {
+      args.push(source.slice(start, i));
+      return { args: args.map((arg) => arg.trim()).filter(Boolean), close: i };
+    } else if (char === "," && depth === 1) {
+      args.push(source.slice(start, i));
+      start = i + 1;
+    }
+  }
+  throw new Error("unbalanced call");
+}
+
+/** Every `completeXeroSyncOperation(...)` call under `src/`, outside tests. */
+function completionSites(): CompletionSite[] {
   const root = join(process.cwd(), "src");
   const files: string[] = [];
   const walk = (dir: string) => {
@@ -228,28 +270,19 @@ function storeCompletionSites(): Array<{ file: string; args: string; after: stri
     }
   };
   walk(root);
-  const sites: Array<{ file: string; args: string; after: string; returned: boolean }> = [];
+  const sites: CompletionSite[] = [];
   for (const full of files) {
     const source = stripComments(readFileSync(full, "utf8"));
     for (const match of source.matchAll(/\bcompleteXeroSyncOperation\s*\(/g)) {
       if (/function\s+$/.test(source.slice(0, match.index))) continue;
       const open = match.index + match[0].length - 1;
-      let depth = 0;
-      let close = open;
-      for (let i = open; i < source.length; i += 1) {
-        if ("([{".includes(source[i]!)) depth += 1;
-        else if (")]}".includes(source[i]!) && --depth === 0) {
-          close = i;
-          break;
-        }
-      }
-      const args = source.slice(open + 1, close);
-      if (!/\bstore\s*:/.test(args)) continue;
+      const { args, close } = callArguments(source, open);
       // To the end of the enclosing top-level function.
       const end = source.indexOf("\n}\n", close);
       sites.push({
         file: relative(process.cwd(), full).split("\\").join("/"),
-        args,
+        options: args[2] ?? "",
+        args: args.join(", "),
         after: source.slice(close, end < 0 ? undefined : end),
         returned: /\breturn\s+$/.test(source.slice(0, match.index)),
       });
@@ -259,10 +292,21 @@ function storeCompletionSites(): Array<{ file: string; args: string; after: stri
 }
 
 describe("#4374 census: a completion inside its caller's transaction delivers the alert after commit", () => {
-  const sites = storeCompletionSites();
+  const sites = completionSites();
+  // `\bstore\b`, not `store:`: the shorthand `{ store }` and `store ? { store } : undefined` pass it too.
+  const storeSites = sites.filter((site) => /\bstore\b/.test(site.options));
+
+  it("finds the writer's callers at all", () => {
+    expect(sites.length).toBeGreaterThan(20);
+  });
+
+  it("reads every caller's options: a literal, never a variable, call or spread that could carry store unseen", () => {
+    const opaque = sites.filter((site) => !optionsAreReadable(site.options));
+    expect(opaque.map((site) => `${site.file}: ${site.options}`)).toEqual([]);
+  });
 
   it("pins the files that complete a Xero operation inside their own transaction", () => {
-    expect([...new Set(sites.map((site) => site.file))].sort()).toEqual([
+    expect([...new Set(storeSites.map((site) => site.file))].sort()).toEqual([
       "src/lib/xero-contact-create-recovery.ts",
       "src/lib/xero-contacts.ts",
       "src/lib/xero-kept-late-capture-invoice.ts",
@@ -270,11 +314,18 @@ describe("#4374 census: a completion inside its caller's transaction delivers th
   });
 
   it("each such caller writes no success, or returns the writer's answer and runs deferredPostCommit after commit", () => {
-    const unhandled = sites.filter(
+    const unhandled = storeSites.filter(
       (site) =>
         !/\bstatus\s*:\s*"CANCELLED"/.test(site.args) &&
         !(site.returned && /\?\.deferredPostCommit\?\.\(\)/.test(site.after)),
     );
     expect(unhandled.map((site) => site.file)).toEqual([]);
+  });
+
+  it("tells readable options from opaque ones", () => {
+    expect(["", "{ store: tx }", "{ store }", "{ retryClaim: true, alert: false }", "store ? { store } : undefined",
+      "input.retryClaim ? { retryClaim: true } : undefined"].filter((options) => !optionsAreReadable(options))).toEqual([]);
+    expect(["options", "opts ?? undefined", "{ ...options }", "{ ...options, alert: false }", "buildOptions(tx)",
+      "flag ? options : undefined"].filter(optionsAreReadable)).toEqual([]);
   });
 });
