@@ -17,9 +17,16 @@
 //     A `select`/`data` naming one still compiles and fails at runtime
 //     (INV-OPS-006), so the delegate calls are scanned as well;
 //   * RAW SQL is plain text the compiler cannot see. PostgreSQL folds an unquoted
-//     identifier to lower case, so a statement can only reach these camel-case
-//     columns by QUOTING them: a production file that names the quoted table and
-//     a quoted column is the shape to refuse.
+//     identifier to lower case, so a statement can only reach this camel-case
+//     table by QUOTING it. A statement can read the ciphertext without naming a
+//     column (`SELECT *`, `t.*`, `row_to_json(t)`), so a production file that
+//     names the quoted table at all is refused, unless it is on the short
+//     allowlist below, each entry with its reason. (The token store itself uses
+//     the generated client, so it needs no entry.)
+//
+// And `XeroConnection`, the table that replaces it, has exactly the six
+// non-secret fields: a token column there would hold a secret the credential
+// store never attributed (INV-PRIV-020).
 //
 // Migration history up to and including R2's own migration, and the fixtures
 // that verify those migrations, may name the columns; R3's drop names the table,
@@ -36,6 +43,19 @@ const SOURCE_EXTENSIONS = /\.(ts|tsx|mts|mjs|js|sh|sql)$/;
 const R2_MIGRATION = "20261124010000_add_xero_connection";
 const R2_PREFIX = R2_MIGRATION.slice(0, 14);
 const CIPHERTEXT_COLUMNS = ["accessToken", "refreshToken"] as const;
+/** Production files that may name the quoted table, each with its reason. */
+const QUOTED_TABLE_ALLOWLIST: Record<string, string> = {
+  "scripts/audit/credential-actor-census.ts":
+    "a comment explaining how the census matches the table's name",
+};
+const XERO_CONNECTION_FIELDS = [
+  "id",
+  "tenantId",
+  "expiresAt",
+  "refreshInProgressUntil",
+  "createdAt",
+  "updatedAt",
+];
 const FAILURE =
   "#3806 R2: production code must not read or write XeroToken.accessToken or " +
   "XeroToken.refreshToken. The tokens live in the credential store (xero-token-store.ts); " +
@@ -69,10 +89,9 @@ function isHistory(rel: string): boolean {
   return (match[1] ?? match[2])! <= R2_PREFIX;
 }
 
-/** Raw SQL naming the quoted table AND a quoted ciphertext column. */
-function rawSqlNamesCiphertext(source: string): boolean {
-  if (!source.includes('"XeroToken"')) return false;
-  return CIPHERTEXT_COLUMNS.some((column) => source.includes(`"${column}"`));
+/** Raw SQL naming the quoted table: it can reach the ciphertext without naming a column. */
+function rawSqlNamesTable(source: string): boolean {
+  return source.includes('"XeroToken"');
 }
 
 /** The argument text of every `xeroToken.<method>(…)` call, balanced. */
@@ -149,20 +168,34 @@ describe("XeroToken ciphertext retirement (#3806 R2)", () => {
     expect(calls).toBeGreaterThanOrEqual(5);
   });
 
-  it("no production raw SQL names either column on the table", () => {
+  it("no production raw SQL names the table outside the allowlist", () => {
     const sources = productionSources();
-    const offenders = sources
-      .filter(({ text }) => rawSqlNamesCiphertext(text))
-      .map(({ rel }) => rel);
+    const naming = sources.filter(({ text }) => rawSqlNamesTable(text)).map(({ rel }) => rel);
+    const offenders = naming.filter((rel) => !(rel in QUOTED_TABLE_ALLOWLIST));
     expect(offenders, FAILURE).toEqual([]);
+    // Every allowlist entry still earns its place.
+    const unused = Object.keys(QUOTED_TABLE_ALLOWLIST).filter((rel) => !naming.includes(rel));
+    expect(unused, "a stale allowlist entry hides nothing; delete it").toEqual([]);
     expect(sources.length).toBeGreaterThan(1000);
   });
 
+  it("XeroConnection's generated fields are exactly the six non-secret ones", () => {
+    expect(
+      Object.keys(Prisma.XeroConnectionScalarFieldEnum).sort(),
+      "#3806 R2: XeroConnection holds no token, ciphertext or key. A secret belongs in the " +
+        "credential store, where every write is attributed (INV-PRIV-020); a new field here " +
+        "must be reviewed and added to this list on purpose.",
+    ).toEqual([...XERO_CONNECTION_FIELDS].sort());
+  });
+
   it("the scanners see what they are for (seeded)", () => {
-    expect(rawSqlNamesCiphertext('SELECT "refreshToken" FROM "XeroToken"')).toBe(true);
-    expect(rawSqlNamesCiphertext('UPDATE "XeroToken" SET "accessToken" = $1')).toBe(true);
-    expect(rawSqlNamesCiphertext('UPDATE "XeroToken" SET "tenantId" = $1')).toBe(false);
-    expect(rawSqlNamesCiphertext('JSON.stringify({ "accessToken": x })')).toBe(false);
+    expect(rawSqlNamesTable('SELECT "refreshToken" FROM "XeroToken"')).toBe(true);
+    expect(rawSqlNamesTable('UPDATE "XeroToken" SET "accessToken" = $1')).toBe(true);
+    expect(rawSqlNamesTable('SELECT * FROM "XeroToken"')).toBe(true);
+    expect(rawSqlNamesTable('SELECT t.* FROM "XeroToken" t')).toBe(true);
+    expect(rawSqlNamesTable('SELECT row_to_json(t) FROM "XeroToken" AS t')).toBe(true);
+    expect(rawSqlNamesTable('SELECT * FROM "FinanceXeroToken"')).toBe(false);
+    expect(rawSqlNamesTable('JSON.stringify({ "accessToken": x })')).toBe(false);
 
     const calls = xeroTokenDelegateCalls(
       "await tx.xeroToken.findFirst({ select: { refreshToken: true } });\n" +
