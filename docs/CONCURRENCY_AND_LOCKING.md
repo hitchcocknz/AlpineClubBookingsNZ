@@ -2041,6 +2041,24 @@ mispricing a booking.
   deliberately **not** taken — the master stays unlocked until step 5, and the
   family-link drift re-check above is what closes that window.
 
+- **Alpine Central Server version recorder** — `src/lib/servernz-version-record.ts`
+  (`recordServerVersionIfCurrent`, #4366): every write of the server's
+  reported API version, from the version check and from a request the server
+  refused for version (409), runs AFTER the HTTP call in one short
+  transaction. It takes `lockServerNzSettings`
+  (`$executeRaw`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE``),
+  then re-reads the stored base URL and the API key's credential version and
+  records only if both still equal what the request was built from. The
+  credential version is the stored row's hash (fresh IV on every write), so a
+  key saved again with the same value (A → B → A) is still a new connection.
+  Counterparts: a base-URL change and the forget after any key write or
+  removal (`forgetServerConnectionAnswers`) both write the same row, so they
+  queue behind the recorder and clear on top of it, or the recorder queues
+  behind them and drops the late answer. Singleton-keyed; no advisory lock;
+  no provider call inside the transaction; disjoint from the
+  booking/capacity/credit and money clusters. A missing row locks nothing and
+  fails the address re-read, so nothing is recorded.
+
 - **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
   (`releaseDeletionRequestApprovalClaim`, #2627): takes
   `$executeRaw`SELECT 1 FROM "DeletionRequest" WHERE "id" = $1 FOR UPDATE`` as the

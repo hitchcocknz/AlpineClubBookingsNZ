@@ -21,13 +21,18 @@
  * claim above is about what this code does, not a promise about the remote.
  */
 
+import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
-  getIntegrationCredentialValue,
+  readIntegrationCredentialVersion,
+  resolveIntegrationCredential,
   setIntegrationCredential,
   deleteIntegrationCredential,
 } from "@/lib/integration-credentials";
-import type { CredentialActor } from "@/lib/integration-credential-actor";
+import type {
+  CredentialActor,
+  CredentialVersion,
+} from "@/lib/integration-credential-actor";
 import { forgetServerConnectionAnswers } from "@/lib/servernz-settings";
 
 export const SERVERNZ_PROVIDER = "servernz";
@@ -41,15 +46,40 @@ export const SERVERNZ_WRITABLE_CREDENTIAL_KEYS = [
   SERVERNZ_CREDENTIAL_KEYS.apiKey,
 ] as const;
 
-/** The operational ServerNZ API key, or `undefined` when unconfigured. */
-export async function getOperationalServerNzApiKey(): Promise<
-  string | undefined
+/**
+ * The operational ServerNZ API key together with the version token of the row
+ * it was decrypted from (#4366), or `undefined` when unconfigured or unreadable.
+ * Both come from ONE read of the stored row, so the version names exactly the
+ * key a request is sent with, even when this process's cached copy is behind a
+ * write made elsewhere. The version is the connection's durable identity: every
+ * write re-encrypts under a fresh IV, so it moves even when the same key value
+ * is saved again (A -> B -> A), and the version recorder compares it under the
+ * settings-row lock (`servernz-version-record.ts`).
+ */
+export async function getOperationalServerNzCredential(): Promise<
+  { apiKey: string; version: CredentialVersion } | undefined
 > {
-  return (
-    (await getIntegrationCredentialValue(
-      SERVERNZ_PROVIDER,
-      SERVERNZ_CREDENTIAL_KEYS.apiKey,
-    )) ?? undefined
+  const resolution = await resolveIntegrationCredential(
+    SERVERNZ_PROVIDER,
+    SERVERNZ_CREDENTIAL_KEYS.apiKey,
+  );
+  return resolution.status === "configured"
+    ? { apiKey: resolution.value, version: resolution.version }
+    : undefined;
+}
+
+/**
+ * The stored API key's version token read through `db`, or `null` when no key
+ * is stored. Uncached and never decrypted, so it can run under the caller's
+ * lock as the re-read half of a compare-and-record (#4366).
+ */
+export async function readServerNzCredentialVersion(
+  db: Pick<Prisma.TransactionClient, "integrationCredential">,
+): Promise<CredentialVersion | null> {
+  return readIntegrationCredentialVersion(
+    db,
+    SERVERNZ_PROVIDER,
+    SERVERNZ_CREDENTIAL_KEYS.apiKey,
   );
 }
 

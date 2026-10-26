@@ -184,6 +184,24 @@ export async function readIntegrationCredentialRow(
   return resolveStoredRow(row);
 }
 
+/**
+ * The version token of one stored credential, READ THROUGH THE DATABASE on the
+ * given client, or `null` when no row is stored. Never decrypts and never
+ * touches the cache: for a fence that re-reads, under the caller's lock, whether
+ * the credential a request was built from is still the one stored (#4366).
+ */
+export async function readIntegrationCredentialVersion(
+  db: Pick<Prisma.TransactionClient, "integrationCredential">,
+  provider: string,
+  key: string,
+): Promise<CredentialVersion | null> {
+  const row = await db.integrationCredential.findUnique({
+    where: { provider_key: { provider, key } },
+    select: { ciphertext: true, iv: true, authTag: true },
+  });
+  return row ? credentialVersionOf(row) : null;
+}
+
 function resolveStoredRow(
   row: IntegrationCredential | null,
 ): CredentialResolution {

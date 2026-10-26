@@ -101,6 +101,23 @@ export async function loadOwnedOtherLodgeNames(
 }
 
 /**
+ * Lock the settings row for the rest of the caller's transaction (#4366, the
+ * row lock #4277 adds as `lockServerNzSettings`). Taken by the version
+ * recorder, which re-reads the connection (address and credential version)
+ * under it before recording, so an answer that outlived a change of connection
+ * is never written over the new one. Every connection change writes this row
+ * (a new address, and the forget that follows a key change), so it queues
+ * behind a recorder holding it, and a recorder behind it re-reads what it
+ * committed. A row lock on a singleton, not an advisory key: nothing else
+ * orders against it. A missing row (never configured) locks nothing.
+ */
+export async function lockServerNzSettings(
+  db: Pick<Prisma.TransactionClient, "$executeRaw">,
+): Promise<void> {
+  await db.$executeRaw`SELECT 1 FROM "ServerNzSettings" WHERE "id" = ${SERVERNZ_SETTINGS_ID} FOR UPDATE`;
+}
+
+/**
  * Read the ServerNZ settings with safe defaults. A missing row or query failure
  * falls back to defaults so the setup page keeps rendering.
  */
@@ -297,7 +314,8 @@ export async function clearOtherLodgesOwnedNames(): Promise<void> {
 /**
  * Record what the central server said its API version is (#49): a canonical
  * `major.minor`, or `SERVER_VERSION_UNKNOWN` when it answered 404. Written
- * AFTER the HTTP call has completed and outside any transaction. A failed call
+ * AFTER the HTTP call has completed, only through `recordServerVersionIfCurrent`
+ * (`servernz-version-record.ts`), whose short transaction passes `db`. A failed call
  * never reaches here - the previous answer stays, so a network blip cannot
  * pause syncing (`INV-INT-027`). Bounded to the column's VarChar(16) by the
  * caller's schema, which caps the wire value at 16 characters.
@@ -305,8 +323,9 @@ export async function clearOtherLodgesOwnedNames(): Promise<void> {
 export async function recordServerVersionCheck(
   version: string,
   at: Date = new Date(),
+  db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma,
 ): Promise<void> {
-  await prisma.serverNzSettings.upsert({
+  await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },
     create: {
       id: SERVERNZ_SETTINGS_ID,
