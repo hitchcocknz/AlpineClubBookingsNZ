@@ -13,7 +13,6 @@ const mocks = vi.hoisted(() => ({
   createIntent: vi.fn(),
   upsert: vi.fn(),
   refuseAdopted: vi.fn(),
-  queueSuperseded: vi.fn(),
   cancelSuperseded: vi.fn(),
   alertOfficers: vi.fn(),
   retireOutstanding: vi.fn(),
@@ -36,9 +35,10 @@ vi.mock("@/lib/payment-transactions", () => ({
   lockPaymentForRefundedTotal: mocks.lockPayment,
 }));
 vi.mock("@/lib/credit-release-ask-close", () => ({ recordReleasePaidInXeroCash: mocks.paidCash }));
+// INV-OPS-015 (#4442 review M2): the supersede's durable half runs for real, on
+// the claim hold's store below; only the Stripe-calling half is stubbed.
 vi.mock("@/lib/booking-payment-cleanup", async () => ({
   ...((await vi.importActual("@/lib/booking-payment-cleanup")) as typeof import("@/lib/booking-payment-cleanup")),
-  queueSupersededAdditionalIntentCancellationRows: mocks.queueSuperseded,
   cancelSupersededAdditionalIntentsNow: mocks.cancelSuperseded,
 }));
 vi.mock("@/lib/ended-booking-ask-guard", () => ({
@@ -107,7 +107,12 @@ function payment(over: Record<string, unknown> = {}, booking: Record<string, unk
 const open = { invoiceId: "inv-1", status: "AUTHORISED", amountDueCents: 4000, invoiceNumber: "INV-1" };
 const paid = { invoiceId: "inv-1", status: "PAID", amountDueCents: 0, invoiceNumber: "INV-1" };
 
-const store = { paymentRecoveryOperation: { update: vi.fn() }, payment: { findUnique: vi.fn() } };
+const store = {
+  paymentRecoveryOperation: { update: vi.fn(), upsert: vi.fn() },
+  payment: { findUnique: vi.fn() },
+  // The live asks the real supersede reads under the claim: none, unless a test names one.
+  paymentTransaction: { findMany: vi.fn() },
+};
 const runnerDeps = () => ({
   holdClaim: vi.fn(async (_op: unknown, write: (s: unknown) => Promise<unknown>) => ({ value: await write(store), heldAt: new Date() })),
   complete: vi.fn().mockResolvedValue(undefined),
@@ -121,7 +126,8 @@ beforeEach(() => {
   mocks.prisma.payment.findUnique.mockResolvedValue(payment());
   mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: CREDIT_RELEASE_ASK_REASON });
   mocks.createIntent.mockResolvedValue({ id: "pi_new" });
-  mocks.queueSuperseded.mockResolvedValue([]);
+  store.paymentTransaction.findMany.mockResolvedValue([]);
+  store.paymentRecoveryOperation.upsert.mockImplementation(async ({ create }: { create: { paymentIntentId: string } }) => ({ id: `op-cancel-${create.paymentIntentId}` }));
   mocks.retireAfterWrite.mockResolvedValue(false);
   mocks.paidCash.mockResolvedValue(0);
   // Under the lock the payment is as it was read, unless a test moves it.
@@ -167,9 +173,17 @@ describe("processCreditReleaseAskOperation", () => {
     mocks.prisma.payment.findUnique.mockResolvedValue(
       payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_rel", amountCents: 32_000 }),
     );
+    store.paymentTransaction.findMany.mockResolvedValue([{ id: "ptx-rel", stripePaymentIntentId: "pi_rel", amountCents: 2500 }]);
     await run();
     // $80.00 is short, $25.00 of it already asked, so the unasked part is $55.00 and the release's $40.00 is all of its own.
     expect(mocks.upsert).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 6500, carriedAskCents: 2500 }));
+    // ...and the ask it carried is retired in the same claimed transaction, by the real supersede.
+    expect(store.paymentRecoveryOperation.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ type: "CANCEL_PAYMENT_INTENT", paymentIntentId: "pi_rel", amountCents: 2500 }) }),
+    );
+    expect(mocks.cancelSuperseded).toHaveBeenCalledWith(
+      expect.objectContaining({ queued: [{ paymentTransactionId: "ptx-rel", paymentIntentId: "pi_rel", operationId: "op-cancel-pi_rel" }] }),
+    );
   });
 
   it("waits, throwing, while an unpaid edit request is open: its own invoice could not be paid by this one", async () => {

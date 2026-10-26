@@ -497,6 +497,9 @@ const TRANSACTION_OPENERS = [
   // hold each write their caller's rows inside their fenced transaction.
   "writeReissuedAskUnderRecovery(",
   "holdAdditionalIntentRecoveryClaim(",
+  // #4442: the inline minters' queue writes their caller's rows inside the
+  // transaction that re-reads the carried balance under the global key.
+  "withAdditionalAskQueueTransaction(",
   // #4125, #4145: a card refund row's close runs its caller's close callback in
   // the transaction that also writes the REFUNDED event - the generic helper,
   // the capacity race's and the member cancel runner's.
