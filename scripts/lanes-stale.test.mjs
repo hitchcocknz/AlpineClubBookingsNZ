@@ -52,6 +52,19 @@ describe("staleReservations", () => {
     expect(staleReservations([thread([...comments, comment(later.body, "2026-06-30T00:00:00Z")])], now)).toEqual([]);
   });
 
+  it("uses comment IDs to order claims created in the same second", () => {
+    const earlier = { ...claim, id: 10 };
+    const later = { ...comment("CLAIM: Summit lane"), id: 12 };
+    const release = { ...comment("RELEASE: earlier claim"), id: 11 };
+    expect(staleReservations([thread([later, earlier, release])], now)[0].holder).toBe("Summit lane");
+  });
+
+  it.each(["RELEASE", "HANDOVER"])("honours %s after a claim in the same second", (prefix) => {
+    const earlier = { ...claim, id: 10 };
+    const later = { ...comment(`${prefix}: done`), id: 11 };
+    expect(staleReservations([thread([later, earlier])], now)).toEqual([]);
+  });
+
   it("ignores ordinary comments and quoted workflow examples", () => {
     const comments = [claim, comment("Discussion of RELEASE and HANDOVER", "2026-06-30T00:00:00Z"),
       comment("```\nLANE-SYNC: example\n```", "2026-06-30T00:00:00Z")];
@@ -92,6 +105,23 @@ describe("GitHub collection", () => {
     });
     expect(staleReservations(await collectReservations("o/r", read), now)).toHaveLength(2);
     expect(read.mock.calls.filter(([path]) => path.includes("/activity?"))).toHaveLength(2);
+  });
+
+  it.each([
+    ["CLAIM: Alpine lane. Branch feature/alpine.", "feature/alpine"],
+    ["CLAIM: Alpine lane. Branch `feature/alpine+fix`.", "feature/alpine+fix"],
+    ["CLAIM: Alpine lane. Branch feature/雪@fix.", "feature/雪@fix"],
+  ])("preserves the branch token in %s", async (body, branch) => {
+    const read = vi.fn(async (path) => {
+      if (path.includes("/issues?")) return [{ number: 1 }];
+      if (path.includes("/comments?")) return [comment(body)];
+      if (path === `repos/o/r/activity?ref=${encodeURIComponent(`refs/heads/${branch}`)}&activity_type=push&per_page=1`) {
+        return [{ timestamp: "2026-06-30T00:00:00Z" }];
+      }
+      if (path === `repos/o/r/activity?ref=${encodeURIComponent(`refs/heads/${branch}`)}&activity_type=force_push&per_page=1`) return [];
+      throw new Error(`Unexpected request ${path}`);
+    });
+    expect(staleReservations(await collectReservations("o/r", read), now)).toEqual([]);
   });
 
   it("flags missing branch information and does not query released reservations", async () => {

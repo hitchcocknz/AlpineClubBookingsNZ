@@ -11,23 +11,29 @@ const STALE_MS = STALE_HOURS * 60 * 60 * 1000;
 function event(comment) {
   const match = comment.body?.trimStart().match(/^(CLAIM|LANE-SYNC|RELEASE|HANDOVER)\b:?\s*([^\n]*)/);
   if (!match) return null;
-  return { kind: match[1], text: match[2], at: Date.parse(comment.created_at), body: comment.body };
+  return { id: comment.id ?? 0, kind: match[1], text: match[2], at: Date.parse(comment.created_at), body: comment.body };
+}
+
+function compareEvents(a, b) {
+  return a.at - b.at || a.id - b.id;
 }
 
 function latestClaim(comments) {
   return comments.map(event).filter((e) => e?.kind === "CLAIM")
-    .sort((a, b) => b.at - a.at)[0];
+    .sort((a, b) => compareEvents(b, a))[0];
 }
 
 function activeClaim(comments) {
   const claim = latestClaim(comments);
-  if (!claim || comments.map(event).some((e) => e && e.at > claim.at &&
+  if (!claim || comments.map(event).some((e) => e && compareEvents(e, claim) > 0 &&
     (e.kind === "RELEASE" || e.kind === "HANDOVER"))) return null;
   return claim;
 }
 
 function branchOf(claim) {
-  return claim?.body.match(/(?:^|[\n.,;])\s*(?:[-*]\s+)?branch\s*[:=]?\s*`?([\w./-]+)/im)?.[1];
+  const match = claim?.body.match(/(?:^|[\n.,;])\s*(?:[-*]\s+)?branch\s*[:=]?\s*(?:`([^`\n]+)`|([^\s]+))/im);
+  // Backticks delimit a literal ref; unquoted refs can end with prose punctuation.
+  return match?.[1] ?? match?.[2]?.replace(/[.,;]+$/, "");
 }
 
 /**
@@ -39,7 +45,7 @@ export function staleReservations(threads, now) {
   for (const thread of threads) {
     const claim = activeClaim(thread.comments);
     if (!claim) continue;
-    const subsequent = thread.comments.map(event).filter((e) => e && e.at > claim.at);
+    const subsequent = thread.comments.map(event).filter((e) => e && compareEvents(e, claim) > 0);
     const lastActivity = Math.max(claim.at, ...subsequent.filter((e) => e.kind === "LANE-SYNC").map((e) => e.at),
       thread.pushedAt ? Date.parse(thread.pushedAt) : claim.at);
     if (now - lastActivity <= STALE_MS) continue;
