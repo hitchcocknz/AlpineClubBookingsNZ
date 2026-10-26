@@ -992,7 +992,7 @@ note.
    RUNNING through `runWithClaimedOriginal`, the one place that claims and
    abandons. From then on the handler owns completion. If it throws before it
    records an outcome — a contact refusal, a missing account mapping — the
-   claim is abandoned: `failXeroSyncOperation(..., { onlyIfRunningSince })`
+   claim is abandoned: `failXeroSyncOperation(claim, ..., { retryClaim: true })`
    returns the row to FAILED with the run's error, guarded on the claim itself
    (still RUNNING, still this run's `startedAt`), so a row the handler already
    completed is never overwritten. Before this, such a throw left the original
@@ -1024,14 +1024,17 @@ note.
    replay, which finds the invoice already linked, closes the row and records
    no payment. Every completion a claimed repair writes, including the refund
    settlement leg's, is guarded on the claim (`completeXeroSyncOperation`'s
-   `onlyIfRunningSince`), so a repair finishing after an operator's Mark failed
+   `retryClaim`), so a repair finishing after an operator's Mark failed
    writes nothing over it; that completion also clears the marker code. An
    invoice repair left PARTIAL by an email fault says so in `lastErrorMessage`
    and raises no repeated-failure alert. The FAILED refund-note repair claims
    its row too (FAILED mode), stamping `REFUND_NOTE_REPAIR_RUNNING`
    (`XERO_REFUND_NOTE_REPAIR_RUNNING_CODE`, #4356); a stale reset returns it
    to FAILED. While either marker is on the claim, no other caller's outcome
-   but SUCCEEDED lands on the row (`INV-INT-029`). Mark non-replayable writes only onto a FAILED or
+   but SUCCEEDED lands on the row (`INV-INT-029`). And since #4373 no outcome
+   at all lands on a RUNNING row another claim stamped: every complete and
+   fail carries the claim (`startedAt`) it was made under, so a stale-reset
+   or failed attempt's late outcome never lands on the retry's claim. Mark non-replayable writes only onto a FAILED or
    PARTIAL row, so a retry that claimed it after the officer's read gets the
    409 "a retry is running"; a queued retry of a row marked not replayable is
    closed as skipped. Rows repaired before this release stay partly
