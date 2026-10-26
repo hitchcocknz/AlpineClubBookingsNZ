@@ -791,6 +791,7 @@ describe("a step's save in flight holds the wizard where it is (#4410)", () => {
         <div>Saving step body</div>
         <button type="button" onClick={() => setSaving(true)}>start save</button>
         <button type="button" onClick={() => setSaving(false)}>finish save</button>
+        <button type="button" onClick={() => helpers.goNext()}>step goes next</button>
         <span>{saving ? "saving" : "idle"}</span>
       </div>
     );
@@ -831,6 +832,9 @@ describe("a step's save in flight holds the wizard where it is (#4410)", () => {
     expect((stepC() as HTMLButtonElement).disabled).toBe(true);
     // A click that slips through moves nothing.
     fireEvent.click(stepC());
+    expect(screen.getByText("Saving step body")).toBeTruthy();
+    // Nor does the step itself advancing mid-save (helpers.goNext).
+    fireEvent.click(screen.getByRole("button", { name: "step goes next" }));
     expect(screen.getByText("Saving step body")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "finish save" }));
