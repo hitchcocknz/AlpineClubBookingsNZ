@@ -1845,15 +1845,19 @@ _Legacy: settles tasks raised before #4317._
 - **The request email can offer a bank transfer as well as card.** The club
   writes its account details in the `paymentRequest.bankTransfer.instructions`
   booking message (the app stores no account details); the email adds them with
-  the booking's Xero invoice number as the payment reference. With no details,
-  no invoice number, a request an edit was merged into (more than the invoice
-  owes) or one that carried an earlier release (the closer does not close it),
-  the email stays card-only.
+  the booking's Xero invoice number as the payment reference. It is offered only
+  where a transfer of that invoice pays exactly what is asked: a request made
+  only of released credit, carried or not (`isPureCreditReleaseChain`), whose
+  amount equals the invoice's open balance when the email is built. Otherwise,
+  with no details, or on a request an edit was merged into, the email stays
+  card-only. The offer is resolved before the reminder's stamp is claimed
+  [INV-ADDPAY-051].
 - **Paid by transfer closes the request.** Xero matching the transfer to the
-  invoice shows it paid, and the closer ends the request
-  [INV-ADDPAY-046]. A transfer that leaves the invoice part-paid, or that Xero
-  cannot match, closes nothing and the request stays with the officers' queues.
-- Home: `credit-release-bank-transfer.ts`.
+  invoice shows it paid, and the closer ends the request, one that carried only
+  earlier released credit included [INV-ADDPAY-046]. A transfer that leaves the
+  invoice part-paid, or that Xero cannot match, closes and resizes nothing: the
+  reminders stop and the request stays with the officers [INV-ADDPAY-051].
+- Home: `credit-release-bank-transfer.ts`, `credit-release-reminder-gate.ts`.
 
 ### INV-ADDPAY-050
 
@@ -1870,3 +1874,22 @@ _Legacy: settles tasks raised before #4317._
   row), so repeating or resuming is harmless.
 - **An operator runs it.** Set bank details first [INV-ADDPAY-049], then turn it on
   once the previous colour has drained. Home: `credit-release-ask-sweep.ts`.
+
+### INV-ADDPAY-051
+
+- **A released-credit request the app cannot safely chase fails closed to the
+  officers** (owner decision D6). Before a reminder's stamp is claimed - by the
+  cron and by an officer's re-send - `resolveCreditReleaseReminderGate` reads the
+  booking's invoice with the sizing's own reader, outside every transaction, for
+  any request that includes released credit. Xero showing less open than that
+  credit (a part transfer, a paid or voided invoice), or a request it cannot match
+  to the invoice, withholds the automatic reminder; the re-send is refused with
+  the reason. Nothing is closed or resized on a part payment. An unreadable
+  invoice claims nothing and the reminder stays due.
+- **Everything the email needs is resolved before the claim**, so no failure
+  between the stamp and the mailer can lose a reminder with no EmailLog row.
+- **The officers are told once.** The request stays on the queues that already
+  show unpaid money; one `payment.credit_release_ask.left_to_officers` audit row
+  on the booking, written once per key, says why the app stopped
+  (`credit-release-officer-signal.ts`).
+- Home: `credit-release-reminder-gate.ts`, `cron-additional-payment-reminders.ts`.

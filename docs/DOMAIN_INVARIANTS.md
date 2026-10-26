@@ -736,6 +736,7 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-048` | Released-credit requests: four weekly reminders, worded by cause |
 | `INV-ADDPAY-049` | Released-credit request emails can offer bank transfer payment |
 | `INV-ADDPAY-050` | Earlier credit releases are asked for in audited, switchable batches |
+| `INV-ADDPAY-051` | An unchaseable released-credit request fails closed to the officers |
 
 ## Analytics And Privacy
 

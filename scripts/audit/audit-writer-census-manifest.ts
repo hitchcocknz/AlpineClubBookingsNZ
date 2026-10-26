@@ -687,7 +687,10 @@ export const AUDIT_CENSUS_TOTALS = {
   // 516 -> 517 (#4253 release 2): `payment.credit_release_ask.backlog_batch_taken`, the audit row of
   // each batch the switchable backlog run takes up, an awaited `createAuditLog` under `payment`.
   // RE-MEASURED with `pnpm run audit:census`.
-  writeSites: 517,
+  // 517 -> 518 (#4253 release 2 fix round): `payment.credit_release_ask.left_to_officers`, the one
+  // note that a released-credit request was left to the officers (waiting on an edit, or its
+  // reminder withheld), an awaited `createAuditLog` under `payment`. RE-MEASURED with `pnpm run audit:census`.
+  writeSites: 518,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -897,7 +900,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 148 -> 149 (#4338): its close of a concurrent attempt's failed allocation, in the same transaction.
     // 149 -> 154 (#4253): the released-credit request's five rows, above.
     // 154 -> 156 (#4270): the credit-note mirror's two rows, in its transaction.
-    createAuditLog: { total: 157, uncategorised: 0 },
+    // 157 -> 158 (#4253 release 2 fix round): the left-to-officers note, above.
+    createAuditLog: { total: 158, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1104,7 +1108,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 60 -> 64 (#4253): a released-credit request raised, not raised, and closed because Xero shows
     // the invoice paid (at ask time and by the sweep) - the payment's figures, read by the same people.
     // 64 -> 65 (#4253 release 2): the backlog run's batch row, read by the same people.
-    payment: 65,
+    // 65 -> 66 (#4253 release 2 fix round): the left-to-officers note, read by the same people.
+    payment: 66,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/email/core", () => ({ sendEmail: mocks.sendEmail }));
+// The sender is handed the offer its caller resolved before claiming the stamp; it never loads one.
 vi.mock("@/lib/credit-release-bank-transfer", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/credit-release-bank-transfer")),
   loadBankTransferOffer: mocks.loadOffer,
@@ -41,15 +42,17 @@ const params = {
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.sendEmail.mockResolvedValue({ status: "sent" });
-  mocks.loadOffer.mockResolvedValue(null);
+  mocks.loadOffer.mockRejectedValue(new Error("the sender must never load the offer itself"));
 });
+
+const OFFER = { instructions: "Account 12-3456", reference: "INV-9" };
 
 const sent = () => mocks.sendEmail.mock.calls[0][0] as { subject: string; html: string; templateName: string; templateData: Record<string, string> };
 
 describe("sendAdditionalPaymentReminderEmail for credit used elsewhere", () => {
   it("is card-only while there is no bank-transfer offer", async () => {
-    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "credit-release", bankTransferInvoiceNumber: "INV-9" }, CLUB_FORMAT_TEST);
-    expect(mocks.loadOffer).toHaveBeenCalledWith("INV-9");
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "credit-release", bankTransfer: null }, CLUB_FORMAT_TEST);
+    expect(mocks.loadOffer).not.toHaveBeenCalled();
     expect(sent().templateName).toBe("credit-released-payment-request");
     expect(sent().subject).toBe("Payment needed for your lodge booking");
     expect(sent().html).not.toMatch(/bank transfer/i);
@@ -57,8 +60,7 @@ describe("sendAdditionalPaymentReminderEmail for credit used elsewhere", () => {
   });
 
   it("adds the transfer offer, with the reference, to both the page and the editable body", async () => {
-    mocks.loadOffer.mockResolvedValue({ instructions: "Account 12-3456", reference: "INV-9" });
-    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "credit-release", bankTransferInvoiceNumber: "INV-9" }, CLUB_FORMAT_TEST);
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "credit-release", bankTransfer: OFFER }, CLUB_FORMAT_TEST);
     expect(sent().html).toContain("pay by bank transfer");
     expect(sent().html).toContain("INV-9");
     expect(sent().html).toContain("Account 12-3456");
@@ -68,15 +70,13 @@ describe("sendAdditionalPaymentReminderEmail for credit used elsewhere", () => {
   });
 
   it("says both causes in the one email where an edit was merged into the request", async () => {
-    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "mixed", bankTransferInvoiceNumber: "INV-9" }, CLUB_FORMAT_TEST);
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "mixed" }, CLUB_FORMAT_TEST);
     expect(sent().templateName).toBe("credit-released-payment-request");
     expect(sent().html).toMatch(/a change to your booking, and account credit applied to it that was used elsewhere in the club's accounts/);
   });
 
   it("offers no bank transfer on a merged request: its amount includes money not owed on the invoice a transfer would quote", async () => {
-    mocks.loadOffer.mockResolvedValue({ instructions: "Account 12-3456", reference: "INV-9" });
-    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "mixed", bankTransferInvoiceNumber: "INV-9" }, CLUB_FORMAT_TEST);
-    expect(mocks.loadOffer).not.toHaveBeenCalled();
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "mixed", bankTransfer: OFFER }, CLUB_FORMAT_TEST);
     expect(sent().html).not.toMatch(/bank transfer/i);
     expect(sent().templateData.bankTransferNote).toBe("");
   });
@@ -109,8 +109,10 @@ describe("sendAdditionalPaymentReminderEmail for credit used elsewhere", () => {
   });
 
   it("escapes the club's words in the page", async () => {
-    mocks.loadOffer.mockResolvedValue({ instructions: "<b>Account</b> & Co", reference: "INV-9" });
-    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "credit-release", bankTransferInvoiceNumber: "INV-9" }, CLUB_FORMAT_TEST);
+    await sendAdditionalPaymentReminderEmail(
+      { ...params, askCause: "credit-release", bankTransfer: { instructions: "<b>Account</b> & Co", reference: "INV-9" } },
+      CLUB_FORMAT_TEST,
+    );
     expect(sent().html).toContain("&lt;b&gt;Account&lt;/b&gt; &amp; Co");
     expect(sent().html).not.toContain("<b>Account</b>");
   });
@@ -118,8 +120,8 @@ describe("sendAdditionalPaymentReminderEmail for credit used elsewhere", () => {
 
 describe("sendAdditionalPaymentReminderEmail for an ordinary change", () => {
   it("never reads the bank-transfer offer and keeps its own template", async () => {
-    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "edit", bankTransferInvoiceNumber: "INV-9" }, CLUB_FORMAT_TEST);
-    expect(mocks.loadOffer).not.toHaveBeenCalled();
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "edit", bankTransfer: OFFER }, CLUB_FORMAT_TEST);
+    expect(sent().html).not.toMatch(/bank transfer/i);
     expect(sent().templateName).toBe("additional-payment-reminder");
     expect(sent().templateData).not.toHaveProperty("bankTransferNote");
     expect(sent().templateData).not.toHaveProperty("askCauseSentence");

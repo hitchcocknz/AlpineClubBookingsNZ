@@ -1,4 +1,5 @@
-import { ASK_CAUSE_ROWS, additionalAskCause, bankTransferInvoiceFor } from "@/lib/additional-ask-cause";
+import { ASK_CAUSE_ROWS, additionalAskCause } from "@/lib/additional-ask-cause";
+import { resolveCreditReleaseReminderGate } from "@/lib/credit-release-reminder-gate";
 import {
   ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES,
   additionalPaymentEpisodeStartedAt,
@@ -103,10 +104,10 @@ export async function resendAdditionalPaymentEmail(params: {
           additionalReminderSentAt: true,
           additionalFinalReminderSentAt: true,
           createdAt: true,
-          xeroInvoiceNumber: true,
+          xeroInvoiceId: true,
           transactions: {
             where: { kind: "ADDITIONAL" },
-            select: { createdAt: true, reason: true, carriedAskCents: true, withdrawnAt: true },
+            select: { createdAt: true, reason: true, carriedAskCents: true, withdrawnAt: true, amountCents: true },
             orderBy: [...LEDGER_ROWS_NEWEST_FIRST],
             take: ASK_CAUSE_ROWS,
           },
@@ -185,6 +186,37 @@ export async function resendAdditionalPaymentEmail(params: {
       status: 429,
       error: `A payment request was already emailed to this member in the last ${ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES} minutes. Please wait before sending another.`,
     };
+  }
+
+  // #4253 release 2 (`INV-ADDPAY-051`): before anything is claimed, the same check the reminder
+  // cron makes for a request that includes released credit. Xero showing less owing on the
+  // booking's invoice than that credit, or no answer from Xero, refuses the re-send: the officer is
+  // told to look rather than the member asked to pay by card what may already be paid. The
+  // bank-transfer offer is resolved here too, so nothing can fail between the claim and the send.
+  let gate: Awaited<ReturnType<typeof resolveCreditReleaseReminderGate>>;
+  try {
+    gate = await resolveCreditReleaseReminderGate({
+      rows: payment.transactions,
+      askCents: payment.additionalAmountCents,
+      xeroInvoiceId: payment.xeroInvoiceId,
+    });
+  } catch (err) {
+    logger.error({ err, bookingId: booking.id }, "Could not prepare the additional-payment re-send");
+    return { ok: false, status: 503, error: "We could not prepare the payment request email, so nothing was sent. Please try again." };
+  }
+  if (!gate.send) {
+    return gate.reason === "invoice-unreadable"
+      ? {
+          ok: false,
+          status: 503,
+          error: "We could not check this booking's invoice in Xero, so nothing was sent. Please try again shortly.",
+        }
+      : {
+          ok: false,
+          status: 409,
+          error:
+            "Xero does not show this booking's invoice still owing the credit this request asks for (part of it may have been paid by bank transfer), so nothing was sent. Check the invoice in Xero before asking the member again.",
+        };
   }
 
   const episodeStartedAt = additionalPaymentEpisodeStartedAt({
@@ -327,7 +359,7 @@ export async function resendAdditionalPaymentEmail(params: {
       requestedOn: episodeStartedAt,
       lodgeId: booking.lodgeId,
       askCause: additionalAskCause(payment.transactions),
-      bankTransferInvoiceNumber: bankTransferInvoiceFor(payment.transactions, payment.xeroInvoiceNumber),
+      bankTransfer: gate.bankTransfer,
     }, format);
   } catch (err) {
     await restoreStamps("transport_error");

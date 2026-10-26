@@ -6,7 +6,10 @@
   club has written its bank details (a new "Bank transfer details for a payment
   request" message under Admin → Booking messages), the email offers a bank
   transfer as well as card, quoting the booking's Xero invoice number as the
-  payment reference, and the request closes when Xero shows the invoice paid.
+  payment reference, and the request closes when Xero shows the invoice paid. The
+  transfer is offered only when it would pay exactly what is asked; if Xero shows the
+  invoice part-paid, the automatic reminders stop and the officers are told in the
+  audit log, rather than the member being asked to pay by card what may already be paid.
   Every screen and email now says why a request exists (a booking change, credit
   used elsewhere, or both, when a change was made while the request was unpaid and
   the two became one). Credit released before the requests were switched on can be

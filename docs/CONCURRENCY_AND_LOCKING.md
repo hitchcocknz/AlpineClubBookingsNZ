@@ -5268,15 +5268,23 @@ The backlog batch (`runCreditReleaseBacklog`) is the same enqueue with a ceiling
 read of two `XeroSyncCursor` rows and one audit write; it takes no lock and no claim, and a
 release it has taken is never taken again because the enqueue keys on the release
 (`INV-ADDPAY-050`). The reminder chase for these requests (`INV-ADDPAY-048`) changes only
-the stamp boundary of the existing guarded claim in `cron-additional-payment-reminders.ts`.
+the stamp boundary of the existing guarded claim in `cron-additional-payment-reminders.ts`
+(the slot's start, or half an interval before now, whichever is earlier). The Xero invoice
+read and the bank-transfer offer that decide whether a released-credit reminder goes
+(`credit-release-reminder-gate.ts`, `INV-ADDPAY-051`) run before that claim and outside any
+transaction, in the cron and in the manual re-send alike; a withheld reminder claims nothing,
+and its one audit note is written outside any lock.
 
 Closing a request Xero shows paid (`credit-release-ask-close.ts`) is a
 settlement-money writer: it cancels the card payment at Stripe first, outside
 any lock, and leaves a succeeded or processing intent alone. It then takes the
 global key and the `Payment` row lock (`INV-LOCK-001`: the global key alone, then the row), fences the
-request row (unpaid, unwithdrawn, carrying nothing) with a status-guarded
-`updateMany`, and writes the bank-cash row in the same transaction; a lost fence writes
-nothing. Registered in `advisory-lock-guard.test.ts`
+request row (unpaid, unwithdrawn, and carrying exactly what it carried when it was read)
+with a status-guarded `updateMany`, and writes the bank-cash row in the same transaction; a
+lost fence writes nothing. A request that carried earlier ones is closed only when every row
+it carried is a credit-release request (read before the provider call; carried rows never
+change once carried, and the re-read requires the payment still to name this request as its
+live ask, so nothing can have been folded in since). Registered in `advisory-lock-guard.test.ts`
 (`closeCreditReleaseAsksPaidInXero#1`).
 
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)

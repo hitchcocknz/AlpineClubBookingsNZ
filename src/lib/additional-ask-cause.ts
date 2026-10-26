@@ -35,35 +35,63 @@ export function isCreditReleaseAskReason(reason: string | null | undefined): boo
  * No rows reads as an ordinary change, the wording every surface had before.
  */
 export function additionalAskCause(rowsNewestFirst: readonly AdditionalAskCauseRow[]): AdditionalAskCause {
-  const [newest, ...older] = rowsNewestFirst;
-  if (!newest) return "edit";
-  let release = isCreditReleaseAskReason(newest.reason);
-  let edit = !release;
-  let carried = newest.carriedAskCents;
-  for (const row of older) {
-    if (carried <= 0 || row.withdrawnAt) break;
-    if (isCreditReleaseAskReason(row.reason)) release = true;
-    else edit = true;
-    carried = row.carriedAskCents;
-  }
+  const { rows } = askChain(rowsNewestFirst);
+  if (rows.length === 0) return "edit";
+  const release = rows.some((row) => isCreditReleaseAskReason(row.reason));
+  const edit = rows.some((row) => !isCreditReleaseAskReason(row.reason));
   if (release && edit) return "mixed";
   return release ? "credit-release" : "edit";
 }
 
+/** A ledger row with its amount, for the walks that need the money as well as the cause. */
+export type AdditionalAskChainRow = AdditionalAskCauseRow & { amountCents: number };
+
 /**
- * The invoice number a bank transfer may quote for this request, or null where none may be
- * offered (`INV-ADDPAY-049`). A transfer is only closed by the closer when the request is purely
- * the released credit AND carried nothing (`credit-release-ask-close.ts`): one that merged an edit
- * asks for more than the booking's invoice owes, and one that carried an earlier release would be
- * paid by transfer and never closed, with the member then chased and able to pay twice.
+ * The rows the newest request is made of, newest first: the newest row and each older row it
+ * carried, followed back as `additionalAskCause` follows them. `complete` is false when the rows
+ * handed in ran out while a row still carried something, so the walk could not see the whole
+ * request; a caller deciding about money then fails closed.
  */
-export function bankTransferInvoiceFor(
-  rowsNewestFirst: readonly AdditionalAskCauseRow[],
-  invoiceNumber: string | null | undefined,
-): string | null {
-  const [newest] = rowsNewestFirst;
-  if (!newest || newest.carriedAskCents > 0 || additionalAskCause(rowsNewestFirst) !== "credit-release") return null;
-  return invoiceNumber ?? null;
+function askChain<T extends AdditionalAskCauseRow>(rowsNewestFirst: readonly T[]): { rows: T[]; complete: boolean } {
+  const [newest, ...older] = rowsNewestFirst;
+  if (!newest) return { rows: [], complete: true };
+  const rows = [newest];
+  let carried = newest.carriedAskCents;
+  for (const row of older) {
+    if (carried <= 0 || row.withdrawnAt) return { rows, complete: true };
+    rows.push(row);
+    carried = row.carriedAskCents;
+  }
+  return { rows, complete: carried <= 0 };
+}
+
+/**
+ * Is the newest request made ONLY of credit-release requests, carried or not, with every row it
+ * carried in hand (`INV-ADDPAY-049`)? Such a request's whole amount stands on the booking's own
+ * invoice, so a bank transfer of that invoice's open balance pays it and Xero showing the invoice
+ * paid closes it (`credit-release-ask-close.ts`). One an edit was merged into is not: its edit
+ * money is on its own supplementary invoice.
+ */
+export function isPureCreditReleaseChain(rowsNewestFirst: readonly AdditionalAskCauseRow[]): boolean {
+  const chain = askChain(rowsNewestFirst);
+  return chain.complete && chain.rows.length > 0 && chain.rows.every((row) => isCreditReleaseAskReason(row.reason));
+}
+
+/**
+ * How much of the newest request is released credit, which is money owed on the booking's own
+ * invoice: each credit-release row's own new money (its amount less what it carried), over the
+ * rows the request is made of. 0 for a request that is only a change; null when the rows ran out
+ * before the request did after released credit was seen, so the share cannot be known.
+ */
+export function creditReleaseShareCents(rowsNewestFirst: readonly AdditionalAskChainRow[]): number | null {
+  const chain = askChain(rowsNewestFirst);
+  const share = chain.rows
+    .filter((row) => isCreditReleaseAskReason(row.reason))
+    .reduce((sum, row) => sum + Math.max(0, row.amountCents - row.carriedAskCents), 0);
+  // Rows ran out mid-request after released credit was seen: its share cannot be known. A request
+  // seen to be only changes keeps the edit chase it always had.
+  if (!chain.complete && chain.rows.some((row) => isCreditReleaseAskReason(row.reason))) return null;
+  return share;
 }
 
 const USED_ELSEWHERE = "account credit applied to this booking was used elsewhere in the club's accounts";

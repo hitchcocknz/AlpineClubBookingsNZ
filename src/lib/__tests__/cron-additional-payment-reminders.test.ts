@@ -15,7 +15,13 @@ const {
   mockReadBookingNoEmails,
   mockGetActiveEmailSuppression,
   mockLogger,
+  mockReadInvoiceBalance,
+  mockLoadBankTransferOffer,
+  mockSignalOfficers,
 } = vi.hoisted(() => ({
+  mockReadInvoiceBalance: vi.fn(),
+  mockLoadBankTransferOffer: vi.fn(),
+  mockSignalOfficers: vi.fn(),
   mockPrisma: {
     booking: { findMany: vi.fn(), findUnique: vi.fn() },
     payment: { updateMany: vi.fn() },
@@ -48,6 +54,17 @@ vi.mock("@/lib/email-suppression", () => ({
   getActiveEmailSuppression: mockGetActiveEmailSuppression,
 }));
 vi.mock("@/lib/logger", () => ({ default: mockLogger }));
+// #4253 release 2 (`INV-ADDPAY-051`): the booking's invoice in Xero, the club's bank details and
+// the officers' note are the gate's three outside reads and writes; the gate's own logic runs.
+vi.mock("@/lib/xero-invoice-balance", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/xero-invoice-balance")),
+  readXeroInvoiceBalance: mockReadInvoiceBalance,
+}));
+vi.mock("@/lib/credit-release-bank-transfer", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/credit-release-bank-transfer")),
+  loadBankTransferOffer: mockLoadBankTransferOffer,
+}));
+vi.mock("@/lib/credit-release-officer-signal", () => ({ signalCreditReleaseToOfficers: mockSignalOfficers }));
 
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
 import { sendAdditionalPaymentReminders } from "@/lib/cron-additional-payment-reminders";
@@ -71,8 +88,9 @@ function booking(overrides: Record<string, unknown> = {}) {
     additionalFinalReminderSentAt: null,
     createdAt: new Date("2026-09-01T00:00:00.000Z"),
     // Raised 10 days ago, so the day-3 nudge is overdue.
-    transactions: [{ createdAt: new Date("2026-10-01T00:00:00.000Z"), reason: null, carriedAskCents: 0, withdrawnAt: null }],
-    xeroInvoiceNumber: "INV-0001",
+    transactions: [{ createdAt: new Date("2026-10-01T00:00:00.000Z"), reason: null, carriedAskCents: 0, withdrawnAt: null, amountCents: 21_000 }],
+    xeroInvoiceId: "xero-inv-1",
+    additionalPaymentIntentId: "pi_ask_1",
     ...((overrides.payment as Record<string, unknown>) ?? {}),
   };
   return {
@@ -98,8 +116,13 @@ const EPISODE_STARTED_AT = new Date("2026-10-01T00:00:00.000Z");
 const FIRST_RUN_AT = new Date("2026-08-01T00:00:00.000Z");
 
 /** A credit-release request's newest ledger row, as the reminder query selects it. */
-function creditReleaseRow(createdAt: Date) {
-  return { createdAt, reason: CREDIT_RELEASE_ASK_REASON, carriedAskCents: 0, withdrawnAt: null };
+function creditReleaseRow(createdAt: Date, amountCents = 21_000) {
+  return { createdAt, reason: CREDIT_RELEASE_ASK_REASON, carriedAskCents: 0, withdrawnAt: null, amountCents };
+}
+
+/** What Xero shows the booking's invoice still owing. */
+function invoiceOwing(amountDueCents: number | null, status = "AUTHORISED") {
+  return { invoiceId: "xero-inv-1", status, amountDueCents, invoiceNumber: "INV-0001" };
 }
 
 describe("sendAdditionalPaymentReminders", () => {
@@ -115,6 +138,10 @@ describe("sendAdditionalPaymentReminders", () => {
     });
     mockReadBookingNoEmails.mockResolvedValue(false);
     mockGetActiveEmailSuppression.mockResolvedValue(null);
+    // The whole released credit is still open on the booking's invoice; no bank details written.
+    mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(21_000));
+    mockLoadBankTransferOffer.mockResolvedValue(null);
+    mockSignalOfficers.mockResolvedValue(true);
     // The mailer RETURNS its outcome; "sent" is the only one that means the
     // member actually received something.
     mockSendAdditionalPaymentReminderEmail.mockResolvedValue({
@@ -145,10 +172,112 @@ describe("sendAdditionalPaymentReminders", () => {
       expect.objectContaining({
         requestedOn: raised,
         askCause: "credit-release",
-        bankTransferInvoiceNumber: "INV-0001",
+        bankTransfer: null,
       }),
       CLUB_FORMAT_TEST,
     );
+  });
+
+  describe("the released-credit gate before the claim (#4253, INV-ADDPAY-051)", () => {
+    const DAY = 86_400_000;
+    const raisedWeekAgo = new Date(NOW.getTime() - 8 * DAY);
+    const firstSent = new Date(raisedWeekAgo.getTime() + 3_600_000);
+    const run = (rows: Record<string, unknown>[]) => {
+      mockPrisma.booking.findMany.mockResolvedValue([
+        booking({ payment: { transactions: rows, additionalReminderSentAt: firstSent } }),
+      ]);
+      return sendAdditionalPaymentReminders();
+    };
+
+    it("withholds the reminder and tells the officers once Xero shows the invoice part-paid", async () => {
+      mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(10_000));
+      const result = await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(mockReadInvoiceBalance).toHaveBeenCalledWith("xero-inv-1");
+      expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+      expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+      expect(result.leftToOfficersBookingIds).toEqual(["booking-1"]);
+      expect(mockSignalOfficers).toHaveBeenCalledWith(
+        expect.objectContaining({ bookingId: "booking-1", reason: "invoice-part-paid", key: "invoice-part-paid:pi_ask_1:21000" }),
+      );
+    });
+
+    it("withholds a request carrying an earlier release once the member has transferred only that one", async () => {
+      // R1 (8,000) was emailed with the bank offer; R2 then carried it. The member transferred R1.
+      mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(13_000));
+      const result = await run([
+        { ...creditReleaseRow(raisedWeekAgo), carriedAskCents: 8_000 },
+        creditReleaseRow(new Date(raisedWeekAgo.getTime() - DAY), 8_000),
+      ]);
+      expect(result.leftToOfficersBookingIds).toEqual(["booking-1"]);
+      expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    });
+
+    it("withholds a merged request when the booking's invoice owes less than its released credit, and sends it otherwise", async () => {
+      const finished = { checkIn: new Date("2026-10-01T00:00:00.000Z"), checkOut: new Date("2026-10-03T00:00:00.000Z") };
+      const rows = [
+        { createdAt: raisedWeekAgo, reason: null, carriedAskCents: 4_000, withdrawnAt: null, amountCents: 21_000 },
+        creditReleaseRow(new Date(raisedWeekAgo.getTime() - DAY), 4_000),
+      ];
+      mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(2_000));
+      mockPrisma.booking.findMany.mockResolvedValue([booking({ ...finished, payment: { transactions: rows, additionalReminderSentAt: firstSent } })]);
+      expect((await sendAdditionalPaymentReminders()).leftToOfficersBookingIds).toEqual(["booking-1"]);
+
+      // The released 4,000 is still open: the request goes, card-only (its edit money is on another invoice).
+      mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(4_000));
+      const result = await sendAdditionalPaymentReminders();
+      expect(result.initialSentBookingIds).toEqual(["booking-1"]);
+      expect(mockLoadBankTransferOffer).not.toHaveBeenCalled();
+    });
+
+    it("claims nothing and tells nobody while Xero cannot be read, so the reminder stays due", async () => {
+      mockReadInvoiceBalance.mockRejectedValue(new Error("Xero unavailable"));
+      const result = await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+      expect(mockSignalOfficers).not.toHaveBeenCalled();
+      expect(result.skippedBookingIds).toEqual(["booking-1"]);
+    });
+
+    it("offers a bank transfer only when the request equals what the invoice still owes", async () => {
+      const offer = { instructions: "Account 12", reference: "INV-0001" };
+      mockLoadBankTransferOffer.mockResolvedValue(offer);
+      await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(mockLoadBankTransferOffer).toHaveBeenCalledWith("INV-0001");
+      expect(mockSendAdditionalPaymentReminderEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ bankTransfer: offer }),
+        CLUB_FORMAT_TEST,
+      );
+
+      // The invoice owes more than the request: a transfer of it would leave the invoice part-paid.
+      vi.clearAllMocks();
+      mockPrisma.payment.updateMany.mockResolvedValue({ count: 1 });
+      mockPrisma.cronJobRun.findFirst.mockResolvedValue({ startedAt: FIRST_RUN_AT });
+      mockReadBookingNoEmails.mockResolvedValue(false);
+      mockSendAdditionalPaymentReminderEmail.mockResolvedValue({ status: "sent" });
+      mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(30_000));
+      await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(mockLoadBankTransferOffer).not.toHaveBeenCalled();
+      expect(mockSendAdditionalPaymentReminderEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ bankTransfer: null }),
+        CLUB_FORMAT_TEST,
+      );
+    });
+
+    it("loses no reminder when the offer cannot be prepared: it fails before the stamp is claimed", async () => {
+      mockLoadBankTransferOffer.mockRejectedValue(new Error("settings unreadable"));
+      const result = await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+      expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+      expect(result.failedBookingIds).toEqual(["booking-1"]);
+    });
+
+    it("never reads Xero for a request that is only a change", async () => {
+      mockPrisma.booking.findMany.mockResolvedValue([
+        booking({ payment: { transactions: [{ createdAt: raisedWeekAgo, reason: null, carriedAskCents: 0, withdrawnAt: null, amountCents: 21_000 }] } }),
+      ]);
+      await sendAdditionalPaymentReminders();
+      expect(mockReadInvoiceBalance).not.toHaveBeenCalled();
+      expect(mockSendAdditionalPaymentReminderEmail).toHaveBeenCalled();
+    });
   });
 
   describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-048)", () => {
@@ -235,8 +364,8 @@ describe("sendAdditionalPaymentReminders", () => {
     it("keeps the ordinary chase and the mixed wording for a request that also carries an edit", async () => {
       const edit = new Date(NOW.getTime() - 1 * DAY);
       const rows = [
-        { createdAt: edit, reason: null, carriedAskCents: 4_000, withdrawnAt: null },
-        creditReleaseRow(new Date(NOW.getTime() - 5 * DAY)),
+        { createdAt: edit, reason: null, carriedAskCents: 4_000, withdrawnAt: null, amountCents: 21_000 },
+        creditReleaseRow(new Date(NOW.getTime() - 5 * DAY), 4_000),
       ];
       const early = await sentFor(rows, null);
       expect(early.initialSentBookingIds).toEqual([]);
@@ -273,8 +402,8 @@ describe("sendAdditionalPaymentReminders", () => {
       const finished = { checkIn: new Date("2026-10-01T00:00:00.000Z"), checkOut: new Date("2026-10-03T00:00:00.000Z") };
       const edit = new Date(NOW.getTime() - 8 * DAY);
       const rows = [
-        { createdAt: edit, reason: null, carriedAskCents: 4_000, withdrawnAt: null },
-        creditReleaseRow(new Date(NOW.getTime() - 12 * DAY)),
+        { createdAt: edit, reason: null, carriedAskCents: 4_000, withdrawnAt: null, amountCents: 21_000 },
+        creditReleaseRow(new Date(NOW.getTime() - 12 * DAY), 4_000),
       ];
       // The edit chase's day-3 reminder went out; the week-1 reminder is now due.
       const result = await sentFor(rows, new Date(edit.getTime() + 3 * DAY), finished);
@@ -345,7 +474,7 @@ describe("sendAdditionalPaymentReminders", () => {
       lodgeId: "lodge-1",
       askCause: "edit",
       // An ordinary change is never offered a bank transfer.
-      bankTransferInvoiceNumber: null,
+      bankTransfer: null,
     }, CLUB_FORMAT_TEST);
     expect(result.initialSentBookingIds).toEqual(["booking-1"]);
     expect(result.finalSentBookingIds).toEqual([]);

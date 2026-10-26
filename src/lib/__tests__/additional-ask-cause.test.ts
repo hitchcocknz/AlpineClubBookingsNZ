@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   additionalAskCause,
-  bankTransferInvoiceFor,
+  creditReleaseShareCents,
+  isPureCreditReleaseChain,
+  paymentRequestCauseSentence,
   memberCardLeadParts,
   timelineCapturedDetail,
   timelineFailedDetail,
@@ -117,21 +119,51 @@ describe("the shared sentences", () => {
   });
 });
 
-describe("bankTransferInvoiceFor (INV-ADDPAY-049)", () => {
-  it("offers the invoice for a request that is only the released credit and carried nothing", () => {
-    expect(bankTransferInvoiceFor([release()], "INV-1")).toBe("INV-1");
+describe("isPureCreditReleaseChain (INV-ADDPAY-049)", () => {
+  it("is a request made only of released credit, carried or not", () => {
+    expect(isPureCreditReleaseChain([release()])).toBe(true);
+    expect(isPureCreditReleaseChain([release(2_000), release()])).toBe(true);
   });
 
-  it("offers nothing for an ordinary change, a merged request, or one that carried an earlier release", () => {
-    expect(bankTransferInvoiceFor([edit()], "INV-1")).toBeNull();
-    expect(bankTransferInvoiceFor([edit(4_000), release()], "INV-1")).toBeNull();
-    expect(bankTransferInvoiceFor([release(2_000), release()], "INV-1")).toBeNull();
-    expect(bankTransferInvoiceFor([], "INV-1")).toBeNull();
+  it("is not an ordinary change, a merged request, or nothing", () => {
+    expect(isPureCreditReleaseChain([edit()])).toBe(false);
+    expect(isPureCreditReleaseChain([edit(4_000), release()])).toBe(false);
+    expect(isPureCreditReleaseChain([release(4_000), edit()])).toBe(false);
+    expect(isPureCreditReleaseChain([])).toBe(false);
   });
 
-  it("offers nothing without an invoice number", () => {
-    expect(bankTransferInvoiceFor([release()], null)).toBeNull();
-    expect(bankTransferInvoiceFor([release()], undefined)).toBeNull();
+  it("is not a request whose carried rows ran out before the request did", () => {
+    expect(isPureCreditReleaseChain([release(2_000)])).toBe(false);
+  });
+});
+
+describe("creditReleaseShareCents (INV-ADDPAY-051)", () => {
+  const withAmount = <T extends object>(row: T, amountCents: number) => ({ ...row, amountCents });
+
+  it("is each release row's own new money, over the request's rows", () => {
+    expect(creditReleaseShareCents([withAmount(release(), 3_000)])).toBe(3_000);
+    expect(creditReleaseShareCents([withAmount(release(3_000), 5_000), withAmount(release(), 3_000)])).toBe(5_000);
+    // A merged request: the edit's own 4,000 is on its own invoice; the release's 3,000 is on the booking's.
+    expect(creditReleaseShareCents([withAmount(edit(3_000), 7_000), withAmount(release(), 3_000)])).toBe(3_000);
+  });
+
+  it("is nothing for an ordinary change, and an earlier settled release is not part of the request", () => {
+    expect(creditReleaseShareCents([withAmount(edit(), 2_000)])).toBe(0);
+    expect(creditReleaseShareCents([withAmount(edit(), 2_000), withAmount(release(), 3_000)])).toBe(0);
+  });
+
+  it("cannot be known when the rows ran out mid-request after released credit was seen", () => {
+    expect(creditReleaseShareCents([withAmount(release(3_000), 5_000)])).toBeNull();
+    expect(creditReleaseShareCents([withAmount(edit(1_000), 2_000)])).toBe(0);
+  });
+});
+
+describe("paymentRequestCauseSentence", () => {
+  it("is the owner-approved wording for the released credit, and names both on a merged request", () => {
+    expect(paymentRequestCauseSentence("credit-release", "$5.00")).toBe(
+      "the account credit applied to your booking was used elsewhere in the club's accounts, so $5.00 of your booking has not been paid.",
+    );
+    expect(paymentRequestCauseSentence("mixed", "$5.00")).toMatch(/^a change to your booking, and account credit/);
   });
 });
 

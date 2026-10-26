@@ -3933,14 +3933,19 @@ once, by card, and Xero is told about the payment without a second invoice.
 - **Bank transfer.** The request email can offer a bank transfer beside the card
   (`credit-release-bank-transfer.ts`). The app holds no account details: the club writes
   them in the `paymentRequest.bankTransfer.instructions` booking message (Admin > Booking
-  messages) and the email quotes the booking's Xero invoice number as the reference. With
-  no details written, or on a request an edit was merged into (its amount is more than that
-  invoice owes), the email offers card only. Xero matching the transfer to the
-  invoice shows it paid, which the closer above turns into a closed request; a transfer
-  that leaves the invoice part-paid closes nothing and stays with the officers' queues.
-  `INV-ADDPAY-049`.
+  messages) and the email quotes the booking's Xero invoice number as the reference. It is
+  offered only when the request is all released credit and equals what Xero shows the
+  invoice still owing as the email is built, so a transfer of it clears the invoice; with no
+  details written, on a request an edit was merged into, or for any other amount, the email
+  offers card only. Xero matching the transfer to the invoice shows it paid, which the closer
+  above turns into a closed request, one that carried earlier released credit included. A
+  transfer that leaves the invoice part-paid closes and resizes nothing: before each reminder
+  the invoice is read again, and showing less owing than the request's released credit stops
+  the automatic reminders and leaves one audit note for the officers (`INV-ADDPAY-049`,
+  `INV-ADDPAY-051`).
 - **Reminders and merged requests.** The member is emailed at once, then reminded every 7
-  days, four reminders after the request, and the officers' queues chase after that (`INV-ADDPAY-048`). An edit
+  days, four reminders after the request, and the officers' queues chase after that
+  (`INV-ADDPAY-048`). An edit
   made while a release request is unpaid merges into one request; the card payment is
   recorded against both invoices (the release's money by the sweep on the booking's
   invoice, the edit's own by its supplementary invoice), with no step in Xero.
@@ -3952,5 +3957,5 @@ once, by card, and Xero is told about the payment without a second invoice.
   (`INV-ADDPAY-050`). Set the bank details first, enable the writer once the previous
   colour has drained, then the backlog.
 
-Rules: `INV-ADDPAY-045`, `INV-ADDPAY-046`, `INV-ADDPAY-048`, `INV-ADDPAY-049`, `INV-ADDPAY-050`.
+Rules: `INV-ADDPAY-045`, `INV-ADDPAY-046`, `INV-ADDPAY-048`, `INV-ADDPAY-049`, `INV-ADDPAY-050`, `INV-ADDPAY-051`.
 

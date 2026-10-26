@@ -58,7 +58,7 @@ import {
 } from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
 import { paymentRequestCauseSentence, preArrivalOutstandingNote, type AdditionalAskCause } from "@/lib/additional-ask-cause";
-import { bankTransferNoteText, loadBankTransferOffer } from "@/lib/credit-release-bank-transfer";
+import { bankTransferNoteText, type BankTransferOffer } from "@/lib/credit-release-bank-transfer";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
 import { appliedCreditGiveBackNote, unpaidAskCancelledNote } from "@/lib/booking-credit-give-back-copy";
@@ -1345,19 +1345,19 @@ export async function sendAdditionalPaymentReminderEmail(params: {
    */
   askCause?: AdditionalAskCause;
   /**
-   * #4253 release 2 (D6): the booking's Xero invoice number, the reference a bank transfer
-   * must quote. With the club's written bank details it adds the transfer offer to a request
-   * for credit used elsewhere; without either, the email stays card-only.
+   * #4253 release 2 (D6): the bank-transfer offer, resolved by the caller BEFORE it claimed the
+   * reminder's stamp (`resolveCreditReleaseReminderGate`), so nothing here can fail between the
+   * claim and the mailer. Only a request purely for credit used elsewhere carries one; absent,
+   * the email is card-only.
    */
-  bankTransferInvoiceNumber?: string | null;
+  bankTransfer?: BankTransferOffer | null;
 },
   format: ClubFormat,
 ) {
   const creditRelease = params.askCause === "credit-release" || params.askCause === "mixed";
   // Only a request that is purely the released credit offers a transfer: a merged one's amount
   // includes the edit's own money, which is not owed on the booking's invoice a transfer would quote.
-  const bankTransfer =
-    params.askCause === "credit-release" ? await loadBankTransferOffer(params.bankTransferInvoiceNumber) : null;
+  const bankTransfer = params.askCause === "credit-release" ? (params.bankTransfer ?? null) : null;
   // Returns the outcome rather than swallowing it (#2350): both callers write a
   // stamp BEFORE sending, and that stamp is also the 60-minute cooldown, so a
   // withheld/suppressed/placeholder send — which returns, it does not throw —
