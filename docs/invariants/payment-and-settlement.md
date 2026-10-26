@@ -3708,7 +3708,8 @@ _Split from `INV-PAY-057` (#3220)._
   admin-only marker in the settle's transaction (`SETTLEMENT_MARKERS`) and sends
   an unmuteable alert after commit, recorded once sent. The cancel arms alert
   themselves: their credit's face is the receipt, and a mixed invoice is
-  measured against its total less the member's own applied credit.
+  measured against its total less the member's own applied credit and any
+  applied correction or no-cash note, which moved no cash (#4095).
 - `pnpm run payments:audit-ib-settled-cash` lists receipts differing from the
   recorded cash, and refunded totals beyond the rows.
 - Pinned by `settle-from-cash.test.ts`, `xero-inbound-reconciliation.test.ts`,
@@ -3731,6 +3732,11 @@ _Split from `INV-PAY-057` (#3220)._
   still includes the corrected amount, so the correction keeps counting and the
   net stays the cash. A recount finds a bank-transfer payment's
   modification notes by its invoice, so a later note never drops an earlier one.
+  A keep counts each applied correction already synced in its own transaction
+  when the rows explain the refunded total, so a writer queued on its locks
+  reads the corrected net. After the commit a keep, and every replay, recounts
+  the payment with no note of its own; failing, the event is retried. One
+  synced during the settle, or beside an older fold, waits for that (#4095).
 - **The refunded-total repair writes through a claim** on the row it read
   (status, totals, `updatedAt`, which every settle transition touches),
   re-running once from scratch when lost, and never un-refunds a payment whose
@@ -3740,5 +3746,6 @@ _Split from `INV-PAY-057` (#3220)._
   modification refunds.
 - Pinned by `account-credit-modification-notes.test.ts`,
   `xero-credit-note-repairs.test.ts`, `xero-booking-edit-settlement.test.ts`,
-  `xero-repair-known-modification-refund.test.ts` and
+  `xero-repair-known-modification-refund.test.ts`,
+  `kept-settle-correction-recount.test.ts` and
   `ib-settle-from-cash.realdb.test.ts`.

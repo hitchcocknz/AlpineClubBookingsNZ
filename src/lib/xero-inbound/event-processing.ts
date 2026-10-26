@@ -14,6 +14,7 @@ import { reconcileXeroContact } from "./contact";
 import { reconcileXeroPayment } from "./payment";
 import { reconcileXeroInvoice, runIncrementalInvoiceReconciliation } from "./invoice";
 import { reconcileXeroCreditNote } from "./credit-note";
+import { failIfRecountLeftUnsettled } from "./recount-left-unsettled";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
 
@@ -86,11 +87,11 @@ async function processXeroInboundEvent(
     case "CONTACT":
       return reconcileXeroContact(event.resourceId);
     case "INVOICE":
-      return reconcileXeroInvoice(event.resourceId, format);
+      return failIfRecountLeftUnsettled(await reconcileXeroInvoice(event.resourceId, format));
     case "PAYMENT":
       return reconcileXeroPayment(event.resourceId);
     case "CREDITNOTE":
-      return reconcileXeroCreditNote(event.resourceId);
+      return failIfRecountLeftUnsettled(await reconcileXeroCreditNote(event.resourceId));
     default:
       logger.warn(
         {
