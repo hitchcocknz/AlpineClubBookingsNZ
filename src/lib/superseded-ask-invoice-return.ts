@@ -48,7 +48,6 @@ import {
   SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY,
   SUPPLEMENTARY_INVOICE_TAKEN_BACK_FROM_KEY,
 } from "@/lib/supplementary-invoice-parked-from";
-import { supplementaryInvoiceBilledCents } from "@/lib/xero-operation-outbox-payload";
 import { asRecord, readString } from "@/lib/xero-json";
 import { lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
 import { SUPPLEMENTARY_INVOICE_CREATE_WHERE } from "@/lib/xero-supplementary-invoice-statuses";
@@ -133,8 +132,6 @@ export async function alertTakenBackInvoicesPaidAgain(paymentIntentId: string): 
   });
   for (const operation of takenBack) {
     const payload = asRecord(operation.requestPayload) ?? {};
-    const cents = supplementaryInvoiceBilledCents(operation.requestPayload);
-    const amount = cents === null ? "its amount" : `$${(cents / 100).toFixed(2)}`;
     await sendAdminAlertOnceEver({
       key: `supplementary-invoice-paid-twice:${readString(payload.bookingId) ?? "booking"}:${operation.id}`,
       label: "change-paid-twice alert",
@@ -143,7 +140,7 @@ export async function alertTakenBackInvoicesPaidAgain(paymentIntentId: string): 
         sendAdminXeroSyncErrorAlert({
           errorType: "SUPPLEMENTARY_INVOICE_CHANGE_PAID_TWICE",
           operation: `Supplementary invoice for booking change ${operation.localId ?? "unknown"}`,
-          errorMessage: `Booking change ${operation.localId ?? "unknown"} was paid twice by card: by its own payment request ${readString(payload.paymentIntentId) ?? "unknown"}, and again inside the later request ${paymentIntentId}, which carried its unpaid balance. Both payments were kept. The change's Xero supplementary invoice (outbox operation ${operation.id}) records the first; nothing in Xero bills the ${amount} of the second. Refund or credit the member that amount, or record it in Xero by hand.`,
+          errorMessage: `Booking change ${operation.localId ?? "unknown"} was paid twice by card: by its own payment request ${readString(payload.paymentIntentId) ?? "unknown"}, and again inside the later request ${paymentIntentId}, which carried its unpaid balance. Both payments were kept. The change's Xero supplementary invoice (outbox operation ${operation.id}) records the first; nothing in Xero bills that part of the second. Refund or credit the member the change's amount, or record it in Xero by hand.`,
           timestamp: new Date(),
         }),
     });
