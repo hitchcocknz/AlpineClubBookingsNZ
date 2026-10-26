@@ -12,6 +12,8 @@ import { gzipSync } from "node:zlib";
 
 import { afterAll, describe, expect, it } from "vitest";
 
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+
 import {
   createOwnershipAndPrivilegeStripStream,
   isSameDatabaseTarget,
@@ -53,6 +55,14 @@ describe("isSameDatabaseTarget", () => {
 
   it("fails closed on a string it cannot parse", () => {
     expect(isSameDatabaseTarget("host=postgres dbname=other", LIVE)).toBe(true);
+  });
+
+  it.each([
+    ["a database path", "postgresql://u:p@shadow:5432/restore_check%E0%A4%A"],
+    ["a user name with no path", "postgresql://u%E0%A4%A:p@shadow:5432"],
+  ])("fails closed, without throwing, on a malformed escape in %s (#4453 review R5)", (_label, url) => {
+    expect(() => isSameDatabaseTarget(url, LIVE)).not.toThrow();
+    expect(isSameDatabaseTarget(url, LIVE)).toBe(true);
   });
 });
 
@@ -115,9 +125,9 @@ describe("the streamed strip (#4453 review N2)", () => {
   ].join("\n");
   const bytes = Buffer.from(dump, "utf8");
 
-  async function streamed(chunkSize: number): Promise<string> {
+  async function streamed(chunkSize: number, input: Buffer = bytes): Promise<string> {
     const chunks: Buffer[] = [];
-    for (let start = 0; start < bytes.length; start += chunkSize) chunks.push(bytes.subarray(start, start + chunkSize));
+    for (let start = 0; start < input.length; start += chunkSize) chunks.push(input.subarray(start, start + chunkSize));
     const out: Buffer[] = [];
     await pipeline(
       Readable.from(chunks),
@@ -150,6 +160,31 @@ describe("the streamed strip (#4453 review N2)", () => {
       }),
     );
     expect(out.join("")).toBe(stripOwnershipAndPrivilegeStatements(withNewline));
+  });
+
+  it.each([1, 5, 65_536])(
+    "matches when the dropped line is the last, with no trailing newline, in %i-byte chunks (#4453 review R3)",
+    async (size) => {
+      const droppedLast = `${dump}\nGRANT SELECT ON TABLE public."Member" TO tac_app;`;
+      const pure = stripOwnershipAndPrivilegeStatements(droppedLast);
+      expect(pure.endsWith("'last line, no newline';")).toBe(true);
+      expect(await streamed(size, Buffer.from(droppedLast, "utf8"))).toBe(pure);
+    },
+  );
+
+  it("matches when every line is dropped", async () => {
+    const allDropped = "GRANT ALL ON TABLE x TO y;\nREVOKE ALL ON TABLE x FROM y;";
+    expect(await streamed(4, Buffer.from(allDropped))).toBe(stripOwnershipAndPrivilegeStatements(allDropped));
+  });
+
+  it("streams a multi-megabyte single line in linear time (#4453 review R2)", async () => {
+    // 8 MiB with no newline, in 1 KiB chunks: re-splitting everything held on
+    // every chunk scans ~32 GiB; one pass over each chunk scans 8 MiB.
+    const line = `COPY x FROM stdin;\n${"a".repeat(8 * 1024 * 1024)}`;
+    const start = process.hrtime.bigint();
+    const out = await streamed(1024, Buffer.from(line));
+    expect(realElapsedMs(start)).toBeLessThan(5_000);
+    expect(out).toBe(line);
   });
 
   describe("restoreDumpWithoutOwnershipOrPrivileges", () => {
@@ -190,6 +225,30 @@ describe("the streamed strip (#4453 review N2)", () => {
           timeoutMs: 30_000,
         }),
       ).rejects.toThrow(/psql exited 3: ERROR: {2}must be owner of table Member/);
+    });
+
+    it("rejects with the cause, and no unhandled rejection, when psql is not on PATH (#4453 review R1)", async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      try {
+        const empty = path.join(dir, "empty-bin");
+        mkdirSync(empty, { recursive: true });
+        await expect(
+          restoreDumpWithoutOwnershipOrPrivileges({
+            sourcePath: gz,
+            argvUrl: "postgresql://check@shadow/tacbookings_restore_check",
+            env: { NODE_ENV: "test", PATH: empty },
+            timeoutMs: 30_000,
+          }),
+        ).rejects.toThrow(/Could not start psql for the restore validation: .*ENOENT/);
+        // Let any stray rejection surface before checking.
+        await new Promise((resolve) => setImmediate(resolve));
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(unhandled).toEqual([]);
+      } finally {
+        process.off("unhandledRejection", onUnhandled);
+      }
     });
   });
 });

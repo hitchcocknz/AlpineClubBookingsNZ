@@ -5,6 +5,7 @@
  * and real-PostgreSQL suites run them as shipped.
  */
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createReadStream } from "node:fs";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -23,13 +24,19 @@ function resolvedDatabaseName(connectionString: string): string | null {
   } catch {
     return null;
   }
-  const fromPath = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-  const name =
-    parsed.searchParams.get("dbname") ||
-    fromPath ||
-    parsed.searchParams.get("user") ||
-    decodeURIComponent(parsed.username);
-  return name || null;
+  // A malformed escape (`%E0%A4`) is unreadable, so it reads as "the same
+  // database" upstream: refuse rather than throw (#4453 review R5).
+  try {
+    const fromPath = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+    const name =
+      parsed.searchParams.get("dbname") ||
+      fromPath ||
+      parsed.searchParams.get("user") ||
+      decodeURIComponent(parsed.username);
+    return name || null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -118,24 +125,45 @@ export function stripOwnershipAndPrivilegeStatements(sql: string): string {
 
 /**
  * The same filter as a stream (#4453 review N2): bytes in, bytes out, one line
- * held at a time. Output is byte-identical to `stripOwnershipAndPrivilegeStatements`
- * over the whole input, including a last line with no newline.
+ * held at a time. Its output is byte-identical to
+ * `stripOwnershipAndPrivilegeStatements` over the whole input, in every case:
+ * kept lines are joined by a newline written BEFORE each kept line but the
+ * first, exactly as `Array.join` does, so a dropped last line leaves no newline
+ * behind (#4453 review R3).
+ *
+ * Each chunk is searched for newlines on its own, and a line that spans chunks
+ * is kept as a list of parts joined once, so a multi-megabyte line costs linear
+ * time rather than a re-split of everything seen so far (#4453 review R2).
  */
 export function createOwnershipAndPrivilegeStripStream(): Transform {
   const filter = new OwnershipAndPrivilegeLineFilter();
   const decoder = new StringDecoder("utf8");
-  let pending = "";
+  let parts: string[] = [];
+  let first = true;
+  const emit = (line: string): string => {
+    if (!filter.keep(line)) return "";
+    const out = first ? line : `\n${line}`;
+    first = false;
+    return out;
+  };
   return new Transform({
     transform(chunk: Buffer, _encoding, callback) {
-      pending += decoder.write(chunk);
-      const lines = pending.split("\n");
-      pending = lines.pop() ?? "";
-      const kept = lines.filter((line) => filter.keep(line));
-      callback(null, kept.length > 0 ? `${kept.join("\n")}\n` : undefined);
+      const text = decoder.write(chunk);
+      let out = "";
+      let start = 0;
+      for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
+        parts.push(text.slice(start, end));
+        out += emit(parts.length === 1 ? parts[0] : parts.join(""));
+        parts = [];
+        start = end + 1;
+      }
+      if (start < text.length) parts.push(text.slice(start));
+      callback(null, out.length > 0 ? out : undefined);
     },
     flush(callback) {
-      pending += decoder.end();
-      callback(null, filter.keep(pending) ? pending : undefined);
+      parts.push(decoder.end());
+      const out = emit(parts.join(""));
+      callback(null, out.length > 0 ? out : undefined);
     },
   });
 }
@@ -163,6 +191,18 @@ export async function restoreDumpWithoutOwnershipOrPrivileges(input: {
     psql.on("error", reject);
     psql.on("close", (code) => resolve(code));
   });
+  // A spawn failure (no psql on PATH) rejects `exited` while nothing awaits it;
+  // mark it handled here and surface the cause below, not as an unhandled
+  // rejection that would take the whole process down (#4453 review R1).
+  exited.catch(() => {});
+  try {
+    await once(psql, "spawn");
+  } catch (error) {
+    throw new Error(
+      `Could not start psql for the restore validation: ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
+  }
   const timer = setTimeout(() => psql.kill("SIGKILL"), input.timeoutMs);
   try {
     let streamError: unknown;
