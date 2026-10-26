@@ -7,13 +7,15 @@
   configuration guide describes, was refused with "Missing required .env
   entry" before anything was deployed.
 
-  The preflight now follows the provider flags the way the application does:
-  SES keys for AWS SES (and when none of the three flags is named at all),
-  the `EMAIL_SERVER_*` keys for an SMTP relay or a capture mailbox. It refuses
-  the two states the application refuses, two flags true or a flag named but
-  false with none true, and refuses a capture mailbox on the live site, all at
-  step 3 rather than at the health check. Nothing changes for a club running
-  AWS SES.
+  The preflight now follows the provider flags the way the application does,
+  and reads them as the application will receive them, after Docker Compose's
+  defaults and any value exported in the shell: SES keys for AWS SES, the four
+  `EMAIL_SERVER_*` keys for an SMTP relay or a capture mailbox. Because
+  Compose defaults `USE_AWS_SES` to `true`, a relay needs `USE_AWS_SES=false`
+  as well as `USE_SMTP_RELAY=true`, and the refusal says so. It refuses the
+  states the application refuses (two flags true, none true, a value other
+  than true or false) and a capture mailbox on the live site, all at step 3
+  rather than at the health check. Nothing changes for a club running AWS SES.
 
   The same preflight also demanded `LEGACY_DASHBOARD_EXPORT_TOKEN`, which the
   configuration guide says to leave empty unless the legacy finance export
@@ -22,12 +24,8 @@
 
   A fork's image names (`GHCR_APP_IMAGE_REPOSITORY` and
   `GHCR_MIGRATE_IMAGE_REPOSITORY`) are now also read from the source
-  repository's `.env` when the shell does not set them, instead of falling
-  straight back to the upstream registry, and step 3/8 says which source each
-  name came from. A deploy run under `sudo`, which strips the shell
+  repository's `.env` when the shell does not set them, with the same rules
+  Compose applies to that file (quotes, `export`, the last duplicate wins),
+  instead of falling straight back to the upstream registry, and step 3/8
+  says which source each name came from. A deploy run under `sudo`, which strips the shell
   environment, therefore still pulls the fork's own images.
-
-  The preflight reads the three provider flags exactly as the application
-  does: `true` or `false`, in any case; any other value (`yes`, `on`, `1`)
-  is refused before anything is deployed, instead of passing here and
-  leaving the site unable to send a single message.

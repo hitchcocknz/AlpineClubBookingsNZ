@@ -8,12 +8,14 @@
   for the compose database service. The default stays at 40, so nothing
   changes for an installation that does not set it; a host that sees that
   error raises it, for example to 80, and the next deploy recreates the
-  database container with the new ceiling. The deployment guide's
-  "Connection pool sizing" section records the measurement and why raising
-  the ceiling, not shrinking a pool, is the right response until the
-  app's multiple-pool behaviour is pinned and fixed.
+  database container with the new ceiling. The deploy refuses a value that is
+  not a whole number above the connection pools the configuration can open
+  together, or that is above 1000, before it touches the database container.
+  The deployment guide's "Connection pool sizing" section records the
+  measurement and why raising the ceiling, not shrinking a pool, is the right
+  response.
 
   `POSTGRES_MEM_LIMIT` (default `768m`, unchanged) lets a host raise the
-  database container's memory in step with the ceiling. The measurement
-  behind the change, one app container holding more connections than its
-  pool allows, is filed as #4269 for the fix at its source.
+  database container's memory in step with the ceiling. The cause of the
+  measurement, one app container holding more connections than its pool
+  allows, was fixed at its source in #4269.

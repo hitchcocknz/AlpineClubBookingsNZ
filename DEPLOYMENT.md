@@ -111,18 +111,22 @@ size, `max_connections`, or the replica count.
 measured.** `POSTGRES_MAX_CONNECTIONS` in `.env` sets `max_connections`
 (default `40`, unchanged); it is applied when the `postgres` container is next
 created, which a blue/green deploy does at step 11 when the compose model has
-changed. It became a setting because a routine handover on a live host was
-sampled, two seconds apart, at **39 client connections**: the serving web slot
-at 11, the cron leader at 18 and the freshly warmed target slot at 8 to 11,
-against documented `connection_limit`s of 10, 5 and 10. One container holding
-18 means the app opens more than one pool per container, which is filed as
-[#4269](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4269) with
-the measurement; until it is pinned and fixed, the 27 budget above is an
-undercount by roughly a factor of two, and the warm-up gate's page renders
-fail with `P2037: too many database connections opened` exactly when three app
-containers are live. A host that sees that error raises the ceiling rather
-than lowering a pool (a smaller pool moves the failure to `P2024` pool
-timeouts under real traffic), and raises `POSTGRES_MEM_LIMIT` with it: each
+changed. The deploy refuses it at step 3, before that, unless the value the
+`postgres` command would carry is a whole number above the pools the resolved
+Compose model can open together (27 with the shipped pools) and at most `1000`:
+Compose passes any string through, and PostgreSQL would reject `abc` only once
+the container is being recreated. It became a setting because a routine
+handover on a live host, before the
+[#4269](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4269) fix
+above, was sampled two seconds apart at **39 client connections** (the serving
+web slot at 11, the cron leader at 18 and the freshly warmed target slot at 8
+to 11) against the 27-connection budget — about 1.44 times it — and the
+warm-up gate's page renders failed with `P2037: too many database connections
+opened` while three app containers were live. With #4269's one pool per
+container the default should hold again; a host that still sees that error
+raises the ceiling rather than lowering a pool (a smaller pool moves the
+failure to `P2024` pool timeouts under real traffic), and raises
+`POSTGRES_MEM_LIMIT` with it: each
 backend costs its `work_mem` and connection overhead, so going from 40 to 80
 wants the limit taken from the default `768m` towards `1g`. The pairing
 `POSTGRES_MAX_CONNECTIONS=80` with the default `768m` has run on one fork host
@@ -495,11 +499,15 @@ Minimum production categories:
   one of `USE_AWS_SES`, `USE_SMTP_RELAY` or `USE_LOCAL_CAPTURE` may be true,
   and the step-3 preflight requires only that provider's keys: `SMTP_HOST`,
   `SMTP_PORT`, `AWS_SES_ACCESS_KEY_ID`, `AWS_SES_SECRET_ACCESS_KEY` and
-  `SES_SNS_TOPIC_ARN` for AWS SES (also the default when none of the three
-  flags is named at all), or `EMAIL_SERVER_HOST`, `EMAIL_SERVER_PORT`,
-  `EMAIL_SERVER_USER` and `EMAIL_SERVER_PASSWORD` for an SMTP relay. A flag
-  named but false with no other true is refused, as the app refuses it, and
-  `USE_LOCAL_CAPTURE=true` is refused on a production-role site. `EMAIL_FROM` is
+  `SES_SNS_TOPIC_ARN` for AWS SES, or `EMAIL_SERVER_HOST`, `EMAIL_SERVER_PORT`,
+  `EMAIL_SERVER_USER` and `EMAIL_SERVER_PASSWORD` for an SMTP relay or a
+  capture mailbox. It checks what each app service would **receive** — the
+  `docker compose config` values, after Compose's defaults and any shell
+  export — not the `.env` lines. `docker-compose.yml` defaults `USE_AWS_SES`
+  to `true`, so a relay sets **both** `USE_SMTP_RELAY=true` and
+  `USE_AWS_SES=false`; naming no flag at all leaves AWS SES selected. Every flag
+  false is refused, as the app refuses it, and `USE_LOCAL_CAPTURE=true` is
+  refused because this deploy only runs a production-role site. `EMAIL_FROM` is
   the only email-identity env var (besides these transport secrets): it is the
   envelope / Return-Path sender and must be a provider-verified (SES) address.
   Email identity — from display name, support address, and contact-form
@@ -610,10 +618,11 @@ For a fork, set `GHCR_APP_IMAGE_REPOSITORY` and
 `GHCR_MIGRATE_IMAGE_REPOSITORY` if your image names differ from the defaults —
 either in the shell environment or, more durably, in the source repository's
 `.env`. The shell wins over the file, the file wins over the upstream default,
-and step 3/8 prints which source each name came from, because a default that
-silently points at the upstream registry is how a fork's deploy fails at step
-9 with "not found". Note that `sudo` strips the shell environment; the `.env`
-route survives it.
+and the file is read with Compose's own `.env` rules (quotes removed, `export`
+allowed, the last duplicate wins). Step 3/8 prints which source each name came
+from, because a default that silently points at the upstream registry is how
+a fork's deploy fails at step 9 with "not found". Note that `sudo` strips the
+shell environment; the `.env` route survives it.
 
 ### The deploy refuses a commit that exists on no remote (#3539)
 
@@ -795,12 +804,40 @@ Caddy issues every site's certificate from its own internal CA and never
 contacts Let's Encrypt. Then point the proxy at the VM's **443** with scheme
 **https** and tell it to accept a certificate that is not publicly trusted
 (Nginx Proxy Manager: "Ignore Invalid SSL"). The browser only ever sees the
-proxy's certificate. A `.env` change is picked up when the Caddy container is
-next created; to apply it to a running one:
+proxy's certificate.
+
+A `.env` change reaches Caddy when its container is next created, and every
+deploy recreates it at step 17 from that deploy's workspace. **Apply it by
+running the deploy wrapper**, as for a release: it validates the Caddyfile with
+the resolved `CADDY_TLS_MODE` and `CADDY_TRUSTED_PROXIES` at step 4, before the
+migration, and carries the live upstream into its workspace at step 5/8. If
+`main` has moved on and no release is due, set `DEPLOY_REF` to the commit that
+is live.
+
+Do **not** run `docker compose up -d caddy` from the source checkout. The
+running Caddy bind-mounts the live deploy workspace, whose
+`deploy/caddy/tacbookings-active.caddy` names the serving colour. Compose run
+from the checkout recreates Caddy with the checkout's mounts instead, and the
+tracked copy of that file names `app_blue` and the cron leader `app`: on a host
+serving green, whose blue container the last deploy removed, every request
+then reaches the cron leader.
+
+If a deploy is not possible, the manual equivalent is the deploy's own step-17
+command, run in the live workspace with the edited `.env` copied into it:
 
 ```bash
-docker compose --project-name <project> up -d caddy
+cid=$(docker compose --project-name <project> -f <checkout>/docker-compose.yml ps -q caddy)
+live=$(docker inspect "$cid" --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/deploy"}}{{.Source}}{{end}}{{end}}')
+workspace=$(dirname "$(dirname "$live")")
+cp <checkout>/.env "$workspace/.env"
+cd "$workspace" && docker compose --project-name <project> up -d --no-deps caddy
 ```
+
+`<project>` is the deploy's Compose project (by default the checkout's
+directory name, lower-cased); without `--project-name` Compose names a new
+project after the workspace directory and starts a second Caddy. This route
+skips the step-4 validation, so a mistyped value stops Caddy instead of the
+deploy.
 
 Do **not** edit `Caddyfile` on the host for this: the deploy refuses a dirty
 checkout, and the workspace it builds is a clean `git archive` that would drop

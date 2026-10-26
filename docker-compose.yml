@@ -390,10 +390,10 @@ services:
       # connection-budget note on x-app-environment and DEPLOYMENT.md.
       #
       # POSTGRES_MAX_CONNECTIONS: the ceiling is a setting because the budget
-      # above is not what a live host measured (#4269): a warm-up during a
-      # routine handover was sampled at 39 client connections, one app container
-      # holding 18 against a connection_limit of 10, so three app containers
-      # plus the deploy's probes hit 40 and every page render failed with
+      # above was not what a live host measured before #4269's fix: a warm-up
+      # during a routine handover was sampled at 39 client connections, one
+      # app container holding 18 against a connection_limit of 10, so three app
+      # containers plus the deploy's probes hit 40 and every page render failed with
       # "too many clients". A host that sees that raises it in .env and raises
       # POSTGRES_MEM_LIMIT in step (see DEPLOYMENT.md -> "Connection pool
       # sizing"); the defaults are unchanged.
