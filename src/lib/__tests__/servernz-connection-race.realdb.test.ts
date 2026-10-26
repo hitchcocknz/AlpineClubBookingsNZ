@@ -36,9 +36,17 @@ function latch() {
     await prisma.serverNzSettings.deleteMany({ where: { id: "default" } });
   }
 
-  async function waitForBlockedConnection() {
+  /**
+   * Waits until a competing statement queues on the settings row. Given
+   * `unlessSettled`, also returns once that promise settles, so a mutation that
+   * removes the fence fails on the test's assertion rather than this timeout.
+   */
+  async function waitForBlockedConnection(unlessSettled?: Promise<unknown>) {
+    let settled = false;
+    void unlessSettled?.then(() => { settled = true; }, () => { settled = true; });
     const start = process.hrtime.bigint();
     while (true) {
+      if (settled) return;
       // An observation, not a row-lock read; there is no Prisma model for this view.
       // Only this suite's settings-row statements count, not any waiter in the database.
       const rows = await observer.$queryRaw<Array<{ count: number }>>`
@@ -146,6 +154,52 @@ function latch() {
       resumeReader.release();
       read.mockRestore();
       await Promise.allSettled([sync, move]);
+    }
+  });
+
+  it("never sends a key saved after an address move to the old address", async () => {
+    // The admin's two saves in order: move the address, then enter the new
+    // server's key. A sync that read the OLD address before either must not
+    // then pick up the NEW key: the reader holds the settings row until it has
+    // read both, so the move (and the key save behind it) waits.
+    const NEW_KEY = "race-4436-new-key";
+    fetchMock.mockImplementation(async (url: string | URL) => new Response(JSON.stringify(
+      String(url).endsWith("/api/v1/version") ? { version: "2.1", match: true } : { lodges: [], cursor: null, count: 0 },
+    )));
+    const readAddress = latch();
+    const resumeReader = latch();
+    const originalLoad = settings.loadServerNzSettings;
+    const read = vi.spyOn(settings, "loadServerNzSettings").mockImplementationOnce(async (db) => {
+      const value = await originalLoad(db);
+      readAddress.release();
+      await resumeReader.promise;
+      return value;
+    });
+    const sync = api.pullOtherLodges();
+    let replace: Promise<unknown> | undefined;
+    try {
+      await Promise.race([readAddress.promise, sync.then(() => { throw new Error("Sync escaped the read barrier."); })]);
+      replace = moveAddress().then(() => config.setServerNzApiKey(NEW_KEY, { kind: "admin", memberId: ACTOR_ID }));
+      await waitForBlockedConnection(replace);
+      resumeReader.release();
+      await sync;
+      await replace;
+      // The next sync takes the new connection whole.
+      await api.pullOtherLodges();
+      const sent = fetchMock.mock.calls.map(([url, init]) => ({
+        url: String(url), authorization: new Headers(init.headers).get("Authorization"),
+      }));
+      expect(sent.filter(({ authorization }) => authorization === `Bearer ${NEW_KEY}`)
+        .every(({ url }) => url.startsWith(`${NEW_URL}/`))).toBe(true);
+      expect(sent.filter(({ url }) => url.startsWith(`${OLD_URL}/`))).toEqual([
+        { url: `${OLD_URL}/api/v1/other-lodges`, authorization: `Bearer ${OLD_KEY}` },
+      ]);
+      expect(sent.some(({ url, authorization }) =>
+        url.startsWith(`${NEW_URL}/api/v1/other-lodges`) && authorization === `Bearer ${NEW_KEY}`)).toBe(true);
+    } finally {
+      resumeReader.release();
+      read.mockRestore();
+      await Promise.allSettled([sync, replace]);
     }
   });
 
