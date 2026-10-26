@@ -24,3 +24,16 @@ export function isAuditRetentionClass(value: unknown): value is AuditRetentionCl
 export const UNCLASSIFIED_RETENTION: Prisma.AuditLogWhereInput = {
   OR: [{ retentionClass: null }, { retentionClass: { notIn: [...AUDIT_RETENTION_CLASSES] } }],
 };
+
+type AuditLogColumnName = keyof typeof Prisma.AuditLogScalarFieldEnum;
+
+// The request-data columns `anonymizeExpiredAuditRequestData` clears after 90
+// days (#4453). ONE list for the job and for the database grant: the job builds
+// its UPDATE from it, and the audit-retention role may UPDATE exactly these
+// columns (`src/lib/database-roles.ts`), so adding a column to the anonymisation
+// widens the grant on the next provisioning run rather than failing the nightly
+// job with "permission denied".
+export const AUDIT_ANONYMISED_REQUEST_COLUMNS = [
+  "ipAddress",
+  "userAgent",
+] as const satisfies readonly AuditLogColumnName[];

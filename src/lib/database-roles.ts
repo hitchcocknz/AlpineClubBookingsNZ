@@ -38,8 +38,7 @@
  * anything from PUBLIC, or print a password.
  */
 
-import type { Prisma } from "@prisma/client";
-
+import { AUDIT_ANONYMISED_REQUEST_COLUMNS } from "./audit-retention-classes";
 import {
   buildCreateLoginRoleIfAbsentSql,
   buildStripAllRoleMembershipsSql,
@@ -62,22 +61,11 @@ export const APPEND_ONLY_RELATIONS = ["BookingLedgerLine", "AuditLog"] as const;
 /** Prisma's migration history: the application reads it, only migrations write it. */
 export const MIGRATION_HISTORY_RELATION = "_prisma_migrations";
 
-/** The audit relation the retention role maintains. */
-export const AUDIT_RETENTION_RELATION = "AuditLog";
-
-type AuditLogColumnName = keyof typeof Prisma.AuditLogScalarFieldEnum;
-
 /**
- * The request-data columns `anonymizeExpiredAuditRequestData` clears after 90
- * days. ONE list for the job and for the grant: the job derives its UPDATE from
- * it, and the retention role may UPDATE exactly these columns, so adding a column
- * to the anonymisation widens the grant on the next provisioning run instead of
- * failing the nightly job with "permission denied".
+ * The audit relation the retention role maintains. It may UPDATE only
+ * `AUDIT_ANONYMISED_REQUEST_COLUMNS`, the list the job itself clears.
  */
-export const AUDIT_ANONYMISED_REQUEST_COLUMNS = [
-  "ipAddress",
-  "userAgent",
-] as const satisfies readonly AuditLogColumnName[];
+export const AUDIT_RETENTION_RELATION = "AuditLog";
 
 /** Table rights the application role holds on an ordinary relation. */
 export const APPLICATION_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE";
