@@ -100,6 +100,12 @@ CI also runs independent static and container checks:
 - Keep `pnpm-lock.yaml` committed. It is the only lockfile; CI refuses a
   `package-lock.json` (#3673).
 - Prefer small dependency update PRs with explicit validation results.
+- A package that runs an install script is approved in `pnpm-workspace.yaml`
+  `allowBuilds` at one exact version, and Dependabot bumps it in its own
+  `install-scripts` group. `verify` checks both before the install
+  (`scripts/ci/check-allow-builds.mjs`, #4364); a failure there is re-approved
+  as [`CONTRIBUTING.md` → "Package manager: pnpm"](../CONTRIBUTING.md#package-manager-pnpm)
+  describes.
 - Keep the `overrides` block in `pnpm-workspace.yaml` to the minimum that is still
   load-bearing, and retire an entry as soon as the upstream dependency graph no
   longer needs it. The register below — not the workspace file, whose comments
@@ -344,7 +350,12 @@ safe (`browserslist` above is the standing example).
   protected-branch check (`Image security gate (Trivy CRITICAL)`), so it blocks
   the merge rather than only turning a job red; the HIGH step keeps
   `continue-on-error: true` and the two steps are named "REQUIRED" and
-  "ADVISORY" so the distinction is readable from the checks list.
+  "ADVISORY" so the distinction is readable from the checks list. Since #4425
+  (owner decision, 26 Oct 2026) a pull request builds and scans the image only
+  when it changes dependencies, `patches/`, the Dockerfile, a compose file,
+  `.dockerignore`, `.trivyignore` or the CI workflow; the check still reports,
+  and every push to `main` scans in full, so a newly published CVE surfaces
+  there rather than on an unrelated pull request.
 - Keep a scanner's configuration file honest about what it actually enables. A
   `.gitleaks.toml` without `[extend] useDefault = true` REPLACES the built-in
   rule set instead of adding to it, and this repository shipped exactly that for
@@ -641,8 +652,9 @@ Two consequences worth holding on to.
 
 Trivy scans the built image against a vulnerability database that moves on its
 own. A newly published CRITICAL against the `node:24.15-alpine` base therefore
-turns `Image security gate (Trivy CRITICAL)` red on **every** open pull request,
-including the one that would fix it, with nobody having changed a line. Branch
+turns `Image security gate (Trivy CRITICAL)` red on the next push to `main` and
+on **every** open pull request that rebuilds the image (#4425), including the one
+that would fix it, with nobody having changed a line. Branch
 protection has `enforce_admins` off, so the owner can force a merge through; an
 agent cannot, and must not try. Do this instead, in order:
 
@@ -2300,7 +2312,9 @@ DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash --json
 A receipt whose invoice was paid by an applied overpayment or prepayment (Xero
 records an allocation, not a payment; the inbound sync marks the primary-invoice
 link), one with no recorded payment, or one whose amount cannot be read is
-listed apart as not judged: check its invoice in Xero. Officer-settled payments
+listed apart as not judged: check its invoice in Xero. An invoice last synced
+before the sync recorded allocations carries no mark, so the report says when a
+difference, or a missing payment, may hide one (#4095). Officer-settled payments
 (`INV-PAY-001`) are left out. **Correcting a row is a database change**: the
 owner or a developer makes it under the raw-SQL rules (`INV-OPS`), and corrects
 the receipt and the payment's refunded total TOGETHER - either alone moves the

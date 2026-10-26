@@ -7,10 +7,12 @@ import {
 import { prisma } from "@/lib/prisma";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import {
+  cardRefundNoteRowsWhere,
   paidAnotherWayCloseNoteRowsWhere,
   readPaidAnotherWayCloseShare,
 } from "@/lib/card-refund-paid-another-way-cash";
 import { claimXeroSyncOperationToRunning } from "@/lib/xero-operation-claim";
+import { cardRefundNoteKey, readCardRefundNoteShare } from "@/lib/card-refund-own-note-share";
 import { readClubTimeZoneOutsideRequest } from "@/lib/club-time-zone-runtime";
 import { clubSeasonYear } from "@/lib/financial-year";
 import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
@@ -27,6 +29,7 @@ import {
   startXeroSyncOperation,
   upsertXeroObjectLink,
 } from "@/lib/xero-sync";
+import { holdsRecordedXeroSuccess, NOT_A_XERO_REPAIR_CLAIM } from "@/lib/xero-operation-outcome-guard";
 import {
   createXeroInvoiceForBooking,
   updateXeroBookingInvoiceForBooking,
@@ -120,6 +123,7 @@ import {
   outstandingSupplementaryInvoiceOperationsWhere,
   RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES,
   restatableSupplementaryInvoiceOperationsWhere,
+  stillWaitingOnIntentWhere,
   waitingSupplementaryInvoiceOperationsWhere,
 } from "@/lib/xero-supplementary-invoice-statuses";
 import { formatDateOnly } from "@/lib/date-only";
@@ -861,6 +865,12 @@ export async function enqueueXeroRefundCreditNoteOperation(
      * (`bank-refund-void-scan.ts`).
      */
     handBackTaskId?: string;
+    /**
+     * #4312 (`INV-ADDPAY-047`): the card refund (its `stripeRefundId`) on a
+     * bank-transfer payment this note answers. Keyed and sized on that refund
+     * alone (`readCardRefundNoteShare`), as a close's note is on its record.
+     */
+    cardRefundId?: string;
   }
 ) {
   // Optional transaction client (#1357) so callers (e.g. the Internet Banking
@@ -930,7 +940,10 @@ export async function enqueueXeroRefundCreditNoteOperation(
   const stepped =
     payment.source === PaymentSource.STRIPE ||
     Boolean(options?.reviewTaskId) ||
-    Boolean(options?.paidAnotherWayTaskId);
+    Boolean(options?.paidAnotherWayTaskId) ||
+    Boolean(options?.cardRefundId);
+  // #4312: what a card refund's own notes already cover, which keys its note.
+  let cardRefundCoveredCents: number | null = null;
   if (stepped) {
     // Stripe payments can be refunded in several steps, and each step needs
     // its own credit note for the still-uncovered delta. The cumulative total
@@ -963,6 +976,12 @@ export async function enqueueXeroRefundCreditNoteOperation(
       // of a refund Stripe failed later asks only for what the card refund
       // note already in Xero does not answer (`queuePaidAnotherWayXero`).
       noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
+    } else if (options?.cardRefundId) {
+      // #4312 (`INV-ADDPAY-047`): sized by the refund alone, never the payment-wide gap.
+      const share = await readCardRefundNoteShare(db, paymentId, options.cardRefundId);
+      if (!share) throw new Error(`Refusing to queue a Xero refund note for payment ${paymentId}: its card refund ${options.cardRefundId} is not on this payment`);
+      noteAmountCents = Math.min(refundAmountCents, share.uncoveredCents);
+      cardRefundCoveredCents = share.coveredCents;
     } else {
       // #3635 round-3 R1: the cash a note may answer, which leaves out refunds of
       // late captures the app never recorded in Xero (`INV-PAY-110`).
@@ -984,6 +1003,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
         queueOperationId: null,
         message: options?.paidAnotherWayTaskId
           ? "This paid-another-way close's own refund credit notes already cover what it paid back."
+          : options?.cardRefundId
+          ? "This card refund's own refund credit notes already cover it, or it gets no note of its own."
           : "No provider-backed Stripe cash refund remains uncovered by refund credit notes for this payment.",
       };
     }
@@ -1020,7 +1041,9 @@ export async function enqueueXeroRefundCreditNoteOperation(
   // The cumulative watermark distinguishes equal-amount Stripe deltas so each one
   // gets its own note, while replays of the same state produce the same key and
   // collide into the PENDING/RUNNING dedupe just below.
-  const correlationKey = buildXeroIdempotencyKey(
+  const correlationKey = options?.cardRefundId && cardRefundCoveredCents !== null
+    ? await cardRefundNoteKey(paymentId, options.cardRefundId, cardRefundCoveredCents, db) // #4312: one row per refund
+    : buildXeroIdempotencyKey(
     "payment", paymentId, "refund-credit-note", stepped ? watermarkCents : noteAmountCents, stepped ? "v2" : "v1",
     ...reviewTaskKeyParts(options?.reviewTaskId),
     ...(options?.paidAnotherWayTaskId ? ["paid-another-way", options.paidAnotherWayTaskId] : []),
@@ -1051,6 +1074,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
     where: {
       ...(options?.paidAnotherWayTaskId
         ? paidAnotherWayCloseNoteRowsWhere(paymentId, options.paidAnotherWayTaskId)
+        : options?.cardRefundId
+        ? cardRefundNoteRowsWhere(paymentId, options.cardRefundId)
         : {
             correlationKey,
             direction: "OUTBOUND",
@@ -1087,7 +1112,8 @@ export async function enqueueXeroRefundCreditNoteOperation(
     requestPayload: {
       queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE,
       refundAmountCents: noteAmountCents,
-      watermarkCents,
+      // #4312: none on a card refund's own row - an older release's worker then runs it as the one note it would fold into.
+      ...(options?.cardRefundId && cardRefundCoveredCents !== null ? {} : { watermarkCents }),
       ...(options?.refundMethod ? { refundMethod: options.refundMethod } : {}),
       // Normalised at write time too (a cast or untyped caller): cash wording
       // is stored only with the internet-banking method (`readRefundNoteWording`).
@@ -1098,6 +1124,7 @@ export async function enqueueXeroRefundCreditNoteOperation(
       ...(options?.paidAnotherWayTaskId ? { paidAnotherWayTaskId: options.paidAnotherWayTaskId } : {}),
       ...(options?.creditsInvoiceId ? { creditsInvoiceId: options.creditsInvoiceId } : {}),
       ...(options?.handBackTaskId ? { handBackTaskId: options.handBackTaskId } : {}),
+      ...(options?.cardRefundId ? { cardRefundId: options.cardRefundId } : {}),
     },
     createdByMemberId: options?.createdByMemberId ?? null,
     store: db,
@@ -1809,16 +1836,14 @@ export async function releaseXeroSupplementaryInvoiceOperationsForPaymentIntent(
  */
 export async function releaseWaitingSupplementaryInvoiceOperations(
   queueOperationIds: string[],
+  /** #3403 review: the capture they were read waiting on; one moved off it since is not its to release. */
+  paymentIntentId?: string,
 ): Promise<{ released: number; queueOperationIds: string[] }> {
-  if (queueOperationIds.length === 0) {
-    return { released: 0, queueOperationIds: [] };
-  }
+  if (queueOperationIds.length === 0) return { released: 0, queueOperationIds: [] };
   const updateResult = await prisma.xeroSyncOperation.updateMany({
     where: {
-      id: {
-        in: queueOperationIds,
-      },
-      status: "WAITING_PAYMENT",
+      id: { in: queueOperationIds },
+      ...(paymentIntentId ? stillWaitingOnIntentWhere(paymentIntentId) : { status: "WAITING_PAYMENT" }),
     },
     data: {
       status: "PENDING",
@@ -1828,10 +1853,7 @@ export async function releaseWaitingSupplementaryInvoiceOperations(
     },
   });
 
-  return {
-    released: updateResult.count,
-    queueOperationIds,
-  };
+  return { released: updateResult.count, queueOperationIds };
 }
 
 /**
@@ -2002,6 +2024,8 @@ export async function restatePendingSupplementaryInvoiceAmount({
       where: {
         id: operation.id,
         status: { in: [...RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES] },
+        // #3403 review (C1): still waiting on the request it was read on; an invoice a supersession moved since is not written back.
+        ...(typeof payload.paymentIntentId === "string" ? { requestPayload: { path: ["paymentIntentId"], equals: payload.paymentIntentId } } : {}),
       },
       data: {
         requestPayload: {
@@ -2167,7 +2191,7 @@ export async function recordSkippedXeroBookingInvoiceUpdateOperation(params: {
     createdByMemberId: params.createdByMemberId ?? null,
   });
 
-  await completeXeroSyncOperation(operation.id, {
+  await completeXeroSyncOperation(operation, {
     responsePayload: {
       skipped: true,
       reason: params.reason,
@@ -2854,6 +2878,7 @@ export interface ProcessQueuedXeroOutboxOperationsResult {
   succeeded: number;
   failed: number;
   skipped: number;
+  cooldownDeferred?: number; // #4375: of `skipped`, refused before any call; set only when non-zero
 }
 
 export async function kickQueuedXeroOutboxOperationsIfConnected(options?: {
@@ -2913,6 +2938,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
   for (const queuedOperation of queuedOperations) {
     const queueType = readQueueType(queuedOperation.requestPayload);
     const expectedOperation = getQueuedOutboxExpectedOperation(queueType);
+    // #4373: the claim this dispatch's outcomes are written under (`INV-INT-029`).
     const claimed = await claimQueuedOutboxOperation(queuedOperation.id, expectedOperation);
     if (!claimed) {
       result.skipped += 1;
@@ -2974,7 +3000,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
     // hand-made document stands for it. Closed CANCELLED, before any Xero call.
     const resolvedSibling = await findResolvedSiblingSince(queuedOperation);
     if (resolvedSibling) {
-      await completeXeroSyncOperation(queuedOperation.id, {
+      await completeXeroSyncOperation(claimed, {
         status: "CANCELLED",
         responsePayload: {
           skipped: "resolved-in-xero",
@@ -3000,25 +3026,25 @@ export async function processQueuedXeroOutboxOperations(options?: {
       ) {
         await createXeroEntranceFeeInvoice(queuedOperation.localId, {
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
           precomputedEntranceFee: entranceFeeContext,
         });
       } else if (payload?.queueType === XERO_OUTBOX_BOOKING_INVOICE_TYPE) {
         await createXeroInvoiceForBooking(payload.bookingId, {
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else if (payload?.queueType === XERO_OUTBOX_BOOKING_INVOICE_UPDATE_TYPE) {
         await updateXeroBookingInvoiceForBooking(payload.bookingId, {
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else if (
         payload?.queueType === XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_TYPE
       ) {
         await createXeroInvoiceForGroupSettlement(payload.settlementId, {
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else if (
         payload?.queueType === XERO_OUTBOX_GROUP_SETTLEMENT_INVOICE_VOID_TYPE
@@ -3028,19 +3054,19 @@ export async function processQueuedXeroOutboxOperations(options?: {
           await voidXeroInvoiceForAbandonedGroupSettlement(
             payload.settlementId,
             payload.xeroInvoiceId,
-            { syncOperationId: queuedOperation.id }
+            { syncOperation: claimed }
           );
         } else {
           await voidXeroInvoiceForCancelledGroupSettlement(
             payload.settlementId,
-            { syncOperationId: queuedOperation.id }
+            { syncOperation: claimed }
           );
         }
       } else if (payload?.queueType === XERO_OUTBOX_SUBSCRIPTION_INVOICE_TYPE && subscriptionChargeId) {
         await createXeroMembershipSubscriptionInvoice({ // INV-INT-026
           chargeId: subscriptionChargeId,
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else if (
         payload?.queueType === XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE &&
@@ -3051,7 +3077,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
           payload.refundAmountCents,
           {
             createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-            syncOperationId: queuedOperation.id,
+            syncOperation: claimed,
             watermarkCents: payload.watermarkCents,
             ...(payload.refundMethod && payload.refundMethod !== "account-credit"
               ? { refundMethod: payload.refundMethod }
@@ -3063,6 +3089,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
             ...(payload.creditsInvoiceId ? { creditsInvoiceId: payload.creditsInvoiceId } : {}),
             // #4162: the hand-back this note records rides the executed row.
             ...(payload.handBackTaskId ? { handBackTaskId: payload.handBackTaskId } : {}),
+            ...(payload.cardRefundId ? { cardRefundId: payload.cardRefundId } : {}), // #4312: the card refund it answers
             // #3827 (D-3813-8): a refund request's own note (`refund-request-credit-note.ts`).
             ...(readRefundRequestIdFromPayload(queuedOperation.requestPayload)
               ? { refundRequestId: readRefundRequestIdFromPayload(queuedOperation.requestPayload)! }
@@ -3080,7 +3107,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
           format,
           {
             createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-            syncOperationId: queuedOperation.id,
+            syncOperation: claimed,
           }
         );
       } else if (
@@ -3092,18 +3119,18 @@ export async function processQueuedXeroOutboxOperations(options?: {
           bookingModificationId: payload.bookingModificationId,
           reviewTaskId: queuedReviewTaskId(queuedOperation),
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
           format,
         });
       } else if (payload?.queueType === XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE) {
         // #3635: a late capture a treasurer kept, invoiced and paid in Xero.
         await createXeroKeptLateCaptureInvoice({
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
         });
       } else if (payload?.queueType === XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE) {
         // #3953: a change's card capture nothing waited on, recorded against the invoice billing it.
-        await recordAdditionalCaptureReceipt({ syncOperationId: queuedOperation.id, createdByMemberId: queuedOperation.createdByMemberId ?? undefined });
+        await recordAdditionalCaptureReceipt({ syncOperation: claimed, createdByMemberId: queuedOperation.createdByMemberId ?? undefined });
       } else if (payload?.queueType === XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE) {
         await createXeroSupplementaryInvoice({
           bookingId: payload.bookingId,
@@ -3117,7 +3144,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
           // being asked twice.
           shortfallReviewTaskId: payload.shortfallReviewTaskId,
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
           format,
         });
       } else if (payload?.queueType === XERO_OUTBOX_MODIFICATION_CREDIT_NOTE_TYPE) {
@@ -3128,7 +3155,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
           reviewTaskId: queuedReviewTaskId(queuedOperation),
           ...readModificationNoteWording(payload),
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
           format,
         });
       } else if (
@@ -3139,7 +3166,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
           requestId: payload.requestId,
           participantId: payload.participantId,
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else if (
         payload?.queueType === XERO_OUTBOX_MEMBERSHIP_CANCELLATION_CONTACT_TYPE
@@ -3149,7 +3176,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
           requestId: payload.requestId,
           participantId: payload.participantId,
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else if (
         payload?.queueType === XERO_OUTBOX_CREDIT_NOTE_ALLOCATION_TYPE &&
@@ -3165,7 +3192,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
             localId: queuedOperation.localId,
             role: payload.role,
             createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-            syncOperationId: queuedOperation.id,
+            syncOperation: claimed,
           }
         );
       } else if (
@@ -3173,13 +3200,13 @@ export async function processQueuedXeroOutboxOperations(options?: {
       ) {
         await allocateAppliedCreditForBooking(payload.bookingId, {
           createdByMemberId: queuedOperation.createdByMemberId ?? undefined,
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else if (
         payload?.queueType === XERO_OUTBOX_APPLIED_CREDIT_DEALLOCATION_TYPE
       ) {
         await deallocateExcessAppliedCreditForBooking(payload.bookingId, {
-          syncOperationId: queuedOperation.id,
+          syncOperation: claimed,
         });
       } else {
         throw new Error("Queued Xero outbox payload is incomplete.");
@@ -3195,7 +3222,8 @@ export async function processQueuedXeroOutboxOperations(options?: {
         // #3791: the reason stays on the row, so a note waiting on a
         // deallocation says what it is waiting for.
         await prisma.xeroSyncOperation.updateMany({
-          where: { id: queuedOperation.id, status: "RUNNING" },
+          // #4356: never take back a repair's marked claim; #4373: nor any claim but this dispatch's (`INV-INT-029`).
+          where: { id: queuedOperation.id, status: "RUNNING", startedAt: claimed.startedAt, ...NOT_A_XERO_REPAIR_CLAIM },
           data: {
             status: "PENDING",
             startedAt: null,
@@ -3223,8 +3251,8 @@ export async function processQueuedXeroOutboxOperations(options?: {
         // state the outbox expects. Every queue type but the three named below
         // owns a `catch { await failXeroSyncOperation(<this outbox row>, error); throw }`
         // (the kept late-capture invoice, #3635, self-fails like the rest),
-        // and `failXeroSyncOperation` writes `status: FAILED` + `completedAt`
-        // with no status guard — so by the time this branch runs the row is
+        // and `failXeroSyncOperation` writes `status: FAILED` + `completedAt` over a
+        // RUNNING row (only a recorded success is kept, `INV-INT-029`) — so by the time this branch runs the row is
         // already FAILED for those types, and a `status: "RUNNING"`-only guard
         // would match zero rows and leave it terminally FAILED (the very bug the
         // #2423 F2 review caught). The three handlers that do NOT self-fail
@@ -3252,9 +3280,11 @@ export async function processQueuedXeroOutboxOperations(options?: {
         const returned = await prisma.xeroSyncOperation.updateMany({
           where: {
             id: queuedOperation.id,
-            status: { in: ["RUNNING", "FAILED"] },
-            // #3635 (`INV-INT-025`): never revive a row an officer resolved.
+            // #4373: RUNNING only as this dispatch's own claim, never a later retry's (`INV-INT-029`).
+            AND: [{ OR: [{ status: "RUNNING", startedAt: claimed.startedAt }, { status: "FAILED" }] }],
+            // Never revive a row an officer resolved (#3635, `INV-INT-025`), nor a repair's marked claim (#4356).
             manuallyResolvedAt: null,
+            ...NOT_A_XERO_REPAIR_CLAIM,
           },
           data: {
             status: "PENDING",
@@ -3273,6 +3303,15 @@ export async function processQueuedXeroOutboxOperations(options?: {
             },
             "Returned un-attempted Xero outbox operation to PENDING: a Xero cooldown refused it before any call"
           );
+          result.skipped += 1;
+          result.cooldownDeferred = (result.cooldownDeferred ?? 0) + 1;
+          continue;
+        }
+        // #4356: a caller sharing this row recorded a success on it, so the handler's
+        // own failure was refused (`INV-INT-029`): nothing failed, that outcome stands.
+        const held = await prisma.xeroSyncOperation.findUnique({ where: { id: queuedOperation.id }, select: { status: true } });
+        if (held && holdsRecordedXeroSuccess(held.status)) {
+          logger.info({ queueOperationId: queuedOperation.id, heldStatus: held.status }, "Xero cooldown refused an outbox operation another caller had already completed; its outcome stands");
           result.skipped += 1;
           continue;
         }
@@ -3326,7 +3365,7 @@ export async function processQueuedXeroOutboxOperations(options?: {
         // #3635 round-3 N5: never over a row withdrawn in the meantime (an
         // approval cancels a kept row it finds FAILED); CANCELLED stands.
         await failXeroSyncOperation(
-          queuedOperation.id,
+          claimed,
           error instanceof Error ? error : new Error(String(error)),
           undefined,
           { keepCancelled: true }

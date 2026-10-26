@@ -289,7 +289,7 @@ describe("closing a dead card refund as paid another way", () => {
     await close();
 
     expect(mocks.claim).toHaveBeenCalledWith({
-      where: { id: "op-1", ...deadCardRefundOperationWhere },
+      where: { id: "op-1", ...deadCardRefundOperationWhere, allocationPlan: { equals: deadOperation().allocationPlan } },
       data: expect.objectContaining({
         status: "SUCCEEDED",
         nextRetryAt: null,
@@ -1029,6 +1029,18 @@ describe("a close that must not happen writes nothing", () => {
   it("a lost claim - a second click, or the row moved since the read - records no money", async () => {
     mocks.claim.mockResolvedValue({ count: 0 });
     await expectRefusal(close(), 409);
+    expect(calls).toEqual(["lock(1)", "read-operation", "lock-payment-row", "read-payment", "claim"]);
+  });
+
+  it("MUTATION (#4312 F2): a re-send's mark landing between the owed read and the claim fails the claim", async () => {
+    // The row as it stands at the claim: a mark (`markResentSlices`, `pairResendRecordedFirst`) wrote its plan after the close read it.
+    const stored = { ...deadOperation(), allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 15_000, madeRefundId: "re_resend" }] };
+    mocks.claim.mockImplementation(async ({ where }: { where: { allocationPlan?: { equals: unknown } } }) => ({
+      count: where.allocationPlan && JSON.stringify(where.allocationPlan.equals) !== JSON.stringify(stored.allocationPlan) ? 0 : 1,
+    }));
+    const refused = close();
+    await expectRefusal(refused, 409);
+    await expect(refused).rejects.toThrow("changed while you were closing it");
     expect(calls).toEqual(["lock(1)", "read-operation", "lock-payment-row", "read-payment", "claim"]);
   });
 

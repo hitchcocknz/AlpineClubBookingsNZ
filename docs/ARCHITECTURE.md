@@ -1877,8 +1877,10 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
   sessions, and issue reports.
 - Lodge rooms, lodge beds, bed allocations, allocation settings, and allocation
   approval metadata.
-- Operational Xero tokens, object links, cache tables, inbound events,
-  operation queues, account/item mappings, and API usage metering.
+- The operational Xero connection (`XeroConnection`: tenant, token expiry and
+  refresh lease, no secret; the tokens themselves are one encrypted
+  credential-store row), object links, cache tables, inbound events, operation
+  queues, account/item mappings, and API usage metering.
 - Finance sync runs, finance snapshots, chart-of-accounts snapshots, finance
   report diagnostics, and finance access levels, all using the operational Xero
   connection rather than a separate finance token store.
@@ -3088,9 +3090,11 @@ an unrecorded, unpaid intent that matches this ask (`mintOrdinaryAskIntent`),
 and fails closed and retries instead when none or several match, when the intent
 scan stopped at its bound, or when another recovery of the booking still in
 flight (`isPaymentRecoveryOperationInFlight`, a FAILED row awaiting its retry
-included) could own the match; it never takes an intent under a door's reason
-that Stripe created after the recovery row (`DOOR_INTENT_CLOCK_SKEW_MS`), since
-the row exists only once the door's create failed; under its claim it re-checks
+included) could own the match; it never takes an intent under the runner's
+own reason (#4079), nor one Stripe created after the recovery row
+(`DOOR_INTENT_CLOCK_SKEW_MS`), since the row exists only once the door's create
+failed, and its scan reads nothing created after that bound; under its claim it
+re-checks
 that no ledger row took the adopted intent, and it leaves the payment's customer
 as it was. Every ask write that names its edit, the door's and the runner's,
 refuses atomically a ledger row already naming another edit
@@ -3138,9 +3142,11 @@ retry path re-drives compensation.
 
 Operational Xero handles member/contact sync, booking invoices, payments,
 credit notes, item codes, contact groups, inbound webhooks, local caches, retry
-queues, and usage metering. Xero tokens are encrypted at rest.
-OAuth token refresh uses a short database-backed lease on the operational
-token row so multiple app workers cannot use the same rotating refresh token.
+queues, and usage metering. Xero tokens are encrypted at rest in the
+credential store. OAuth token refresh uses a short database-backed lease on the
+`XeroConnection` row (and, until #3806 R3, on the previous release's
+`XeroToken` row too) so multiple app workers cannot use the same rotating
+refresh token.
 Internet Banking bookings use this boundary to issue invoice-backed payment
 instructions and reconcile settlement from inbound Xero invoice/payment state.
 Unheld Internet Banking reconciliation performs the final capacity claim before
@@ -3290,7 +3296,7 @@ reference):
 ```mermaid
 flowchart TD
     Leader["app cron-leader<br/>(CRON_ENABLED=true)"]
-    Leader --> Q15["Every 15 min<br/>payment-recovery, internet-banking-hold-release,<br/>xero-waiting-invoice-reaper, late-capture-held-alert,<br/>credit-release-asks, duplicate-capture-kept-alert, xero-outbox,<br/>xero-operation-replay, xero-inbound-reconcile"]
+    Leader --> Q15["Every 15 min<br/>payment-recovery, internet-banking-hold-release,<br/>xero-waiting-invoice-reaper, late-capture-held-alert,<br/>credit-release-asks, duplicate-capture-kept-alert, xero-outbox,<br/>xero-operation-replay, xero-inbound-reconcile,<br/>xero-credit-note-outside-spend-mirror"]
     Leader --> Q30["Every 30 min<br/>waitlist-processor, email-retry"]
     Leader --> Q3h["Every 3 h<br/>additional-payment-reminders, confirm-pending,<br/>placeholder-guest-name-reminders, pre-arrival-reminders,<br/>purge-booking-requests, quote-expiry-reminders,<br/>school-attendee-confirmations, group-settlement-reaper,<br/>policy-exception-hold-reaper, hosting-coverage-reevaluation"]
     Leader --> Daily["Daily<br/>complete-bookings, data-pruning, draft-cleanup,<br/>age-up, email-inheritance-reconcile,<br/>capacity-warnings, admin-digest,<br/>credit-reconciliation, hut-leader-auto-assign,<br/>checkin-reminders, pending-deadline-alerts,<br/>member-guest-consent-expiry,<br/>nomination-reminders, finance-daily-sync,<br/>xero-membership-refresh, xero-link-backfill,<br/>xero-link-cleanup, xero-bank-refund-void-follow-up,<br/>xero-reconciliation-report,<br/>xero-credit-sync-check"]
@@ -3320,6 +3326,7 @@ flowchart TD
 | `xero-outbox` | Every 15 minutes | Process queued Xero outbox operations |
 | `xero-operation-replay` | Every 15 minutes | Replay queued Xero retries |
 | `xero-inbound-reconcile` | Every 15 minutes | Process inbound Xero events |
+| `xero-credit-note-outside-spend-mirror` | Every 15 minutes (in the inbound reconcile's slot) | Backstop sweep for credit notes used or un-used in Xero outside the app (#4270); writes only the credit ledger, self-throttled, switchable off without a deploy |
 | `complete-bookings` | Daily | Mark past bookings completed |
 | `xero-membership-refresh` | Daily when enabled | Sync membership invoice state |
 | `xero-link-backfill` | Daily | Backfill canonical Xero object links into the ledger |

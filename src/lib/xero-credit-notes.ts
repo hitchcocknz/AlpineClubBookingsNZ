@@ -38,6 +38,7 @@ import { bookingOwner } from "@/lib/booking-owner";
 import logger from "@/lib/logger";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import { paidAnotherWayCloseNoteRowsWhere, readPaidAnotherWayCloseShare, readPaidAnotherWayUncoveredCents } from "@/lib/card-refund-paid-another-way-cash";
+import { cardRefundNoteKey, readCardRefundNoteShare } from "@/lib/card-refund-own-note-share";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import {
   buildXeroIdempotencyKey,
@@ -81,13 +82,14 @@ import type { RefundNoteWording } from "@/lib/xero-refund-method";
 import type { ClubFormat } from "@/lib/club-format";
 import { cancellationCreditDescription } from "@/lib/cancellation-settled-money";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import type { XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
 
 /** #4104: how often a card note re-reads the closes' figure until it agrees with the cash read between. */
 const STABLE_CLOSE_READ_ATTEMPTS = 3;
 
 export interface CreateXeroRefundCreditNoteOptions
   extends FindOrCreateXeroContactOptions {
-  syncOperationId?: string;
+  syncOperation?: XeroOperationClaim;
   /**
    * Cumulative refunded-cents watermark this note settles up to (#1162). When
    * set, the payment is refunded per-delta (Stripe): skip only when an active
@@ -136,6 +138,8 @@ export interface CreateXeroRefundCreditNoteOptions
    * note records. Rides the executed row only, so a void can be matched to it.
    */
   handBackTaskId?: string;
+  /** #4312 (`INV-ADDPAY-047`): the card refund on a bank transfer this note answers - keyed and sized on it alone. */
+  cardRefundId?: string;
   /**
    * #3827 (D-3813-8, `INV-PAY-118`): this is that refund request's OWN note,
    * raised when its task is marked paid back. Keyed by the request, linked
@@ -169,7 +173,7 @@ function readLinkWatermarkCents(metadata: unknown): number | null {
 
 export interface CreateXeroUnappliedCreditNoteOptions
   extends FindOrCreateXeroContactOptions {
-  syncOperationId?: string;
+  syncOperation?: XeroOperationClaim;
   bookingModificationId?: string;
   /**
    * #3791: one review task's share of the modification. Scopes the Xero key to
@@ -195,7 +199,8 @@ export async function createXeroCreditNote(
   });
 
   if (!payment) throw new Error(`Payment not found: ${paymentId}`);
-  const queuedOperationId = options?.syncOperationId ?? null;
+  const queuedOperation = options?.syncOperation ?? null;
+  const queuedOperationId = queuedOperation?.id ?? null;
   // #3635 (`INV-PAY-110`, round-3 R5): a note for a LATE CAPTURE names that
   // capture's own receipt - its kept invoice, or its change's supplementary
   // invoice - and never `payment.xeroInvoiceId`, which for a late capture is
@@ -217,8 +222,8 @@ export async function createXeroCreditNote(
         { paymentId, paymentIntentId: lateCaptureIntent, receipt: receipt.kind },
         "Late-capture refund credit note not raised: the app never recorded this capture's receipt in Xero"
       );
-      if (queuedOperationId) {
-        await completeXeroSyncOperation(queuedOperationId, {
+      if (queuedOperation) {
+        await completeXeroSyncOperation(queuedOperation, {
           responsePayload: {
             skipped: LATE_CAPTURE_REFUND_NOTE_SKIPPED,
             receipt: receipt.kind,
@@ -251,7 +256,9 @@ export async function createXeroCreditNote(
     throw new Error(`No Xero invoice linked to payment: ${paymentId}`);
   }
   const refundRequestId = options?.refundRequestId ?? null;
-  const watermarkCents = options?.watermarkCents;
+  // #4312: a card refund's own row carries no watermark (so an older release's worker runs it as the one note it
+  // would have folded into, never a payment-wide delta); it is a delta note all the same, sized on its refund.
+  const watermarkCents = options?.watermarkCents ?? (options?.cardRefundId && !options.paidAnotherWayTaskId ? 0 : undefined);
   // #3827 (D-3813-8): a refund request's own note is never per-delta.
   const isDeltaMode =
     refundRequestId === null &&
@@ -261,7 +268,7 @@ export async function createXeroCreditNote(
   const perRefundNote =
     isDeltaMode &&
     payment.source !== PaymentSource.STRIPE &&
-    (Boolean(options?.reviewTaskId) || Boolean(options?.paidAnotherWayTaskId));
+    (Boolean(options?.reviewTaskId) || Boolean(options?.paidAnotherWayTaskId) || Boolean(options?.cardRefundId));
   const { refundMethod, refundMethodRecorded } = resolveRefundNoteMethod(
     options?.refundMethod,
     payment.source,
@@ -280,20 +287,20 @@ export async function createXeroCreditNote(
   // #3548 (`INV-PAY-111`): this row's OWN recorded note, before any coverage
   // read or mint. A row that already raised a note and recorded no outcome
   // for it is finished on that note, never a second one.
-  if (queuedOperationId) {
+  if (queuedOperation) {
     const own = await prisma.xeroSyncOperation.findUnique({
-      where: { id: queuedOperationId },
+      where: { id: queuedOperation.id },
       select: { xeroObjectId: true, correlationKey: true, idempotencyKey: true },
     });
     if (
       own?.xeroObjectId &&
       (await refundNoteSettlementInterrupted(paymentId, own.xeroObjectId, {
-        ignoreOperationId: queuedOperationId,
+        ignoreOperationId: queuedOperation.id,
       }))
     ) {
       try {
         await finishRefundCreditNoteSettlement({
-          operationId: queuedOperationId,
+          operation: queuedOperation,
           paymentId,
           creditNoteId: own.xeroObjectId,
           creationKeys: [own.correlationKey, own.idempotencyKey],
@@ -304,7 +311,7 @@ export async function createXeroCreditNote(
           refundRequestId,
         });
       } catch (error) {
-        await failXeroSyncOperation(queuedOperationId, error);
+        await failXeroSyncOperation(queuedOperation, error);
         throw error;
       }
       return own.xeroObjectId;
@@ -334,6 +341,9 @@ export async function createXeroCreditNote(
   let effectiveWatermarkCents: number | null = null;
   // #3924 round 9: what a close's OWN notes already cover, which keys its note.
   let closeCoveredCents: number | null = null;
+  // #4312: the same, for a card refund's own note.
+  let cardRefundCoveredCents: number | null = null;
+  const cardRefundId = options?.paidAnotherWayTaskId ? null : options?.cardRefundId ?? null;
 
   if (isDeltaMode) {
     // #3880: no other run on this payment between its coverage read and its record.
@@ -386,6 +396,13 @@ export async function createXeroCreditNote(
       uncoveredCents = share.uncoveredCents;
       closeCoveredCents = share.coveredCents;
       evidenceLog = { paidAnotherWayTaskId, closeAmountCents: share.amountCents, closeCoveredCents: share.coveredCents };
+    } else if (cardRefundId !== null) {
+      // #4312 (`INV-ADDPAY-047`): a card refund's own note answers that refund alone, as a close's does its record.
+      const share = await readCardRefundNoteShare(prisma, paymentId, cardRefundId);
+      if (!share) throw new Error(`Refusing to create a Xero refund credit note for payment ${paymentId}: its card refund ${cardRefundId} is not on this payment`);
+      uncoveredCents = share.uncoveredCents;
+      cardRefundCoveredCents = share.coveredCents;
+      evidenceLog = { cardRefundId, refundAmountCents: share.amountCents, cardRefundCoveredCents: share.coveredCents, answeredCents: share.answeredCents };
     } else {
       // #3635 round-3 R1: the cash a note may answer, the figure the enqueue
       // capped against, never refunds of late captures Xero never received.
@@ -428,7 +445,7 @@ export async function createXeroCreditNote(
       // own notes only, and another note's link is not one of them; its row
       // completes as covered, raising nothing.
       const coveringLink =
-        paidAnotherWayTaskId !== null
+        paidAnotherWayTaskId !== null || cardRefundId !== null
           ? null
           : (activeLinks.find((link) => {
               const linkWatermark = readLinkWatermarkCents(link.metadata);
@@ -453,8 +470,8 @@ export async function createXeroCreditNote(
           },
           "No uncovered provider-backed Stripe cash refund at execution time; completing without creating a Xero refund credit note"
         );
-        if (queuedOperationId) {
-          await completeXeroSyncOperation(queuedOperationId, {
+        if (queuedOperation) {
+          await completeXeroSyncOperation(queuedOperation, {
             responsePayload: {
               skippedNothingUncovered: true,
               coveredCents,
@@ -502,6 +519,8 @@ export async function createXeroCreditNote(
   const afterVoid = await refundNoteKeyAfterVoidParts(paymentId, keyScope, prisma);
   const creditNoteIdempotencyKey = refundRequestId !== null
     ? refundRequestCreditNoteKey(paymentId, refundRequestId, afterVoid)
+    : isDeltaMode && cardRefundId !== null && cardRefundCoveredCents !== null
+    ? await cardRefundNoteKey(paymentId, cardRefundId, cardRefundCoveredCents, prisma) // #4312: the enqueue's key, for Xero too
     : isDeltaMode && options?.paidAnotherWayTaskId && closeCoveredCents !== null
     ? // #3924 rounds 8 and 9: a close's note is its own document in Xero, keyed
       // on the close and what ITS OWN notes already cover - never the
@@ -537,6 +556,7 @@ export async function createXeroCreditNote(
     ...(options?.creditsInvoiceId ? { creditsInvoiceId: options.creditsInvoiceId } : {}),
     // #4162: the hand-back this note records rides the row, so a retry keeps it.
     ...(options?.handBackTaskId ? { handBackTaskId: options.handBackTaskId } : {}),
+    ...(cardRefundId !== null ? { cardRefundId } : {}), // #4312: the refund rides the row, so a retry keeps it its own
     // #3935: the officer's cash answer rides the row, so a retry says the same.
     ...(noteWording ? { noteWording } : {}),
     // #3880 F2: a delta run's watermark rides its row, so an operator retry of
@@ -575,8 +595,8 @@ export async function createXeroCreditNote(
       xeroObjectNumber: existingCreditNoteNumber,
       role: noteLinkRole,
     });
-    if (queuedOperationId) {
-      await completeXeroSyncOperation(queuedOperationId, {
+    if (queuedOperation) {
+      await completeXeroSyncOperation(queuedOperation, {
         responsePayload: {
           existingCreditNoteId,
           coveredByExistingNote: true,
@@ -661,6 +681,7 @@ export async function createXeroCreditNote(
   });
 
   let operationId = queuedOperationId;
+  let operationClaim = queuedOperation;
   // `refundMethod` rides in the recorded payload so a retry or a repair of
   // this row settles against the same account and says the same thing.
   const requestPayload = {
@@ -693,6 +714,7 @@ export async function createXeroCreditNote(
       createdByMemberId: options?.createdByMemberId ?? null,
     });
     operationId = operation.id;
+    operationClaim = operation;
   }
 
   try {
@@ -805,7 +827,7 @@ export async function createXeroCreditNote(
     });
 
     await completeXeroSyncOperation(
-      operationId!,
+      operationClaim!,
       refundCreditNoteCompletion({
         paymentId,
         creditNoteBody: response.body,
@@ -821,7 +843,7 @@ export async function createXeroCreditNote(
 
     return createdNote.creditNoteID;
   } catch (error) {
-    await failXeroSyncOperation(operationId!, error);
+    await failXeroSyncOperation(operationClaim!, error);
     throw error;
   }
 }
@@ -907,7 +929,8 @@ export async function createUnappliedXeroCreditNote(
   });
 
   if (!payment) throw new Error(`Payment not found: ${paymentId}`);
-  const queuedOperationId = options?.syncOperationId ?? null;
+  const queuedOperation = options?.syncOperation ?? null;
+  const queuedOperationId = queuedOperation?.id ?? null;
   const bookingModificationId = options?.bookingModificationId ?? null;
   const linkLocalModel = bookingModificationId ? "BookingModification" : "Payment";
   const linkLocalId = bookingModificationId ?? paymentId;
@@ -955,8 +978,8 @@ export async function createUnappliedXeroCreditNote(
       });
     }
 
-    if (queuedOperationId) {
-      await completeXeroSyncOperation(queuedOperationId, {
+    if (queuedOperation) {
+      await completeXeroSyncOperation(queuedOperation, {
         responsePayload: {
           existingCreditNoteId: existingLink.xeroObjectId,
         },
@@ -1057,6 +1080,7 @@ export async function createUnappliedXeroCreditNote(
     "v1"
   );
   let operationId = queuedOperationId;
+  let operationClaim = queuedOperation;
   // #3791: the executed payload keeps what an operator retry reads back - the
   // amount (which is in the Xero key) and, on a queued row, its queue shape -
   // as the invoice-allocated builder's does. Without them a retry of a review's
@@ -1101,6 +1125,7 @@ export async function createUnappliedXeroCreditNote(
       createdByMemberId: options?.createdByMemberId ?? null,
     });
     operationId = operation.id;
+    operationClaim = operation;
   }
 
   try {
@@ -1165,7 +1190,7 @@ export async function createUnappliedXeroCreditNote(
       });
     }
 
-    await completeXeroSyncOperation(operationId!, {
+    await completeXeroSyncOperation(operationClaim!, {
       responsePayload: response.body,
       xeroObjectType: "CREDIT_NOTE",
       xeroObjectId: createdNote.creditNoteID,
@@ -1189,7 +1214,7 @@ export async function createUnappliedXeroCreditNote(
 
     return createdNote.creditNoteID;
   } catch (error) {
-    await failXeroSyncOperation(operationId!, error);
+    await failXeroSyncOperation(operationClaim!, error);
     throw error;
   }
 }
@@ -1201,7 +1226,7 @@ export async function createUnappliedXeroCreditNoteForModification(params: {
   /** #3791: see `CreateXeroUnappliedCreditNoteOptions.reviewTaskId`. */
   reviewTaskId?: string;
   createdByMemberId?: string;
-  syncOperationId?: string;
+  syncOperation?: XeroOperationClaim;
   /**
    * The club's format (#3565), for any amount a line description renders (a
    * promotion delta reads "reduced by $20.00" on the Xero line). Resolved once
@@ -1215,7 +1240,7 @@ export async function createUnappliedXeroCreditNoteForModification(params: {
     params.format,
     {
       createdByMemberId: params.createdByMemberId,
-      syncOperationId: params.syncOperationId,
+      syncOperation: params.syncOperation,
       bookingModificationId: params.bookingModificationId,
       reviewTaskId: params.reviewTaskId,
     },
@@ -1236,7 +1261,7 @@ export async function allocateCreditNoteToInvoice(
     localId?: string;
     role?: string;
     createdByMemberId?: string;
-    syncOperationId?: string;
+    syncOperation?: XeroOperationClaim;
     appliedCreditContext?: {
       parentOperationId: string | null;
       bookingId: string;
@@ -1258,7 +1283,8 @@ export async function allocateCreditNoteToInvoice(
     amountCents,
     "v1"
   );
-  let operationId = options?.syncOperationId ?? null;
+  let operationClaim = options?.syncOperation ?? null;
+  let operationId = operationClaim?.id ?? null;
   const requestPayload = {
     creditNoteId,
     invoiceId,
@@ -1288,6 +1314,7 @@ export async function allocateCreditNoteToInvoice(
       createdByMemberId: options?.createdByMemberId ?? null,
     });
     operationId = operation.id;
+    operationClaim = operation;
   }
 
   try {
@@ -1316,7 +1343,7 @@ export async function allocateCreditNoteToInvoice(
       }
     );
 
-    await completeXeroSyncOperation(operationId!, {
+    await completeXeroSyncOperation(operationClaim!, {
       responsePayload: response.body,
       xeroObjectType: "ALLOCATION",
       xeroObjectId: buildSyntheticAllocationId(creditNoteId, invoiceId, amountCents),
@@ -1346,7 +1373,7 @@ export async function allocateCreditNoteToInvoice(
       "Allocated Xero credit note against invoice"
     );
   } catch (error) {
-    throw await failAllocation(operationId!, error, creditNoteId, invoiceId, amountCents);
+    throw await failAllocation(operationClaim!, error, creditNoteId, invoiceId, amountCents);
   }
 }
 

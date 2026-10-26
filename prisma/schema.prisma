@@ -3260,7 +3260,9 @@ model PaymentTransaction {
   /// while it was unpaid. A withdrawn row is no longer the live ask:
   /// `reconcilePaymentAggregates` projects the Payment's additional columns
   /// from the latest row WITHOUT one, and the repair pass raises nothing for
-  /// it. Never deleted, never cleared - the audit row says who and why.
+  /// it. Never deleted, never cleared - the audit row says who and why. A
+  /// reduction stamps it too (INV-PAY-120), and so does a mark-paid reversal
+  /// restoring a card ask, on its reversed INTERNET_BANKING cash row (#4320).
   withdrawnAt           DateTime?
   /// #3954 round 7 (INV-PAY-120): on an ADDITIONAL request an edit asked for, that
   /// edit's own answer to `hasIssuedPrimaryXeroInvoice` when it asked - the twin of
@@ -4196,15 +4198,46 @@ model HostingCoverageReevaluation {
 }
 
 // ---------------------------------------------------------------------------
-// Xero OAuth Token (single row)
+// Xero OAuth Token (single row) — RETIRING (#3806)
 // ---------------------------------------------------------------------------
+//
+// Kept only for the previous release (#3454), which reads, refreshes, connects
+// and disconnects through this row alone. Since #3806 R2 the tokens live only in
+// the credential store and the connection facts and refresh lease live in
+// `XeroConnection`. This release keeps the row present while connected, with
+// `tenantId`, `expiresAt` and the old lease current, and never names the two
+// ciphertext columns: they are `@ignore`d so the generated client cannot put
+// them in a SELECT, an INSERT or a RETURNING (INV-OPS-005), and the database
+// fills them with '' on create (the schema's `@default("")` mirrors the column default for the drift check only). The table is dropped in R3 (#3806).
 
 model XeroToken {
   id                     String    @id @default(cuid())
-  accessToken            String
-  refreshToken           String
+  accessToken            String    @default("") @ignore
+  refreshToken           String    @default("") @ignore
   expiresAt              DateTime
   tenantId               String?
+  refreshInProgressUntil DateTime?
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Xero connection (single row, no secret) — #3806 R2
+// ---------------------------------------------------------------------------
+//
+// The one answer to "is Xero connected, to which tenant, until when", and the
+// refresh lease. Holds no token, ciphertext or key; the tokens are one row of
+// the encrypted credential store (`xero-oauth` / `token-set`). One row, id
+// "default" (a CHECK constraint in the migration). While `XeroToken` exists, a
+// statement trigger on it copies the latest row's `tenantId` and `expiresAt`
+// here and deletes this row when none is left, so the previous release's writes
+// are reflected too; the lease column is written only by the token store.
+// Read it through `readXeroConnection` (src/lib/xero-connection.ts).
+
+model XeroConnection {
+  id                     String    @id @default("default")
+  tenantId               String?
+  expiresAt              DateTime
   refreshInProgressUntil DateTime?
   createdAt              DateTime  @default(now())
   updatedAt              DateTime  @updatedAt

@@ -758,11 +758,13 @@ balance of the ask it supersedes.
 
 ```text
 edit raises an ask -> mint the replacement intent
-  -> enqueue CANCEL_PAYMENT_INTENT for every other live ADDITIONAL intent
+  -> enqueue CANCEL_PAYMENT_INTENT for every other live or declined (#4422) ADDITIONAL intent
   -> cancel it SYNCHRONOUSLY, best-effort, BEFORE the new client secret returns
        still cancellable -> transaction FAILED, operation SUCCEEDED
        Stripe already captured it -> handed off to REFUND_SUPERSEDED_PAYMENT
        provider failure -> the queued operation stands; the recovery cron finishes
+  -> each superseded ask's WAITING_PAYMENT supplementary invoice, a declined
+       ask's included, re-pointed at the replacing intent (#3403, INV-PAY-140)
   -> the member's card sees only the replacing intent
 REFUND_SUPERSEDED_PAYMENT completes
   -> reconcile aggregates, THEN one audit row + one REFUNDED BookingEvent
@@ -2142,16 +2144,78 @@ Payment: SUCCEEDED -> PENDING, provenance cleared, source left as-is; a
 PaymentTransaction (the manual PRIMARY row): SUCCEEDED -> FAILED,
   reason "manual_mark_paid_reversed" — history, never deleted, and never
   resurrected by a later re-mark (the mint predicate skips FAILED rows)
+PaymentTransaction (the manual ADDITIONAL row, when the settle covered the
+  extra): SUCCEEDED -> FAILED, reason "manual_mark_paid_additional_reversed".
+  When the extra goes back to owing and an open card ask for it stands that
+  the reversal does not keep cancelled, the row is
+  also stamped `withdrawnAt` and `additionalPaymentIntentId` is put back to
+  that ask (#4355): the mirror reads past the stamped row, so a capture of the
+  ask reads SUCCEEDED. With no such ask the row stays the mirror's anchor.
 PaymentRecoveryOperation (every CANCEL_PAYMENT_INTENT /
-  REFUND_SUPERSEDED_PAYMENT on this payment still PENDING|PROCESSING):
+  REFUND_SUPERSEDED_PAYMENT not yet SUCCEEDED — PENDING, PROCESSING or
+  FAILED, retrying or exhausted (#4320) — on a live card intent the restored
+  booking can still be paid with):
   DELETED, inside the reversal's transaction — not flipped to a terminal
   status, because every webhook-side liveness predicate keys on
   `status != SUCCEEDED` and a FAILED "closed" row would still hand a
   post-reversal capture to the superseded-refund machinery. The deleted rows'
-  full content is preserved on the reversal's AuditLog entry, and a member-owed
-  superseded refund can never be reached: its settled transaction 409s the
-  reversal first.
+  full content is preserved on the reversal's AuditLog entry.
+PaymentRecoveryOperation (the cancellation of a stale intent, or of one the
+  settle found already queued): KEPT, or queued afresh as PENDING where the
+  intent had none — it goes on to cancel the intent, or hand its capture to
+  the superseded refund. One the runner will not finish (given up at the
+  attempt ceiling, or PROCESSING on its last attempt) is RE-ARMED: PENDING,
+  attempts 0, due now.
 ```
+
+Which intents stay cancelled is derived from the restored booking, never
+remembered (#4320): the cancel key is shared, so an edit on the PAID booking,
+an additional ask's supersede or the `/pay` link's supersede can share the very
+row the settle minted, and a settle recorded before #4320 kept no list. The
+reversal re-applies the supersede rules — a PRIMARY intent not at the amount the
+booking owes (`readBookingAmountOwed`, #1161), a saved-card charge attempt not
+at the booking's worth (`bookingWorthCents`: what the cron charges, and what
+the capture path accepts), an ADDITIONAL intent that is not the live ask
+(`additionalPaymentIntentId`, #3340) — and keeps those intents cancelled. A
+settle that covered the extra minted a newer cash ADDITIONAL row, so any
+rebuild of the mirror since nulls that pointer; when the reversal puts the
+extra back to owing, the live ask is the newest card ask an officer has not
+withdrawn, if it asks exactly that extra and its intent is still open
+(PENDING or PROCESSING: a FAILED one may be cancelled at Stripe). It also keeps an intent the settle
+found already queued (`adoptedCancelPaymentIntentIds` on the mark-paid's audit
+row), because a superseded intent is never handed out again (`INV-PAY-138`)
+and a wrong-currency supersede (#3567) is not derivable. A settle row without
+that list adopts nothing. For every intent left cancelled, a cancellation the
+runner will not finish is re-armed, so "still cancelled" is true. A worker
+still holding a re-armed row cannot undo it: its failure write is fenced on
+the attempt it claimed, which the re-arm reset. Every other live row on a live
+card intent is withdrawn; a row on an intent the ledger already retired is
+left. The reversal's audit row lists the intents left cancelled
+(`stillCancelledPaymentIntentIds`), the rows it re-armed
+(`rearmedRecoveryOperationIds`) and the card ask it put the extra back to
+(`restoredAdditionalPaymentIntentId`). Each delete is fenced on the same
+liveness predicate, so a worker that claims the row meanwhile (FAILED ->
+PROCESSING) loses it, and a row a worker finished (SUCCEEDED) is left and not
+reported closed.
+
+A member-owed superseded refund is never deleted. The hand-off that creates one
+re-claims its cancel row, marks the capture SUCCEEDED and rebuilds the payment
+in one transaction under the `Payment` row, which the reversal holds from its
+"no settled Stripe transaction" check to its commit: a hand-off that commits
+first makes the reversal refuse, and a reversal that commits first leaves the
+hand-off nothing to claim, so the capture settles the booking. A worker that
+claimed a row before the reversal may still reach Stripe's cancel after it
+commits: the member's open tab then fails. The pay step does not mint a fresh
+intent: the reversal leaves the payment on internet banking, so both card doors
+refuse before reaching Stripe (#4348), and the member pays by bank transfer. No
+money moves.
+
+The FAILED row is why #4320 exists: a mark-paid's cancel that met a Stripe
+outage waits FAILED to retry, and while the reversal deleted only
+PENDING|PROCESSING rows it survived. Once the booking was payable again, the
+member's capture of that intent was refunded as superseded and the booking
+never settled, or the retry cancelled the intent the member still had open.
+Proved on PostgreSQL in `manual-reversal-retrying-cancel.realdb.test.ts`.
 
 Both directions record an `AuditLog` naming the acting admin, and the reversal
 records a durable `BookingEvent` — a `CANCELLED` event carrying the
@@ -3717,6 +3781,18 @@ local business event -> Xero outbox operation queued
   nothing can be read. Limit: after a FAILED winner the extra call can fail
   too and add one FAILED row toward the repeated-failure alert; an
   applied-credit allocation's is closed by the converge below
+two callers on one row (the hand-off above) each record their own outcome of
+  the same keyed Xero call (#4356, INV-INT-029): an outcome never replaces a
+  better one. A failure, or a FAILED or CANCELLED completion, never lands on
+  SUCCEEDED or PARTIAL; PARTIAL never lands on SUCCEEDED; SUCCEEDED lands on
+  any row no claim holds. None but SUCCEEDED lands on a repair's marked
+  RUNNING claim unless written onto that claim. Every outcome carries the
+  claim it was made under (its RUNNING row's `startedAt`, #4373), and none, a
+  success included, lands on a RUNNING row another claim holds: a stale-reset
+  or failed attempt's late outcome never lands on the retry's claim, so the
+  row stays RUNNING for the retry and the booking invoice retry's
+  settle-time fence. A refused write answers null: no link, no
+  repeated-failure alert
 worker claims operation -> provider call -> success or retryable failure
 success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier
   wait's or failure's code is not shown on it (#4049); PARTIAL keeps them
@@ -3729,6 +3805,32 @@ worker finds the operation must wait (busy) -> RUNNING -> PENDING: returns
   createdAt -> FAILED for a person (an operator's retry raises it unwaited)
   it waits only when its edit expected an own note; a note the repair pass
   queues reads that from the edit's history row (#4049)
+supplementary invoice WAITING_PAYMENT on a card ask's intent (INV-PAY-104;
+  an officer's or the repair tool's own actions on it are not drawn here)
+  -> that intent captured and the money kept -> the others naming it billed
+     with it fit the capture -> PENDING (released)
+       they would not -> CANCELLED, STALE_WAITING_PAYMENT_CAPTURED, an
+       officer told
+  -> that intent captured and refunded -> left WAITING_PAYMENT for the reaper
+  -> a later request supersedes the ask and carries its balance (#3403,
+     INV-PAY-140) -> stays WAITING_PAYMENT, re-pointed at the request that
+     absorbed it (`parkedFromPaymentIntentId` keeps the first intent), under
+     the change's and the carrier's keys, guarded on status, intent and
+     correlation key: by the supersede's cancel step, by the minter before it
+     returns its secret, by an edit leg parking on a failed ask, and by the
+     reaper before it would retire it
+       -> booking ended, change already linked or another invoice queued, the
+          carrier would bill more than it asks, or the payload unreadable ->
+          left as it was
+       -> the carrier already captured -> released at once (unpaid where its
+          receipt records the capture)
+  -> re-pointed, and the FIRST intent is then captured and kept (a declined
+     ask paid from a stale tab) -> returned to that intent, then released
+  -> a price reduction retires the chain -> CANCELLED,
+     ADDITIONAL_ASK_RETIRED_BY_REDUCTION (INV-PAY-120)
+  -> the pay door closed and nothing carries it -> CANCELLED,
+     STALE_WAITING_PAYMENT (the reaper; only a capture of that same intent
+     revives it)
 inbound webhook/event recorded -> reconciliation worker processes event
 failure -> retry/backoff/admin visibility
 FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
@@ -3736,6 +3838,17 @@ FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
   refused while the operation is RUNNING, a live copy of it is queued, or a
   queued retry of it overlaps the mark (the mark is then withdrawn)
   refused for applied-credit allocations and deallocations (retry-only)
+  a FAILED payment refund-note create naming no note (#4421, INV-INT-028):
+  the mark needs the Xero note's number, checked in Xero first, and records
+  the note's id and number with it and the payment's live refund-note link,
+  under lock(1) then the Payment row, in one status-guarded claim (FAILED,
+  "naming no note"); refused, nothing written, when a retry of it ran since
+  the read, a run already raised its note (its retry or a same-key create,
+  SUCCEEDED or PARTIAL), a live copy is queued, or another create row or a
+  link records that note, or for a number sent to a row that takes none; a
+  withdrawn mark takes the note and retires the link (audited; a failed
+  withdrawal alerts); a PARTIAL row naming no note and an unreadable amount
+  are refused (Mark non-replayable)
 credit-note allocation refused by Xero as more than the note has left (#4218)
   -> FAILED with code CREDIT_NOTE_SPENT_OUTSIDE_APP when a read of the note
   afterwards CONFIRMS it was spent outside the app. Xero's refusal is the
@@ -3761,6 +3874,13 @@ applied-credit allocation raises that named failure (#4219) -> the worker
   exist; otherwise the row stays FAILED. Only credit Xero shows spent on an invoice or
   payment the app has no record of counts. Fails closed (original failure
   stands) when it cannot account for the discrepancy
+inbound credit-note event or the backstop sweep finds the note funding a lot (#4270)
+  -> the mirror writes down the free part of the lot Xero shows spent outside the
+  app, or restores what it wrote down when Xero shows the spend undone (an
+  additive `ADMIN_ADJUSTMENT` row and one audit row, member credit lock only).
+  Defers a note changed under two minutes ago (a sweep recheck follows), a note
+  with allocation work in flight, and writes nothing for a note that is not
+  AUTHORISED or PAID, whose list does not add up, or that funds several lots
 queued retry (REQUEUE) RUNNING -> CANCELLED when its operation read as resolved
   in Xero (before the claim, or the claim lost to the resolve); nothing ran
 outbox copy RUNNING -> CANCELLED when a sibling for the same document was
@@ -3790,7 +3910,11 @@ PARTIAL invoice payment repair or refund-note repair claims PARTIAL -> RUNNING
   "Retry it once to close it", never "Repaired"
   Reset stale running reports FAILED and PARTIAL counts separately
   rows repaired before #4256 stay PARTIAL; one retry closes them
-FAILED refund-note repair claims FAILED -> RUNNING too; a throw -> FAILED
+FAILED refund-note repair claims FAILED only -> RUNNING, with code
+  REFUND_NOTE_REPAIR_RUNNING (#4356); a lost claim -> "already claimed". A
+  throw before completion, or a stale reset of a dead run -> FAILED; a
+  refund-payment failure completes PARTIAL first. The outbox's busy and
+  cooldown un-claims never return a marked claim to PENDING
 mark non-replayable on FAILED/PARTIAL only, status-guarded: a retry that
   claimed the row after the officer's read -> 409, nothing written, no audit
 queued retry (REQUEUE) of an operation marked not replayable -> CANCELLED,
@@ -3875,6 +3999,8 @@ The claimed-original abandon and Mark failed are pinned by
 `xero-operation-queue.test.ts` and `xero-operation-routes.test.ts` (#3462).
 The PARTIAL repair's claim is pinned by `xero-operation-retry.test.ts` and,
 against real PostgreSQL, `xero-partial-repair-claim.realdb.test.ts` (#4256).
+The shared-row outcome guard is pinned by `xero-sync.test.ts` and, against real
+PostgreSQL, `xero-shared-operation-outcome.realdb.test.ts` (#4356).
 A change capture's receipt is pinned by `additional-capture-xero-receipt.test.ts`,
 `additional-capture-recorder.test.ts` and, against real PostgreSQL,
 `additional-capture-receipt.realdb.test.ts` and
@@ -3891,6 +4017,27 @@ failure -> run/failure visible and retryable where business-critical
 
 To verify: which cron jobs record `CronJobRun`, exact statuses, stale queue
 health thresholds, and skipped-module reporting.
+
+### Xero cron run status: SKIPPED means no work (#4375)
+
+```text
+module off / Xero not connected / membership refresh env off -> skipped: true -> SKIPPED
+credit-sync pass already ran this interval (skipped: true)                     -> SKIPPED
+credit-note mirror with nothing to read (skipped: true)                        -> SKIPPED
+batch worked, some rows passed over (skipped: <count>)                        -> SUCCESS
+outbox rows refused before any call (cooldownDeferred > 0)                    -> SUCCESS + warning
+outbox or replay rows failed (failed > 0)                                     -> SUCCESS + warning
+heal or void follow-up with a failed note                                      -> FAILURE
+```
+
+A queue task's numeric `skipped` count is rows it passed over after working its
+batch: a lost claim, a row resolved in Xero or marked not replayable, a note
+waiting for another note. That run succeeded, so cron health stays green. A row
+the outage cooldown, the daily limit or the environment check refused before any
+call is counted there too, but it means Xero is unusable: the outbox counts it
+as `cooldownDeferred` and the run carries a `warning`, shown amber. A failed
+row warns the same way and points at Xero Operations. To verify:
+`xero-cron-runner.test.ts`, `xero-outbox-fail-fast.test.ts`.
 
 ### Alpine Central Server version pause (#49)
 

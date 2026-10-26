@@ -55,6 +55,7 @@ const helpers: WizardStepHelpers = {
   optional: false,
   acknowledged: false,
   skip: vi.fn(),
+  reportSaving: vi.fn(),
   // Required, and typed as the literal `true` (#2324): the shell always renders
   // the view-only banner above a step body.
   ancestorRendersViewOnlyBanner: true,

@@ -1,6 +1,8 @@
 import { CreditType } from "@prisma/client";
 import { bookingOwner } from "@/lib/booking-owner";
 import { prisma } from "@/lib/prisma";
+import logger from "@/lib/logger";
+import { creditNoteMirrorEvidenceFrom, mirrorCreditNoteOutsideSpend } from "@/lib/xero-credit-note-mirror";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { callXeroApi, getAuthenticatedXeroClient } from "@/lib/xero-api-client";
 import { type XeroObjectLinkInput, upsertXeroObjectLink } from "@/lib/xero-sync";
@@ -432,9 +434,27 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     metadata: auditMetadata,
   });
 
+  // #4270: LAST, after the links and repairs above, so a refund payment or booking invoice
+  // the app made is already recorded when the mirror asks which spend is the app's own. It
+  // reuses the note read above, writes only the credit ledger, and never fails the event:
+  // the links are already written and a replay would only repeat them.
+  try {
+    const mirrorEvidence = creditNoteMirrorEvidenceFrom(creditNote);
+    if (mirrorEvidence) await mirrorCreditNoteOutsideSpend(mirrorEvidence);
+  } catch (err) {
+    logger.error({ err, creditNoteId: creditNote.creditNoteID }, "Mirroring a credit note spent outside the app failed; the sweep will try again");
+  }
+
   return {
     handled: true,
     kind: "CREDIT_NOTE",
+    // #4095: a refunded total whose claim was lost twice was left unwritten; a
+    // stored event fails on it after every write above, so it is retried.
+    ...(refundedPaymentRepair.unsettledPaymentIds
+      ? {
+          recountLeftUnsettled: `The refunded total of payment(s) ${refundedPaymentRepair.unsettledPaymentIds.join(", ")} lost its claim twice to a concurrent writer while credit note ${creditNote.creditNoteID} was synced; the event is retried to recount it.`,
+        }
+      : {}),
     resourceId: creditNote.creditNoteID,
     creditNoteNumber: creditNote.creditNoteNumber ?? null,
     matchedPayments: paymentCandidates.length,
