@@ -19,6 +19,19 @@ export const SERVERNZ_SETTINGS_ID = "default";
 /** Bounded settings-row contention, including a lodge merge holding the row. */
 export const SERVERNZ_TRANSACTION_OPTIONS = { timeout: 150_000, maxWait: 10_000 };
 
+declare const SERVERNZ_CONNECTION_FENCE: unique symbol;
+
+/**
+ * A transaction client that holds the connection fence (#4436): the settings
+ * row is locked and credential caches are invalidated when it ends. Only
+ * `withServerNzConnectionTransaction` (`servernz-config.ts`) mints one. The
+ * writers that change a connection require it, so a call on the global
+ * client, or on a transaction that never took the fence, does not compile.
+ */
+export type ServerNzConnectionTx = Prisma.TransactionClient & {
+  readonly [SERVERNZ_CONNECTION_FENCE]: true;
+};
+
 export interface ServerNzSettingsValues {
   baseUrl: string | null;
   otherLodgesEnabled: boolean;
@@ -205,14 +218,15 @@ export function validateCentralServerBaseUrl(value: string): BaseUrlValidation {
 
 /**
  * Update the connection settings (base URL and/or the per-item enable flag).
- * `db` is REQUIRED (#4436): the one caller is `saveServerNzConnectionSettings`,
- * whose fenced transaction moves the address and removes its key together.
+ * `db` is a fenced client (#4436): the one caller is
+ * `saveServerNzConnectionSettings`, whose transaction moves the address and
+ * removes its key together.
  */
 export async function updateServerNzSettings(input: {
   baseUrl?: string | null;
   otherLodgesEnabled?: boolean;
   updatedByMemberId: string;
-}, db: Pick<Prisma.TransactionClient, "serverNzSettings">): Promise<ServerNzSettingsValues> {
+}, db: ServerNzConnectionTx): Promise<ServerNzSettingsValues> {
   const data: {
     baseUrl?: string | null;
     otherLodgesEnabled?: boolean;
@@ -368,12 +382,13 @@ export async function clearServerVersionCheck(): Promise<void> {
  * because both answers belonged to it. One upsert rather than the two
  * single-purpose writers above in sequence, so a crash between them cannot
  * leave the row half-forgotten: a stale version pausing a new connection, or a
- * stale owned list editable under a new key. `db` is REQUIRED (#4436): the
- * connection change it belongs to runs in `withServerNzConnectionTransaction`,
- * so the forget commits with the key or address write, never on its own.
+ * stale owned list editable under a new key. `db` is a fenced client (#4436):
+ * the connection change it belongs to runs in
+ * `withServerNzConnectionTransaction`, so the forget commits with the key or
+ * address write, never on its own.
  */
 export async function forgetServerConnectionAnswers(
-  db: Pick<Prisma.TransactionClient, "serverNzSettings">,
+  db: ServerNzConnectionTx,
 ): Promise<void> {
   await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },

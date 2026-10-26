@@ -2089,10 +2089,13 @@ mispricing a booking.
   there is no advisory key (`INV-LOCK-001`, `INV-LOCK-002`, `INV-LOCK-003`).
   Address replacement commits the new address, credential deletion (and its
   audit) and answer reset together. Key replacement likewise resets answers
-  in its credential transaction. Request builders read the
-  address and uncached decrypted credential through that transaction client,
-  release the lock, then send HTTP using the captured identity. A warmed
-  cross-process credential cache cannot pair an old key with a new address.
+  in its credential transaction. The fence hands its work a branded
+  `ServerNzConnectionTx`, and the address write, key removal and answer reset
+  require that type, so a call outside the fence does not compile. Request
+  builders read the address and uncached decrypted credential through that
+  transaction client, release the lock, then send HTTP using the captured
+  identity. A warmed cross-process credential cache cannot pair an old key
+  with a new address.
   Every request therefore serialises on the settings row's `FOR UPDATE`; the
   hold is short, two reads and no HTTP, so requests queue only briefly.
   `recordServerVersionIfCurrent` (`src/lib/servernz-version-record.ts`, #4366)

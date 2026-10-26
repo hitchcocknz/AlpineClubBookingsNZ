@@ -25,6 +25,7 @@ import {
   recordOtherLodgesDownload,
   recordServerVersionCheck,
   validateCentralServerBaseUrl,
+  type ServerNzConnectionTx,
 } from "@/lib/servernz-settings";
 
 beforeEach(() => {
@@ -184,7 +185,10 @@ describe("the server's reported API version (#49)", () => {
   });
 
   it("forgets the owned list AND the version in ONE write when the connection ends", async () => {
-    await forgetServerConnectionAnswers(prisma);
+    // The writer's own write, on the mocked client. Only the connection fence
+    // mints this type in production (#4436); `servernz-config.test.ts` covers it.
+    const unfencedClientForUnitTest = prisma as unknown as ServerNzConnectionTx;
+    await forgetServerConnectionAnswers(unfencedClientForUnitTest);
     expect(mocks.upsert).toHaveBeenCalledTimes(1);
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.where).toEqual({ id: SERVERNZ_SETTINGS_ID });

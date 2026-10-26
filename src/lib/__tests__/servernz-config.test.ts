@@ -46,6 +46,7 @@ import {
   readServerNzCredentialVersion,
   setServerNzApiKey,
   clearServerNzApiKey,
+  withServerNzConnectionTransaction,
   getServerNzSetupState,
   isServerNzConfigured,
 } from "@/lib/servernz-config";
@@ -136,7 +137,7 @@ describe("ServerNZ credential wiring", () => {
     expect(mocks.lockServerNzSettings.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.setIntegrationCredential.mock.invocationCallOrder[0]);
 
-    await clearServerNzApiKey(actor, mocks.tx as never);
+    await withServerNzConnectionTransaction((tx) => clearServerNzApiKey(actor, tx));
     expect(mocks.deleteIntegrationCredential).toHaveBeenCalledWith({
       tx: mocks.tx,
       provider: "servernz",
@@ -155,7 +156,7 @@ describe("ServerNZ credential wiring", () => {
     expect(mocks.forgetServerConnectionAnswers).toHaveBeenCalledWith(mocks.tx);
     expect(mocks.setIntegrationCredential.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.forgetServerConnectionAnswers.mock.invocationCallOrder[0]);
-    await clearServerNzApiKey(actor, mocks.tx as never);
+    await withServerNzConnectionTransaction((tx) => clearServerNzApiKey(actor, tx));
     // #49: the server's last reported version was that connection's answer
     // too, and both are forgotten in the one write.
     expect(mocks.forgetServerConnectionAnswers).toHaveBeenCalledTimes(2);

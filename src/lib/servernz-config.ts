@@ -42,6 +42,7 @@ import {
   updateServerNzSettings,
   SERVERNZ_SETTINGS_ID,
   SERVERNZ_TRANSACTION_OPTIONS,
+  type ServerNzConnectionTx,
   type ServerNzSettingsValues,
 } from "@/lib/servernz-settings";
 
@@ -138,13 +139,13 @@ export async function setServerNzApiKey(
  * reported API version goes for the same reason (#49): it was that server's
  * answer. Both in ONE write.
  *
- * `tx` is REQUIRED and must be a `withServerNzConnectionTransaction` client
- * (#4436): a removal outside the fence could let a request pair a moved
- * address with the key being removed.
+ * `tx` is a `withServerNzConnectionTransaction` client, by type (#4436): a
+ * removal outside the fence could let a request pair a moved address with the
+ * key being removed.
  */
 export async function clearServerNzApiKey(
   actor: CredentialActor,
-  tx: Prisma.TransactionClient,
+  tx: ServerNzConnectionTx,
 ): Promise<void> {
   await deleteIntegrationCredentialInTransaction({
     tx,
@@ -195,9 +196,12 @@ export async function saveServerNzConnectionSettings(
  * credentials second; no HTTP in work. Materialise a fresh-install singleton
  * before locking it, so a missing row cannot leave concurrent setup unfenced.
  * Credential caches are invalidated after commit/rollback by the store.
+ *
+ * The ONE place a `ServerNzConnectionTx` is minted: the cast below follows the
+ * lock, so the writers that require that type run only inside this fence.
  */
 export async function withServerNzConnectionTransaction<T>(
-  work: (tx: Prisma.TransactionClient) => Promise<T>,
+  work: (tx: ServerNzConnectionTx) => Promise<T>,
 ): Promise<T> {
   return withCredentialTransaction([SERVERNZ_PROVIDER], async (tx) => {
     await tx.serverNzSettings.createMany({
@@ -205,7 +209,7 @@ export async function withServerNzConnectionTransaction<T>(
       skipDuplicates: true,
     });
     await lockServerNzSettings(tx);
-    return work(tx);
+    return work(tx as ServerNzConnectionTx);
   }, SERVERNZ_TRANSACTION_OPTIONS);
 }
 
