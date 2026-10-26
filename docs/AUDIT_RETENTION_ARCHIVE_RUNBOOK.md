@@ -137,7 +137,7 @@ database's `AuditLog`. By default it does so through the application's own
 the application as a role that may only INSERT and SELECT audit rows, so it sets:
 
 ```bash
-AUDIT_RETENTION_DATABASE_URL=postgresql://tac_audit_retention:<password>@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10
+AUDIT_RETENTION_DATABASE_URL=postgresql://tac_audit_retention:<your-retention-password>@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10
 ```
 
 on the cron-enabled app instance. `pnpm run db:provision-roles --apply` creates

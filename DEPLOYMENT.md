@@ -145,7 +145,7 @@ stack in [Staging](#staging)), then repeat on production.
    ```bash
    # With DB_PASSWORD and the three passwords from .env exported in this shell:
    docker compose --profile migrate run --rm --no-deps \
-     -e DB_ROLES_PROVISION_DATABASE_URL="postgresql://tac:${DB_PASSWORD}@postgres:5432/tacbookings" \
+     -e DB_ROLES_PROVISION_DATABASE_URL="postgresql://tac:<your-operator-password>@postgres:5432/tacbookings" \
      -e MIGRATION_DB_PASSWORD -e APP_DB_PASSWORD -e AUDIT_RETENTION_DB_PASSWORD \
      migrate ./node_modules/.bin/tsx scripts/provision-database-roles.ts          # dry run
    # …the same command with --apply at the end
@@ -160,7 +160,7 @@ stack in [Staging](#staging)), then repeat on production.
    unaffected: it still connects as `tac`.
 3. **Set the switch** in `.env`: `APP_DB_USER=tac_app`, `MIGRATION_DB_USER=tac_migrator`
    (their passwords are already there) and
-   `AUDIT_RETENTION_DATABASE_URL=postgresql://tac_audit_retention:<password>@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10`.
+   `AUDIT_RETENTION_DATABASE_URL=postgresql://tac_audit_retention:<your-retention-password>@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10`.
    All three belong together: once the app role is split, the retention job
    needs its own role, because the application role may no longer change audit rows.
 4. **Deploy** as usual (`scripts/run-production-blue-green-deploy.sh`). The
