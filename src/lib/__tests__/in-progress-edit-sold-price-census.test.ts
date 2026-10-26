@@ -3,7 +3,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { toSeasonRateData } from "@/lib/policies/booking-route-decisions";
 
-import { stripComments } from "./support/strip-comments";
+import { blankLiterals, stripComments } from "./support/strip-comments";
 import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
@@ -127,8 +127,12 @@ const NIGHTS_SELECT = /nights:\s*\{\s*select:\s*\{([^}]*)\}/g;
  */
 const PLAN_BUILDER_CALL = /(?<!function\s)\bbuildInProgressGuestRangePlan\s*\(/g;
 
-function balancedArgumentList(source: string, openIndex: number): string {
-  return balancedBrackets(source, openIndex).text;
+function balancedArgumentList(
+  source: string,
+  openIndex: number,
+  structure: string,
+): string {
+  return balancedBrackets(source, openIndex, structure).text;
 }
 
 /**
@@ -231,7 +235,9 @@ describe("in-progress edit sold-price census (#2744)", () => {
         path.resolve(process.cwd(), site.file),
         "utf8",
       );
-      const builderCalls = [...source.matchAll(PLAN_BUILDER_CALL)];
+      // Found over masked text: a call named in a comment or string is not one.
+      const structure = blankLiterals(source);
+      const builderCalls = [...structure.matchAll(PLAN_BUILDER_CALL)];
 
       expect(builderCalls.length, `${site.file} plan-builder calls`).toBe(
         site.planBuilderCalls,
@@ -244,7 +250,7 @@ describe("in-progress edit sold-price census (#2744)", () => {
         // the tree goes red, because the argument is optional by design (a club
         // that has not switched the discount on passes nothing).
         const argumentList = stripComments(
-          balancedArgumentList(source, openIndex),
+          balancedArgumentList(source, openIndex, structure),
         );
         expect(
           argumentList,

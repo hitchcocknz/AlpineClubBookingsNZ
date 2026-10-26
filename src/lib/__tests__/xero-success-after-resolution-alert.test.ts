@@ -20,7 +20,7 @@ import { join, relative } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { XeroSyncOperation } from "@prisma/client";
 import { matchesWhere } from "./support/prisma-where";
-import { stripComments } from "./support/strip-comments";
+import { blankLiterals, stripComments } from "./support/strip-comments";
 import { balancedBrackets } from "./support/balanced-brackets";
 import { xeroClaim } from "./helpers/xero-claim";
 
@@ -244,8 +244,12 @@ function optionsAreReadable(options: string): boolean {
   return options === "" || (READABLE_OPTIONS.test(options) && !/\.\.\.\s*[\w$]/.test(options));
 }
 
-function callArguments(source: string, open: number): { args: string[]; close: number } {
-  const { parts: args, end: close } = balancedBrackets(source, open);
+function callArguments(
+  source: string,
+  open: number,
+  structure: string,
+): { args: string[]; close: number } {
+  const { parts: args, end: close } = balancedBrackets(source, open, structure);
   return { args, close };
 }
 
@@ -265,10 +269,12 @@ function completionSites(): CompletionSite[] {
   const sites: CompletionSite[] = [];
   for (const full of files) {
     const source = stripComments(readFileSync(full, "utf8"));
-    for (const match of source.matchAll(/\bcompleteXeroSyncOperation\s*\(/g)) {
+    // Calls are found over masked text: one named in a string is not a call.
+    const structure = blankLiterals(source);
+    for (const match of structure.matchAll(/\bcompleteXeroSyncOperation\s*\(/g)) {
       if (/function\s+$/.test(source.slice(0, match.index))) continue;
       const open = match.index + match[0].length - 1;
-      const { args, close } = callArguments(source, open);
+      const { args, close } = callArguments(source, open, structure);
       // To the end of the enclosing top-level function.
       const end = source.indexOf("\n}\n", close);
       sites.push({

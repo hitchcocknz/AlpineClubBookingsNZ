@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 
-import { stripComments } from "./support/strip-comments";
+import { blankLiterals, stripComments } from "./support/strip-comments";
 import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
@@ -165,9 +165,11 @@ function codeOf(file: string): string {
 function callArguments(code: string, name: string): string[] {
   const out: string[] = [];
   const needle = `${name}(`;
+  // Found over masked text: a call named in a string is not a call.
+  const structure = blankLiterals(code);
   let from = 0;
   for (;;) {
-    const at = code.indexOf(needle, from);
+    const at = structure.indexOf(needle, from);
     if (at === -1) return out;
     // Not a call if the character before is an identifier character — that would
     // be a longer name ending in this one.
@@ -176,7 +178,7 @@ function callArguments(code: string, name: string): string[] {
       from = at + needle.length;
       continue;
     }
-    const region = balancedBrackets(code, at + needle.length - 1);
+    const region = balancedBrackets(code, at + needle.length - 1, structure);
     out.push(region.text.slice(1, -1));
     from = region.end + 1;
   }

@@ -15,7 +15,7 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { stripComments } from "@/lib/__tests__/support/strip-comments";
+import { blankLiterals, stripComments } from "@/lib/__tests__/support/strip-comments";
 import { balancedBrackets } from "../../__tests__/support/balanced-brackets";
 
 const ROOT = process.cwd();
@@ -527,8 +527,8 @@ const DATE_FORMATTER_EXEMPTIONS = new Map<string, { hits: number; reason: string
 const DATE_OPTION_KEYS =
   /\b(?:dateStyle|timeStyle|weekday|era|year|month|day|dayPeriod|hour|minute|second|fractionalSecondDigits|timeZone|timeZoneName|hour12|hourCycle)\s*:/;
 
-function callArguments(source: string, open: number): string {
-  return balancedBrackets(source, open).text.slice(1, -1);
+function callArguments(source: string, open: number, structure: string): string {
+  return balancedBrackets(source, open, structure).text.slice(1, -1);
 }
 
 function topLevelArguments(text: string): string[] {
@@ -560,9 +560,15 @@ export function findDateFormatterConstructions(source: string): string[] {
   for (const match of source.matchAll(/\btoLocale(?:Date|Time)String\b/g)) {
     hits.push(match[0]);
   }
+  // The pattern reads the bracket spelling `x["toLocaleString"](` too, so it
+  // runs over the text. Its `(` must still be code: a `toLocaleString(` named
+  // inside a string has no call to read.
+  let structure: string | undefined;
   for (const match of source.matchAll(/\btoLocaleString\b\s*(?:["'`]\s*\]\s*)?\(/g)) {
     const open = (match.index ?? 0) + match[0].length - 1;
-    if (toLocaleStringCanCarryDateOptions(callArguments(source, open))) {
+    structure ??= blankLiterals(source);
+    if (structure[open] !== "(") continue;
+    if (toLocaleStringCanCarryDateOptions(callArguments(source, open, structure))) {
       hits.push("toLocaleString(date)");
     }
   }

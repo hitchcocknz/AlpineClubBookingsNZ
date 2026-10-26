@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 /**
  * The census tells a review's give-back from every other applied-credit row by
  * ONE marker: a `BOOKING_APPLIED` row that names its booking as
@@ -23,6 +22,9 @@ import { join, relative } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { balancedBrackets } from "./support/balanced-brackets";
+import { blankLiterals } from "./support/strip-comments";
+
 const ROOT = join(__dirname, "..", "..", "..");
 
 function sourceFiles(dir: string): string[] {
@@ -40,8 +42,8 @@ function enclosingFunction(text: string, index: number): string {
 }
 
 /** The balanced `( … )` that opens at `start`. */
-function argumentsAt(text: string, start: number): string {
-  return balancedBrackets(text, start).text;
+function argumentsAt(text: string, start: number, structure: string): string {
+  return balancedBrackets(text, start, structure).text;
 }
 
 describe("only a review's give-back marks an applied-credit row with its source booking (#3791, #3583)", () => {
@@ -49,8 +51,11 @@ describe("only a review's give-back marks an applied-credit row with its source 
     const marked: string[] = [];
     for (const file of sourceFiles(join(ROOT, "src"))) {
       const text = readFileSync(file, "utf8");
-      for (const match of text.matchAll(/(?<!function )(memberCredit\.(?:create|createMany|upsert|update|updateMany)|giveBackAppliedCredit)\s*\(/g)) {
-        const args = argumentsAt(text, (match.index ?? 0) + match[0].length - 1);
+      // Call sites are found over masked text: one named in a comment or string
+      // is not a call and has no opening bracket to read.
+      const structure = blankLiterals(text);
+      for (const match of structure.matchAll(/(?<!function )(memberCredit\.(?:create|createMany|upsert|update|updateMany)|giveBackAppliedCredit)\s*\(/g)) {
+        const args = argumentsAt(text, (match.index ?? 0) + match[0].length - 1, structure);
         const write = match[1] ?? "";
         if (args.includes("sourceBookingId") && (write === "giveBackAppliedCredit" || args.includes("BOOKING_APPLIED"))) {
           marked.push(`${relative(ROOT, file)} ${enclosingFunction(text, match.index ?? 0)} ${write}`);

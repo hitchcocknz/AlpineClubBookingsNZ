@@ -652,7 +652,11 @@ function callerTransactionSpans(
 const FUNCTION_DECLARATION =
   /(?:^|\n)\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*(?:<[^>]*>)?\s*\(|(?:^|\n)\s*(?:export\s+)?const\s+(\w+)\s*(?::[^=\n]*)?=\s*(?:async\s+)?(?:<[^>]*>)?\s*\(/g;
 
-/** The index of the bracket closing the one at `from`, or -1. */
+/**
+ * The index of the bracket closing the one at `from`. `source` is masked text
+ * and is its own structure. Throws when the bracket is unbalanced or `from` is
+ * not an opening bracket, so a scan this file cannot read fails loudly.
+ */
 function closingBracket(
   source: string,
   from: number,
@@ -681,12 +685,9 @@ function functionSpan(
     // span that ends before the function does — which is how the first draft of
     // this helper judged its own allowed home to be out of bounds.
     const parenClose = closingBracket(source, at + opener.length - 1);
-    if (parenClose === -1) continue;
     const brace = source.indexOf("{", parenClose);
     if (brace === -1) continue;
-    const end = closingBracket(source, brace);
-    if (end === -1) continue;
-    return { start: brace, end };
+    return { start: brace, end: closingBracket(source, brace) };
   }
   return null;
 }
@@ -713,7 +714,6 @@ function transactionWrapperNames(source: string): string[] {
     const name = match[1] ?? match[2];
     const paramsOpen = (match.index ?? 0) + match[0].length - 1;
     const paramsEnd = closingBracket(masked, paramsOpen);
-    if (paramsEnd === -1) continue;
 
     // A callback parameter — the thing that makes this a wrapper rather than a
     // function that merely happens to use a transaction internally.
@@ -722,7 +722,7 @@ function transactionWrapperNames(source: string): string[] {
     const bodyOpen = masked.indexOf("{", paramsEnd);
     if (bodyOpen === -1) continue;
     const bodyEnd = closingBracket(masked, bodyOpen);
-    const body = masked.slice(bodyOpen, bodyEnd === -1 ? masked.length : bodyEnd);
+    const body = masked.slice(bodyOpen, bodyEnd);
     if (body.includes("$transaction(")) names.push(name);
   }
 

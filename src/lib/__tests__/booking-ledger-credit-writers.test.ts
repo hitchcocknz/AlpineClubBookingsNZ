@@ -106,9 +106,12 @@ function sourceFiles(): string[] {
   return found;
 }
 
-/** The index just past the bracket that closes the one opened at `open`. */
+/**
+ * The index just past the bracket that closes the one opened at `open`. `code`
+ * is already masked (`stripCommentsAndStrings`), so it is its own structure.
+ */
 function closeOf(code: string, open: number): number {
-  return balancedBrackets(code, open).end + 1;
+  return balancedBrackets(code, open, code).end + 1;
 }
 
 type Finding = { file: string; problem: string };

@@ -16,6 +16,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { balancedBrackets } from "./support/balanced-brackets";
+import { blankLiterals } from "./support/strip-comments";
 
 const ROOT = path.resolve(__dirname, "../../..");
 
@@ -41,9 +42,11 @@ function readCalls(source: string): string[] {
     /manualRefundTask\.(?:findFirst|findMany|count|aggregate|groupBy)\(/g,
     /manualRefundTasks:\s*\{/g,
   ];
+  // Found over masked text: a read named in a comment or string is not one.
+  const structure = blankLiterals(source);
   for (const re of shapes) {
-    for (let match = re.exec(source); match; match = re.exec(source)) {
-      const { end } = balancedBrackets(source, match.index + match[0].length - 1);
+    for (let match = re.exec(structure); match; match = re.exec(structure)) {
+      const { end } = balancedBrackets(source, match.index + match[0].length - 1, structure);
       calls.push(source.slice(match.index, end + 1));
     }
   }
