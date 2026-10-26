@@ -54,8 +54,9 @@
  * declined ask too, so a stale tab's capture of one races a live cancel row and
  * takes the superseded-capture path - refunded, or held for a treasurer on a
  * cancelled booking - and its invoice stays on the carrier. Only a capture no
- * live cancel row owns (a declined ask superseded before #4422, or one whose
- * row a manual mark-paid reversal deleted) settles as a late capture, and that
+ * live cancel row owns (a declined ask superseded before #4422, one whose row a
+ * manual mark-paid reversal deleted, or one paid before the superseding minter
+ * committed its row, #4442) settles as a late capture, and that
  * takes its invoice back: the release returns every invoice first parked on
  * that intent to it before it releases (`returnMovedInvoicesToCapturedIntent`),
  * so the capture that paid the change is the one it records.
