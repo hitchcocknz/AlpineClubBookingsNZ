@@ -15,6 +15,7 @@ import {
   withRatesFromServer,
   type ServerRates,
 } from "@/lib/servernz-rate";
+import type { ServerNzSettingsValues } from "@/lib/servernz-settings";
 import type { ServerNzConnectionIdentity } from "@/lib/servernz-version-record";
 
 /**
@@ -197,6 +198,12 @@ export interface OtherLodgesPullResult {
    * request was in flight changes nothing.
    */
   sentOn: ServerNzConnectionIdentity;
+  /**
+   * The settings row read in the same fenced read as `sentOn`: the stored
+   * cursor, keyed marker and owned list this answer is merged against, so
+   * they cannot belong to a connection replaced before the request.
+   */
+  snapshot: ServerNzSettingsValues;
 }
 
 /** The column's VarChar(16): the bound on any version string taken off the wire. */

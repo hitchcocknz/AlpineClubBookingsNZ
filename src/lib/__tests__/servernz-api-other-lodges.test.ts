@@ -581,3 +581,23 @@ describe("pullOtherLodges — deletedLodges, lodges deleted on the server (#58, 
     await expect(pullOtherLodges(null)).rejects.toThrow();
   });
 });
+
+// #4262 review: the cursor a pull asks from, and the stored answers it hands
+// back, come from the settings read in the same fenced read as its connection.
+describe("pullOtherLodges — the fenced settings snapshot", () => {
+  it("asks from the cursor its own fenced read saw, and returns that read with the connection", async () => {
+    respondWith({ lodges: [], cursor: "c-2", count: 0 });
+    const stored: unknown[] = [];
+
+    const pull = await pullOtherLodges((settings) => {
+      stored.push(settings);
+      return "since-from-fenced-read";
+    });
+
+    const [url] = fetchMock.mock.calls.find(([u]) => String(u).includes("/api/v1/other-lodges"))!;
+    expect(new URL(String(url)).searchParams.get("since")).toBe("since-from-fenced-read");
+    expect(stored).toHaveLength(1);
+    expect(pull.snapshot).toBe(stored[0]);
+    expect(pull.sentOn).toEqual({ baseUrl: "https://central.test", credentialVersion: "test-credential-version" });
+  });
+});

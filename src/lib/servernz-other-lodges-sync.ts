@@ -267,7 +267,17 @@ export interface DownloadSummary {
   hiddenLodges: string[];
   /** Rows the server sent that failed validation and were discarded. */
   dropped: number;
+  /**
+   * Why this download did NOT record its cursor (#4262 review), or `null` when
+   * it did: `connection-changed` when a fenced write found the connection
+   * replaced (nothing from the answer was written after the change), and
+   * `superseded` when another download recorded first. The route audits it
+   * as its own outcome and the nightly pass reports it.
+   */
+  stopped: DownloadStopReason | null;
 }
+
+export type DownloadStopReason = "connection-changed" | "superseded";
 
 /**
  * Pull the distributed Other Clubs set and merge it into the local registry.
@@ -295,9 +305,14 @@ export interface DownloadSummary {
  * was in flight therefore hides, unlinks, creates, renames and records
  * nothing; the download stops at its first refused write. No transaction is
  * held across the HTTP call (`INV-INT-027`).
+ *
+ * The stored answers it works from (cursor, keyed marker, owned list) are the
+ * pull's `snapshot`, read in the SAME fenced read as `sentOn`, so they always
+ * belong to the connection the request went to: a replacement before the
+ * request makes the request itself the new connection's, asked from that
+ * connection's (forgotten) state.
  */
 export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
-  const settings = await loadServerNzSettings();
   // Ask from one overlap BEFORE the stored cursor, where the stored cursor is
   // an instant — see `@/lib/servernz-cursor-overlap` for why the repeat is deliberate,
   // why removing it re-opens a permanent skip, and what an opaque cursor means.
@@ -307,12 +322,13 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
   // upgraded, a new connection, or a keying download that failed part-way),
   // every download asks for the WHOLE registry instead, so every row is
   // matched by name once and keyed — not only the lodges that happen to change.
-  const wholeRegistry = settings.otherLodgesKeyedAt === null;
-  const pull = await pullOtherLodges(
-    wholeRegistry
+  const pull = await pullOtherLodges((stored) =>
+    stored.otherLodgesKeyedAt === null
       ? null
-      : overlappedRequestCursor(settings.otherLodgesCursor, OVERLAP_SYNC_LABEL),
+      : overlappedRequestCursor(stored.otherLodgesCursor, OVERLAP_SYNC_LABEL),
   );
+  const settings = pull.snapshot;
+  const wholeRegistry = settings.otherLodgesKeyedAt === null;
 
   if (pull.ownLodgesRefused) {
     logger.warn(
@@ -399,7 +415,7 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
   const byNameAllowed = (lodge: (typeof lodges)[number]) =>
     wholeRegistry && namesInPull.get(lodge.name) === 1;
 
-  let recorded = false;
+  let stopped: DownloadStopReason | null = null;
   try {
     // The hides and their one audit record, in ONE fenced transaction, written
     // HERE so the nightly pass and the Download button leave the same trail
@@ -461,7 +477,7 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
     // lists (another server's after an address change, or a lodge deleted
     // there), so such a row uploads by name again and is marked "not found".
     // Raw, so `updatedAt` stays put: a forgotten id is not an edit.
-    recorded = await write(async (tx) => {
+    const recorded = await write(async (tx) => {
       const current = await tx.serverNzSettings.findUnique({
         where: { id: SERVERNZ_SETTINGS_ID },
         select: { otherLodgesCursor: true, otherLodgesKeyedAt: true },
@@ -502,10 +518,12 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
       );
       return true;
     });
+    if (!recorded) stopped = "superseded";
   } catch (error) {
     if (!(error instanceof ServerNzConnectionChangedError)) throw error;
     // Stopped at the first refused write: nothing from this answer was written
     // after the connection changed, and nothing was recorded.
+    stopped = "connection-changed";
   }
   if (nameConflicts.length > 0) {
     logger.warn(
@@ -513,10 +531,12 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
       "Lodges on the central server could not be placed here: a concurrent change held their id, or several local lodges share the name of one sent without an id",
     );
   }
-  if (!recorded) {
+  if (stopped === "connection-changed") {
     logger.warn(
-      "The Alpine Central Server connection changed, or another Other lodges download recorded first, while this one ran; nothing from it was written after the change, and nothing was recorded",
+      "The Alpine Central Server connection changed while this Other lodges download ran; nothing from it was written after the change, and nothing was recorded",
     );
+  } else if (stopped === "superseded") {
+    logger.warn("Another Other lodges download recorded first while this one ran; this one recorded nothing");
   }
   return {
     fetched: pull.count,
@@ -528,5 +548,6 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
     nameConflicts,
     hiddenLodges,
     dropped: pull.dropped,
+    stopped,
   };
 }

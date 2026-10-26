@@ -90,6 +90,7 @@ function downloadSummaryText(data: {
   renamed?: number;
   nameConflicts?: Array<{ lodge: string | null; wanted: string }>;
   hiddenLodges?: string[];
+  stopped?: "connection-changed" | "superseded" | null;
 }): string {
   const entries = `${data.fetched} ${data.fetched === 1 ? "entry" : "entries"}`;
   const renamed = data.renamed ? ` (${data.renamed} renamed)` : "";
@@ -103,7 +104,15 @@ function downloadSummaryText(data: {
   const hiddenText = hidden.length
     ? ` Deleted on the central server, so hidden here: ${hidden.map((n) => `"${n}"`).join(", ")}.`
     : "";
-  return `Downloaded ${entries}: ${data.created} added, ${data.updated} updated${renamed}, ${data.unchanged ?? 0} unchanged.${conflictText}${hiddenText}`;
+  // A download that stopped before recording (#4262 review) says so: the next
+  // one repeats it.
+  const stoppedText =
+    data.stopped === "connection-changed"
+      ? " Stopped: the central server address or API key changed while it ran, so nothing more was saved. Download again."
+      : data.stopped === "superseded"
+        ? " Another download finished first, so this one saved no position. Download again if anything is missing."
+        : "";
+  return `Downloaded ${entries}: ${data.created} added, ${data.updated} updated${renamed}, ${data.unchanged ?? 0} unchanged.${conflictText}${hiddenText}${stoppedText}`;
 }
 
 export function AlpineServerSetup({ initialState }: { initialState: InitialState }) {

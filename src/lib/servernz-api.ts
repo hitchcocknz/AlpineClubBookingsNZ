@@ -46,6 +46,7 @@ import { getOperationalServerNzCredential, withServerNzConnectionTransaction } f
 import {
   loadServerNzSettings,
   validateCentralServerBaseUrl,
+  type ServerNzSettingsValues,
 } from "@/lib/servernz-settings";
 import {
   recordServerVersionIfCurrent,
@@ -108,6 +109,13 @@ interface ServerNzConnection {
   baseUrl: string;
   apiKey: string;
   identity: ServerNzConnectionIdentity;
+  /**
+   * The settings row as read in the SAME fenced read as `identity` (#4262
+   * review): a caller that bases its request or its writes on stored answers
+   * (the Other lodges cursor, keyed marker and owned list) takes them from
+   * here, so they belong to the connection the request is sent on.
+   */
+  settings: ServerNzSettingsValues;
 }
 
 /**
@@ -163,6 +171,7 @@ async function resolveConnection(
     baseUrl: check.value as string,
     apiKey: credential.apiKey,
     identity: { baseUrl: settings.baseUrl, credentialVersion: credential.version },
+    settings,
   };
   if (options.skipVersionGate) return connection;
 
@@ -589,13 +598,19 @@ export async function uploadOtherLodges(
   return uploadResultSchema.parse(await res.json());
 }
 
-/** Pull the distributed Other Clubs set from the central server. */
+/**
+ * Pull the distributed Other Clubs set from the central server. `since` may be
+ * a function of the stored settings, so the cursor asked from is the one read
+ * in the same fenced read as the connection (#4262 review); the result returns
+ * that read as `snapshot`.
+ */
 export async function pullOtherLodges(
-  since?: string | null,
+  since?: string | null | ((stored: ServerNzSettingsValues) => string | null),
 ): Promise<OtherLodgesPullResult> {
-  const { baseUrl, apiKey, identity } = await resolveConnection();
+  const { baseUrl, apiKey, identity, settings } = await resolveConnection();
+  const sinceValue = typeof since === "function" ? since(settings) : since;
   const url = new URL(`${baseUrl}/api/v1/other-lodges`);
-  if (since) url.searchParams.set("since", since);
+  if (sinceValue) url.searchParams.set("since", sinceValue);
   const res = await fetch(url, {
     method: "GET",
     cache: "no-store",
@@ -646,5 +661,6 @@ export async function pullOtherLodges(
     ownLodgesRefused,
     deletedLodgeIds,
     sentOn: identity,
+    snapshot: settings,
   };
 }

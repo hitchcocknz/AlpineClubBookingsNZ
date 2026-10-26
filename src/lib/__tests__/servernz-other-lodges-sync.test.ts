@@ -52,6 +52,9 @@ vi.mock("@/lib/prisma", () => {
 
 const mockUploadOtherLodges = vi.fn();
 const mockPullOtherLodges = vi.fn();
+// The settings the pull reads in its fenced read; `undefined` (the default)
+// means the stored settings `mockLoadSettings` answers.
+const mockPullSnapshot = vi.fn();
 
 vi.mock("@/lib/servernz-api", () => ({
   // A 2.5 server answers every item with its lodge's id; a fixture that leaves
@@ -66,7 +69,16 @@ vi.mock("@/lib/servernz-api", () => ({
       ),
     };
   },
-  pullOtherLodges: (...args: unknown[]) => mockPullOtherLodges(...args),
+  // The pull reads the stored settings in the same fenced read as its
+  // connection (#4262 review): `since` may be a function of them, and the
+  // answer carries them as `snapshot`. Here the stored settings are whatever
+  // `mockLoadSettings` answers, unless a test's pull supplies its own snapshot.
+  pullOtherLodges: async (since?: unknown) => {
+    const stored = (await mockPullSnapshot()) ?? (await mockLoadSettings());
+    const value = typeof since === "function" ? (since as (s: unknown) => unknown)(stored) : since;
+    const answer = await mockPullOtherLodges(value);
+    return answer && typeof answer === "object" && !("snapshot" in answer) ? { ...answer, snapshot: stored } : answer;
+  },
 }));
 
 // THE CONNECTION FENCE (#4262 review): every download write runs through the
@@ -279,6 +291,7 @@ beforeEach(() => {
   mockCreate.mockResolvedValue({ id: "ol_new" });
   mockAuditCreate.mockResolvedValue(undefined);
   mockConnectionCurrent.mockResolvedValue(true);
+  mockPullSnapshot.mockResolvedValue(undefined);
   // Under the lock, the row reads back as this download loaded it, unless a
   // test says another writer got there first.
   mockSettingsRow.mockImplementation(async () => {
@@ -399,6 +412,7 @@ describe("downloadOtherClubsFromServer", () => {
       nameConflicts: [],
       hiddenLodges: [],
       dropped: 0,
+      stopped: null,
     });
   });
 
@@ -1950,6 +1964,39 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     expect(mockRecordDownload).toHaveBeenCalledWith("c-640", undefined);
   });
 
+  // #4262 review (B1): the cursor, keyed marker and owned list come from the
+  // settings read in the SAME fenced read as the pull's connection, never from
+  // an earlier read a replacement could have made stale.
+  it("works from the pull's fenced snapshot, not from a settings read before the request", async () => {
+    // What a read before the request saw: the old connection, keyed, owning c-x.
+    mockLoadSettings.mockResolvedValue({
+      ...SETTINGS,
+      otherLodgesKeyedAt: "2026-08-01T00:00:00.000Z",
+      otherLodgesCursor: "old-cursor",
+      otherLodgesOwnedLodges: [{ id: "c-x", name: "Old Ours" }],
+    });
+    // What the fenced read with the request saw: the replacement forgot them.
+    const snapshot = { ...SETTINGS, otherLodgesKeyedAt: null, otherLodgesCursor: null, otherLodgesOwnedLodges: null };
+    let askedSince: unknown = "not asked";
+    registry([]);
+    mockPullOtherLodges.mockImplementation(async (since: unknown) => {
+      askedSince = since;
+      return { lodges: [], count: 0, cursor: "c-new", dropped: 0, ownLodges: undefined, sentOn: SENT_ON };
+    });
+    mockPullSnapshot.mockResolvedValue(snapshot);
+    // Under the fence the row still reads as the replacement left it.
+    mockSettingsRow.mockResolvedValue({ otherLodgesCursor: null, otherLodgesKeyedAt: null });
+
+    const result = await downloadOtherClubsFromServer();
+
+    expect(result.stopped).toBeNull();
+    // Asked from the snapshot: a whole registry, not the old cursor's overlap.
+    expect(askedSince).toBeNull();
+    // Recorded against the snapshot's cursor and as a whole download.
+    expect(mockRecordDownload).toHaveBeenCalledWith("c-new", undefined);
+    expect(mockRecordOptions).toHaveBeenCalledWith(expect.objectContaining({ keyed: true }));
+  });
+
   it("records the owned list through the connection fence, on the pull's own connection", async () => {
     registry([]);
     pull([], { sentOn: SENT_ON });
@@ -2073,10 +2120,11 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     });
     pull([]);
 
-    await downloadOtherClubsFromServer();
+    const result = await downloadOtherClubsFromServer();
 
     expect(mockRecordDownload).not.toHaveBeenCalled();
     expect(mockExecuteRaw).not.toHaveBeenCalled();
+    expect(result.stopped).toBe("superseded");
   });
 
   it("forgets nothing on an incremental download", async () => {
@@ -2127,7 +2175,7 @@ describe("download keyed by the central server's lodge id (#64)", () => {
       ["ol_gone", "Gone Lodge", null],
       ["ol_2", "Old Name", null],
     ]);
-    expect(result).toMatchObject({ hiddenLodges: [], created: 0, updated: 0, renamed: 0 });
+    expect(result).toMatchObject({ hiddenLodges: [], created: 0, updated: 0, renamed: 0, stopped: "connection-changed" });
     expect(mockLoggerWarn).toHaveBeenCalledWith(expect.stringMatching(/connection changed/i));
   });
 
