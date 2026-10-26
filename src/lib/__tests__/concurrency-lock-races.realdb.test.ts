@@ -584,8 +584,9 @@ import "./own-live-refund-note-coverage.realdb.test";
 // names no note records the officer's note, and that note then records no
 // other refund: the real resolve route and the real hand-made answer, in
 // sequence both ways and each holding lock(1) past its check while the other
-// queues. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
-// own `race-4421-` fixtures.
+// queues, and an inbound void of the recorded note undone by the nightly
+// follow-up through the link the resolve wrote. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4421-` fixtures.
 import "./resolve-records-refund-note.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster

@@ -5789,8 +5789,9 @@ Counterparts:
   that resolve committing while the completion holds its locks
   (`own-live-refund-note-coverage.realdb.test.ts`). A resolve that RECORDS the
   officer's hand-made note on a row naming none (#4421) is a writer of the same
-  fact, so it takes `lock(1)`: see "Resolve by hand records the refund note"
-  below. No new advisory key.
+  fact, through the same link writer, so it takes `lock(1)` and then the
+  `Payment` row: see "Resolve by hand records the refund note" below. No new
+  advisory key.
 
 **A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
 runs the very same undo (`undoUnderLocks`) for an unmatched note: the same
@@ -5822,50 +5823,72 @@ another payment's line, a reversed one, one larger than what is left or one
 its own live note records in full or in part refused. The order is pinned by
 `bank-refund-void-follow-up.test.ts`.
 
-## Resolve by hand records the refund note: global `lock(1)` alone (#4421)
+## Resolve by hand records the refund note: `lock(1)`, then the Payment row (#4421)
 
 `claimResolveRecordingRefundNote` (`src/lib/xero-resolve-refund-note.ts`, owner
 decision 26 Oct 2026, `INV-INT-028`) is the one writer behind "Resolve by hand"
-on a payment refund-note create that names no note of its own: it writes the
-officer's mark AND the id and number of the Xero credit note the officer made.
-Which note records which refund is the fact the #4162 hand-made answer
+on a FAILED payment refund-note create that names no note of its own: it writes
+the officer's mark, the id and number of the Xero credit note the officer made,
+and the payment's tracked per-refund `REFUND_CREDIT_NOTE` link for it. Which
+note records which refund is the fact the #4162 hand-made answer
 (`recordHandMadeRefundNoteLink`, inside `resolveManualRefundTask`) also writes,
-for any payment, so the two must exclude each other: both read "does any create
-row or link here record this note?" and then record it, and two such writers
-interleaved would each read "no" and one $200 note would record $400 of
-refunds. No per-payment row covers the race (the two refunds can sit on
-different payments) and a per-note key would be a new advisory key, so the
-writer joins the global cohort (`INV-LOCK-001`): the completion already holds
-`lock(1)` for its whole transaction for a follow-up, a non-cancellation
-hand-back.
+for any payment, through the same link writer (`writeHandMadeRefundNoteLink`),
+so the two must exclude each other: both read "does any create row or link here
+record this note?" and then record it, and two such writers interleaved would
+each read "no" and one $200 note would record $400 of refunds. No per-payment
+row covers the race (the two refunds can sit on different payments) and a
+per-note key would be a new advisory key, so the writer joins the global cohort
+(`INV-LOCK-001`): the completion already holds `lock(1)` for its whole
+transaction for a follow-up, a non-cancellation hand-back.
 
-The order, all in one short transaction:
+The order is the #4162 follow-up's, all in one short transaction:
 
 1. the Xero check (`verifyHandMadeRefundNote`) runs BEFORE the transaction
    opens, so no provider call is held under a lock;
-2. `lock(1)`, the transaction's first and only lock - the resolve touches no
-   `Payment`, ledger, capacity or member row, so it takes no narrower key and
-   joins the completion's order at its head;
-3. the row re-read under it, still a refund-note create naming no note,
-   unresolved, FAILED or PARTIAL, and its amount still the note's;
-4. the note's records read: any other credit-note create row
+2. `lock(1)`, the transaction's first lock;
+3. the `Payment` row (`lockPaymentForRefundedTotal`) BEFORE anything about the
+   payment is read - the #4217 order every refunded-total writer keeps;
+4. the row re-read: still a refund-note create naming no note, unresolved,
+   FAILED, its amount still the note's;
+5. no retry of the row ran since the route read it (`findRetryRunningOrSince`:
+   RUNNING, or started or completed at or after the read). A FAILED refund
+   note's retry runs on its own REQUEUE row and never claims the original, so
+   one that started and finished while the route checked Xero and waited for
+   the lock would otherwise raise its own note beside the officer's, and the
+   post-commit `findRetryOverlappingMark` cannot see it (not RUNNING, started
+   after the read). The mark's instant is taken here, after the lock;
+6. the note's records read: any other credit-note create row
    (`creditNoteCreateRowsRecordingWhere`, the spelling the answer's guard uses)
-   or any `XeroObjectLink` - either refuses with a 409, and the transaction
-   rolls back having written nothing;
-5. the status-guarded claim (`updateMany`: FAILED/PARTIAL, `manuallyResolvedAt`
-   null, `xeroObjectId` null) writing the mark and the note together. A lost
-   claim writes nothing and the route answers as for any lost resolve.
+   or any `XeroObjectLink`, except the link this row wrote and a withdrawal
+   retired - either refuses with a 409, and the transaction rolls back having
+   written nothing;
+7. the status-guarded claim (`updateMany`: FAILED, `manuallyResolvedAt` null,
+   `xeroObjectId` null) writing the mark and the note together. A lost claim
+   writes nothing and the route answers as for any lost resolve;
+8. the link row last, through the link funnel (`writeHandMadeRefundNoteLink`),
+   which keeps a void or newer reading that committed first under the link's
+   row lock (#4288) and then refuses, rolling the claim back. The inbound link
+   write and #4161's heal take only the link row (the heal's Payment row
+   `NOWAIT`), so taking it after the Payment row adds no cycle.
 
 Of a resolve and an answer offering the same note, whichever takes `lock(1)`
 second reads the first's commit and refuses; a second resolve offering it
 queues the same way. After the commit the route's existing running-retry check
-runs (`findRetryOverlappingMark`); a mark it withdraws takes the note with it,
-guarded on that mark and that note. Every other resolve - a row naming its
-note, a refund request's note, any other entity - takes no lock, as before.
-One registered site, `claimResolveRecordingRefundNote#1`. Proven against real
-PostgreSQL by `resolve-records-refund-note.realdb.test.ts`: both orders in
-sequence, and each writer held inside its transaction past its check while the
-other is shown queued on the advisory lock, ending with one record of the note.
+runs (`findRetryOverlappingMark`); a mark it withdraws
+(`withdrawResolveRecordingRefundNote`) takes the note and the link with it, in
+the claim's own order - `lock(1)`, the `Payment` row, the row's `updateMany`
+guarded on that mark and that note, the link retired last. Then the note is read
+from Xero once more, outside any lock (`reconcileHandMadeNoteAfterRecording`).
+Every other resolve - a row naming its note, a refund request's note, any other
+entity - takes no lock, as before. Two registered sites,
+`claimResolveRecordingRefundNote#1` and `withdrawResolveRecordingRefundNote#1`;
+no new row-lock site (the Payment row and link row are taken by their existing
+helpers). Proven against real PostgreSQL by
+`resolve-records-refund-note.realdb.test.ts`: both orders in sequence, each
+writer held inside its transaction past its check while the other is shown
+queued on the advisory lock, ending with one record of the note; and the void
+path - the inbound void of the recorded note retires its link, coverage drops to
+$0 and the nightly follow-up undoes the refund and asks once.
 
 ## Refund-note link writes racing a void (#4195, #4223)
 

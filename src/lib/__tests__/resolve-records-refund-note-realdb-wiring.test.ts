@@ -22,5 +22,6 @@ describe("the resolve-records-refund-note real-database proof stays wired into C
     expect(suite).toContain("once the hand-made answer records the note, a resolve offering it is refused");
     expect(suite).toContain("a resolve arriving while the answer holds its locks past its guard waits on lock(1), then refuses");
     expect(suite).toContain("an answer arriving while the resolve holds lock(1) past its checks waits, then refuses");
+    expect(suite).toContain("once Xero voids the note a resolve recorded, the link records the void");
   });
 });

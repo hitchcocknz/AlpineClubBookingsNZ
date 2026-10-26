@@ -518,21 +518,24 @@ officer made, and that note records no other refund: one note, one refund
 (#4421, owner decision 26 Oct 2026).
 
 - **Asked of one population.** `refundNoteResolveShape`
-  (`xero-resolve-refund-note.ts`) asks for the note's number on exactly the
-  rows `readResolvedRefundCreditNoteCoverage` counts: an outbound refund-note
-  create on a payment, its own refund's (`countsTowardRefundNoteCoverage`),
-  naming no note. A refund request's note (#4391), a row naming its note and
-  every other row resolve as `INV-INT-025` says; an unreadable amount is
-  refused.
+  (`xero-resolve-refund-note.ts`) asks for the number on a FAILED row naming no
+  note, among the rows `readResolvedRefundCreditNoteCoverage` reads (one set of
+  row constants) that are their own refund's (`countsTowardRefundNoteCoverage`).
+  A refund request's note (#4391), a row naming its note and every other row
+  resolve as `INV-INT-025` says, and a number sent for one is refused. A row
+  whose amount cannot be read is refused: Retry refuses it too, so Mark
+  non-replayable, and the treasurer decides what Xero needs.
 - **Checked as the hand-made answer is.** `verifyHandMadeRefundNote`
   (`INV-ADDPAY-042`), before any transaction: approved or paid, a sales credit
-  note for the payment's contact and exactly the row's recorded amount.
-- **Recorded once.** Under `lock(1)` - the key the hand-made answer's
-  completion holds - the row is re-read and the note refused, with a 409 and
-  nothing written, when another credit-note create row or any link records it;
-  the status-guarded claim writes the mark with the note's id and number. The
-  answer refuses a note a resolved row names, so either order ends with one
-  record.
+  note for the booking's contact, the row's exact amount.
+- **Recorded once, and tracked.** Under `lock(1)`, then the Payment row: a
+  retry of the row that ran since the route read it, another create row or any
+  link recording the note refuses with a 409 and nothing written; then the
+  status-guarded claim writes the mark and the note, and the answer's own
+  writer (`writeHandMadeRefundNoteLink`) its live link, so the inbound sync
+  catches a void and coverage counts the note once. Either order of resolve and
+  answer ends with one record. A withdrawn mark retires its link; only that row
+  takes it back.
 - **Legacy.** A row resolved before #4421 names no note and stays so.
 
 Pinned by `xero-resolve-refund-note.test.ts`,

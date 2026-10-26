@@ -12,7 +12,10 @@
  * - the treasurer's "already recorded it in Xero myself" answer to the
  *   follow-up, through the real completion (`resolveManualRefundTask`).
  * Only one may. Proven in sequence both ways and with each writer holding its
- * transaction past its own check while the other runs.
+ * transaction past its own check while the other runs. And the resolve tracks
+ * the note through the payment's link, so when Xero voids it the inbound sync
+ * records the void and the nightly follow-up undoes the refund (#4421 review,
+ * money F1).
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
