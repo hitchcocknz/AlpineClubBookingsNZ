@@ -3149,8 +3149,13 @@ limit of the window, not of the release. An ORDINARY increase's door and
 replay share one request (`INV-MOD-060`, #4036), so in the window an old
 door's row replays byte for byte under this runner, a new door's row the old
 runner replays is refused and backs off until this runner replays it, and an
-intent the old runner minted under its own reason is adopted only as the one
-unrecorded match no other in-flight recovery of the booking could own.
+intent the old runner minted under its own reason was adopted only as the one
+unrecorded match no other in-flight recovery of the booking could own. #4079
+removed that case once no pre-#4036 recovery row remained. Intents under the
+runner's reason are still minted, by a row whose key names no door and by a
+currency re-issue of a row the runner recorded; in #4079's deploy window the
+#4077 release's runner treats those exactly as it always did, and the #4079
+runner never adopts one.
 
 **#4316 adds the edit minter's retirement of an ask on a booking that has
 ended, and no key** (`INV-ADDPAY-044`). The ordinary doors decide the ask under
