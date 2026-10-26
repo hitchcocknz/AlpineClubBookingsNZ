@@ -601,6 +601,9 @@ import "./own-live-refund-note-coverage.realdb.test";
 // row and then refuses rather than writing over the forget. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans the singleton settings row.
 import "./servernz-version-record-race.realdb.test";
+
+// #4436: address/key replacement and request capture share the settings fence.
+import "./servernz-connection-race.realdb.test";
 // #4421 reuses it to prove "Resolve by hand" on a refund-note create that
 // names no note records the officer's note, and that note then records no
 // other refund: the real resolve route and the real hand-made answer, in

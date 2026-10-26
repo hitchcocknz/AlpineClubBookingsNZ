@@ -134,6 +134,11 @@ another's contact details current. Instead of every club retyping every other
 club's booking officer by hand, each club maintains its own entry and the hub
 distributes it.
 
+Changing the server address clears the previous server's API key and answers
+in the same save. A sync running at that moment either uses the previous
+connection together or waits for the change; it cannot send the old key to
+the new address. Enter a key issued by the new server before syncing again.
+
 **Read this before you turn it on.** This is the one integration that sends data
 *out* of your club. When you enable a shared item, everything recorded on **your
 own lodge's** entry in the **Other lodges** panel is uploaded to the central
