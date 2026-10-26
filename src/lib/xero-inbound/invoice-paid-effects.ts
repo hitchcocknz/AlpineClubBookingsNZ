@@ -819,13 +819,13 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
           tx,
           matchedBookingIds.filter((id) => id !== settlementPayment.bookingId)
         );
-        const { mintableCents, mintPartial: belowFace, cashUnverified, aggregateCapped } =
-          resolveMintableCents(
-            receiptFigure.receiptCents,
-            invoiceCash,
-            otherMintedCents,
-          );
-        const mintPartial = (belowFace && mintableCents < receiptFigure.partialFaceCents) || receiptFigure.mixedInvoiceExpectedCents !== null;
+        const mint = resolveMintableCents(
+          receiptFigure.receiptCents,
+          invoiceCash,
+          otherMintedCents,
+        );
+        const { mintableCents, cashUnverified, aggregateCapped } = mint;
+        const mintPartial = receiptFigure.isPartPayment(mint);
 
         // #3643 (`INV-PAY-108`, ORCHESTRATOR DECISION 3): while a part-payment
         // review names this payment, open or closed, neither arm below sizes
@@ -1267,9 +1267,9 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
             );
           // #3979: the receipt's figure as the face, and the invoice side for a
           // mixed invoice, as the already-cancelled arm above.
-          const { mintableCents, mintPartial: belowFace, cashUnverified, aggregateCapped } =
-            resolveMintableCents(receiptFigure.receiptCents, invoiceCash, otherMintedCents);
-          const mintPartial = (belowFace && mintableCents < receiptFigure.partialFaceCents) || receiptFigure.mixedInvoiceExpectedCents !== null;
+          const mint = resolveMintableCents(receiptFigure.receiptCents, invoiceCash, otherMintedCents);
+          const { mintableCents, cashUnverified, aggregateCapped } = mint;
+          const mintPartial = receiptFigure.isPartPayment(mint);
           if (aggregateCapped) {
             logger.warn(
               { invoiceId, paymentId: fresh.id, bookingId: fresh.bookingId, mintableCents, otherMintedCents, invoiceCashCents: invoiceCash.knownCents },

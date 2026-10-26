@@ -232,12 +232,17 @@ export async function decideInternetBankingReceiptFigure(
    */
   mixedInvoiceExpectedCents: number | null;
   /**
-   * The cash a full payment of this receipt brings: the receipt, or less when
-   * the invoice expected less (applied corrections and no-cash notes). Cash
-   * short of the receipt by only those is not a part payment (#4095 item 2).
+   * Whether a cancel arm's mint (`resolveMintableCents`) credits only part of
+   * the cash a full payment brings - the receipt, or less when the invoice
+   * expected less (applied corrections and no-cash notes, #4095 item 2) - or
+   * the invoice is mixed. The one rule both cancel arms apply (`INV-SSOT`).
    */
-  partialFaceCents: number;
-  /** The invoice-correction notes applied to the invoice, for the recount after a kept settle (#4095). */
+  isPartPayment: (mint: { mintableCents: number; mintPartial: boolean }) => boolean;
+  /**
+   * The invoice-correction notes applied to the invoice, one per note with its
+   * applied amounts summed (a note allocated twice counts whole), for the
+   * recount after a kept settle (#4095).
+   */
   appliedCorrectionNotes: AppliedCreditNote[];
 }> {
   const { payment } = input;
@@ -258,7 +263,7 @@ export async function decideInternetBankingReceiptFigure(
   let refundWordedCents = 0;
   let noCashCents = 0;
   let memberCreditCents = 0;
-  const appliedCorrectionNotes: AppliedCreditNote[] = [];
+  const correctionCentsByNoteId = new Map<string, number>();
   for (const note of input.invoice.appliedCreditNotes) {
     // The member's own account credit first (#3979 final review): an edit's
     // credit kept as account credit on ANOTHER booking is a modification
@@ -270,8 +275,14 @@ export async function decideInternetBankingReceiptFigure(
     const kind = noteCash.get(note.id);
     if (kind === "refund") refundWordedCents += note.appliedCents;
     else if (kind) noCashCents += note.appliedCents;
-    if (kind === "correction") appliedCorrectionNotes.push(note);
+    if (kind === "correction") {
+      correctionCentsByNoteId.set(note.id, (correctionCentsByNoteId.get(note.id) ?? 0) + note.appliedCents);
+    }
   }
+  const appliedCorrectionNotes: AppliedCreditNote[] = [...correctionCentsByNoteId].map(([id, appliedCents]) => ({
+    id,
+    appliedCents,
+  }));
 
   const plan = planInternetBankingCashSettlement({
     refundedAmountCents: payment.refundedAmountCents,
@@ -300,9 +311,11 @@ export async function decideInternetBankingReceiptFigure(
   const mixedInvoiceExpectedCents =
     input.cash.knownCents > 0 && input.cash.knownCents < expectedCents ? expectedCents : null;
   const partialFaceCents = Math.min(receiptCents, expectedCents);
+  const isPartPayment = (mint: { mintableCents: number; mintPartial: boolean }) =>
+    (mint.mintPartial && mint.mintableCents < partialFaceCents) || mixedInvoiceExpectedCents !== null;
 
   if (plan.kind !== "rewrite") {
-    return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents, partialFaceCents, appliedCorrectionNotes };
+    return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents, isPartPayment, appliedCorrectionNotes };
   }
   const primaryDiffers = uncapturedPrimary.some((row) => row.amountCents !== plan.receiptCents);
   return {
@@ -318,7 +331,7 @@ export async function decideInternetBankingReceiptFigure(
       status: plan.status,
     },
     mixedInvoiceExpectedCents,
-    partialFaceCents,
+    isPartPayment,
     appliedCorrectionNotes,
   };
 }

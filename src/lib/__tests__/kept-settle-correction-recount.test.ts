@@ -121,7 +121,9 @@ describe("decideInternetBankingReceiptFigure names the applied corrections (#409
       invoice: {
         totalCents: 30_000,
         appliedCreditNotes: [
-          { id: "correction", appliedCents: 10_000 },
+          // One note allocated to the invoice in two parts (#4095 review, item 5).
+          { id: "correction", appliedCents: 6_000 },
+          { id: "correction", appliedCents: 4_000 },
           { id: "refund", appliedCents: 1_000 },
           { id: "no-cash", appliedCents: 2_000 },
           { id: "member-credit", appliedCents: 3_000 },
@@ -129,11 +131,15 @@ describe("decideInternetBankingReceiptFigure names the applied corrections (#409
       },
     });
     expect(decided.plan).toMatchObject({ kind: "keep" });
+    // One entry per note, its parts summed: never counted at one part.
     expect(decided.appliedCorrectionNotes).toEqual([{ id: "correction", appliedCents: 10_000 }]);
     // Kept at the stored $300, a full payment brings $300 less the $100
-    // correction, the $20 no-cash note and the member's $30 credit: the $200
-    // of cash is no part payment on the cancel arms (#4095 item 2).
+    // correction, the $20 no-cash note and the member's $30 credit, $150: a
+    // mint of that much is no part payment on the cancel arms (#4095 item 2),
+    // and a cent less is.
     expect(decided.receiptCents).toBe(30_000);
-    expect(decided.partialFaceCents).toBe(30_000 - 10_000 - 2_000 - 3_000);
+    expect(decided.isPartPayment({ mintableCents: 15_000, mintPartial: true })).toBe(false);
+    expect(decided.isPartPayment({ mintableCents: 14_999, mintPartial: true })).toBe(true);
+    expect(decided.isPartPayment({ mintableCents: 30_000, mintPartial: false })).toBe(false);
   });
 });
