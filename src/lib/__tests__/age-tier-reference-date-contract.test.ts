@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 /**
  * `computeAgeTier` is never called without its reference date (CT-4 group F1,
  * #2870, correctness review).
@@ -48,6 +47,9 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import { balancedBrackets } from "./support/balanced-brackets";
+import { blankLiterals } from "./support/strip-comments";
+
 const SRC = path.join(process.cwd(), "src");
 
 function walk(dir: string): string[] {
@@ -70,17 +72,20 @@ function walk(dir: string): string[] {
 function callArgumentLists(code: string): string[] {
   const calls: string[] = [];
   const needle = "computeAgeTier(";
+  // Call sites are found over masked text, so a call named in a comment or
+  // string is skipped rather than handed to the bracket reader.
+  const structure = blankLiterals(code);
   let from = 0;
   for (;;) {
-    const at = code.indexOf(needle, from);
+    const at = structure.indexOf(needle, from);
     if (at === -1) break;
     from = at + needle.length;
     // Skip `computeAgeTierWithSettings(`, a different function with its own rules.
-    if (code.startsWith("computeAgeTierWithSettings(", at)) continue;
+    if (structure.startsWith("computeAgeTierWithSettings(", at)) continue;
     // Skip a declaration rather than a call.
-    const before = code.slice(Math.max(0, at - 30), at);
+    const before = structure.slice(Math.max(0, at - 30), at);
     if (/function\s+$/.test(before)) continue;
-    const region = balancedBrackets(code, from - 1);
+    const region = balancedBrackets(code, from - 1, structure);
     calls.push(region.text.slice(1, -1));
   }
   return calls;

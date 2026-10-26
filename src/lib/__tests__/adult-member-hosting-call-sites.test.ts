@@ -44,7 +44,7 @@ import { describe, expect, it } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
-import { stripComments } from "./support/strip-comments";
+import { blankLiterals, stripComments } from "./support/strip-comments";
 import { balancedBrackets } from "./support/balanced-brackets";
 import {
   ADULT_MEMBER_HOST_SCOPES,
@@ -193,15 +193,21 @@ function terminalStatusFlips(): TerminalStatusFlip[] {
   for (const file of everySourceFile()) {
     const source = readRepoCode(file);
     if (!source.includes("booking.update")) continue;
+    // Call sites are found over masked text: a `booking.update(` named in a
+    // string is not a call and has no opening bracket for the reader to find.
+    const structure = blankLiterals(source);
     const calls = /\bbooking\.(?:update|updateMany)\s*\(/g;
     let match: RegExpExecArray | null;
-    while ((match = calls.exec(source)) !== null) {
-      const { text: call } = balancedBrackets(source, match.index + match[0].length - 1);
+    while ((match = calls.exec(structure)) !== null) {
+      const open = match.index + match[0].length - 1;
+      const { text: call, end } = balancedBrackets(source, open, structure);
+      const callStructure = structure.slice(open, end + 1);
       let status: string | null = null;
-      for (const dataMatch of call.matchAll(/\bdata:\s*\{/g)) {
+      for (const dataMatch of callStructure.matchAll(/\bdata:\s*\{/g)) {
         const data = balancedBrackets(
           call,
           (dataMatch.index ?? 0) + dataMatch[0].length - 1,
+          callStructure,
         ).text;
         const terminal = data.match(
           /status:\s*(?:BookingStatus\.)?["']?(CANCELLED|EXPIRED|BUMPED)["']?\s*[,}]/,
