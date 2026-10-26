@@ -6,9 +6,14 @@ import {
   type AdditionalAskChainRow,
 } from "@/lib/additional-ask-cause";
 import { loadBankTransferOffer, type BankTransferOffer } from "@/lib/credit-release-bank-transfer";
-import { signalCreditReleaseToOfficers } from "@/lib/release-ask-officer-signal";
+import { signalCreditReleaseToOfficers, type CreditReleaseWithheldReason } from "@/lib/release-ask-officer-signal";
 import logger from "@/lib/logger";
-import { openBalanceCents, readXeroInvoiceBalance, type XeroInvoiceBalanceReader } from "@/lib/xero-invoice-balance";
+import {
+  isXeroInvoiceNotFound,
+  openBalanceCents,
+  readXeroInvoiceBalance,
+  type XeroInvoiceBalanceReader,
+} from "@/lib/xero-invoice-balance";
 
 /**
  * MAY THIS PAYMENT REQUEST BE EMAILED, AND MAY IT OFFER A BANK TRANSFER? (#4253 release 2,
@@ -22,9 +27,13 @@ import { openBalanceCents, readXeroInvoiceBalance, type XeroInvoiceBalanceReader
  * for a request that includes released credit; a request that is only a change is never read.
  *
  * - Xero showing LESS open on the invoice than the request's released credit (a transfer that paid
- *   part of it, an invoice paid or voided) withholds the reminder for an officer: never a card
- *   chase for money that may already be paid, and never an automatic close or resize on a part
- *   payment.
+ *   part of it), or the invoice not open at all (paid, voided, not yet approved), withholds the
+ *   reminder for an officer: never a card chase for money that may already be paid, and never an
+ *   automatic close or resize on a part payment.
+ * - A request that cannot be matched to the invoice - none in Xero, Xero answering that it has no
+ *   such invoice (a definite 404) or giving no amount due - is withheld for an officer too: those
+ *   are answers, and retrying them would only skip the reminder silently for ever. Only a read that
+ *   got no answer (Xero down, rate-limited, a 5xx) is "unreadable" and waits for the next pass.
  * - A bank transfer is offered only where it would pay exactly what is asked: a request made only
  *   of released credit (`isPureCreditReleaseChain`) whose amount EQUALS the invoice's open balance
  *   now. Then a transfer of the quoted invoice clears the invoice, which the closer turns into a
@@ -33,7 +42,7 @@ import { openBalanceCents, readXeroInvoiceBalance, type XeroInvoiceBalanceReader
 export type CreditReleaseReminderGate =
   | { send: true; bankTransfer: BankTransferOffer | null }
   /** Withheld for an officer (`signalCreditReleaseToOfficers`). */
-  | { send: false; reason: "invoice-part-paid" | "request-unmatched"; detail: Record<string, unknown> }
+  | { send: false; reason: CreditReleaseWithheldReason; detail: Record<string, unknown> }
   /** Xero could not be read: nothing claimed, nothing told, the reminder stays due for the next pass. */
   | { send: false; reason: "invoice-unreadable"; detail: Record<string, unknown> };
 
@@ -55,15 +64,22 @@ export async function resolveCreditReleaseReminderGate(params: {
   try {
     const balance = await (params.readInvoiceBalance ?? readXeroInvoiceBalance)(params.xeroInvoiceId);
     if (balance.amountDueCents === null) {
-      return { send: false, reason: "invoice-unreadable", detail: { invoiceStatus: balance.status } };
+      // Xero answered and gave no amount due: an answer, not an outage.
+      return { send: false, reason: "request-unmatched", detail: { invoiceStatus: balance.status, amountDueMissing: true } };
     }
     open = openBalanceCents(balance);
+    if (open === null) {
+      return { send: false, reason: "invoice-not-open", detail: { invoiceStatus: balance.status, shareCents, askCents: params.askCents } };
+    }
     invoiceNumber = balance.invoiceNumber;
   } catch (err) {
+    if (isXeroInvoiceNotFound(err)) {
+      return { send: false, reason: "request-unmatched", detail: { invoiceNotFound: true } };
+    }
     logger.warn({ err, xeroInvoiceId: params.xeroInvoiceId }, "Could not read the booking's Xero invoice before a payment request; leaving it for the next pass");
     return { send: false, reason: "invoice-unreadable", detail: {} };
   }
-  if (open === null || open < shareCents) {
+  if (open < shareCents) {
     return { send: false, reason: "invoice-part-paid", detail: { invoiceOpenCents: open, shareCents, askCents: params.askCents } };
   }
   const offerable = isPureCreditReleaseChain(params.rows) && open === params.askCents;

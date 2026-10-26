@@ -51,6 +51,7 @@ vi.mock("@/lib/credit-release-bank-transfer", async (importOriginal) => ({
 
 import { resendAdditionalPaymentEmail } from "@/lib/additional-payment-resend-service";
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
+import { creditReleaseResendRefusal } from "@/lib/release-ask-officer-signal";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const NOW = new Date("2026-10-10T22:00:00.000Z");
@@ -128,6 +129,23 @@ describe("resendAdditionalPaymentEmail", () => {
       expect(result).toMatchObject({ ok: false, status: 409 });
       expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
       expect(mockSendAdditionalPaymentReminderEmail).not.toHaveBeenCalled();
+    });
+
+    it("words each refusal by its own reason, from the one source of those words", async () => {
+      const balance = (amountDueCents: number | null, status = "AUTHORISED") =>
+        ({ invoiceId: "xero-inv-1", status, amountDueCents, invoiceNumber: "INV-0001" });
+      mockReadInvoiceBalance.mockResolvedValue(balance(5_000));
+      expect(await resend()).toMatchObject({ status: 409, error: creditReleaseResendRefusal("invoice-part-paid") });
+      mockReadInvoiceBalance.mockResolvedValue(balance(21_000, "VOIDED"));
+      expect(await resend()).toMatchObject({ status: 409, error: creditReleaseResendRefusal("invoice-not-open") });
+      mockReadInvoiceBalance.mockRejectedValue({ response: { statusCode: 404 } });
+      expect(await resend()).toMatchObject({ status: 409, error: creditReleaseResendRefusal("request-unmatched") });
+      mockReadInvoiceBalance.mockResolvedValue(balance(null));
+      expect(await resend()).toMatchObject({ status: 409, error: creditReleaseResendRefusal("request-unmatched") });
+      // Three different sentences: a part payment is not a voided invoice is not a missing one.
+      expect(new Set(["invoice-part-paid", "invoice-not-open", "request-unmatched"].map((r) => creditReleaseResendRefusal(r as never))).size).toBe(3);
+      expect(creditReleaseResendRefusal("invoice-not-open")).not.toMatch(/owing less/);
+      expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
     });
 
     it("refuses while Xero cannot be read", async () => {

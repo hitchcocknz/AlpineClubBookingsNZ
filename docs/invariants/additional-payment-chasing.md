@@ -1884,14 +1884,16 @@ _Legacy: settles tasks raised before #4317._
   cron and by an officer's re-send - `resolveCreditReleaseReminderGate` reads the
   booking's invoice with the sizing's own reader, outside every transaction, for
   any request that includes released credit. Xero showing less open than that
-  credit (a part transfer, a paid or voided invoice), or a request it cannot match
-  to the invoice, withholds the automatic reminder; the re-send is refused with
-  the reason. Nothing is closed or resized on a part payment. An unreadable
-  invoice claims nothing and the reminder stays due.
+  credit (a part transfer), the invoice not open (paid, voided, unapproved), or
+  a request it cannot match (no invoice, a definite 404, no amount due) withholds
+  the automatic reminder; the re-send is refused with that reason's own words.
+  Nothing is closed or resized on a part payment. Only a read with no answer
+  (Xero down, a 5xx) claims nothing and leaves the reminder due.
 - **A release behind an unpaid edit request waits as long as that takes.** Its
   recovery row goes back to the longest retry interval with the claim's attempt
-  handed back (`waitPaymentRecoveryOperation`), so it never runs out of attempts
-  and is asked for once the edit is paid or withdrawn.
+  handed back (`waitPaymentRecoveryOperation`), decided before any Xero read, so
+  even an unreachable Xero never runs it out of attempts; it is asked for once
+  the edit is paid or withdrawn.
 - **Everything the email needs is resolved before the claim**, so no failure
   between the stamp and the mailer can lose a reminder with no EmailLog row.
 - **The officers are told once.** The request (or the edit it waits on) stays on

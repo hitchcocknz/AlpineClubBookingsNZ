@@ -2249,7 +2249,8 @@ inbound fence records its conflict the same way, under the
   chase while unpaid (INV-ADDPAY-048): request email now, reminders at 7, 14, 21 and 28
                                days; after the fourth reminder only the officers' queues chase
   reminder withheld for an officer (INV-ADDPAY-051): Xero shows the invoice owing less than the
-                               request's released credit, or the request cannot be matched to it
+                               request's released credit, or not open (paid, voided, unapproved),
+                               or the request cannot be matched to it (none, a 404, no amount due)
 ```
 
 `INV-ADDPAY-045`, `INV-ADDPAY-046`, `INV-ADDPAY-048`, `INV-ADDPAY-050`, `INV-ADDPAY-051`.

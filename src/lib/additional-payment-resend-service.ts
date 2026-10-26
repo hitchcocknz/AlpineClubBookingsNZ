@@ -1,5 +1,6 @@
 import { ASK_CAUSE_ROWS, additionalAskCause } from "@/lib/additional-ask-cause";
 import { resolveCreditReleaseReminderGate } from "@/lib/credit-release-reminder-gate";
+import { creditReleaseResendRefusal } from "@/lib/release-ask-officer-signal";
 import {
   ADDITIONAL_PAYMENT_RESEND_COOLDOWN_MINUTES,
   additionalPaymentEpisodeStartedAt,
@@ -189,9 +190,10 @@ export async function resendAdditionalPaymentEmail(params: {
   }
 
   // #4253 release 2 (`INV-ADDPAY-051`): before anything is claimed, the same check the reminder
-  // cron makes for a request that includes released credit. Xero showing less owing on the
-  // booking's invoice than that credit, or no answer from Xero, refuses the re-send: the officer is
-  // told to look rather than the member asked to pay by card what may already be paid. The
+  // cron makes for a request that includes released credit. A withheld reminder (invoice part-paid,
+  // not open, or not matched in Xero) refuses with 409 and that reason's own words; no answer from
+  // Xero refuses with 503. The officer is told to look rather than the member asked to pay by card
+  // what may already be paid. The
   // bank-transfer offer is resolved here too, so nothing can fail between the claim and the send.
   let gate: Awaited<ReturnType<typeof resolveCreditReleaseReminderGate>>;
   try {
@@ -211,12 +213,7 @@ export async function resendAdditionalPaymentEmail(params: {
           status: 503,
           error: "We could not check this booking's invoice in Xero, so nothing was sent. Please try again shortly.",
         }
-      : {
-          ok: false,
-          status: 409,
-          error:
-            "Xero does not show this booking's invoice still owing the credit this request asks for (part of it may have been paid by bank transfer), so nothing was sent. Check the invoice in Xero before asking the member again.",
-        };
+      : { ok: false, status: 409, error: creditReleaseResendRefusal(gate.reason) };
   }
 
   const episodeStartedAt = additionalPaymentEpisodeStartedAt({

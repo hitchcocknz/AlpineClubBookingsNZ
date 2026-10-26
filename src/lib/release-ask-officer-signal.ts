@@ -15,27 +15,53 @@ import { prisma } from "@/lib/prisma";
  *
  * - `waiting-on-edit-request`: a release landed on a booking whose unpaid edit request is still
  *   open; it is asked for once that request is paid or withdrawn.
- * - `invoice-part-paid`: Xero shows less owing on the booking's invoice than the released credit
- *   the request asks for (a bank transfer that paid part of it, say), so the automatic reminder
- *   is withheld rather than asking the member to pay by card what may already be paid.
- * - `request-unmatched`: the request could not be matched to the booking's invoice at all.
+ * - `invoice-part-paid`: Xero shows the booking's invoice open but owing less than the released
+ *   credit the request asks for (a bank transfer that paid part of it, say), so the automatic
+ *   reminder is withheld rather than asking the member to pay by card what may already be paid.
+ * - `invoice-not-open`: Xero shows the invoice paid, voided or not yet approved, so nothing can be
+ *   paid against it as it stands.
+ * - `request-unmatched`: the request could not be matched to the booking's invoice at all - no
+ *   invoice in Xero, Xero answering that it has no such invoice or giving no amount due, or a
+ *   request whose ledger rows could not all be read.
  *
  * Written once per `key` (the recovery row, or the live request's card payment), so a cron that
  * meets the same request every pass adds nothing. The read and the write are not one transaction:
  * two passes racing could write two rows, which says the same thing twice and moves no money.
  */
-export type CreditReleaseOfficerSignalReason = "waiting-on-edit-request" | "invoice-part-paid" | "request-unmatched";
+/** Why a released-credit REMINDER was withheld (`credit-release-reminder-gate.ts`). */
+export type CreditReleaseWithheldReason = "invoice-part-paid" | "invoice-not-open" | "request-unmatched";
+export type CreditReleaseOfficerSignalReason = "waiting-on-edit-request" | CreditReleaseWithheldReason;
 
 const ACTION = "payment.credit_release_ask.left_to_officers";
 
+/**
+ * THE ONE SOURCE of each reason's words: the audit note's summary and, for a withheld reminder,
+ * what an officer's re-send is refused with (`creditReleaseResendRefusal`).
+ */
 const SUMMARY: Record<CreditReleaseOfficerSignalReason, string> = {
   "waiting-on-edit-request":
     "Credit used in Xero was not asked for yet: an unpaid request for a booking change is open, and the released credit will be asked for once it is paid or withdrawn",
   "invoice-part-paid":
-    "The automatic reminder for credit used in Xero was withheld: Xero shows less owing on the booking's invoice than the request asks for, so an officer should check it",
+    "The automatic reminder for credit used in Xero was withheld: Xero shows the booking's invoice owing less than the request asks for (part may have been paid by bank transfer), so an officer should check it",
+  "invoice-not-open":
+    "The automatic reminder for credit used in Xero was withheld: Xero shows the booking's invoice paid, voided or not yet approved, so an officer should check it",
   "request-unmatched":
-    "The automatic reminder for credit used in Xero was withheld: the request could not be matched to the booking's invoice, so an officer should check it",
+    "The automatic reminder for credit used in Xero was withheld: the request could not be matched to the booking's invoice in Xero, so an officer should check it",
 };
+
+const RESEND_REFUSAL: Record<CreditReleaseWithheldReason, string> = {
+  "invoice-part-paid":
+    "Xero shows this booking's invoice owing less than the credit this request asks for (part of it may have been paid by bank transfer), so nothing was sent. Check the invoice in Xero before asking the member again.",
+  "invoice-not-open":
+    "Xero shows this booking's invoice paid, voided or not yet approved, so nothing was sent. Check the invoice in Xero before asking the member again.",
+  "request-unmatched":
+    "This request could not be matched to the booking's invoice in Xero (the invoice is missing there, or Xero gave no amount owing), so nothing was sent. Check the booking's invoice in Xero first.",
+};
+
+/** What an officer's re-send of a withheld released-credit request is refused with. */
+export function creditReleaseResendRefusal(reason: CreditReleaseWithheldReason): string {
+  return RESEND_REFUSAL[reason];
+}
 
 export async function signalCreditReleaseToOfficers(params: {
   bookingId: string;

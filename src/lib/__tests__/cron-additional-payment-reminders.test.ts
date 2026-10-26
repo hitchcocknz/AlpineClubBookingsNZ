@@ -67,6 +67,7 @@ vi.mock("@/lib/credit-release-bank-transfer", async (importOriginal) => ({
 vi.mock("@/lib/release-ask-officer-signal", () => ({ signalCreditReleaseToOfficers: mockSignalOfficers }));
 
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
+import { XeroInvoiceNotFoundError } from "@/lib/xero-invoice-balance";
 import { sendAdditionalPaymentReminders } from "@/lib/cron-additional-payment-reminders";
 import {
   declareEnvironmentRole,
@@ -227,6 +228,34 @@ describe("sendAdditionalPaymentReminders", () => {
       const result = await sendAdditionalPaymentReminders();
       expect(result.initialSentBookingIds).toEqual(["booking-1"]);
       expect(mockLoadBankTransferOffer).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["Xero answers 404 for the invoice", () => mockReadInvoiceBalance.mockRejectedValue({ response: { statusCode: 404 } })],
+      ["Xero answers without the invoice", () => mockReadInvoiceBalance.mockRejectedValue(new XeroInvoiceNotFoundError("gone"))],
+      ["Xero answers with no amount due", () => mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(null))],
+    ])("withholds and tells the officers once, keyed, when %s: an answer, never retried silently", async (_name, arrange) => {
+      arrange();
+      const result = await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
+      expect(result.leftToOfficersBookingIds).toEqual(["booking-1"]);
+      expect(mockSignalOfficers).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: "request-unmatched", key: "request-unmatched:pi_ask_1:21000" }),
+      );
+    });
+
+    it.each(["VOIDED", "DRAFT", "SUBMITTED", "PAID"])("withholds a %s invoice as not open, never as part-paid", async (status) => {
+      mockReadInvoiceBalance.mockResolvedValue(invoiceOwing(status === "PAID" ? 0 : 21_000, status));
+      const result = await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(result.leftToOfficersBookingIds).toEqual(["booking-1"]);
+      expect(mockSignalOfficers).toHaveBeenCalledWith(expect.objectContaining({ reason: "invoice-not-open" }));
+    });
+
+    it("skips quietly on a transient Xero failure (a 5xx), telling nobody", async () => {
+      mockReadInvoiceBalance.mockRejectedValue({ response: { statusCode: 503 } });
+      const result = await run([creditReleaseRow(raisedWeekAgo)]);
+      expect(mockSignalOfficers).not.toHaveBeenCalled();
+      expect(result.skippedBookingIds).toEqual(["booking-1"]);
     });
 
     it("claims nothing and tells nobody while Xero cannot be read, so the reminder stays due", async () => {
