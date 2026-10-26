@@ -2051,10 +2051,13 @@ mispricing a booking.
   records only if both still equal what the request was built from. The
   credential version is the stored row's hash (fresh IV on every write), so a
   key saved again with the same value (A → B → A) is still a new connection.
-  Counterparts: a base-URL change and the forget after any key write or
-  removal (`forgetServerConnectionAnswers`) both write the same row, so they
-  queue behind the recorder and clear on top of it, or the recorder queues
-  behind them and drops the late answer. Singleton-keyed; no advisory lock;
+  Counterparts: `updateServerNzSettings` writes the new base URL only; the
+  settings route then calls `clearServerNzApiKey`, whose
+  `forgetServerConnectionAnswers` clears the old answers. Key writes and
+  removals likewise commit before their separate forget. The settings writes
+  queue behind a recorder holding the row lock, and the forget clears any
+  recorded answer; a recorder behind a committed connection change instead
+  re-reads the changed identity and drops the late answer. Singleton-keyed; no advisory lock;
   no provider call inside the transaction; disjoint from the
   booking/capacity/credit and money clusters. A missing row locks nothing and
   fails the address re-read, so nothing is recorded.

@@ -35,8 +35,9 @@ export interface ServerNzConnectionIdentity {
  *
  *   - a new address (`updateServerNzSettings`) and the forget that follows any
  *     key change or removal (`forgetServerConnectionAnswers`) both write the
- *     row, so they queue behind a recorder holding the lock, and their clear
- *     lands on top of an answer it recorded for the old connection;
+ *     row, so they queue behind a recorder holding the lock. The address write
+ *     does not clear answers; the settings route's subsequent key removal and
+ *     separate forget clear any answer recorded for the old connection;
  *   - a recorder that queues behind them re-reads what they committed, sees a
  *     different address or credential version, and records nothing.
  *
