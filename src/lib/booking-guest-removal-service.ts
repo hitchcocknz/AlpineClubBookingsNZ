@@ -59,6 +59,7 @@ import {
   calculateModificationSettlementOptions,
   rateSnapshotUpdateForRepricedGuest,
   type BookingModificationSettlementMethod,
+  type LoadedBookingForLifecycle,
   type LoadedBookingForModify,
 } from "@/lib/booking-modify";
 import { creditGiveBackHistory } from "@/lib/booking-credit-give-back-marker";
@@ -837,7 +838,7 @@ export async function removeBookingGuestInTransaction({
   // paid/confirmed booking is flagged for the admin queue without a status
   // change (applyLifecycleTransitions enforces that).
   const lifecycle = await applyLifecycleTransitions(tx, {
-    booking: booking as unknown as LoadedBookingForModify,
+    booking: booking as unknown as LoadedBookingForLifecycle,
     bookingId,
     newCheckIn: booking.checkIn,
     newFinalPriceCents,

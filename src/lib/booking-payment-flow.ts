@@ -1,6 +1,9 @@
-import type { Payment, PaymentTransaction, Prisma } from "@prisma/client";
+import { PaymentStatus, type Payment, type PaymentTransaction, type Prisma } from "@prisma/client";
 import { CLEAR_SETTLING_TRANSACTION } from "@/lib/payment-settler";
-import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
+import {
+  CAPTURED_TRANSACTION_STATUS_LIST,
+  OPEN_INTENT_TRANSACTION_STATUS_LIST,
+} from "@/lib/payment-transaction-status";
 import { IMMEDIATE_PAYMENT_BOOKING_STATUSES } from "@/lib/booking-status";
 
 export type BookingPaymentMode = "payment" | "setup";
@@ -73,8 +76,13 @@ export function memberWholeLodgeChoosesPaymentMethod(modules: {
  * before capture, so amountCents itself is deliberately not a capture test.
  * Additional asks stay in their existing collection/settlement policy.
  * Runtime and Prisma forms below derive from these same facts (INV-SSOT-001).
+ * Uncaptured means an intent still open (the one list, #4316) or one that
+ * failed: composed, never respelled.
  */
-const UNCAPTURED_CARD_STATUSES = ["PENDING", "PROCESSING", "FAILED"] as const;
+const UNCAPTURED_CARD_STATUSES = [
+  ...OPEN_INTENT_TRANSACTION_STATUS_LIST,
+  PaymentStatus.FAILED,
+] as const satisfies readonly PaymentStatus[];
 const UNCAPTURED_CARD_FACTS_BASE = { source: "STRIPE", xeroInvoiceId: null, refundedAmountCents: 0 } as const;
 const UNCAPTURED_PRIMARY_FACTS = { kind: "PRIMARY", ...UNCAPTURED_CARD_FACTS_BASE } as const;
 const UNCAPTURED_CARD_FACTS = {
@@ -85,10 +93,17 @@ const UNCAPTURED_CARD_FACTS = {
   manuallyMarkedPaidAt: null,
 } as const;
 
+/**
+ * `transactions` is REQUIRED whenever a payment is passed: without the rows
+ * the predicate cannot tell an abandoned card attempt from a capture and fails
+ * closed, so a door that loaded `payment: true` alone would silently stop
+ * treating an abandoned attempt as unpaid (#4019 review). Requiring it here
+ * makes that omission a compile error at every typed caller.
+ */
 type WholeLodgeUnpaidState = {
   status: string;
   wholeLodgeHold?: boolean | null;
-  payment?: (Partial<Payment> & { transactions?: readonly Partial<PaymentTransaction>[] }) | null;
+  payment?: (Partial<Payment> & { transactions: readonly Partial<PaymentTransaction>[] }) | null;
 };
 
 /** An approval or abandoned card attempt still owes its price, net of credit. */

@@ -34,6 +34,7 @@ import {
   resolveTargetDates,
   type BatchModifyInput,
   type BookingModificationSettlementMethod,
+  type LoadedBookingForLifecycle,
   type LoadedBookingForModify,
   type ResolvedGuestNameUpdate,
   type PricingResult,
@@ -1059,7 +1060,7 @@ export async function modifyBookingBatch({
           },
         },
       },
-    })) as LoadedBookingForModify | null;
+    })) as LoadedBookingForLifecycle | null;
 
     assertBookingModifiable(booking, {
       role: actor.role,

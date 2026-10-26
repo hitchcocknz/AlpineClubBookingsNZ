@@ -54,7 +54,13 @@ describe("INV-PAY-140: an abandoned whole-lodge card attempt stays unpaid", () =
   });
   it("admits absent payment but refuses missing transaction evidence", () => {
     expect(isUnpaidConfirmedWholeLodge({ ...booking, payment: null })).toBe(true);
-    expect(isUnpaidConfirmedWholeLodge({ ...booking, payment: { ...payment, transactions: undefined } })).toBe(false);
+    // #4019 review: a payment without its transaction rows no longer compiles;
+    // a caller that casts past the type still fails closed at runtime.
+    // @ts-expect-error -- `transactions` is required whenever a payment is passed
+    isUnpaidConfirmedWholeLodge({ ...booking, payment: { ...payment, transactions: undefined } });
+    // @ts-expect-error -- and omitting it outright is the same compile error
+    isUnpaidConfirmedWholeLodge({ ...booking, payment: { status: "FAILED" } });
+    expect(isUnpaidConfirmedWholeLodge({ ...booking, payment: { ...payment, transactions: undefined } } as unknown as Parameters<typeof isUnpaidConfirmedWholeLodge>[0])).toBe(false);
     expect(isUnpaidConfirmedWholeLodge({ ...booking, payment: { ...payment, transactions: [] } })).toBe(false);
   });
   it.each([

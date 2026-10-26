@@ -57,15 +57,19 @@ reason: the INV-MOD-012 clamp and the $0 auto-settle now reach an approved
   its ceiling.
 
 file: src/lib/booking-batch-modification-service.ts
-lines: 2743
+lines: 2744
 reason: the locked booking query loads ordered transaction evidence, and a
   newly paid whole-lodge edit calls the shared confirmation poster after its
   guest/night writes; the caller must keep that ordering inside its existing
   transaction, while the posting policy itself lives in the extracted helper.
+  The load is typed as `LoadedBookingForLifecycle` (one import line), so the
+  lifecycle's unpaid predicate sees the transactions it requires.
 
 file: src/lib/booking-guest-removal-service.ts
-lines: 1241
+lines: 1242
 reason: the locked booking query loads ordered transaction evidence for the
   shared lifecycle decision, and the new whole-lodge zero-cash branch calls
   the shared confirmation poster after its guest/night writes; extracting the
   call would separate it from the transaction whose PAID transition it records.
+  The lifecycle call is typed as `LoadedBookingForLifecycle` (one import
+  line), so the unpaid predicate sees the transactions it requires.

@@ -46,7 +46,7 @@ import {
   isSettledBookingStatus,
   recordedChangeFeeCents,
 } from "@/lib/booking-payment-state";
-import { type BookingModificationSettlementMethod, type LoadedBookingForModify } from "@/lib/booking-modify-validation";
+import { type BookingModificationSettlementMethod, type LoadedBookingForLifecycle, type LoadedBookingForModify } from "@/lib/booking-modify-validation";
 import { type GuestPlan } from "@/lib/booking-modify-plan";
 import { calculateBookingHoldDecision } from "@/lib/policies/booking-route-decisions";
 import {
@@ -429,7 +429,7 @@ export async function applyLifecycleTransitions(
     skipBookingLifecycleRules,
     reviewUpdate,
   }: {
-    booking: LoadedBookingForModify;
+    booking: LoadedBookingForLifecycle;
     bookingId: string;
     newCheckIn: Date;
     newFinalPriceCents: number;
