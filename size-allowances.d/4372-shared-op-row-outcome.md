@@ -5,7 +5,7 @@ The rule lives in its own module, `src/lib/xero-operation-outcome-guard.ts`
 what a cooldown refusal did to its row being told about that rule.
 
 file: src/lib/xero-operation-outbox.ts
-lines: 3365
+lines: 3391
 reason: the cooldown branch's un-claim is the only place the outbox learns
   that its handler's own failure was refused because a caller sharing the row
   recorded a success there. One read of the row, through the guard module's
