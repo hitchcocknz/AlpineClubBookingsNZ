@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 
 import { parseJsonRequestBody } from "@/lib/api-json";
+import type { AdminPermissionArea } from "@/lib/admin-permissions";
 import { requireAdmin } from "@/lib/session-guards";
 import {
   getIntegrationWizardProgress,
@@ -42,20 +43,40 @@ import {
 // the cursor writable would hand every lodge admin write access to a route that
 // also governs the Xero/Stripe/Google cursors, which is a far worse trade for a
 // resume hint.
-const ALLOWED_WIZARD_IDS = ["xero", "stripe", "google", "display"] as const;
-type AllowedWizardId = (typeof ALLOWED_WIZARD_IDS)[number];
+//
+// "backup" is the database-backup setup wizard (#2227), which lives in the
+// SUPPORT area, not finance. Owner decision (#4409, 26 Oct 2026): it remembers
+// its step like the others, gated by its own area - support view to read,
+// support edit to save - so the gate is per wizard. Every id not listed (and a
+// body that does not parse) keeps the finance gate, so authentication still
+// comes before any validation answer.
+const WIZARD_PROGRESS_AREAS = {
+  xero: "finance",
+  stripe: "finance",
+  google: "finance",
+  display: "finance",
+  backup: "support",
+} as const satisfies Record<string, AdminPermissionArea>;
+type AllowedWizardId = keyof typeof WIZARD_PROGRESS_AREAS;
 
 function isAllowedWizardId(value: string): value is AllowedWizardId {
-  return (ALLOWED_WIZARD_IDS as readonly string[]).includes(value);
+  return Object.hasOwn(WIZARD_PROGRESS_AREAS, value);
+}
+
+/** The area gating a wizard's cursor; finance for anything not listed. */
+function wizardProgressArea(wizardId: unknown): AdminPermissionArea {
+  return typeof wizardId === "string" && isAllowedWizardId(wizardId)
+    ? WIZARD_PROGRESS_AREAS[wizardId]
+    : "finance";
 }
 
 export async function GET(request: Request) {
+  const wizardId = new URL(request.url).searchParams.get("wizardId") ?? "";
   const guard = await requireAdmin({
-    permission: { area: "finance", level: "view" },
+    permission: { area: wizardProgressArea(wizardId), level: "view" },
   });
   if (!guard.ok) return guard.response;
 
-  const wizardId = new URL(request.url).searchParams.get("wizardId") ?? "";
   if (!isAllowedWizardId(wizardId)) {
     return NextResponse.json({ error: "Unknown wizard." }, { status: 400 });
   }
@@ -71,12 +92,15 @@ const bodySchema = z.object({
 });
 
 export async function POST(request: Request) {
+  // The body names the wizard, and the wizard names the area, so it is read
+  // first; nothing in it is acted on, or answered, until the guard passes.
+  const json = await parseJsonRequestBody(request);
+  const claimedWizardId = json.ok ? (json.body as { wizardId?: unknown } | null)?.wizardId : undefined;
   const guard = await requireAdmin({
-    permission: { area: "finance", level: "edit" },
+    permission: { area: wizardProgressArea(claimedWizardId), level: "edit" },
   });
   if (!guard.ok) return guard.response;
 
-  const json = await parseJsonRequestBody(request);
   if (!json.ok) return json.response;
   const parsed = bodySchema.safeParse(json.body);
   if (!parsed.success) {

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Cursor persistence route for the reusable wizard shell (#2080): finance view
-// to read, finance edit to write, only allowlisted wizard ids.
+// to read, finance edit to write, only allowlisted wizard ids - except the
+// Backups wizard, gated by its own support area (#4409, owner decision).
 
 const mocks = vi.hoisted(() => ({
   requireAdmin: vi.fn(),
@@ -69,6 +70,20 @@ describe("GET wizard-progress", () => {
   // #2249: the Lodge Display wizard persists under the SAME finance gate as the
   // provider wizards — the owner decided not to widen the area for it — so the
   // only change the display wizard needed here was its id on the allowlist.
+  it("#4409: reads the Backups wizard cursor under SUPPORT view, not finance", async () => {
+    mocks.getProgress.mockResolvedValue(null);
+    const res = await get("http://localhost/api/admin/integrations/wizard-progress?wizardId=backup");
+    expect(res.status).toBe(200);
+    expect(mocks.requireAdmin).toHaveBeenCalledWith({ permission: { area: "support", level: "view" } });
+    expect(mocks.getProgress).toHaveBeenCalledWith("backup");
+  });
+
+  it("#4409: an unknown id is guarded by finance view before its 400", async () => {
+    const res = await get("http://localhost/api/admin/integrations/wizard-progress?wizardId=evil");
+    expect(res.status).toBe(400);
+    expect(mocks.requireAdmin).toHaveBeenCalledWith({ permission: { area: "finance", level: "view" } });
+  });
+
   it("allows the display wizard id, still under the finance gate", async () => {
     mocks.getProgress.mockResolvedValue({
       wizardId: "display",
@@ -138,6 +153,43 @@ describe("POST wizard-progress", () => {
     expect(mocks.saveProgress).toHaveBeenCalledWith(
       expect.objectContaining({ wizardId: "display", currentStepId: "pair" }),
     );
+  });
+
+  it("#4409: persists the Backups wizard cursor under SUPPORT edit, not finance", async () => {
+    mocks.saveProgress.mockResolvedValue({
+      wizardId: "backup",
+      currentStepId: "destination",
+      completedStepIds: ["intro"],
+      updatedAt: "2026-07-29T00:00:00.000Z",
+    });
+    const res = await post({ wizardId: "backup", currentStepId: "destination", completedStepIds: ["intro"] });
+    expect(res.status).toBe(200);
+    expect(mocks.requireAdmin).toHaveBeenCalledWith({ permission: { area: "support", level: "edit" } });
+    expect(mocks.saveProgress).toHaveBeenCalledWith(
+      expect.objectContaining({ wizardId: "backup", currentStepId: "destination" }),
+    );
+  });
+
+  it("#4409: an unknown id, or a body that does not parse, is still guarded by finance before any 400", async () => {
+    await post({ wizardId: "evil", currentStepId: "x", completedStepIds: [] });
+    expect(mocks.requireAdmin).toHaveBeenLastCalledWith({ permission: { area: "finance", level: "edit" } });
+
+    mocks.requireAdmin.mockResolvedValue({ ok: false, response: new Response("unauthorised", { status: 401 }) });
+    const malformed = await POST(
+      new Request("http://localhost/api/admin/integrations/wizard-progress", { method: "POST", body: "{not json" }),
+    );
+    expect(malformed.status).toBe(401);
+    expect(mocks.requireAdmin).toHaveBeenLastCalledWith({ permission: { area: "finance", level: "edit" } });
+    expect(mocks.saveProgress).not.toHaveBeenCalled();
+  });
+
+  it("#4409: a support-only admin's save of a finance wizard is refused by the finance gate", async () => {
+    mocks.requireAdmin.mockImplementation(async ({ permission }: { permission: { area: string } }) =>
+      permission.area === "support" ? okGuard() : { ok: false, response: new Response("forbidden", { status: 403 }) },
+    );
+    const res = await post({ wizardId: "xero", currentStepId: "connect", completedStepIds: [] });
+    expect(res.status).toBe(403);
+    expect(mocks.saveProgress).not.toHaveBeenCalled();
   });
 
   it("403s when the guard rejects", async () => {
