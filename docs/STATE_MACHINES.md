@@ -4126,8 +4126,9 @@ PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
                        the Payment row lock; INV-PAY-128)
 (none) -> DEAD        (that row's own retry failed later too, or Stripe
                        created the refund before the cutoff migration and no
-                       open row counts it: raised PENDING with its attempts
-                       spent, never claimed, never in flight)
+                       open row counts it, or (#4210, INV-PAY-142) the row that
+                       made it was closed "Paid another way": raised PENDING
+                       with its attempts spent, never claimed, never in flight)
 PENDING|FAILED -> same (an open, claimed row that counted the refund is
                        re-planned instead: the slice on its next key,
                        recording the failure in failedRefundIds; compare-and-set
@@ -4211,7 +4212,10 @@ row is raised dead - for "Paid another way", alerted - when the refund was
 itself such a retry, or Stripe created it before the cutoff migration
 (`20261115010000_card_refund_failed_later_cutoff`) finished (every refund, with
 a migration history that lacks it): it may have failed while nothing could
-notice, and may already have been paid by hand. A refund naming no booking of
+notice, and may already have been paid by hand. So too (#4210, `INV-PAY-142`)
+when the row that made it, or whose slice it fills, was closed "Paid another
+way" (a completed close record keyed on that row, read under the same lock):
+the close's bank transfer may already have paid it, so an officer checks it. A refund naming no booking of
 the payment (made in the Stripe dashboard, or a legacy group refund) is taken
 out of the refunded total, alerted with its Stripe id and audited, never
 re-sent. Two ways

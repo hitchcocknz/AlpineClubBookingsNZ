@@ -386,8 +386,10 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
         expect(alerts()).toEqual([expect.stringMatching(HELD)]);
         expect(alerts()[0]).toContain("$200.00");
         await expectNeverResent(raised[0]!.id);
-        // The close paid the member in full: the payment holds nothing more, so nothing reads owed.
+        // The close paid the member in full: the payment holds nothing more, so nothing reads owed,
+        // and (the stated limit, `INV-PAY-142`) no close is offered for the held row.
         expect(await owedNow()).toBe(0);
+        expect((await listDeadCardRefunds()).filter((row) => row.bookingId === BOOKING_ID)).toEqual([]);
 
         // Duplicate deliveries: the refusal again, the sync's stale listing, and the sync's refused one.
         expect(await deliverRefusal(late, refusal)).toBe("recorded");

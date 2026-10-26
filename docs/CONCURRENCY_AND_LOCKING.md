@@ -5602,6 +5602,16 @@ and the debt's writes come last, on `PaymentRecoveryOperation`:
   its own** (the event between the door's record and its plan write) leaves a
   marked slice whose refund is refused: the owed figure reads it filled by the
   failed-later row, and the runner never sends a marked slice, so it is owed once.
+- **A "Paid another way" close on the row that made the refund** (#4210,
+  `INV-PAY-142`) is read on the writer's client after that lock, before the
+  new row is inserted: a completed close record keyed on the row
+  (`CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE`, `closeKeysOf`). The close takes
+  `lock(1)`, then the same Payment row, and writes its record and its claim
+  there, so the two serialise on the row: a close that committed first is
+  seen and the new row is raised held (attempts spent, never claimed); a
+  failure that committed first re-planned the still-open row that counted it,
+  and the close against the figure it read is refused (409). A read only - no
+  new key, no new order.
 
 **The cancel card refund shortfall's completion** (`cardShortfallSettlement`,
 #4097) reads these rows under the same Payment row lock beside the cancel's

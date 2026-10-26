@@ -526,6 +526,37 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `payment-transactions-refunds.test.ts` and
   `refunded-total-shortfall-audit.test.ts`.
 
+## INV-PAY-142
+
+**Related: `INV-PAY-128`** (a refund Stripe fails later) and **`INV-PAY-122`**
+(closing a dead card refund).
+
+- **A card refund Stripe fails later is never re-sent automatically once the
+  row that made it was closed "Paid another way"** (#4210; owner, #4361
+  decision 4): the bank transfer the close recorded may already have paid it.
+- **Which close.** A completed close record keyed on the row whose runner
+  metadata the refund carries, or whose slice it fills as the payment stood
+  before the failure (`CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE`,
+  `closeKeysOf`). A close settles only the row it names: one on another row of
+  the payment holds nothing.
+- **Held, not decided.** The failure's row of its own is raised as
+  `INV-PAY-128` raises it, with its attempts spent: never claimed, listed under
+  "Card refunds Stripe gave up on", counted in "Refunds owed" as every dead row
+  is. The officers are alerted once: settle anything still owed with "Paid
+  another way", never a new Stripe dashboard refund (decision 7). Whether the
+  close covered it, and Xero, are stage 3 of #4361.
+- **Read on the failed-later writer's client, under the Payment row lock it
+  holds**; a close takes that row after `lock(1)`, before its record. No new
+  lock (`INV-LOCK-001`). A replayed delivery writes and alerts nothing.
+- **Unchanged**: an open row that counted the refund is re-planned (no close
+  can be on it); with no close, the row is live.
+- **Limit.** After a full close the held row owes nothing the payment still
+  holds, so no close is offered for it; it stays among the recovery rows to
+  reconcile until stage 3.
+- Pinned by `card-refund-failed-later.test.ts`,
+  `card-refund-failed-later-after-paid-another-way.realdb.test.ts` and
+  `card-refund-reversal-bank-cash-floor.realdb.test.ts`.
+
 ## INV-PAY-002
 
 - Account credit is consumed only by a booking that is actually reaching
@@ -1336,7 +1367,7 @@ one, check the other.
 
 - **A card refund Stripe answers `failed` or `canceled` on an edit, a
   cancellation or a refund request, or accepts (`pending`) and fails later, is
-  still owed** (#4083, #4096, #4102, #4104), never counted as made.
+  still owed** (#4083, #4096, #4102, #4104).
   - **Whoever reads a refusal moves that slice to a fresh key**
     (`refundSliceStripeIdempotencyKey`): Stripe replays a key's refusal for 24
     hours. A slice never read refused keeps its key.
@@ -1346,19 +1377,20 @@ one, check the other.
   - **The runner never closes a row on a refusal**: it re-plans on the attempt
     it holds and fails it.
   - **A slice made beside a refusal or a failure stays, marked**
-    (`madeRefundId`): never re-sent; the amount stays.
+    (`madeRefundId`), never re-sent.
   - **Failed later**: the refund-row writer sees it once, under the Payment row
     lock. The open row that counted it moves that slice (`failedRefundIds`) - a
     marked slice, or one it fills carrying exactly that row's runner metadata;
-    else one row per Stripe refund owes it. A retry failing too, or a refund no
-    open row owes that Stripe created before the cutoff migration, is raised
-    dead; one naming no booking only alerts and is audited.
+    else one row per Stripe refund owes it. A retry failing too, a refund no
+    open row owes that Stripe created before the cutoff migration, or one whose
+    row closed "Paid another way" (`INV-PAY-142`) is raised dead; one naming no
+    booking only alerts and is audited.
   - **Paid another way** notes only what a card note still in Xero does not
     cover, kept on its record (`failedLaterCardNoteCoverCents`).
   - **Officers hear once per refused slice or failed-later decision**, and
     again if retries run out.
   - **Deploy window**: an older release closes a refused row as paid and drops
-    `refund.failed`; the read-back finds a dropped one still pending.
+    `refund.failed`; the read-back finds a dropped one pending.
   - **Every other door**: `INV-PAY-130` (#4103).
   - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
     `own-card-refund-outcome`, `booking-cancel.test.ts`,
