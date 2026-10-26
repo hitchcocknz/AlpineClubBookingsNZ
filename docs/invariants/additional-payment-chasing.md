@@ -1818,8 +1818,9 @@ _Legacy: settles tasks raised before #4317._
   counts reminders, never the request), so five emails at most.
   The rule reads only the one reminder stamp: a reminder is due when none has
   gone out since the request was raised, or the last is older than the start of
-  the week the request is in, so a paused cron sends one catch-up and a manual
-  re-send counts as that week's. The guarded claim uses the same boundary
+  the week the request is in and at least half a week old, so a paused cron
+  sends one catch-up, never two back to back, and a manual re-send counts as
+  that week's. The guarded claim uses the same boundary
   (`creditReleaseStampBoundary`). After the last the officers' own queues are
   the only chaser, and it does not stop at check-out; requests older than
   `CREDIT_RELEASE_CHASE_HORIZON_DAYS` are left to those queues once the stay

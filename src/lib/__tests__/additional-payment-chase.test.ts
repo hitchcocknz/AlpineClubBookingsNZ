@@ -6,6 +6,7 @@ import {
   CREDIT_RELEASE_REMINDER_COUNT,
   CREDIT_RELEASE_REMINDER_INTERVAL_DAYS,
   creditReleaseCadenceSummary,
+  CREDIT_RELEASE_REMINDER_MIN_GAP_MS,
   creditReleaseReminderSlot,
   creditReleaseStampBoundary,
   resolveCreditReleaseChase,
@@ -422,6 +423,21 @@ describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-048)",
     expect(due(at(15, 3), at(15, 1))).toBeNull();
   });
 
+  it("never sends two reminders back to back around a week boundary (half an interval apart at least)", () => {
+    // A late catch-up for week 1 at day 13.95, then the week-2 boundary hours later.
+    const catchUp = at(13, 22.8);
+    expect(due(catchUp, at(0, 1))).toBe("initial");
+    expect(due(at(14, 3), catchUp)).toBeNull();
+    expect(due(at(17), catchUp)).toBeNull();
+    expect(due(at(17, 11), catchUp)).toBe("initial");
+    expect(CREDIT_RELEASE_REMINDER_MIN_GAP_MS).toBe(3.5 * DAY);
+  });
+
+  it("does not hold the request email back for a stamp from an earlier request", () => {
+    // An edit's reminder went out two days ago; the release request that superseded it starts now.
+    expect(due(at(0, 2), new Date(start.getTime() - 2 * DAY))).toBe("initial");
+  });
+
   it("counts a manual re-send as that week's reminder", () => {
     expect(due(at(8), at(7, 20))).toBeNull();
     expect(due(at(14), at(7, 20))).toBe("initial");
@@ -459,7 +475,9 @@ describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-048)",
     expect(creditReleaseReminderSlot({ now: at(27.9), episodeStartedAt: start })).toBe(3);
     expect(creditReleaseReminderSlot({ now: at(28), episodeStartedAt: start })).toBe(4);
     expect(creditReleaseReminderSlot({ now: at(200), episodeStartedAt: start })).toBe(4);
-    expect(creditReleaseStampBoundary({ now: at(15), episodeStartedAt: start })).toEqual(at(14));
+    // Past the request email the boundary is the slot's start or half an interval ago, the earlier.
+    expect(creditReleaseStampBoundary({ now: at(15), episodeStartedAt: start })).toEqual(at(11, 12));
+    expect(creditReleaseStampBoundary({ now: at(20), episodeStartedAt: start })).toEqual(at(14));
     expect(creditReleaseStampBoundary({ now: at(2), episodeStartedAt: start })).toEqual(start);
   });
 });

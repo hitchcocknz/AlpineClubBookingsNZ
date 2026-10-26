@@ -176,11 +176,25 @@ describe("sendAdditionalPaymentReminders", () => {
     });
 
     it("claims against the start of the current week, not the start of the request", async () => {
-      const raised = new Date(NOW.getTime() - 15 * DAY);
+      const raised = new Date(NOW.getTime() - 20 * DAY);
       await sentFor([creditReleaseRow(raised)], new Date(raised.getTime() + 8 * DAY));
       const claim = mockPrisma.payment.updateMany.mock.calls[0][0];
       const boundary = new Date(raised.getTime() + 14 * DAY);
       expect(JSON.stringify(claim.where)).toContain(JSON.stringify({ additionalReminderSentAt: { lt: boundary } }));
+    });
+
+    it("claims only a stamp at least half a week old, so a late catch-up is not followed hours later", async () => {
+      const raised = new Date(NOW.getTime() - 15 * DAY);
+      await sentFor([creditReleaseRow(raised)], new Date(raised.getTime() + 8 * DAY));
+      const claim = mockPrisma.payment.updateMany.mock.calls[0][0];
+      const boundary = new Date(NOW.getTime() - 3.5 * DAY);
+      expect(JSON.stringify(claim.where)).toContain(JSON.stringify({ additionalReminderSentAt: { lt: boundary } }));
+      mockPrisma.payment.updateMany.mockClear();
+      mockSendAdditionalPaymentReminderEmail.mockClear();
+      // The week-1 catch-up went out late, at day 13.9; the week-2 boundary has just passed.
+      const result = await sentFor([creditReleaseRow(new Date(NOW.getTime() - 14 * DAY - 3_600_000))], new Date(NOW.getTime() - 3 * 3_600_000));
+      expect(result.initialSentBookingIds).toEqual([]);
+      expect(mockPrisma.payment.updateMany).not.toHaveBeenCalled();
     });
 
     it("sends the fourth reminder on day 28 (the fifth email)", async () => {

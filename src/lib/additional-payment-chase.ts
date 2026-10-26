@@ -579,24 +579,40 @@ export function creditReleaseReminderSlot(params: {
 }
 
 /**
+ * The shortest gap between two reminders of the repeating chase: half the
+ * interval. Without it a catch-up sent late in one week (day 13.9, say) and the
+ * next week's reminder a few hours later would both go, spaced only by the
+ * re-send cooldown.
+ */
+export const CREDIT_RELEASE_REMINDER_MIN_GAP_MS =
+  (CREDIT_RELEASE_REMINDER_INTERVAL_DAYS * MS_PER_DAY) / 2;
+
+/**
  * The instant a stamp must be older than for the current slot's reminder to be
- * due. Read by the pure test below AND by the guarded claim, so the two cannot
- * disagree about what "already reminded for this slot" means.
+ * due: the start of the slot, and, past the request email, also the minimum gap
+ * before now (`CREDIT_RELEASE_REMINDER_MIN_GAP_MS`), whichever is earlier. Read
+ * by the pure test below AND by the guarded claim, so the two cannot disagree
+ * about what "already reminded for this slot" means. The request email (slot 0)
+ * is not held back by a stamp from an earlier request: that one is older than
+ * this request's start, and the re-send cooldown still spaces the two.
  */
 export function creditReleaseStampBoundary(params: {
   now: Date;
   episodeStartedAt: Date;
 }): Date {
-  return new Date(
+  const slot = creditReleaseReminderSlot(params);
+  const slotStart =
     params.episodeStartedAt.getTime() +
-      creditReleaseReminderSlot(params) * CREDIT_RELEASE_REMINDER_INTERVAL_DAYS * MS_PER_DAY,
-  );
+    slot * CREDIT_RELEASE_REMINDER_INTERVAL_DAYS * MS_PER_DAY;
+  if (slot === 0) return new Date(slotStart);
+  return new Date(Math.min(slotStart, params.now.getTime() - CREDIT_RELEASE_REMINDER_MIN_GAP_MS));
 }
 
 /**
  * The repeating chase for a credit-release request (`INV-ADDPAY-048`): due when
  * no reminder at all has gone out since the request was raised, or the last one
- * is older than the start of the slot the request is in. Stateless over the one
+ * is older than the start of the slot the request is in and at least half an
+ * interval old (`creditReleaseStampBoundary`). Stateless over the one
  * existing stamp, so a missed run sends ONE catch-up (never one per missed week),
  * a manual re-send counts as that slot's reminder, and once the last slot's
  * reminder is out nothing more is sent: the request plus at most
