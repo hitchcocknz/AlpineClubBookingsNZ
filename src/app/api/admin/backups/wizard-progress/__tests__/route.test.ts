@@ -65,6 +65,12 @@ describe("backups wizard-progress (#4409)", () => {
     expect(mocks.saveProgress).not.toHaveBeenCalled();
   });
 
+  it("no wizard id is stored by two routes (each id has exactly one gate)", async () => {
+    const { WIZARD_PROGRESS_ROUTES } = await import("@/lib/integration-wizard-progress-routes");
+    const ids = Object.values(WIZARD_PROGRESS_ROUTES).flatMap((route) => [...route.wizardIds]);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("is where the client hook sends the Backups wizard, and only it", () => {
     expect(wizardProgressPath("backup")).toBe("/api/admin/backups/wizard-progress");
     for (const id of ["xero", "stripe", "google", "display", "unknown"]) {

@@ -1,5 +1,7 @@
 import { expect, type APIRequestContext } from "@playwright/test";
 
+import { wizardProgressPath } from "../../src/lib/integration-wizard-progress-routes";
+
 /**
  * RETRY IDEMPOTENCY HELPERS (issue #2302).
  *
@@ -356,7 +358,7 @@ export async function resetXeroSetupWizard(
   ).toBeTruthy();
 
   const rewound = await adminRequest.post(
-    "/api/admin/integrations/wizard-progress",
+    wizardProgressPath("xero"),
     {
       data: {
         wizardId: "xero",
@@ -367,6 +369,6 @@ export async function resetXeroSetupWizard(
   );
   expect(
     rewound.ok(),
-    `POST /api/admin/integrations/wizard-progress (${rewound.status()})`,
+    `POST ${wizardProgressPath("xero")} (${rewound.status()})`,
   ).toBeTruthy();
 }
