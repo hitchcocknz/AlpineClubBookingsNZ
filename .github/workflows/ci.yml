@@ -546,7 +546,7 @@ jobs:
   # 25-26 Oct 2026), each in its own job so they run beside the unit shards.
   # None is a required context: `verify` requires all three by exact job
   # name in the step that requires the shards, so renaming one here means
-  # renaming it in that step's `--require`. The shards' rules hold: no
+  # renaming it in that step's `--job`. The shards' rules hold: no
   # `needs:`, no job-level `if:`, no `continue-on-error`, and the same
   # environment as `verify` (`require-test-shards.test.mjs` pins all of it).
   typecheck:
@@ -996,7 +996,7 @@ jobs:
       - name: Require the unit-test shards, typecheck, lint and build to pass
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/ci/require-test-shards.mjs --require Typecheck --require Lint --require "Production build"
+        run: node scripts/ci/require-test-shards.mjs --job Typecheck --job Lint --job "Production build"
 
       # #3432: deliberately LAST. Keep the detailed base-selection contract
       # above beside the full-history checkout it depends on; placing this

@@ -382,7 +382,7 @@ heavy steps only on an explicit `needed=false`, so a push or any failure to
 classify the change runs everything. A job that reaches a required check
 through another's gate step (`require-test-shards.mjs`) takes no condition
 either: the gate fails on a skipped job. Renaming such a job means renaming it
-in the gate's `--require` too.
+in the gate's `--job` too.
 
 **The PR-body gates read the description from a file, never an environment
 variable** (#4053). `verify` writes `.pull_request.body` from

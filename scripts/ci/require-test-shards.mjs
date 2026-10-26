@@ -5,7 +5,7 @@ import { escapeRegex } from "./escape-regex.mjs";
 
 // #3431: this is the sole required-check bridge for independent jobs.
 // `verify` runs it with the unit-test shard defaults and, since #4425, names
-// its typecheck, lint and build jobs with `--require`, so one poll gates all
+// its typecheck, lint and build jobs with `--job`, so one poll gates all
 // of them; `e2e.yml`'s required jobs run it with `--label`/`--count` for their
 // matrix (#4397). The workflow contract tests (require-test-shards.test.mjs)
 // check that these names match the jobs in both workflows.
@@ -16,7 +16,7 @@ const MAX_WAIT_MS = 45 * 60_000;
 
 const PENDING_STATUSES = ["queued", "in_progress", "waiting", "pending", "requested"];
 
-/** A GitHub job name as `--upstream` and `--require` accept it. */
+/** A GitHub job name as `--upstream` and `--job` accept it. */
 export const UPSTREAM_JOB_NAME = /^[A-Za-z][\w -]*$/;
 
 /** `--max-wait-minutes`, shared by both waiting gates. */
@@ -42,7 +42,7 @@ export function assertUpstreamSucceeded(jobs, upstream) {
 }
 
 /**
- * #4425: single jobs a gate requires by exact name (`--require`). Each must
+ * #4425: single jobs a gate requires by exact name (`--job`). Each must
  * appear exactly once and succeed; missing or still running is pending, and
  * any other completed conclusion, a skip included, fails at once.
  */
@@ -173,7 +173,7 @@ export async function requireTestShards({
   }
 }
 
-/** `--label <job name prefix>`, `--count <n>`, `--from <n>`, `--max-wait-minutes <n>`, and repeatable `--upstream <job name>` and `--require <job name>`; bare, the unit-test defaults. */
+/** `--label <job name prefix>`, `--count <n>`, `--from <n>`, `--max-wait-minutes <n>`, and repeatable `--upstream <job name>` and `--job <job name>`; bare, the unit-test defaults. */
 export function parseShardGateArgs(argv) {
   const options = { label: DEFAULT_SHARD_LABEL, count: EXPECTED_SHARD_COUNT, maxWaitMs: MAX_WAIT_MS, upstream: [], from: 1, required: [] };
   for (let i = 0; i < argv.length; i += 1) {
@@ -193,9 +193,9 @@ export function parseShardGateArgs(argv) {
     } else if (flag === "--upstream") {
       if (!UPSTREAM_JOB_NAME.test(value)) throw new Error(`Invalid --upstream: ${value}`);
       options.upstream.push(value);
-    } else if (flag === "--require") {
-      if (!UPSTREAM_JOB_NAME.test(value)) throw new Error(`Invalid --require: ${value}`);
-      if (options.required.includes(value)) throw new Error(`Duplicate --require: ${value}`);
+    } else if (flag === "--job") {
+      if (!UPSTREAM_JOB_NAME.test(value)) throw new Error(`Invalid --job: ${value}`);
+      if (options.required.includes(value)) throw new Error(`Duplicate --job: ${value}`);
       options.required.push(value);
     } else if (flag === "--max-wait-minutes") {
       options.maxWaitMs = parseMaxWaitMinutes(value);

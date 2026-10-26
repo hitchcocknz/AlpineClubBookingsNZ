@@ -115,7 +115,7 @@ describe("required verify's independent test-shard gate", () => {
 // of their own, which reach the required check only through `verify`'s gate
 // step. Each must stay unconditional (a skipped job fails the gate, but a
 // condition that is always false would fail every PR), run under `verify`'s
-// environment, and be named exactly as the gate's `--require` names it.
+// environment, and be named exactly as the gate's `--job` names it.
 describe("verify's typecheck, lint and build jobs (#4425)", () => {
   const SPLIT_JOBS = [
     { id: "typecheck", command: "pnpm run typecheck" },
@@ -165,8 +165,8 @@ describe("verify's typecheck, lint and build jobs (#4425)", () => {
     }
     expect(() => classifyRequiredJobs([job("Lint"), job("Lint")], names)).toThrow(/Duplicate required job: Lint/);
     expect(() => classifyRequiredJobs([job("Lint", "exploded", null)], ["Lint"])).toThrow(/unknown status exploded/);
-    expect(() => parseShardGateArgs(["--require", "Lint", "--require", "Lint"])).toThrow(/Duplicate --require/);
-    expect(() => parseShardGateArgs(["--require", "x\"; rm"])).toThrow(/Invalid --require/);
+    expect(() => parseShardGateArgs(["--job", "Lint", "--job", "Lint"])).toThrow(/Duplicate --job/);
+    expect(() => parseShardGateArgs(["--job", "x\"; rm"])).toThrow(/Invalid --job/);
   });
 
   it("the gate waits for the shards AND the named jobs, and fails before the shards finish when one fails", async () => {

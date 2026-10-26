@@ -730,7 +730,7 @@ describe("deployment image contracts", () => {
         "run: pnpm run quality:budget",
         "run: pnpm run db:generate",
         "run: pnpm exec knip",
-        'run: node scripts/ci/require-test-shards.mjs --require Typecheck --require Lint --require "Production build"',
+        'run: node scripts/ci/require-test-shards.mjs --job Typecheck --job Lint --job "Production build"',
       ]) {
         expect(verify, `verify no longer runs \`${step}\``).toContain(step);
       }

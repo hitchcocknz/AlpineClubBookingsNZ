@@ -1349,7 +1349,7 @@ describe("review finding source/schema contracts", () => {
     expect(
       job,
       "verify must require the Typecheck job (#4425), or a type error stops gating merges"
-    ).toMatch(/run: node scripts\/ci\/require-test-shards\.mjs .*--require Typecheck /);
+    ).toMatch(/run: node scripts\/ci\/require-test-shards\.mjs .*--job Typecheck /);
   });
 
   it("wraps age-up membership upgrades and token issuance in a transaction", () => {
