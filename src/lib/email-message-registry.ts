@@ -4,6 +4,7 @@ import {
   type EmailAuditTemplateName,
 } from "@/lib/email-message-audit-defaults";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { creditReleaseCadenceSummary } from "@/lib/additional-payment-chase";
 import { ibSettlementFigureParagraph } from "@/lib/ib-settlement-figure-note";
 import { duplicateCaptureKeptAction, duplicateCaptureKeptParagraph } from "@/lib/duplicate-capture-kept-note";
 import { supersededCaptureRefusedAction, supersededCaptureRefusedParagraph } from "@/lib/superseded-capture-refused-note";
@@ -1125,8 +1126,8 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
   "credit-released-payment-request": {
     triggerSummary:
       "Account credit applied to a booking was used elsewhere in the club's accounts, so part of the booking is unpaid again and a card payment was requested (with the club's bank-transfer details too, once it has written them)",
-    frequency:
-      "Sent when the payment request is raised, then every 7 days, four emails in all (it carries on after the stay has ended), plus any manual re-send an admin triggers from the booking page. After the fourth only the admin queues chase it",
+    // Built from the cadence's own constants (`INV-ADDPAY-048`), so the copy cannot drift from the rule.
+    frequency: creditReleaseCadenceSummary(),
   },
   "booking-policy-exception-approved": {
     triggerSummary:

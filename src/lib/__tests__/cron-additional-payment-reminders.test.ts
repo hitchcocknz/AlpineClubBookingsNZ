@@ -183,9 +183,16 @@ describe("sendAdditionalPaymentReminders", () => {
       expect(JSON.stringify(claim.where)).toContain(JSON.stringify({ additionalReminderSentAt: { lt: boundary } }));
     });
 
-    it("stops after the fourth email", async () => {
+    it("sends the fourth reminder on day 28 (the fifth email)", async () => {
+      const raised = new Date(NOW.getTime() - 28 * DAY - 3_600_000);
+      const third = new Date(raised.getTime() + 21 * DAY + 3_600_000);
+      const result = await sentFor([creditReleaseRow(raised)], third);
+      expect(result.initialSentBookingIds).toEqual(["booking-1"]);
+    });
+
+    it("stops after the fourth reminder", async () => {
       const raised = new Date(NOW.getTime() - 40 * DAY);
-      const fourth = new Date(raised.getTime() + 21 * DAY + 3_600_000);
+      const fourth = new Date(raised.getTime() + 28 * DAY + 3_600_000);
       const result = await sentFor([creditReleaseRow(raised)], fourth);
       expect(result.initialSentBookingIds).toEqual([]);
     });

@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ADDITIONAL_PAYMENT_REMINDER_DAYS,
+  CREDIT_RELEASE_CHASE_HORIZON_DAYS,
   CREDIT_RELEASE_REMINDER_COUNT,
   CREDIT_RELEASE_REMINDER_INTERVAL_DAYS,
+  creditReleaseCadenceSummary,
   creditReleaseReminderSlot,
   creditReleaseStampBoundary,
   resolveCreditReleaseChase,
@@ -377,24 +379,42 @@ describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-048)",
   const due = (now: Date, reminderSentAt: Date | null) =>
     resolveCreditReleaseChase({ now, episodeStartedAt: start, reminderSentAt, chaseStartsAt });
 
-  it("is four reminders a week apart", () => {
+  it("is four reminders a week apart, after the request email", () => {
     expect(CREDIT_RELEASE_REMINDER_COUNT).toBe(4);
     expect(CREDIT_RELEASE_REMINDER_INTERVAL_DAYS).toBe(7);
+    // The last reminder is due on day 28; a finished stay is still read for a fortnight after it.
+    expect(CREDIT_RELEASE_CHASE_HORIZON_DAYS).toBe(42);
   });
 
-  it("sends the first at once, then one a week", () => {
+  it("sends the request at once, then one reminder a week up to day 28", () => {
     expect(due(at(0, 1), null)).toBe("initial");
     expect(due(at(3), at(0, 1))).toBeNull();
     expect(due(at(7), at(0, 1))).toBe("initial");
     expect(due(at(10), at(7, 1))).toBeNull();
     expect(due(at(14), at(7, 1))).toBe("initial");
     expect(due(at(21), at(14, 1))).toBe("initial");
+    // D3: the fourth REMINDER, the fifth email.
+    expect(due(at(28), at(21, 1))).toBe("initial");
   });
 
-  it("stops after the fourth, and leaves the rest to the officers' queues", () => {
-    expect(due(at(21, 2), at(21, 1))).toBeNull();
-    expect(due(at(60), at(21, 1))).toBeNull();
-    expect(due(at(400), at(22))).toBeNull();
+  it("sends five emails at most over a cron that runs every three hours, the last on day 28", () => {
+    let stamp: Date | null = null;
+    const sentOn: number[] = [];
+    for (let hour = 0; hour <= 120 * 24; hour += 3) {
+      const now = at(0, hour);
+      if (due(now, stamp)) {
+        stamp = now;
+        sentOn.push(hour / 24);
+      }
+    }
+    expect(sentOn).toEqual([0, 7, 14, 21, 28]);
+  });
+
+  it("stops after the fourth reminder, and leaves the rest to the officers' queues", () => {
+    expect(due(at(28, 2), at(28, 1))).toBeNull();
+    expect(due(at(35), at(28, 1))).toBeNull();
+    expect(due(at(60), at(28, 1))).toBeNull();
+    expect(due(at(400), at(29))).toBeNull();
   });
 
   it("sends ONE catch-up, not one for every missed week", () => {
@@ -428,11 +448,17 @@ describe("the credit-release request's repeating chase (#4253, INV-ADDPAY-048)",
     expect(due(at(14), null)).toBe("initial");
   });
 
+  it("words the registry's cadence line from the same two numbers", () => {
+    expect(creditReleaseCadenceSummary()).toContain("a reminder every 7 days, 4 reminders after the request");
+  });
+
   it("names the slot and the stamp boundary the claim shares", () => {
     expect(creditReleaseReminderSlot({ now: at(0), episodeStartedAt: start })).toBe(0);
     expect(creditReleaseReminderSlot({ now: at(6.9), episodeStartedAt: start })).toBe(0);
     expect(creditReleaseReminderSlot({ now: at(7), episodeStartedAt: start })).toBe(1);
-    expect(creditReleaseReminderSlot({ now: at(200), episodeStartedAt: start })).toBe(3);
+    expect(creditReleaseReminderSlot({ now: at(27.9), episodeStartedAt: start })).toBe(3);
+    expect(creditReleaseReminderSlot({ now: at(28), episodeStartedAt: start })).toBe(4);
+    expect(creditReleaseReminderSlot({ now: at(200), episodeStartedAt: start })).toBe(4);
     expect(creditReleaseStampBoundary({ now: at(15), episodeStartedAt: start })).toEqual(at(14));
     expect(creditReleaseStampBoundary({ now: at(2), episodeStartedAt: start })).toEqual(start);
   });

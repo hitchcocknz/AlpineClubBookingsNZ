@@ -45,23 +45,34 @@ export function additionalPaymentFirstReminderDelayDays(askReason: string | null
 
 /**
  * The repeating chase for a request for credit used elsewhere in the club's
- * accounts (`INV-ADDPAY-048`): one email at once, then one every 7 days, four in
- * all, and after the fourth the officers' own queues (the unsettled-stays
- * dashboard card, the sidebar badge, the bookings-list filter) are the only
- * chaser. It is a separate rule from the two-email edit chase beside it
- * (`INV-ADDPAY-024`), which a request for a change the member made keeps.
+ * accounts (`INV-ADDPAY-048`, owner decision D3): the request email at once, then
+ * a reminder every 7 days, `CREDIT_RELEASE_REMINDER_COUNT` reminders AFTER the
+ * request (days 7, 14, 21 and 28), and after the last one the officers' own
+ * queues (the unsettled-stays dashboard card, the sidebar badge, the
+ * bookings-list filter) are the only chaser. It is a separate rule from the
+ * two-email edit chase beside it (`INV-ADDPAY-024`), which a request for a change
+ * the member made keeps.
  */
 export const CREDIT_RELEASE_REMINDER_INTERVAL_DAYS = 7;
+/** Reminders after the request email, never counting the request itself. */
 export const CREDIT_RELEASE_REMINDER_COUNT = 4;
 
 /**
  * How long after a credit-release request a stay that has already finished is
- * still looked at for its remaining reminders: the whole cadence plus a fortnight
- * of slack for a paused cron or an unreachable address. Past it only the
- * officers' queues chase.
+ * still looked at for its remaining reminders: the whole cadence (the last
+ * reminder is due at day 28) plus a fortnight of slack for a paused cron or an
+ * unreachable address. Past it only the officers' queues chase.
  */
 export const CREDIT_RELEASE_CHASE_HORIZON_DAYS =
-  (CREDIT_RELEASE_REMINDER_COUNT - 1) * CREDIT_RELEASE_REMINDER_INTERVAL_DAYS + 14;
+  CREDIT_RELEASE_REMINDER_COUNT * CREDIT_RELEASE_REMINDER_INTERVAL_DAYS + 14;
+
+/**
+ * The cadence in words, for the email registry's "how often" line, built from the
+ * two numbers above so the copy cannot drift from the rule.
+ */
+export function creditReleaseCadenceSummary(): string {
+  return `Sent when the payment request is raised, then a reminder every ${CREDIT_RELEASE_REMINDER_INTERVAL_DAYS} days, ${CREDIT_RELEASE_REMINDER_COUNT} reminders after the request (it carries on after the stay has ended), plus any manual re-send an admin triggers from the booking page. After the last reminder only the admin queues chase it`;
+}
 
 /**
  * Days before check-in for the last-chance reminder. Deliberately inside the
@@ -550,8 +561,9 @@ export interface CreditReleaseChaseInput {
 }
 
 /**
- * Which of the four reminders the request has reached: 0 on the day it was raised,
- * then one more every 7 days, never past the last.
+ * Which slot of the cadence the request has reached: 0 (the request email) on the
+ * day it was raised, then one more every 7 days, never past the last reminder
+ * (`CREDIT_RELEASE_REMINDER_COUNT`).
  */
 export function creditReleaseReminderSlot(params: {
   now: Date;
@@ -561,7 +573,7 @@ export function creditReleaseReminderSlot(params: {
     (params.now.getTime() - params.episodeStartedAt.getTime()) / MS_PER_DAY,
   );
   return Math.min(
-    CREDIT_RELEASE_REMINDER_COUNT - 1,
+    CREDIT_RELEASE_REMINDER_COUNT,
     Math.max(0, Math.floor(elapsedDays / CREDIT_RELEASE_REMINDER_INTERVAL_DAYS)),
   );
 }
@@ -586,10 +598,11 @@ export function creditReleaseStampBoundary(params: {
  * no reminder at all has gone out since the request was raised, or the last one
  * is older than the start of the slot the request is in. Stateless over the one
  * existing stamp, so a missed run sends ONE catch-up (never one per missed week),
- * a manual re-send counts as that slot's reminder, and once the fourth slot's
- * reminder is out nothing more is sent. Unlike the edit chase it does not stop at
- * check-out: the member still owes the money after the stay, and the officers'
- * queues only take over once the four have gone. The first-deploy guard and the
+ * a manual re-send counts as that slot's reminder, and once the last slot's
+ * reminder is out nothing more is sent: the request plus at most
+ * `CREDIT_RELEASE_REMINDER_COUNT` reminders. Unlike the edit chase it does not stop
+ * at check-out: the member still owes the money after the stay, and the officers'
+ * queues only take over once the last reminder has gone. The first-deploy guard and the
  * re-send cooldown apply exactly as they do to the edit chase.
  */
 export function resolveCreditReleaseChase(

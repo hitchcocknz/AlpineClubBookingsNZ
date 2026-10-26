@@ -431,9 +431,9 @@ Two consequences worth knowing before you edit one:
   reference) when the club has written its bank details, and nothing otherwise, so
   the email offers card payment only until then. Write the account details in the
   **Bank transfer details for a payment request** booking message.
-  The member is emailed at once and then every 7 days, four times in all; if a
-  change to the booking is made while the request is unpaid, the two become one
-  request and the email says both.
+  The member is emailed at once, then reminded every 7 days, four reminders after
+  the first email (five emails at most); if a change to the booking is made while
+  the request is unpaid, the two become one request and the email says both.
 - **The pre-arrival reminder's chore sentence only appears for clubs that run a
   roster.** `{{checkoutChoreNote}}` on **Pre-arrival Information** produces the
   whole sentence — that guests are on the chore roster on the morning they check

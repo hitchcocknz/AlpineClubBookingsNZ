@@ -1,8 +1,8 @@
 - **Members asked to pay for account credit used elsewhere are now reminded
   weekly, can pay by bank transfer, and the older cases are picked up.** The
   request for credit that was used elsewhere in the club's accounts is emailed
-  at once, then every 7 days, four times in all; after that only the officers'
-  queues chase it, and the reminders carry on after the stay has ended. Where the
+  at once, then reminded every 7 days, four reminders after the request (five
+  emails at most); after that only the officers' queues chase it, and the reminders carry on after the stay has ended. Where the
   club has written its bank details (a new "Bank transfer details for a payment
   request" message under Admin → Booking messages), the email offers a bank
   transfer as well as card, quoting the booking's Xero invoice number as the

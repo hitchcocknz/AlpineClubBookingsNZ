@@ -1812,14 +1812,15 @@ _Legacy: settles tasks raised before #4317._
 
 ### INV-ADDPAY-048
 
-- **A request for credit used elsewhere is chased every 7 days, four times.** The
-  first email goes out at once, then one at 7, 14 and 21 days
-  (`CREDIT_RELEASE_REMINDER_INTERVAL_DAYS`, `CREDIT_RELEASE_REMINDER_COUNT`).
+- **A request for credit used elsewhere is emailed at once, then reminded every
+  7 days, four reminders after it** (owner decision D3): days 7, 14, 21 and 28
+  (`CREDIT_RELEASE_REMINDER_INTERVAL_DAYS`, `CREDIT_RELEASE_REMINDER_COUNT`
+  counts reminders, never the request), so five emails at most.
   The rule reads only the one reminder stamp: a reminder is due when none has
   gone out since the request was raised, or the last is older than the start of
   the week the request is in, so a paused cron sends one catch-up and a manual
   re-send counts as that week's. The guarded claim uses the same boundary
-  (`creditReleaseStampBoundary`). After the fourth the officers' own queues are
+  (`creditReleaseStampBoundary`). After the last the officers' own queues are
   the only chaser, and it does not stop at check-out; requests older than
   `CREDIT_RELEASE_CHASE_HORIZON_DAYS` are left to those queues once the stay
   has ended.

@@ -3939,8 +3939,8 @@ once, by card, and Xero is told about the payment without a second invoice.
   invoice shows it paid, which the closer above turns into a closed request; a transfer
   that leaves the invoice part-paid closes nothing and stays with the officers' queues.
   `INV-ADDPAY-049`.
-- **Reminders and merged requests.** The member is emailed at once and then every 7 days,
-  four times in all, and the officers' queues chase after that (`INV-ADDPAY-048`). An edit
+- **Reminders and merged requests.** The member is emailed at once, then reminded every 7
+  days, four reminders after the request, and the officers' queues chase after that (`INV-ADDPAY-048`). An edit
   made while a release request is unpaid merges into one request; the card payment is
   recorded against both invoices (the release's money by the sweep on the booking's
   invoice, the edit's own by its supplementary invoice), with no step in Xero.
