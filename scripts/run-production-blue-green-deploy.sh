@@ -2440,7 +2440,10 @@ validate_prisma_schema_matches_migrations() {
 # application role. Anything else (a table a superuser created by hand, a
 # rollback.sql run as the operator, a migration that ran before the switch) is
 # invisible to the app and to its nightly pg_dump, so refuse before the new
-# colour starts. A view the app could write through is refused too: a new view
+# colour starts. An extension's own relations (pg_buffercache, PostGIS) are left
+# out, as provisioning leaves them with their owner. The SQL is ONE definition:
+# `DEPLOY_GRANTS_CHECK_SQL` in src/lib/database-roles.ts, which
+# deploy-database-roles-script-contract.test.ts pins this copy equal to. A view the app could write through is refused too: a new view
 # gets the default table grants, and DML through a view runs with its owner's
 # rights, so it must be narrowed to SELECT first. The fix is a re-run of `db:provision-roles --apply`. The SQL
 # between the markers is run as shipped by database-roles.realdb.test.ts.
@@ -2461,6 +2464,10 @@ FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname = 'public'
   AND c.relkind IN ('r', 'p', 'v', 'm')
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_depend d
+    WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+  )
   AND (pg_catalog.pg_get_userbyid(c.relowner) <> :'migration_role'
        OR NOT pg_catalog.has_table_privilege(:'app_role', c.oid, 'SELECT')
        OR (c.relkind IN ('v', 'm')

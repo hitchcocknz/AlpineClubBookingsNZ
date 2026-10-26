@@ -20,6 +20,8 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
+import { DEPLOY_GRANTS_CHECK_SQL } from "@/lib/database-roles";
+
 import { DEPLOY_SCRIPT, shellFunctionSource } from "./helpers/deploy-script";
 
 const script = readFileSync(path.join(process.cwd(), DEPLOY_SCRIPT), "utf8");
@@ -184,6 +186,16 @@ describe("verify_least_privilege_role_grants", () => {
     const unreachable = runWith(stub("", 2));
     expect(unreachable.status).toBe(1);
     expect(unreachable.stderr).toContain("Could not check the least-privilege role grants");
+  });
+
+  it("carries exactly DEPLOY_GRANTS_CHECK_SQL, the one definition (N3)", () => {
+    const block = script.slice(
+      script.indexOf("# BEGIN least-privilege-grants-check"),
+      script.indexOf("# END least-privilege-grants-check"),
+    );
+    const sql = block.slice(block.indexOf("<<'SQL'\n") + "<<'SQL'\n".length, block.indexOf("\nSQL\n"));
+    expect(sql).toBe(DEPLOY_GRANTS_CHECK_SQL);
+    expect(sql).toContain("d.deptype = 'e'");
   });
 
   it("runs straight after the migrate's status check, before the new colour starts", () => {

@@ -774,6 +774,13 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
 
       it("passes the deploy script's post-migrate check, and fails it for a table the superuser made (O-F2)", async () => {
         expect(deployGrantsCheck(DATABASES.upgrade)).toBe("");
+        // An extension's own relations keep their owner, as provisioning leaves
+        // them: the check must not refuse every deploy because of one (N3).
+        await withClient(urlFor(DATABASES.upgrade), (client) => client.query(`CREATE EXTENSION IF NOT EXISTS pg_buffercache`));
+        const rerun = provisionWithCli(DATABASES.upgrade);
+        expect(rerun.status, `${rerun.stdout}\n${rerun.stderr}`).toBe(0);
+        expect(deployGrantsCheck(DATABASES.upgrade)).toBe("");
+        await withClient(urlFor(DATABASES.upgrade), (client) => client.query(`DROP EXTENSION pg_buffercache`));
         await withClient(urlFor(DATABASES.upgrade), (client) => client.query(`CREATE TABLE "Tac4453HandMade" ("id" INT)`));
         expect(deployGrantsCheck(DATABASES.upgrade)).toBe("Tac4453HandMade");
         await withClient(urlFor(DATABASES.upgrade), (client) => client.query(`DROP TABLE "Tac4453HandMade"`));

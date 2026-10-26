@@ -137,6 +137,33 @@ export interface DatabaseRolesProvisionInput {
   auditRetention: DatabaseRoleCredential;
 }
 
+/**
+ * The deploy script's post-migrate check (#4453 review O-F2, N3), as psql runs
+ * it with `-v migration_role=… -v app_role=…`: the `public` relations that are
+ * not owned by the migration role, not readable by the application role, or a
+ * view the application could write through. Empty means the deploy may go on.
+ * Extension members are left out, as the ownership transfer leaves them.
+ *
+ * ONE definition. Bash cannot import it, so
+ * `scripts/run-production-blue-green-deploy.sh` carries it between its
+ * `least-privilege-grants-check` markers, pinned equal to this constant by
+ * `deploy-database-roles-script-contract.test.ts`, and run against PostgreSQL by
+ * `database-roles.realdb.test.ts`.
+ */
+export const DEPLOY_GRANTS_CHECK_SQL = `SELECT coalesce(string_agg(c.relname, ', ' ORDER BY c.relname), '')
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relkind IN ('r', 'p', 'v', 'm')
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_depend d
+    WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+  )
+  AND (pg_catalog.pg_get_userbyid(c.relowner) <> :'migration_role'
+       OR NOT pg_catalog.has_table_privilege(:'app_role', c.oid, 'SELECT')
+       OR (c.relkind IN ('v', 'm')
+           AND pg_catalog.has_table_privilege(:'app_role', c.oid, 'INSERT, UPDATE, DELETE')));`;
+
 /** A relation name in the application schema, quoted for SQL text. */
 function relation(name: string): string {
   return `${quoteIdentifier(APPLICATION_SCHEMA)}.${quoteIdentifier(name)}`;
