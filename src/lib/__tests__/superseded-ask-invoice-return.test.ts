@@ -14,6 +14,7 @@ import { matchesWhere, type WhereRow } from "./support/prisma-where";
 
 const mocks = vi.hoisted(() => ({
   lockAnchor: vi.fn(),
+  anchorCaptureHasReceipt: vi.fn(async () => false),
   beforeWrite: { value: null as null | (() => void) },
 }));
 
@@ -38,6 +39,7 @@ vi.mock("@/lib/prisma", () => {
   return { prisma: client };
 });
 vi.mock("@/lib/xero-operation-outbox", () => ({ lockSupplementaryInvoiceAnchor: mocks.lockAnchor }));
+vi.mock("@/lib/additional-capture-receipt-link", () => ({ anchorCaptureHasReceipt: mocks.anchorCaptureHasReceipt }));
 
 import { returnMovedInvoicesToCapturedIntent } from "@/lib/superseded-ask-invoice-return";
 
@@ -61,6 +63,8 @@ const payloadOf = (id: string) => operations.find((row) => row.id === id)!.reque
 beforeEach(() => {
   operations = [];
   mocks.lockAnchor.mockReset();
+  mocks.anchorCaptureHasReceipt.mockReset();
+  mocks.anchorCaptureHasReceipt.mockResolvedValue(false);
   mocks.beforeWrite.value = null;
 });
 
@@ -95,5 +99,44 @@ describe("returnMovedInvoicesToCapturedIntent", () => {
 
     expect(await returnMovedInvoicesToCapturedIntent("pi_a")).toBe(0);
     expect(payloadOf("op_a").paymentIntentId).toBe("pi_b");
+  });
+
+  describe("review 2 (F2): whether it records a payment is decided again for the capture taking it back", () => {
+    it("the unpaid a move onto a carrier with its own receipt wrote does not survive: paid again for A's capture", async () => {
+      operations = [
+        invoice("op_a", {
+          bookingId: "booking_1",
+          paymentIntentId: "pi_b",
+          parkedFromPaymentIntentId: "pi_a",
+          recordPayment: false,
+          movedUnpaidOntoCarrier: true,
+        }),
+      ];
+
+      expect(await returnMovedInvoicesToCapturedIntent("pi_a")).toBe(1);
+
+      expect(payloadOf("op_a")).toEqual(expect.objectContaining({ paymentIntentId: "pi_a", recordPayment: true }));
+      expect(payloadOf("op_a")).not.toHaveProperty("movedUnpaidOntoCarrier");
+      expect(mocks.anchorCaptureHasReceipt).toHaveBeenCalledWith(expect.anything(), {
+        bookingId: "booking_1",
+        bookingModificationId: "mod_a",
+        paymentIntentId: "pi_a",
+      });
+    });
+
+    it("unpaid where A's own receipt already records A's capture: one recorder", async () => {
+      operations = [invoice("op_a", { bookingId: "booking_1", paymentIntentId: "pi_b", parkedFromPaymentIntentId: "pi_a" })];
+      mocks.anchorCaptureHasReceipt.mockResolvedValue(true);
+
+      expect(await returnMovedInvoicesToCapturedIntent("pi_a")).toBe(1);
+      expect(payloadOf("op_a")).toEqual(expect.objectContaining({ paymentIntentId: "pi_a", recordPayment: false }));
+    });
+
+    it("an invoice raised unpaid before any move stays unpaid", async () => {
+      operations = [invoice("op_a", { paymentIntentId: "pi_b", parkedFromPaymentIntentId: "pi_a", recordPayment: false })];
+
+      expect(await returnMovedInvoicesToCapturedIntent("pi_a")).toBe(1);
+      expect(payloadOf("op_a")).toEqual(expect.objectContaining({ paymentIntentId: "pi_a", recordPayment: false }));
+    });
   });
 });
