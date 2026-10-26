@@ -95,7 +95,7 @@ describe("AlpineServerSetup version display (#49)", () => {
     versionRouteAnswers({ status: "match", serverVersion: "2.6", expected: "2.6", checkedAt: "2026-07-01T00:00:00.000Z", couldNotCheck: false, missingBaseUrl: false });
     render(<AlpineServerSetup initialState={initial()} />);
     expect(
-      await screen.findByText(/free beds only once its Central lodge link is saved .*even for a club with one lodge/),
+      await screen.findByText(/Until a lodge's Central lodge link is saved .*shows\s+its free beds as unknown, even for a club with one lodge/),
     ).toBeTruthy();
   });
 

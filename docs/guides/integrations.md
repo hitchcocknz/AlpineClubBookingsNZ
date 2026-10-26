@@ -209,7 +209,10 @@ The same list decides which entries your **Booking Officer** committee role is
 written into: when a member takes or leaves that role, the officer's name,
 role email and (if published) phone are written into the lodge entries the
 central server names as yours — and, until it has named any, into entries whose
-name exactly matches one of your own lodges.
+name exactly matches one of your own lodges. That name rule is the one place a
+lodge is still taken as yours by its name: once a **Download** has said which
+lodges are yours, only their ids count, and another club's lodge of the same
+name is never written into.
 
 Only one sync with the central server runs at a time, across every copy of
 the site: the nightly job, the **Upload** button and the **Download** button

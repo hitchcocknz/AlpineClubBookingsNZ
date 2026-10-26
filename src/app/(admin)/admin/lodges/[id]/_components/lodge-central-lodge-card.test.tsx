@@ -184,6 +184,32 @@ describe("LodgeCentralLodgeCard", () => {
     expect(JSON.parse(init.body)).toEqual({ centralLodgeId: "ol_b" });
   });
 
+  // #4262 review (C1): before Save the lodge answers as it did, so the status
+  // line describes the SAVED link, never the choice in the editor.
+  it("never says Linked to before Save, and says the change is not saved yet", async () => {
+    serve(body({ ownedLodges: [A], suggestedCentralLodgeId: "ol_a" }));
+    render(<LodgeCentralLodgeCard lodgeId="lodge_1" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Edit" }));
+
+    expect((screen.getByRole("combobox", { name: "Central lodge" }) as HTMLSelectElement).value).toBe("ol_a");
+    expect(screen.queryByText(/Linked to/)).toBeNull();
+    expect(screen.getByText(/Not linked yet.*Your change is not saved yet\./)).toBeTruthy();
+  });
+
+  // #4262 review (C2): a lodge:view administrator cannot Edit, so is not told to.
+  it.each([
+    ["with a suggestion", { ownedLodges: [A], suggestedCentralLodgeId: "ol_a" }],
+    ["without one", {}],
+  ])("tells a lodge:view administrator who can link it, not to click Edit (%s)", async (_case, over) => {
+    lodgeLevel = "view";
+    serve(body(over));
+    render(<LodgeCentralLodgeCard lodgeId="lodge_1" />);
+    expect(
+      await screen.findByText(/An administrator with lodge edit access needs to choose this lodge's entry and save it\./),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Click Edit/)).toBeNull();
+  });
+
   it("gives a lodge:view administrator no working editor", async () => {
     lodgeLevel = "view";
     serve(body());

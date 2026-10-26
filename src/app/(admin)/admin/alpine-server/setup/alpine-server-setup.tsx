@@ -536,9 +536,9 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                   officer, beds).
                 </p>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  The central lodge search shows a lodge&apos;s free beds only once
-                  its Central lodge link is saved (Lodges, then Configure, then
-                  Central lodge), even for a club with one lodge.
+                  Until a lodge&apos;s Central lodge link is saved (Lodges, then
+                  Configure, then Central lodge), the central lodge search shows
+                  its free beds as unknown, even for a club with one lodge.
                 </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Last upload {fmt(clubTime, lastUpload)} · last download {fmt(clubTime, lastDownload)}
