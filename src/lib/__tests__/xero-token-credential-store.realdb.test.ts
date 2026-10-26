@@ -315,10 +315,11 @@ const TENANT = "race-3806-tenant";
         const now = new Date();
         const lease = new Date(now.getTime() + 120_000);
 
-        const [oldWon, ours] = await Promise.all([
+        const [oldClaim, ours] = await Promise.all([
           release3454.claim3454(prisma, now, lease),
           store.claimXeroTokenRefreshLease({ now }),
         ]);
+        const oldWon = oldClaim !== null;
 
         expect((oldWon ? 1 : 0) + (ours.claimed ? 1 : 0), `round ${round}`).toBe(1);
         if (oldWon) {
@@ -331,7 +332,7 @@ const TENANT = "race-3806-tenant";
     it("loses, and takes nothing, while the previous release holds its lease", async () => {
       await connect("c1");
       const now = new Date();
-      expect(await release3454.claim3454(prisma, now, new Date(now.getTime() + 120_000))).toBe(true);
+      expect(await release3454.claim3454(prisma, now, new Date(now.getTime() + 120_000))).not.toBeNull();
 
       const claim = await store.claimXeroTokenRefreshLease({ now });
 
@@ -357,7 +358,7 @@ const TENANT = "race-3806-tenant";
       expect(claim.claimed).toBe(false);
       expect(await leases()).toEqual({ previousRelease: null, ours: elsewhere.getTime() });
       // And the previous release can still take its lease: nothing was left held.
-      expect(await release3454.claim3454(prisma, now, elsewhere)).toBe(true);
+      expect(await release3454.claim3454(prisma, now, elsewhere)).not.toBeNull();
     });
 
     it("releases both halves", async () => {
@@ -434,9 +435,10 @@ const TENANT = "race-3806-tenant";
 
       const now = new Date();
       const lease = new Date(now.getTime() + 120_000);
-      expect(await release3454.claim3454(prisma, now, lease)).toBe(true);
+      const oldClaim = await release3454.claim3454(prisma, now, lease);
+      expect(oldClaim?.tokens).toMatchObject({ source: "store", refreshToken: "race-3806-refresh-old" });
       const next = tokens("old-r1", 1_800_000);
-      await release3454.save3454(next, lease, REFRESH_JOB);
+      await release3454.save3454(next, oldClaim!, REFRESH_JOB);
       const connection = await prisma.xeroConnection.findUniqueOrThrow({
         where: { id: "default" },
       });
@@ -468,12 +470,13 @@ const TENANT = "race-3806-tenant";
           actor: REFRESH_JOB,
           lease: claim.lease,
         });
-        // The previous release, through its own read, claim and save.
-        const seen = await release3454.read3454(prisma);
+        // The previous release, through its own claim, the tokens it read under
+        // the lease, and its save.
         const now = new Date();
-        const lease = new Date(now.getTime() + 120_000);
-        expect(await release3454.claim3454(prisma, now, lease)).toBe(true);
-        await release3454.save3454(spend(seen!.refreshToken), lease, REFRESH_JOB);
+        const oldClaim = await release3454.claim3454(prisma, now, new Date(now.getTime() + 120_000));
+        if (!oldClaim) throw new Error("the previous release lost the lease");
+        expect(oldClaim.tokens.source).toBe("store");
+        await release3454.save3454(spend(oldClaim.tokens.refreshToken), oldClaim, REFRESH_JOB);
       }
 
       expect((await store.loadXeroTokens())?.refreshToken).toBe(live);

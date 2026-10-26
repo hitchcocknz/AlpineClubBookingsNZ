@@ -9,32 +9,58 @@
  * `XeroConnection`. Its algorithm, restated here from the deployed
  * `src/lib/xero-token-store.ts` at #3454 (merge of PR #3805):
  *
- *   - READ: the store row first, then the most recently written `XeroToken`
- *     row. No row: not connected. The store copy is read when its `mirror`
- *     equals SHA-256(`${id}:${accessToken}:${refreshToken}`) of that row;
- *     otherwise the row's own ciphertext is decrypted under the wrapped key.
- *   - CLAIM: `UPDATE "XeroToken" SET "refreshInProgressUntil" = lease WHERE id =
- *     <latest> AND (lease IS NULL OR lease <= now)`.
- *   - CONNECT / REFRESH SAVE: one transaction writing the row's ciphertext (a
- *     fresh IV each time) and the store copy with the matching `mirror`.
- *   - DISCONNECT: delete every `XeroToken` row and the store row.
+ *   - ROW ORDER: `updatedAt` DESC only — #3454's `XERO_TOKEN_ROW_ORDER` had no
+ *     `id` tie-break (R2's does), so this emulation has none either.
+ *   - READ: the store row first, then the latest `XeroToken` row, or the row a
+ *     won claim locked, BY ID. No row: not connected. The store copy is read
+ *     when its `mirror` equals SHA-256(`${id}:${accessToken}:${refreshToken}`)
+ *     of that row; otherwise the row's own ciphertext is decrypted.
+ *   - CLAIM: in one transaction, find the latest row, `UPDATE ... SET lease
+ *     WHERE id = <it> AND (lease IS NULL OR lease <= now)`, then read both
+ *     copies by that id. The claim carries the row id and the store version.
+ *   - REFRESH SAVE: one transaction: the CLAIMED row's ciphertext (a fresh IV
+ *     each time), guarded on the lease, and the store copy with the matching
+ *     `mirror`, compare-and-set on the claimed store version (`absent` when
+ *     there was none).
+ *   - CONNECT: one transaction: update the latest row in place (keeping its
+ *     tenant when the grant names none) or create one; the store copy follows
+ *     the row's tenant, with the matching `mirror`.
+ *   - DISCONNECT: delete every `XeroToken` row and the store row; when only the
+ *     row existed, one "pre-upgrade copy only" audit row.
+ *   - `updatedAt` is the client's clock on every write, as Prisma's
+ *     `@updatedAt` stamps it.
+ *
+ * WHERE IT DIFFERS from #3454, none of it on a path R2 is judged by:
+ *
+ *   - the row ciphertext is encrypted under a FIXED test key, where #3454
+ *     resolved (and, when absent, generated and audited) the wrapped
+ *     `xero` / `token_key`. R2 never reads it; a row R2 created holds '', which
+ *     no key decrypts, so #3454 would read it as "reconnect required" — and
+ *     never does, because R2's store copy always carries the matching `mirror`;
+ *   - a row this emulation creates gets a random id, not Prisma's cuid;
+ *   - its errors are plain `Error`s with "3454:" messages, not #3454's types.
  *
  * The R2 schema `@ignore`s the two ciphertext columns, so the generated client
- * cannot name them; that is why every statement touching them here is raw SQL,
- * exactly the SQL the #3454 client emitted. The store row goes through the real
- * credential store, which #3454 also used and R2 did not change; its writes run
- * on the application client, through `withCredentialTransaction`, as #3454's did. The wrapped
- * token key is a fixed test key: R2 never reads it, so only this emulation needs
- * it.
+ * cannot name them; that is why every statement here is raw SQL, the SQL the
+ * #3454 client emitted. The store row goes through the real credential store,
+ * which #3454 also used and R2 did not change; its writes run on the
+ * application client, through `withCredentialTransaction`, as #3454's did.
  */
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "crypto";
 import type { PrismaClient } from "@prisma/client";
-import type { CredentialActor } from "@/lib/integration-credential-actor";
+import {
+  CREDENTIAL_AUDIT_ACTIONS,
+  recordCredentialMutation,
+  type CredentialActor,
+  type CredentialVersion,
+} from "@/lib/integration-credential-actor";
 import {
   deleteIntegrationCredentialInTransaction,
+  deletedCredentialSummary,
   readIntegrationCredentialRow,
   setIntegrationCredentialInTransaction,
   withCredentialTransaction,
+  type CredentialResolution,
 } from "@/lib/integration-credentials";
 import {
   XERO_OAUTH_TOKEN_KEY,
@@ -82,14 +108,26 @@ interface Row3454 {
   refreshInProgressUntil: Date | null;
 }
 
-type Client = Pick<PrismaClient, "$queryRaw" | "$executeRaw" | "integrationCredential">;
+type Client = Pick<
+  PrismaClient,
+  "$queryRaw" | "$executeRaw" | "integrationCredential" | "auditLog"
+>;
 
+/** #3454's `findFirst({ orderBy: { updatedAt: "desc" } })`: no tie-break. */
 async function latestRow(db: Client): Promise<Row3454 | null> {
   const rows = await db.$queryRaw<Row3454[]>`
     SELECT "id", "accessToken", "refreshToken", "expiresAt", "tenantId", "refreshInProgressUntil"
       FROM "XeroToken"
      ORDER BY "updatedAt" DESC
      LIMIT 1`;
+  return rows[0] ?? null;
+}
+
+async function rowById(db: Client, id: string): Promise<Row3454 | null> {
+  const rows = await db.$queryRaw<Row3454[]>`
+    SELECT "id", "accessToken", "refreshToken", "expiresAt", "tenantId", "refreshInProgressUntil"
+      FROM "XeroToken"
+     WHERE "id" = ${id}`;
   return rows[0] ?? null;
 }
 
@@ -101,17 +139,25 @@ export interface Read3454 {
   refreshToken: string;
   expiresAt: Date;
   tenantId: string | null;
+  refreshInProgressUntil: Date | null;
+  /** The store version read beside it; `null` when there was no store row. */
+  storeVersion: CredentialVersion | null;
 }
 
-/** #3454's `readCurrentTokens`: what the previous release would use now. */
-export async function read3454(db: Client): Promise<Read3454 | null> {
+function storeVersionOf(stored: CredentialResolution): CredentialVersion | null {
+  return stored.status === "not_configured" ? null : stored.version;
+}
+
+/** #3454's `readCurrentTokens`: the latest row, or the locked one by id. */
+async function readCurrent(db: Client, lockedRowId?: string): Promise<Read3454 | null> {
   const stored = await readIntegrationCredentialRow(
     db,
     XERO_OAUTH_TOKEN_PROVIDER,
     XERO_OAUTH_TOKEN_KEY,
   );
-  const row = await latestRow(db);
+  const row = lockedRowId === undefined ? await latestRow(db) : await rowById(db, lockedRowId);
   if (!row) return null;
+  const storeVersion = storeVersionOf(stored);
   if (stored.status === "configured") {
     const value = JSON.parse(stored.value) as {
       v: number;
@@ -130,6 +176,8 @@ export async function read3454(db: Client): Promise<Read3454 | null> {
         refreshToken: value.refreshToken,
         expiresAt: new Date(value.expiresAt),
         tenantId: value.tenantId,
+        refreshInProgressUntil: row.refreshInProgressUntil,
+        storeVersion,
       };
     }
   }
@@ -140,43 +188,67 @@ export async function read3454(db: Client): Promise<Read3454 | null> {
     refreshToken: decrypt(row.refreshToken),
     expiresAt: row.expiresAt,
     tenantId: row.tenantId,
+    refreshInProgressUntil: row.refreshInProgressUntil,
+    storeVersion,
   };
 }
 
-/** #3454's claim statement. Returns whether it took the lease. */
-export async function claim3454(
-  db: Client,
-  now: Date,
-  leaseUntil: Date,
-): Promise<boolean> {
-  const count = await db.$executeRaw`
-    UPDATE "XeroToken"
-       SET "refreshInProgressUntil" = ${leaseUntil}, "updatedAt" = ${now}
-     WHERE "id" = (SELECT "id" FROM "XeroToken" ORDER BY "updatedAt" DESC LIMIT 1)
-       AND ("refreshInProgressUntil" IS NULL OR "refreshInProgressUntil" <= ${now})`;
-  return Number(count) === 1;
+/** #3454's unlocked read: what the previous release would use now. */
+export async function read3454(db: Client): Promise<Read3454 | null> {
+  return readCurrent(db);
+}
+
+/** A claim #3454 won: the tokens it read under the lease, and the lease. */
+export interface Claim3454 {
+  tokens: Read3454;
+  leaseUntil: Date;
 }
 
 /**
- * #3454's refresh save: both copies under its lease, the store copy with a
- * fresh mirror. Throws when the lease no longer matches, as #3454 did.
+ * #3454's `claimXeroTokenRefreshLease`: claim first, then read the locked row
+ * by id. Returns the claim, or `null` when the lease was not taken.
+ */
+export async function claim3454(
+  db: Pick<PrismaClient, "$transaction">,
+  now: Date,
+  leaseUntil: Date,
+): Promise<Claim3454 | null> {
+  return db.$transaction(async (tx) => {
+    const row = await latestRow(tx);
+    if (!row) return null;
+    const count = await tx.$executeRaw`
+      UPDATE "XeroToken"
+         SET "refreshInProgressUntil" = ${leaseUntil}, "updatedAt" = ${new Date()}
+       WHERE "id" = ${row.id}
+         AND ("refreshInProgressUntil" IS NULL OR "refreshInProgressUntil" <= ${now})`;
+    if (Number(count) !== 1) return null;
+    const tokens = await readCurrent(tx, row.id);
+    if (!tokens) throw new Error("3454: Xero token row changed under its own refresh lease");
+    return { tokens: { ...tokens, refreshInProgressUntil: leaseUntil }, leaseUntil };
+  });
+}
+
+/**
+ * #3454's refresh save: the claimed row and the store copy under its lease,
+ * the store write a compare-and-set on the version the claim read. Throws when
+ * either fence no longer matches, as #3454 did.
  */
 export async function save3454(
   tokens: TokenData,
-  leaseUntil: Date,
+  claim: Claim3454,
   actor: CredentialActor,
 ): Promise<void> {
   const access = encrypt(tokens.accessToken);
   const refresh = encrypt(tokens.refreshToken);
+  const tenantId = tokens.tenantId ?? null;
+  const storeVersion = claim.tokens.storeVersion;
   await withCredentialTransaction([XERO_OAUTH_TOKEN_PROVIDER], async (tx) => {
-    const row = await latestRow(tx);
-    if (!row) throw new Error("3454: not connected");
     const updated = await tx.$executeRaw`
       UPDATE "XeroToken"
          SET "accessToken" = ${access}, "refreshToken" = ${refresh},
-             "expiresAt" = ${tokens.expiresAt}, "tenantId" = ${tokens.tenantId ?? null},
+             "expiresAt" = ${tokens.expiresAt}, "tenantId" = ${tenantId},
              "refreshInProgressUntil" = NULL, "updatedAt" = ${new Date()}
-       WHERE "id" = ${row.id} AND "refreshInProgressUntil" <= ${leaseUntil}`;
+       WHERE "id" = ${claim.tokens.rowId} AND "refreshInProgressUntil" <= ${claim.leaseUntil}`;
     if (Number(updated) !== 1) {
       throw new Error("3454: Xero token refresh lease expired before refreshed tokens could be saved");
     }
@@ -189,11 +261,18 @@ export async function save3454(
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
         expiresAt: tokens.expiresAt.toISOString(),
-        tenantId: tokens.tenantId ?? null,
-        mirror: fingerprint3454({ id: row.id, accessToken: access, refreshToken: refresh }),
+        tenantId,
+        mirror: fingerprint3454({
+          id: claim.tokens.rowId,
+          accessToken: access,
+          refreshToken: refresh,
+        }),
       }),
       actor,
-      expect: { expect: "any" },
+      expect:
+        storeVersion === null
+          ? { expect: "absent" }
+          : { expect: "version", version: storeVersion },
       cause: { kind: "token-refresh" },
     });
   });
@@ -209,19 +288,22 @@ export async function connect3454(
   await withCredentialTransaction([XERO_OAUTH_TOKEN_PROVIDER], async (tx) => {
     const existing = await latestRow(tx);
     const id = existing?.id ?? `xt3454-${randomBytes(6).toString("hex")}`;
+    // #3454 kept the row's tenant when the grant named none.
+    const tenantId = tokens.tenantId ?? existing?.tenantId ?? null;
     const now = new Date();
     if (existing) {
       await tx.$executeRaw`
         UPDATE "XeroToken"
            SET "accessToken" = ${access}, "refreshToken" = ${refresh},
-               "expiresAt" = ${tokens.expiresAt}, "tenantId" = ${tokens.tenantId ?? null},
+               "expiresAt" = ${tokens.expiresAt}, "tenantId" = ${tenantId},
                "refreshInProgressUntil" = NULL, "updatedAt" = ${now}
          WHERE "id" = ${id}`;
     } else {
       await tx.$executeRaw`
         INSERT INTO "XeroToken"
-          ("id", "accessToken", "refreshToken", "expiresAt", "tenantId", "createdAt", "updatedAt")
-        VALUES (${id}, ${access}, ${refresh}, ${tokens.expiresAt}, ${tokens.tenantId ?? null}, ${now}, ${now})`;
+          ("id", "accessToken", "refreshToken", "expiresAt", "tenantId",
+           "refreshInProgressUntil", "createdAt", "updatedAt")
+        VALUES (${id}, ${access}, ${refresh}, ${tokens.expiresAt}, ${tenantId}, NULL, ${now}, ${now})`;
     }
     await setIntegrationCredentialInTransaction({
       tx,
@@ -232,7 +314,7 @@ export async function connect3454(
         accessToken: tokens.accessToken,
         refreshToken: tokens.refreshToken,
         expiresAt: tokens.expiresAt.toISOString(),
-        tenantId: tokens.tenantId ?? null,
+        tenantId,
         mirror: fingerprint3454({ id, accessToken: access, refreshToken: refresh }),
       }),
       actor,
@@ -242,13 +324,13 @@ export async function connect3454(
   });
 }
 
-/** #3454's disconnect: every `XeroToken` row and the store row. */
+/** #3454's disconnect: every `XeroToken` row and the store row, one audit row. */
 export async function disconnect3454(
   actor: CredentialActor,
 ): Promise<void> {
   await withCredentialTransaction([XERO_OAUTH_TOKEN_PROVIDER], async (tx) => {
-    await tx.$executeRaw`DELETE FROM "XeroToken"`;
-    await deleteIntegrationCredentialInTransaction({
+    const rows = Number(await tx.$executeRaw`DELETE FROM "XeroToken"`);
+    const storeRemoved = await deleteIntegrationCredentialInTransaction({
       tx,
       provider: XERO_OAUTH_TOKEN_PROVIDER,
       key: XERO_OAUTH_TOKEN_KEY,
@@ -256,5 +338,16 @@ export async function disconnect3454(
       expect: { expect: "any" },
       cause: { kind: "oauth-disconnect" },
     });
+    if (!storeRemoved && rows > 0) {
+      await recordCredentialMutation(tx, {
+        action: CREDENTIAL_AUDIT_ACTIONS.deleted,
+        summary: `${deletedCredentialSummary(XERO_OAUTH_TOKEN_PROVIDER, XERO_OAUTH_TOKEN_KEY)} (pre-upgrade copy only)`,
+        actor,
+        provider: XERO_OAUTH_TOKEN_PROVIDER,
+        key: XERO_OAUTH_TOKEN_KEY,
+        expectation: "any",
+        cause: { kind: "oauth-disconnect" },
+      });
+    }
   });
 }
