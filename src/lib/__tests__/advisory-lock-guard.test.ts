@@ -1425,6 +1425,15 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
   "src/app/api/members/[id]/photo/route.ts": 2,
+  // Alpine Central Server version recorder (#4366): `lockServerNzSettings`
+  // locks the singleton settings row (`SELECT 1 … FOR UPDATE`) so
+  // `recordServerVersionIfCurrent` re-reads the connection (address and API-key
+  // credential version) under it before it records the server's answer; a
+  // connection change writes the same row, so the two serialise. #4277 adds a
+  // second caller of the same one statement (the download record step). No
+  // advisory key; disjoint from booking/money writers. See
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Alpine Central Server version recorder".
+  "src/lib/servernz-settings.ts": 1,
   // Adult-member-hosting queue participants (#2597): the shared helper mints
   // one reviewed `FOR UPDATE` protocol for member merge over master, loser and
   // every planned ancillary owner, plus the shared standing-subject barrier
