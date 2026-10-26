@@ -1655,8 +1655,7 @@ release).
   (refunded) is carried on.
 - **Each for its own amount.** The carrier's capture releases every invoice
   naming it; a carrier never paid invoices nothing. Never folded onto the
-  later invoice. Bank transfer queues each unpaid when priced, so nothing
-  moves there.
+  later invoice. Bank transfer queues each unpaid when priced: nothing moves.
 - **Who moves it.** The supersede's cancel step (failed or captured), every
   superseding minter, an edit leg parking on an already-failed ask, and the
   reaper before retiring.
@@ -1666,10 +1665,10 @@ release).
   supplementary-invoice keys, booking first; writes guarded on status, intent
   and correlation key. A captured carrier releases at once, unpaid where a
   receipt for its capture is active or records it.
-- **The capture covers them together.** A capture is checked against the sum
-  of every invoice naming it, not each alone.
-- **A capture of the carried ask takes it back.** A declined ask stays
-  confirmable; a kept capture of it returns the invoices first parked on it
+- **Checked together:** a capture against the sum of every invoice naming it.
+- **A capture of the carried ask.** A declined ask is cancelled too (#4422);
+  a capture racing that cancel is refunded, its invoices staying. A kept
+  capture no cancel row owns returns the invoices first parked on it
   (`parkedFromPaymentIntentId`), paid unless its receipt records it; a change
   invoice naming another capture never records it. Both kept: an officer is
   told once.

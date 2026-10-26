@@ -240,10 +240,10 @@ export async function queueSupersededAdditionalIntentCancellationRows(options: {
  * #3403 (`INV-PAY-140`): a minter names the intent it just wrote
  * (`newPaymentIntentId`), and the superseded asks' waiting Xero supplementary
  * invoices are then moved onto it, before the minter returns its secret. Here
- * as well as in the cancel step because a cancel that did not finish (a Stripe
- * outage, a backoff) or an ask already cancelled runs no cancel step now. A
- * declined ask is cancelled here too (#4422). A writer that retires an ask
- * without replacing it (a booking cancel) names none.
+ * as well as in the cancel step because an ask whose card was DECLINED is
+ * carried at once, though its cancel (#4422) may not finish now (a Stripe
+ * outage, a backoff) or finished at an earlier supersede. A writer that
+ * retires an ask without replacing it (a booking cancel) names none.
  */
 export async function cancelSupersededAdditionalIntentsNow(options: {
   bookingId: string;
