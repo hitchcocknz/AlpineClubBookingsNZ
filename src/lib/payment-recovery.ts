@@ -1196,6 +1196,7 @@ async function markPaymentRecoveryOperationFailed({
   fromProcessingStartedAt,
   fromAttempts,
   format,
+  handBackAttempt = false,
 }: {
   operation: PaymentRecoveryOperation;
   /** Recorded verbatim on `lastError`, and quoted in the exhaustion alert. */
@@ -1236,6 +1237,12 @@ async function markPaymentRecoveryOperationFailed({
   fromAttempts?: number;
   /** The club's format (#3565), resolved before any transaction by the caller. */
   format: ClubFormat;
+  /**
+   * #4253 release 2: hand back the attempt this worker's claim took, for a row that is WAITING on
+   * something that clears on its own rather than failing (`waitPaymentRecoveryOperation`). Only
+   * with `terminal: false`, which it can never make terminal.
+   */
+  handBackAttempt?: boolean;
 }): Promise<PaymentRecoveryFailureOutcome> {
   // Both fences apply when both are given: each is its own clause, so neither
   // can overwrite the other's `processingStartedAt`.
@@ -1251,7 +1258,9 @@ async function markPaymentRecoveryOperationFailed({
       status: PaymentRecoveryOperationStatus.FAILED,
       lastError: message,
       processingStartedAt: null,
-      ...(terminal ? { nextRetryAt: null, attempts: Math.max(operation.attempts, MAX_PAYMENT_RECOVERY_ATTEMPTS) } : { nextRetryAt }),
+      ...(terminal
+        ? { nextRetryAt: null, attempts: Math.max(operation.attempts, MAX_PAYMENT_RECOVERY_ATTEMPTS) }
+        : { nextRetryAt, ...(handBackAttempt ? { attempts: Math.max(operation.attempts - 1, 0) } : {}) }),
     },
   });
 
@@ -1574,6 +1583,26 @@ async function failPaymentRecoveryOperation(
    * that no reader has asked for.
    */
   return outcome === "gone" ? (terminal ? "failed" : "retry") : outcome;
+}
+
+/**
+ * #4253 release 2 (`INV-ADDPAY-045`): a row that must WAIT, not fail - a released-credit request
+ * blocked by an unpaid edit request. Back to a non-terminal retry at the longest interval with its
+ * claim's attempt handed back, so it never runs out of attempts, goes terminal or alerts. Through
+ * the one chokepoint, fenced on this worker's own attempt.
+ */
+async function waitPaymentRecoveryOperation(operation: PaymentRecoveryOperation, message: string, format: ClubFormat) {
+  return markPaymentRecoveryOperationFailed({
+    operation,
+    format,
+    message,
+    terminal: false,
+    // The schedule's last (longest) step: the attempt index clamps to it.
+    nextRetryAt: nextRetryDate(MAX_PAYMENT_RECOVERY_ATTEMPTS),
+    fromStatuses: NON_TERMINAL_PAYMENT_RECOVERY_STATUSES,
+    fromAttempts: operation.attempts,
+    handBackAttempt: true,
+  });
 }
 
 async function claimPaymentRecoveryOperation(operationId: string) {
@@ -2439,6 +2468,7 @@ async function processCreateAdditionalPaymentIntentOperation(
     await processCreditReleaseAskOperation(operation, format, {
       holdClaim: holdAdditionalIntentRecoveryClaim,
       complete: (operationId) => completePaymentRecoveryOperation(operationId),
+      wait: (waiting, message) => waitPaymentRecoveryOperation(waiting, message, format),
     });
     return;
   }

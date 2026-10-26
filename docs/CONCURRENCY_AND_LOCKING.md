@@ -5273,7 +5273,10 @@ the stamp boundary of the existing guarded claim in `cron-additional-payment-rem
 read and the bank-transfer offer that decide whether a released-credit reminder goes
 (`credit-release-reminder-gate.ts`, `INV-ADDPAY-051`) run before that claim and outside any
 transaction, in the cron and in the manual re-send alike; a withheld reminder claims nothing,
-and its one audit note is written outside any lock.
+and its one audit note is written outside any lock. A release waiting behind an unpaid edit
+request goes back through the recovery runner's one failure write
+(`markPaymentRecoveryOperationFailed`), fenced on the attempt its worker holds, with that
+attempt handed back; it takes no lock and changes no money.
 
 Closing a request Xero shows paid (`credit-release-ask-close.ts`) is a
 settlement-money writer: it cancels the card payment at Stripe first, outside

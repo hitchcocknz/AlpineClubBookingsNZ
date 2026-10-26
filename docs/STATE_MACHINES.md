@@ -2236,9 +2236,12 @@ inbound fence records its conflict the same way, under the
   -> closed, nothing asked    (not a release / ended booking / payment not captured /
                                organiser-settled / invoice paid in Xero / nothing owed /
                                below the card minimum, the last with an officer alert)
+  -> waiting                  (an unpaid edit request is open: back to the longest retry interval,
+                               no attempt spent, never terminal; officers told once, INV-ADDPAY-051)
   -> ADDITIONAL row PENDING (reason credit_released_outside_app, carries any live ask)
        -> SUCCEEDED by card  -> payment recorded on the booking's invoice (sweep, XeroObjectLink)
-       -> FAILED+withdrawn   when Xero shows the invoice PAID: card payment cancelled first,
+       -> FAILED+withdrawn   when Xero shows the invoice PAID (the request alone, or carrying only
+                               earlier released credit): card payment cancelled first,
                                bank-cash row written in the same transaction
        -> superseded         by a later ask that carries it (INV-PAY-098): an edit made while
                                the request is unpaid MERGES into one request (cause "mixed"),

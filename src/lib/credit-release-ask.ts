@@ -36,6 +36,7 @@ import {
 import { bookingLedgerResidualCents, outstandingAdditionalAskCents } from "@/lib/additional-payment-ask";
 import { sizeCreditReleaseAsk } from "@/lib/credit-release-ask-size";
 import { createAuditLog } from "@/lib/audit";
+import { signalCreditReleaseToOfficers } from "@/lib/credit-release-officer-signal";
 import { bookingOwner } from "@/lib/booking-owner";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
@@ -70,7 +71,17 @@ export interface CreditReleaseAskRunnerDeps {
   ) => Promise<{ value: T; heldAt: Date } | null>;
   /** Closes the row (`completePaymentRecoveryOperation`). */
   complete: (operationId: string) => Promise<unknown>;
+  /**
+   * Puts the row back to wait at the longest retry interval WITHOUT spending the attempt the
+   * claim took (`waitPaymentRecoveryOperation`): for a release blocked only by something that
+   * clears on its own, which must never run the row out of attempts and go terminal.
+   */
+  wait: (operation: PaymentRecoveryOperation, message: string) => Promise<unknown>;
 }
+
+/** What a release waiting behind an unpaid edit request records on its recovery row. */
+export const CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE =
+  "An unpaid edit request is open on this booking; the released-credit request waits until it is paid or withdrawn";
 
 /** Why a row was closed without asking for anything: the audit row's wording and its code. */
 type NoAskReason =
@@ -222,14 +233,26 @@ export async function processCreditReleaseAskOperation(
   }
 
   // An unpaid EDIT request may have its own supplementary invoice, which a release request
-  // superseding it could not pay (an edit made after the release merges instead, `INV-ADDPAY-048`). Wait for it to be paid or withdrawn.
+  // superseding it could not pay (an edit made after the release merges instead, `INV-ADDPAY-048`).
+  // The release waits for it to be paid or withdrawn - for as long as that takes. A throw here used
+  // to spend the row's attempts in about 17 hours and leave it terminal, and the sweep never looks
+  // at a release twice, so the money was never asked for. Now the row is put back at the longest
+  // retry interval with its attempt handed back, and the officers are told once (`INV-ADDPAY-051`).
   if (outstandingAdditionalAskCents(payment) > 0 && payment.additionalPaymentIntentId) {
     const live = await prisma.paymentTransaction.findUnique({
       where: { stripePaymentIntentId: payment.additionalPaymentIntentId },
       select: { reason: true },
     });
     if (live?.reason !== CREDIT_RELEASE_ASK_REASON) {
-      throw new Error("An unpaid edit request is open on this booking; the released-credit request waits until it is paid or withdrawn");
+      await signalCreditReleaseToOfficers({
+        bookingId: operation.bookingId,
+        reason: "waiting-on-edit-request",
+        key: `waiting-on-edit-request:${operation.id}`,
+        metadata: { operationId: operation.id, releasedCents: operation.amountCents, editPaymentIntentId: payment.additionalPaymentIntentId },
+      });
+      logger.info({ operationId: operation.id, bookingId: operation.bookingId }, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
+      await deps.wait(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
+      return;
     }
   }
 

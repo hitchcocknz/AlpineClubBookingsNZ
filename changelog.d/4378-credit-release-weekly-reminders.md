@@ -2,8 +2,9 @@
   weekly, can pay by bank transfer, and the older cases are picked up.** The
   request for credit that was used elsewhere in the club's accounts is emailed
   at once, then reminded every 7 days, four reminders after the request (five
-  emails at most); after that only the officers' queues chase it, and the reminders carry on after the stay has ended. Where the
-  club has written its bank details (a new "Bank transfer details for a payment
+  emails at most); after that only the officers' queues chase it, and the
+  reminders carry on after the stay has ended. Where the club has written its bank
+  details (a new "Bank transfer details for a payment
   request" message under Admin → Booking messages), the email offers a bank
   transfer as well as card, quoting the booking's Xero invoice number as the
   payment reference, and the request closes when Xero shows the invoice paid. The
@@ -16,3 +17,6 @@
   asked for in small, audited batches behind a second switch (see
   `docs/xero/ARCHITECTURE.md`); each is re-checked against Xero first, so nothing is
   asked that is no longer owed.
+  Credit released while a request for a booking change is still unpaid now waits for
+  that request to be paid or withdrawn, however long it takes, and is asked for then;
+  before, it gave up after a few retries and was never asked for.

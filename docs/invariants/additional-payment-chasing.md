@@ -1739,16 +1739,16 @@ _Legacy: settles tasks raised before #4317._
   (`INV-PAY-098`). Nothing owed closes the row with an audit.
 - **No second invoice.** The amount already stands on the booking's invoice, so
   the row is written `hadIssuedXeroInvoice: false`.
-- **It waits behind an unpaid edit request** and retries. An edit made AFTER
-  the release is the other direction, and merges the two [INV-ADDPAY-048].
+- **It waits behind an unpaid edit request**, never going terminal
+  [INV-ADDPAY-051]; carrying that edit into this request is a follow-up. An edit
+  made after the release merges the two [INV-ADDPAY-048].
 - **It closes, never guesses.** Cancelled, bumped, uncaptured and
   organiser-settled bookings close without an ask; an invoice not yet open in
   Xero throws and retries. A booking that ended is asked nothing
   (`INV-ADDPAY-044`).
-- **Its own words.** The first email goes out at the next reminder pass instead
-  of after the usual wait (`INV-ADDPAY-024`), worded as credit used elsewhere,
+- **Its own words and cadence** [INV-ADDPAY-048]: emailed at the next reminder
+  pass, worded as credit used elsewhere (or both, once merged with an edit),
   never as a change to the stay. A reduction never nets against this request.
-  A request mixing an edit and a release is worded as both [INV-ADDPAY-048].
 - **Blue/green.** Enqueueing is off until an operator sets the
   `CREDIT_RELEASE_ASK`/`WRITER` `XeroSyncCursor` row's `enabled` to `true`, after
   the previous colour has drained; the runner, recorder and closer are always on.
@@ -1886,10 +1886,14 @@ _Legacy: settles tasks raised before #4317._
   to the invoice, withholds the automatic reminder; the re-send is refused with
   the reason. Nothing is closed or resized on a part payment. An unreadable
   invoice claims nothing and the reminder stays due.
+- **A release behind an unpaid edit request waits as long as that takes.** Its
+  recovery row goes back to the longest retry interval with the claim's attempt
+  handed back (`waitPaymentRecoveryOperation`), so it never runs out of attempts
+  and is asked for once the edit is paid or withdrawn.
 - **Everything the email needs is resolved before the claim**, so no failure
   between the stamp and the mailer can lose a reminder with no EmailLog row.
-- **The officers are told once.** The request stays on the queues that already
-  show unpaid money; one `payment.credit_release_ask.left_to_officers` audit row
-  on the booking, written once per key, says why the app stopped
-  (`credit-release-officer-signal.ts`).
-- Home: `credit-release-reminder-gate.ts`, `cron-additional-payment-reminders.ts`.
+- **The officers are told once.** The request (or the edit it waits on) stays on
+  the queues that already show unpaid money; one
+  `payment.credit_release_ask.left_to_officers` audit row on the booking, written
+  once per key, says why the app stopped (`credit-release-officer-signal.ts`).
+- Home: `credit-release-reminder-gate.ts`, `credit-release-ask.ts`.
