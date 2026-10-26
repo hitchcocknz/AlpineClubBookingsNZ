@@ -715,7 +715,7 @@ describe("backup", () => {
   });
 
   it("refuses a validation URL naming the audit archive database, still taking the backup (#4453 review N5)", async () => {
-    process.env.AUDIT_ARCHIVE_DATABASE_URL = "postgresql://archive:archive-pw@archive-host:5432/audit_archive";
+    process.env.AUDIT_ARCHIVE_DATABASE_URL = "postgresql://archive:archive-fixture-pw@archive-host:5432/audit_archive";
     setConfig({ restoreValidationUrl: "postgresql://check:check-pw@shadow/audit_archive" });
 
     await expectBackupTakenValidationRefused(
