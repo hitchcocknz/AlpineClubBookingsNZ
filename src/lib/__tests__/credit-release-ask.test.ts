@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 const mocks = vi.hoisted(() => ({
+  signalOfficers: vi.fn(),
   prisma: {
     memberCredit: { findUnique: vi.fn() },
     payment: { findUnique: vi.fn() },
@@ -46,8 +47,13 @@ vi.mock("@/lib/ended-booking-ask-guard", () => ({
   replayRetiresAskOnEndedBooking: mocks.retireAfterWrite,
 }));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers: mocks.alertOfficers }));
+vi.mock("@/lib/release-ask-officer-signal", () => ({ signalCreditReleaseToOfficers: mocks.signalOfficers }));
 
-import { processCreditReleaseAskOperation, type CreditReleaseAskRunnerDeps } from "@/lib/credit-release-ask";
+import {
+  CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE,
+  processCreditReleaseAskOperation,
+  type CreditReleaseAskRunnerDeps,
+} from "@/lib/credit-release-ask";
 import {
   buildCreditReleaseAskRecoveryIdempotencyKey,
   buildCreditReleaseAskStripeIdempotencyKey,
@@ -116,6 +122,7 @@ const store = {
 const runnerDeps = () => ({
   holdClaim: vi.fn(async (_op: unknown, write: (s: unknown) => Promise<unknown>) => ({ value: await write(store), heldAt: new Date() })),
   complete: vi.fn().mockResolvedValue(undefined),
+  wait: vi.fn().mockResolvedValue(undefined),
 });
 
 const asDeps = (d: ReturnType<typeof runnerDeps>) => d as unknown as CreditReleaseAskRunnerDeps;
@@ -186,15 +193,43 @@ describe("processCreditReleaseAskOperation", () => {
     );
   });
 
-  it("waits, throwing, while an unpaid edit request is open: its own invoice could not be paid by this one", async () => {
+  it("waits while an unpaid edit request is open, spending no attempt, and tells the officers once", async () => {
     mocks.prisma.payment.findUnique.mockResolvedValue(
       payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_edit", amountCents: 32_000 }),
     );
     mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: "edit_price_increase" });
-    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(runnerDeps()), vi.fn().mockResolvedValue(open))).rejects.toThrow(
-      /unpaid edit request/,
-    );
+    const deps = runnerDeps();
+    await processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), vi.fn().mockResolvedValue(open));
+    // Never a throw: a throw spends an attempt, and five of them made the release terminal and never asked.
+    expect(deps.wait).toHaveBeenCalledWith(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
+    expect(deps.complete).not.toHaveBeenCalled();
     expect(mocks.createIntent).not.toHaveBeenCalled();
+    expect(mocks.signalOfficers).toHaveBeenCalledWith(
+      expect.objectContaining({ bookingId: "bk-1", reason: "waiting-on-edit-request", key: "waiting-on-edit-request:op-1" }),
+    );
+  });
+
+  it("keeps waiting, attempt handed back, while Xero is down: the wait is decided before any Xero read", async () => {
+    mocks.prisma.payment.findUnique.mockResolvedValue(
+      payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_edit", amountCents: 32_000 }),
+    );
+    mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: "edit_price_increase" });
+    const deps = runnerDeps();
+    const read = vi.fn().mockRejectedValue(new Error("Xero unavailable"));
+    // Never a throw (which would spend an attempt and, five times over, make the row terminal).
+    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), read)).resolves.toBe("waited");
+    expect(read).not.toHaveBeenCalled();
+    expect(deps.wait).toHaveBeenCalledWith(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
+  });
+
+  it("asks once the edit request is paid: the release's own live request is not something to wait for", async () => {
+    mocks.prisma.payment.findUnique.mockResolvedValue(
+      payment({ additionalAmountCents: 2500, additionalPaymentStatus: "PENDING", additionalPaymentIntentId: "pi_rel_old", amountCents: 32_000 }),
+    );
+    mocks.prisma.paymentTransaction.findUnique.mockResolvedValue({ reason: CREDIT_RELEASE_ASK_REASON });
+    const deps = runnerDeps();
+    await processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), vi.fn().mockResolvedValue(open));
+    expect(deps.wait).not.toHaveBeenCalled();
   });
 
   it("asks for the smaller figure when part of the release was paid meanwhile, under a key that names the amount", async () => {

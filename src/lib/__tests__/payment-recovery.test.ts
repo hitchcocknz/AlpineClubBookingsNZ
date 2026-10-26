@@ -371,6 +371,16 @@ vi.mock("@/lib/superseded-additional-refund", () => ({
     mockReportSupersededPaymentRefund(...args),
 }));
 
+// #4253 release 2: the released-credit branch, reduced to the one call these tests need - a release
+// blocked by an unpaid edit request asks the runner to put its row back to wait.
+vi.mock("@/lib/credit-release-ask", () => ({
+  processCreditReleaseAskOperation: vi.fn(
+    async (operation: unknown, _format: unknown, deps: { wait: (op: unknown, message: string) => Promise<unknown> }) => {
+      await deps.wait(operation, "An unpaid edit request is open on this booking");
+      return "waited" as const;
+    },
+  ),
+}));
 vi.mock("@/lib/logger", () => ({
   default: {
     info: vi.fn(),
@@ -413,6 +423,7 @@ import {
   buildRefundRequestRefundMetadata,
   bookingModificationRefundReasonForKeyPrefix,
   completeCanceledSupersededPaymentIntentRecovery,
+  createAdditionalPaymentIntentRecoveryOnce,
   enqueueBookingCancellationRefundRecovery,
   enqueueBookingModificationRefundRecovery,
   enqueueCapacityClaimFailedRefundRecovery,
@@ -768,6 +779,60 @@ describe("payment recovery worker", () => {
       }),
       CLUB_FORMAT_TEST,
     );
+  });
+
+  it("#4253: creates a released-credit request's row only once, and says whether this call created it", async () => {
+    const input = {
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      idempotencyKey: "credit_release_ask_rel-1",
+      amountCents: 4000,
+      stripeIdempotencyKey: "credit_release_ask_pi_rel-1",
+      hadIssuedXeroInvoice: false,
+    };
+    mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 1 });
+    expect(await createAdditionalPaymentIntentRecoveryOnce(input)).toBe(true);
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+          status: PaymentRecoveryOperationStatus.PENDING,
+          idempotencyKey: "credit_release_ask_rel-1",
+          paymentIntentId: "credit_release_ask_pi_rel-1",
+          hadIssuedXeroInvoice: false,
+          nextRetryAt: expect.any(Date),
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    // Another pass created it first.
+    mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+    expect(await createAdditionalPaymentIntentRecoveryOnce(input)).toBe(false);
+  });
+
+  it("#4253: a released-credit request waiting on an unpaid edit goes back to wait, its attempt handed back, never terminal", async () => {
+    // Its last attempt: a failure here would be terminal, alert the officers and never ask again.
+    mockPaymentRecoveryFindUnique.mockResolvedValue(
+      makeOperation({
+        type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+        idempotencyKey: "credit_release_ask_rel-1",
+        attempts: 5,
+      }),
+    );
+    const before = Date.now();
+
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+    // A wait is a retry in the run's summary, never a completion.
+    expect(result).toMatchObject({ processed: 1, succeeded: 0, retried: 1, failed: 0 });
+
+    const waitWrite = mockPaymentRecoveryUpdateMany.mock.calls
+      .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })
+      .find((args) => args.data?.status === PaymentRecoveryOperationStatus.FAILED);
+    expect(waitWrite?.where).toMatchObject({ id: "recovery-1", attempts: 5, processingStartedAt: { not: null } });
+    expect(waitWrite?.data).toMatchObject({ attempts: 4, lastError: "An unpaid edit request is open on this booking" });
+    // The longest step of the schedule (12 hours), not a terminal null.
+    expect((waitWrite?.data.nextRetryAt as Date).getTime() - before).toBeGreaterThanOrEqual(720 * 60_000);
+    expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
   });
 
   /**
