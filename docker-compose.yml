@@ -48,19 +48,29 @@ x-app-environment: &app-environment
   # ceiling, so a nightly pg_dump, the deploy-time shadow DB, a pg_isready
   # probe, or an operator psql tipped it over.
   #
-  # NOTE the app role `tac` is a Postgres SUPERUSER (POSTGRES_USER), so
-  # superuser_reserved_connections does NOT hold slots back from the app's own
-  # pools — once the pools fill the ceiling even an admin psql is refused (which
-  # is why the "reserved" slots gave no emergency headroom at 30). Accepted here:
-  # the pools are hard-capped (27) well under 40, so the margin covers admin in
-  # practice; a dedicated NOSUPERUSER app role would restore a truly protected
-  # slot if a future change ever makes the margin tight.
+  # NOTE by default the app connects as `tac`, the Postgres SUPERUSER
+  # (POSTGRES_USER), so superuser_reserved_connections does NOT hold slots back
+  # from the app's own pools — once the pools fill the ceiling even an admin psql
+  # is refused (which is why the "reserved" slots gave no emergency headroom at
+  # 30). The pools are hard-capped (27) well under 40, so the margin covers admin
+  # in practice.
+  #
+  # LEAST-PRIVILEGE ROLES (#4453). APP_DB_USER / APP_DB_PASSWORD switch every
+  # app service (both web slots and the cron leader) to a NOSUPERUSER application
+  # role, and MIGRATION_DB_USER / MIGRATION_DB_PASSWORD switch the `migrate`
+  # service to the role that owns the schema; `pnpm run db:provision-roles`
+  # creates both. Unset, both fall back to `tac` / DB_PASSWORD, which is exactly
+  # the single-superuser stack this file shipped before, so an existing
+  # deployment changes nothing until its operator opts in. With the split, the 3
+  # superuser_reserved_connections slots really are kept for the operator.
+  # Each password is interpolated into a URL unencoded: keep it free of
+  # @ / : ? # % and whitespace (the deploy script refuses one that is not).
   # So the 40 ceiling is raw headroom, not a reservation: budget EVERY consumer,
   # not just the Prisma pools —
   #   sum(pools) + pg_dump + shadow DB + probes + admin psql <= max_connections.
   # A constrained-VPS fork may lower max_connections AND the postgres mem_limit
   # together. See DEPLOYMENT.md "Connection pool sizing".
-  DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10
+  DATABASE_URL: postgresql://${APP_DB_USER:-tac}:${APP_DB_PASSWORD:-${DB_PASSWORD:?DB_PASSWORD is required}}@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10
   NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
   NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
   AUTH_SECRET: ${AUTH_SECRET:-${NEXTAUTH_SECRET}}
@@ -223,6 +233,13 @@ x-app-environment: &app-environment
   # src/lib/audit-retention.ts (empty = archive to the primary database).
   AUDIT_ARCHIVE_DATABASE_URL: ${AUDIT_ARCHIVE_DATABASE_URL:-}
   AUDIT_LOG_ARCHIVE_DATABASE_URL: ${AUDIT_LOG_ARCHIVE_DATABASE_URL:-}
+  # Optional PRIMARY-database connection for the nightly audit retention job
+  # (#4453), as the audit-retention role `pnpm run db:provision-roles` creates:
+  # under the least-privilege roles the app role may only INSERT/SELECT AuditLog,
+  # so the anonymise and delete steps need this. Empty = the app's own
+  # DATABASE_URL, as before. Only the cron leader runs the job; its pool is used
+  # for minutes a night, so keep connection_limit=2.
+  AUDIT_RETENTION_DATABASE_URL: ${AUDIT_RETENTION_DATABASE_URL:-}
   # Where Admin > System Health asks the cron leader for its runtime status —
   # src/app/api/admin/health/route.ts, which defaults to the compose-internal
   # http://app:3000/api/deploy/runtime-status when this is empty. `.env.example`
@@ -385,9 +402,10 @@ services:
       - "-c"
       # Sized so the deploy-window pool worst case (blue+green web + cron +
       # migrate = 27) clears with headroom for the NON-pool consumers (pg_dump,
-      # shadow DB, probes, admin psql). The app role is a superuser, so the 3
-      # superuser-reserved slots do NOT protect admin access — see the
-      # connection-budget note on x-app-environment and DEPLOYMENT.md.
+      # shadow DB, probes, admin psql). While the app connects as the superuser
+      # `tac` (the default), the 3 superuser-reserved slots do NOT protect admin
+      # access — see the connection-budget note on x-app-environment and
+      # DEPLOYMENT.md.
       - "max_connections=40"
     volumes:
       - postgres_data:/var/lib/postgresql/data
@@ -412,7 +430,7 @@ services:
       # Cron-leader keeps the original 5-conn pool: its workload is scheduled
       # background jobs, not the concurrent web burst the slots above size for.
       # Holding it at 5 keeps the total within max_connections=40 (#1884, F17).
-      DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=5&pool_timeout=10
+      DATABASE_URL: postgresql://${APP_DB_USER:-tac}:${APP_DB_PASSWORD:-${DB_PASSWORD:?DB_PASSWORD is required}}@postgres:5432/tacbookings?connection_limit=5&pool_timeout=10
 
   app_blue:
     <<: *app-service
@@ -552,11 +570,16 @@ services:
       # other lock_timeout: merge bounds a wait inside one admin transaction, while
       # a migration's ACCESS EXCLUSIVE wait queues every later reader of the table.
       #
+      # The ROLE (#4453): MIGRATION_DB_USER / MIGRATION_DB_PASSWORD name the
+      # migration role that owns the schema; unset, `tac` as before. Only the
+      # credentials are parameterised, so the pool bound and the lock timeout
+      # above hold whichever role connects.
+      #
       # Override with MIGRATION_LOCK_TIMEOUT_MS in .env. 0 is REFUSED by
       # scripts/run-production-blue-green-deploy.sh, because 0 is "wait forever"
       # and would silently remove the guard rather than relax it. Recovering from
       # a deploy stopped here: docs/PRODUCTION_UPGRADE_RUNBOOK.md 2.1a.
-      DATABASE_URL: postgresql://tac:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10&options=-c%20lock_timeout%3D${MIGRATION_LOCK_TIMEOUT_MS:-5000}
+      DATABASE_URL: postgresql://${MIGRATION_DB_USER:-tac}:${MIGRATION_DB_PASSWORD:-${DB_PASSWORD:?DB_PASSWORD is required}}@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10&options=-c%20lock_timeout%3D${MIGRATION_LOCK_TIMEOUT_MS:-5000}
     command: ./node_modules/.bin/prisma migrate deploy
 
 volumes:

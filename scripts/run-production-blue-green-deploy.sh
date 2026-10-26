@@ -1780,14 +1780,20 @@ require_domain_matches_url() {
 }
 
 require_safe_database_password() {
+  local key
   local value
 
-  value="$(trim_whitespace "$(get_env_file_value DB_PASSWORD)")"
-  if printf '%s' "$value" | grep -Eq '[@/:?#[:space:]]'; then
-    echo "DB_PASSWORD contains URL-unsafe characters for the DATABASE_URL values in docker-compose.yml" >&2
-    echo "Use a password without @ / : ? # or whitespace, or update the compose URLs to URL-encode it." >&2
-    return 1
-  fi
+  # APP_DB_PASSWORD and MIGRATION_DB_PASSWORD are the optional least-privilege
+  # role passwords (#4453); docker-compose.yml interpolates them into the same
+  # DATABASE_URL values, unencoded, when they are set.
+  for key in DB_PASSWORD APP_DB_PASSWORD MIGRATION_DB_PASSWORD; do
+    value="$(trim_whitespace "$(get_env_file_value "$key")")"
+    if printf '%s' "$value" | grep -Eq '[@/:?#[:space:]]'; then
+      echo "$key contains URL-unsafe characters for the DATABASE_URL values in docker-compose.yml" >&2
+      echo "Use a password without @ / : ? # or whitespace, or update the compose URLs to URL-encode it." >&2
+      return 1
+    fi
+  done
 }
 
 validate_host_contract() {
