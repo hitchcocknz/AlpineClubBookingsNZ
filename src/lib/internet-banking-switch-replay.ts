@@ -1,6 +1,7 @@
 import type { Payment } from "@prisma/client";
 
 import logger from "@/lib/logger";
+import { prisma } from "@/lib/prisma";
 import { isXeroConnected } from "@/lib/xero";
 import {
   enqueueXeroAppliedCreditAllocationOperation,
@@ -60,9 +61,21 @@ export function alreadySwitchedBody(
  * would heal it: the automatic `MISSING_PRIMARY_INVOICE` repair reads PAID
  * bookings only. Best-effort, as the first switch's always was: a failure is
  * logged and the switch's answer stands.
+ *
+ * The outbox enqueue reads no booking status, and every caller runs after its
+ * transaction with no lock held (the early replay read its booking with none at
+ * all), so a cancellation can commit between the caller's read and this line.
+ * The booking's live state is therefore read again here, and a booking no
+ * longer live (`isLiveSwitchState`) queues nothing. A cancel landing after this
+ * re-read is the same narrow window the first switch's own enqueue always had.
  */
 export async function queueSwitchInvoiceAfterCommit(bookingId: string, memberId: string): Promise<void> {
   try {
+    const current = await prisma.booking.findUnique({
+      where: { id: bookingId },
+      select: { status: true, deletedAt: true, organiserSettled: true },
+    });
+    if (!current || !isLiveSwitchState(current)) return;
     const queued = await enqueueXeroBookingInvoiceOperation(bookingId, {
       createdByMemberId: memberId,
       invoiceEmailDelivery: null,

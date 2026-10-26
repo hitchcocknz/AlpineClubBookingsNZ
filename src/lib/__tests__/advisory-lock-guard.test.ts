@@ -279,7 +279,7 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     site: "POST /api/payments/switch-to-internet-banking#1",
     tier: "GLOBAL",
     reason:
-      "Switching to Internet Banking with holdBedSlots flips the booking to CONFIRMED — a net-new capacity claim and a money side effect — and re-reads under the locks, because the pre-transaction snapshot was read with no lock at all. #4019: re-read the payment source before any switch write; an already-IB payment returns persisted holds without a second PRIMARY, credit spend or invoice enqueue even when the booking status did not change.",
+      "Switching to Internet Banking with holdBedSlots flips the booking to CONFIRMED — a net-new capacity claim and a money side effect — and re-reads under the locks, because the pre-transaction snapshot was read with no lock at all. #4019: re-read the payment source before any switch write; an already-IB payment returns its persisted holds (none once released) without a second PRIMARY or credit spend, even when the booking status did not change, and re-queues the idempotent invoice only after the commit, holding no lock.",
     invariant: "INV-LOCK-002",
   },
   {

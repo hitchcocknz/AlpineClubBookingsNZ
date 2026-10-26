@@ -11,13 +11,15 @@
  * `LoadedBookingForLifecycle`, which carries them, so a TYPED caller that drops
  * them no longer compiles. But every door reaches those types through an
  * `as unknown as` cast of its own Prisma payload, which no compiler checks.
- * So this reads each door's source and requires:
+ * So this reads each door's source and requires, in the SAME function as each
+ * reader call (the door's transaction body, not anywhere in the file):
  *
  * - a `payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } }`
  *   load (the order `INV-PAY-133` gives the ledger);
- * - a `postStoredBookingConfirmationLedgerLines(...)` call: a whole-lodge
- *   booking reaching PAID at $0 through an edit bypasses the ordinary settle,
- *   which is what posts its confirmation lines.
+ * - a `postStoredBookingConfirmationLedgerLines(...)` call in the THEN branch
+ *   of an `if` that reads the unpaid whole-lodge answer: a whole-lodge booking
+ *   reaching PAID at $0 through an edit bypasses the ordinary settle, which is
+ *   what posts its confirmation lines.
  *
  * The door set is pinned EXACTLY: a new caller of either function fails here
  * until it is added, which is the moment to give it both.
@@ -58,31 +60,71 @@ const EXPECTED_DOORS = [
 ];
 const TRANSACTIONS_LOAD = "payment:{include:{transactions:{orderBy:[...LEDGER_ROWS_OLDEST_FIRST]}}}";
 const CONFIRMATION_POSTER = "postStoredBookingConfirmationLedgerLines";
+/** An `if` condition that reads the unpaid whole-lodge answer, called or stored. */
+const UNPAID_GUARD = /unpaidConfirmedWholeLodge/i;
 
 type DoorScan = { readers: string[]; loadsTransactions: boolean; postsConfirmation: boolean };
 
+/** The innermost function around `node`: the door's own scope. */
+function enclosingFunction(node: ts.Node): ts.Node {
+  for (let at = node.parent; at; at = at.parent) {
+    if (ts.isFunctionLike(at)) return at;
+  }
+  return node.getSourceFile();
+}
+
+/** Is `node` in the THEN branch of an `if` (below `scope`) whose condition reads the unpaid whole-lodge answer? */
+function guardedByUnpaidWholeLodge(node: ts.Node, scope: ts.Node, source: ts.SourceFile): boolean {
+  for (let child = node, at = node.parent; at && at !== scope; child = at, at = at.parent) {
+    if (ts.isIfStatement(at) && at.thenStatement === child && UNPAID_GUARD.test(at.expression.getText(source))) return true;
+  }
+  return false;
+}
+
+/**
+ * Scoped to the function that asks: the load and the guarded post must sit in
+ * the SAME function as the reader call (the door's transaction body), and the
+ * post must run only under an `if` that reads the unpaid whole-lodge answer
+ * (`isUnpaidConfirmedWholeLodge(...)`, or the local the date door stores it in).
+ * A load in another function, or a poster call outside the guard, does not count.
+ */
 function scanDoor(file: string, code: string): DoorScan {
   const source = ts.createSourceFile(file, code, ts.ScriptTarget.Latest, true);
   const readers = new Set<string>();
-  let loadsTransactions = false;
-  let postsConfirmation = false;
-  const visit = (node: ts.Node) => {
-    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
-      if (UNPAID_READERS.has(node.expression.text)) readers.add(node.expression.text);
-      if (node.expression.text === CONFIRMATION_POSTER) postsConfirmation = true;
+  const scopes = new Set<ts.Node>();
+  const findReaders = (node: ts.Node) => {
+    if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && UNPAID_READERS.has(node.expression.text)) {
+      readers.add(node.expression.text);
+      scopes.add(enclosingFunction(node));
     }
-    if (
-      ts.isPropertyAssignment(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === "payment" &&
-      node.getText(source).replace(/\s+/g, "") === TRANSACTIONS_LOAD
-    ) {
-      loadsTransactions = true;
-    }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, findReaders);
   };
-  visit(source);
-  return { readers: [...readers].sort(), loadsTransactions, postsConfirmation };
+  findReaders(source);
+  const scopeHas = (scope: ts.Node, test: (node: ts.Node) => boolean): boolean => {
+    let found = false;
+    const visit = (node: ts.Node) => {
+      if (found) return;
+      if (test(node)) found = true;
+      else ts.forEachChild(node, visit);
+    };
+    ts.forEachChild(scope, visit);
+    return found;
+  };
+  const isTransactionsLoad = (node: ts.Node) =>
+    ts.isPropertyAssignment(node) &&
+    ts.isIdentifier(node.name) &&
+    node.name.text === "payment" &&
+    node.getText(source).replace(/\s+/g, "") === TRANSACTIONS_LOAD;
+  const all = [...scopes];
+  return {
+    readers: [...readers].sort(),
+    loadsTransactions: all.length > 0 && all.every((scope) => scopeHas(scope, isTransactionsLoad)),
+    postsConfirmation: all.length > 0 && all.every((scope) => scopeHas(scope, (node) =>
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === CONFIRMATION_POSTER &&
+      guardedByUnpaidWholeLodge(node, scope, source))),
+  };
 }
 
 function scanTree(): Map<string, DoorScan> {
@@ -125,15 +167,42 @@ describe("INV-PAY-141: whole-lodge unpaid readers load transactions and post con
   it("recognises a door that dropped either half (the scanner has teeth)", () => {
     const dropped = scanDoor(
       "fixture.ts",
-      "const b = await tx.booking.findUnique({ include: { payment: true } });\n" +
-        "await applyLifecycleTransitions(tx, { booking: b });\n",
+      "async function door(tx) {\n" +
+        "  const b = await tx.booking.findUnique({ include: { payment: true } });\n" +
+        "  await applyLifecycleTransitions(tx, { booking: b });\n" +
+        "}\n",
     );
     expect(dropped).toEqual({ readers: ["applyLifecycleTransitions"], loadsTransactions: false, postsConfirmation: false });
     const wired = scanDoor(
       "fixture.ts",
-      "const b = await tx.booking.findUnique({ include: { payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } } } });\n" +
-        "if (isUnpaidConfirmedWholeLodge(b)) await postStoredBookingConfirmationLedgerLines(tx, b.id);\n",
+      "async function door(tx) {\n" +
+        "  const b = await tx.booking.findUnique({ include: { payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } } } });\n" +
+        "  const lifecycle = await applyLifecycleTransitions(tx, { booking: b });\n" +
+        "  if (lifecycle.zeroDollarAutoPaid && isUnpaidConfirmedWholeLodge(b)) await postStoredBookingConfirmationLedgerLines(tx, b.id);\n" +
+        "}\n",
     );
-    expect(wired).toEqual({ readers: ["isUnpaidConfirmedWholeLodge"], loadsTransactions: true, postsConfirmation: true });
+    expect(wired).toEqual({ readers: ["applyLifecycleTransitions", "isUnpaidConfirmedWholeLodge"], loadsTransactions: true, postsConfirmation: true });
+  });
+
+  it("refuses a poster call outside the unpaid guard, and a load in another function", () => {
+    const unguarded = scanDoor(
+      "fixture.ts",
+      "async function door(tx) {\n" +
+        "  const b = await tx.booking.findUnique({ include: { payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } } } });\n" +
+        "  const lifecycle = await applyLifecycleTransitions(tx, { booking: b });\n" +
+        "  if (isUnpaidConfirmedWholeLodge(b)) { log(); } else { await postStoredBookingConfirmationLedgerLines(tx, b.id); }\n" +
+        "  await postStoredBookingConfirmationLedgerLines(tx, b.id);\n" +
+        "}\n",
+    );
+    expect(unguarded.postsConfirmation, "an unguarded or else-branch post is not the door's post").toBe(false);
+    const elsewhere = scanDoor(
+      "fixture.ts",
+      "const load = (tx) => tx.booking.findUnique({ include: { payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } } } });\n" +
+        "async function door(tx, b) {\n" +
+        "  const lifecycle = await applyLifecycleTransitions(tx, { booking: b });\n" +
+        "  if (lifecycle.zeroDollarAutoPaid && isUnpaidConfirmedWholeLodge(b)) await postStoredBookingConfirmationLedgerLines(tx, b.id);\n" +
+        "}\n",
+    );
+    expect(elsewhere).toMatchObject({ loadsTransactions: false, postsConfirmation: true });
   });
 });

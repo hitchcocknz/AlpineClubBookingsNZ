@@ -1088,7 +1088,9 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - Pinned by `booking-payment-flow.test.ts`, `booking-modify-credit-clamp.test.ts`,
   `unpaid-finished-stays.test.ts`, `school-booking-request.test.ts`,
   `lifecycle-door-payment-transactions-census.test.ts` and
-  `whole-lodge-payment-review.realdb.test.ts`.
+  `whole-lodge-payment-review.realdb.test.ts`. The census also pins the
+  guest-acceptance door, unreachable today for an officer-priced whole-lodge
+  booking.
 
 ## INV-PAY-023
 
