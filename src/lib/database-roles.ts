@@ -69,8 +69,6 @@ export const AUDIT_RETENTION_RELATION = "AuditLog";
 
 /** Table rights the application role holds on an ordinary relation. */
 export const APPLICATION_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE";
-/** Table rights it holds on an append-only relation. */
-export const APPEND_ONLY_TABLE_PRIVILEGES = "SELECT, INSERT";
 
 /** The stock role names. A deployment may choose its own. */
 export const DEFAULT_DATABASE_ROLE_NAMES = {

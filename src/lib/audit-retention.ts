@@ -372,7 +372,7 @@ function resolveRetentionDatabaseUrl(
  * application client carries the same omission so the census holds with no
  * exemption (`INV-PRIV-022`), even one that only runs raw AuditLog statements.
  */
-function createStandaloneClient(databaseUrl: string): PrismaClient {
+function createStandaloneClient(databaseUrl: string) {
   return new PrismaClient({
     adapter: createPrismaPgAdapter(databaseUrl),
     omit: PRISMA_CLIENT_GLOBAL_OMIT,

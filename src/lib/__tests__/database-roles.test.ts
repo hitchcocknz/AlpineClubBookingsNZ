@@ -120,6 +120,7 @@ describe("pnpm run db:provision-roles (#4453)", () => {
       encoding: "utf8",
       timeout: 60_000,
       env: {
+        NODE_ENV: "test",
         PATH: process.env.PATH ?? "",
         HOME: process.env.HOME ?? "",
         // Unroutable: a dry run must never connect, and a refusal must come first.
