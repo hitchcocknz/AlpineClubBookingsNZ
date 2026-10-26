@@ -24,6 +24,15 @@ import { prisma } from "@/lib/prisma";
  */
 
 /**
+ * The budget every carrying-ask queue transaction runs on (#4442 review C-F1).
+ * It waits on the global key, whose longest ordinary holder runs on this same
+ * budget (`assignBedRange`); queued behind it, Prisma's 5s default would fail a
+ * mint whose intent Stripe already holds. The copy `additional-payment-withdraw.ts`
+ * made for the same reason.
+ */
+export const ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS = { maxWait: 10_000, timeout: 30_000 } as const;
+
+/**
  * The carrying-ask queue's locks, in `INV-LOCK-002`'s order: the global key
  * (capture and settlement money, `INV-LOCK-001`), then the `Payment` row
  * (#4217) - always before any recovery-row claim the caller then makes. The
@@ -58,11 +67,13 @@ export class CarriedAskChangedError extends Error {
  * durable recovery re-plans from the `Payment` as it then stands. Folded
  * waiting re-issues are not part of this live balance and stay owed. An ask
  * that carries no live ask (`paymentBalanceCents` null) has nothing to check.
+ * The recovery runner's frozen replay, which is no `AdditionalAsk`, passes the
+ * balance its own pre-mint read saw.
  */
 export async function assertAdditionalAskSizingCurrent(
   store: Prisma.TransactionClient,
   paymentId: string,
-  ask: AdditionalAsk,
+  ask: Pick<AdditionalAsk, "paymentBalanceCents">,
 ): Promise<void> {
   if (ask.paymentBalanceCents === null) return;
   const payment = await store.payment.findUnique({
@@ -85,5 +96,5 @@ export async function withAdditionalAskQueueTransaction<T>(
     await lockAdditionalAskQueue(store, paymentId);
     await assertAdditionalAskSizingCurrent(store, paymentId, ask);
     return write(store);
-  });
+  }, ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS);
 }

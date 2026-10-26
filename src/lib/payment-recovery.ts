@@ -1,4 +1,9 @@
-import { assertAdditionalAskSizingCurrent, lockAdditionalAskQueue } from "@/lib/additional-ask-queue-transaction";
+import {
+  ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS,
+  assertAdditionalAskSizingCurrent,
+  lockAdditionalAskQueue,
+} from "@/lib/additional-ask-queue-transaction";
+import { outstandingAdditionalAskCents } from "@/lib/additional-payment-ask";
 import {
   PaymentSource,
   PaymentRecoveryOperationStatus,
@@ -2382,10 +2387,16 @@ async function raiseDeferredSupplementaryInvoiceForRecoveredIntent(params: {
 async function holdAdditionalIntentRecoveryClaim<T>(
   operation: Pick<PaymentRecoveryOperation, "id" | "paymentId" | "attempts" | "processingStartedAt">,
   write: (store: Prisma.TransactionClient) => Promise<T>,
+  /**
+   * #4442 review C-F1: `"payment-row"` for a re-stamp that writes nothing - the
+   * reduction it fences orders on the Payment row, so it waits on no global holder.
+   */
+  locks: "queue" | "payment-row" = "queue",
 ): Promise<{ value: T; heldAt: Date } | null> {
   return prisma.$transaction(async (tx) => {
     // #4217, #4442 (`INV-LOCK-002`): the global key, then the Payment row, before the recovery row, as a reduction netting this ask off takes them.
-    await lockAdditionalAskQueue(tx, operation.paymentId);
+    if (locks === "queue") await lockAdditionalAskQueue(tx, operation.paymentId);
+    else await lockPaymentForRefundedTotal(tx, operation.paymentId);
     const heldAt = new Date();
     const held = await tx.paymentRecoveryOperation.updateMany({
       where: {
@@ -2398,7 +2409,7 @@ async function holdAdditionalIntentRecoveryClaim<T>(
     });
     if (held.count !== 1) return null;
     return { value: await write(tx), heldAt };
-  });
+  }, ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS);
 }
 
 async function processCreateAdditionalPaymentIntentOperation(
@@ -2769,6 +2780,118 @@ async function processCreateAdditionalPaymentIntentOperation(
     return;
   }
 
+  /**
+   * The steps after this recovery's row is written: re-stamp the claim, point
+   * the edit's waiting invoice at the intent, raise the invoice the edit
+   * deferred, complete. One closure so a retry that finds its OWN row runs
+   * exactly them (#4442 review C-F1).
+   */
+  const finishRecoveredAsk = async (paymentIntentId: string, claimedAt: Date | null) => {
+    // #3954 round 6: the Stripe cancels before this can take a while. A price
+    // reduction may have netted this ask off since (a claim older than
+    // `RECENT_RECOVERY_CLAIM_MS` reads as a stalled worker), retiring the row
+    // just written - so the claim is re-checked, and re-stamped, before any
+    // invoice is queued to wait on this intent. A lost claim queues none: the
+    // reduction accounted for this ask's money in its own invoice and history.
+    const stillHeld = await holdAdditionalIntentRecoveryClaim(
+      { id: operation.id, paymentId: operation.paymentId, attempts: operation.attempts, processingStartedAt: claimedAt },
+      async () => true,
+      "payment-row",
+    );
+    if (stillHeld === null) {
+      logger.warn(
+        { operationId: operation.id, bookingId: operation.bookingId, paymentIntentId },
+        "Additional intent recovery lost its claim after writing its row (a price reduction retired the ask, #3954); no supplementary invoice queued for it",
+      );
+      return;
+    }
+
+    // A supplementary Xero invoice op enqueued at modification time waited on
+    // an intent that never existed; point it at the recovered one so the
+    // payment webhook can release it. The anchor comes from the shared parser at
+    // the top of this function, never from a prefix slice spelled here (#3170).
+    if (bookingModificationId) {
+      // #3641: a failed attach alerts an officer rather than stranding the
+      // invoice on no intent until the age backstop retires it.
+      await attachRecoveredIntentToWaitingSupplementaryInvoice({
+        bookingModificationId,
+        paymentIntentId,
+        recoveryOperationId: operation.id,
+      });
+    }
+
+    /**
+     * #3181: and now raise the invoice the edit deferred. The attach above only
+     * ever points an EXISTING waiting operation at the recovered intent; where the
+     * inline dispatch skipped the queue entirely there is nothing for it to point
+     * at, which is the whole defect.
+     *
+     * The figure comes from the `BookingModification` itself rather than from
+     * `operation.amountCents`. They are different quantities: the recovery row
+     * carries what Stripe is collecting, and the invoice bills the edit's SIGNED
+     * components, which a mixed-sign edit (a price reduction plus a larger
+     * late-change fee) separates - the pair is what `INV-MONEY`/#1356 requires and
+     * what the booking-vs-Xero repair pass reads for the same invoice.
+     */
+    // #3954 decision A: a re-issued ask's invoice is its reducing edit's own,
+    // sized by that edit (`queueReissuedAskSupplementaryInvoice`), not the edit's
+    // signed components - which are a reduction.
+    if (bookingModificationId && reissuesReducedAsk) {
+      await queueReissuedAskSupplementaryInvoice({
+        bookingId: operation.bookingId,
+        bookingModificationId,
+        paymentIntentId,
+      });
+    }
+    if (bookingModificationId && !reissuesReducedAsk) {
+      // Read above the mint, deliberately: see the hoist's own comment.
+      if (modificationToBill) {
+        await raiseDeferredSupplementaryInvoiceForRecoveredIntent({
+          operationId: operation.id,
+          bookingId: operation.bookingId,
+          bookingModificationId,
+          paymentIntentId,
+          priceDiffCents: modificationToBill.priceDiffCents,
+          changeFeeCents: modificationToBill.changeFeeCents,
+          // The EDIT's answer, frozen on this row when the mint failed. Re-reading
+          // `payment.xeroInvoiceId` here is the double-bill the helper describes.
+          hadIssuedXeroInvoice: operation.hadIssuedXeroInvoice,
+          originalPaymentStatus: payment.status,
+        });
+        // #3954 round 6: the re-issues this increase folded in are asked for on
+        // this intent, so their own invoices wait on it.
+        await queueFoldedReissuedAskInvoices({
+          bookingId: operation.bookingId,
+          increaseModificationId: bookingModificationId,
+          paymentIntentId,
+        });
+      } else {
+        logger.error(
+          {
+            operationId: operation.id,
+            bookingId: operation.bookingId,
+            bookingModificationId,
+          },
+          "Recovered additional intent has no booking modification to bill - no Xero supplementary invoice was raised",
+        );
+      }
+    }
+
+    await completePaymentRecoveryOperation(operation.id);
+  };
+
+  // #4442 review C-F1: THIS recovery's own row, written by an earlier attempt
+  // that then failed before the steps above (its re-stamp timed out behind a
+  // long holder, say). It is not an overtake: completing here would collect the
+  // ask with no invoice behind it, so the steps run now.
+  const ownRow = payment.transactions.find(
+    (row) => row.kind === PaymentTransactionKind.ADDITIONAL && row.stripePaymentIntentId === operation.paymentIntentId,
+  );
+  if (ownRow?.stripePaymentIntentId) {
+    await finishRecoveredAsk(ownRow.stripePaymentIntentId, operation.processingStartedAt);
+    return;
+  }
+
   // A later edit already created a fresh additional intent: it superseded
   // this modification's collectable, so resurrecting ours would offer the
   // member two instruments for overlapping money. The later edit repriced
@@ -2842,7 +2965,9 @@ async function processCreateAdditionalPaymentIntentOperation(
         // would be worse than recording none - a 0 says "nothing known to have
         // been absorbed", which is the truth about a figure frozen before this
         // column existed.
-        { amountCents: replay.amountCents, carriedCents: 0 }
+        // #4442 review C-F2: but the live balance it was minted over is still
+        // known - the read above - and the queue re-reads it like any other.
+        { amountCents: replay.amountCents, carriedCents: 0, paymentBalanceCents: outstandingAdditionalAskCents(payment) }
       : replay.ask;
   const askCents = ask.amountCents;
 
@@ -2900,7 +3025,7 @@ async function processCreateAdditionalPaymentIntentOperation(
   const { queueSupersededAdditionalIntentCancellationRows, cancelSupersededAdditionalIntentsNow } =
     await import("@/lib/booking-payment-cleanup");
   const held = await holdAdditionalIntentRecoveryClaim(operation, async (store) => {
-    if (replay.kind !== "frozen") await assertAdditionalAskSizingCurrent(store, operation.paymentId, replay.ask);
+    await assertAdditionalAskSizingCurrent(store, operation.paymentId, ask);
     // #4036 review: an adopted intent another ask recorded meanwhile is never written over.
     await refuseAdoptedIntentOnLedger(store, { intent: pi, adopted });
     await upsertPaymentIntentTransaction({
@@ -2959,96 +3084,7 @@ async function processCreateAdditionalPaymentIntentOperation(
     return;
   }
 
-  // #3954 round 6: the Stripe cancels above can take a while. A price
-  // reduction may have netted this ask off since (a claim older than
-  // `RECENT_RECOVERY_CLAIM_MS` reads as a stalled worker), retiring the row
-  // just written - so the claim is re-checked, and re-stamped, before any
-  // invoice is queued to wait on this intent. A lost claim queues none: the
-  // reduction accounted for this ask's money in its own invoice and history.
-  const stillHeld = await holdAdditionalIntentRecoveryClaim(
-    { id: operation.id, paymentId: operation.paymentId, attempts: operation.attempts, processingStartedAt: held.heldAt },
-    async () => true,
-  );
-  if (stillHeld === null) {
-    logger.warn(
-      { operationId: operation.id, bookingId: operation.bookingId, paymentIntentId: pi.id },
-      "Additional intent recovery lost its claim after writing its row (a price reduction retired the ask, #3954); no supplementary invoice queued for it",
-    );
-    return;
-  }
-
-  // A supplementary Xero invoice op enqueued at modification time waited on
-  // an intent that never existed; point it at the recovered one so the
-  // payment webhook can release it. The anchor comes from the shared parser at
-  // the top of this function, never from a prefix slice spelled here (#3170).
-  if (bookingModificationId) {
-    // #3641: a failed attach alerts an officer rather than stranding the
-    // invoice on no intent until the age backstop retires it.
-    await attachRecoveredIntentToWaitingSupplementaryInvoice({
-      bookingModificationId,
-      paymentIntentId: pi.id,
-      recoveryOperationId: operation.id,
-    });
-  }
-
-  /**
-   * #3181: and now raise the invoice the edit deferred. The attach above only
-   * ever points an EXISTING waiting operation at the recovered intent; where the
-   * inline dispatch skipped the queue entirely there is nothing for it to point
-   * at, which is the whole defect.
-   *
-   * The figure comes from the `BookingModification` itself rather than from
-   * `operation.amountCents`. They are different quantities: the recovery row
-   * carries what Stripe is collecting, and the invoice bills the edit's SIGNED
-   * components, which a mixed-sign edit (a price reduction plus a larger
-   * late-change fee) separates - the pair is what `INV-MONEY`/#1356 requires and
-   * what the booking-vs-Xero repair pass reads for the same invoice.
-   */
-  // #3954 decision A: a re-issued ask's invoice is its reducing edit's own,
-  // sized by that edit (`queueReissuedAskSupplementaryInvoice`), not the edit's
-  // signed components - which are a reduction.
-  if (bookingModificationId && reissuesReducedAsk) {
-    await queueReissuedAskSupplementaryInvoice({
-      bookingId: operation.bookingId,
-      bookingModificationId,
-      paymentIntentId: pi.id,
-    });
-  }
-  if (bookingModificationId && !reissuesReducedAsk) {
-    // Read above the mint, deliberately: see the hoist's own comment.
-    if (modificationToBill) {
-      await raiseDeferredSupplementaryInvoiceForRecoveredIntent({
-        operationId: operation.id,
-        bookingId: operation.bookingId,
-        bookingModificationId,
-        paymentIntentId: pi.id,
-        priceDiffCents: modificationToBill.priceDiffCents,
-        changeFeeCents: modificationToBill.changeFeeCents,
-        // The EDIT's answer, frozen on this row when the mint failed. Re-reading
-        // `payment.xeroInvoiceId` here is the double-bill the helper describes.
-        hadIssuedXeroInvoice: operation.hadIssuedXeroInvoice,
-        originalPaymentStatus: payment.status,
-      });
-      // #3954 round 6: the re-issues this increase folded in are asked for on
-      // this intent, so their own invoices wait on it.
-      await queueFoldedReissuedAskInvoices({
-        bookingId: operation.bookingId,
-        increaseModificationId: bookingModificationId,
-        paymentIntentId: pi.id,
-      });
-    } else {
-      logger.error(
-        {
-          operationId: operation.id,
-          bookingId: operation.bookingId,
-          bookingModificationId,
-        },
-        "Recovered additional intent has no booking modification to bill - no Xero supplementary invoice was raised",
-      );
-    }
-  }
-
-  await completePaymentRecoveryOperation(operation.id);
+  await finishRecoveredAsk(pi.id, held.heldAt);
 }
 
 async function processPaymentRecoveryOperation(

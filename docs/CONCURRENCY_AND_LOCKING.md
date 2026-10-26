@@ -3098,20 +3098,37 @@ currency re-issue), the re-issue's completion (`writeReissuedAskUnderRecovery`)
 and the recovery runner's claim hold (`holdAdditionalIntentRecoveryClaim`) - first
 takes `lockAdditionalAskQueue`: the existing global key, then the `Payment`
 row, before any recovery-row claim (`INV-LOCK-002`; registered once,
-`lockAdditionalAskQueue#1`, `INV-LOCK-003`). Under them it re-reads the live
-balance through `outstandingAdditionalAskCents`, the rule the sizing used, and
-refuses on any change (`assertAdditionalAskSizingCurrent`), rolling back the
-whole queue: the minted secret was never offered, and the recovery row
-re-plans from the `Payment` as it then stands. The capture's settle
+`lockAdditionalAskQueue#1`, `INV-LOCK-003`). Each runs on
+`ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS` (`maxWait` 10s, `timeout` 30s, the
+`additional-payment-withdraw.ts` budget), because its intent already exists at
+Stripe. Under the locks it re-reads the live balance through
+`outstandingAdditionalAskCents`, the rule every ask constructor recorded it with
+(`AdditionalAsk.paymentBalanceCents`, from the `Payment` the caller read), and
+refuses any change with `CarriedAskChangedError`, rolling back the whole queue:
+the minted secret was never offered, and the recovery row re-plans from the
+`Payment` as it then stands. The pay page's currency re-issue answers that
+refusal 409 `ADDITIONAL_PAYMENT_CHANGED` (reload). The capture's settle
 (`markPaymentIntentTransactionSucceeded`) writes under the same `Payment` row,
-so a capture committed first is read and refused, and one landing later is
-owned by the cancel row the queue committed (the webhook's or the runner's
-superseded-capture hand-off refunds it). Folded waiting re-issues are not that
-live balance and stay owed. The recovery row's guarded claim is unchanged.
+so a capture committed first is read and refused. A capture landing later is
+owned by the cancel row the queue committed: the webhook's or the runner's
+superseded-capture hand-off refunds it, and the late-success release reads that
+cancel row (`lateCaptureRefundState`) and leaves the invoice unsent, even where
+the webhook's unlocked cancel-row check ran before the queue committed. Folded
+waiting re-issues are not that live balance and stay owed. A frozen replay (no
+figure it can re-derive) is fenced the same way on the balance its own read
+saw; that closes the window, but its retry still asks for the frozen figure.
+
+The runner's re-stamp after the Stripe cancels writes nothing and fences only a
+reduction, which orders on the `Payment` row, so it takes that row alone, not
+the global key. A retry whose attempt wrote its row and then failed (that
+re-stamp timing out, say) finds its OWN row - the intent the recovery recorded -
+and resumes the post-write steps (the waiting invoice's attach, the deferred
+invoice, completion) instead of reading the row as a later edit's overtake.
 Stripe mint and cancel calls stay outside these transactions; no new key
 (`INV-LOCK-001` through `INV-LOCK-003`). Proved against a real server in
-`superseded-ask-invoice-carry.realdb.test.ts`, including a capture committing
-while the queue waits on the global key.
+`superseded-ask-invoice-carry.realdb.test.ts` (including a capture committing
+while the queue waits on the global key, and a frozen replay) and
+`additional-ask-reduction.realdb.test.ts` (the re-issue's door and runner).
 
 **#3653 adds the organiser child's refund out of the combined card payment
 (`INV-PAY-114`).** Three writers join this cohort and mint no keyspace. The edit

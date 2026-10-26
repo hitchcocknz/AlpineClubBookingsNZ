@@ -8,6 +8,7 @@ import {
 } from "@prisma/client";
 
 const {
+  mockExecuteRaw,
   mockPaymentRecoveryFindMany,
   mockPaymentRecoveryFindUnique,
   mockPaymentRecoveryFindFirst,
@@ -51,6 +52,9 @@ const {
   mockCreateAuditLog,
   settlementModuleLoadFailure,
 } = vi.hoisted(() => ({
+  // #4442 review C-F1: the raw statements each transaction runs, so a test can
+  // say which took the global key.
+  mockExecuteRaw: vi.fn(async () => 0),
   mockPaymentRecoveryFindMany: vi.fn(),
   mockPaymentRecoveryFindUnique: vi.fn(),
   mockPaymentRecoveryFindFirst: vi.fn(),
@@ -142,7 +146,7 @@ vi.mock("@/lib/edit-financial-review-charge", () => ({
 
 vi.mock("@/lib/prisma", () => {
   const prisma = {
-    $executeRaw: async () => 0,
+    $executeRaw: (...args: unknown[]) => mockExecuteRaw(...args),
     paymentRecoveryOperation: {
       findMany: (...args: unknown[]) => mockPaymentRecoveryFindMany(...args),
       findUnique: (...args: unknown[]) => mockPaymentRecoveryFindUnique(...args),
@@ -3832,6 +3836,51 @@ describe("payment recovery worker", () => {
           ...overrides,
         };
       }
+
+      /**
+       * #4442 review C-F1: an earlier attempt wrote this recovery's row and
+       * recorded its intent on the recovery, then failed before the invoice
+       * steps (its re-stamp timed out behind a long holder of the global key).
+       * The retry finds its OWN row: it must not read it as a later edit's
+       * overtake and complete with no invoice. It resumes the steps, minting
+       * nothing, and its write-free re-stamp takes only the Payment row.
+       */
+      it("#4442 C-F1: a retry that finds its own row resumes the invoice steps instead of completing as overtaken", async () => {
+        primeQueue(additionalIntentOperation({ paymentIntentId: "pi_recovered" }));
+        const base = paymentWithIssuedInvoice();
+        mockPaymentFindUnique.mockResolvedValue({
+          ...base,
+          transactions: [
+            ...base.transactions,
+            {
+              id: "txn-own",
+              kind: "ADDITIONAL",
+              stripePaymentIntentId: "pi_recovered",
+              amountCents: 3000,
+              refundedAmountCents: 0,
+              status: PaymentStatus.PENDING,
+              // After the recovery was queued: the overtake rule alone would read it as a later ask.
+              createdAt: new Date("2026-06-02T00:00:00.000Z"),
+            },
+          ],
+        });
+        mockExecuteRaw.mockClear();
+
+        const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+        expect(result.succeeded).toBe(1);
+        expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+        expect(mockUpsertPaymentIntentTransaction).not.toHaveBeenCalled();
+        expect(mockAttachIntentToWaitingOps).toHaveBeenCalledWith(
+          expect.objectContaining({ paymentIntentId: "pi_recovered" }),
+        );
+        expect(mockCompleteDeferredSupplementaryInvoice).toHaveBeenCalledWith(
+          expect.objectContaining({ bookingModificationId: "mod-9", paymentIntentId: "pi_recovered" }),
+        );
+        expect(mockLockPaymentForRefundedTotal, "the re-stamp takes the Payment row").toHaveBeenCalledWith(expect.anything(), "payment-1");
+        const statements = mockExecuteRaw.mock.calls.map(([sql]) => (sql as readonly string[]).join("?"));
+        expect(statements.filter((sql) => sql.includes("pg_advisory_xact_lock(1)")), "and not the global key").toEqual([]);
+      });
 
       it("raises it against the recovered intent once the mint succeeds", async () => {
         primeQueue(additionalIntentOperation());

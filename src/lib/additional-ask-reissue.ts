@@ -17,7 +17,7 @@
  */
 import { PaymentRecoveryOperationStatus, PaymentTransactionKind, type Prisma } from "@prisma/client";
 
-import { lockAdditionalAskQueue } from "@/lib/additional-ask-queue-transaction";
+import { ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS, lockAdditionalAskQueue } from "@/lib/additional-ask-queue-transaction";
 import { closeWaitingAskRecoveries } from "@/lib/additional-ask-recovery-close";
 import {
   inFlightAskRecoveries,
@@ -442,5 +442,5 @@ export async function writeReissuedAskUnderRecovery<T>(
     });
     if (completed.count !== 1) return null;
     return write(tx);
-  });
+  }, ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS);
 }
