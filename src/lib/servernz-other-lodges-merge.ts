@@ -101,9 +101,11 @@ function isUniqueViolation(error: unknown): boolean {
  *
  * `byNameAllowed` says whether a lodge WITH a usable id may key an unkeyed row
  * by its name (#69): the caller allows it only on a whole-registry download,
- * and only when the name is the registry's alone or the lodge is ours, so a
- * row is never keyed to another club's lodge of the same name. A lodge
- * without a usable id is always matched by name.
+ * and only when the name is the registry's alone (#4262 review: not for our
+ * own lodge either when another lodge shares its name), so a row is never
+ * keyed to another lodge of the same name. Even then, two or more local rows
+ * of the name key none of them. A lodge without a usable id is always matched
+ * by name.
  *
  * `knownIds` is set only for a WHOLE-registry download: every id the server
  * has. A local row keyed by an id NOT among them carries a stale id — from a

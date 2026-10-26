@@ -237,6 +237,11 @@ here; a download never renames it, and an upload sends your new name with the
 id so the server renames its lodge (server API 2.3). The first download after
 this site is upgraded asks for the whole registry once and matches every lodge
 by name, which fills in the ids; after that downloads are incremental again.
+A name that two lodges on the central server share matches **neither** of
+them, even when one is yours: a lodge here with that name could be either, and
+matching the wrong one would move the bookings that name it onto a different
+lodge. Both arrive as new lodges, and the old one is marked **Not found on the
+Alpine Central Server**, for you to check its bookings and **Hide** it.
 
 - **A new name another lodge here already has** is simply taken: two lodges may
   share a name (server API 2.5). A lodge the central server sends without its

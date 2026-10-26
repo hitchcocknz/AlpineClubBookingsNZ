@@ -395,17 +395,21 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
       ? new Set(lodges.flatMap((l) => usableCentralId(l.id) ?? []))
       : null;
   // Keying by name (#69: names may repeat) only on a whole download, which
-  // sees every lodge of the name: when the name is one lodge's alone, or for
-  // our own lodge. Otherwise a lodge with an id is new here, never welded onto
-  // a row that may be another lodge of the same name.
+  // sees every lodge of the name, and only when the name is ONE lodge's alone.
+  // When two lodges on the server share it, an unkeyed local row of that name
+  // could be either, so it is keyed to neither, whichever of them is ours
+  // (#4262 review): the server saying a lodge is ours does not say which
+  // local row it once was, and taking the other lodge's row would move the
+  // bookings that name it onto a different lodge. Each such lodge is then new
+  // here, never welded onto a row that may be another lodge of the same name;
+  // the unkeyed row is marked not found, for an administrator to hide.
   const namesInPull = new Map<string, number>();
   for (const l of lodges) namesInPull.set(l.name, (namesInPull.get(l.name) ?? 0) + 1);
   // On `wholeRegistry`, not on `knownIds`: a whole download that dropped a row
   // still keys by name (else every unkeyed row would gain a twin); the dropped
   // row only stops ids from being treated as stale.
   const byNameAllowed = (lodge: (typeof lodges)[number]) =>
-    wholeRegistry &&
-    (namesInPull.get(lodge.name) === 1 || ownsOtherLodge(owned, { centralId: usableCentralId(lodge.id) }));
+    wholeRegistry && namesInPull.get(lodge.name) === 1;
   let pending = lodges;
   for (;;) {
     const next: typeof lodges = [];

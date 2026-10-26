@@ -1722,11 +1722,45 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     expect(mockRecordOptions).toHaveBeenCalledWith(expect.objectContaining({ keyed: false }));
   });
 
-  it("on a whole download sharing a name, keys our unkeyed row only to OUR lodge (#69)", async () => {
+  // #4262 review: the server saying which lodge is ours does not say which
+  // local row an unkeyed "Kea Lodge" once was. It may be the OTHER club's
+  // lodge of that name, with bookings naming it, so neither lodge claims it,
+  // in either identity: the unkeyed row is ours, or it is theirs. Both pull
+  // orders, too, so the answer cannot depend on which lodge merges first.
+  it.each([
+    ["c-1 is ours, sent first", ["c-1", "c-2"], "c-1"],
+    ["c-1 is ours, sent second", ["c-2", "c-1"], "c-1"],
+    ["c-2 is ours, sent first", ["c-2", "c-1"], "c-2"],
+    ["c-2 is ours, sent second", ["c-1", "c-2"], "c-2"],
+  ])(
+    "on a whole download where two lodges share a name, keys the unkeyed row to NEITHER (%s, #4262)",
+    async (_case, ids, ours) => {
+      // The unkeyed row, with bookings naming it, may be either lodge; nothing
+      // in the pull can tell, so the outcome is the same in every identity.
+      const rows = registry([row("ol_9", "Kea Lodge", null)]);
+      refs.set("ol_9", [3, 1]);
+      mockLoadSettings.mockResolvedValue({ ...SETTINGS, otherLodgesKeyedAt: null });
+      pull(ids.map((id) => remoteLodge("Kea Lodge", { id })), {
+        ownLodges: [{ id: ours, name: "Kea Lodge" }],
+      });
+
+      const result = await downloadOtherClubsFromServer();
+
+      expect(rows.find((r) => r.id === "ol_9")?.centralId).toBeNull();
+      expect(mockCreate).toHaveBeenCalledTimes(2);
+      expect(mockCreate.mock.calls.map((c) => c[0].data.centralId).sort()).toEqual(["c-1", "c-2"]);
+      // No row was written by name: the keying update never ran.
+      expect(mockUpdateMany).not.toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ id: "ol_9" }) }),
+      );
+      expect(result.created).toBe(2);
+    },
+  );
+
+  it("still keys the unkeyed row to OUR lodge when ours is the only lodge of its name", async () => {
     const rows = registry([row("ol_9", "Kea Lodge", null)]);
     mockLoadSettings.mockResolvedValue({ ...SETTINGS, otherLodgesKeyedAt: null });
-    // Another club's "Kea Lodge" first, ours second.
-    pull([remoteLodge("Kea Lodge", { id: "c-theirs" }), remoteLodge("Kea Lodge", { id: "c-ours" })], {
+    pull([remoteLodge("Kea Lodge", { id: "c-ours" }), remoteLodge("Tui Lodge", { id: "c-theirs" })], {
       ownLodges: [{ id: "c-ours", name: "Kea Lodge" }],
     });
 
@@ -1734,7 +1768,7 @@ describe("download keyed by the central server's lodge id (#64)", () => {
 
     expect(rows[0].centralId).toBe("c-ours");
     expect(mockCreate).toHaveBeenCalledTimes(1);
-    expect(mockCreate.mock.calls[0][0].data).toMatchObject({ name: "Kea Lodge", centralId: "c-theirs" });
+    expect(mockCreate.mock.calls[0][0].data).toMatchObject({ name: "Tui Lodge", centralId: "c-theirs" });
   });
 
   it("keys the ONE unkeyed row of a name, and creates a new lodge when two share it (#69)", async () => {
