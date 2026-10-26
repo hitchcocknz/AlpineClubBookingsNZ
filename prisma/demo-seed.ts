@@ -34,6 +34,7 @@ import { must } from "../src/lib/indexed-access";
 import { addDaysDateOnly } from "../src/lib/date-only";
 import { getDefaultLodgeId } from "../src/lib/lodges";
 import { createPrismaPgAdapter } from "../src/lib/prisma-adapter";
+import { prisma as applicationPrisma } from "../src/lib/prisma";
 import { redeemPromoCode } from "../src/lib/promo";
 import { getClubFormat } from "../src/lib/club-format-settings";
 import { bankRefundVoidFollowUpOccurrenceKey } from "../src/lib/bank-refund-void-follow-up-key";
@@ -1564,5 +1565,10 @@ main()
     process.exit(1);
   })
   .finally(async () => {
-    await prisma.$disconnect();
+    // #4412: `getClubFormat()` reads through the application's own client
+    // (`src/lib/prisma`), whose pool keeps an idle connection for five minutes
+    // (`DEFAULT_IDLE_TIMEOUT_MILLIS`), so disconnecting only this script's
+    // client left the process alive that long after its last line - every E2E
+    // job waited for it. Both clients are closed.
+    await Promise.all([prisma.$disconnect(), applicationPrisma.$disconnect()]);
   });
