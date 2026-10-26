@@ -436,7 +436,9 @@ let sync: typeof import("@/lib/xero-sync");
         expect(await countedFailures()).toBe(0);
       });
 
-      it("MUTATION: attempt 1's late success is refused on the retry's claim too, and the retry's own failure lands", async () => {
+      // Review F1: the refused success's Xero payment still has its link, so a
+      // retry that then fails leaves it recorded somewhere.
+      it("MUTATION: attempt 1's late success is refused on the retry's claim but still records its link, and the retry's own failure lands", async () => {
         const a1Call = scripted({ paymentId: "race-4373-xero-payment-late" });
         script = [a1Call];
         const a1 = pay();
@@ -457,12 +459,21 @@ let sync: typeof import("@/lib/xero-sync");
           startedAt: at(17),
           xeroObjectId: null,
         });
-        expect(await prisma.xeroObjectLink.count({ where: { localId: LOCAL_ID, xeroObjectType: "PAYMENT" } })).toBe(0);
+        const lateLink = () => prisma.xeroObjectLink.findMany({ where: { localId: LOCAL_ID, xeroObjectType: "PAYMENT" } });
+        expect((await lateLink()).map((link) => [link.xeroObjectId, link.role, link.active])).toEqual([
+          ["race-4373-xero-payment-late", "STRIPE_PAYMENT", true],
+        ]);
 
         await expect(sync.failXeroSyncOperation(retryClaim, new Error("Xero 503 on the retry"))).resolves.toMatchObject({
           status: "FAILED",
           lastErrorMessage: expect.stringContaining("Xero 503 on the retry"),
         });
+        // The retry's failure stands as its status; the late payment stays recorded.
+        expect(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: running!.id } })).toMatchObject({
+          status: "FAILED",
+          xeroObjectId: null,
+        });
+        expect(await lateLink()).toHaveLength(1);
       });
 
       // The issue's own case: W fails, a retry claims the row while L's call is

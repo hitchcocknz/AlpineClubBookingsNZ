@@ -2082,6 +2082,70 @@ describe("outcome writes never replace a recorded success (#4356, INV-INT-029)",
       expect(maybeNotifyXeroRepeatedFailure).not.toHaveBeenCalled();
     });
 
+    // Review F1: a success refused on a later claim still records its Xero links,
+    // so a retry that then fails does not leave the object recorded nowhere.
+    // A supplementary invoice's links live only in `extraLinks`.
+    const supplementaryLinks = [
+      { localModel: "BookingModification", localId: "mod_1", xeroObjectType: "INVOICE", xeroObjectId: "inv_late", role: "SUPPLEMENTARY_INVOICE" },
+      { localModel: "BookingModification", localId: "mod_1", xeroObjectType: "PAYMENT", xeroObjectId: "pay_late", role: "SUPPLEMENTARY_INVOICE_PAYMENT" },
+    ];
+    const withLinkWriter = (store: never) => {
+      mocks.txLinkUpsert.mockResolvedValue({ id: "link_late" });
+      mocks.txLinkFindUnique.mockResolvedValue(null);
+      mocks.txLinkFindMany.mockResolvedValue([]);
+      mocks.txLinkUpdateMany.mockResolvedValue({ count: 0 });
+      mocks.txLinkCreateMany.mockResolvedValue({ count: 0 });
+      mocks.txExecuteRaw.mockResolvedValue(1);
+      return {
+        ...(store as object),
+        $executeRaw: mocks.txExecuteRaw,
+        payment: { findUnique: mocks.txPaymentFindUnique, updateMany: mocks.txPaymentUpdateMany },
+        xeroObjectLink: {
+          createMany: mocks.txLinkCreateMany,
+          updateMany: mocks.txLinkUpdateMany,
+          upsert: mocks.txLinkUpsert,
+          findUnique: mocks.txLinkFindUnique,
+          findMany: mocks.txLinkFindMany,
+        },
+      } as never;
+    };
+
+    it.each(["SUCCEEDED", "PARTIAL"])(
+      "MUTATION (review F1): a %s refused on a later claim still records its supplementary-invoice links, row untouched, warned",
+      async (status) => {
+        const { maybeNotifyXeroRepeatedFailure } = await import("@/lib/xero-hardening");
+        const logger = (await import("@/lib/logger")).default;
+        const { row, store } = oneRow("RUNNING");
+        await expect(
+          completeXeroSyncOperation(
+            xeroClaim("op_shared", EARLIER),
+            { status, xeroObjectType: "INVOICE", xeroObjectId: "inv_late", extraLinks: supplementaryLinks },
+            { store: withLinkWriter(store) },
+          ),
+        ).resolves.toBeNull();
+        expect(row).toMatchObject({ status: "RUNNING", startedAt: TEST_XERO_CLAIMED_AT, xeroObjectId: null });
+        const written = mocks.txLinkUpsert.mock.calls.map(([args]) => (args as { create: { xeroObjectId: string; role: string } }).create);
+        expect(written).toEqual([
+          expect.objectContaining({ xeroObjectId: "inv_late", role: "SUPPLEMENTARY_INVOICE" }),
+          expect.objectContaining({ xeroObjectId: "pay_late", role: "SUPPLEMENTARY_INVOICE_PAYMENT" }),
+        ]);
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ operationId: "op_shared", xeroObjectId: "inv_late", claimStartedAt: EARLIER, heldClaimStartedAt: TEST_XERO_CLAIMED_AT }),
+          expect.stringContaining("links were recorded"),
+        );
+        expect(maybeNotifyXeroRepeatedFailure).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["FAILED", "CANCELLED"])("a %s completion refused on a later claim still records nothing", async (status) => {
+      const { row, store } = oneRow("RUNNING");
+      await expect(
+        completeXeroSyncOperation(xeroClaim("op_shared", EARLIER), { status, extraLinks: supplementaryLinks }, { store: withLinkWriter(store) }),
+      ).resolves.toBeNull();
+      expect(row.status).toBe("RUNNING");
+      expect(mocks.txLinkUpsert).not.toHaveBeenCalled();
+    });
+
     it("logs the refusal, as INV-INT-029's refusals are", async () => {
       const logger = (await import("@/lib/logger")).default;
       oneRow("RUNNING");

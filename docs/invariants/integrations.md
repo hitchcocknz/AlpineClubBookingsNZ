@@ -572,6 +572,7 @@ outcome there.
   same keyed call.
 - **A refused write changes nothing.** It answers null, writes no link and
   raises no alert. A missing row throws, or is logged for a guarded caller.
+  A success refused for a later claim still records its links, warned.
 - **Claims, resets and marks write directly,** guarded as before. The outbox
   and REQUEUE hand-backs to PENDING touch only their own claim.
 

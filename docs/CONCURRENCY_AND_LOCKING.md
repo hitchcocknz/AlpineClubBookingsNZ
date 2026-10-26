@@ -198,11 +198,16 @@ call without one does not compile. No outcome, a success included, lands on a
 RUNNING row whose `startedAt` is another claim's: after a stale reset or a
 failure, the earlier attempt's late outcome is refused on the retry's claim
 (null, no link, no alert, an info log), and the row stays RUNNING for the
-retry and the booking invoice retry's settle-time fence. The outbox's and the
+retry and the booking invoice retry's settle-time fence. A refused SUCCEEDED
+or PARTIAL still upserts its `extraLinks` (idempotent) and logs a warning,
+leaving the row's status and claim as they are, so a Xero object the earlier
+attempt created is recorded even if the retry then fails; a refused FAILED or
+CANCELLED writes nothing. The outbox's and the
 REQUEUE queue's hand-backs to PENDING are fenced on their own claim the same
 way. Two claims of one row share a token only if made in the same
-millisecond; a second claim needs the first to have failed after a Xero round
-trip or been reset stale, so that does not happen. No advisory key, row lock,
+millisecond; a second claim follows the first's failure (after a Xero round
+trip, a pre-HTTP cooldown refusal or a CAS requeue) or its stale reset, each
+many milliseconds after the first was stamped, so that does not happen. No advisory key, row lock,
 schema change or new participant. Proven against real PostgreSQL by
 `xero-shared-operation-outcome.realdb.test.ts`.
 

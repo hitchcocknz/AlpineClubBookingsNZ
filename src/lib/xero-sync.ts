@@ -958,7 +958,15 @@ export async function completeXeroSyncOperation(
     };
     const guard = outcomeWriteGuard(claim, status, { retryClaim: options?.retryClaim });
     const claimed = await tx.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
-    if (claimed.count === 0) return refusedOutcomeWrite(tx, operationId, status, options ?? {});
+    if (claimed.count === 0) {
+      // #4373 review F1: a success refused on a later claim still records its links.
+      return refusedOutcomeWrite(tx, claim, status, options ?? {}, {
+        xeroObjectId: completion.xeroObjectId ?? null,
+        recordLinks: async () => {
+          for (const link of completion.extraLinks ?? []) await upsertXeroObjectLinkWithClient(tx, link);
+        },
+      });
+    }
     const operation = await tx.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } });
 
     for (const link of completion.extraLinks ?? []) {
@@ -1046,7 +1054,7 @@ export async function failXeroSyncOperation(
     alsoKeep: options?.keepCancelled ? "CANCELLED" : undefined,
   });
   const [operation] = await prisma.xeroSyncOperation.updateManyAndReturn({ where: { id: operationId, ...guard }, data });
-  if (!operation) return refusedOutcomeWrite(prisma, operationId, "FAILED", options ?? {});
+  if (!operation) return refusedOutcomeWrite(prisma, claim, "FAILED", options ?? {});
 
   try {
     const { maybeNotifyXeroRepeatedFailure } = await import("./xero-hardening");
