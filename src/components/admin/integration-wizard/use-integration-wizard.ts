@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { wizardProgressPath } from "@/lib/integration-wizard-progress-routes";
+
 /**
  * Cursor persistence for the reusable integration wizard shell (#2080).
  *
@@ -11,7 +13,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
  * verification from live server truth, so a stale cursor can never skip a gate.
  */
 
-const ENDPOINT = "/api/admin/integrations/wizard-progress";
 // A write that never settles would hold back every later one (#4014 review).
 const CURSOR_WRITE_TIMEOUT_MS = 10_000;
 
@@ -70,7 +71,7 @@ export function useWizardCursor(wizardId: string): WizardCursor {
   // cancelled with the old document. The body is tiny, far under the limit.
   const postWrite = useCallback(
     (write: CursorWrite, signal?: AbortSignal) =>
-      fetch(ENDPOINT, {
+      fetch(wizardProgressPath(wizardId), {
         method: "POST",
         credentials: "same-origin",
         keepalive: true,
@@ -130,7 +131,7 @@ export function useWizardCursor(wizardId: string): WizardCursor {
     void (async () => {
       try {
         const res = await fetch(
-          `${ENDPOINT}?wizardId=${encodeURIComponent(wizardId)}`,
+          `${wizardProgressPath(wizardId)}?wizardId=${encodeURIComponent(wizardId)}`,
           { credentials: "same-origin" },
         );
         if (!res.ok) throw new Error("load failed");

@@ -1,15 +1,11 @@
 import "server-only";
 
-import { NextResponse } from "next/server";
-import { z } from "zod";
-
-import { parseJsonRequestBody } from "@/lib/api-json";
-import type { AdminPermissionArea } from "@/lib/admin-permissions";
 import { requireAdmin } from "@/lib/session-guards";
 import {
-  getIntegrationWizardProgress,
-  saveIntegrationWizardProgress,
-} from "@/lib/integration-wizard-progress";
+  answerWizardProgressGet,
+  answerWizardProgressPost,
+} from "@/lib/integration-wizard-progress-http";
+import { WIZARD_PROGRESS_ROUTES } from "@/lib/integration-wizard-progress-routes";
 
 // Cursor persistence for the reusable guided-provider setup shell (#2080).
 //
@@ -30,9 +26,10 @@ import {
 // live server truth, so a clobbered cursor can only change which step opens
 // first. The wizard UI states this in plain English on every step.
 //
-// Allowlist of wizard ids the shell may persist. Keeps arbitrary rows out and
+// Allowlist of wizard ids this route may persist. Keeps arbitrary rows out and
 // mirrors the provider namespace. C4/C5 add "stripe" / "google"; "display" is
-// the Lodge Display guided setup wizard (#2249).
+// the Lodge Display guided setup wizard (#2249). The Backups wizard ("backup")
+// has its own route under the support area (#4409).
 //
 // "display" deliberately does NOT widen this route's finance gate (owner
 // decision, 28 Jul 2026). A lodge-area admin without finance access therefore
@@ -43,84 +40,23 @@ import {
 // the cursor writable would hand every lodge admin write access to a route that
 // also governs the Xero/Stripe/Google cursors, which is a far worse trade for a
 // resume hint.
-//
-// "backup" is the database-backup setup wizard (#2227), which lives in the
-// SUPPORT area, not finance. Owner decision (#4409, 26 Oct 2026): it remembers
-// its step like the others, gated by its own area - support view to read,
-// support edit to save - so the gate is per wizard. Every id not listed (and a
-// body that does not parse) keeps the finance gate, so authentication still
-// comes before any validation answer.
-const WIZARD_PROGRESS_AREAS = {
-  xero: "finance",
-  stripe: "finance",
-  google: "finance",
-  display: "finance",
-  backup: "support",
-} as const satisfies Record<string, AdminPermissionArea>;
-type AllowedWizardId = keyof typeof WIZARD_PROGRESS_AREAS;
-
-function isAllowedWizardId(value: string): value is AllowedWizardId {
-  return Object.hasOwn(WIZARD_PROGRESS_AREAS, value);
-}
-
-/** The area gating a wizard's cursor; finance for anything not listed. */
-function wizardProgressArea(wizardId: unknown): AdminPermissionArea {
-  return typeof wizardId === "string" && isAllowedWizardId(wizardId)
-    ? WIZARD_PROGRESS_AREAS[wizardId]
-    : "finance";
-}
+// The ids this route stores live in `WIZARD_PROGRESS_ROUTES` (one map shared
+// with the client hook and the backups route, #4409); the handling after the
+// gate is shared too (`integration-wizard-progress-http.ts`).
+const WIZARD_IDS = WIZARD_PROGRESS_ROUTES.integrations.wizardIds;
 
 export async function GET(request: Request) {
-  const wizardId = new URL(request.url).searchParams.get("wizardId") ?? "";
   const guard = await requireAdmin({
-    permission: { area: wizardProgressArea(wizardId), level: "view" },
+    permission: { area: "finance", level: "view" },
   });
   if (!guard.ok) return guard.response;
-
-  if (!isAllowedWizardId(wizardId)) {
-    return NextResponse.json({ error: "Unknown wizard." }, { status: 400 });
-  }
-
-  const progress = await getIntegrationWizardProgress(wizardId);
-  return NextResponse.json({ wizardId, progress });
+  return answerWizardProgressGet(request, WIZARD_IDS);
 }
 
-const bodySchema = z.object({
-  wizardId: z.string().min(1).max(64),
-  currentStepId: z.string().min(1).max(64),
-  completedStepIds: z.array(z.string().min(1).max(64)).max(32),
-});
-
 export async function POST(request: Request) {
-  // The body names the wizard, and the wizard names the area, so it is read
-  // first; nothing in it is acted on, or answered, until the guard passes.
-  const json = await parseJsonRequestBody(request);
-  const claimedWizardId = json.ok ? (json.body as { wizardId?: unknown } | null)?.wizardId : undefined;
   const guard = await requireAdmin({
-    permission: { area: wizardProgressArea(claimedWizardId), level: "edit" },
+    permission: { area: "finance", level: "edit" },
   });
   if (!guard.ok) return guard.response;
-
-  if (!json.ok) return json.response;
-  const parsed = bodySchema.safeParse(json.body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Invalid request", details: parsed.error.flatten() },
-      { status: 400 },
-    );
-  }
-
-  const { wizardId, currentStepId, completedStepIds } = parsed.data;
-  if (!isAllowedWizardId(wizardId)) {
-    return NextResponse.json({ error: "Unknown wizard." }, { status: 400 });
-  }
-
-  const progress = await saveIntegrationWizardProgress({
-    wizardId,
-    currentStepId,
-    completedStepIds,
-    updatedByMemberId: guard.session.user.id,
-  });
-
-  return NextResponse.json({ ok: true, wizardId, progress });
+  return answerWizardProgressPost(request, WIZARD_IDS, guard.session.user.id);
 }
