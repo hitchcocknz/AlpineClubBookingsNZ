@@ -124,30 +124,17 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
 
   const sanitizedDatabaseUrl = sanitizePostgresUrlForPgDump(databaseUrl);
   const restoreValidationDatabaseUrl = config.restoreValidationUrl ?? undefined;
-  // The same database NAME as the live database or the audit archive refuses,
-  // whoever connects and wherever (#4453): the validation starts with DROP SCHEMA.
+  // The same database NAME as the live database or the audit archive refuses the
+  // VALIDATION, whoever connects and wherever (#4453): it starts with DROP SCHEMA.
+  // The backup itself is still taken and stored; the run then reports failure.
   const archiveUrl = configuredAuditArchiveDatabaseUrl();
-  if (
-    restoreValidationDatabaseUrl &&
-    archiveUrl &&
-    isSameDatabaseTarget(restoreValidationDatabaseUrl, archiveUrl)
-  ) {
-    return {
-      success: false,
-      error:
-        "The restore-validation URL must point at a disposable shadow database, not the audit archive database",
-    };
-  }
-  if (
-    restoreValidationDatabaseUrl &&
-    isSameDatabaseTarget(restoreValidationDatabaseUrl, databaseUrl)
-  ) {
-    return {
-      success: false,
-      error:
-        "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL",
-    };
-  }
+  const validationRefusal = !restoreValidationDatabaseUrl
+    ? undefined
+    : archiveUrl && isSameDatabaseTarget(restoreValidationDatabaseUrl, archiveUrl)
+      ? "The restore-validation URL must point at a disposable shadow database, not the audit archive database"
+      : isSameDatabaseTarget(restoreValidationDatabaseUrl, databaseUrl)
+        ? "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL"
+        : undefined;
 
   try {
     // Ensure backup directory exists
@@ -265,6 +252,22 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
           error: `S3 upload/readback failed: ${message}`,
         };
       }
+    }
+
+    if (validationRefusal) {
+      logger.error({ job: "backup" }, validationRefusal);
+      cleanupS3Readback(s3ReadbackPath);
+      return {
+        success: false,
+        filename,
+        filepath,
+        uploadedToS3,
+        s3Key,
+        s3ReadbackVerified,
+        s3ReadbackSizeBytes,
+        sizeBytes: stats.size,
+        error: `${validationRefusal}. The backup was taken and stored; its restore validation was skipped.`,
+      };
     }
 
     if (restoreValidationDatabaseUrl) {

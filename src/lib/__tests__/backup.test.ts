@@ -683,7 +683,25 @@ describe("backup", () => {
     );
   });
 
-  it("refuses restore validation when the shadow URL points at the source database", async () => {
+  /**
+   * #4453 review R4: a refused validation target skips ONLY the destructive
+   * validation restore. The dump is still taken and stored, nothing touches the
+   * refused database, and the run reports failure with the reason.
+   */
+  async function expectBackupTakenValidationRefused(reason: string) {
+    const result = await runDatabaseBackup();
+    expect(result).toMatchObject({
+      success: false,
+      filename: expect.stringMatching(/^tacbookings-.*\.sql\.gz$/),
+      sizeBytes: 1024,
+      error: `${reason}. The backup was taken and stored; its restore validation was skipped.`,
+    });
+    expect(execFileSyncMock).toHaveBeenCalledWith("pg_dump", expect.anything(), expect.anything());
+    expect(execFileSyncMock).not.toHaveBeenCalledWith("psql", expect.anything(), expect.anything());
+    expect(vi.mocked(restoreDumpWithoutOwnershipOrPrivileges)).not.toHaveBeenCalled();
+  }
+
+  it("refuses restore validation when the shadow URL points at the source database, still taking the backup", async () => {
     process.env.DATABASE_URL =
       "postgresql://postgres:postgres@postgres:5432/tacbookings?connection_limit=5";
     setConfig({
@@ -691,28 +709,21 @@ describe("backup", () => {
         "postgresql://postgres:postgres@postgres:5432/tacbookings",
     });
 
-    await expect(runDatabaseBackup()).resolves.toEqual({
-      success: false,
-      error:
-        "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL",
-    });
-
-    expect(execFileSyncMock).not.toHaveBeenCalled();
+    await expectBackupTakenValidationRefused(
+      "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL",
+    );
   });
 
-  it("refuses a validation URL naming the audit archive database (#4453 review N5)", async () => {
+  it("refuses a validation URL naming the audit archive database, still taking the backup (#4453 review N5)", async () => {
     process.env.AUDIT_ARCHIVE_DATABASE_URL = "postgresql://archive:archive-pw@archive-host:5432/audit_archive";
     setConfig({ restoreValidationUrl: "postgresql://check:check-pw@shadow/audit_archive" });
 
-    await expect(runDatabaseBackup()).resolves.toEqual({
-      success: false,
-      error:
-        "The restore-validation URL must point at a disposable shadow database, not the audit archive database",
-    });
-    expect(execFileSyncMock).not.toHaveBeenCalled();
+    await expectBackupTakenValidationRefused(
+      "The restore-validation URL must point at a disposable shadow database, not the audit archive database",
+    );
   });
 
-  it("refuses the live database under another role, as after the #4453 role split", async () => {
+  it("refuses the live database under another role, as after the #4453 role split, still taking the backup", async () => {
     // The app connects as the application role; a validation URL naming the live
     // database as any other role used to slip past a whole-URL comparison, and
     // the validation step starts with DROP SCHEMA public CASCADE.
@@ -722,12 +733,8 @@ describe("backup", () => {
       restoreValidationUrl: "postgresql://tac_restore_check:other-pw@postgres/tacbookings?sslmode=disable",
     });
 
-    await expect(runDatabaseBackup()).resolves.toEqual({
-      success: false,
-      error:
-        "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL",
-    });
-
-    expect(execFileSyncMock).not.toHaveBeenCalled();
+    await expectBackupTakenValidationRefused(
+      "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL",
+    );
   });
 });
