@@ -4731,6 +4731,24 @@ describe("processStoredXeroInboundEvents", () => {
       });
     });
 
+    it("MUTATION: a run with two invoices left unrecounted reports both failed and sends one alert naming both, because the hourly alert limit would drop a second (#4095, PR #4437 review round 3, L1)", async () => {
+      await arrangeKeptSettleWhoseRecountFails();
+      // The second invoice reads the same links as the first.
+      mocks.linkFindMany
+        .mockResolvedValueOnce([{ localModel: "Payment", localId: "pay_ib_gate", xeroObjectType: "INVOICE", role: "PRIMARY_INVOICE" }])
+        .mockResolvedValueOnce([]);
+
+      const result = await runIncrementalInvoiceReconciliation({
+        membershipReconciliation: { changedInvoiceIds: ["inv_ib_gate", "inv_ib_gate"] } as never,
+      });
+
+      expect(result).toMatchObject({ processed: 2, succeeded: 0, failed: 2 });
+      expect(xeroSyncErrorAlert.notifyXeroSyncError).toHaveBeenCalledTimes(1);
+      expect(xeroSyncErrorAlert.notifyXeroSyncError).toHaveBeenCalledWith(expect.objectContaining({
+        operation: "incremental-invoice-reconciliation:recount:inv_ib_gate,inv_ib_gate",
+      }));
+    });
+
     it("recounts an applied correction after a kept settle, and fails the event when the recount could not run, so it is retried (#4095 items 5 and 12)", async () => {
       const recountReads = await arrangeKeptSettleWhoseRecountFails();
 
