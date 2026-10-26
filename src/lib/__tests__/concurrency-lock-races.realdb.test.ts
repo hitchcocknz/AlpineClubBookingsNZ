@@ -580,6 +580,12 @@ import "./saved-card-charge-worth.realdb.test";
 // note a resolved row records (#4321). Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4265-` fixtures.
 import "./own-live-refund-note-coverage.realdb.test";
+// #4366 reuses it to prove a late central-server version answer records
+// nothing once its connection has changed: the same key saved again or a moved
+// address is refused, and a recorder racing a key change queues on the settings
+// row and then refuses rather than writing over the forget. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans the singleton settings row.
+import "./servernz-version-record-race.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
