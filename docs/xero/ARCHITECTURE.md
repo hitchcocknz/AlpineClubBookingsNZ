@@ -1874,7 +1874,7 @@ payment, that is resolved by hand or not yet SUCCEEDED (#4321: with no live
 link, a resolved row counts the note as its own refund's, and the resolve route
 can still flip an unfinished one). A FAILED row an officer resolved after making
 its note by hand names no note - the route records none - so that note is not
-recognised (FOLLOWUP_4321_CAPTURE). The completion links it as a per-refund
+recognised (#4421). The completion links it as a per-refund
 `REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
 commits before that link write is kept under the link's row lock and the answer
 is refused (#4288). After

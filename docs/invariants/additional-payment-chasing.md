@@ -1654,7 +1654,7 @@ _Legacy: settles tasks raised before #4317._
   and sized on it, or a hand-made note checked in Xero first and then tracked,
   never one another record tracks or an unfinished or hand-resolved create
   row names (#4321; a FAILED row resolved by hand names no note,
-  FOLLOWUP_4321_CAPTURE).
+  #4421).
 - **Report-only** until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`: nothing,
   the person's pick included, writes before then.
   Pinned by `bank-refund-void-follow-up` (unit and realdb),

@@ -266,7 +266,7 @@ export async function prepareBankRefundVoidAnswer(input: {
  * or (#4321) a credit-note create row records it that is resolved by hand in
  * Xero or not yet SUCCEEDED. A row resolved after the officer made its note by
  * hand records no note id (the resolve route writes none), so that note is not
- * recognised here (FOLLOWUP_4321_CAPTURE).
+ * recognised here (#4421).
  * The one exception (review, money 6): the note is tracked only by this
  * payment's own inactive, non-voided refund-note link - a duplicate the
  * single-note rule turned off - which is reactivated for the follow-up.

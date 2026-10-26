@@ -20,7 +20,7 @@
  *   with the resolve committing while the completion holds its locks - and
  *   still takes a note no row records. A row resolved after the officer made
  *   its note by hand records no note id (the resolve route writes none), so
- *   that case is out of this proof's reach (FOLLOWUP_4321_CAPTURE).
+ *   that case is out of this proof's reach (#4421).
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which

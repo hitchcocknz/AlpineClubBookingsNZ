@@ -462,7 +462,7 @@ Nothing is sent to the member and nothing is raised in Xero until you answer:
   already records for another refund, including one whose Xero operation is
   unfinished or that you marked resolved (#4321). It cannot recognise a note
   you made by hand for a failed operation you then marked resolved, as the app
-  never learns that note's number (FOLLOWUP_4321_CAPTURE), so never give a
+  never learns that note's number (#4421), so never give a
   note that already records another refund. If not, it tells you why and
   nothing changes. If
   Xero is busy, try again in a minute; if Xero's daily limit has been
