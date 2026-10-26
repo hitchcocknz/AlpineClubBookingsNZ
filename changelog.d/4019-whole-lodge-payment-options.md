@@ -25,6 +25,7 @@
 
   Starting card entry and leaving it unfinished keeps the booking eligible for
   excess-credit returns after a price reduction and for the unpaid-stay queue.
-  Concurrent switches to internet banking create one receivable. Officer
+  Concurrent switches to internet banking create one receivable, and pressing
+  the switch again queues the Xero invoice if the first press could not. Officer
   messages now reflect current payment modules and describe zero-price paid
   approvals without attributing them to credit.

@@ -1443,7 +1443,8 @@ settlement and finished-stay collection queue (`INV-PAY-140`); received,
 refunded, invoiced or unverified payment evidence does not enter that branch.
 Concurrent Internet Banking switches re-read the payment source under the
 existing global/lodge locks and replay the winner's persisted hold fields
-without another receivable or invoice operation (`INV-LOCK-002`).
+without another receivable (`INV-LOCK-002`); the replay re-runs the
+idempotent invoice enqueue after the transaction.
 
 **Why `PRICED` appears above when the prose below says these rows never reach it.**
 Both are true and the difference matters. Nothing sanctioned can price a

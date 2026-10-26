@@ -40,11 +40,10 @@ import {
 import { recordInternetBankingPaymentTransaction } from "@/lib/payment-transactions";
 import { retireCardIntentBeforeElection } from "@/lib/card-intent-retirement";
 import {
-  enqueueXeroAppliedCreditAllocationOperation,
-  enqueueXeroBookingInvoiceOperation,
-  kickQueuedXeroOutboxOperationsIfConnected,
-} from "@/lib/xero-operation-outbox";
-import { isXeroConnected } from "@/lib/xero";
+  alreadySwitchedBody,
+  isLiveSwitchState,
+  queueSwitchInvoiceAfterCommit,
+} from "@/lib/internet-banking-switch-replay";
 import logger from "@/lib/logger";
 import { hasAdminAccess } from "@/lib/access-roles";
 import { lockMemberCreditLedger } from "@/lib/member-credit";
@@ -133,13 +132,11 @@ export async function POST(request: NextRequest) {
 
   const reference = buildInternetBankingPaymentReference(booking.id);
 
-  // Already on Internet Banking → idempotent success.
+  // Already on Internet Banking → idempotent success, re-queueing the invoice
+  // a live booking may still lack (`queueSwitchInvoiceAfterCommit`).
   if (booking.payment?.source === PaymentSource.INTERNET_BANKING) {
-    return NextResponse.json({
-      reference,
-      holdBedSlots: booking.payment.internetBankingHoldSlots,
-      holdUntil: booking.payment.internetBankingHoldUntil,
-    });
+    if (isLiveSwitchState(booking)) await queueSwitchInvoiceAfterCommit(booking.id, session.user.id);
+    return NextResponse.json(alreadySwitchedBody(booking.payment, reference));
   }
 
   const internetBankingSettings = await loadInternetBankingPaymentSettings();
@@ -280,8 +277,7 @@ export async function POST(request: NextRequest) {
     });
     // Lifecycle gates still win over replay: a cancelled/deleted booking must
     // never be resurrected or return an old successful switch response.
-    if (!locked || locked.deletedAt || locked.organiserSettled ||
-      (locked.status !== "PAYMENT_PENDING" && locked.status !== "CONFIRMED")) {
+    if (!locked || !isLiveSwitchState(locked)) {
       return { type: "notSwitchable" as const };
     }
     const lockedPayment = await tx.payment.findUnique({
@@ -520,42 +516,16 @@ export async function POST(request: NextRequest) {
   }
 
   if (paymentResult.type === "alreadyInternetBanking") {
-    return NextResponse.json({
-      reference: paymentResult.payment.reference ?? reference,
-      holdBedSlots: paymentResult.payment.internetBankingHoldSlots,
-      holdUntil: paymentResult.payment.internetBankingHoldUntil,
-    });
+    // Live under the locks (the gate above), so the replay re-queues too.
+    await queueSwitchInvoiceAfterCommit(booking.id, session.user.id);
+    return NextResponse.json(alreadySwitchedBody(paymentResult.payment, reference));
   }
 
   // #2576 §9: drain the re-evaluation the claim above recorded, now that the
   // confirmation has committed. Best-effort; the cron sweep is the authority.
   await settleHostingCoverageAfterCommit({ bookingId: booking.id });
 
-  try {
-    const queued = await enqueueXeroBookingInvoiceOperation(booking.id, {
-      createdByMemberId: session.user.id,
-      invoiceEmailDelivery: null,
-    });
-    // #1620 — enqueue the applied-credit allocation AFTER the invoice op (older
-    // createdAt → processed first) so the invoice exists when the allocation
-    // runs; if not yet raised the allocation handler throws and the outbox
-    // retries. Skips itself when there is no unallocated applied credit.
-    const queuedAllocation = await enqueueXeroAppliedCreditAllocationOperation(
-      booking.id,
-      { createdByMemberId: session.user.id },
-    );
-    if (
-      (queued.queueOperationId || queuedAllocation.queueOperationId) &&
-      (await isXeroConnected())
-    ) {
-      await kickQueuedXeroOutboxOperationsIfConnected({ limit: 2 });
-    }
-  } catch (err) {
-    logger.error(
-      { err, bookingId },
-      "Failed to queue Xero invoice after switching to Internet Banking"
-    );
-  }
+  await queueSwitchInvoiceAfterCommit(booking.id, session.user.id);
 
   return NextResponse.json({
     reference,

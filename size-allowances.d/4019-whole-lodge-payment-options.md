@@ -21,11 +21,13 @@ reason: the request's credit election is one field on the creation write and
   a new module for a boolean would put the request's shape in two places.
 
 file: src/app/api/payments/switch-to-internet-banking/route.ts
-lines: 569
+lines: 539
 reason: the whole-lodge hold exemption, shared status rule and post-lock
   already-Internet-Banking replay stay inside the existing switch transaction;
   splitting its claim from its source re-read would separate the check from
-  the receivable, credit and hold effects it fences.
+  the receivable, credit and hold effects it fences. The post-commit invoice
+  enqueue, the live-state rule and the replay's answer moved out to
+  internet-banking-switch-replay.ts, which both replays share.
 
 file: src/components/admin/booking-requests/public-booking-requests-panel.tsx
 lines: 2721
