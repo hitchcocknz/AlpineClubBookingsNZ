@@ -87,6 +87,7 @@ import { asRecord } from "@/lib/xero-json";
 import { kickQueuedXeroOutboxOperationsIfConnected, lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
 import { supplementaryInvoiceBilledCents } from "@/lib/xero-operation-outbox-payload";
 import {
+  SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY,
   SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY,
   supplementaryInvoiceWaitedFirstOn,
 } from "@/lib/supplementary-invoice-parked-from";
@@ -409,7 +410,8 @@ async function moveAnchorOntoCarrier(input: {
     // A capture already recorded by its own receipt (`INV-PAY-139`) keeps one
     // recorder: the moved invoice then goes out unpaid, as the late-capture
     // re-queue revives one. Decided under the carrier's key, where that
-    // receipt decides too.
+    // receipt decides too, and marked, so a return to the superseded ask
+    // decides it again for that ask's capture (review 2, F2).
     const carrierCaptured = isCapturedTransactionStatus(carrier.status);
     let moved = 0;
     for (const operation of moving) {
@@ -439,7 +441,7 @@ async function moveAnchorOntoCarrier(input: {
             ...payload,
             paymentIntentId: carrierIntentId,
             [SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY]: supplementaryInvoiceWaitedFirstOn(payload),
-            ...(unpaid ? { recordPayment: false } : {}),
+            ...(unpaid ? { recordPayment: false, [SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY]: true } : {}),
           } as Prisma.InputJsonObject,
         },
       });

@@ -18,14 +18,20 @@
  * (`lockSupplementaryInvoiceAnchor`) - the key this capture's receipt decides
  * under too, since a member ask is stamped with its change - with a write
  * guarded on the status, the intent it was moved to and the correlation key.
- * An invoice the carrier's capture already released has recorded that
- * capture, and stays as it is.
+ * Whether it records a payment is decided again there for THIS capture (review
+ * 2, F2): paid, unless this capture's own receipt already records it - the
+ * unpaid a move onto a carrier with its own receipt wrote
+ * (`SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY`) was about the carrier's capture.
  */
 import type { Prisma } from "@prisma/client";
 
+import { anchorCaptureHasReceipt } from "@/lib/additional-capture-receipt-link";
 import { prisma } from "@/lib/prisma";
-import { SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY } from "@/lib/supplementary-invoice-parked-from";
-import { asRecord } from "@/lib/xero-json";
+import {
+  SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY,
+  SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY,
+} from "@/lib/supplementary-invoice-parked-from";
+import { asRecord, readString } from "@/lib/xero-json";
 import { lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
 import { SUPPLEMENTARY_INVOICE_CREATE_WHERE } from "@/lib/xero-supplementary-invoice-statuses";
 
@@ -57,8 +63,18 @@ export async function returnMovedInvoicesToCapturedIntent(paymentIntentId: strin
       for (const row of rows) {
         const payload = asRecord(row.requestPayload) ?? {};
         if (typeof payload.paymentIntentId !== "string" || payload.paymentIntentId === paymentIntentId) continue;
-        const unmoved = { ...payload };
+        // Paid as it was before any move made it unpaid, unless this capture's own receipt records it.
+        const paid = payload[SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY] === true || payload.recordPayment !== false;
+        const recordPayment =
+          paid &&
+          !(await anchorCaptureHasReceipt(tx, {
+            bookingId: readString(payload.bookingId) ?? "",
+            bookingModificationId: anchorId,
+            paymentIntentId,
+          }));
+        const unmoved: Record<string, unknown> = { ...payload, ...(paid ? { recordPayment } : {}) };
         delete unmoved[SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY];
+        delete unmoved[SUPPLEMENTARY_INVOICE_MOVED_UNPAID_KEY];
         const written = await tx.xeroSyncOperation.updateMany({
           where: {
             id: row.id,
