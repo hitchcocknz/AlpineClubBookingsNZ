@@ -13,17 +13,22 @@ export const DEFAULT_SHARD_LABEL = "Test shard";
 const POLL_INTERVAL_MS = 15_000;
 const MAX_WAIT_MS = 45 * 60_000;
 
-export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label = DEFAULT_SHARD_LABEL) {
+export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label = DEFAULT_SHARD_LABEL, upstream = []) {
   if (!Array.isArray(jobs)) throw new Error("GitHub returned no jobs array");
+  // #4397: a matrix whose `needs:` failed is skipped before its names expand,
+  // and GitHub then reports it under a placeholder (seen as `matrix.name`)
+  // that no label matches, so waiting on it would only time out. The gate is
+  // told the upstream jobs by name and fails at once when one of them ends
+  // in anything but success.
+  for (const name of upstream) {
+    const job = jobs.find((item) => item?.name === name);
+    if (job?.status === "completed" && job.conclusion !== "success") {
+      throw new Error(`Upstream job "${name}" completed as ${job.conclusion ?? "unknown"}`);
+    }
+  }
   const found = new Map();
   const pattern = new RegExp(`^${escapeRegex(label)} \\(([1-9]\\d*)\\/([1-9]\\d*)\\)$`);
   for (const job of jobs) {
-    // A matrix job skipped before expansion (its `needs:` failed) reports its
-    // unexpanded name, which no label matches; waiting on it would only time
-    // out (#4397). Fail at once instead.
-    if (typeof job?.name === "string" && job.name.includes("${{") && job.status === "completed" && job.conclusion !== "success") {
-      throw new Error(`An unexpanded matrix job (${job.name}) completed as ${job.conclusion ?? "unknown"}`);
-    }
     if (typeof job?.name !== "string" || !job.name.startsWith(`${label} (`)) continue;
     const match = pattern.exec(job.name);
     if (!match || Number(match[2]) !== count || Number(match[1]) > count) {
@@ -95,6 +100,7 @@ export async function requireTestShards({
   loadJobs,
   count = EXPECTED_SHARD_COUNT,
   label = DEFAULT_SHARD_LABEL,
+  upstream = [],
   now = () => performance.now(),
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   maxWaitMs = MAX_WAIT_MS,
@@ -102,7 +108,7 @@ export async function requireTestShards({
 }) {
   const start = now();
   while (true) {
-    const pending = classifyTestShardJobs(await loadJobs(), count, label);
+    const pending = classifyTestShardJobs(await loadJobs(), count, label, upstream);
     if (pending.length === 0) return;
     if (now() - start >= maxWaitMs) {
       throw new Error(`Timed out waiting for ${label} jobs: ${pending.join(", ")}`);
@@ -111,9 +117,9 @@ export async function requireTestShards({
   }
 }
 
-/** `--label <job name prefix>`, `--count <n>` and `--max-wait-minutes <n>`; bare, the unit-test defaults. */
+/** `--label <job name prefix>`, `--count <n>`, `--max-wait-minutes <n>` and repeatable `--upstream <job name>`; bare, the unit-test defaults. */
 export function parseShardGateArgs(argv) {
-  const options = { label: DEFAULT_SHARD_LABEL, count: EXPECTED_SHARD_COUNT, maxWaitMs: MAX_WAIT_MS };
+  const options = { label: DEFAULT_SHARD_LABEL, count: EXPECTED_SHARD_COUNT, maxWaitMs: MAX_WAIT_MS, upstream: [] };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const value = argv[i + 1];
@@ -125,6 +131,9 @@ export function parseShardGateArgs(argv) {
     } else if (flag === "--count") {
       if (!/^[1-9]\d?$/.test(value)) throw new Error(`Invalid --count: ${value}`);
       options.count = Number(value);
+    } else if (flag === "--upstream") {
+      if (!/^[A-Za-z][\w -]*$/.test(value)) throw new Error(`Invalid --upstream: ${value}`);
+      options.upstream.push(value);
     } else if (flag === "--max-wait-minutes") {
       if (!/^[1-9]\d{0,2}$/.test(value)) throw new Error(`Invalid --max-wait-minutes: ${value}`);
       options.maxWaitMs = Number(value) * 60_000;

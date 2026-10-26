@@ -148,8 +148,8 @@ describe("the gate for another matrix (--label/--count)", () => {
   const e2e = (index, status = "completed", conclusion = "success") => ({ name: `E2E shard (${index}/3)`, status, conclusion });
 
   it("parses its arguments, defaulting to the unit-test matrix, and refuses anything else", () => {
-    expect(parseShardGateArgs([])).toEqual({ label: "Test shard", count: EXPECTED_SHARD_COUNT, maxWaitMs: 45 * 60_000 });
-    expect(parseShardGateArgs(["--label", "E2E shard", "--count", "3", "--max-wait-minutes", "55"])).toEqual({ label: "E2E shard", count: 3, maxWaitMs: 55 * 60_000 });
+    expect(parseShardGateArgs([])).toEqual({ label: "Test shard", count: EXPECTED_SHARD_COUNT, maxWaitMs: 45 * 60_000, upstream: [] });
+    expect(parseShardGateArgs(["--label", "E2E shard", "--count", "3", "--max-wait-minutes", "55"])).toEqual({ label: "E2E shard", count: 3, maxWaitMs: 55 * 60_000, upstream: [] });
     expect(() => parseShardGateArgs(["--count", "0"])).toThrow(/Invalid --count/);
     expect(() => parseShardGateArgs(["--label", "x\"; rm"])).toThrow(/Invalid --label/);
     expect(() => parseShardGateArgs(["--label"])).toThrow(/needs a value/);
@@ -166,10 +166,17 @@ describe("the gate for another matrix (--label/--count)", () => {
     expect(() => classifyTestShardJobs([{ name: "E2E shard (1/4)", status: "completed", conclusion: "success" }], 3, "E2E shard")).toThrow(/Unexpected E2E shard/);
   });
 
-  it("fails at once on a matrix job skipped before its name expanded, instead of waiting it out", () => {
-    const unexpanded = { name: "${{ matrix.name }}", status: "completed", conclusion: "skipped" };
-    expect(() => classifyTestShardJobs([unexpanded], 3, "E2E shard")).toThrow(/unexpanded matrix job/);
-    expect(classifyTestShardJobs([{ ...unexpanded, status: "queued", conclusion: null }], 1, "E2E multi-lodge run")).toEqual(["missing 1/1"]);
+  it("fails at once when a named upstream job fails, instead of waiting out runners that will never expand", () => {
+    // What GitHub reported in run 40247244343 for the skipped matrix.
+    const placeholder = { name: "matrix.name", status: "completed", conclusion: "cancelled" };
+    const image = (conclusion, status = "completed") => ({ name: "E2E app image", status, conclusion });
+    const upstream = ["E2E app image", "E2E seeded database"];
+    expect(() => classifyTestShardJobs([image("failure"), placeholder], 3, "E2E shard", upstream)).toThrow(/Upstream job "E2E app image" completed as failure/);
+    expect(() => classifyTestShardJobs([image("cancelled")], 1, "E2E multi-lodge run", upstream)).toThrow(/completed as cancelled/);
+    // Still running or passed upstream: just pending.
+    expect(classifyTestShardJobs([image(null, "in_progress"), placeholder], 1, "E2E multi-lodge run", upstream)).toEqual(["missing 1/1"]);
+    expect(classifyTestShardJobs([image("success")], 1, "E2E multi-lodge run", upstream)).toEqual(["missing 1/1"]);
+    expect(parseShardGateArgs(["--upstream", "E2E app image", "--upstream", "E2E seeded database"]).upstream).toEqual(upstream);
   });
 
   it("names the matrix in a timeout", async () => {
@@ -252,6 +259,8 @@ describe("e2e.yml's required gates and their runners", () => {
     expect(gateStep?.["continue-on-error"]).toBeUndefined();
     const options = parseShardGateArgs(gateStep.run.replace("node scripts/ci/require-test-shards.mjs", "").match(/"[^"]*"|\S+/g).map((arg) => arg.replace(/^"|"$/g, "")));
     expect(options.label).toBe(label);
+    // Fails at once on exactly the jobs the runners need.
+    expect(options.upstream).toEqual(runner.needs.replace(/[[\]]/g, "").split(",").map((id) => e2e.jobs[id.trim()].name));
     const mine = entries.filter((entry) => entry.name.startsWith(`${label} (`));
     expect(mine).toHaveLength(options.count);
     expect(mine.map((entry) => entry.name)).toEqual(Array.from({ length: options.count }, (_, i) => `${label} (${i + 1}/${options.count})`));
@@ -292,16 +301,6 @@ describe("e2e.yml's required gates and their runners", () => {
     expect(multiLodge).toEqual([expect.objectContaining({ name: "E2E multi-lodge run (1/1)", shard: "", playwright_args: "--project=multi-lodge" })]);
   });
 
-  // The gate fails fast on any completed, non-success job whose name is still
-  // a template. Safe only while no templated job can be skipped for a
-  // legitimate reason: no job-level `if:` on one, in either gated workflow.
-  it("gives no templated job a job-level if, so the gate's fail-fast cannot misfire", () => {
-    for (const [file, parsed] of [["ci.yml", workflow], ["e2e.yml", e2e]]) {
-      for (const [id, job] of Object.entries(parsed.jobs)) {
-        if (String(job.name ?? "").includes("${{")) expect(job.if, `${file} ${id}`).toBeUndefined();
-      }
-    }
-  });
 
   it("skips heavy steps only on an explicit needed=false, never on a missing answer", () => {
     expect(e2eText).not.toMatch(/outputs\.needed == 'true'/);

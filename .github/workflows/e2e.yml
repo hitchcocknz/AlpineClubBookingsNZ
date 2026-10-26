@@ -354,7 +354,7 @@ jobs:
       - name: Require every runner job to pass
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/ci/require-test-shards.mjs --label "E2E shard" --count 3 --max-wait-minutes 95
+        run: node scripts/ci/require-test-shards.mjs --label "E2E shard" --count 3 --max-wait-minutes 95 --upstream "E2E app image" --upstream "E2E seeded database"
 
   # Required check (branch protection) for the multi-lodge runner, gated the
   # same way.
@@ -378,4 +378,4 @@ jobs:
       - name: Require every runner job to pass
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: node scripts/ci/require-test-shards.mjs --label "E2E multi-lodge run" --count 1 --max-wait-minutes 95
+        run: node scripts/ci/require-test-shards.mjs --label "E2E multi-lodge run" --count 1 --max-wait-minutes 95 --upstream "E2E app image" --upstream "E2E seeded database"
