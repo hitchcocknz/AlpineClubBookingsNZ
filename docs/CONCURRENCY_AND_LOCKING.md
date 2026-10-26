@@ -5778,7 +5778,17 @@ Counterparts:
   (`reconcileHandMadeNoteAfterCompletion`, through the inbound
   `reconcileXeroCreditNote`), so a later void is caught. A void that commits
   before the completion's link write is kept under the link's row lock and the
-  answer is refused with a 409, rolling the completion back (#4288).
+  answer is refused with a 409, rolling the completion back (#4288). Under the
+  same locks the answer also reads, plainly, the credit-note creates naming the
+  note, and refuses it when any is resolved by hand or not yet SUCCEEDED
+  (#4321). The resolve route takes none of these locks, so the condition is
+  one a resolve cannot flip: the route moves only FAILED/PARTIAL rows to
+  resolved, and a SUCCEEDED row is never resolved. A resolve committing after
+  the read therefore finds the answer already refused, never one note
+  recording two refunds - which nothing would ask about again, as the refund
+  gap readers cover card payments only. Proven against real
+  PostgreSQL with that resolve committing while the completion holds its locks
+  (`own-live-refund-note-coverage.realdb.test.ts`). No new advisory key.
 
 **A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
 runs the very same undo (`undoUnderLocks`) for an unmatched note: the same

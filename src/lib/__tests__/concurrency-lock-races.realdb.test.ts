@@ -572,6 +572,14 @@ import "./ended-booking-ask-mint-race.realdb.test";
 // confirm-pending-guests route, and the REAL settle takes it. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4357-` fixtures.
 import "./saved-card-charge-worth.realdb.test";
+// #4265 reuses it to prove a refund-note row covers only its own live,
+// non-request note: a refund request's note resolved by hand through the real
+// outbox and resolve route covers nothing, live or voided, so the bank-void
+// follow-up undoes a voided note it once called spare; a close row covered by
+// another note counts none of it (#4258); and the hand-made answer refuses a
+// note a resolved row records (#4321). Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4265-` fixtures.
+import "./own-live-refund-note-coverage.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database

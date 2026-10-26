@@ -703,7 +703,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. Split into cohesive `xero-hardening-*` sub-modules (#1208 item 5, entry re-exports the public surface); see refactor item 5 for the module map. Cleanup and the report's drift classifications are source-aware for Stripe per-delta refund notes (#2901): see "Repairing Stripe refund-note links" under Flow 3. |
 | `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: unconditionally deactivates local mirrors of notes VOIDED/DELETED in Xero, reactivates wrongly deactivated links (recorded-status only, never past the note-eligible cash — `resolveRefundNoteEligibleCash`, #2902/INV-PAY-050 less late captures Xero never received, #3635 — with notes resolved in Xero counted as coverage; landing short is applied honestly and the self-heal reissues the remainder), refuses payments with a still-executable credit-note operation (queued/running/awaiting-payment, failed-but-retryable, or a queued retry of one). No provider calls; `--apply` is bound to reviewed payment ids. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
 | `xero-refund-note-status-recorder` | Read-only provider GETs that record each linked refund credit note's live Xero status onto ALL of its local links, active or not (`--record-statuses`; run automatically before `--apply`). Exists because inbound reconciliation structurally cannot stamp a status onto an inactive link, and the repair never reactivates an unknown-status note. |
-| `xero-refund-note-status` | The one home for "does this credit-note status still count as refund coverage?" (`VOIDED`/`DELETED` do not) and for reading a link's recorded status — shared by the inbound contribution math, `sumCoveredRefundCreditNoteCents`, cleanup, the drift report and the operator repair so no path can disagree (#2901). |
+| `xero-refund-note-status` | The one home for "does this credit-note status still count as refund coverage?" (`VOIDED`/`DELETED` do not) and for reading a link's recorded status — shared by the inbound contribution math, `sumCoveredRefundCreditNoteCents`, cleanup, the drift report and the operator repair so no path can disagree (#2901). Also "does this create row count toward coverage?" (`countsTowardRefundNoteCoverage`, #4265): only its own note, never a refund request's. |
 | `xero-invoice-rounding-audit` | Read-only diagnostic that replays the pre-#1231 line maths in integer cents to flag issued invoices that would have carried the #1163 rounding drift, across **both** builder callers — per-booking invoices (`Payment.xeroInvoiceId`) and group-settlement invoices (`GroupBookingSettlement.xeroInvoiceId`). Makes **no** live-provider calls and mutates nothing (only `booking.findMany` + `groupBookingSettlement.findMany`). CLI entry: `scripts/audit-xero-invoice-rounding.ts`. See "Historical rounding-drift audit" below. |
 | `xero-credit-sync-checker` | #2501 detect-and-warn reconciliation of **applied account credit**: compares each booking's stamped `BOOKING_APPLIED` sum (BookingApp's known credit, the same figure the #2483 email nets from) against its live Xero invoice `amountCredited`, and warns admins on drift with the exact per-booking amount. Read-only, idempotent, fail-safe. See "Credit-sync drift checker" below. |
 | `xero-cron-runner` | Maps the 8 cron tasks to the workers above, records `CronJobRun` rows, gates on module + connection. |
@@ -1614,7 +1614,15 @@ on `manuallyResolvedAt`.
   executed at another watermark than it was queued at. Its amount is never
   read. Owner decision (21 Oct 2026): a voided card refund note is raised
   again automatically, even one resolved in Xero, so officers are told not to
-  replace it by hand as well, which would duplicate it. A resolved row whose
+  replace it by hand as well, which would duplicate it. A row's coverage is
+  its own, live note, and never a refund request's (#4265, owner decision
+  26 Oct 2026; `countsTowardRefundNoteCoverage`, read by this reader and by
+  `sumRefundCreditNoteCoverageOfRowsCents`): a refund request's note answers
+  the request (`INV-PAY-118`), and a row closed as covered by another refund's
+  note (`coveredByExistingNote`, #4258) raised none of its own. Such a row
+  covers nothing, live or voided, and its amount is never read; its key and id
+  are still reported, so the request's own fence holds. A voided request note
+  is #4391's to handle. A resolved row whose
   amount cannot be read, unless its note is voided or deleted (#4250), makes
   the enqueue refuse loudly (error log, "raise it by hand"). `readRefundCreditNoteGap` is the one reader of the gap
   for the self-heal list and the booking page. No new booking invoice is queued
@@ -1833,7 +1841,7 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | awaiting heal | The mirror is still active: the next night, after the heal. |
 | handled | Its nightly follow-up exists (the key is the claim); a link marker records a spare, a person's answer, or picks in full; or a person's picks add up to its amount (one pick when its amount cannot be read). Nothing more. |
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
-| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
+| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule, nor a refund request's note, #4265) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
 | unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), it recorded a card refund itself (#4312, `card-refund`: a note keyed on its `PaymentRefund`, by its payload or its key), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; nor does a card refund's own note (`isCardMoneyVoidReason`), which takes a recorded answer once Xero is checked: nothing re-raises it, so a person raises it by hand where Xero should still show it. A late capture's refund is no exception: its voided note keeps its credit note's id, so the capture's sizing (`noteLateCaptureRefunds`, `classifyLateCaptureCardNote`) still counts it and a later refund of the capture asks only for itself; any other row with nothing to pick says why and takes a recorded answer. |
 
@@ -1862,8 +1870,13 @@ transaction (`getCreditNotes`, and the payment's invoice for its contact,
 `bank-refund-void-answer.ts`; one retry, 5s wait, "Xero is busy" on a rate
 limit, "try again tomorrow" on the daily limit), checks it is an `ACCRECCREDIT` that is AUTHORISED or PAID, for the
 amount, for the invoice's contact (else the owner's), allocated to no other
-invoice and tracked by nothing else here (this payment's own inactive,
-non-voided link is reactivated), and the completion links it as a per-refund
+invoice, tracked by nothing else here (this payment's own inactive,
+non-voided link is reactivated) and named by no credit-note create, on any
+payment, that is resolved by hand or not yet SUCCEEDED (#4321: with no live
+link, a resolved row counts the note as its own refund's, and the resolve route
+can still flip an unfinished one). A FAILED row an officer resolved after making
+its note by hand names no note - the route records none - so that note is not
+recognised (#4421). The completion links it as a per-refund
 `REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
 commits before that link write is kept under the link's row lock and the answer
 is refused (#4288). After

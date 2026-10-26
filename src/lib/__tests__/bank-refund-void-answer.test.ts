@@ -143,10 +143,12 @@ describe("recordHandMadeRefundNoteLink under the link's own row lock (#4288)", (
    * unlocked check reads; `stored` is the row as the funnel reads it under its
    * lock - a void that committed in between shows only there.
    */
-  function fakeTx(stored: { metadata: unknown; active: boolean } | null) {
+  function fakeTx(stored: { metadata: unknown; active: boolean } | null, resolvedRow: { id: string } | null = null) {
     const upsert = vi.fn(async (args: { update: { active: boolean; metadata: unknown } }) => ({ active: args.update.active, metadata: args.update.metadata }));
+    const findResolvedRow = vi.fn(async () => resolvedRow);
     const tx = {
       $executeRaw: vi.fn(async () => 1),
+      xeroSyncOperation: { findFirst: findResolvedRow },
       payment: { findUnique: vi.fn(async () => ({ source: "INTERNET_BANKING", xeroRefundCreditNoteId: null })), updateMany: vi.fn() },
       xeroObjectLink: {
         findMany: vi.fn(async () => []),
@@ -156,9 +158,28 @@ describe("recordHandMadeRefundNoteLink under the link's own row lock (#4288)", (
         upsert,
       },
     };
-    return { tx: tx as never, upsert };
+    return { tx: tx as never, upsert, findResolvedRow };
   }
   const record = (tx: never) => recordHandMadeRefundNoteLink(tx, { paymentId: "pay-1", taskId: "task-1", amountCents: 20_000, note });
+
+  it("MUTATION (#4321): a note a credit-note create row records, resolved by hand or not yet SUCCEEDED, is refused, and nothing is written", async () => {
+    const { tx, upsert, findResolvedRow } = fakeTx(null, { id: "op-resolved" });
+    await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("CN-0123 is already recorded against another refund") });
+    expect(upsert).not.toHaveBeenCalled();
+    // Any payment's credit-note create naming the note by its id - never its
+    // number (an old organisation's, or a reused one) - that a resolve could
+    // still flip, or already has.
+    expect(findResolvedRow).toHaveBeenCalledWith({
+      where: {
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn-hand",
+        entityType: "CREDIT_NOTE",
+        operationType: "CREATE",
+        OR: [{ manuallyResolvedAt: { not: null } }, { status: { not: "SUCCEEDED" } }],
+      },
+      select: { id: true },
+    });
+  });
 
   it("records the checked note live, stamped with its Xero timestamp", async () => {
     const { tx, upsert } = fakeTx(null);
