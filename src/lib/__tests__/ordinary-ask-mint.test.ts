@@ -111,6 +111,24 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
     expect(mocks.listRecentPaymentIntentsMatching).not.toHaveBeenCalled();
   });
 
+  it("#4079: a refused replay whose key names no door is thrown without a lookup - no intent could match it", async () => {
+    const noDoor = planOrdinaryAskMint({
+      bookingId: BOOKING,
+      bookingModificationId: "edit_no_door",
+      stripeKey: "pi_written_earlier",
+      frozenAmountCents: 6_000,
+      amountCents: 6_000,
+    });
+    const err = refusal();
+    mocks.createPaymentIntent.mockRejectedValue(err);
+    stripeHolds(intent("pi_runner", { metadata: { bookingId: BOOKING, type: "modification_additional", reason: noDoor.metadata.reason } }));
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan: noDoor, customerId: "cus_door", recovery: RECOVERY }),
+    ).rejects.toBe(err);
+    expect(mocks.listRecentPaymentIntentsMatching).not.toHaveBeenCalled();
+  });
+
   it("any other failure is thrown as it came, without a lookup", async () => {
     const err = stripeSdkError({ type: "api_error" });
     mocks.createPaymentIntent.mockRejectedValue(err);
@@ -121,7 +139,7 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
     expect(mocks.listRecentPaymentIntentsMatching).not.toHaveBeenCalled();
   });
 
-  it("a refused replay adopts the one unrecorded intent the key minted, looked for from just before the recovery was written", async () => {
+  it("a refused replay adopts the one unrecorded intent the key minted, looked for from just before the recovery was written to just after", async () => {
     mocks.createPaymentIntent.mockRejectedValue(refusal());
     stripeHolds(intent("pi_other_booking", { metadata: { ...intent("x").metadata, bookingId: "bk_other" } }), intent("pi_door"));
 
@@ -137,6 +155,8 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
       expect.objectContaining({
         customerId: "cus_moved",
         createdSince: new Date(RECOVERY.createdAt.getTime() - MINTED_INTENT_LOOKBACK_MS),
+        // #4079: the scan reads nothing created after the row could have been written.
+        createdUntil: new Date(RECOVERY.createdAt.getTime() + DOOR_INTENT_CLOCK_SKEW_MS),
       }),
     );
     expect(mocks.paymentTransactionFindMany).toHaveBeenCalledWith({
@@ -161,6 +181,17 @@ describe("mintOrdinaryAskIntent (#4036)", () => {
     mocks.createPaymentIntent.mockRejectedValue(err);
     const late = RECOVERY.createdAt.getTime() / 1000 + DOOR_INTENT_CLOCK_SKEW_MS / 1000 + 1;
     stripeHolds(intent("pi_later_door", { created: late }));
+
+    await expect(
+      mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),
+    ).rejects.toBe(err);
+    expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
+  });
+
+  it("#4079: does not adopt an intent under the runner's own reason - only the pre-#4036 runner sent it for a door's key", async () => {
+    const err = refusal();
+    mocks.createPaymentIntent.mockRejectedValue(err);
+    stripeHolds(intent("pi_old_runner", { metadata: { ...intent("x").metadata, reason: "modification_additional_recovery" } }));
 
     await expect(
       mintOrdinaryAskIntent({ format: CLUB_FORMAT_TEST, plan, customerId: "cus_door", recovery: RECOVERY }),

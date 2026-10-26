@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { XERO_OPERATION_REASON_MAX, XERO_OPERATION_REASON_MIN } from "@/lib/xero-operation-resolution";
 import { createAuditLog } from "@/lib/audit";
 import { requireAdmin } from "@/lib/session-guards";
 import {
@@ -9,7 +10,7 @@ import {
 import logger from "@/lib/logger";
 
 const markFailedSchema = z.object({
-  reason: z.string().trim().min(3).max(500),
+  reason: z.string().trim().min(XERO_OPERATION_REASON_MIN).max(XERO_OPERATION_REASON_MAX),
 });
 
 /**

@@ -973,6 +973,29 @@ describe("Cron: Confirm Pending Bookings", () => {
         update: expect.objectContaining({ amountCents: 12500 }),
       }),
     );
+    // #4357 (`INV-PAY-119`): the confirmation email quotes what was charged.
+    expect(mockSendConfirmedEmail).toHaveBeenCalledWith(
+      expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(),
+      12500,
+      CLUB_FORMAT_TEST,
+      expect.anything(),
+    );
+  });
+
+  it("#4357: a $0 price carrying a recorded change fee is charged the fee, never confirmed at no charge", async () => {
+    const booking = makePendingBooking("b1", { finalPriceCents: 0, ownPayment: { changeFeeCents: 2500 } });
+    mockPendingBookings([booking]);
+    mockCheckCapacityForGuestRanges.mockResolvedValue({ available: true, minAvailable: 10, nightDetails: [] });
+    mockChargePaymentMethod.mockResolvedValue({ id: "pi_auto_1", status: "succeeded", amount: 2500 });
+    mockPaymentUpdate.mockResolvedValue({});
+    mockBookingUpdate.mockResolvedValue({});
+
+    await confirmPendingBookings();
+
+    expect(mockChargePaymentMethod).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2500 }));
+    expect(mockPaymentUpsert).not.toHaveBeenCalledWith(
+      expect.objectContaining({ create: expect.objectContaining({ amountCents: 0, status: "SUCCEEDED" }) }),
+    );
   });
 
   it("charges a split non-member child using the parent booking's SetupIntent-saved card, without copying the card onto the child's row (#3269)", async () => {

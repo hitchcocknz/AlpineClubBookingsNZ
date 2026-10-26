@@ -11,14 +11,15 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/prisma", () => ({ prisma: {} }));
 
-import { readResolvedRefundCreditNoteCoverage } from "@/lib/xero-resolved-in-xero-fences";
+import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageOfRowsCents } from "@/lib/xero-resolved-in-xero-fences";
+import { countsTowardRefundNoteCoverage } from "@/lib/xero-refund-note-status";
 
 const PAYMENT_ID = "pay-4250";
 const NOTE_ID = "note-n1";
 
 type Link = { xeroObjectId: string; active: boolean; metadata: unknown };
 
-type Row = { id: string; correlationKey: string | null; requestPayload: unknown; xeroObjectId: string | null };
+type Row = { id: string; correlationKey: string | null; requestPayload: unknown; xeroObjectId: string | null; responsePayload?: unknown };
 
 /** The two reads the reader makes, over in-memory rows; links honour the `active` and `xeroObjectId` filters. */
 function fakeDb(requestPayload: unknown, links: Link[], rows?: Row[]) {
@@ -101,5 +102,65 @@ describe("readResolvedRefundCreditNoteCoverage: a resolved row by its note's lin
     expect(coverage.operationIds[coverage.correlationKeys.indexOf("key-live")]).toBe("row-live");
     expect(coverage.operationIds).toEqual(["row-live", "row-voided", "row-keyless"]);
     expect(coverage.coveredCents).toBe(50_000);
+  });
+});
+
+/**
+ * #4265 (owner decision 26 Oct 2026): a row's coverage is its OWN note, LIVE,
+ * and never a refund request's. Folded in: #4258's row closed as covered by
+ * another refund's note. The real-PostgreSQL proof, through the real outbox,
+ * resolve route and bank-void follow-up, is
+ * `own-live-refund-note-coverage.realdb.test.ts`.
+ */
+describe("a row's coverage is its own live, non-request note (#4265, #4258)", () => {
+  const REQUEST_PAYLOAD = { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 30_000, refundMethod: "internet-banking", refundRequestId: "req-1" };
+  const REQUEST_KEY = `payment:${PAYMENT_ID}:refund-request-credit-note:req-1:v1`;
+  const COVERED = { existingCreditNoteId: NOTE_ID, coveredByExistingNote: true };
+
+  it("the predicate: an ordinary row counts; a refund request's (by payload or by key) and a covered-by-existing row do not", () => {
+    expect(countsTowardRefundNoteCoverage({ requestPayload: READABLE, responsePayload: null, correlationKey: "key-n1" })).toBe(true);
+    expect(countsTowardRefundNoteCoverage({ requestPayload: REQUEST_PAYLOAD, responsePayload: null })).toBe(false);
+    // A row whose payload was lost is still a request's by its key.
+    expect(countsTowardRefundNoteCoverage({ requestPayload: null, responsePayload: null, correlationKey: REQUEST_KEY })).toBe(false);
+    expect(countsTowardRefundNoteCoverage({ requestPayload: READABLE, responsePayload: COVERED })).toBe(false);
+  });
+
+  it("MUTATION: a refund request's note resolved by hand covers nothing; its key is still reported for the request's own fence", async () => {
+    // Its link is request-role, which the payment's refund-note sets never read, live or voided: no link here.
+    const coverage = await readResolvedRefundCreditNoteCoverage(
+      PAYMENT_ID,
+      fakeDb(REQUEST_PAYLOAD, [], [{ id: "row-rq", correlationKey: REQUEST_KEY, requestPayload: REQUEST_PAYLOAD, xeroObjectId: NOTE_ID }]),
+    );
+    expect(coverage).toEqual({ coveredCents: 0, correlationKeys: [REQUEST_KEY], operationIds: ["row-rq"], unreadableOperationIds: [] });
+  });
+
+  it("MUTATION: a refund request's row whose amount cannot be read refuses nothing - its amount is never read", async () => {
+    const coverage = await readResolvedRefundCreditNoteCoverage(
+      PAYMENT_ID,
+      fakeDb(null, [], [{ id: "row-rq", correlationKey: REQUEST_KEY, requestPayload: null, xeroObjectId: null }]),
+    );
+    expect(coverage).toEqual({ coveredCents: 0, correlationKeys: [REQUEST_KEY], operationIds: ["row-rq"], unreadableOperationIds: [] });
+  });
+
+  it("an ordinary resolved row beside it still covers its recorded amount", async () => {
+    const coverage = await readResolvedRefundCreditNoteCoverage(
+      PAYMENT_ID,
+      fakeDb(READABLE, [], [
+        { id: "row-rq", correlationKey: REQUEST_KEY, requestPayload: REQUEST_PAYLOAD, xeroObjectId: "note-rq" },
+        { id: "row-n1", correlationKey: "key-n1", requestPayload: READABLE, xeroObjectId: null },
+      ]),
+    );
+    expect(coverage.coveredCents).toBe(25_000);
+    expect(coverage.correlationKeys).toEqual([REQUEST_KEY, "key-n1"]);
+  });
+
+  it("MUTATION (#4258): one refund's rows - a row closed as covered by another refund's live note counts nothing of it; the raising row still does", async () => {
+    const covered = { id: "row-covered", correlationKey: "key-b", requestPayload: READABLE, xeroObjectId: NOTE_ID, responsePayload: COVERED };
+    const raising = { id: "row-n1", correlationKey: "key-n1", requestPayload: READABLE, xeroObjectId: NOTE_ID, responsePayload: null };
+    const liveLink = [link(true, "AUTHORISED")];
+    expect(await sumRefundCreditNoteCoverageOfRowsCents(PAYMENT_ID, { id: "row-covered" }, fakeDb(READABLE, liveLink, [covered]) as never)).toBe(0);
+    expect(await sumRefundCreditNoteCoverageOfRowsCents(PAYMENT_ID, { id: "row-n1" }, fakeDb(READABLE, liveLink, [raising]) as never)).toBe(25_000);
+    // Both asked together: the note counts once, through the row that raised it.
+    expect(await sumRefundCreditNoteCoverageOfRowsCents(PAYMENT_ID, {}, fakeDb(READABLE, liveLink, [covered, raising]) as never)).toBe(25_000);
   });
 });

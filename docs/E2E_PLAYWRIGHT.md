@@ -394,8 +394,47 @@ The `two-factor` module is already enabled for the run by
 
 `.github/workflows/e2e.yml` runs the suite on PRs and pushes to `main`. It is a
 **blocking gate** — a red E2E job fails the workflow (promoted from advisory in
-#1315 after a stable green window on `main`). Check the job log and the uploaded
-`playwright-report` artifact when it goes red.
+#1315 after a stable green window on `main`). Check the failing shard's log and
+its `playwright-report-<run>-shard-<n>` artifact when it goes red.
+
+### How a run is laid out (#4397)
+
+A run used to take ~29 minutes: each of the two E2E jobs built the app image
+(~10 min), ran the demo seed (~5 min) and then the suite on one worker
+(~12 min). Now:
+
+| Job | What it does |
+| --- | --- |
+| `E2E app image` | builds the image once and uploads it (`docker save`, zstd) as a run artifact |
+| `E2E seeded database` | in parallel: migrates, runs the single-lodge seeds and dumps the result with its club day (`scripts/e2e-stack.sh snapshot`). It holds **no secrets**: the dump is downloadable from a public repository, so Stripe test credentials are seeded on each runner after the restore |
+| `Playwright E2E` | **required check.** Runs shard 1 itself (`E2E_SHARD=1/3`, with `pre-setup`), then requires `E2E shard (2/3)` and `(3/3)` to pass (`scripts/ci/require-test-shards.mjs --from 2`, the gate `verify` uses for the unit shards) |
+| `E2E shard (2/3)`, `(3/3)` | the other two thirds of the `chromium` spec files, each on its own stack |
+| `E2E multi-lodge` | **required check.** Runs the `multi-lodge` project itself, on the restored database plus the second-lodge seed |
+
+Every browser job runs one composite action, `.github/actions/e2e-run`: load the image, restore the dump (`E2E_DB_SNAPSHOT`, which also sets the snapshot's club day), prepare, run, report, tear down. The two required jobs may not use `needs:`: GitHub counts a skipped required check as passing. So they start at once and wait in a step for this run's two artifacts (`scripts/ci/wait-for-run-artifacts.mjs`), failing at once if the image or database job fails. They do not idle: an earlier layout had them only poll, which held two runners for the whole run and, under the account's concurrent-job cap, left shards queued for 25 minutes.
+
+Each shard has its own stack and database, so `workers: 1` still means nothing
+interleaves on a database. Every shard runs `setup`. `pre-setup` runs only in
+shard 1, after that shard's `chromium` slice. Playwright's own `--shard` is not
+used: it keeps the `setup` → `chromium` → `pre-setup` dependency chain whole,
+which put all 203 tests in shard 1. `scripts/ci/e2e-spec-shard.mjs` deals the
+sorted spec files round-robin instead, applied as the project's `testMatch`.
+**A spec must not depend on state another spec file leaves behind**: a shard
+never sees the other shards' files.
+
+**Pull requests that cannot move the suite skip it.** Every E2E job's first step
+is `scripts/ci/e2e-scope.mjs`. When every changed file is docs, a unit test or
+an agent note (an allowlist; anything else runs the suite), the heavy steps
+skip, the jobs pass, and so do the required checks. Pushes always run the suite.
+The skip is a step condition, never a job-level `if:`, so each required check
+still reports a real result (`CONTRIBUTING.md` → "Branch protection").
+
+Locally nothing changes: `pnpm run test:e2e` prepares, seeds and runs the whole
+suite on one stack. To reproduce one CI shard, set `E2E_SHARD=2/3` on the run.
+
+**Re-run all jobs, not just the failed ones.** A partial re-run reuses the
+first attempt's seeded database and its club day, and its artifacts expire
+after a day; a fresh run reseeds for today.
 
 Note on scope: `main` is branch-protected and `Playwright E2E` is one of the
 required status checks, so a red E2E run hard-blocks a (non-admin) merge.
@@ -421,7 +460,7 @@ advisory in #1623 and promoted to blocking in #1655 (the #1315 precedent) after
 its observation window — the one observed flake class was root-caused and fixed
 test-side in #1650, and the job's first functional run caught a real product
 bug (#1628). A red run blocks a (non-admin) merge exactly like `Playwright
-E2E`; check the job log and the `playwright-report-multi-lodge` artifact when
+E2E`; check its log and its `playwright-report-<run>-multi-lodge` artifact when
 it goes red. It stays a separate job so the second-lodge seed never reaches
 the single-lodge stack the main suite asserts on.
 
@@ -475,7 +514,7 @@ two mechanisms below**, and in four of the five a *single* transient failure was
 turned into three by the retry policy. Neither mechanism is a "timing" problem,
 so neither is fixed by a longer timeout, an extra retry, or a `waitForTimeout`.
 The third invariant — no fixed dates — is the standing rule that stops a further
-class from joining them.
+class from joining them; invariants 4–6 were learned from later flakes.
 
 ### 1. Retries re-run against the database the failed attempt left behind
 
@@ -862,6 +901,44 @@ completes Alice's onboarding through the shared helper, so by the time the
 retroactive spec's member test runs the gate is gone. Running one spec on its own
 — exactly what you do while working on it — leaves the gate outstanding. **A spec
 must pass run on its own, not only in file order.**
+
+### 6. Leaving the page does not stop the writes it started (issue #4014)
+
+A full navigation, such as the Xero Connect step's OAuth round-trip, keeps the
+old document alive until the new page's response arrives, and every `fetch`
+it has in flight keeps going. A write the spec did not wait for can therefore
+land in the middle of the round-trip it set off, or after it.
+
+`xero-setup-wizard.spec.ts` hit both halves of this in E2E run 37830486574:
+
+- **The spec's own save.** On the Replace-credentials path, "Both credentials
+  stored" and an enabled Continue are on screen before the click. So the spec
+  reached Connect while the save's second write was still queued. That write
+  committed after the OAuth callback, and a credential write resets the Xero
+  connection by design, so the page came back Not Connected.
+- **The wizard's resume cursor.** The shell saved "credentials" and then
+  "connect" as two independent writes. The browser held both behind a socket
+  pool that the admin sidebar's prefetches had filled, and the server committed
+  the older one second. So the page came back on Credentials; the timestamps
+  point to a socket pool the sidebar's prefetches had filled, an inference
+  rather than a reproduction. `useWizardCursor` now sends cursor writes one at a
+  time, newest next, all as keepalive requests, and sends a still-waiting write
+  as the page is left. Even so, the new page can read the cursor before that
+  last write commits, which is why the spec still waits.
+
+The trace's request timings hid both. A request's wait for a free socket is
+not part of its HAR duration. The server's own timestamps gave the real order:
+the row's `updatedAt`, the credential's `setAt` and the `Date` header.
+
+Two rules follow:
+
+- **Assert on what your action changed, not on standing state.** Wait for the
+  message only this save writes (`Credentials saved`) before moving on.
+- **Before leaving the page, wait for the writes the next page reads** —
+  any request whose result the next page loads, not only the cursor. Both
+  wizard specs await `wizardCursorSave` (`e2e/helpers/wizard-cursor.ts`)
+  before pressing Connect, because the post-OAuth page resumes on the stored
+  step.
 
 ### What is deliberately NOT the fix
 

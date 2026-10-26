@@ -48,7 +48,13 @@ describe("whether a cancellation hand-back's note stands on its own record (#428
   });
 
   it("MUTATION (review F2): the payment holds a card charge, even before any card refund lands", async () => {
-    await expect(cancellationHandBackNotedOnItsOwnRecord(store({ cardCharges: 1 }).db, "payment-1", TASK)).resolves.toBe(true);
+    const { db } = store({ cardCharges: 1 });
+    await expect(cancellationHandBackNotedOnItsOwnRecord(db, "payment-1", TASK)).resolves.toBe(true);
+    // #4239 F1: any STRIPE row counts, in any status and of any kind - a card
+    // attempt that failed or was cancelled before the payment was marked paid
+    // by hand still makes the hand-back its own record.
+    const { paymentTransaction } = db as unknown as { paymentTransaction: { count: ReturnType<typeof vi.fn> } };
+    expect(paymentTransaction.count).toHaveBeenCalledWith({ where: { paymentId: "payment-1", source: "STRIPE" } });
   });
 
   it("MUTATION: the payment has card refund rows (an organiser child's refund names no charge row)", async () => {

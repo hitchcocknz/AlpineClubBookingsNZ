@@ -92,7 +92,9 @@ export function resolveBookingDetailPayment({
       wholeLodgeHold: booking.wholeLodgeHold,
     }) &&
     !booking.organiserSettled &&
-    booking.finalPriceCents > 0;
+    // #4357 (`INV-PAY-119`): a $0 booking still owing a recorded change fee
+    // can switch too.
+    bookingWorthCents({ finalPriceCents: booking.finalPriceCents, changeFeeCents: booking.payment?.changeFeeCents ?? null }) > 0;
   // #3924: a payment of money (`hasCapturedPayment`) that Net Collected's
   // capture rule also says took it (`netCollectedPaymentTookMoney`), the rule
   // the retained line below reads - not the status alone. A never-paid
