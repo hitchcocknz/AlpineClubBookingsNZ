@@ -1635,8 +1635,8 @@ _Legacy: settles tasks raised before #4317._
   (`bank-refund-void-follow-up.ts`) handles every voided `REFUND_CREDIT_NOTE`
   on an `INTERNET_BANKING` payment EXACTLY ONCE (`bank-refund-void-scan.ts`):
 - **A spare moves nothing.** When live notes, plus notes resolved by hand
-  (`INV-INT-025`: a row's own live note, never a refund request's, #4265),
-  still cover every bank hand-back, a marker on the link records it.
+  (`INV-INT-025`, #4265), still cover every bank hand-back, a marker on the
+  link records it.
 - **Otherwise one transaction**, under `lock(1)` then the Payment row:
   re-classify, defer while a create could mint, claim with the follow-up's
   unique key `bank-refund-void:<payment>:<note>`, then unwind the allocation,
@@ -1652,7 +1652,9 @@ _Legacy: settles tasks raised before #4317._
 - **Nothing is raised in Xero without a person.** No email, booking event or
   provider call. Completing the follow-up needs an answer: a fresh note keyed
   and sized on it, or a hand-made note checked in Xero first and then tracked,
-  never one another record tracks or a row resolved by hand records (#4321).
+  never one another record tracks or an unfinished or hand-resolved create
+  row names (#4321; a FAILED row resolved by hand names no note,
+  FOLLOWUP_4321_CAPTURE).
 - **Report-only** until `XERO_ENABLE_BANK_REFUND_VOID_WRITES=true`: nothing,
   the person's pick included, writes before then.
   Pinned by `bank-refund-void-follow-up` (unit and realdb),

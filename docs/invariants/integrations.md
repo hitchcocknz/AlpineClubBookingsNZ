@@ -482,35 +482,34 @@ re-run, never offered for retry, never re-minted beside (owner decision,
 
 - **One predicate.** `isResolvedInXero` (`xero-operation-resolution.ts`); a
   `where` clause spells it on `manuallyResolvedAt`. The mark leaves the row
-  `FAILED`/`PARTIAL`, so status alone reads live.
+  `FAILED`/`PARTIAL`, so status alone reads it as live.
 - **Retries refuse it.** `getXeroOperationRetryMeta` refuses first; retry and
   requeue answer 409; the drain closes that queued row `CANCELLED`.
 - **Enqueues and the outbox respect it.** A resolved refund note covers its
-  recorded amount, so later refunds still get notes. A row counts only its own
-  live note, never a refund request's (#4265, `countsTowardRefundNoteCoverage`):
-  none voided or deleted (#4250), none it closed as covered by. One sum
+  recorded amount, so later refunds still get notes, unless voided or deleted
+  (#4250) or a refund request's (#4265); one sum
   (`sumRefundCreditNoteCoverageCents`) caps the enqueue, the send and the gap. No booking invoice is
-  queued while the latest create is resolved; single-booking force-sync alone
-  overrides, audited. Before any Xero call, the outbox cancels a copy queued
-  before a sibling's resolve.
+  queued while the latest create is resolved; only single-booking force-sync
+  overrides, and audits it. The outbox cancels, before any Xero call, a copy
+  queued before a sibling was resolved.
 - **Resolve and retry.** The route refuses while the operation is RUNNING, a
   live copy is queued, or a queued retry is RUNNING or started before the mark
-  and completed after it - checked after the mark is written, then withdrawn.
-  Open: clock skew between instances, and a `retryXeroSyncOperation` caller
-  bypassing the drain.
-- **Applied-credit operations are retry-only.** The route refuses them; an
-  older mark on one is void on the retry path.
+  and completed after it - checked after the mark is written, which is then
+  withdrawn. What remains: clock skew between instances, and a caller of
+  `retryXeroSyncOperation` that bypasses the drain.
+- **Applied-credit operations are retry-only.** The route refuses them, and a
+  mark on one written before this release is void on the retry path.
 - **Done is not absent.** `getBlockingOperation` returns `retryable`, `blocked`
   or `resolved`; a resolved row never outranks a live one and is never dropped.
-  `buildRetryAction` takes only `retryable`. With no document recorded, the
-  repair tool and the booking page report `RESOLVED_IN_XERO_BY_OFFICER` (info,
-  no action).
+  `buildRetryAction` takes only `retryable`. Where no document is recorded, the
+  repair tool reports `RESOLVED_IN_XERO_BY_OFFICER` (info, no action), and the
+  booking page says the same.
 
 Pinned by `xero-operation-retry.test.ts`, `xero-operation-queue.test.ts`,
 `xero-operation-routes.test.ts`, `xero-operations-panel-failed-default.test.tsx`,
 `xero-operation-outbox.test.ts`,
 `xero-booking-repair.test.ts`, `refunds-missing-credit-notes.test.ts`,
-`booking-provider-mismatches.test.ts`, `own-live-refund-note-coverage.realdb.test.ts`.
+`booking-provider-mismatches.test.ts`.
 
 ## Stored outbox payloads (#3971)
 

@@ -8,12 +8,16 @@
     spare, so the nightly check left a $200 refund with no credit in Xero.
   - A refund closed as "covered by another refund's note" was credited with
     that other refund's whole note.
-  - A credit note already recorded against one refund, resolved by hand, could
-    also be accepted as the hand-made note for another.
+  - A credit note the app had raised for one refund, whose Xero operation was
+    resolved by hand or not yet finished, could also be accepted as the
+    hand-made note for another.
 
-  Now a refund counts only its own live note, never a refund request's. Such a
-  void is undone and put back on the refund list as owed, as the nightly check
-  intends. Answering "already recorded it in Xero myself" with a note that
-  another refund already records is refused with a plain message, and nothing
-  is recorded. Refunds that had been wrongly treated as covered surface on the
-  next nightly run; nothing is changed retrospectively by this release.
+  Now a refund counts only its own live note, never a refund request's. A
+  voided note that the nightly check judges after this release is undone and
+  put back on the refund list as owed, as the check intends. A void the check
+  already marked spare before this release stays marked and is not looked at
+  again; this release changes no existing record. Answering "already recorded
+  it in Xero myself" with a note that such an operation records is refused with
+  a plain message, and nothing is recorded. The app still cannot recognise a
+  note made by hand in Xero for a failed operation that was then marked
+  resolved, because it never learns that note's number.

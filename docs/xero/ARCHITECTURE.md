@@ -1869,9 +1869,12 @@ transaction (`getCreditNotes`, and the payment's invoice for its contact,
 limit, "try again tomorrow" on the daily limit), checks it is an `ACCRECCREDIT` that is AUTHORISED or PAID, for the
 amount, for the invoice's contact (else the owner's), allocated to no other
 invoice, tracked by nothing else here (this payment's own inactive,
-non-voided link is reactivated) and recorded by no refund-note create resolved
-by hand, on any payment (#4321: with no live link, that row counts the note as
-its own refund's), and the completion links it as a per-refund
+non-voided link is reactivated) and named by no credit-note create, on any
+payment, that is resolved by hand or not yet SUCCEEDED (#4321: with no live
+link, a resolved row counts the note as its own refund's, and the resolve route
+can still flip an unfinished one). A FAILED row an officer resolved after making
+its note by hand names no note - the route records none - so that note is not
+recognised (FOLLOWUP_4321_CAPTURE). The completion links it as a per-refund
 `REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
 commits before that link write is kept under the link's row lock and the answer
 is refused (#4288). After
