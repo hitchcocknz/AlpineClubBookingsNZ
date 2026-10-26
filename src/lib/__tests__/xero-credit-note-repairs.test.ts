@@ -695,6 +695,75 @@ describe("the un-refund guard's limits and the write's claim (#3979 review C)", 
   });
 });
 
+// #4095 review, item 2: the kept settle's recount passes no note of its own.
+// Every note, the correction included, counts from its links as the repair
+// reads them, after the payment rows: nothing read before the repair is used.
+describe("a recount with no note being synced (#4095 review, item 2)", () => {
+  const keptReceipt = (overrides: Record<string, unknown> = {}) =>
+    payment({ source: PaymentSource.INTERNET_BANKING, amountCents: 30_000, xeroInvoiceId: "inv-1", updatedAt: new Date("2026-07-01T00:00:00.000Z"), ...overrides });
+  let correctionStatus = "AUTHORISED";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.paymentUpdateMany.mockResolvedValue({ count: 1 });
+    mocks.paymentTransactionAggregate.mockResolvedValue({ _sum: { refundedAmountCents: 0 } });
+    mocks.manualRefundTaskFindMany.mockResolvedValue([]);
+    // The receipt the keep captured at the stored figure.
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { paymentId: "pay-1", kind: "PRIMARY", source: PaymentSource.INTERNET_BANKING, status: PaymentStatus.SUCCEEDED, reason: "internet_banking_booking_payment", createdAt: new Date("2026-06-01T00:00:00.000Z") },
+    ]);
+    mocks.xeroSyncOperationFindMany.mockResolvedValue([
+      { xeroObjectId: "cn-correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
+    ]);
+    correctionStatus = "AUTHORISED";
+    mocks.xeroObjectLinkFindMany.mockImplementation(async ({ where }: { where: { role?: unknown } }) => {
+      if (where.role === "MODIFICATION_CREDIT_NOTE_ALLOCATION") {
+        return [{ localId: "mod-1", xeroObjectId: "alloc-correction", metadata: { creditNoteId: "cn-correction", invoiceId: "inv-1", amountCents: 10_000 } }];
+      }
+      if (where.role === "MODIFICATION_CREDIT_NOTE") return [{ xeroObjectId: "cn-correction", metadata: { status: correctionStatus } }];
+      return [];
+    });
+  });
+
+  const recount = () =>
+    repairRefundedPaymentBusinessState({
+      creditNoteId: null,
+      // Read as live if it counted: a recount with no note must ignore it.
+      creditNote: { status: "AUTHORISED", total: 50 } as never,
+      directPaymentIds: ["pay-1"],
+      modificationRefundAmountsByPaymentId: new Map(),
+    });
+
+  it("counts a synced correction from its links against the kept receipt", async () => {
+    mocks.paymentFindMany.mockResolvedValue([keptReceipt()]);
+
+    await expect(recount()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 1 });
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { refundedAmountCents: 10_000, status: PaymentStatus.PARTIALLY_REFUNDED } }),
+    );
+    // No current note: no refund-note row of its own is read, nor any lock taken.
+    expect(mocks.transaction).not.toHaveBeenCalled();
+  });
+
+  it("a correction voided before the recount reads its link counts nothing, so the void is never overwritten", async () => {
+    mocks.paymentFindMany.mockResolvedValue([keptReceipt({ refundedAmountCents: 10_000, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+    correctionStatus = "VOIDED";
+
+    await recount();
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED } }),
+    );
+  });
+
+  it("MUTATION: the creditNote passed adds nothing as a current note", async () => {
+    mocks.paymentFindMany.mockResolvedValue([keptReceipt()]);
+    mocks.xeroObjectLinkFindMany.mockResolvedValue([]);
+
+    await expect(recount()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0 });
+    expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
+  });
+});
+
 describe("an invoice correction counts only against a receipt recorded at the stored figure (#3979 review A)", () => {
   beforeEach(() => {
     vi.clearAllMocks();

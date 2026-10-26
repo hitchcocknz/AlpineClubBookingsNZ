@@ -4679,9 +4679,22 @@ describe("processStoredXeroInboundEvents", () => {
       mocks.txOperationFindMany.mockResolvedValue([
         { xeroObjectId: "cn_correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
       ]);
-      mocks.linkFindFirst.mockImplementation(async (args: { where?: { xeroObjectId?: string } }) => {
-        if (args.where?.xeroObjectId === "cn_correction") throw new Error("database went away");
-        return null;
+      // The recount's own read of the payment (#4095 review, item 2: the
+      // inbound recount with no note being synced) fails after the commit. The
+      // helper's queued reads are answered by shape instead, so the recount's
+      // read never takes one meant for a later reader.
+      const linkRead = await mocks.paymentFindMany();
+      const settleRead = await mocks.paymentFindMany();
+      const ownerRead = await mocks.paymentFindMany();
+      mocks.paymentFindMany.mockClear();
+      const recountReads: unknown[] = [];
+      mocks.paymentFindMany.mockImplementation(async (args: { include?: unknown; select?: { updatedAt?: boolean; xeroInvoiceNumber?: boolean } }) => {
+        if (args?.select?.updatedAt) {
+          recountReads.push(args);
+          throw new Error("database went away");
+        }
+        if (args?.include) return settleRead;
+        return args?.select?.xeroInvoiceNumber ? linkRead : ownerRead;
       });
 
       await expect(processStoredXeroInboundEvents()).resolves.toMatchObject({ succeeded: 0, failed: 1 });
@@ -4689,9 +4702,7 @@ describe("processStoredXeroInboundEvents", () => {
       // The settle committed and kept the stored figure first.
       expect(mocks.paymentTransactionUpdateMany.mock.calls[0][0].data).not.toHaveProperty("amountCents");
       expect(vi.mocked(sendAdminBankTransferSettlementFigureAlert).mock.calls[0][0]).toMatchObject({ keptReason: "cash-incomplete" });
-      expect(mocks.linkFindFirst).toHaveBeenCalledWith(
-        expect.objectContaining({ where: expect.objectContaining({ xeroObjectId: "cn_correction", role: "MODIFICATION_CREDIT_NOTE" }) }),
-      );
+      expect(recountReads).toEqual([expect.objectContaining({ where: { id: { in: ["pay_ib_gate"] } } })]);
       expect(mocks.inboundUpdate).toHaveBeenCalledWith({
         where: { id: "evt_ib_gate" },
         data: expect.objectContaining({

@@ -7,18 +7,15 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   linkFindFirst: vi.fn(),
+  linkFindMany: vi.fn(),
   repair: vi.fn(),
-  resolve: vi.fn(),
   readModificationNoteCash: vi.fn(),
   loggerError: vi.fn(),
 }));
 
-vi.mock("@/lib/prisma", () => ({ prisma: { xeroObjectLink: { findFirst: mocks.linkFindFirst } } }));
+vi.mock("@/lib/prisma", () => ({ prisma: { xeroObjectLink: { findFirst: mocks.linkFindFirst, findMany: mocks.linkFindMany } } }));
 vi.mock("@/lib/logger", () => ({ default: { error: mocks.loggerError, warn: vi.fn(), info: vi.fn() } }));
 vi.mock("@/lib/xero-inbound/credit-note-repairs", () => ({ repairRefundedPaymentBusinessState: mocks.repair }));
-vi.mock("@/lib/xero-inbound/modification-note-refunds", () => ({
-  resolveModificationRefundAmountsByPaymentId: mocks.resolve,
-}));
 vi.mock("@/lib/xero-inbound/account-credit-modification-notes", () => ({
   readModificationNoteCash: mocks.readModificationNoteCash,
 }));
@@ -27,70 +24,57 @@ import { recountCorrectionsAfterKeptSettle } from "@/lib/xero-inbound/kept-settl
 import { decideInternetBankingReceiptFigure } from "@/lib/xero-inbound/settle-from-cash";
 
 const INVOICE_ID = "inv-4095";
+const PAYMENT_ID = "pay-1";
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.linkFindFirst.mockResolvedValue({ metadata: { status: "AUTHORISED", total: 100 } });
-  mocks.resolve.mockResolvedValue(new Map([["pay-1", 10_000]]));
-  mocks.repair.mockResolvedValue({ matchedPaymentIds: ["pay-1"], changedPaymentIds: ["pay-1"] });
+  // The repair's own result shape (`RefundedPaymentBusinessStateRepairResult`).
+  mocks.repair.mockResolvedValue({ matchedPayments: 1, updatedPayments: 1 });
 });
 
 describe("recountCorrectionsAfterKeptSettle (#4095 items 5 and 12)", () => {
-  it("recounts a synced correction as its own sync does: its contribution by invoice, then the repair", async () => {
-    await expect(recountCorrectionsAfterKeptSettle(INVOICE_ID, [{ id: "note-1", appliedCents: 10_000 }])).resolves.toEqual([]);
+  it("MUTATION: recounts the payment with no note being synced, so every correction counts from its links as the repair reads them (#4095 review, item 2)", async () => {
+    await expect(
+      recountCorrectionsAfterKeptSettle(INVOICE_ID, PAYMENT_ID, [{ id: "note-1", appliedCents: 10_000 }]),
+    ).resolves.toEqual([]);
 
-    expect(mocks.linkFindFirst).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({ xeroObjectType: "CREDIT_NOTE", xeroObjectId: "note-1", role: "MODIFICATION_CREDIT_NOTE", active: true }),
-      }),
-    );
-    expect(mocks.resolve).toHaveBeenCalledWith({
-      creditNoteId: "note-1",
-      isModificationNote: true,
-      allocationTargets: [{ invoiceId: INVOICE_ID, amountCents: 10_000 }],
-    });
     expect(mocks.repair).toHaveBeenCalledTimes(1);
-    const input = mocks.repair.mock.calls[0][0];
-    expect(input).toMatchObject({
-      creditNoteId: "note-1",
-      creditNote: { status: "AUTHORISED", total: 100 },
-      directPaymentIds: [],
-      modificationRefundAmountsByPaymentId: new Map([["pay-1", 10_000]]),
+    expect(mocks.repair).toHaveBeenCalledWith({
+      creditNoteId: null,
+      creditNote: {},
+      directPaymentIds: [PAYMENT_ID],
+      modificationRefundAmountsByPaymentId: new Map(),
     });
-    // The repair's retry re-resolves the contribution, as the note's own sync does.
-    await input.recomputeModificationRefundAmounts();
-    expect(mocks.resolve).toHaveBeenCalledTimes(2);
+    // No status or amount read before the repair reads the payment: a void that
+    // commits in between is never overwritten with the note counted.
+    expect(mocks.linkFindFirst).not.toHaveBeenCalled();
+    expect(mocks.linkFindMany).not.toHaveBeenCalled();
   });
 
-  it("leaves a note never synced to its own sync", async () => {
-    mocks.linkFindFirst.mockResolvedValue(null);
-    await recountCorrectionsAfterKeptSettle(INVOICE_ID, [{ id: "note-1", appliedCents: 10_000 }]);
+  it("one recount covers every correction on the invoice", async () => {
+    await recountCorrectionsAfterKeptSettle(INVOICE_ID, PAYMENT_ID, [
+      { id: "note-1", appliedCents: 10_000 },
+      { id: "note-2", appliedCents: 5_000 },
+    ]);
+    expect(mocks.repair).toHaveBeenCalledTimes(1);
+  });
+
+  it("recounts nothing when no correction is applied", async () => {
+    await expect(recountCorrectionsAfterKeptSettle(INVOICE_ID, PAYMENT_ID, [])).resolves.toEqual([]);
     expect(mocks.repair).not.toHaveBeenCalled();
   });
 
-  it("never recounts a voided note", async () => {
-    mocks.linkFindFirst.mockResolvedValue({ metadata: { status: "VOIDED", total: 100 } });
-    await recountCorrectionsAfterKeptSettle(INVOICE_ID, [{ id: "note-1", appliedCents: 10_000 }]);
-    expect(mocks.repair).not.toHaveBeenCalled();
-  });
-
-  it("skips a note whose contribution reaches no payment", async () => {
-    mocks.resolve.mockResolvedValue(new Map());
-    await recountCorrectionsAfterKeptSettle(INVOICE_ID, [{ id: "note-1", appliedCents: 10_000 }]);
-    expect(mocks.repair).not.toHaveBeenCalled();
-  });
-
-  it("never fails the committed settle: a failed or lost recount is logged and returned, and the next note still runs", async () => {
+  it("never fails the committed settle: a failed or lost recount is logged and its corrections returned", async () => {
+    const notes = [
+      { id: "note-1", appliedCents: 10_000 },
+      { id: "note-2", appliedCents: 5_000 },
+    ];
     mocks.repair
       .mockRejectedValueOnce(new Error("boom"))
-      .mockResolvedValueOnce({ matchedPaymentIds: ["pay-1"], changedPaymentIds: [], unsettledPaymentIds: ["pay-1"] });
-    await expect(
-      recountCorrectionsAfterKeptSettle(INVOICE_ID, [
-        { id: "note-1", appliedCents: 10_000 },
-        { id: "note-2", appliedCents: 5_000 },
-      ]),
-    ).resolves.toEqual(["note-1", "note-2"]);
-    expect(mocks.repair).toHaveBeenCalledTimes(2);
+      .mockResolvedValueOnce({ matchedPayments: 1, updatedPayments: 0, unsettledPaymentIds: [PAYMENT_ID] });
+
+    await expect(recountCorrectionsAfterKeptSettle(INVOICE_ID, PAYMENT_ID, notes)).resolves.toEqual(["note-1", "note-2"]);
+    await expect(recountCorrectionsAfterKeptSettle(INVOICE_ID, PAYMENT_ID, notes)).resolves.toEqual(["note-1", "note-2"]);
     expect(mocks.loggerError).toHaveBeenCalledTimes(2);
   });
 });

@@ -126,7 +126,12 @@ async function includeDeletedAppliedCreditAllocationTargets(
 type RecomputeModificationRefundAmounts = () => Promise<Map<string, number>>;
 
 export async function repairRefundedPaymentBusinessState(input: {
-  creditNoteId: string;
+  /**
+   * The note being synced, whose own contribution is the caller's; null for a
+   * recount with no note being synced (#4095, the kept settle's recount): every
+   * note then counts from its links as this recount reads them.
+   */
+  creditNoteId: string | null;
   creditNote: Pick<XeroCreditNote, "status" | "total" | "appliedAmount" | "remainingCredit" | "creditNoteNumber">;
   directPaymentIds: string[];
   modificationRefundAmountsByPaymentId: Map<string, number>;
@@ -221,7 +226,9 @@ export async function repairRefundedPaymentBusinessState(input: {
       },
     }),
     readRefundRequestPaidBackCentsByPaymentId(paymentIds),
-    readRefundNoteRowsByPayment(input.creditNoteId, paymentIds, prisma),
+    input.creditNoteId === null
+      ? new Map<string, { active: boolean; metadata: unknown }>()
+      : readRefundNoteRowsByPayment(input.creditNoteId, paymentIds, prisma),
   ]);
 
   // #3979 (`INV-PAY-126`): a bank-transfer payment's modification notes are
@@ -354,8 +361,10 @@ export async function repairRefundedPaymentBusinessState(input: {
 
   // #4288: each payment's current note as its own refund-note row holds it NOW (read above, after the payment rows),
   // never the reading or a remembered verdict: an inactive or VOIDED/DELETED row counts nothing; no row, the reading.
+  // #4095: a recount with no note being synced has no current contribution.
   const includesCurrentCreditNoteContribution = (paymentId: string, row = currentNoteRows.get(paymentId)) =>
-    row ? row.active && isIncludedRefundCreditNoteStatus(getJsonRecord(row.metadata)?.status) : isIncludedRefundCreditNoteStatus(input.creditNote.status);
+    input.creditNoteId !== null &&
+    (row ? row.active && isIncludedRefundCreditNoteStatus(getJsonRecord(row.metadata)?.status) : isIncludedRefundCreditNoteStatus(input.creditNote.status));
   const currentCreditNoteAmountCents = (paymentId: string, row = currentNoteRows.get(paymentId)) =>
     !includesCurrentCreditNoteContribution(paymentId) ? null : row ? getRefundContributionCentsFromCreditNoteMetadata(row.metadata) : getCreditNoteAmountCents(input.creditNote);
   const currentDirectRefundPaymentId = directPaymentIds.length === 1 ? directPaymentIds[0] : null;
@@ -443,7 +452,7 @@ export async function repairRefundedPaymentBusinessState(input: {
       );
       await notifyXeroSyncError({
         errorType: "refund-ledger-divergence",
-        operation: `inbound-credit-note-repair:${input.creditNoteId}`,
+        operation: `inbound-credit-note-repair:${input.creditNoteId ?? `recount:${payment.id}`}`,
         errorMessage: `Xero-derived refund total (${formatCents(nextRefundedTotalCents, format)}) for payment ${payment.id} is below the local Stripe refund ledger (${formatCents(payment.refundedAmountCents, format)}). The local ledger was kept (raise-only floor, #1353). Likely causes: a missing refund-delta credit note in Xero, or a refund credit note voided in Xero after Stripe paid the refund out.`,
       });
       effectiveRefundedTotalCents = payment.refundedAmountCents;
@@ -513,7 +522,8 @@ export async function repairRefundedPaymentBusinessState(input: {
     // `additional-payment-withdraw.ts`'s, not Prisma's 2s/5s: the nightly bank-void follow-up holds this row for up to 30s.
     return prisma.$transaction(async (tx) => {
       await lockPaymentForRefundedTotal(tx, payment.id);
-      const now = (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], tx)).get(payment.id);
+      // Reached only with the note's own row, so never on a recount with no note being synced.
+      const now = input.creditNoteId === null ? undefined : (await readRefundNoteRowsByPayment(input.creditNoteId, [payment.id], tx)).get(payment.id);
       if (includesCurrentCreditNoteContribution(payment.id) && !(now && includesCurrentCreditNoteContribution(payment.id, now))) return "recount" as const;
       if (Object.keys(updates).length === 0) return (await tx.payment.findFirst({ where: asRead, select: { id: true } })) ? ("unchanged" as const) : ("lost" as const);
       return (await tx.payment.updateMany({ where: asRead, data: updates })).count === 1 ? ("updated" as const) : ("lost" as const);

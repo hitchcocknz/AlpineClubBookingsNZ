@@ -1424,7 +1424,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     // #4095 (`INV-PAY-126`): a kept receipt holds the stored figure, so a
     // correction already synced against it is recounted now; a replay recounts
     // again, so an event retried for one left unrecounted finishes it.
-    result.unrecountedCorrectionNoteIds.push(...(await recountCorrectionsAfterKeptSettle(invoiceId, correctionNotesToRecount)));
+    result.unrecountedCorrectionNoteIds.push(...(await recountCorrectionsAfterKeptSettle(invoiceId, outcome.payment.id, correctionNotesToRecount)));
 
     // #3979 (`INV-PAY-125`): a kept figure, or cash that disagrees with what
     // the booking owes, is never silent on a booking the settle leaves live:
