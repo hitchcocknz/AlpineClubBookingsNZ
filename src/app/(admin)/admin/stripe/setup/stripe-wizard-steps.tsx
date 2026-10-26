@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { FieldHint, useFieldHint } from "@/components/ui/field-hint";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { CopyField } from "@/components/admin/integration-wizard";
+import { CopyField, useStepSaving } from "@/components/admin/integration-wizard";
 import { STRIPE_WEBHOOK_EVENT_TYPES } from "@/lib/stripe-webhook-events";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
@@ -138,7 +138,7 @@ export function CredentialsStep({
 }) {
   const [secretKey, setSecretKey] = useState("");
   const [publishableKey, setPublishableKey] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useStepSaving(helpers);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   /*
@@ -396,7 +396,7 @@ export function WebhookStep({
   helpers: WizardStepHelpers;
 }) {
   const [webhookSecret, setWebhookSecret] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useStepSaving(helpers);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   // #2264 — same split as the key fields: the example shape becomes a hint, the
