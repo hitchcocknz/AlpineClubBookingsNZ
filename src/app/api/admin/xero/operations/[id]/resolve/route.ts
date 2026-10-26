@@ -271,7 +271,7 @@ export async function POST(
     // link voided at once - and the coverage readers then count it as nothing.
     if (recordedNote) {
       await reconcileHandMadeNoteAfterRecording(recordedNote, {
-        operation: "xero-resolve-hand-made-note",
+        alertKey: "xero-resolve-hand-made-note",
         recordedFor: "a refund credit note resolved by hand",
       });
     }

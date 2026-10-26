@@ -336,7 +336,7 @@ describe("Resolve by hand records the officer's note on a refund credit-note cre
       expect.anything(),
       expect.objectContaining({ paymentId: "pay_1", note: VERIFIED, records: { resolvedOperationId: "op_note" } }),
     );
-    expect(mocks.reconcileHandMadeNoteAfterRecording).toHaveBeenCalledWith(VERIFIED, expect.objectContaining({ operation: "xero-resolve-hand-made-note" }));
+    expect(mocks.reconcileHandMadeNoteAfterRecording).toHaveBeenCalledWith(VERIFIED, expect.objectContaining({ alertKey: "xero-resolve-hand-made-note" }));
     expect(mocks.createAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({ outcome: "success", metadata: expect.objectContaining({ creditNoteId: "cn-hand", creditNoteNumber: "CN-0123", amountCents: 20_000 }) }),
     );

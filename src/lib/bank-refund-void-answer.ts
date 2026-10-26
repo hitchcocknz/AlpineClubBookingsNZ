@@ -418,7 +418,7 @@ export const RESOLVED_OPERATION_LINK_KEY = "resolvedOperationId";
  */
 export async function reconcileHandMadeNoteAfterCompletion(answer: ResolvedBankRefundVoidAnswer | null): Promise<void> {
   if (answer?.answer !== "recorded-in-xero") return;
-  await reconcileHandMadeNoteAfterRecording(answer.note, { operation: "bank-refund-void-hand-made-note", recordedFor: "a re-confirmed bank refund" });
+  await reconcileHandMadeNoteAfterRecording(answer.note, { alertKey: "bank-refund-void-hand-made-note", recordedFor: "a re-confirmed bank refund" });
 }
 
 /**
@@ -430,7 +430,8 @@ export async function reconcileHandMadeNoteAfterCompletion(answer: ResolvedBankR
  */
 export async function reconcileHandMadeNoteAfterRecording(
   note: Pick<VerifiedHandMadeRefundNote, "creditNoteId" | "creditNoteNumber">,
-  context: { operation: string; recordedFor: string },
+  /** `alertKey`: the alert's key prefix, never a Xero call name. */
+  context: { alertKey: string; recordedFor: string },
 ): Promise<void> {
   try {
     await reconcileXeroCreditNote(note.creditNoteId);
@@ -438,7 +439,7 @@ export async function reconcileHandMadeNoteAfterRecording(
     logger.error({ err: error, creditNoteId: note.creditNoteId }, "Could not re-read a hand-made refund credit note after recording it (#4162, #4421)");
     await notifyXeroSyncError({
       errorType: "refund-ledger-divergence",
-      operation: `${context.operation}:${note.creditNoteId}`,
+      operation: `${context.alertKey}:${note.creditNoteId}`,
       errorMessage: `The hand-made Xero credit note ${note.creditNoteNumber} was recorded for ${context.recordedFor}, but the app could not read it from Xero again afterwards. If it was voided in the meantime, the inbound sync or the nightly follow-up will catch it; check it in Xero.`,
     }).catch(() => undefined);
   }
