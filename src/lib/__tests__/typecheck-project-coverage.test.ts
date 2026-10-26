@@ -57,6 +57,9 @@ const JAVASCRIPT_VITEST_TESTS = [
   // same reason every other entry here does. It arrived on `main`, whose copy of
   // this contract has no such list, so nothing there asked for the entry.
   "scripts/ci/audit-dependencies.test.mjs",
+  // #4425: the change-scope classifier the scoped required jobs run under
+  // bare node, before any install; its suite stays JavaScript like e2e-scope's.
+  "scripts/ci/change-scope.test.mjs",
   // #3843: the audit's MITIGATED verdict lives in its own `.mjs` module beside
   // the wrapper, and its suite is JavaScript for the same reason.
   "scripts/ci/dependency-mitigation.test.mjs",

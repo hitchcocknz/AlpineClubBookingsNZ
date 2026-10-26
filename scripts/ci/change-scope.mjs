@@ -63,7 +63,8 @@ export const CHANGE_SCOPES = {
   // `Image security gate (Trivy CRITICAL)` (#4425, owner decision 26 Oct
   // 2026): only a change to the dependencies or the image definition can bring
   // a new package into the image, so only one of those, or a change to the
-  // workflow, rebuilds and scans it on a pull request.
+  // workflow, rebuilds and scans it on a pull request. `.trivyignore` joins
+  // the owner's list because it changes the scan's verdict, not the image.
   image: {
     subject: "the image build and Trivy scan",
     triggers: [
@@ -74,6 +75,7 @@ export const CHANGE_SCOPES = {
       /^Dockerfile$/,
       /^docker-compose[^/]*\.yml$/,
       /^\.dockerignore$/,
+      /^\.trivyignore$/,
       ...WORKFLOW_AND_CLASSIFIER,
     ],
   },

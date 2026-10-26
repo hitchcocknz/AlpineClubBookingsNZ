@@ -46,6 +46,7 @@ describe("change-scope: which pull requests can skip a required job's heavy step
     [["docker-compose.yml"], true],
     [["docker-compose.e2e.yml"], true],
     [[".dockerignore"], true],
+    [[".trivyignore"], true],
     [[".github/workflows/ci.yml"], true],
     [["scripts/ci/pr-body.mjs"], true],
     [["src/lib/booking.ts", "prisma/schema.prisma", "docs/a.md"], false],
