@@ -96,6 +96,15 @@ describe("deriveRefundedTotalShortfall (#3640)", () => {
     ).toMatchObject({ expectedFloorCents: 35000, shortfallCents: 25000, attributableCents: 5000, unattributedCents: 20000 });
   });
 
+  it("#4280: caps the floor at what was captured when a counted card refund and a close's cash exceed it", () => {
+    // $200 captured, closed for $200, and a $50 card refund that succeeded too (paid twice): $250 > $200.
+    expect(
+      deriveRefundedTotalShortfall(
+        row({ amountCents: 20000, refundedAmountCents: 20000, cardRefundCents: 5000, accountCreditCents: 0, paidAnotherWayCents: 20000 }),
+      ),
+    ).toBeNull();
+  });
+
   it("caps the floor at what was captured", () => {
     expect(
       deriveRefundedTotalShortfall(

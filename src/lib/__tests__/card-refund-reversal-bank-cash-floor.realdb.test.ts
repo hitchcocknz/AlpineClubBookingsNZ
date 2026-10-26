@@ -19,21 +19,25 @@
  * - several charges and refunds, and a close already on another charge's
  *   mirror, counted once;
  * - account credit beside the bank cash;
- * - a cancel's card refund shortfall and a hand-back #4162 undid, never counted
- *   (owner, 26 Oct 2026);
+ * - the cap binding: card refunds still counted plus the close's cash above
+ *   what was captured;
+ * - a cancel's card refund shortfall, and a hand-back paid through the real
+ *   allocation that #4162's unwind took back, never counted (owner, 26 Oct 2026);
  * - the close and the late refund racing in both orders, a failure racing a
  *   second close in both orders, and a failure rolled back with its caller.
  *
  * Each asserts the net position, both mirrors (the payment's refunded total and
  * each charge's), the debt "Refunds owed" reads (`openCardRefundOwedCents`)
- * and the card refund rows. With the close's cash kept, the payment holds
- * nothing more to refund, so "Refunds owed" reads nothing. THE ROW, ON THIS
- * RELEASE: a closed row's refund failing later still raises one card refund
- * row of its own (`INV-PAY-128`) - exactly one per refund, never a second on a
- * replay or a concurrent delivery - and the floor writes none. That such a row
- * is raised at all once a close paid the member is #4210, which #4225 fixes on
- * top of this repair; when it lands it changes the `raisedRows` figures and
- * nothing else here.
+ * and the card refund rows. After a full close the payment holds nothing more
+ * to refund, so "Refunds owed" reads nothing. THE ROW, ON THIS RELEASE: a
+ * closed row's refund failing later still raises one card refund row of its
+ * own (`INV-PAY-128`) - exactly one per refund, never a second on a replay or
+ * a concurrent delivery - and the floor writes none. After a PART close that
+ * row owes again what the close gave up, up to what the payment still holds,
+ * and "Refunds owed" reads it. That such a row is raised at all once a close
+ * paid the member is #4210, which #4225 fixes on top of this repair; when it
+ * lands it changes the `raisedRows` and part-close owed figures and nothing
+ * else here.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -79,7 +83,9 @@ let closeCardRefundPaidAnotherWay: (typeof import("@/lib/card-refund-paid-anothe
 let syncRefundsFromStripeCharge: (typeof import("@/lib/payment-transactions"))["syncRefundsFromStripeCharge"];
 let recordStripeRefundsAgainstTransaction: (typeof import("@/lib/payment-transactions"))["recordStripeRefundsAgainstTransaction"];
 let applyLocalRefundAllocation: (typeof import("@/lib/payment-transactions"))["applyLocalRefundAllocation"];
-let recordRefusedCardRefund: (typeof import("@/lib/card-refund-status-sync"))["recordRefusedCardRefund"];
+let reconcilePaymentAggregates: (typeof import("@/lib/payment-transactions"))["reconcilePaymentAggregates"];
+let unwindLocalRefundAllocation: (typeof import("@/lib/refund-allocation-unwind"))["unwindLocalRefundAllocation"];
+let recordRefusedCardRefund:(typeof import("@/lib/card-refund-status-sync"))["recordRefusedCardRefund"];
 let createCancellationCredit: (typeof import("@/lib/member-credit"))["createCancellationCredit"];
 let openCardRefundOwedCents: (typeof import("@/lib/open-card-refund-owed"))["openCardRefundOwedCents"];
 let netCollectedCardRefundSelect: (typeof import("@/lib/additional-ledger-gap"))["netCollectedCardRefundSelect"];
@@ -133,8 +139,9 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ closeCardRefundPaidAnotherWay } = await import("@/lib/card-refund-paid-another-way"));
-      ({ syncRefundsFromStripeCharge, recordStripeRefundsAgainstTransaction, applyLocalRefundAllocation } = await import("@/lib/payment-transactions"));
+      ({ syncRefundsFromStripeCharge, recordStripeRefundsAgainstTransaction, applyLocalRefundAllocation, reconcilePaymentAggregates } = await import("@/lib/payment-transactions"));
       ({ recordRefusedCardRefund } = await import("@/lib/card-refund-status-sync"));
+      ({ unwindLocalRefundAllocation } = await import("@/lib/refund-allocation-unwind"));
       ({ createCancellationCredit } = await import("@/lib/member-credit"));
       ({ openCardRefundOwedCents } = await import("@/lib/open-card-refund-owed"));
       ({ netCollectedCardRefundSelect } = await import("@/lib/additional-ledger-gap"));
@@ -411,10 +418,13 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
 
         expect(await mirrors()).toEqual({ payment: 12_000, charges: { [TXN_A]: 12_000 }, retained: 8_000 });
         expect(await raisedRows()).toEqual([rowOfItsOwn("re_race_4280_part", CHARGE_A_CENTS)]);
+        // What "Refunds owed" reads on this release: the $80 the part close gave up, owed again by the
+        // failure's own row (up to what the payment still holds). That is #4210's ground, for #4225.
+        expect(await owedNow()).toBe(8_000);
         expect(await auditFinding()).toBeNull();
       });
 
-      it("account credit beside the bank cash: both stay, capped at what was captured", async () => {
+      it("account credit beside the bank cash: both stay", async () => {
         await seedPayment({ charges: [A] });
         await settleCredit(CREDIT_CENTS);
         await seedDeadRefund({ slices: [{ charge: A, cents: CHARGE_A_CENTS - CREDIT_CENTS }] });
@@ -427,6 +437,8 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
 
         // Unfloored by the close it read the credit alone: $50.
         expect(await mirrors()).toEqual({ payment: CHARGE_A_CENTS, charges: { [TXN_A]: CHARGE_A_CENTS }, retained: 0 });
+        expect(await raisedRows()).toEqual([rowOfItsOwn(late.id, CHARGE_A_CENTS - CREDIT_CENTS)]);
+        expect(await owedNow()).toBe(0);
         expect(await auditFinding()).toBeNull();
       });
     });
@@ -477,6 +489,7 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
 
         expect(await mirrors()).toEqual({ payment: CHARGE_A_CENTS, charges: { [TXN_A]: CHARGE_A_CENTS }, retained: 0 });
         expect(await raisedRows()).toEqual([rowOfItsOwn(late.id, CHARGE_A_CENTS)]);
+        expect(await owedNow()).toBe(0);
         expect(await auditFinding()).toBeNull();
       });
     });
@@ -515,6 +528,33 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
 
         // The charges hold the close's $150 between them, exactly as it placed them.
         expect(await mirrors()).toEqual(closed);
+        expect(await raisedRows()).toEqual([rowOfItsOwn(lateA.id, CHARGE_A_CENTS)]);
+        // As above: the $150 the part close gave up is owed again by the failure's row (#4210, #4225).
+        expect(await owedNow()).toBe(15_000);
+        expect(await auditFinding()).toBeNull();
+      });
+
+      it("the cap binds: card refunds still counted plus the close's cash exceed what was captured, and the total holds at the capture", async () => {
+        await seedPayment({ charges: [A, B] });
+        await seedDeadRefund({ slices: [{ charge: A, cents: CHARGE_A_CENTS }] });
+        await close(OP_ID, CHARGE_A_CENTS);
+        // Refunds made by hand in the Stripe dashboard, which succeeded: one fills charge B,
+        // one more on the closed charge A is capped (the member was paid twice on it).
+        const onB = await stripeRefund("re_race_4280_cap_b", B, CHARGE_B_CENTS, "succeeded", { madeBy: null });
+        const extraA = await stripeRefund("re_race_4280_cap_a_extra", A, 5_000, "succeeded", { madeBy: null });
+        const late = await stripeRefund("re_race_4280_cap_a_late", A, CHARGE_A_CENTS, "pending");
+        await syncCharge(B, [onB]);
+        await syncCharge(A, [extraA, late]);
+        expect(await mirrors()).toEqual({ payment: 30_000, charges: { [TXN_A]: CHARGE_A_CENTS, [TXN_B]: CHARGE_B_CENTS }, retained: 0 });
+
+        await deliverRefusal(late, "failed");
+
+        // Counted $100 + $50 plus the close's $200 = $350, capped at the $300 captured; less B's $100.
+        expect(await mirrors()).toEqual({ payment: 30_000, charges: { [TXN_A]: CHARGE_A_CENTS, [TXN_B]: CHARGE_B_CENTS }, retained: 0 });
+        expect(await raisedRows()).toEqual([rowOfItsOwn(late.id, CHARGE_A_CENTS)]);
+        expect(await owedNow()).toBe(0);
+        // The audit's expected figure is capped too: uncapped it would read $350 and report $50 short.
+        expect(await auditFinding()).toBeNull();
       });
 
       it("a close already on ANOTHER charge's mirror is not counted again: a dashboard refund's failure on this charge goes to $0", async () => {
@@ -541,7 +581,17 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
       it("a completed card refund shortfall and a bank hand-back #4162 undid raise no floor: with no close, the failure goes to $0", async () => {
         await seedPayment({ charges: [A] });
         await seedDeadRefund({ slices: [{ charge: A, cents: CHARGE_A_CENTS }] });
-        // Completed records whose cash no longer stands in this total, or never was a close's.
+        // A bank hand-back paid back through the real allocation (the mirror holds it), then
+        // undone by #4162's money writer when Xero voided its note: its task still reads COMPLETED.
+        await applyLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: CHARGE_A_CENTS, store: prisma });
+        expect(await mirrors()).toEqual({ payment: CHARGE_A_CENTS, charges: { [TXN_A]: CHARGE_A_CENTS }, retained: 0 });
+        // As its one caller does: the unwind, then the aggregate re-derived, in one transaction.
+        await prisma.$transaction(async (tx) => {
+          await unwindLocalRefundAllocation({ paymentId: PAYMENT_ID, amountCents: CHARGE_A_CENTS, store: tx });
+          await reconcilePaymentAggregates({ paymentId: PAYMENT_ID, store: tx });
+        });
+        expect(await mirrors()).toEqual({ payment: 0, charges: { [TXN_A]: 0 }, retained: CHARGE_A_CENTS });
+        // Completed records whose cash no longer stands in this total, or is outside this repair.
         const handBack = await prisma.manualRefundTask.create({
           data: {
             bookingId: BOOKING_ID,
@@ -572,6 +622,7 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
             paymentId: PAYMENT_ID,
             kind: "CANCELLED_BOOKING_HAND_BACK",
             status: "COMPLETED",
+            // Its record alone: card shortfalls are outside this bounded repair (owner, 26 Oct 2026).
             occurrenceKey: `cancel-card-shortfall:${BOOKING_ID}:race-4280`,
             amountCents: CHARGE_A_CENTS,
             completedAt: NIGHT,
@@ -736,7 +787,10 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
               fallbackPaymentIntentId: INTENT_A,
               store: tx,
             });
-            // The floor read the close on this client, under the Payment row it holds.
+            // Inside the caller's transaction the subtraction is already floored at the close's
+            // cash. That the floor reads the close records on this client is pinned by the unit
+            // test's `manualRefundTask.groupBy` assertion (`payment-transactions-refunds.test.ts`),
+            // not by this figure, which a committed close would give on any client.
             readInside = (await tx.paymentTransaction.findUniqueOrThrow({ where: { id: TXN_A } })).refundedAmountCents;
             throw new Error("the caller rolls back");
           }),

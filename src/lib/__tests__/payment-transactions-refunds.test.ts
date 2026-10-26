@@ -2213,7 +2213,7 @@ describe("#3640 / INV-PAY-103 - a card refund adds to the refunded total", () =>
       );
     });
 
-    it("#4280: a part close keeps only what it paid; credit beside it adds, capped at what was captured", async () => {
+    it("#4280: a part close keeps only what it paid, and credit beside it adds", async () => {
       const ctx = paidStore();
       await settleCredit(ctx);
       await closePaidAnotherWay(ctx, 12000);
@@ -2223,6 +2223,24 @@ describe("#3640 / INV-PAY-103 - a card refund adds to the refunded total", () =>
       await webhookSync(ctx, cardRefund("re_late", PAID_CENTS, "failed"));
 
       expect(ctx.transaction.refundedAmountCents).toBe(CREDIT_CENTS + 12000);
+    });
+
+    it("#4280: the cap binds - credit, a counted card refund and the close's cash above the capture hold the total at the capture", async () => {
+      const ctx = paidStore();
+      await settleCredit(ctx);
+      await closePaidAnotherWay(ctx, PAID_CENTS - CREDIT_CENTS);
+      // A dashboard refund that succeeded on the full charge (the member paid twice), and the lost one recorded late.
+      await webhookSync(ctx, cardRefund("re_extra", CARD_REFUND_CENTS));
+      await webhookSync(ctx, cardRefund("re_late", PAID_CENTS - CREDIT_CENTS, "pending"));
+      expect(ctx.transaction.refundedAmountCents).toBe(PAID_CENTS);
+
+      await webhookSync(ctx, cardRefund("re_late", PAID_CENTS - CREDIT_CENTS, "failed"));
+
+      // $50 + $100 + $300 = $450, capped at the $400 captured. The writer never reads above its own
+      // charge either way (the floor only bounds a subtraction), so the cap shows in the audit's
+      // expected figure (`refunded-total-shortfall-audit.test.ts`), which this floor shares.
+      expect(ctx.transaction.refundedAmountCents).toBe(PAID_CENTS);
+      expect(ctx.payment.refundedAmountCents).toBe(PAID_CENTS);
     });
 
     it("the floor never RAISES a total - it only bounds the subtraction", async () => {
