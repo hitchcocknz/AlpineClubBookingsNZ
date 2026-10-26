@@ -22,11 +22,14 @@ reason: `buildCreateLoginRoleIfAbsentSql`, `buildStripAllRoleMembershipsSql` and
   builder's statement list is byte-identical.
 
 file: src/lib/backup.ts
-lines: 742
+lines: 745
 reason: the restore-validation step's two call sites for the #4453 review fixes
-  (S-F2, N2, N5): the guard now asks `isSameDatabaseTarget` against the live and
-  the audit archive databases, with a refusal message for each, and the
+  (S-F2, N2, N5, R4): the guard now asks `isSameDatabaseTarget` against the live
+  and the audit archive databases, with a refusal message for each, and the
   validation restore is one call to the streamed, owner-and-grant-stripping
   `restoreDumpWithoutOwnershipOrPrivileges`. Both helpers live in
   `src/lib/backup-restore-validation.ts`; only the import and the two calls,
-  with a line of reason each, are here, beside the psql steps around them.
+  with a line of reason each, are here, beside the psql steps around them. A
+  refused target skips only the validation (R4): the dump is still taken and
+  stored, so the refusal returns the stored backup's result, which needs the
+  run's own locals and so stays beside them.
