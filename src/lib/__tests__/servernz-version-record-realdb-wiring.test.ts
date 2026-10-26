@@ -31,6 +31,7 @@ describe("the central-server version recorder's real-database proof stays wired 
       "records nothing once the same key has been saved again (A -> B -> A)",
       "records nothing once the address has moved, even with the same key",
       "waits for a key change in flight and then records nothing over its forget",
+      "lets a separately committed key write and forget clear a recorder holding the row lock",
     ]) {
       expect(suite).toContain(`it("${scenario}"`);
     }

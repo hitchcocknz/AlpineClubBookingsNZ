@@ -21,8 +21,8 @@
  * singleton `ServerNzSettings` row and the `servernz`/`api_key` credential,
  * which no other race suite touches, and cleans both before and after.
  */
-import type { PrismaClient } from "@prisma/client";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import type { Prisma, PrismaClient } from "@prisma/client";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 import { assertSafeRaceDbUrl } from "@/lib/__tests__/support/race-db-url";
 
@@ -47,6 +47,7 @@ function credentialRow(iv: string) {
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let recordServerVersionIfCurrent: (typeof import("@/lib/servernz-version-record"))["recordServerVersionIfCurrent"];
+let forgetServerConnectionAnswers: (typeof import("@/lib/servernz-settings"))["forgetServerConnectionAnswers"];
 let credentialVersionOf: (typeof import("@/lib/integration-credential-actor"))["credentialVersionOf"];
 let holderClient: PrismaClient;
 let observerClient: PrismaClient;
@@ -101,6 +102,7 @@ let observerClient: PrismaClient;
       process.env.DATABASE_URL = RACE_DB_URL;
       ({ prisma } = await import("@/lib/prisma"));
       ({ recordServerVersionIfCurrent } = await import("@/lib/servernz-version-record"));
+      ({ forgetServerConnectionAnswers } = await import("@/lib/servernz-settings"));
       ({ credentialVersionOf } = await import("@/lib/integration-credential-actor"));
 
       const [{ PrismaClient: SeparatePrismaClient }, { createPrismaPgAdapter }] = await Promise.all([
@@ -172,8 +174,8 @@ let observerClient: PrismaClient;
       });
       const holder = holderClient.$transaction(
         async (tx) => {
-          // The counterpart writers' shape: the key write, then the forget,
-          // which writes the settings row and so holds it until commit.
+          // An atomic replacement probe, not the production writers' separate
+          // commits: hold the settings row until both writes commit together.
           await tx.integrationCredential.update({
             where: { provider_key: { provider: PROVIDER, key: KEY } },
             data: credentialRow("race-4366-iv-a2"),
@@ -204,6 +206,57 @@ let observerClient: PrismaClient;
       await holder;
       await expect(recorder).resolves.toBe(false);
       expect(await storedVersion()).toBeNull();
+    });
+
+    it("lets a separately committed key write and forget clear a recorder holding the row lock", async () => {
+      const sentOn = await storeKey("race-4366-iv-a1");
+      let releaseRecorder!: () => void;
+      const recorderMayCommit = new Promise<void>((resolve) => {
+        releaseRecorder = resolve;
+      });
+      let recorderHasRow!: () => void;
+      const recorderHoldsRow = new Promise<void>((resolve) => {
+        recorderHasRow = resolve;
+      });
+      const realTransaction = prisma.$transaction.bind(prisma);
+      const transaction = vi.spyOn(prisma, "$transaction").mockImplementationOnce((
+        (work: (tx: Prisma.TransactionClient) => Promise<boolean>, options?: { timeout?: number; maxWait?: number }) =>
+          realTransaction(async (tx) => {
+            const recorded = await work(tx);
+            recorderHasRow();
+            await recorderMayCommit;
+            return recorded;
+          }, options)
+      ) as typeof prisma.$transaction);
+
+      const recorder = recordServerVersionIfCurrent({ baseUrl: BASE_URL, credentialVersion: sentOn }, "2.1");
+      let forget: Promise<void> | undefined;
+      try {
+        await Promise.race([
+          recorderHoldsRow,
+          recorder.then(() => { throw new Error("The recorder committed before the test released it."); }),
+        ]);
+        const replacement = await storeKey("race-4366-iv-b");
+        expect(replacement).not.toBe(sentOn);
+        forget = forgetServerConnectionAnswers();
+
+        const pollStart = process.hrtime.bigint();
+        while ((await lockWaiters()) < 1) {
+          if (realElapsedMs(pollStart) > LOCK_POLL_TIMEOUT_MS) {
+            throw new Error("The separately committed forget never queued on the recorder's settings row.");
+          }
+          await new Promise((resolve) => setTimeout(resolve, 25));
+        }
+
+        releaseRecorder();
+        await expect(recorder).resolves.toBe(true);
+        await forget;
+        expect(await storedVersion()).toBeNull();
+      } finally {
+        releaseRecorder();
+        transaction.mockRestore();
+        await Promise.allSettled([recorder, forget]);
+      }
     });
   },
 );
