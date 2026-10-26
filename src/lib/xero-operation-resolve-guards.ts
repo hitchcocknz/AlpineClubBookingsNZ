@@ -50,6 +50,36 @@ export async function findRetryOverlappingMark(
 }
 
 /**
+ * #4421 (concurrency review F1): a queued retry of this operation that could
+ * have minted a document since `since` - the moment the resolve route read the
+ * row. One still RUNNING, or one (not stood down) that started or completed at
+ * or after it. Asked under the resolve's `lock(1)` BEFORE a mark that records
+ * a hand-made note is written: a retry of a FAILED refund-note create runs on
+ * its own REQUEUE row without claiming the original, so one that started and
+ * finished while the route checked Xero and waited for the lock is missed by
+ * `findRetryOverlappingMark` (not RUNNING, started after the read), and the
+ * resolve would record the officer's note beside the note the retry raised.
+ */
+export async function findRetryRunningOrSince(
+  operationId: string,
+  since: Date,
+  db: OperationReader = prisma,
+): Promise<ConflictingRetry | null> {
+  return db.xeroSyncOperation.findFirst({
+    where: {
+      correlationKey: buildXeroOperationRequeueCorrelationKey(operationId),
+      operationType: XERO_REQUEUE_OPERATION_TYPE,
+      OR: [
+        { status: "RUNNING" },
+        { status: { not: "CANCELLED" }, startedAt: { gte: since } },
+        { status: { not: "CANCELLED" }, completedAt: { gte: since } },
+      ],
+    },
+    select: { id: true, status: true, startedAt: true },
+  });
+}
+
+/**
  * A live copy of the same document queued beside this operation (review N3):
  * same correlation key, still PENDING, RUNNING or WAITING_PAYMENT. Resolving
  * now would leave that copy to mint a second document. The outbox also

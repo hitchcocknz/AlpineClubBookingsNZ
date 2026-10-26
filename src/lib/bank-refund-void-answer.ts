@@ -5,7 +5,9 @@ import {
   BANK_REFUND_VOID_ANSWER_NOT_ASKED_MESSAGE,
   BANK_REFUND_VOID_ANSWER_REQUIRED_MESSAGE,
   bankRefundVoidCompletionMessage,
+  EXAMPLE_CREDIT_NOTE_NUMBER,
   HAND_MADE_CREDIT_NOTE_NUMBER_MAX,
+  handMadeNoteAlreadyRecordedMessage,
   readBankRefundVoidFollowUpContext,
   type BankRefundVoidAnswer,
 } from "@/lib/bank-refund-void-follow-up-copy";
@@ -86,7 +88,7 @@ export type ResolvedBankRefundVoidAnswer =
 function normaliseCreditNoteNumber(raw: string): string {
   const number = raw.trim();
   if (number.length === 0 || number.length > HAND_MADE_CREDIT_NOTE_NUMBER_MAX || /["\\]/.test(number)) {
-    throw new ManualBookingPaymentError("Type the credit note's number as Xero shows it, for example CN-0123.", 400);
+    throw new ManualBookingPaymentError(`Type the credit note's number as Xero shows it, for example ${EXAMPLE_CREDIT_NOTE_NUMBER}.`, 400);
   }
   return number;
 }
@@ -333,11 +335,46 @@ export async function recordHandMadeRefundNoteLink(
     select: { id: true },
   });
   if (noteRow || !tracked.every(ownInactive)) {
-    throw new ManualBookingPaymentError(
-      `Credit note ${input.note.creditNoteNumber} is already recorded against another refund or booking here, so it cannot also record this one.`,
-      409,
-    );
+    throw new ManualBookingPaymentError(handMadeNoteAlreadyRecordedMessage(input.note.creditNoteNumber), 409);
   }
+  await writeHandMadeRefundNoteLink(tx, {
+    paymentId: input.paymentId,
+    note: input.note,
+    records: { handBackTaskId: input.taskId },
+    refusals: {
+      voided: `Credit note ${input.note.creditNoteNumber} was voided in Xero while this answer was being recorded, so nothing was recorded. A voided note cannot record a refund: make a new credit note in Xero and answer with its number, or choose a fresh note.`,
+      changed: `Credit note ${input.note.creditNoteNumber} changed in Xero while this answer was being recorded, so nothing was recorded. Refresh and try again.`,
+    },
+  });
+}
+
+/**
+ * #4421 (`INV-SSOT`, `INV-INT-028`): THE write of a checked hand-made note as
+ * the payment's tracked per-refund `REFUND_CREDIT_NOTE` link, inside the
+ * caller's transaction and under its locks (`lock(1)`, then the Payment row;
+ * the link row is taken last, by the link funnel). Shared by the #4162
+ * answer (`recordHandMadeRefundNoteLink`, naming the follow-up) and "Resolve
+ * by hand" (`claimResolveRecordingRefundNote`, naming the resolved row), so a
+ * note either records is tracked the same way: the inbound sync marks it
+ * voided, and every coverage reader counts it once, live, through the link.
+ * Each writer clears the other's key, so a link one retired and the other
+ * re-took names only its current owner.
+ *
+ * #4288 (owner decision 24 Oct 2026): the link write re-reads the row under
+ * its lock. When it kept the stored snapshot over this reading - a void, or a
+ * newer reading, that committed after the caller's check - none of these keys
+ * were written, so the caller's refusal is thrown and its whole transaction
+ * rolls back, whether the kept row is active or not.
+ */
+export async function writeHandMadeRefundNoteLink(
+  tx: Prisma.TransactionClient,
+  input: {
+    paymentId: string;
+    note: VerifiedHandMadeRefundNote;
+    records: { handBackTaskId: string } | { resolvedOperationId: string };
+    refusals: { voided: string; changed: string };
+  },
+): Promise<void> {
   const link = {
     localModel: "Payment",
     localId: input.paymentId,
@@ -353,28 +390,24 @@ export async function recordHandMadeRefundNoteLink(
       // A note per refund: it stands beside the payment's other notes and
       // is never its one canonical note (`isPerDeltaRefundNoteLink`).
       perDelta: true,
-      handBackTaskId: input.taskId,
+      ...("handBackTaskId" in input.records
+        ? { handBackTaskId: input.records.handBackTaskId, [RESOLVED_OPERATION_LINK_KEY]: null }
+        : { handBackTaskId: null, [RESOLVED_OPERATION_LINK_KEY]: input.records.resolvedOperationId }),
       recordedByHand: true,
     },
     mergeMetadata: true,
   };
   const written = await upsertXeroObjectLink(link, { store: tx });
-  // #4288 (owner decision 24 Oct 2026): the link write re-reads the row under
-  // its lock. When it kept the stored snapshot over this reading - a void, or a
-  // newer reading, that committed after the check above - none of this answer's
-  // keys (`handBackTaskId`, `perDelta`, ...) were written, so the answer is
-  // refused and the whole completion rolls back, whether the kept row is
-  // active or not.
   if (isRefundCreditNoteLinkCancelledInXero(written.metadata)) {
-    throw new ManualBookingPaymentError(
-      `Credit note ${input.note.creditNoteNumber} was voided in Xero while this answer was being recorded, so nothing was recorded. A voided note cannot record a refund: make a new credit note in Xero and answer with its number, or choose a fresh note.`,
-      409,
-    );
+    throw new ManualBookingPaymentError(input.refusals.voided, 409);
   }
   if (judgedRefundNoteReading(link.metadata, written).stale || !written.active) {
-    throw new ManualBookingPaymentError(`Credit note ${input.note.creditNoteNumber} changed in Xero while this answer was being recorded, so nothing was recorded. Refresh and try again.`, 409);
+    throw new ManualBookingPaymentError(input.refusals.changed, 409);
   }
 }
+
+/** #4421: the link metadata key naming the refund-note create row a "Resolve by hand" recorded the note for. */
+export const RESOLVED_OPERATION_LINK_KEY = "resolvedOperationId";
 
 /**
  * #4162 review (concurrency 1): after the completion commits, outside any
@@ -385,14 +418,28 @@ export async function recordHandMadeRefundNoteLink(
  */
 export async function reconcileHandMadeNoteAfterCompletion(answer: ResolvedBankRefundVoidAnswer | null): Promise<void> {
   if (answer?.answer !== "recorded-in-xero") return;
+  await reconcileHandMadeNoteAfterRecording(answer.note, { operation: "bank-refund-void-hand-made-note", recordedFor: "a re-confirmed bank refund" });
+}
+
+/**
+ * The re-read itself, shared with "Resolve by hand" (#4421, `INV-SSOT`): the
+ * recorded note is reconciled once more through the inbound
+ * `reconcileXeroCreditNote`, outside any transaction, so a void that landed
+ * between the check and the link write marks the new link voided at once. A
+ * failure is logged and alerted, never the caller's failure.
+ */
+export async function reconcileHandMadeNoteAfterRecording(
+  note: Pick<VerifiedHandMadeRefundNote, "creditNoteId" | "creditNoteNumber">,
+  context: { operation: string; recordedFor: string },
+): Promise<void> {
   try {
-    await reconcileXeroCreditNote(answer.note.creditNoteId);
+    await reconcileXeroCreditNote(note.creditNoteId);
   } catch (error) {
-    logger.error({ err: error, creditNoteId: answer.note.creditNoteId }, "Could not re-read a hand-made refund credit note after recording it (#4162)");
+    logger.error({ err: error, creditNoteId: note.creditNoteId }, "Could not re-read a hand-made refund credit note after recording it (#4162, #4421)");
     await notifyXeroSyncError({
       errorType: "refund-ledger-divergence",
-      operation: `bank-refund-void-hand-made-note:${answer.note.creditNoteId}`,
-      errorMessage: `The hand-made Xero credit note ${answer.note.creditNoteNumber} was recorded for a re-confirmed bank refund, but the app could not read it from Xero again afterwards. If it was voided in the meantime, the inbound sync or the nightly follow-up will catch it; check it in Xero.`,
+      operation: `${context.operation}:${note.creditNoteId}`,
+      errorMessage: `The hand-made Xero credit note ${note.creditNoteNumber} was recorded for ${context.recordedFor}, but the app could not read it from Xero again afterwards. If it was voided in the meantime, the inbound sync or the nightly follow-up will catch it; check it in Xero.`,
     }).catch(() => undefined);
   }
 }

@@ -279,7 +279,7 @@ describe("Xero operation admin retry routes", () => {
     });
   });
 
-  it("tells the panel which rows' Resolve asks for the Xero note number: a refund note's create that names no note (#4421)", async () => {
+  it("tells the panel which rows' Resolve asks for the Xero note number and for what amount, and which it will refuse (#4421)", async () => {
     const createdAt = new Date("2026-04-14T09:00:00Z");
     const refundNote = {
       direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: "pay_1",
@@ -291,18 +291,21 @@ describe("Xero operation admin retry routes", () => {
       { ...refundNote, id: "op_no_note" },
       { ...refundNote, id: "op_partial", status: "PARTIAL", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_own" },
       { ...refundNote, id: "op_request", requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 30_000, refundRequestId: "rr_1" } },
+      { ...refundNote, id: "op_unreadable", requestPayload: null },
     ]);
-    mocks.xeroOperationCount.mockResolvedValue(3);
+    mocks.xeroOperationCount.mockResolvedValue(4);
     mocks.resolveFailedXeroOperationStates.mockResolvedValue(new Map());
 
     const response = await listOperations(new NextRequest("http://localhost/api/admin/xero/operations"));
 
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body.data.map((row: { id: string; resolveAsksCreditNoteNumber: boolean }) => [row.id, row.resolveAsksCreditNoteNumber])).toEqual([
-      ["op_no_note", true],
-      ["op_partial", false],
-      ["op_request", false],
+    type Listed = { id: string; resolveAsksCreditNoteNumber: boolean; resolveCreditNoteAmountCents: number | null; resolveRefusal: string | null };
+    expect(body.data.map((row: Listed) => [row.id, row.resolveAsksCreditNoteNumber, row.resolveCreditNoteAmountCents, row.resolveRefusal])).toEqual([
+      ["op_no_note", true, 20_000, null],
+      ["op_partial", false, null, null],
+      ["op_request", false, null, null],
+      ["op_unreadable", false, null, expect.stringContaining("Mark non-replayable")],
     ]);
   });
 

@@ -10,7 +10,7 @@ import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { getXeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import { buildLocalAdminUrl } from "@/lib/xero-record-links";
 import { isStaleRunningXeroOperation } from "@/lib/xero-stale-operations";
-import { resolveAsksCreditNoteNumber } from "@/lib/xero-resolve-refund-note";
+import { resolveCreditNotePrompt } from "@/lib/xero-resolve-refund-note";
 import {
   endOfClubDayInclusive,
   requireCalendarDate,
@@ -189,8 +189,9 @@ export async function GET(request: NextRequest) {
         // button agrees with the route that will accept it.
         staleRunning: isStaleRunningXeroOperation(operation, now),
         // #4421: the server decides whether "Resolve by hand" asks for the
-        // note's number, so the panel and the resolve route agree.
-        resolveAsksCreditNoteNumber: resolveAsksCreditNoteNumber(operation),
+        // note's number (and for what amount) or will be refused, so the
+        // panel and the resolve route agree.
+        ...resolveCreditNotePrompt(operation),
       })),
       total,
       hiddenFailedCount,

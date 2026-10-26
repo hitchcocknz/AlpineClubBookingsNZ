@@ -66,6 +66,19 @@ export type BankRefundVoidAnswer = (typeof BANK_REFUND_VOID_ANSWERS)[number];
 /** The longest credit-note number the "already in Xero" answer accepts (Xero's own limit is 255). */
 export const HAND_MADE_CREDIT_NOTE_NUMBER_MAX = 255;
 
+/** #4421: the one example credit-note number every hand-made-note prompt, placeholder and message shows. */
+export const EXAMPLE_CREDIT_NOTE_NUMBER = "CN-0123";
+
+/**
+ * #4421 (`INV-SSOT`, `INV-INT-028`): THE refusal of a hand-made note that a
+ * create row or link here already records - one note, one refund. Shared by
+ * the #4162 answer (`recordHandMadeRefundNoteLink`) and "Resolve by hand"
+ * (`claimResolveRecordingRefundNote`), so both say it the same way.
+ */
+export function handMadeNoteAlreadyRecordedMessage(creditNoteNumber: string): string {
+  return `Credit note ${creditNoteNumber} is already recorded against another refund or booking here, so it cannot also record this one. Check the number, or make a separate credit note in Xero for this refund.`;
+}
+
 /** The one question the refund list asks of a follow-up. Takes formatted parts. */
 export function bankRefundVoidQuestion(parts: {
   bookingReference: string;

@@ -58,6 +58,37 @@ function toResolved(
  * A resolved row whose amount cannot be read is reported in
  * `unreadableOperationIds`; callers must refuse loudly on it rather than guess.
  */
+/**
+ * #4421 (`INV-SSOT`, `INV-INT-028`): THE refund-note create rows the resolved
+ * coverage reader reads - an outbound credit-note create on a payment, queued
+ * as a refund note or with no recorded queue type (a legacy row, whose payload
+ * says whether it was a refund or an account-credit note). One spelling for
+ * this module's queries and for the "Resolve by hand" shape
+ * (`refundNoteResolveShape`), so the rows a resolve asks a note number of are
+ * exactly the rows whose resolve counts toward coverage.
+ */
+export const REFUND_NOTE_CREATE_ROW = {
+  direction: "OUTBOUND",
+  entityType: "CREDIT_NOTE",
+  operationType: "CREATE",
+  localModel: "Payment",
+} as const;
+export const REFUND_NOTE_CREATE_QUEUE_TYPES = [XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE, null] as const;
+
+/** The same population, asked of a row already read. */
+export function isRefundNoteCreateRow(row: {
+  direction: string;
+  entityType: string;
+  operationType: string;
+  localModel: string | null;
+  queueType: string | null;
+}): boolean {
+  return (
+    (Object.keys(REFUND_NOTE_CREATE_ROW) as Array<keyof typeof REFUND_NOTE_CREATE_ROW>).every((key) => row[key] === REFUND_NOTE_CREATE_ROW[key]) &&
+    (REFUND_NOTE_CREATE_QUEUE_TYPES as readonly (string | null)[]).includes(row.queueType)
+  );
+}
+
 export interface ResolvedRefundCreditNoteCoverage {
   coveredCents: number;
   correlationKeys: string[];
@@ -73,15 +104,12 @@ export async function readResolvedRefundCreditNoteCoverage(
 ): Promise<ResolvedRefundCreditNoteCoverage> {
   const rows = await db.xeroSyncOperation.findMany({
     where: {
-      direction: "OUTBOUND",
-      entityType: "CREDIT_NOTE",
-      operationType: "CREATE",
-      localModel: "Payment",
+      ...REFUND_NOTE_CREATE_ROW,
       localId: paymentId,
       manuallyResolvedAt: { not: null },
       // A legacy row with no recorded queue type is read too; its payload
       // says whether it was a refund or an account-credit note.
-      OR: [{ queueType: XERO_OUTBOX_REFUND_CREDIT_NOTE_TYPE }, { queueType: null }],
+      OR: REFUND_NOTE_CREATE_QUEUE_TYPES.map((queueType) => ({ queueType })),
       ...(rowsWhere ? { AND: [rowsWhere] } : {}),
     },
     orderBy: { createdAt: "asc" },
@@ -173,10 +201,7 @@ export async function sumRefundCreditNoteCoverageOfRowsCents(
 ): Promise<number> {
   const rows = await db.xeroSyncOperation.findMany({
     where: {
-      direction: "OUTBOUND",
-      entityType: "CREDIT_NOTE",
-      operationType: "CREATE",
-      localModel: "Payment",
+      ...REFUND_NOTE_CREATE_ROW,
       localId: paymentId,
       AND: [rowsWhere],
     },

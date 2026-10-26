@@ -402,6 +402,10 @@ export interface XeroOperation {
   staleRunning: boolean
   /** #4421: "Resolve by hand" asks for the number of the credit note made in Xero. */
   resolveAsksCreditNoteNumber: boolean
+  /** #4421: the refund amount that note must be for, when it is asked. */
+  resolveCreditNoteAmountCents: number | null
+  /** #4421: why Resolve will be refused, said before the officer types anything. */
+  resolveRefusal: string | null
 }
 
 export interface XeroInboundEvent {

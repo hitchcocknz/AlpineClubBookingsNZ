@@ -168,8 +168,11 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(rowId).toEqual(expect.any(String));
       // As the outbox leaves a create Xero refused: FAILED, no note.
       await prisma.xeroSyncOperation.update({ where: { id: rowId }, data: { status: "FAILED", lastErrorMessage: "Xero refused the credit note", completedAt: new Date() } });
-      const { resolveAsksCreditNoteNumber } = await import("@/lib/xero-resolve-refund-note");
-      expect(resolveAsksCreditNoteNumber(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: rowId } }))).toBe(true);
+      const { resolveCreditNotePrompt } = await import("@/lib/xero-resolve-refund-note");
+      expect(resolveCreditNotePrompt(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: rowId } }))).toMatchObject({
+        resolveAsksCreditNoteNumber: true,
+        resolveCreditNoteAmountCents: 20_000,
+      });
       return { h2, rowId, followUpId: outcome!.followUpTaskId! };
     }
 
@@ -205,11 +208,21 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       );
     }
 
-    /** Every record of X here: create rows naming it, and links. One note, one refund means exactly one. */
+    /**
+     * Every record of X here, by the refund it records: a create row naming it,
+     * and each link with the record it names (the resolved row, or the
+     * follow-up). One note, one refund: every record names the same refund.
+     */
     async function recordsOfX() {
-      const rows = await prisma.xeroSyncOperation.findMany({ where: { xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE_X }, select: { id: true, manuallyResolvedAt: true } });
-      const links = await prisma.xeroObjectLink.findMany({ where: { xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE_X }, select: { id: true } });
-      return { rows: rows.length, links: links.length };
+      const rows = await prisma.xeroSyncOperation.findMany({ where: { xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE_X }, select: { id: true } });
+      const links = await prisma.xeroObjectLink.findMany({ where: { xeroObjectType: "CREDIT_NOTE", xeroObjectId: NOTE_X }, select: { active: true, metadata: true } });
+      return {
+        rows: rows.map((row) => row.id),
+        links: links.map((link) => {
+          const metadata = (link.metadata ?? {}) as Record<string, unknown>;
+          return { active: link.active, resolvedOperationId: metadata.resolvedOperationId ?? null, handBackTaskId: metadata.handBackTaskId ?? null };
+        }),
+      };
     }
 
     /** The money, the payment's refund-note coverage, and the two refunds' states. */
@@ -298,10 +311,14 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         row: { status: "FAILED", xeroObjectId: NOTE_X, xeroObjectNumber: `CN-${NOTE_X}` },
       });
 
+      // The row and the payment's live link both name X for H2's row: the link counts it, the row adds nothing.
+      const recorded = { rows: [rowId], links: [{ active: true, resolvedOperationId: rowId, handBackTaskId: null }] };
+      expect(await recordsOfX()).toEqual(recorded);
+
       // Before #4421 the row named no note, X passed #4419's guard, and one $200 note covered $400.
       await expect(complete(followUpId, await answerWithX(followUpId))).rejects.toMatchObject(refusedAnswer);
       expect(await books(rowId, followUpId)).toEqual(resolved);
-      expect(await recordsOfX()).toEqual({ rows: 1, links: 0 });
+      expect(await recordsOfX()).toEqual(recorded);
     });
 
     it("MUTATION (#4421, reverse order): once the hand-made answer records the note, a resolve offering it is refused and writes nothing", async () => {
@@ -314,7 +331,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(response.status).toBe(409);
       expect((await response.json()).error).toContain(`CN-${NOTE_X} is already recorded against another refund or booking here`);
       expect(await books(rowId, followUpId)).toEqual(answered);
-      expect(await recordsOfX()).toEqual({ rows: 0, links: 1 });
+      expect(await recordsOfX()).toEqual({ rows: [], links: [{ active: true, resolvedOperationId: null, handBackTaskId: followUpId }] });
     });
 
     it("MUTATION (#4421, interleaving): a resolve arriving while the answer holds its locks past its guard waits on lock(1), then refuses; the note is recorded once", async () => {
@@ -355,7 +372,7 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       }
 
       expect(await books(rowId, followUpId)).toMatchObject({ refundedAmountCents: 40_000, coverageCents: 20_000, rowResolved: false, followUpStatus: "COMPLETED", row: { xeroObjectId: null } });
-      expect(await recordsOfX()).toEqual({ rows: 0, links: 1 });
+      expect(await recordsOfX()).toEqual({ rows: [], links: [{ active: true, resolvedOperationId: null, handBackTaskId: followUpId }] });
     });
 
     it("MUTATION (#4421, interleaving): an answer arriving while the resolve holds lock(1) past its checks waits, then refuses; the note is recorded once", async () => {
@@ -408,7 +425,31 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await books(rowId, followUpId)).toMatchObject({
         refundedAmountCents: 20_000, coverageCents: 20_000, rowResolved: true, followUpStatus: "OPEN", row: { xeroObjectId: NOTE_X },
       });
-      expect(await recordsOfX()).toEqual({ rows: 1, links: 0 });
+      expect(await recordsOfX()).toEqual({ rows: [rowId], links: [{ active: true, resolvedOperationId: rowId, handBackTaskId: null }] });
+    });
+
+    it("MUTATION (#4421, the void path): once Xero voids the note a resolve recorded, the link records the void, nothing covers H2, and the nightly follow-up undoes it and asks once", async () => {
+      const { rowId, followUpId } = await failedNoteBesideFollowUp();
+      expect((await resolveWithX(rowId)).status).toBe(200);
+      expect(await books(rowId, followUpId)).toMatchObject({ refundedAmountCents: 20_000, coverageCents: 20_000, rowResolved: true });
+
+      // Xero voids X; the real inbound reconcile finds it through the link the resolve wrote.
+      const linkId = await voidInXero(NOTE_X, 20_000);
+      const link = await prisma.xeroObjectLink.findUniqueOrThrow({ where: { id: linkId }, select: { active: true, metadata: true } });
+      expect(link.active).toBe(false);
+      expect((link.metadata as Record<string, unknown>).status).toBe("VOIDED");
+      // Neither the voided link nor the resolved row naming it covers anything: $200 refunded, $0 noted.
+      expect(await books(rowId, followUpId)).toMatchObject({ refundedAmountCents: 20_000, coverageCents: 0, rowResolved: true });
+
+      // The real nightly follow-up undoes H2's $200 and asks once, as for any voided bank refund note.
+      const outcome = await followUp.followUpVoidedBankRefundNote(linkId);
+      expect(outcome).toMatchObject({ outcome: "undone" });
+      expect(await books(rowId, followUpId)).toMatchObject({ refundedAmountCents: 0, coverageCents: 0 });
+      const asked = await prisma.manualRefundTask.findMany({ where: { bookingId: BOOKING_ID, status: "OPEN" }, select: { id: true, amountCents: true } });
+      expect(asked).toHaveLength(2);
+      expect(asked.find((task) => task.id === outcome!.followUpTaskId)).toMatchObject({ amountCents: 20_000 });
+      // Run again: handled, nothing more.
+      expect(await followUp.followUpVoidedBankRefundNote(linkId)).not.toMatchObject({ outcome: "undone" });
     });
   },
 );

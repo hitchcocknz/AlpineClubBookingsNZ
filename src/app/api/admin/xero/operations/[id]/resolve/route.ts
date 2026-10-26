@@ -9,15 +9,21 @@ import { isAppliedCreditLedgerOperation } from "@/lib/xero-applied-credit-operat
 import { HAND_MADE_CREDIT_NOTE_NUMBER_MAX } from "@/lib/bank-refund-void-follow-up-copy";
 import { clubFormatValues } from "@/lib/club-format-server";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
-import type { VerifiedHandMadeRefundNote } from "@/lib/bank-refund-void-answer";
+import { reconcileHandMadeNoteAfterRecording, type VerifiedHandMadeRefundNote } from "@/lib/bank-refund-void-answer";
 import {
   claimResolveRecordingRefundNote,
   refundNoteResolveShape,
-  RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE,
-  RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE,
   verifyResolvedRefundNote,
   withdrawResolveRecordingRefundNote,
 } from "@/lib/xero-resolve-refund-note";
+import {
+  alreadyResolvedWithNoteMessage,
+  RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE,
+  RESOLVE_NOTE_NOT_ASKED_MESSAGE,
+  RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE,
+  RESOLVE_REASON_MAX,
+  RESOLVE_REASON_MIN,
+} from "@/lib/xero-resolve-refund-note-copy";
 import {
   findQueuedLiveCopy,
   findRetryOverlappingMark,
@@ -32,19 +38,31 @@ function retryRunning(retry: { status: string; startedAt: Date | null } | null) 
 /**
  * #3635 review N5: a mark another officer just wrote may still be withdrawn
  * (it is checked against running retries after it is written), so "already
- * resolved" is answered only when the same check would keep it.
+ * resolved" is answered only when the same check would keep it. #4421 review
+ * (concurrency F6): an officer who offered a note is told which note the mark
+ * recorded, and refused when it is not the one they offered.
  */
-async function answerExistingMark(id: string, markAt: Date) {
-  const conflict: ConflictingRetry | null = await findRetryOverlappingMark(id, markAt);
+async function answerExistingMark(
+  id: string,
+  mark: { manuallyResolvedAt: Date; xeroObjectNumber: string | null },
+  offeredNumber: string | undefined,
+) {
+  const conflict: ConflictingRetry | null = await findRetryOverlappingMark(id, mark.manuallyResolvedAt);
   if (conflict) return retryRunning(conflict);
+  if (offeredNumber) {
+    const message = alreadyResolvedWithNoteMessage(mark.xeroObjectNumber);
+    return mark.xeroObjectNumber === offeredNumber
+      ? NextResponse.json({ ok: true, message })
+      : NextResponse.json({ error: message }, { status: 409 });
+  }
   return NextResponse.json({ ok: true, message: "Xero operation was already resolved." });
 }
 
 const resolveSchema = z.object({
-  reason: z.string().trim().min(3).max(500),
-  // #4421: the Xero credit note the officer made, asked of a payment refund
-  // note's create that names no note of its own (`refundNoteResolveShape`).
-  // Ignored for every other row, which resolves as before.
+  reason: z.string().trim().min(RESOLVE_REASON_MIN).max(RESOLVE_REASON_MAX),
+  // #4421: the Xero credit note the officer made, asked of a FAILED payment
+  // refund note's create that names no note of its own
+  // (`refundNoteResolveShape`). Refused for every other row (review, money F5).
   creditNoteNumber: z.string().trim().max(HAND_MADE_CREDIT_NOTE_NUMBER_MAX).optional(),
 });
 
@@ -67,8 +85,34 @@ export async function POST(
   }
 
   const { id } = await params;
+  const offeredNumber = parsed.data.creditNoteNumber || undefined;
+
+  /**
+   * #4421 review (security F6): a refused resolve that offered or needed a
+   * credit note number is audited too, with the number tried and the status.
+   */
+  const refuse = async (status: number, message: string) => {
+    await createAuditLog({
+      action: "xero.operation.manually_resolved",
+      memberId: session.user.id,
+      actorMemberId: session.user.id,
+      targetId: id,
+      entityType: "XeroSyncOperation",
+      entityId: id,
+      category: "xero",
+      severity: "important",
+      outcome: "failure",
+      summary: "Xero operation not marked resolved: its credit note was refused",
+      details: message,
+      metadata: { operationId: id, creditNoteNumber: offeredNumber ?? null, status },
+    }).catch((error: unknown) => logger.error({ err: error, operationId: id }, "Could not audit a refused resolve (#4421)"));
+    return NextResponse.json({ error: message }, { status });
+  };
 
   try {
+    // #4421 review (concurrency F1): the instant the row was read. A retry of
+    // it that started or finished since is refused under the claim's lock.
+    const readAt = new Date();
     const operation = await prisma.xeroSyncOperation.findUnique({
       where: { id },
     });
@@ -78,7 +122,7 @@ export async function POST(
     }
 
     if (isResolvedInXero(operation) && operation.manuallyResolvedAt) {
-      return answerExistingMark(id, operation.manuallyResolvedAt);
+      return answerExistingMark(id, { manuallyResolvedAt: operation.manuallyResolvedAt, xeroObjectNumber: operation.xeroObjectNumber }, offeredNumber);
     }
 
     if (operation.status === "RUNNING") {
@@ -125,34 +169,42 @@ export async function POST(
     // resolve below.
     const shape = refundNoteResolveShape(operation);
     if (shape.kind === "unreadable") {
-      return NextResponse.json({ error: RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE }, { status: 409 });
+      return refuse(409, RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE);
+    }
+    if (shape.kind !== "asks-number" && offeredNumber) {
+      return refuse(409, RESOLVE_NOTE_NOT_ASKED_MESSAGE);
     }
     let recordedNote: VerifiedHandMadeRefundNote | null = null;
+    let resolvedAt = new Date();
+    let claimed: boolean;
     if (shape.kind === "asks-number") {
-      if (!parsed.data.creditNoteNumber) {
-        return NextResponse.json({ error: RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE }, { status: 400 });
+      if (!offeredNumber) {
+        return refuse(400, RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE);
       }
-      recordedNote = await verifyResolvedRefundNote({
-        shape,
-        creditNoteNumber: parsed.data.creditNoteNumber,
-        format: await clubFormatValues(),
-      });
-    }
-
-    // #3635 (`INV-INT-025`): status-guarded, the mirror of the retry claims'
-    // `manuallyResolvedAt: null` guard, so a retry that claimed the row after
-    // the read above wins. #4421: a recorded note is claimed with the resolve,
-    // under `lock(1)`, refused when anything here already records it.
-    const resolvedAt = new Date();
-    const claimed = recordedNote
-      ? await claimResolveRecordingRefundNote({
+      try {
+        recordedNote = await verifyResolvedRefundNote({ shape, creditNoteNumber: offeredNumber, format: await clubFormatValues() });
+        // #4421: the note is claimed with the resolve, under `lock(1)` and
+        // the Payment row, refused when anything here already records it.
+        const claim = await claimResolveRecordingRefundNote({
           operationId: id,
+          paymentId: shape.paymentId,
           note: recordedNote,
-          resolvedAt,
+          readAt,
           reason: parsed.data.reason,
           resolvedById: session.user.id,
-        })
-      : (
+        });
+        claimed = claim.outcome === "claimed";
+        if (claim.outcome === "claimed") resolvedAt = claim.resolvedAt;
+      } catch (error) {
+        if (error instanceof ManualBookingPaymentError) return refuse(error.status, error.message);
+        throw error;
+      }
+    } else {
+      // #3635 (`INV-INT-025`): status-guarded, the mirror of the retry claims'
+      // `manuallyResolvedAt: null` guard, so a retry that claimed the row
+      // after the read above wins.
+      claimed =
+        (
           await prisma.xeroSyncOperation.updateMany({
             where: {
               id,
@@ -166,12 +218,15 @@ export async function POST(
             },
           })
         ).count === 1;
+    }
     if (!claimed) {
       const current = await prisma.xeroSyncOperation.findUnique({
         where: { id },
-        select: { manuallyResolvedAt: true, status: true, startedAt: true },
+        select: { manuallyResolvedAt: true, status: true, startedAt: true, xeroObjectNumber: true },
       });
-      if (current?.manuallyResolvedAt) return answerExistingMark(id, current.manuallyResolvedAt);
+      if (current?.manuallyResolvedAt) {
+        return answerExistingMark(id, { manuallyResolvedAt: current.manuallyResolvedAt, xeroObjectNumber: current.xeroObjectNumber }, offeredNumber);
+      }
       if (current?.status === "RUNNING") return retryRunning(current);
       return NextResponse.json(
         {
@@ -190,9 +245,10 @@ export async function POST(
     // a drain that reads after the mark refuses to run.
     const runningRetry = await findRetryOverlappingMark(id, resolvedAt);
     if (runningRetry) {
-      if (recordedNote) {
+      if (recordedNote && shape.kind === "asks-number") {
         await withdrawResolveRecordingRefundNote({
           operationId: id,
+          paymentId: shape.paymentId,
           resolvedAt,
           creditNoteId: recordedNote.creditNoteId,
           previousXeroObjectType: operation.xeroObjectType,
@@ -208,6 +264,16 @@ export async function POST(
         });
       }
       return retryRunning(runningRetry);
+    }
+
+    // #4421 review (money F1): the recorded note read from Xero once more,
+    // outside any lock, so a void that landed since the check marks its new
+    // link voided at once - and the coverage readers then count it as nothing.
+    if (recordedNote) {
+      await reconcileHandMadeNoteAfterRecording(recordedNote, {
+        operation: "xero-resolve-hand-made-note",
+        recordedFor: "a refund credit note resolved by hand",
+      });
     }
 
     await createAuditLog({
@@ -243,10 +309,6 @@ export async function POST(
         : "Xero operation marked resolved; it will drop off the active failure list.",
     });
   } catch (error) {
-    // #4421: the note check's and the claim's refusals, in words the officer reads.
-    if (error instanceof ManualBookingPaymentError) {
-      return NextResponse.json({ error: error.message }, { status: error.status });
-    }
     logger.error({ err: error, operationId: id }, "Failed to resolve Xero operation");
     return NextResponse.json(
       { error: "Failed to resolve Xero operation" },

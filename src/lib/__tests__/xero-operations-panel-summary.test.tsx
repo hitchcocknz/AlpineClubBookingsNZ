@@ -43,6 +43,8 @@ function makeOperation(overrides: Partial<XeroOperation> = {}): XeroOperation {
     failureRootKey: null,
     staleRunning: false,
     resolveAsksCreditNoteNumber: false,
+    resolveCreditNoteAmountCents: null,
+    resolveRefusal: null,
     ...overrides,
   };
 }
