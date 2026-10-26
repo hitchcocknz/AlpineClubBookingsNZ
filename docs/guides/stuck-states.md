@@ -107,10 +107,13 @@ pay the member another way and close:
   been paid back by hand, so check Stripe and your bank first;
 - a refund whose card refund you had already closed as **Paid another way**
   (#4210) - the bank transfer you recorded may already have paid it, so check
-  that transfer first. If the member is still owed anything, settle it with
-  **Paid another way**, never with a new refund in the Stripe dashboard. After
-  a close that paid back everything, nothing is left to close here, and the row
-  stays counted among the payment recovery operations that need reconciling.
+  that transfer first. After a part close the figure can include what that
+  close recorded as no longer owed: check its record before paying. If the
+  member is still owed anything, settle it with **Paid another way**, never
+  with a new refund in the Stripe dashboard. After a close that paid back
+  everything, nothing is left to close here: the row stays in the **Exhausted
+  recovery operations** count, and the health check's payment recovery result
+  stays red, so ask a developer to reconcile it.
 
 A refund whose retries had already run out when it failed stays here too, with
 the failure noted on it.

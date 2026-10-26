@@ -12,9 +12,14 @@
 
   A failed refund whose card refund was not closed this way is asked for again
   automatically, as before; so is one on a payment where a different card
-  refund was closed.
+  refund was closed. One case is still open (#4492): a refund whose card refund
+  had stalled but not yet been closed, failing before the close, is still sent
+  again automatically, and the close still goes through.
 
-  Known limit. After a close that paid the member back in full, nothing is left
-  owed on the payment, so the held refund is not offered for a close; it stays
-  counted among the payment recovery operations that need reconciling until
-  the later stage of #4361 settles these automatically.
+  Known limits. After a part close, the amount shown for the held refund can
+  include what that close recorded as no longer owed: check the close's record
+  before paying. After a close that paid the member back in full, nothing is
+  left owed on the payment, so the held refund is not offered for a close; it
+  stays in the exhausted recovery operations count, and the health check's
+  payment recovery result stays red because of it, until the later stage of
+  #4361 settles these automatically. Ask a developer to reconcile it.
