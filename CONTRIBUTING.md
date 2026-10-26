@@ -107,7 +107,12 @@ two lists differ in either direction, when an approved package matches no
 `pnpm-lock.yaml` resolves, naming the package and both versions. Adding a
 package to `allowBuilds` therefore also means adding a pattern that matches it
 to both groups in `.github/dependabot.yml`: the `install-scripts` group's
-`patterns` and the other group's `exclude-patterns`. When that
+`patterns` and the other group's `exclude-patterns`. Dependabot groups by the **direct**
+dependency it bumps, not by the approved package. So the direct dependencies
+that pull an approved package in (`pnpm why <package>`; today `tsx`, `vite`,
+`vitest`, `@vitest/coverage-v8`, `@sentry/nextjs`, `prisma`, `@prisma/client`,
+`eslint-config-next`) need a matching pattern too. The check doesn't verify
+those; keep them by hand when adding a direct dependency. When that
 check, or the install itself with `ERR_PNPM_IGNORED_BUILDS <name>@<version>`,
 fails on a bump:
 
