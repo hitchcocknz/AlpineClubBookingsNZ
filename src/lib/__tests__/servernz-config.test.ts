@@ -147,7 +147,7 @@ describe("ServerNZ credential wiring", () => {
     });
   });
 
-  it("forgets connection answers on both replacement and disconnect (#4436)", async () => {
+  it("forgets connection answers on both replacement and address move (#4436)", async () => {
     // The list was the server's answer for THAT key; the next key may own
     // different lodges. (The settings route's address move removes the key
     // through `clearServerNzApiKey`, so it is covered too.)
