@@ -63,6 +63,7 @@ function makeHelpers(
     // Required, and typed as the literal `true` (#2324): the shell always
     // renders the view-only banner above a step, so a step body is always
     // covered when it is the shell rendering it.
+    reportSaving: vi.fn(),
     ancestorRendersViewOnlyBanner: true,
     ...overrides,
   };

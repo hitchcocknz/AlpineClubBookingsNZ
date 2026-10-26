@@ -172,8 +172,17 @@ export function IntegrationWizard<Ctx>({
     stepContainerRef.current?.focus();
   }, [step, ready]);
 
+  // #4410: the index of a step whose save is still in flight (the step said so
+  // through `helpers.reportSaving`), or null. While it is set the operator
+  // cannot move to another step: a credential Replace counts as verified before
+  // its writes land, and continuing to Connect let a late write reset the
+  // tokens the OAuth callback had just stored.
+  const [savingStepIndex, setSavingStepIndex] = useState<number | null>(null);
+  const stepSaving = savingStepIndex === index;
+
   function goTo(next: number) {
     const clamped = Math.min(Math.max(next, 0), maxReachable);
+    if (stepSaving && clamped !== index) return;
     // The operator owns the cursor from here on, so a resume initialisation
     // that has not run yet stands down rather than undoing this (#2781).
     //
@@ -250,6 +259,7 @@ export function IntegrationWizard<Ctx>({
     optional: isWizardStepOptional(activeStep),
     acknowledged: acknowledgedOnly,
     skip: skipCurrent,
+    reportSaving: (saving) => setSavingStepIndex(saving ? index : null),
     // The shell's vouch (#2324): `viewOnlyBanner` above is rendered in EVERY
     // branch of this component — the loading early-return included — so a step's
     // gated controls may drop their own per-button reason and lean on it. The
@@ -298,7 +308,7 @@ export function IntegrationWizard<Ctx>({
                   <button
                     type="button"
                     onClick={() => reachable && goTo(i)}
-                    disabled={!reachable}
+                    disabled={!reachable || (stepSaving && i !== index)}
                     aria-current={active ? "step" : undefined}
                     className={cn(
                       "flex min-h-11 w-full items-center gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors",
@@ -363,7 +373,7 @@ export function IntegrationWizard<Ctx>({
               type="button"
               variant="outline"
               onClick={() => goTo(index - 1)}
-              disabled={index === 0}
+              disabled={index === 0 || stepSaving}
             >
               Back
             </Button>
@@ -402,7 +412,7 @@ export function IntegrationWizard<Ctx>({
                 <Button
                   type="button"
                   onClick={() => goTo(index + 1)}
-                  disabled={!currentPassed}
+                  disabled={!currentPassed || stepSaving}
                 >
                   Continue
                 </Button>

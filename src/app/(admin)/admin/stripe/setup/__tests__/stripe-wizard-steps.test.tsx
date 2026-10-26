@@ -57,7 +57,8 @@ const helpers: WizardStepHelpers = {
   skip: vi.fn(),
   // Required, and typed as the literal `true` (#2324): the shell always renders
   // the view-only banner above a step body.
-  ancestorRendersViewOnlyBanner: true,
+  reportSaving: vi.fn(),
+    ancestorRendersViewOnlyBanner: true,
 };
 
 // Each notice reads `Only a <strong>Full Admin</strong> can …`, so the sentence
