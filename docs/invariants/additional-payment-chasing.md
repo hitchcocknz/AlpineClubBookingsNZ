@@ -1740,7 +1740,7 @@ _Legacy: settles tasks raised before #4317._
 - **No second invoice.** The amount already stands on the booking's invoice, so
   the row is written `hadIssuedXeroInvoice: false`.
 - **It waits behind an unpaid edit request**, never going terminal
-  [INV-ADDPAY-051]; carrying that edit into this request is a follow-up. An edit
+  [INV-ADDPAY-051]; carrying that edit into this request is #4491. An edit
   made after the release merges the two [INV-ADDPAY-048].
 - **It closes, never guesses.** Cancelled, bumped, uncaptured and
   organiser-settled bookings close without an ask; an invoice not yet open in
