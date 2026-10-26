@@ -47,6 +47,7 @@ import {
   releaseXeroSupplementaryInvoiceForCapturedPaymentIntent,
 } from "@/lib/xero-supplementary-invoice-late-capture";
 import { followSupersededAskInvoicesSafely } from "@/lib/superseded-ask-invoice-carry";
+import { stillWaitingOnIntentWhere } from "@/lib/xero-supplementary-invoice-statuses";
 
 const STALE_WAITING_PAYMENT_AGE_DAYS = 14;
 
@@ -266,13 +267,6 @@ function groupByIntent(
 }
 
 /**
- * One waiting operation on an intent. The local rows first, and Stripe only
- * where they cannot answer: an ask whose transaction is FAILED might be a
- * decline (still payable with another card) or a provider cancel (never payable
- * again), and only Stripe can tell which. A PENDING or PROCESSING ask is kept on
- * the local rows alone.
- */
-/**
  * #3403: the backstop for the move at supersession. A superseded ask's balance
  * is carried by a later request, so its invoice is moved there first; only one
  * still waiting on this intent after that is retired.
@@ -284,16 +278,19 @@ async function moveToCarrierOrRetire(
   const carried = await followSupersededAskInvoicesSafely({ paymentId });
   if (!carried || carried.moved === 0) return "retire";
   const stillHere = await prisma.xeroSyncOperation.findFirst({
-    where: {
-      id: params.operationId,
-      status: "WAITING_PAYMENT",
-      requestPayload: { path: ["paymentIntentId"], equals: params.paymentIntentId },
-    },
+    where: { id: params.operationId, ...stillWaitingOnIntentWhere(params.paymentIntentId) },
     select: { id: true },
   });
   return stillHere ? "retire" : "moved";
 }
 
+/**
+ * One waiting operation on an intent. The local rows first, and Stripe only
+ * where they cannot answer: an ask whose transaction is FAILED might be a
+ * decline (still payable with another card) or a provider cancel (never payable
+ * again), and only Stripe can tell which. A PENDING or PROCESSING ask is kept on
+ * the local rows alone.
+ */
 async function decideWaitingOperation(params: {
   operationId: string;
   paymentIntentId: string;

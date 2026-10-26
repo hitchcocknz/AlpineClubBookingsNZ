@@ -77,8 +77,6 @@ import { PaymentSource, PaymentStatus, PaymentTransactionKind, type Prisma } fro
 
 import { isAdditionalAskRetiredBookingStatus } from "@/lib/additional-payment-chase";
 import { anchorCaptureHasReceipt, captureChangeId } from "@/lib/additional-capture-receipt-link";
-import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
-import { XERO_ACTIVE_OPERATION_STATUSES } from "@/lib/xero-active-operation-statuses";
 import { findActiveSupplementaryInvoiceLink } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
@@ -421,15 +419,11 @@ async function moveAnchorOntoCarrier(input: {
     // the carrier's own part recorded nowhere; unpaid, the receipt records it all.
     const carrierReceiptActive =
       carrierCaptured &&
-      (await tx.xeroSyncOperation.findFirst({
-        where: {
-          localModel: "PaymentTransaction",
-          localId: carrier.id,
-          queueType: XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE,
-          status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] },
-        },
-        select: { id: true },
-      })) !== null;
+      (await anchorCaptureHasReceipt(
+        tx,
+        { bookingId: input.bookingId, bookingModificationId: null, paymentIntentId: carrierIntentId },
+        { queuedCounts: true },
+      ));
     let moved = 0;
     for (const operation of moving) {
       const payload = asRecord(operation.requestPayload) ?? {};

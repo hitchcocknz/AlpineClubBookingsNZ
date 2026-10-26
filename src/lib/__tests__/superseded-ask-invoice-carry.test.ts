@@ -309,15 +309,32 @@ describe("the move (`followSupersededAskInvoicesToCarrier`)", () => {
 
   it("on a captured carrier whose own receipt records the capture, the moved invoice goes out unpaid (one recorder)", async () => {
     aSupersededByB({ b: { status: "SUCCEEDED" } });
-    mocks.anchorCaptureHasReceipt.mockResolvedValue(true);
+    // No receipt of B's still to run (F6), but the change's captures have one.
+    mocks.anchorCaptureHasReceipt.mockResolvedValueOnce(false).mockResolvedValue(true);
 
     await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
 
-    expect(mocks.anchorCaptureHasReceipt).toHaveBeenCalledWith(expect.anything(), {
+    expect(mocks.anchorCaptureHasReceipt).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      { bookingId: "booking_1", bookingModificationId: null, paymentIntentId: "pi_b" },
+      { queuedCounts: true },
+    );
+    expect(mocks.anchorCaptureHasReceipt).toHaveBeenNthCalledWith(2, expect.anything(), {
       bookingId: "booking_1",
       bookingModificationId: "mod_a",
       paymentIntentId: "pi_b",
     });
+    expect(payloadOf("op_mod_a")).toMatchObject({ paymentIntentId: "pi_b", recordPayment: false });
+  });
+
+  it("#3403 review 2 (F6): a receipt of the carrier's still to run - queued, or failed before deciding - makes the moved invoice unpaid", async () => {
+    aSupersededByB({ b: { status: "SUCCEEDED" } });
+    mocks.anchorCaptureHasReceipt.mockResolvedValueOnce(true).mockResolvedValue(false);
+
+    await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
+
+    expect(mocks.anchorCaptureHasReceipt).toHaveBeenCalledTimes(1);
     expect(payloadOf("op_mod_a")).toMatchObject({ paymentIntentId: "pi_b", recordPayment: false });
   });
 
