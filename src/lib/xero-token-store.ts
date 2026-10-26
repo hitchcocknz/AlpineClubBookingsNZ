@@ -336,6 +336,19 @@ export async function saveXeroTokens(
       // means its ciphertext columns are the database's '' default, whose
       // fingerprint this release knows without reading them (rule 3). It also
       // fences any refresh in flight: its lease-guarded update finds no row.
+      //
+      // KNOWN LIMIT: two connects at the same moment can leave TWO rows, as they
+      // could under #3454 — neither delete sees the other's uncommitted insert.
+      // No delete follows the connection upsert to tidy that up, because it
+      // would take `XeroToken` row locks after `XeroConnection`'s, the reverse
+      // of rule 2. It is tolerated instead: every reader of either release
+      // takes the most recently written row (`XERO_TOKEN_ROW_ORDER`), so both
+      // releases still claim the same lease; the first refresh rewrites that
+      // row and the connection from the store copy, the last connect's; and
+      // the next connect or disconnect deletes both. If the two connects named
+      // different organisations and the connection followed the other one, the
+      // store copy no longer matches it and reads as "reconnect required"
+      // (`tokenSetForConnection`).
       await tx.xeroToken.deleteMany();
       const row = await tx.xeroToken.create({
         data: { expiresAt: tokens.expiresAt, tenantId },

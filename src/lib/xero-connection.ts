@@ -1,5 +1,7 @@
 /**
- * THE one answer to "is Xero connected, to which tenant, until when" (#3806).
+ * Where every reader asks "is Xero connected, to which tenant, until when"
+ * (#3806). The token store still decides whether the stored tokens are usable
+ * (`getXeroTokenReadability`).
  *
  * Since #3806 R2 the connection's non-secret facts live in `XeroConnection`, a
  * one-row table with no token, ciphertext or key in it. Every reader that used to

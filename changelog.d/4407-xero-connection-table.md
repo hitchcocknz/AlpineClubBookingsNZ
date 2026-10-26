@@ -6,7 +6,8 @@
   date for the previous release during an upgrade and is removed in a later
   release.
 
-  Nothing changes for administrators. A Xero connection made before the Xero
-  tokens moved into the credential store, and never used since, shows as
-  "reconnect required" after this upgrade; reconnecting from Admin → Xero fixes
-  it. The upgrade notes say how to check for that before deploying.
+  A club already running a build that moved the Xero tokens into the credential
+  store (#3454) notices nothing. A club upgrading from v0.13.2, the newest
+  tagged release, or anything older reconnects Xero once from Admin → Xero
+  after this upgrade; until then Xero shows "reconnect required" and Xero work
+  waits. The upgrade notes say how to check, and how to avoid the reconnect.

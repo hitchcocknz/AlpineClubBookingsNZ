@@ -192,11 +192,19 @@ no process holds half a lease. Release and save clear both. While no
 `XeroToken` row exists, only `XeroConnection`'s is claimed.
 
 **Lock order: `XeroToken`, then `XeroConnection`.** A statement trigger on
-`XeroToken` writes `XeroConnection` at the end of each `XeroToken` statement
-(when the tenant or expiry changed), so every writer of either release that
-touches both tables touches `XeroToken` first. The token store's claim, save,
-release, connect and delete keep that order, so no cycle forms with the previous
-release's writers.
+`XeroToken` syncs `XeroConnection` at the end of each `XeroToken` statement, so
+every writer of either release that touches both tables touches `XeroToken`
+first. The token store's claim, save, release, connect and delete keep that
+order, so no cycle forms with the previous release's writers. The sync is ONE
+statement, reading one snapshot taken once its `XeroConnection` lock is
+granted, so a refresh, connect or disconnect committing while it waits is
+never half-seen and written back stale. It row-locks the connection only to
+change its tenant or expiry, so a lease claim (which changes neither) waits on
+no `XeroConnection` writer; otherwise it waits only for a row another
+transaction is writing or inserting at the same moment. Two connects at the
+same moment can still leave two `XeroToken` rows, as under #3454: every reader
+takes the most recently written one, and the next connect or disconnect
+deletes both (`saveXeroTokens`).
 
 **The claim takes the leases first and reads the tokens second, in the same
 transaction.** The winning `updateMany`s hold both rows' locks until the claim
@@ -217,7 +225,8 @@ the claim read under its locks. A reconnect, a later claim or a writer that
 bypassed the leases makes it lose, and losing any rolls back all three.
 `xero-token-credential-store.realdb.test.ts` proves the dual claim and the
 fences against real row locks, including against the previous release's own
-claim statement.
+claim statement, and forces both of the trigger's interleavings with a queued
+table lock.
 
 ## The lock families
 

@@ -486,18 +486,18 @@ export async function getSetupDatabaseSnapshot(): Promise<SetupDatabaseSnapshot>
     lodgesNotSetUpForBookings = undefined;
   }
 
-  // Truthful Xero connection state (#2079): a token row that no longer decrypts
-  // (env→DB upgrade or an auth-secret change) must read as "needs reconnect",
-  // not "connected". The readability probe is side-effect-free (peeks the key,
-  // never generates one) and never exposes the token value; a DB/crypto hiccup
-  // there must not sink the whole readiness snapshot, so it fails soft to
-  // "not needing re-entry" (the connect/expiry checks still gate "connected").
+  // Truthful Xero connection state (#2079, #3806): a connection whose stored
+  // token set is missing, no longer decrypts (an auth-secret change) or names
+  // another organisation must read as "needs reconnect", not "connected". The
+  // readability probe is side-effect-free and never exposes the token value; a
+  // DB/crypto hiccup there must not sink the whole readiness snapshot, so it
+  // fails soft to "not needing re-entry" (the connect/expiry checks still gate
+  // "connected").
   let operationalXeroNeedsReentry = false;
   if (operationalXeroConnection) {
     try {
       operationalXeroNeedsReentry =
-        // Over the CURRENT copy of the tokens, which since #3454 may be the
-        // credential-store one rather than this row's.
+        // Over the credential-store copy, the only one read since #3806 R2.
         (await getXeroTokenReadability()) === "unreadable";
     } catch {
       operationalXeroNeedsReentry = false;

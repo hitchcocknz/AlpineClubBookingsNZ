@@ -2859,8 +2859,12 @@ provider `xero-oauth`, key `token-set`: a JSON token set encrypted under the
 store's own key derivation. Every write therefore names its actor, commits its
 `integration.credential.*` audit row in the same transaction, and declares what
 it expected to find (`INV-PRIV-020`). Since #3806 R2 it is the only copy read:
-a connection whose store copy is missing, unreadable or malformed reads as
-"reconnect required", never as connected.
+a connection whose store copy is missing, unreadable or malformed, or names a
+different organisation from the connection, reads as "reconnect required",
+never as connected. The last case is a copy a release from before #3454 left
+behind when it reconnected to another organisation: it writes only
+`XeroToken`, so the trigger moves the connection and the store keeps the old
+grant.
 
 **The connection and the refresh lease** are the one `XeroConnection` row: no
 row means not connected. It holds the tenant id, the access token's expiry and
@@ -2868,7 +2872,8 @@ row means not connected. It holds the tenant id, the access token's expiry and
 needs only the tenant or expiry (`isXeroConnected`, the health check, the setup
 provider test, setup readiness, the stored financial-year resolution, config
 transfer's tenant stamp, the admin cache key) asks `readXeroConnection`
-(`src/lib/xero-connection.ts`), so one place answers "is Xero connected".
+(`src/lib/xero-connection.ts`), so they all read the same row. Whether the
+tokens behind it are usable is the token store's `getXeroTokenReadability`.
 
 **The old `XeroToken` row is kept for the previous release (#3454), until R3.**
 A blue-green deploy runs the previous release beside this one, and after a
@@ -2905,9 +2910,13 @@ that:
   the most recently written row's tenant and expiry (`updatedAt`, then `id`,
   descending — `XERO_TOKEN_ROW_ORDER`) into `XeroConnection`, or deletes it when
   no row is left. It never touches the lease, and writes nothing when neither
-  value changed. So the previous release's connect, refresh, reconnect and
-  disconnect reach this release too. Every writer touches `XeroToken` before
-  `XeroConnection`, the order the trigger fixes (CONCURRENCY_AND_LOCKING.md).
+  value changed. It is one statement reading one snapshot, so a write that
+  commits while it waits for its lock is never written back stale. So the
+  previous release's connect, refresh, reconnect and disconnect reach this
+  release too. Every writer touches `XeroToken` before `XeroConnection`, the
+  order the trigger fixes (CONCURRENCY_AND_LOCKING.md). Two connects at the same
+  moment can leave two `XeroToken` rows; every reader takes the newest, and the
+  next connect or disconnect deletes both.
 
 If the auth secret no longer passes the capture gate, the refresh refuses before
 spending the token, alerts as "Token Store Unavailable", and the status page
@@ -2919,15 +2928,21 @@ container rotated a moment ago would be dead in it. The token store reads the
 row through the database on its own (or the lease transaction's) client.
 
 **The wrapped token key is retired.** It encrypted only the `XeroToken`
-ciphertext; nothing generates or reads it now, and the next connect, disconnect
-or verify-reset deletes a leftover `xero` / `token_key` row.
+ciphertext. This release never generates or reads it, and its next connect,
+disconnect or verify-reset deletes a leftover `xero` / `token_key` row. The
+previous release, while it still runs, generates a new one when it writes the
+tokens and finds none, audited as `xero-token-key-generation`.
 
-**Upgrading to R2.** A connection the previous release has refreshed at least
-once carries a store copy and keeps working. One made before #3454 and never
-refreshed since has no store copy; it reads as "reconnect required" until an
-administrator reconnects. Until R3, `XeroToken` may still hold the last
-ciphertext the previous release wrote; after the first refresh here that
-refresh token has been spent.
+**Upgrading to R2.** A connection a #3454 release has refreshed since any
+older release last ran carries a current store copy and keeps working. A
+connection on a release without #3454 (every tagged release so far) has no
+store copy, and one an older release refreshed after #3454 had stored a copy
+holds a spent refresh token there; either needs a reconnect, or a refresh on a
+#3454 build first. [UPGRADING.md](../UPGRADING.md) has the paths and the pre-deploy check.
+Until R3, `XeroToken` may still hold the last ciphertext the previous release
+wrote; after the first refresh here that refresh token has been spent. A
+rollback past #3454, once R2 has connected, refreshed or disconnected, needs a
+reconnect there.
 
 **Retiring `XeroToken` (R3, #3806)** comes after R2 has fully deployed: first a
 release that stops writing `XeroToken` and drops the trigger, then the

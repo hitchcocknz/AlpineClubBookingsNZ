@@ -15,7 +15,10 @@ import type { Prisma } from "@prisma/client";
  * the previous release's lease beside its own); every other reader asks
  * `readXeroConnection` instead. The database trigger that keeps `XeroConnection`
  * in step with this table orders the same way (`updatedAt` DESC, then `id`).
- * Retired with the table in R3.
+ * #3454's order was `updatedAt` alone, so the two releases agree on the row
+ * except when two rows share an `updatedAt` to the millisecond; two rows exist
+ * only after two simultaneous connects (the known limit in `saveXeroTokens`),
+ * and the next connect or disconnect deletes both. Retired with the table in R3.
  */
 export const XERO_TOKEN_ROW_ORDER: Prisma.XeroTokenOrderByWithRelationInput[] = [
   { updatedAt: "desc" },

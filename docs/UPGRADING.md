@@ -119,7 +119,7 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
-### The Xero connection moves to its own table; old connections may need one reconnect (#3806)
+### The Xero connection moves to its own table; some installs reconnect Xero once (#3806)
 
 **What changes.** Release R2 of #3806. The Xero refresh lease and the "is Xero
 connected" answer move to a new table, `XeroConnection`, which holds no secret.
@@ -130,9 +130,24 @@ release, but its token columns are no longer written or read. One migration
 `XeroToken`, and adds a trigger that keeps it in step while the previous release
 can still run. It is an ordinary blue-green release: no window.
 
-**Before you deploy.** Deploy this only after a release that contains #3454 has
-fully deployed. Then check that the token store holds this connection's tokens.
-Run this read-only query against the live database:
+This release reads only the credential store's copy of the tokens. A release
+before #3454 never wrote that copy, so whether you need to reconnect depends on
+the release you run now. **No tagged release contains #3454 yet**: v0.13.2, the
+newest, predates it. #3454 reached `main` on 2 October 2026.
+
+**If you run v0.13.2 or any other release without #3454**, using Xero before
+you deploy does nothing, because those releases never write the store copy.
+Choose one:
+
+- **Reconnect once (recommended for most clubs).** Deploy this release, then
+  reconnect Xero from **Admin → Xero** straight away. Until then Xero shows
+  "reconnect required" and Xero work pauses; nothing is lost.
+- **No reconnect.** First deploy a build that contains #3454 but not this
+  change, then follow the next paragraph before deploying this one.
+
+**If you run a build that contains #3454**, check before you deploy that the
+store holds this connection's tokens. Run this read-only query against the live
+database:
 
 ```sql
 SELECT (SELECT count(*) FROM "XeroToken") AS "connectedRows",
@@ -140,21 +155,44 @@ SELECT (SELECT count(*) FROM "XeroToken") AS "connectedRows",
          WHERE "provider" = 'xero-oauth' AND "key" = 'token-set') AS "storedTokenSets";
 ```
 
-If `connectedRows` is 1 or more and `storedTokenSets` is 0, the connection was
-made before #3454 and has not refreshed since, so this release cannot read it.
-Use any Xero feature once before you deploy (any call refreshes an expired
-token and stores it), or plan to reconnect Xero from **Admin → Xero** straight
-after the deploy. Until then Xero shows as "reconnect required" and Xero work
-pauses; nothing is lost.
+If `connectedRows` is 1 or more and `storedTokenSets` is 0, the connection has
+not refreshed since #3454 arrived. Use any Xero feature (a contact sync, say)
+at least 30 minutes after Xero was last used, so the access token has expired
+and the call refreshes it and stores a copy; then run the query again. Or plan
+to reconnect straight after the deploy.
 
-**After upgrading.** Nothing to do. After the first connect, disconnect or
+The query cannot see one more case. If an older release ran after #3454 was
+first deployed (a rollback, or the old colour during that deploy) and used
+Xero, it refreshed the tokens in `XeroToken` alone, and the store copy holds a
+refresh token Xero has since retired. #3454 notices this and reads the newer
+row, but this release reads only the store. So if that happened, use a Xero
+feature on #3454 that refreshes, as above, after the older release last ran,
+before you deploy this one. A store copy for a different organisation from the
+connection reads as "reconnect required"; one for the same organisation fails
+at its first refresh, and a reconnect fixes it.
+
+**If Xero says "reconnect required" after upgrading** because the connection
+predates #3454, reconnecting fixes it. Rolling back to a build that contains
+#3454, using a Xero feature that refreshes and deploying this release again
+fixes it without a reconnect.
+
+**After upgrading.** Nothing else. After the first connect, disconnect or
 change of Xero client id or secret, the retired wrapped token key
 (`xero` / `token_key`) is deleted from the credential store, recorded in the
 audit log as that administrator's act.
 
-**Rolling back.** The previous release keeps working on this schema: it reads
-the same `XeroToken` row and the same credential-store tokens, and the trigger
-keeps `XeroConnection` current behind it.
+**Rolling back.**
+
+- **To a build that contains #3454:** it keeps working on this schema. It reads
+  the same `XeroToken` row and the same credential-store tokens, and the trigger
+  keeps `XeroConnection` current behind it. When it next writes the tokens it
+  generates a new `xero` / `token_key`, which the audit log records as a key
+  generation; this release deletes it again at its next connect or disconnect.
+- **To v0.13.2 or another release without #3454,** once this release has
+  connected, refreshed or disconnected Xero: Xero needs a reconnect there. That
+  release reads only `XeroToken`'s token columns, which this release leaves
+  empty on a connect and stale after a refresh, and the key that encrypted them
+  is deleted.
 
 ### Check card cancellations left behind by earlier cash-payment reversals (#4320)
 
