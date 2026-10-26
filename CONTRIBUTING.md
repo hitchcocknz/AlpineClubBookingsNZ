@@ -369,8 +369,8 @@ the owner's checklist for rebuilding it.
 | `Migration drift check` | applied | `ci.yml` → `migration-drift` | migrations reproduce `schema.prisma`; real-Postgres lock harnesses |
 | `Data migration verification` | applied | `ci.yml` → `data-migration-verification` | data-rewriting migrations against realistic pre-state |
 | `Static analysis gate` | applied | `ci.yml` → `static-analysis` | Semgrep: four registry packs **plus** `.semgrep/rules/**` and their fixtures |
-| `Playwright E2E` | applied | `e2e.yml` → `playwright` | the browser suite: a fail-closed gate over the `E2E shard (i/3)` runner jobs (#4397) |
-| `E2E multi-lodge` | applied | `e2e.yml` → `multi-lodge` | the multi-lodge browser suite: a fail-closed gate over `E2E multi-lodge run (1/1)` (#4397) |
+| `Playwright E2E` | applied | `e2e.yml` → `playwright` | the browser suite: runs shard 1 and fails closed unless `E2E shard (2/3)`/`(3/3)` pass (#4397) |
+| `E2E multi-lodge` | applied | `e2e.yml` → `multi-lodge` | the multi-lodge browser suite (#4397: waits for the run's image and database in a step, never `needs:`) |
 | `Secret scan (gitleaks)` | applied | `ci.yml` → `secret-scan` | the PR's own commits, `main`'s history including merge commits, and the checked-out tree (#2686) |
 | `Image security gate (Trivy CRITICAL)` | applied | `ci.yml` → `docker-image-security` | CRITICAL image vulnerabilities. HIGH stays advisory (#2686) |
 | `Dependency audit` | applied | `ci.yml` → `dependency-audit` | `pnpm audit --audit-level=high`. Split out of `verify` (#2946), where a failing audit skipped lint, the ratchet, `prisma generate`, typecheck, knip, `pnpm test` and the build on every branch (#2945) |

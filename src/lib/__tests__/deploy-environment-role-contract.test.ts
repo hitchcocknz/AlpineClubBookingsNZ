@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -984,14 +984,18 @@ describe("non-production targets declare themselves", () => {
       Named rather than counted, the way the neighbouring censuses name their
       inputs: a job that stops calling the writer should say WHICH job, and a new
       one should be added here deliberately. Three callers today — `e2e.yml`'s
-      seeded-database job and its runner matrix (the shards and the multi-lodge
-      run, #4397), and the dispatch-only rollover proof.
+      seeded-database job, the `e2e-run` action every browser job uses (#4397),
+      and the dispatch-only rollover proof.
     */
-    const callers = readdirSync(path.join(ROOT, ".github/workflows"))
+    const workflowFiles = readdirSync(path.join(ROOT, ".github/workflows"))
       .filter((name) => /\.ya?ml$/.test(name))
+      .map((name) => `.github/workflows/${name}`);
+    const actionFiles = readdirSync(path.join(ROOT, ".github/actions"))
+      .map((name) => `.github/actions/${name}/action.yml`)
+      .filter((file) => existsSync(path.join(ROOT, file)));
+    const callers = [...actionFiles, ...workflowFiles]
       .sort()
-      .flatMap((name) => {
-        const file = `.github/workflows/${name}`;
+      .flatMap((file) => {
         const calls =
           readRepoFile(file).split(`bash ${E2E_STAGING_ENV_WRITER}`).length - 1;
         return Array.from(
@@ -1004,9 +1008,9 @@ describe("non-production targets declare themselves", () => {
       "the set of CI jobs writing the E2E stack's env file changed; if that is " +
         "deliberate, update this list",
     ).toEqual([
+      ".github/actions/e2e-run/action.yml #1",
       ".github/workflows/e2e-rollover-proof.yml #1",
       ".github/workflows/e2e.yml #1",
-      ".github/workflows/e2e.yml #2",
     ]);
   });
 

@@ -4,6 +4,7 @@ import path from "node:path";
 import { BaseSequencer } from "vitest/node";
 
 import { parseWorkflowYaml } from "./check-workflow-suite-checkout-depth.mjs";
+import { parseArtifactWaitArgs } from "./wait-for-run-artifacts.mjs";
 import {
   EXPECTED_SHARD_COUNT,
   classifyTestShardJobs,
@@ -148,8 +149,8 @@ describe("the gate for another matrix (--label/--count)", () => {
   const e2e = (index, status = "completed", conclusion = "success") => ({ name: `E2E shard (${index}/3)`, status, conclusion });
 
   it("parses its arguments, defaulting to the unit-test matrix, and refuses anything else", () => {
-    expect(parseShardGateArgs([])).toEqual({ label: "Test shard", count: EXPECTED_SHARD_COUNT, maxWaitMs: 45 * 60_000, upstream: [] });
-    expect(parseShardGateArgs(["--label", "E2E shard", "--count", "3", "--max-wait-minutes", "55"])).toEqual({ label: "E2E shard", count: 3, maxWaitMs: 55 * 60_000, upstream: [] });
+    expect(parseShardGateArgs([])).toEqual({ label: "Test shard", count: EXPECTED_SHARD_COUNT, maxWaitMs: 45 * 60_000, upstream: [], from: 1 });
+    expect(parseShardGateArgs(["--label", "E2E shard", "--count", "3", "--max-wait-minutes", "55"])).toEqual({ label: "E2E shard", count: 3, maxWaitMs: 55 * 60_000, upstream: [], from: 1 });
     expect(() => parseShardGateArgs(["--count", "0"])).toThrow(/Invalid --count/);
     expect(() => parseShardGateArgs(["--label", "x\"; rm"])).toThrow(/Invalid --label/);
     expect(() => parseShardGateArgs(["--label"])).toThrow(/needs a value/);
@@ -234,76 +235,100 @@ describe("Vitest shard partition on the actual repository", () => {
   });
 });
 
-// #4397: e2e.yml's two required checks are gates over runner jobs, pinned the
-// way `verify` is above. A change that lets one go green without its runners
+// #4397: e2e.yml's two required checks run browsers themselves (shard 1, and
+// the multi-lodge project), wait for their inputs in a step rather than a
+// `needs:`, and `Playwright E2E` also gates shards 2 and 3. Pinned the way
+// `verify` is above: a change that lets one go green without its tests
 // passing must fail here, not on a merged pull request.
-describe("e2e.yml's required gates and their runners", () => {
-  const e2e = parseWorkflowYaml(readFileSync(path.join(root, ".github", "workflows", "e2e.yml"), "utf8"));
-  const e2eText = readFileSync(path.join(root, ".github", "workflows", "e2e.yml"), "utf8");
-  const runner = e2e.jobs["e2e-runner"];
-  const entries = runner.strategy.matrix.include;
-  const gates = [
-    { id: "playwright", name: "Playwright E2E", label: "E2E shard" },
-    { id: "multi-lodge", name: "E2E multi-lodge", label: "E2E multi-lodge run" },
-  ];
+describe("e2e.yml's required jobs, their shards and the run action", () => {
+  const e2ePath = path.join(root, ".github", "workflows", "e2e.yml");
+  const e2e = parseWorkflowYaml(readFileSync(e2ePath, "utf8"));
+  const action = parseWorkflowYaml(readFileSync(path.join(root, ".github", "actions", "e2e-run", "action.yml"), "utf8"));
+  const shards = e2e.jobs["e2e-shard"];
+  const needed = "inputs.needed != 'false'";
+  const upstreamNames = shards.needs.replace(/[[\]]/g, "").split(",").map((id) => e2e.jobs[id.trim()].name);
+  const runStep = (job) => job.steps.find((step) => step.uses === "./.github/actions/e2e-run");
 
-  it.each(gates)("$name keeps its required name, has no needs/if, and gates exactly its matrix entries", ({ id, name, label }) => {
-    const gate = e2e.jobs[id];
-    expect(gate.name).toBe(name);
-    expect(gate.needs).toBeUndefined();
-    expect(gate.if).toBeUndefined();
-    expect(gate["continue-on-error"]).toBeUndefined();
-    expect(gate.permissions.actions).toBe("read");
-    const gateStep = gate.steps.find((step) => step.run?.startsWith("node scripts/ci/require-test-shards.mjs"));
-    expect(gateStep?.if).toBeUndefined();
-    expect(gateStep?.["continue-on-error"]).toBeUndefined();
-    const options = parseShardGateArgs(gateStep.run.replace("node scripts/ci/require-test-shards.mjs", "").match(/"[^"]*"|\S+/g).map((arg) => arg.replace(/^"|"$/g, "")));
-    expect(options.label).toBe(label);
-    // Fails at once on exactly the jobs the runners need.
-    expect(options.upstream).toEqual(runner.needs.replace(/[[\]]/g, "").split(",").map((id) => e2e.jobs[id.trim()].name));
-    const mine = entries.filter((entry) => entry.name.startsWith(`${label} (`));
-    expect(mine).toHaveLength(options.count);
-    expect(mine.map((entry) => entry.name)).toEqual(Array.from({ length: options.count }, (_, i) => `${label} (${i + 1}/${options.count})`));
-    // The gate outwaits the slowest chain it depends on (image, then a runner).
-    expect(options.maxWaitMs / 60_000).toBeGreaterThanOrEqual(Number(e2e.jobs["e2e-image"]["timeout-minutes"]) + Number(runner["timeout-minutes"]));
-    expect(Number(gate["timeout-minutes"])).toBeGreaterThan(options.maxWaitMs / 60_000);
-  });
-
-  it("runs every matrix entry as its own runner, each shard on its own slice", () => {
-    expect(runner.name).toBe("${{ matrix.name }}");
-    expect(runner.if).toBeUndefined();
-    expect(runner["continue-on-error"]).toBeUndefined();
-    expect(runner.env.E2E_MULTI_LODGE).toBe("${{ matrix.multi_lodge }}");
-    // The runner cannot pass without actually preparing the stack and running
-    // Playwright: the steps exist, run exactly these commands, and neither can
-    // be skipped by anything but an explicit needed=false, nor shrug off a failure.
-    const needed = "steps.scope.outputs.needed != 'false'";
-    const scope = runner.steps.find((step) => step.id === "scope");
+  it.each([
+    { id: "playwright", name: "Playwright E2E", wait: "true" },
+    { id: "multi-lodge", name: "E2E multi-lodge", wait: "true" },
+  ])("$name keeps its required name, has no needs/if, and really runs browsers after waiting for its inputs", ({ id, name, wait }) => {
+    const job = e2e.jobs[id];
+    expect(job.name).toBe(name);
+    expect(job.needs).toBeUndefined();
+    expect(job.if).toBeUndefined();
+    expect(job["continue-on-error"]).toBeUndefined();
+    expect(job.permissions.actions).toBe("read");
+    const run = runStep(job);
+    expect(run).toBeDefined();
+    expect(run.if).toBeUndefined();
+    expect(run["continue-on-error"]).toBeUndefined();
+    expect(run.with.needed).toBe("${{ steps.scope.outputs.needed }}");
+    expect(run.with["wait-for-artifacts"]).toBe(wait);
+    const scope = job.steps.find((step) => step.id === "scope");
     expect(scope?.run).toBe("node scripts/ci/e2e-scope.mjs");
     expect(scope?.if).toBeUndefined();
-    for (const command of ["bash scripts/e2e-stack.sh prepare", "bash scripts/e2e-stack.sh run ${{ matrix.playwright_args }}"]) {
-      const step = runner.steps.find((item) => item.run === command);
+  });
+
+  it("runs shard 1 and the multi-lodge project with exactly their own settings", () => {
+    expect(e2e.jobs.playwright.env.E2E_SHARD).toBe("1/3");
+    expect(e2e.jobs.playwright.env.E2E_MULTI_LODGE).toBeUndefined();
+    expect(runStep(e2e.jobs.playwright).with["playwright-args"]).toBeUndefined();
+    expect(e2e.jobs["multi-lodge"].env.E2E_MULTI_LODGE).toBe("1");
+    expect(e2e.jobs["multi-lodge"].env.E2E_SHARD).toBeUndefined();
+    expect(runStep(e2e.jobs["multi-lodge"]).with["playwright-args"]).toBe("--project=multi-lodge");
+  });
+
+  it("Playwright E2E gates exactly shards 2 and 3, failing at once on an upstream failure", () => {
+    const gateStep = e2e.jobs.playwright.steps.find((step) => step.run?.startsWith("node scripts/ci/require-test-shards.mjs"));
+    expect(gateStep?.if).toBeUndefined();
+    expect(gateStep?.["continue-on-error"]).toBeUndefined();
+    expect(e2e.jobs.playwright.steps.indexOf(gateStep)).toBeGreaterThan(e2e.jobs.playwright.steps.indexOf(runStep(e2e.jobs.playwright)));
+    const options = parseShardGateArgs(gateStep.run.replace("node scripts/ci/require-test-shards.mjs", "").match(/"[^"]*"|\S+/g).map((arg) => arg.replace(/^"|"$/g, "")));
+    expect(options).toMatchObject({ label: "E2E shard", count: 3, from: 2 });
+    expect(options.upstream).toEqual(upstreamNames);
+    expect(shards.name).toBe("E2E shard (${{ matrix.shard }}/3)");
+    expect(shards.strategy.matrix.shard.map(Number)).toEqual([2, 3]);
+    expect(shards.env.E2E_SHARD).toBe("${{ matrix.shard }}/3");
+    expect(shards.if).toBeUndefined();
+    expect(shards["continue-on-error"]).toBeUndefined();
+    expect(shards.strategy["fail-fast"]).toBe("false");
+    const shardRun = runStep(shards);
+    expect(shardRun.with["wait-for-artifacts"]).toBe("false");
+    expect(shardRun.with["playwright-args"]).toBeUndefined();
+    expect(shardRun.if).toBeUndefined();
+    // The gate outwaits the slowest chain it depends on (image, then a shard).
+    expect(options.maxWaitMs / 60_000).toBeGreaterThanOrEqual(Number(e2e.jobs["e2e-image"]["timeout-minutes"]) + Number(shards["timeout-minutes"]) - 25);
+  });
+
+  it("the run action prepares and runs Playwright, skippable only on an explicit needed=false, and waits on the right inputs", () => {
+    const steps = action.runs.steps;
+    for (const command of ["bash scripts/e2e-stack.sh prepare", "bash scripts/e2e-stack.sh run ${{ inputs.playwright-args }}"]) {
+      const step = steps.find((item) => item.run === command);
       expect(step, command).toBeDefined();
       expect(step.if).toBe(needed);
       expect(step["continue-on-error"]).toBeUndefined();
     }
-    expect(runner.strategy["fail-fast"]).toBe("false");
-    expect(runner.env.E2E_SHARD).toBe("${{ matrix.shard }}");
-    for (const entry of entries.filter((item) => item.name.startsWith("E2E shard ("))) {
-      expect(entry.name).toBe(`E2E shard (${entry.shard})`);
-      expect(entry.multi_lodge).toBe("");
-      // No extra Playwright arguments: `--list`, a never-matching `--grep` or a
-      // narrower `--project` would let a shard pass without running its slice.
-      expect(entry.playwright_args).toBe("");
+    const wait = steps.find((item) => item.run?.startsWith("node scripts/ci/wait-for-run-artifacts.mjs"));
+    expect(wait?.if).toBe(`${needed} && inputs.wait-for-artifacts == 'true'`);
+    expect(wait?.["continue-on-error"]).toBeUndefined();
+    const command = wait.run.replace("node scripts/ci/wait-for-run-artifacts.mjs", "").replaceAll("${{ github.run_id }}", "4397");
+    const args = parseArtifactWaitArgs(command.match(/"[^"]*"|\S+/g).map((arg) => arg.replace(/^"|"$/g, "")));
+    expect(args.artifacts).toEqual(["e2e-app-image-4397", "e2e-seeded-db-4397"]);
+    // The names the image and database jobs upload.
+    const text = readFileSync(e2ePath, "utf8");
+    expect(text).toContain("name: e2e-app-image-${{ github.run_id }}");
+    expect(text).toContain("name: e2e-seeded-db-${{ github.run_id }}");
+    expect(args.upstream).toEqual(upstreamNames);
+    for (const step of steps) {
+      if (step.if?.includes("inputs.needed")) expect(step.if).toMatch(/inputs\.needed != 'false'/);
+      expect(step["continue-on-error"]).toBeUndefined();
     }
-    expect(entries).toHaveLength(4);
-    const multiLodge = entries.filter((item) => item.multi_lodge === "1");
-    expect(multiLodge).toEqual([expect.objectContaining({ name: "E2E multi-lodge run (1/1)", shard: "", playwright_args: "--project=multi-lodge" })]);
   });
 
-
   it("skips heavy steps only on an explicit needed=false, never on a missing answer", () => {
-    expect(e2eText).not.toMatch(/outputs\.needed == 'true'/);
+    const text = readFileSync(e2ePath, "utf8") + readFileSync(path.join(root, ".github", "actions", "e2e-run", "action.yml"), "utf8");
+    expect(text).not.toMatch(/needed == 'true'/);
     for (const job of Object.values(e2e.jobs)) {
       for (const step of job.steps) {
         if (step.if?.includes("steps.scope")) expect(step.if).toMatch(/steps\.scope\.outputs\.needed != 'false'/);
@@ -312,10 +337,9 @@ describe("e2e.yml's required gates and their runners", () => {
   });
 
   it("keeps every secret out of the seeded-database artifact", () => {
-    const dbJob = e2eText.slice(e2eText.indexOf("\n  e2e-db:"), e2eText.indexOf("\n  e2e-runner:"));
-    expect(dbJob).toContain("bash scripts/e2e-stack.sh snapshot");
+    const text = readFileSync(e2ePath, "utf8");
+    expect(text.slice(text.indexOf("\n  e2e-db:"))).toContain("bash scripts/e2e-stack.sh snapshot");
     expect(JSON.stringify(e2e.jobs["e2e-db"])).not.toMatch(/\bsecrets\b/);
-    // Nothing workflow-wide reaches the job either.
     expect(e2e.env).toBeUndefined();
     const stack = readFileSync(path.join(root, "scripts", "e2e-stack.sh"), "utf8");
     const body = (name) => stack.slice(stack.indexOf(`\n${name}() {`), stack.indexOf("\n}\n", stack.indexOf(`\n${name}() {`)));
@@ -323,7 +347,6 @@ describe("e2e.yml's required gates and their runners", () => {
       expect(stack.indexOf(`\n${name}() {`), `${name}() must exist`).toBeGreaterThan(-1);
       expect(body(name), name).not.toMatch(/seed-stripe-credentials|STRIPE/);
     }
-    // Every shell function `snapshot` calls is one of those checked above.
     const called = [...body("snapshot").matchAll(/^\s*([a-z_]+)(?:\s|$)/gm)].map((match) => match[1]);
     const checkedOrBuiltin = new Set(["seed_database", "reset_database", "capture_fixture_date", "local", "echo", "mkdir", "compose", "cp", "snapshot"]);
     expect(called.filter((name) => !checkedOrBuiltin.has(name))).toEqual([]);
