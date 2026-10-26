@@ -338,6 +338,13 @@ import "./cancel-card-refund-event.realdb.test";
 // failed-later writer and "paid another way" close. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4166-` fixtures.
 import "./cancel-card-refund-failed-later.realdb.test";
+// #4280 reuses it to prove a card refund's reversal keeps the bank cash a "Paid
+// another way" close recorded: full and part closes, a late pending or
+// succeeded refund then failed or cancelled, each note state, several charges,
+// credit beside it, shortfalls and undone hand-backs never counted, the close
+// and the refund racing in both orders, and a rolled-back failure. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4280-` fixtures.
+import "./card-refund-reversal-bank-cash-floor.realdb.test";
 // #4147 reuses it to prove the booking-ledger census reads a capacity race's
 // cancel by its own refund rows: through the REAL capacity race, back-post and
 // recovery runner, a refund still being sent is IN_FLIGHT_REFUND (the back-post

@@ -475,8 +475,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `ON CONFLICT DO NOTHING` insert recorded it, in a counted status, made no
   earlier than the second the ledger-writers migration finished on this install
   (an older one is already in the mirror); it subtracts a counted refund it sees
-  move to failed or cancelled, never below the payment's account credit plus
-  its card refunds still counted (a refund the old formula never added, failing
+  move to failed or cancelled, never below the payment's floor
+  ([`INV-PAY-141`](#inv-pay-141); a refund the old formula never added, failing
   later, takes nothing). Rows, mirror and aggregate commit in one transaction.
 - **Every later write of that column is one compare-and-set**, re-read and
   retried: the writer above, #1491's fold, `applyLocalRefundAllocation`, which
@@ -492,6 +492,39 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - Pinned by `payment-transactions-refunds.test.ts` and
   `card-refund-mirror-races.realdb.test.ts`. Totals the old formula left short
   are listed by `pnpm run payments:audit-refunded-total`, never repaired by code.
+
+## INV-PAY-141
+
+**Related: `INV-PAY-103`** (the one card-refund writer) and **`INV-PAY-122`**
+(closing a dead card refund).
+
+- **A card refund's reversal never takes a payment's refunded total below the
+  bank cash its "Paid another way" closes recorded** (#4280; owner, 22 and 26
+  Oct 2026). `INV-PAY-103`'s floor on a counted refund moving to failed or
+  cancelled is the captured amount, or less: card refunds still counted, plus
+  account credit, plus that cash (`expectedRefundedFloorCents`), less what the
+  payment's other charges hold. A late refund the cap kept out takes none of it.
+- **The cash** is each completed close record's `amountCents`
+  (`CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE`): for a part close, what was paid.
+  Its note's state changes nothing. One reader,
+  `readPaidAnotherWayCloseBankCashByPayment`, on the writer's client under the
+  Payment row it holds.
+- **Only those closes.** Card and capacity shortfalls are outside this bounded
+  repair (owner, 26 Oct 2026; #4162 never undoes them). Ordinary bank
+  hand-backs are excluded because #4162 can undo one while its task reads
+  completed.
+- The floor only bounds a subtraction: it never raises a total and writes no
+  row. No new lock (`INV-LOCK-001`).
+- **Limits.** A charge's floor nets the other charges' mirrors in full, so
+  shortfall or hand-back cash on another charge can still let it drop, unseen
+  by the audit (#4488): card A $200 closed, a $100 shortfall paid on B, A's
+  capped late refund failing takes A to $100. Overstated account credit (pre-#1636 restores) can hold
+  a total too high: the fail-safe direction.
+- **History is reported, never rewritten** by the refunded-total audit, in one
+  read-only snapshot. Rolling the code back restores the old subtraction.
+- Pinned by `card-refund-reversal-bank-cash-floor.realdb.test.ts`,
+  `payment-transactions-refunds.test.ts` and
+  `refunded-total-shortfall-audit.test.ts`.
 
 ## INV-PAY-002
 
