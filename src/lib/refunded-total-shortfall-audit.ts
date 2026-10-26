@@ -235,10 +235,16 @@ export function formatRefundedTotalShortfallReport(
     lines.push(
       "",
       "## Short for another reason - read before acting",
-      "  Either a credit here was never folded into the refunded total (a credit minted with no",
-      "  payment, or internet-banking cash that became credit on a cancelled booking), or a card",
-      "  refund the old arithmetic never added later failed and was taken out, or (#4280) a late",
-      "  card refund failed after a Paid another way close and took the close's bank cash with it."
+      "  Any of these, which the figures alone cannot tell apart:",
+      "  - a credit here was never folded into the refunded total (a credit minted with no",
+      "    payment, or internet-banking cash that became credit on a cancelled booking);",
+      "  - a card refund the old arithmetic never added later failed and was taken out;",
+      "  - (#4280) a late card refund failed after a Paid another way close and took the close's",
+      "    bank cash with it;",
+      "  - a #3640 loss that a later close's cash masked: it counts here, not above;",
+      "  - on a payment with several charges, a close and a counted card refund that paid the same",
+      "    charge (the member paid twice): see Stuck States' \"paid twice\" list. A late card refund",
+      "    still pending is transient - re-run once Stripe settles it."
     );
     for (const finding of other) {
       lines.push(

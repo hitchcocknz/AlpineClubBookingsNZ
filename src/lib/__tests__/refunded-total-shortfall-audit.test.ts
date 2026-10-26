@@ -83,7 +83,10 @@ describe("deriveRefundedTotalShortfall (#3640)", () => {
 
   it("#4280: what only a close's bank cash explains is never attributed to the old arithmetic", () => {
     // $50 card + $100 credit stored as $300 with a $200 close: the floor
-    // without the close ($150) is met, so the $50 short is the close's, not #3640's.
+    // without the close ($150) is met, so none of the $50 short is attributed to
+    // #3640. The figures cannot say which cause it is (a failure that took the
+    // close's cash, or a #3640 loss the close's cash masks), so it is listed for
+    // a person, never counted as #3640's.
     expect(
       deriveRefundedTotalShortfall(row({ refundedAmountCents: 30000, cardRefundCents: 5000, accountCreditCents: 10000, paidAnotherWayCents: 20000 })),
     ).toMatchObject({ expectedFloorCents: 35000, shortfallCents: 5000, attributableCents: 0, unattributedCents: 5000 });
@@ -226,5 +229,10 @@ describe("auditRefundedTotalShortfalls (#3640) - read only", () => {
     expect(attributed).toContain("pay_short");
     expect(attributed).not.toContain("pay_ib_after_cancel");
     expect(other).toContain("pay_ib_after_cancel");
+    // #4280 review (money F2, F3): the causes the figures cannot tell apart, said as such.
+    expect(other).toContain("a #3640 loss that a later close's cash masked");
+    expect(other).toContain("Stuck States' \"paid twice\" list");
+    expect(other).toContain("still pending is transient");
+    expect(other).toContain("paid another way $200.00");
   });
 });
