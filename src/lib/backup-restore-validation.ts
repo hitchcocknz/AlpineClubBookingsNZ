@@ -1,8 +1,15 @@
 /**
- * Two pure helpers for the nightly backup's restore-validation step (#4453
- * review, S-F2 / O-F11). Kept free of `server-only`, child processes and the
- * environment so the unit and real-PostgreSQL suites can run them as shipped.
+ * The nightly backup's restore-validation helpers (#4453 review, S-F2 / O-F11,
+ * N2, N5): the live-database guard, and the owner/grant filter in a pure and a
+ * streaming form. Kept free of `server-only` and of the environment so the unit
+ * and real-PostgreSQL suites run them as shipped.
  */
+import { spawn } from "node:child_process";
+import { createReadStream } from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { StringDecoder } from "node:string_decoder";
+import { createGunzip } from "node:zlib";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
 const DEFAULT_POSTGRES_PORT = "5432";
@@ -64,6 +71,41 @@ const COPY_END = "\\.";
 const DOLLAR_QUOTE = /\$[A-Za-z_0-9]*\$/g;
 
 /**
+ * The one line-by-line state machine both forms below run (`INV-SSOT`): it says
+ * whether each line of a plain `pg_dump` is kept.
+ *
+ * `pg_dump` writes each owner and privilege statement on one line at column 0.
+ * Lines inside a `COPY … FROM stdin` block are row data and lines inside a
+ * dollar-quoted body are routine source, so neither is ever dropped. A `$tag$`
+ * inside a single-quoted literal can desynchronise the dollar tracker; it then
+ * KEEPS later owner lines, so the non-superuser restore fails closed rather than
+ * dropping anything it should not.
+ */
+class OwnershipAndPrivilegeLineFilter {
+  private inCopy = false;
+  private openDollarTag: string | null = null;
+
+  keep(line: string): boolean {
+    if (this.inCopy) {
+      if (line === COPY_END) this.inCopy = false;
+      return true;
+    }
+    if (this.openDollarTag === null) {
+      if (COPY_FROM_STDIN.test(line)) {
+        this.inCopy = true;
+        return true;
+      }
+      if (OWNERSHIP_OR_PRIVILEGE_STATEMENT.test(line)) return false;
+    }
+    for (const tag of line.match(DOLLAR_QUOTE) ?? []) {
+      if (this.openDollarTag === null) this.openDollarTag = tag;
+      else if (tag === this.openDollarTag) this.openDollarTag = null;
+    }
+    return true;
+  }
+}
+
+/**
  * The backup SQL with every ownership and privilege statement removed, for the
  * restore-validation run only. This is what `pg_restore --no-owner --no-acl`
  * does for an archive; a plain-SQL dump has no such switch.
@@ -75,33 +117,85 @@ const DOLLAR_QUOTE = /\$[A-Za-z_0-9]*\$/g;
  * superuser credential. The real backup file is not changed: a disaster-recovery
  * restore, run by the operator, keeps the owners and grants.
  *
- * `pg_dump` writes each of these statements on one line at column 0. Lines
- * inside a `COPY … FROM stdin` block are row data and lines inside a
- * dollar-quoted body are routine source, so neither is ever touched.
+ * The whole-string form, for tests and small inputs; the validation itself runs
+ * the streaming form below, so a large dump is never held in memory.
  */
 export function stripOwnershipAndPrivilegeStatements(sql: string): string {
-  const out: string[] = [];
-  let inCopy = false;
-  let openDollarTag: string | null = null;
-  for (const line of sql.split("\n")) {
-    if (inCopy) {
-      out.push(line);
-      if (line === COPY_END) inCopy = false;
-      continue;
+  const filter = new OwnershipAndPrivilegeLineFilter();
+  return sql
+    .split("\n")
+    .filter((line) => filter.keep(line))
+    .join("\n");
+}
+
+/**
+ * The same filter as a stream (#4453 review N2): bytes in, bytes out, one line
+ * held at a time. Output is byte-identical to `stripOwnershipAndPrivilegeStatements`
+ * over the whole input, including a last line with no newline.
+ */
+export function createOwnershipAndPrivilegeStripStream(): Transform {
+  const filter = new OwnershipAndPrivilegeLineFilter();
+  const decoder = new StringDecoder("utf8");
+  let pending = "";
+  return new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      pending += decoder.write(chunk);
+      const lines = pending.split("\n");
+      pending = lines.pop() ?? "";
+      const kept = lines.filter((line) => filter.keep(line));
+      callback(null, kept.length > 0 ? `${kept.join("\n")}\n` : undefined);
+    },
+    flush(callback) {
+      pending += decoder.end();
+      callback(null, filter.keep(pending) ? pending : undefined);
+    },
+  });
+}
+
+/**
+ * Restore a gzipped plain dump into the validation database with owners and
+ * grants left out, streamed end to end: file → gunzip → filter → `psql` stdin.
+ * Throws with psql's own message (its first 64 KiB) when the restore fails.
+ */
+export async function restoreDumpWithoutOwnershipOrPrivileges(input: {
+  sourcePath: string;
+  argvUrl: string;
+  env: NodeJS.ProcessEnv;
+  timeoutMs: number;
+}): Promise<void> {
+  const psql = spawn("psql", [input.argvUrl, "-q", "-v", "ON_ERROR_STOP=1"], {
+    env: input.env,
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  psql.stderr.on("data", (chunk: Buffer) => {
+    if (stderr.length < 65_536) stderr += chunk.toString("utf8");
+  });
+  const exited = new Promise<number | null>((resolve, reject) => {
+    psql.on("error", reject);
+    psql.on("close", (code) => resolve(code));
+  });
+  const timer = setTimeout(() => psql.kill("SIGKILL"), input.timeoutMs);
+  try {
+    let streamError: unknown;
+    try {
+      await pipeline(
+        createReadStream(input.sourcePath),
+        createGunzip(),
+        createOwnershipAndPrivilegeStripStream(),
+        psql.stdin,
+      );
+    } catch (error) {
+      // psql stopping early (ON_ERROR_STOP) closes its stdin: report psql's
+      // reason, not the broken pipe it caused.
+      streamError = error;
     }
-    if (openDollarTag === null) {
-      if (COPY_FROM_STDIN.test(line)) {
-        inCopy = true;
-        out.push(line);
-        continue;
-      }
-      if (OWNERSHIP_OR_PRIVILEGE_STATEMENT.test(line)) continue;
+    const code = await exited;
+    if (code !== 0) {
+      throw new Error(`Restore-validation psql exited ${code ?? "on a signal"}: ${stderr.trim()}`);
     }
-    for (const tag of line.match(DOLLAR_QUOTE) ?? []) {
-      if (openDollarTag === null) openDollarTag = tag;
-      else if (tag === openDollarTag) openDollarTag = null;
-    }
-    out.push(line);
+    if (streamError) throw streamError;
+  } finally {
+    clearTimeout(timer);
   }
-  return out.join("\n");
 }

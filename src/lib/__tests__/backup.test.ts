@@ -34,6 +34,14 @@ vi.mock("@/lib/logger", () => ({
   },
 }));
 
+// #4453: the validation restore streams file -> gunzip -> filter -> psql, which
+// `backup-restore-validation.test.ts` and the real-PostgreSQL suite prove; here
+// only the call is observed. PARTIAL: the live-database guard stays real.
+vi.mock("@/lib/backup-restore-validation", async (importOriginal) => {
+  const actual = (await importOriginal()) as typeof import("@/lib/backup-restore-validation");
+  return { ...actual, restoreDumpWithoutOwnershipOrPrivileges: vi.fn(async () => {}) };
+});
+
 // Backup config is DB-only (#2095): mock the resolver rather than setting env.
 // PARTIAL, not wholesale: the module also exports the pure
 // `isAnyBackupDestinationEnabled` predicate the engine now gates on, and
@@ -58,6 +66,7 @@ import {
   type ResolvedBackupConfig,
 } from "@/lib/backup-config";
 import logger from "@/lib/logger";
+import { restoreDumpWithoutOwnershipOrPrivileges } from "@/lib/backup-restore-validation";
 
 const BACKUP_DIRECTORY_FRAGMENT =
   path.join("/tmp", "tacbookings-backups") + path.sep;
@@ -619,11 +628,28 @@ describe("backup", () => {
         env: expect.objectContaining({ PGPASSWORD: "postgres" }),
       })
     );
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "gunzip",
-      ["-c", expect.stringContaining(BACKUP_DIRECTORY_FRAGMENT)],
-      expect.any(Object)
+    // Streamed, owners and grants stripped, as the password-free argv URL.
+    expect(vi.mocked(restoreDumpWithoutOwnershipOrPrivileges)).toHaveBeenCalledWith({
+      sourcePath: expect.stringContaining(BACKUP_DIRECTORY_FRAGMENT),
+      argvUrl: "postgresql://postgres@postgres:5432/tacbookings_restore",
+      env: expect.objectContaining({ PGPASSWORD: "postgres" }),
+      timeoutMs: expect.any(Number),
+    });
+    expect(execFileSyncMock).not.toHaveBeenCalledWith("gunzip", expect.anything(), expect.anything());
+  });
+
+  it("fails the backup when the streamed validation restore fails", async () => {
+    setConfig({
+      restoreValidationUrl: "postgresql://postgres:postgres@postgres:5432/tacbookings_restore",
+    });
+    vi.mocked(restoreDumpWithoutOwnershipOrPrivileges).mockRejectedValueOnce(
+      new Error("Restore-validation psql exited 3: ERROR:  must be owner of table"),
     );
+
+    await expect(runDatabaseBackup()).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("must be owner of table"),
+    });
   });
 
   it("fails backup when restore validation smoke counts are empty", async () => {

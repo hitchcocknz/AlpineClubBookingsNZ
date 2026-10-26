@@ -35,7 +35,7 @@ import {
 import { pruneLocalBackups, storeLocalBackup } from "@/lib/backup-local";
 import {
   isSameDatabaseTarget,
-  stripOwnershipAndPrivilegeStatements,
+  restoreDumpWithoutOwnershipOrPrivileges,
 } from "@/lib/backup-restore-validation";
 
 const BACKUP_DIR = "/tmp/tacbookings-backups";
@@ -257,7 +257,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     if (restoreValidationDatabaseUrl) {
       const sourcePath = s3ReadbackPath ?? filepath;
       try {
-        restoreValidation = validateBackupRestore(
+        restoreValidation = await validateBackupRestore(
           sourcePath,
           restoreValidationDatabaseUrl,
           s3ReadbackPath ? "s3-readback" : "local-file"
@@ -617,11 +617,11 @@ function cleanupS3Readback(readbackPath?: string) {
   }
 }
 
-function validateBackupRestore(
+async function validateBackupRestore(
   sourcePath: string,
   restoreValidationDatabaseUrl: string,
   source: BackupRestoreValidation["source"]
-): BackupRestoreValidation {
+): Promise<BackupRestoreValidation> {
   const { argvUrl: sanitizedRestoreUrl, password: restorePassword } =
     splitPostgresPassword(
       sanitizePostgresUrlForPgDump(restoreValidationDatabaseUrl),
@@ -644,21 +644,14 @@ function validateBackupRestore(
     }
   );
 
-  const sql = execFileSync("gunzip", ["-c", sourcePath], {
-    timeout: BACKUP_COMMAND_TIMEOUT_MS,
-    maxBuffer: BACKUP_COMMAND_MAX_BUFFER_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-
-  // Owners and grants are left out of the validation restore only (#4453), so a
-  // non-superuser that owns just the shadow database can run it. The backup
-  // file itself is unchanged.
-  execFileSync("psql", [sanitizedRestoreUrl, "-v", "ON_ERROR_STOP=1"], {
-    input: stripOwnershipAndPrivilegeStatements(sql.toString("utf8")),
-    timeout: BACKUP_COMMAND_TIMEOUT_MS,
-    maxBuffer: BACKUP_COMMAND_MAX_BUFFER_BYTES,
+  // Owners and grants are left out of the validation restore only, so a
+  // non-superuser that owns just the shadow database can run it; streamed, so
+  // the dump is never held in memory (#4453). The backup file is unchanged.
+  await restoreDumpWithoutOwnershipOrPrivileges({
+    sourcePath,
+    argvUrl: sanitizedRestoreUrl,
     env: restoreEnv,
-    stdio: ["pipe", "pipe", "pipe"],
+    timeoutMs: BACKUP_COMMAND_TIMEOUT_MS,
   });
 
   const counts = execFileSync(

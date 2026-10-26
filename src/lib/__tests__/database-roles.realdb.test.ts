@@ -33,8 +33,10 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { gzipSync } from "node:zlib";
 
 import type { PrismaClient } from "@prisma/client";
 import { Client } from "pg";
@@ -42,7 +44,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { FROZEN_TEST_CLOCK_BASE_ISO } from "./helpers/clock";
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
-import { stripOwnershipAndPrivilegeStatements } from "@/lib/backup-restore-validation";
+import { restoreDumpWithoutOwnershipOrPrivileges } from "@/lib/backup-restore-validation";
 import { buildDatabaseRolesSql } from "@/lib/database-roles";
 import { buildAiDiagnosticsRoleSql } from "@/lib/diagnostics/tools/provision-role";
 
@@ -623,10 +625,17 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
         const unstripped = runTool("psql", ["-q", "-v", "ON_ERROR_STOP=1", target], appDumpSql);
         expect(unstripped.status).not.toBe(0);
 
-        // What `validateBackupRestore` feeds psql: the same dump, owners and grants removed.
+        // What `validateBackupRestore` runs, as shipped: the gzipped backup streamed
+        // through the owner/grant filter into psql.
         expect(reset().status).toBe(0);
-        const stripped = runTool("psql", ["-q", "-v", "ON_ERROR_STOP=1", target], stripOwnershipAndPrivilegeStatements(appDumpSql));
-        expect(stripped.status, stripped.stderr).toBe(0);
+        const dir = mkdtempSync(path.join(tmpdir(), "tac4453-validation-"));
+        try {
+          const gz = path.join(dir, "backup.sql.gz");
+          writeFileSync(gz, gzipSync(Buffer.from(appDumpSql, "utf8")));
+          await restoreDumpWithoutOwnershipOrPrivileges({ sourcePath: gz, argvUrl: target, env: process.env, timeoutMs: 120_000 });
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
         const { rows } = await withClient(target, (client) =>
           client.query(`SELECT (SELECT count(*) FROM "BookingLedgerLine")::int AS lines, (SELECT count(*) FROM "Booking")::int AS bookings`),
         );
