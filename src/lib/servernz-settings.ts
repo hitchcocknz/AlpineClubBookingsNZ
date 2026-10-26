@@ -315,15 +315,17 @@ export async function clearOtherLodgesOwnedNames(): Promise<void> {
  * Record what the central server said its API version is (#49): a canonical
  * `major.minor`, or `SERVER_VERSION_UNKNOWN` when it answered 404. Written
  * AFTER the HTTP call has completed, only through `recordServerVersionIfCurrent`
- * (`servernz-version-record.ts`), whose short transaction passes `db`. A failed call
+ * (`servernz-version-record.ts`), whose short transaction passes `db` - there
+ * is no default client, and `servernz-settings.test.ts` pins that one caller
+ * (#4366). A failed call
  * never reaches here - the previous answer stays, so a network blip cannot
  * pause syncing (`INV-INT-027`). Bounded to the column's VarChar(16) by the
  * caller's schema, which caps the wire value at 16 characters.
  */
 export async function recordServerVersionCheck(
   version: string,
-  at: Date = new Date(),
-  db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma,
+  at: Date,
+  db: Pick<Prisma.TransactionClient, "serverNzSettings">,
 ): Promise<void> {
   await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },

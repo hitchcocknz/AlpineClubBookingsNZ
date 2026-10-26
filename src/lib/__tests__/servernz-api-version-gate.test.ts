@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => {
     order,
     loadServerNzSettings: vi.fn(),
     recordServerVersionCheck: vi.fn(),
+    invalidateProviderCredentialCache: vi.fn(),
     lockServerNzSettings: vi.fn(async () => {
       order.push("lock");
     }),
@@ -53,8 +54,13 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("@/lib/servernz-config", () => ({
+  SERVERNZ_PROVIDER: "servernz",
   getOperationalServerNzCredential: mocks.getOperationalServerNzCredential,
   readServerNzCredentialVersion: mocks.readServerNzCredentialVersion,
+}));
+
+vi.mock("@/lib/integration-credentials", () => ({
+  invalidateProviderCredentialCache: mocks.invalidateProviderCredentialCache,
 }));
 
 vi.mock("@/lib/servernz-settings", () => ({
@@ -304,6 +310,8 @@ describe("the server's own 409 refusal (review item 1)", () => {
     // The caller still pauses on what the server said; only the record is refused.
     expect((error as ServerNzVersionMismatchError).serverVersion).toBe("2.2");
     expect(mocks.recordServerVersionCheck).not.toHaveBeenCalled();
+    // The key it was sent with may be a stale cached copy: the next request re-resolves.
+    expect(mocks.invalidateProviderCredentialCache).toHaveBeenCalledWith("servernz");
   });
 });
 
@@ -312,6 +320,7 @@ describe("refreshStoredServerVersion: one path writes the column", () => {
     fetchMock.mockResolvedValue(respond(404));
     await expect(refreshStoredServerVersion()).resolves.toBe(SERVER_VERSION_UNKNOWN);
     expectRecorded(SERVER_VERSION_UNKNOWN);
+    expect(mocks.invalidateProviderCredentialCache).not.toHaveBeenCalled();
   });
 
   it("records NOTHING and returns null when the call fails, so a blip cannot pause syncing", async () => {

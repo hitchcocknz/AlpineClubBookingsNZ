@@ -1,7 +1,11 @@
 import "server-only";
 import type { CredentialVersion } from "@/lib/integration-credential-actor";
+import { invalidateProviderCredentialCache } from "@/lib/integration-credentials";
 import { prisma } from "@/lib/prisma";
-import { readServerNzCredentialVersion } from "@/lib/servernz-config";
+import {
+  SERVERNZ_PROVIDER,
+  readServerNzCredentialVersion,
+} from "@/lib/servernz-config";
 import {
   SERVERNZ_SETTINGS_ID,
   lockServerNzSettings,
@@ -36,6 +40,11 @@ export interface ServerNzConnectionIdentity {
  *   - a recorder that queues behind them re-reads what they committed, sees a
  *     different address or credential version, and records nothing.
  *
+ * A refused answer also drops this process's cached ServerNZ credential: the
+ * key it was sent with may be a cached copy a write elsewhere has replaced, and
+ * the next request should resolve - and check - the stored one rather than
+ * repeat the stale key for the rest of the cache window.
+ *
  * No HTTP happens here: the caller has already received the answer, and the
  * transaction holds no provider call (`INV-INT-027`). A database failure
  * propagates, so a RECEIVED answer is never mistaken for a failed check.
@@ -44,7 +53,7 @@ export async function recordServerVersionIfCurrent(
   identity: ServerNzConnectionIdentity,
   version: string,
 ): Promise<boolean> {
-  return prisma.$transaction(async (tx) => {
+  const recorded = await prisma.$transaction(async (tx) => {
     await lockServerNzSettings(tx);
     const settings = await tx.serverNzSettings.findUnique({
       where: { id: SERVERNZ_SETTINGS_ID },
@@ -60,4 +69,6 @@ export async function recordServerVersionIfCurrent(
     await recordServerVersionCheck(version, new Date(), tx);
     return true;
   });
+  if (!recorded) invalidateProviderCredentialCache(SERVERNZ_PROVIDER);
+  return recorded;
 }
