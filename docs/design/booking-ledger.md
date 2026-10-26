@@ -146,10 +146,17 @@ The database can enforce this as well (#4453). A deployment that uses the
 connects the application as a role holding only INSERT and SELECT on this table:
 an UPDATE, DELETE, TRUNCATE, `INSERT … ON CONFLICT DO UPDATE` or
 `SELECT … FOR UPDATE` against a line is refused with SQLSTATE `42501`, whatever
-the code path (`database-roles.realdb.test.ts`). Two things the grant does not
-cover. Migrations run as the role that owns the table. And `bookingId`'s
-`ON DELETE CASCADE` runs with the owner's rights, so deleting a booking still
-removes its lines.
+the code path (`database-roles.realdb.test.ts`). The other routes are closed too:
+- views over the table are SELECT-only for the application;
+- `SECURITY DEFINER` routines are refused;
+- both foreign keys are `ON UPDATE RESTRICT`
+  (`20261125010000_restrict_booking_ledger_key_updates`), so changing a booking's
+  or lodge's key cannot rewrite `bookingId` or `lodgeId`.
+
+Two things the grant does not cover. Migrations run as the role that owns the
+table. And `bookingId`'s `ON DELETE CASCADE` runs with the owner's rights, so
+**deleting a booking still removes its lines**. That is booking deletion's
+behaviour, and whether it should change belongs to this design, not to the grant.
 
 ### 4.1 Derived quantities, and the one place they are derived
 

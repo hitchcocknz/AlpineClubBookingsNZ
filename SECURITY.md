@@ -40,11 +40,21 @@ By default the Compose stack connects every service as the PostgreSQL superuser.
 A deployment can switch to least-privilege roles (#4453): a migration role that owns
 the schema, and an application role that may only INSERT and SELECT the booking
 ledger (`BookingLedgerLine`) and the audit log (`AuditLog`). A narrow audit-retention
-role is the only credential that can anonymise or delete audit rows. None of them is a
-superuser or a member of a wider role, and the superuser is kept for people. With the
-split, a leaked application credential or an injected query cannot rewrite either record,
-truncate a table, change the schema, or run a superuser-only statement.
-`src/lib/__tests__/database-roles.realdb.test.ts` proves this against PostgreSQL.
+role, given to the cron leader only, is the only credential that can anonymise or
+delete audit rows. A trigger lets it clear request data but never write a value.
+None of the roles is a superuser or a member of a wider role. The superuser is kept
+for people, and the app is never given a superuser connection string, not even for
+backup restore-validation.
+
+With the split, a leaked application credential or an injected query cannot UPDATE a
+ledger line or an audit row by any route. Views over them are read-only,
+`SECURITY DEFINER` routines are refused, and the ledger's foreign keys refuse a
+parent-key change. It also cannot truncate a table, change the schema, or run a
+superuser-only statement. **It can still delete a booking, and deleting a booking
+deletes that booking's ledger lines** through the foreign key's `ON DELETE CASCADE`.
+That route is documented, not closed. `src/lib/__tests__/database-roles.realdb.test.ts`
+proves all of this against PostgreSQL, in a required CI job.
+
 To switch, follow [`DEPLOYMENT.md` → "Least-privilege database roles"](DEPLOYMENT.md#least-privilege-database-roles).
 The AI Diagnostics role stays SELECT-only on its own allowlist
 ([ADR-007](docs/ai-diagnostics/decisions/ADR-007-least-privilege-select-only-database-credential.md)).

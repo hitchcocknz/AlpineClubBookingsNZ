@@ -140,11 +140,23 @@ the application as a role that may only INSERT and SELECT audit rows, so it sets
 AUDIT_RETENTION_DATABASE_URL=postgresql://tac_audit_retention:<your-retention-password>@postgres:5432/tacbookings?connection_limit=2&pool_timeout=10
 ```
 
-on the cron-enabled app instance. `pnpm run db:provision-roles --apply` creates
-the role. Beyond SELECT on `AuditLog` it holds only DELETE and UPDATE of
-`ipAddress` and `userAgent`, the columns the anonymisation clears. It has no
-right on any other table, and it cannot insert or rewrite an audit entry. When
-the variable is empty the job uses `DATABASE_URL`, exactly as before.
+on the cron-enabled app instance. In the stock Compose stack only the `app`
+service (the cron leader) receives it; the web slots never see this credential.
+`pnpm run db:provision-roles --apply` creates the role. Beyond SELECT on
+`AuditLog` it holds only DELETE and UPDATE of `ipAddress` and `userAgent`, the
+columns the anonymisation clears. A trigger
+(`20261125020000_audit_request_data_update_only_clears`) lets any UPDATE set those
+two columns only to empty, so the role cannot write a made-up address. It has no
+right on any other table, and it cannot insert an audit entry or change any other
+column. Which rows it may delete is the prune's own rule; there is no separate
+database guard for that. When the variable is empty the job uses `DATABASE_URL`,
+exactly as before.
+
+A release that adds a column to `AUDIT_ANONYMISED_REQUEST_COLUMNS` needs two
+things before the next nightly run: a re-run of `pnpm run db:provision-roles --apply`,
+so the role may clear the new column, and that release's migration extending the
+trigger. Until the re-run, the job fails with "permission denied" and
+over-retains. Its upgrade note says so.
 
 This is not the archive connection. `AUDIT_ARCHIVE_DATABASE_URL` names a
 different database, and its role is unchanged. If the application role is split

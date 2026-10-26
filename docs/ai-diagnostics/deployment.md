@@ -195,7 +195,7 @@ no longer a superuser. Those roles leave this one exactly as provisioned here.
 
 | Variable | Required | Meaning |
 | --- | --- | --- |
-| `AI_DIAGNOSTICS_DB_PASSWORD` | yes (not for `--dry-run`) | The new role's password. Minimum 20 characters. Never printed or logged. |
+| `AI_DIAGNOSTICS_DB_PASSWORD` | yes (not for `--dry-run`) | The new role's password. Minimum 20 characters, no backslash (it could end the SQL literal early on a server with `standard_conforming_strings` off; refused since #4453). Never printed or logged. |
 | `AI_DIAGNOSTICS_PROVISION_DATABASE_URL` | no | Connection that may create roles. Defaults to `DATABASE_URL`. |
 | `AI_DIAGNOSTICS_DB_ROLE` | no | Role name. Defaults to `ai_diagnostics_ro`. Refused if it equals the provisioning role, or if it is not a supported identifier (below). |
 | `AI_DIAGNOSTICS_DB_PRESERVE_TEMP_ROLES` | no | Comma-separated roles that must keep `TEMPORARY` on the database (see below). Defaults to the provisioning role, so a deployment whose **application** role name is unsupported must set this explicitly. |

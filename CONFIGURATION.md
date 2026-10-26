@@ -2655,7 +2655,7 @@ rate-limited, or temporarily unavailable.
 | `BACKUP_LOCAL_DIR`                    | Path **inside the container** that mount lands on (default `/backups`). What the app writes to, and the value `/admin/backups` pre-fills. A path saved on that page overrides it. |
 | `AUDIT_ARCHIVE_DATABASE_URL`          | Preferred optional archive database for audit retention.                    |
 | `AUDIT_LOG_ARCHIVE_DATABASE_URL`      | Backward-compatible archive database alias.                                 |
-| `AUDIT_RETENTION_DATABASE_URL`        | Optional connection to the **primary** database as the audit-retention role (#4453). The nightly audit retention job anonymises and prunes `AuditLog` through it. Empty uses `DATABASE_URL`, as before. Required once `APP_DB_USER` is set, because the application role may only INSERT and SELECT audit rows. Use `connection_limit=2`. See "Least-privilege database roles" below. |
+| `AUDIT_RETENTION_DATABASE_URL`        | Optional connection to the **primary** database as the audit-retention role (#4453). The nightly audit retention job anonymises and prunes `AuditLog` through it. Empty uses `DATABASE_URL`, as before. Required once `APP_DB_USER` is set (the deploy script refuses the switch without it), because the application role may only INSERT and SELECT audit rows. Compose gives it to the cron-leader `app` service only. Use `connection_limit=2`. See "Least-privilege database roles" below. |
 | `SHADOW_DATABASE_URL`                 | Optional Prisma shadow database URL for migration validation.               |
 | `AI_DIAGNOSTICS_DATABASE_URL`         | Dedicated **non-superuser, SELECT-only** database role for AI Diagnostics tool reads (ADR-007). Required before the AI Diagnostics module can be used; never the app's `DATABASE_URL`. Provision with `pnpm run diagnostics:provision-role`. See [`docs/ai-diagnostics/deployment.md`](docs/ai-diagnostics/deployment.md). |
 
@@ -2703,9 +2703,13 @@ Each one left empty keeps today's behaviour.
 `db:provision-roles` also reads `APP_DB_USER` and `MIGRATION_DB_USER` (defaults `tac_app` and
 `tac_migrator`) and the three passwords. It refuses any password shorter than 20 characters
 or containing `@ / : ? # %` or whitespace, because Compose puts each password into a URL
-unencoded. The deploy script also refuses an `APP_DB_PASSWORD` or `MIGRATION_DB_PASSWORD`
-containing `@ / : ? #` or whitespace. Without `--apply` the script is a dry run: it prints the SQL, with every password
-replaced by a placeholder, and connects to nothing.
+unencoded, and a backslash, which could end a SQL literal early. The deploy script refuses a
+`DB_PASSWORD`, `APP_DB_PASSWORD` or `MIGRATION_DB_PASSWORD` containing the same URL-unsafe
+characters (one set, pinned by `database-roles-password-charset.test.ts`). It also refuses
+`APP_DB_USER` unless `MIGRATION_DB_USER` and `AUDIT_RETENTION_DATABASE_URL` are set too. Without
+`--apply` the script is a dry run: it prints the SQL, with every password replaced by a
+placeholder, and connects to nothing. Every `--apply` resets all three passwords, so deploy
+straight after one.
 
 ## Legacy Finance Bridge
 
