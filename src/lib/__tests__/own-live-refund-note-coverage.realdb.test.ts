@@ -15,8 +15,12 @@
  *   finding: the shape is an older release's), so the row is written as that
  *   release wrote it.
  * - #4321: the follow-up's "already recorded in Xero myself" answer refuses a
- *   note a row resolved by hand already records, and still takes a note no row
- *   records.
+ *   note a credit-note create row records while that row is resolved by hand,
+ *   or not yet SUCCEEDED so a resolve could still flip it - in sequence and
+ *   with the resolve committing while the completion holds its locks - and
+ *   still takes a note no row records. A row resolved after the officer made
+ *   its note by hand records no note id (the resolve route writes none), so
+ *   that case is out of this proof's reach (FOLLOWUP_4321_CAPTURE).
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions, which
@@ -345,55 +349,154 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       expect(await fences.sumRefundCreditNoteCoverageOfRowsCents(PAYMENT_ID, paidAnotherWayCloseNoteRowsWhere(PAYMENT_ID, a))).toBe(5_000);
     });
 
-    it("MUTATION (#4321): the hand-made answer refuses a note a row resolved by hand records, and nothing moves; a note no row records is taken", async () => {
+    /**
+     * #4321's shape: H1's $200 note V, which Xero voids, so the nightly
+     * follow-up undoes H1 and asks once; then H2's own $200 note X, raised
+     * PARTIAL by the real outbox (`resolve`: then resolved by hand through the
+     * real route), its mirror turned off with no void recorded - the shape the
+     * single-note rule leaves on a retired duplicate, which the answer
+     * otherwise reactivates (`recordHandMadeRefundNoteLink`, review money 6).
+     */
+    async function followUpBesideNoteX(options: { resolve: boolean }) {
       await handBack(`${P}-v`, 20_000);
-      // H2's own $200 note X: raised PARTIAL by the real outbox, resolved by
-      // hand, its mirror then turned off with no void recorded - the shape
-      // the single-note rule leaves on a retired duplicate, which the answer
-      // otherwise reactivates (`recordHandMadeRefundNoteLink`, review money 6).
       const h2 = await handBack(`${P}-h2`, 20_000, { noNote: true });
-      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
-      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 20_000, { refundMethod: "internet-banking", paidAnotherWayTaskId: h2 });
-      expect(await raiseThenFailPayment(queued.queueOperationId!, `${P}-x`)).toMatchObject({ status: "PARTIAL", xeroObjectId: `${P}-x` });
-      await resolveByHand(queued.queueOperationId!);
-      await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-x` }, data: { active: false } });
-
       const linkId = await voidInXero(`${P}-v`, 20_000);
       const outcome = await followUp.followUpVoidedBankRefundNote(linkId);
       expect(outcome).toMatchObject({ outcome: "undone" });
-      const followUpId = outcome!.followUpTaskId!;
 
+      // H2's own note, queued and raised after the follow-up (a create in flight would defer the undo).
+      const { enqueueXeroRefundCreditNoteOperation } = await import("@/lib/xero-operation-outbox");
+      const queued = await enqueueXeroRefundCreditNoteOperation(PAYMENT_ID, 20_000, { refundMethod: "internet-banking", paidAnotherWayTaskId: h2 });
+      const rowId = queued.queueOperationId!;
+      expect(await raiseThenFailPayment(rowId, `${P}-x`)).toMatchObject({ status: "PARTIAL", xeroObjectId: `${P}-x` });
+      if (options.resolve) await resolveByHand(rowId);
+      await prisma.xeroObjectLink.updateMany({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-x` }, data: { active: false } });
+      return { h2, rowId, followUpId: outcome!.followUpTaskId! };
+    }
+
+    /** The treasurer's "already recorded it in Xero myself" answer naming `id`, checked against a fake Xero. */
+    async function answerWith(followUpId: string, id: string) {
       const { prepareBankRefundVoidAnswer } = await import("@/lib/bank-refund-void-answer");
-      const xeroNote = (id: string) => ({
-        creditNoteID: id, creditNoteNumber: `CN-${id}`, status: "AUTHORISED", type: "ACCRECCREDIT", total: 200, contact: { contactID: CONTACT_ID }, allocations: [],
+      const xeroNote = { creditNoteID: id, creditNoteNumber: `CN-${id}`, status: "AUTHORISED", type: "ACCRECCREDIT", total: 200, contact: { contactID: CONTACT_ID }, allocations: [] };
+      return withFakeXero(
+        {
+          getCreditNotes: async () => ({ body: { creditNotes: [xeroNote] } }),
+          getInvoice: async () => ({ body: { invoices: [{ contact: { contactID: CONTACT_ID } }] } }),
+        },
+        () => prepareBankRefundVoidAnswer({ taskId: followUpId, answer: { answer: "recorded-in-xero", creditNoteNumber: `CN-${id}` }, format: CLUB_FORMAT_TEST }),
+      );
+    }
+
+    /** The follow-up's completion, through the real resolution, with that answer. */
+    async function complete(followUpId: string, answer: Awaited<ReturnType<typeof answerWith>>) {
+      const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
+      return resolveManualRefundTask(
+        { taskId: followUpId, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: null, recordedNightPrices: null, bankRefundVoidAnswer: answer },
+        CLUB_FORMAT_TEST,
+      );
+    }
+
+    /**
+     * The money, each task's own coverage, and the follow-up's state: what a
+     * refused answer must leave alone. H2's is its record's share
+     * (`readPaidAnotherWayCloseShare`, its own rows); the follow-up's, while
+     * open, is what the bank-void scan reads for it - the hand-made notes
+     * linked to it (no create row names it).
+     */
+    async function books(h2: string, followUpId: string) {
+      const { readPaidAnotherWayCloseShare } = await import("@/lib/card-refund-paid-another-way-cash");
+      const { sumCoveredRefundCreditNoteCents } = await import("@/lib/xero-sync");
+      const h2Share = (await readPaidAnotherWayCloseShare(prisma, PAYMENT_ID, h2))!;
+      const handMade = await prisma.xeroObjectLink.findMany({
+        where: { localId: PAYMENT_ID, role: "REFUND_CREDIT_NOTE", active: true, metadata: { path: ["handBackTaskId"], equals: followUpId } },
+        select: { xeroObjectId: true },
       });
-      const answerWith = (id: string) =>
-        withFakeXero(
-          {
-            getCreditNotes: async () => ({ body: { creditNotes: [xeroNote(id)] } }),
-            getInvoice: async () => ({ body: { invoices: [{ contact: { contactID: CONTACT_ID } }] } }),
-          },
-          () => prepareBankRefundVoidAnswer({ taskId: followUpId, answer: { answer: "recorded-in-xero", creditNoteNumber: `CN-${id}` }, format: CLUB_FORMAT_TEST }),
-        );
-      const complete = async (answer: Awaited<ReturnType<typeof answerWith>>) => {
-        const { resolveManualRefundTask } = await import("@/lib/manual-refund-task-resolution");
-        return resolveManualRefundTask(
-          { taskId: followUpId, resolution: "completed", note: null, actingMemberId: OFFICER_ID, confirmedAmountCents: null, direction: null, recordedNightPrices: null, bankRefundVoidAnswer: answer },
-          CLUB_FORMAT_TEST,
-        );
+      return {
+        refundedAmountCents: (await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).refundedAmountCents,
+        coverageCents: (await coverage()).totalCents,
+        h2: { coveredCents: h2Share.coveredCents, uncoveredCents: h2Share.uncoveredCents },
+        followUpCoveredCents: await sumCoveredRefundCreditNoteCents(PAYMENT_ID, prisma, handMade.map((link) => link.xeroObjectId)),
+        followUpStatus: (await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: followUpId }, select: { status: true } })).status,
+        xActive: (await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-x` }, select: { active: true } })).active,
       };
-      const before = await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } });
+    }
+
+    const refused = { status: 409, message: expect.stringContaining(`CN-${P}-x is already recorded`) };
+
+    it("MUTATION (#4321): the hand-made answer refuses a note a row resolved by hand records, and nothing moves; a note no row records is taken", async () => {
+      const { h2, followUpId } = await followUpBesideNoteX({ resolve: true });
+      const before = await books(h2, followUpId);
+      // H1 undone ($200 back off the total); H2's own note X covers H2 through its resolved row.
+      expect(before).toEqual({
+        refundedAmountCents: 20_000, coverageCents: 20_000, h2: { coveredCents: 20_000, uncoveredCents: 0 },
+        followUpCoveredCents: 0, followUpStatus: "OPEN", xActive: false,
+      });
 
       // Before the fix X was reactivated for the follow-up: one $200 note recorded both refunds.
-      await expect(complete(await answerWith(`${P}-x`))).rejects.toMatchObject({ status: 409, message: expect.stringContaining(`CN-${P}-x is already recorded`) });
-      expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: followUpId }, select: { status: true } })).toEqual({ status: "OPEN" });
-      expect(await prisma.payment.findUniqueOrThrow({ where: { id: PAYMENT_ID }, select: { refundedAmountCents: true } })).toEqual(before);
-      expect(await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-x` }, select: { active: true } })).toEqual({ active: false });
+      await expect(complete(followUpId, await answerWith(followUpId, `${P}-x`))).rejects.toMatchObject(refused);
+      expect(await books(h2, followUpId)).toEqual(before);
 
-      // A note of its own, which no row records, is taken.
-      await complete(await answerWith(`${P}-own`));
-      expect(await prisma.manualRefundTask.findUniqueOrThrow({ where: { id: followUpId }, select: { status: true } })).toEqual({ status: "COMPLETED" });
+      // A note of its own, which no row records, is taken: the $200 goes back on, and both refunds are covered once each.
+      await complete(followUpId, await answerWith(followUpId, `${P}-own`));
+      expect(await books(h2, followUpId)).toEqual({
+        refundedAmountCents: 40_000, coverageCents: 40_000, h2: { coveredCents: 20_000, uncoveredCents: 0 },
+        followUpCoveredCents: 20_000, followUpStatus: "COMPLETED", xActive: false,
+      });
       expect(await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: PAYMENT_ID, xeroObjectId: `${P}-own` }, select: { active: true } })).toEqual({ active: true });
+    });
+
+    it("MUTATION (#4321, sequential): a note whose row is still PARTIAL is refused, so resolving that row later never leaves one note recording two refunds", async () => {
+      const { h2, rowId, followUpId } = await followUpBesideNoteX({ resolve: false });
+      const before = await books(h2, followUpId);
+      // R unresolved, X's mirror off: nothing covers H2 yet - a visible gap.
+      expect(before).toMatchObject({ refundedAmountCents: 20_000, coverageCents: 0, h2: { coveredCents: 0, uncoveredCents: 20_000 }, followUpCoveredCents: 0 });
+
+      // A resolved-only guard took X here (R unresolved), and the resolve below then made X cover H2 and the follow-up both.
+      await expect(complete(followUpId, await answerWith(followUpId, `${P}-x`))).rejects.toMatchObject(refused);
+      await resolveByHand(rowId);
+
+      const after = await books(h2, followUpId);
+      expect(after).toEqual({ ...before, coverageCents: 20_000, h2: { coveredCents: 20_000, uncoveredCents: 0 } });
+      expect(after).toMatchObject({ refundedAmountCents: 20_000, followUpCoveredCents: 0, followUpStatus: "OPEN", xActive: false });
+    });
+
+    it("MUTATION (#4321, interleaving): a resolve committing while the completion holds its locks past the guard leaves the answer refused, and no note covers two refunds", async () => {
+      const { h2, rowId, followUpId } = await followUpBesideNoteX({ resolve: false });
+      const answer = await answerWith(followUpId, `${P}-x`);
+      const before = await books(h2, followUpId);
+
+      // A barrier on the link write, which runs only after the guard passes: a
+      // completion that got past the guard waits there, inside its transaction,
+      // while the officer's resolve commits from another session.
+      const xeroSync = await import("@/lib/xero-sync");
+      const realUpsert = xeroSync.upsertXeroObjectLink;
+      let reachedLinkWrite!: () => void;
+      const atLinkWrite = new Promise<"past-guard">((resolve) => (reachedLinkWrite = () => resolve("past-guard")));
+      let release!: () => void;
+      const released = new Promise<void>((resolve) => (release = resolve));
+      const spy = vi.spyOn(xeroSync, "upsertXeroObjectLink").mockImplementation(async (...args: Parameters<typeof realUpsert>) => {
+        if (args[0].xeroObjectId === `${P}-x`) {
+          reachedLinkWrite();
+          await released;
+        }
+        return realUpsert(...args);
+      });
+      try {
+        const completion = complete(followUpId, answer);
+        void completion.catch(() => undefined);
+        const where = await Promise.race([atLinkWrite, completion.then(() => "done" as const, () => "done" as const)]);
+        // Session B: the officer resolves R through the real route, and it commits.
+        await resolveByHand(rowId);
+        release();
+        await expect(completion).rejects.toMatchObject(refused);
+        // The fixed guard refuses at its read, before the link write: the barrier is never reached.
+        expect(where).toBe("done");
+      } finally {
+        release();
+        spy.mockRestore();
+      }
+
+      expect(await books(h2, followUpId)).toEqual({ ...before, coverageCents: 20_000, h2: { coveredCents: 20_000, uncoveredCents: 0 } });
     });
   },
 );

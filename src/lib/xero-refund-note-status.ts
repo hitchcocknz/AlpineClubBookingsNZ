@@ -8,7 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
-import { readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import { isRefundRequestNoteOperation, readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { xeroInstant } from "@/lib/xero-provider-dates";
 
 /**
@@ -516,7 +516,7 @@ export function isCoveredByExistingNoteRow(row: { responsePayload: unknown }): b
  * its amount is never read.
  */
 export function countsTowardRefundNoteCoverage(row: { requestPayload: unknown; responsePayload: unknown; correlationKey?: string | null; idempotencyKey?: string | null }): boolean {
-  return !isCoveredByExistingNoteRow(row) && readRefundRequestIdFromOperation(row) === null;
+  return !isCoveredByExistingNoteRow(row) && !isRefundRequestNoteOperation(row);
 }
 
 /**

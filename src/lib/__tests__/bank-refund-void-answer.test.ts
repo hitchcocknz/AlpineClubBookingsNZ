@@ -162,17 +162,20 @@ describe("recordHandMadeRefundNoteLink under the link's own row lock (#4288)", (
   }
   const record = (tx: never) => recordHandMadeRefundNoteLink(tx, { paymentId: "pay-1", taskId: "task-1", amountCents: 20_000, note });
 
-  it("MUTATION (#4321): a note a row resolved by hand in Xero records is refused, and nothing is written", async () => {
+  it("MUTATION (#4321): a note a credit-note create row records, resolved by hand or not yet SUCCEEDED, is refused, and nothing is written", async () => {
     const { tx, upsert, findResolvedRow } = fakeTx(null, { id: "op-resolved" });
     await expect(record(tx)).rejects.toMatchObject({ status: 409, message: expect.stringContaining("CN-0123 is already recorded against another refund") });
     expect(upsert).not.toHaveBeenCalled();
-    // Any payment's refund-note create resolved by hand, naming the note by its id or its number.
+    // Any payment's credit-note create naming the note by its id - never its
+    // number (an old organisation's, or a reused one) - that a resolve could
+    // still flip, or already has.
     expect(findResolvedRow).toHaveBeenCalledWith({
       where: {
+        xeroObjectType: "CREDIT_NOTE",
+        xeroObjectId: "cn-hand",
         entityType: "CREDIT_NOTE",
         operationType: "CREATE",
-        manuallyResolvedAt: { not: null },
-        OR: [{ xeroObjectId: "cn-hand" }, { xeroObjectNumber: "CN-0123" }],
+        OR: [{ manuallyResolvedAt: { not: null } }, { status: { not: "SUCCEEDED" } }],
       },
       select: { id: true },
     });
