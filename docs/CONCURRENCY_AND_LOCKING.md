@@ -4138,7 +4138,15 @@ the pre-#4217 code). Now:
   unique violation there rolls it back whole and it runs once more.
 - The Internet Banking settle (#4094) takes it after `lock(1)`, the lodge key
   and the member key, and re-reads the payment's figures under it; its rows are
-  read under it. Its figure logic (#3979, `INV-PAY-126`) is unchanged.
+  read under it. Its figure logic (#3979, `INV-PAY-126`) is unchanged, except
+  that a keep also counts an applied correction already synced there, from
+  link rows it reads plainly (#4095). After it commits, outside every lock, a
+  keep or a replay with an applied correction triggers the lock-free inbound
+  recount (`repairRefundedPaymentBusinessState`, no note of its own), whose
+  claim on the row as read loses to any writer in between; it adds no key.
+  Both run only when exactly one payment matches the invoice
+  (`matchedPayments === 1`): otherwise no payment's share of a correction is
+  known, and neither counts one.
 - A cancellation hand-back's completion decides whether its Xero note stands
   on its own task (#4287, `INV-ADDPAY-043`,
   `cancellationHandBackNotedOnItsOwnRecord`) only after its allocation has
@@ -6077,7 +6085,8 @@ unless the payment's pointer names the note. For a payment holding the note's
 own refund-note row, A decides in one short transaction, inline in the recount:
 the Payment row (`lockPaymentForRefundedTotal`, `FOR NO KEY UPDATE`), then a
 plain re-read of that link row, then the as-read claim, or nothing when the row
-no longer counts (one retry at most; a second is left to the next sync). An
+no longer counts (one retry at most; a second fails the inbound event, which
+is retried after its backoff, #4095). An
 unchanged verdict also checks the payment as read under the lock. No provider
 call runs in it, and it takes no other lock. Its budget is `{ maxWait: 10_000,
 timeout: 30_000 }`, copied from `additional-payment-withdraw.ts`, because the
