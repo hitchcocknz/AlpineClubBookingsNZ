@@ -1651,13 +1651,15 @@ release).
   `WAITING_PAYMENT` on its own ask. When a later request carries that ask's
   balance, the invoice is re-pointed at the request that absorbed it: the
   first later row still payable or captured that no superseded-intent
-  operation names (`supersededAskCarriers`).
+  operation names (`supersededAskCarriers`); a superseded row captured late
+  (refunded) is carried on.
 - **Each for its own amount.** The carrier's capture releases every invoice
   naming it; a carrier never paid invoices nothing. Never folded onto the
-  later invoice, which double-bills wherever the earlier one issued. Bank
-  transfer queues each unpaid when priced, so nothing moves there.
-- **Who moves it.** The supersede's cancel step, every superseding minter, an
-  edit leg parking on an already-failed ask, and the reaper before retiring.
+  later invoice. Bank transfer queues each unpaid when priced, so nothing
+  moves there.
+- **Who moves it.** The supersede's cancel step (failed or captured), every
+  superseding minter, an edit leg parking on an already-failed ask, and the
+  reaper before retiring.
 - **Refused, left as it was:** an ended booking, a linked or second queued
   invoice, or a carrier that would bill more than its amount, or more than it
   carried for other changes. Decided under the change's and the carrier's
@@ -1668,10 +1670,13 @@ release).
   of every invoice naming it, not each alone.
 - **A capture of the carried ask takes it back.** A declined ask stays
   confirmable; a kept capture of it returns the invoices first parked on it
-  (`parkedFromPaymentIntentId`) before its release.
+  (`parkedFromPaymentIntentId`), paid unless its receipt records it; a change
+  invoice naming another capture never records it. Both kept: an officer is
+  told once.
 - Pinned by `superseded-ask-invoice-carry.test.ts`,
   `superseded-ask-invoice-return.test.ts`,
-  `superseded-ask-invoice-carry.realdb.test.ts` and
+  `superseded-ask-invoice-carry.realdb.test.ts`,
+  `additional-capture-recorder.test.ts` and
   `xero-operation-outbox.test.ts`.
 
 ## INV-PAY-031

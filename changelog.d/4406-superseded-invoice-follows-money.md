@@ -14,7 +14,12 @@
   request was already paid when the move happens, the earlier invoice is sent
   straight away. A declined card on the earlier request is covered too, and
   if that declined request is later paid from an old browser tab after all,
-  its invoice goes back to it and records that payment instead.
+  its invoice goes back to it and records that payment instead. If the
+  member ends up paying both the old request and the one that took it over,
+  the change's invoice still records only one of them; the old request's
+  payment, arriving second, is recorded by its own receipt, and where the
+  newer request is paid second an officer is told once so the extra can be
+  refunded or credited.
 
   Separately, when several invoices wait on one card payment, Xero now records
   them as paid only while together they add up to no more than the payment;
