@@ -446,10 +446,15 @@ async function moveAnchorOntoCarrier(input: {
  * waiting for the reaper's backstop.
  */
 export async function followSupersededAskInvoicesForIntentSafely(paymentIntentId: string): Promise<void> {
-  const row = await prisma.paymentTransaction
-    .findUnique({ where: { stripePaymentIntentId: paymentIntentId }, select: { paymentId: true, status: true } })
-    .catch(() => null);
-  if (row?.status === PaymentStatus.FAILED) await followSupersededAskInvoicesSafely({ paymentId: row.paymentId });
+  try {
+    const row = await prisma.paymentTransaction.findUnique({
+      where: { stripePaymentIntentId: paymentIntentId },
+      select: { paymentId: true, status: true },
+    });
+    if (row?.status === PaymentStatus.FAILED) await followSupersededAskInvoicesSafely({ paymentId: row.paymentId });
+  } catch (err) {
+    logger.error({ err, paymentIntentId }, "Could not check whether an edit's parked Xero invoice waits on a superseded ask (#3403); the reaper moves it before it would retire it");
+  }
 }
 
 /**
