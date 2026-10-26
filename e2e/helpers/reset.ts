@@ -1,5 +1,4 @@
 import { expect, type APIRequestContext } from "@playwright/test";
-import { WIZARD_PROGRESS_PATH } from "./wizard-cursor";
 
 /**
  * RETRY IDEMPOTENCY HELPERS (issue #2302).
@@ -357,7 +356,7 @@ export async function resetXeroSetupWizard(
   ).toBeTruthy();
 
   const rewound = await adminRequest.post(
-    WIZARD_PROGRESS_PATH,
+    "/api/admin/integrations/wizard-progress",
     {
       data: {
         wizardId: "xero",
