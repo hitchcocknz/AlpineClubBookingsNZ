@@ -1529,6 +1529,17 @@ on. Expect a batch of realdb files to
 take as long as running them one after another. Inside one file the old rules
 still apply: a suite owns its own fixtures and queued work.
 
+CI runs every one of these files in the advisory `realdb-all` job (#4458), in
+one `vitest run` on one Postgres service, with `RUN_CONCURRENCY_RACE_TESTS=1`.
+The file list is `scripts/ci/realdb-files.mjs`: every `*.realdb.test.*` file
+under `src/` minus `scripts/ci/realdb-quarantine.txt`, which names a suite that
+is red for a known reason, with its issue. Add a realdb file and it joins the
+job with no edit. `realdb-ci-coverage-census.test.ts` fails when a file is
+neither run nor quarantined, when the job stops setting
+`RUN_CONCURRENCY_RACE_TESTS=1`, or when any other job names `realdb-all`. The
+per-file steps in `migration-drift` and `data-migration-verification` stay: they
+are required checks and this job is not.
+
 ## Mocking a money seam: never in a test that asserts its money
 
 The rule is `INV-OPS-015` ([`invariants/operations.md`](invariants/operations.md));
