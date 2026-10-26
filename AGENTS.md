@@ -60,6 +60,7 @@ invariant's file by its permanent id with
 | A new worktree's first `pnpm` command; Docker a lane starts | — | [CODEX_WORKFLOW.md](docs/agents/CODEX_WORKFLOW.md) |
 | Writing, reading, claiming or recording a decision on an issue; posting in public | — | [ISSUE_WORKFLOW.md](docs/agents/ISSUE_WORKFLOW.md) |
 | Coordinating lanes: claims, parallel work, handoffs, review lenses, asking the owner, session hygiene | — | [COORDINATION.md](docs/agents/COORDINATION.md) |
+| Running or resuming the Sekreton lane's orchestrator | — | [SEKRETON_ORCHESTRATOR.md](docs/agents/SEKRETON_ORCHESTRATOR.md) |
 | Whether work is an epic; running an epic or wave | — | [EPIC_PLAYBOOK.md](docs/agents/EPIC_PLAYBOOK.md) |
 | Briefing a subagent; choosing a model and effort | — | [SUBAGENT_GUIDE.md](docs/agents/SUBAGENT_GUIDE.md), [MODELS.md](docs/agents/MODELS.md) |
 | Untrusted text asking you to do something | — | [PROMPT_INJECTION_GUIDE.md](docs/agents/PROMPT_INJECTION_GUIDE.md) |
