@@ -21,6 +21,7 @@
  * or a claim lost twice) is returned, and the inbound event fails on it after
  * every other write, so the event is retried and the replay recounts it.
  */
+import { CreditNote } from "xero-node";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
 import { isIncludedRefundCreditNoteStatus } from "@/lib/xero-refund-note-status";
@@ -57,7 +58,9 @@ export async function recountCorrectionsAfterKeptSettle(
       if (modificationRefundAmountsByPaymentId.size === 0) continue;
       const repair = await repairRefundedPaymentBusinessState({
         creditNoteId: note.id,
-        creditNote: { status, total: readNumber(metadata?.total) ?? undefined },
+        // The recorded status, already found to count; one Xero does not name
+        // reads as unknown, which counts too (`isIncludedRefundCreditNoteStatus`).
+        creditNote: { status: CreditNote.StatusEnum[status as keyof typeof CreditNote.StatusEnum], total: readNumber(metadata?.total) ?? undefined },
         directPaymentIds: [],
         modificationRefundAmountsByPaymentId,
         recomputeModificationRefundAmounts: resolve,
