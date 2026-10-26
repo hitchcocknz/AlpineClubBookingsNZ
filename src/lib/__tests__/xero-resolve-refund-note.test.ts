@@ -15,7 +15,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  */
 
 type Row = Record<string, unknown> & { id: string };
-type Link = { id: string; xeroObjectType: string; xeroObjectId: string };
 
 const state = vi.hoisted(() => ({
   rows: new Map<string, Record<string, unknown> & { id: string }>(),
