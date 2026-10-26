@@ -345,6 +345,27 @@ function deferred() {
       });
     }
 
+    /**
+     * Who records a capture (`INV-PAY-139`): the cents of every invoice naming
+     * it that records a payment, and its own receipt rows.
+     */
+    async function recordersOf(intentId: string) {
+      const naming = await prisma.xeroSyncOperation.findMany({
+        where: { queueType: "SUPPLEMENTARY_INVOICE", status: { not: "CANCELLED" }, requestPayload: { path: ["paymentIntentId"], equals: intentId } },
+        select: { requestPayload: true },
+      });
+      const invoicedCents = naming
+        .map((row) => row.requestPayload as Record<string, unknown>)
+        .filter((payload) => payload.recordPayment !== false)
+        .reduce((sum, payload) => sum + (payload.priceDiffCents as number) + (payload.changeFeeCents as number), 0);
+      return { invoicedCents, receipts: (await receiptsFor(intentId)).length };
+    }
+
+    /** The once-ever "this change was paid twice" alert's claims (`alertTakenBackInvoicesPaidAgain`). */
+    async function paidTwiceAlerts() {
+      return prisma.alertCooldown.count({ where: { key: { startsWith: `supplementary-invoice-paid-twice:${BOOKING_ID}:` } } });
+    }
+
     async function captured(intentId: string) {
       const row = await prisma.paymentTransaction.findUniqueOrThrow({ where: { stripePaymentIntentId: intentId }, select: { status: true, amountCents: true } });
       expect(row.status).toBe("SUCCEEDED");
@@ -780,6 +801,54 @@ function deferred() {
         expect(await captured(a)).toBe(A_CENTS);
         // B's capture keeps its one recorder, its own receipt.
         expect(await receiptsFor(b)).toEqual([{ id: receiptB!.id, status: "RUNNING" }]);
+      });
+    });
+
+    describe("review 2 (9a0c129d4), F3: the superseded ask AND its carrier both paid and kept", () => {
+      /** A declined, its invoice moved onto B, which carries A's balance as well as its own. */
+      async function aCarriedByB() {
+        await seedPaidBooking();
+        const a = await priceIncrease(MOD_A, A_CENTS);
+        await declineCard(a);
+        const b = await priceIncrease(MOD_B, B_CENTS);
+        expect(await invoiceFor(MOD_A)).toMatchObject({ waitsOn: b, parkedFrom: a });
+        return { a, b };
+      }
+
+      it("the carrier first: its invoices record all of B; A's own capture is recorded by its own receipt, never stood down", async () => {
+        const { a, b } = await aCarriedByB();
+        await payWithCard(b);
+        await payWithCard(a);
+
+        // Every captured dollar has exactly one recorder.
+        expect(await recordersOf(b)).toEqual({ invoicedCents: await captured(b), receipts: 0 });
+        expect(await recordersOf(a)).toEqual({ invoicedCents: 0, receipts: 1 });
+        expect(await captured(a)).toBe(A_CENTS);
+        // The repair's view agrees: A's change invoice records B's capture, not A's.
+        const { readSupplementaryRecordedIntents, readCapturedStripeCash } = await import("@/lib/additional-capture-recorder");
+        const recorded = await readSupplementaryRecordedIntents(BOOKING_ID, await readCapturedStripeCash(BOOKING_ID));
+        expect(recorded.has(b)).toBe(true);
+        expect(recorded.has(a)).toBe(false);
+        expect(await paidTwiceAlerts()).toBe(0);
+      });
+
+      it("the ask first: A's invoice comes back and records A; B's own invoice records only B's own amount, and an officer is told once that B paid A's change again", async () => {
+        const { a, b } = await aCarriedByB();
+        await payWithCard(a);
+        expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: a, recordPayment: true });
+        expect(await paidTwiceAlerts()).toBe(0);
+
+        await payWithCard(b);
+
+        expect(await recordersOf(a)).toEqual({ invoicedCents: await captured(a), receipts: 0 });
+        // B's capture carried A's balance too: only B's own amount is recorded, never A's twice...
+        expect(await captured(b)).toBe(A_CENTS + B_CENTS);
+        expect(await recordersOf(b)).toEqual({ invoicedCents: B_CENTS, receipts: 0 });
+        // ...and the A_CENTS of it nothing bills is an officer's, told once whoever releases B again.
+        expect(await paidTwiceAlerts()).toBe(1);
+        const { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } = await import("@/lib/xero-supplementary-invoice-late-capture");
+        await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(b);
+        expect(await paidTwiceAlerts()).toBe(1);
       });
     });
 

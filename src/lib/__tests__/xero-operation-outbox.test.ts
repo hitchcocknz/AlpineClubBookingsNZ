@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => ({
   // #3403: the reaper's backstop move; its own module is tested on its own.
   followSupersededAskInvoicesSafely: vi.fn(),
   returnMovedInvoicesToCapturedIntent: vi.fn(async () => 0),
+  alertTakenBackInvoicesPaidAgain: vi.fn(async () => 0),
   updateManyOperation: vi.fn(),
   updateOperation: vi.fn(),
   startXeroSyncOperation: vi.fn(),
@@ -279,6 +280,7 @@ vi.mock("@/lib/superseded-ask-invoice-carry", () => ({
 // #3403 review (M1): proven in its own suite and against PostgreSQL; here it returns nothing.
 vi.mock("@/lib/superseded-ask-invoice-return", () => ({
   returnMovedInvoicesToCapturedIntent: mocks.returnMovedInvoicesToCapturedIntent,
+  alertTakenBackInvoicesPaidAgain: mocks.alertTakenBackInvoicesPaidAgain,
 }));
 
 /** #3403 review (M2): the late-capture release's one read of every invoice naming the capture. */
@@ -4637,6 +4639,13 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
       mocks.findFirstRecoveryOperation.mockResolvedValue({ id: "recovery_superseded" });
       await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
       expect(mocks.returnMovedInvoicesToCapturedIntent).not.toHaveBeenCalled();
+      // Review 2 (F3): nor is a refunded carrier's "paid twice" told - that money goes back.
+      expect(mocks.alertTakenBackInvoicesPaidAgain).not.toHaveBeenCalled();
+    });
+
+    it("review 2 (F3): a kept capture asks whether an invoice taken back from it was paid twice", async () => {
+      await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+      expect(mocks.alertTakenBackInvoicesPaidAgain).toHaveBeenCalledWith("pi_late");
     });
   });
 
