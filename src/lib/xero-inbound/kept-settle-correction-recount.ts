@@ -7,8 +7,11 @@
  * the stored figure. A correction synced before the settle (or whose sync read
  * the payment while it was still uncaptured) found no such receipt and counted
  * nothing; the settle then captured the receipt at the stored figure, which
- * still includes the corrected amount, so the net was overstated by the
- * correction until another note happened to recount it.
+ * still includes the corrected amount. The keep counts such a correction in
+ * its own transaction when it can (`keptCorrectionRefundCents` in
+ * `settle-from-cash.ts`); this recount, after the commit, is the backstop: a
+ * replay, a refunded total the keep left alone, and a correction whose sync
+ * wrote its links while the settle ran.
  *
  * It is the inbound recount with no note being synced
  * (`repairRefundedPaymentBusinessState`, `creditNoteId: null`): every note,

@@ -3702,10 +3702,11 @@ _Split from `INV-PAY-057` (#3220)._
   still includes the corrected amount, so the correction keeps counting and the
   net stays the cash. A recount finds a bank-transfer payment's
   modification notes by its invoice, so a later note never drops an earlier one.
-  A kept settle, and every replay, recounts after its commit each applied
-  correction already synced, which found no such receipt then; one it cannot
-  recount fails the event, which is retried (#4095). Until it runs, a writer
-  queued on the settle's lock reads the net before it ([INV-PAY-125], #4092).
+  A keep counts each applied correction already synced in its own transaction
+  when the rows explain the refunded total, so a writer queued on its locks
+  reads the corrected net. After the commit a keep, and every replay, recounts
+  the payment with no note of its own; failing, the event is retried. One
+  synced during the settle, or beside an older fold, waits for that (#4095).
 - **The refunded-total repair writes through a claim** on the row it read
   (status, totals, `updatedAt`, which every settle transition touches),
   re-running once from scratch when lost, and never un-refunds a payment whose

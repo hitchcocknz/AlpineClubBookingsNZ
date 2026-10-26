@@ -58,6 +58,7 @@ import {
 import {
   type AppliedCreditNote,
   decideInternetBankingReceiptFigure,
+  IB_RECEIPT_KEPT_REASON,
   paidInvoiceFacts,
 } from "@/lib/xero-inbound/settle-from-cash";
 import { recountCorrectionsAfterKeptSettle } from "@/lib/xero-inbound/kept-settle-correction-recount";
@@ -557,6 +558,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
       // when the cash belongs to this payment alone; otherwise the stored
       // figure stays and the operators are told after the commit.
       const receiptFigure = await decideInternetBankingReceiptFigure(tx, {
+        invoiceId,
         payment: fresh,
         cash: invoiceCash,
         matchedPayments: payments.length,
@@ -628,7 +630,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
               reference: fresh.reference ?? undefined,
               amountCents: receiptFigure.receiptCents,
               status: PaymentStatus.SUCCEEDED,
-              reason: receiptFigure.primaryRowWrite.reason ?? "xero_invoice_paid_reconciliation",
+              reason: receiptFigure.primaryRowWrite.reason ?? IB_RECEIPT_KEPT_REASON,
             },
           });
         }

@@ -98,6 +98,7 @@ describe("decideInternetBankingReceiptFigure names the applied corrections (#409
       memberCredit: { findMany: vi.fn().mockResolvedValue([{ xeroCreditNoteId: "member-credit" }]) },
     };
     const decided = await decideInternetBankingReceiptFigure(tx as never, {
+      invoiceId: INVOICE_ID,
       payment: { id: "pay-1", amountCents: 30_000, refundedAmountCents: 0 },
       cash: { knownCents: 20_000, complete: false },
       matchedPayments: 1,
@@ -125,5 +126,103 @@ describe("decideInternetBankingReceiptFigure names the applied corrections (#409
     expect(decided.isPartPayment({ mintableCents: 15_000, mintPartial: true })).toBe(false);
     expect(decided.isPartPayment({ mintableCents: 14_999, mintPartial: true })).toBe(true);
     expect(decided.isPartPayment({ mintableCents: 30_000, mintPartial: false })).toBe(false);
+  });
+});
+
+describe("a keep counts an applied correction already synced in its own transaction (#4095 review, item 1)", () => {
+  type Row = { kind: string; source: string; status: string; amountCents: number; refundedAmountCents: number; reason: string | null };
+  const pendingReceipt = (overrides: Partial<Row> = {}): Row => ({
+    kind: "PRIMARY",
+    source: "INTERNET_BANKING",
+    status: "PENDING",
+    amountCents: 30_000,
+    refundedAmountCents: 0,
+    reason: "internet_banking_booking_payment",
+    ...overrides,
+  });
+  const noteLink = (status: string | null) => ({ xeroObjectId: "cn-correction", metadata: status === null ? {} : { status } });
+  const allocationLink = { metadata: { creditNoteId: "cn-correction", invoiceId: INVOICE_ID, amountCents: 10_000 } };
+
+  function decide(input: {
+    rows?: Row[];
+    refundedAmountCents?: number;
+    noteLinks?: unknown[];
+    allocationLinks?: unknown[];
+    cash?: { knownCents: number; complete: boolean };
+  }) {
+    mocks.readModificationNoteCash.mockResolvedValue(new Map([["cn-correction", "correction"]]));
+    const linkFindMany = vi.fn(async ({ where }: { where: { role: string } }) =>
+      where.role === "MODIFICATION_CREDIT_NOTE" ? (input.noteLinks ?? [noteLink("AUTHORISED")]) : (input.allocationLinks ?? [allocationLink]),
+    );
+    const tx = {
+      paymentTransaction: { findMany: vi.fn().mockResolvedValue(input.rows ?? [pendingReceipt()]) },
+      memberCredit: { findMany: vi.fn().mockResolvedValue([]) },
+      xeroObjectLink: { findMany: linkFindMany },
+    };
+    const decided = decideInternetBankingReceiptFigure(tx as never, {
+      invoiceId: INVOICE_ID,
+      payment: { id: PAYMENT_ID, amountCents: 30_000, refundedAmountCents: input.refundedAmountCents ?? 0 },
+      // Xero's amount paid unquantifiable: the settle keeps the stored $300.
+      cash: input.cash ?? { knownCents: 20_000, complete: false },
+      matchedPayments: 1,
+      secondInstrument: false,
+      invoice: { totalCents: 30_000, appliedCreditNotes: [{ id: "cn-correction", appliedCents: 10_000 }] },
+    });
+    return { decided, linkFindMany };
+  }
+
+  it("MUTATION: the $100 correction synced before the transfer is counted with the receipt, so the net is the $200 of cash at the commit", async () => {
+    const { decided, linkFindMany } = decide({});
+    await expect(decided).resolves.toMatchObject({
+      plan: { kind: "keep" },
+      receiptCents: 30_000,
+      paymentColumns: { amountCents: 30_000, refundedAmountCents: 10_000, status: "PARTIALLY_REFUNDED" },
+    });
+    // Read in the settle's transaction: the note's live link and its allocation to this invoice.
+    expect(linkFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ role: "MODIFICATION_CREDIT_NOTE", active: true, xeroObjectId: { in: ["cn-correction"] } }) }),
+    );
+    expect(linkFindMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ role: "MODIFICATION_CREDIT_NOTE_ALLOCATION", active: true, metadata: { path: ["invoiceId"], equals: INVOICE_ID } }),
+      }),
+    );
+  });
+
+  it("a note link with no status recorded counts, as the recount counts it", async () => {
+    await expect(decide({ noteLinks: [noteLink(null)] }).decided).resolves.toMatchObject({
+      paymentColumns: { refundedAmountCents: 10_000 },
+    });
+  });
+
+  it("MUTATION: never a voided correction", async () => {
+    await expect(decide({ noteLinks: [noteLink("VOIDED")] }).decided).resolves.toMatchObject({ paymentColumns: null });
+  });
+
+  it("MUTATION: never one whose allocation to this invoice is not linked yet - its sync, and the recount after the commit, count it", async () => {
+    await expect(decide({ allocationLinks: [] }).decided).resolves.toMatchObject({ paymentColumns: null });
+  });
+
+  it("MUTATION: never over a refunded total its rows do not explain, which may already hold the correction", async () => {
+    const { decided, linkFindMany } = decide({ refundedAmountCents: 10_000 });
+    await expect(decided).resolves.toMatchObject({ plan: { kind: "keep" }, paymentColumns: null });
+    expect(linkFindMany).not.toHaveBeenCalled();
+  });
+
+  it("MUTATION: never against a receipt that would not hold the stored figure", async () => {
+    const { decided, linkFindMany } = decide({ rows: [pendingReceipt({ reason: "xero_part_payment_recognised_at_cancel" })] });
+    await expect(decided).resolves.toMatchObject({ plan: { kind: "keep" }, paymentColumns: null });
+    expect(linkFindMany).not.toHaveBeenCalled();
+  });
+
+  it("never on a replay, whose receipt is already captured", async () => {
+    const { decided, linkFindMany } = decide({ rows: [pendingReceipt({ status: "SUCCEEDED" })] });
+    await expect(decided).resolves.toMatchObject({ plan: { kind: "replay" }, paymentColumns: null });
+    expect(linkFindMany).not.toHaveBeenCalled();
+  });
+
+  it("never on a rewrite, whose cash-sized receipt counts no correction", async () => {
+    const { decided } = decide({ cash: { knownCents: 20_000, complete: true } });
+    await expect(decided).resolves.toMatchObject({ plan: { kind: "rewrite" }, paymentColumns: { amountCents: 20_000, refundedAmountCents: 0 } });
   });
 });

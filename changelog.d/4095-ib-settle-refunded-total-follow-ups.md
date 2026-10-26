@@ -2,7 +2,8 @@
   carried an *Invoice correction* note is no longer reported as a "mixed
   invoice" when its booking is cancelled for capacity. When the settle keeps a
   payment's stored figure, an invoice correction already synced is now counted
-  as refunded straight away, so the payment's net matches the cash instead of
+  as refunded in the same step that records the payment, so the payment's net
+  matches the cash, even for a cancellation waiting on that step, instead of
   waiting for another note. A credit-note sync that loses its refunded-total
   recount twice to a concurrent writer now fails its stored event, which is
   retried, instead of leaving the total uncounted. The inbound invoice sync
