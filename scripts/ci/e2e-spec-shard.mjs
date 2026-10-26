@@ -30,18 +30,25 @@ export function parseE2eShard(value) {
  * shard.
  */
 export const PLAYWRIGHT_TEST_FILE = /\.(?:spec|test)\.[cm]?[jt]sx?$/;
+/** The two test-dir subfolders that belong to other projects, never `chromium`. */
+export const NOT_CHROMIUM_DIRS = ["multi-lodge", "pre-setup"];
+const NOT_CHROMIUM_RELATIVE = new RegExp(`^(?:${NOT_CHROMIUM_DIRS.join("|")})/`);
+
 /**
- * Directories the `chromium` project ignores (its `testIgnore`). Unanchored at
- * the start on purpose: Playwright tests it against ABSOLUTE paths, and this
- * module against paths relative to the test directory.
+ * The `chromium` project's `testIgnore` for those folders. Playwright tests it
+ * against ABSOLUTE paths, so it is anchored to the resolved test directory: a
+ * parent folder that happens to share one of the names cannot hide every spec.
  */
-export const NOT_CHROMIUM_DIR = /(?:^|\/)(?:multi-lodge|pre-setup)\//;
+export function notChromiumIgnore(testDir) {
+  const root = path.resolve(testDir).split(path.sep).join("/");
+  return new RegExp(`^${escapeRegex(root)}/(?:${NOT_CHROMIUM_DIRS.join("|")})/`);
+}
 
 /** The test files (relative to `testDir`, `/`-separated) the default `chromium` project owns. */
 export function chromiumSpecFiles(testDir) {
   return readdirSync(testDir, { recursive: true })
     .map((entry) => String(entry).split(path.sep).join("/"))
-    .filter((file) => PLAYWRIGHT_TEST_FILE.test(file) && !NOT_CHROMIUM_DIR.test(file))
+    .filter((file) => PLAYWRIGHT_TEST_FILE.test(file) && !NOT_CHROMIUM_RELATIVE.test(file))
     .sort();
 }
 

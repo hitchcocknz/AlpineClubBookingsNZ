@@ -1,6 +1,6 @@
 import { defineConfig, devices } from "@playwright/test";
 
-import { NOT_CHROMIUM_DIR, parseE2eShard, shardTestMatch } from "./scripts/ci/e2e-spec-shard.mjs";
+import { PLAYWRIGHT_TEST_FILE, notChromiumIgnore, parseE2eShard, shardTestMatch } from "./scripts/ci/e2e-spec-shard.mjs";
 
 // Browser E2E suite for the Critical journeys in docs/END_TO_END_TEST_MATRIX.md.
 // It drives the staging Docker Compose stack (docker-compose.staging.yml) seeded
@@ -42,6 +42,12 @@ const excludedSpecs = (process.env.E2E_EXCLUDE_SPECS ?? "")
 // and still with nothing after it. Unset (a laptop, the rollover proof, the
 // multi-lodge job), the projects below are unchanged.
 const shard = parseE2eShard(process.env.E2E_SHARD);
+// A shard's slice is decided before E2E_EXCLUDE_SPECS applies, so the two
+// together could leave a shard running `setup` alone and passing. Nothing
+// combines them today (the rollover proof runs unsharded); refuse it.
+if (shard && excludedSpecs.length > 0) {
+  throw new Error("E2E_SHARD and E2E_EXCLUDE_SPECS cannot be combined (#4397).");
+}
 const shardSpecs = shard ? shardTestMatch("./e2e", shard) : null;
 const includePreSetup = !shard || shard.index === 1;
 
@@ -86,8 +92,10 @@ export default defineConfig({
       // pre-setup/ is excluded for a stronger reason: those specs CLOSE the
       // public site for their duration, so they run in their own project after
       // everything else (#2420).
-      ...(shardSpecs ? { testMatch: shardSpecs } : {}),
-      testIgnore: [NOT_CHROMIUM_DIR, ...excludedSpecs],
+      // Unsharded, Playwright's default test-file shape, stated once so the
+      // shard partition and this project agree by construction.
+      testMatch: shardSpecs ?? PLAYWRIGHT_TEST_FILE,
+      testIgnore: [notChromiumIgnore("./e2e"), ...excludedSpecs],
     },
     // The pre-setup gate on the wire (#2420). Runs LAST — `dependencies` on the
     // main project — because it un-completes site-style setup, which makes every

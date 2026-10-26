@@ -18,6 +18,12 @@ export function classifyTestShardJobs(jobs, count = EXPECTED_SHARD_COUNT, label 
   const found = new Map();
   const pattern = new RegExp(`^${escapeRegex(label)} \\(([1-9]\\d*)\\/([1-9]\\d*)\\)$`);
   for (const job of jobs) {
+    // A matrix job skipped before expansion (its `needs:` failed) reports its
+    // unexpanded name, which no label matches; waiting on it would only time
+    // out (#4397). Fail at once instead.
+    if (typeof job?.name === "string" && job.name.includes("${{") && job.status === "completed" && job.conclusion !== "success") {
+      throw new Error(`An unexpanded matrix job (${job.name}) completed as ${job.conclusion ?? "unknown"}`);
+    }
     if (typeof job?.name !== "string" || !job.name.startsWith(`${label} (`)) continue;
     const match = pattern.exec(job.name);
     if (!match || Number(match[2]) !== count || Number(match[1]) > count) {
