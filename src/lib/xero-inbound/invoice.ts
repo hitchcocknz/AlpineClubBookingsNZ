@@ -22,6 +22,7 @@ import { writeXeroInboundAuditLogs } from "./audit";
 import { resolveMemberIdsForContact } from "./contact";
 import { refreshLinkedSubscriptionsForInvoice, syncLinkedPaymentInvoiceMetadata } from "./payment";
 import { syncGroupSettlementForPaidInvoice, syncInternetBankingPaymentsForPaidInvoice } from "./invoice-paid-effects";
+import { failIfRecountLeftUnsettled } from "./recount-left-unsettled";
 
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
@@ -314,7 +315,8 @@ export async function runIncrementalInvoiceReconciliation(options: {
     processed += 1;
 
     try {
-      await reconcileXeroInvoice(invoiceId, format, { skipSubscriptionRefresh: true });
+      // #4095: a recount its settle left unwritten fails the invoice, as it fails a stored event.
+      failIfRecountLeftUnsettled(await reconcileXeroInvoice(invoiceId, format, { skipSubscriptionRefresh: true }));
       succeeded += 1;
     } catch (error) {
       failed += 1;

@@ -13,19 +13,9 @@ import { reconcileXeroContact } from "./contact";
 import { reconcileXeroPayment } from "./payment";
 import { reconcileXeroInvoice, runIncrementalInvoiceReconciliation } from "./invoice";
 import { reconcileXeroCreditNote } from "./credit-note";
+import { failIfRecountLeftUnsettled } from "./recount-left-unsettled";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
-
-/**
- * #4095: a reconcile that wrote everything it could but left a refunded-total
- * recount unwritten (a claim lost twice, or a kept settle's recount that
- * failed) says so in its result. A stored event fails on it, so it is retried
- * after its backoff and recounts; a direct caller reads the field itself.
- */
-function failIfRecountLeftUnsettled<T extends { recountLeftUnsettled?: string }>(result: T): T {
-  if (result.recountLeftUnsettled) throw new Error(result.recountLeftUnsettled);
-  return result;
-}
 
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   return Boolean(

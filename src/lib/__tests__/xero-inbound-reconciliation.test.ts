@@ -382,6 +382,7 @@ import {
   replayStoredXeroInboundEvent,
   XeroInboundReplayError,
 } from "@/lib/xero-inbound-reconciliation";
+import { runIncrementalInvoiceReconciliation } from "@/lib/xero-inbound/invoice";
 import {
   sendAdminBankTransferSettlementFigureAlert,
   sendAdminPaymentFailureAlert,
@@ -4663,10 +4664,16 @@ describe("processStoredXeroInboundEvents", () => {
       expect(sendAdminBankTransferSettlementFigureAlert).not.toHaveBeenCalled();
     });
 
-    it("recounts an applied correction after a kept settle, and fails the event when the recount could not run, so it is retried (#4095 items 5 and 12)", async () => {
-      // $123.45 invoiced, a $23.45 invoice correction applied and synced, $100.00
-      // paid plus an overpayment Xero gives no applied amount for: the cash is
-      // incomplete, so the settle keeps the stored figure.
+    /**
+     * $123.45 invoiced, a $23.45 invoice correction applied and synced, $100.00
+     * paid plus an overpayment Xero gives no applied amount for: the cash is
+     * incomplete, so the settle keeps the stored figure. The recount after the
+     * commit (#4095 review, item 2: the inbound recount with no note being
+     * synced) fails on its own read of the payment. The helper's queued reads
+     * are answered by shape instead, so that read never takes one meant for a
+     * later reader. Returns the recount's reads.
+     */
+    async function arrangeKeptSettleWhoseRecountFails(): Promise<unknown[]> {
       mockPendingInternetBankingInboundEvent({
         finalPriceCents: 10000,
         amountPaid: 100.0,
@@ -4679,10 +4686,6 @@ describe("processStoredXeroInboundEvents", () => {
       mocks.txOperationFindMany.mockResolvedValue([
         { xeroObjectId: "cn_correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
       ]);
-      // The recount's own read of the payment (#4095 review, item 2: the
-      // inbound recount with no note being synced) fails after the commit. The
-      // helper's queued reads are answered by shape instead, so the recount's
-      // read never takes one meant for a later reader.
       const linkRead = await mocks.paymentFindMany();
       const settleRead = await mocks.paymentFindMany();
       const ownerRead = await mocks.paymentFindMany();
@@ -4696,6 +4699,27 @@ describe("processStoredXeroInboundEvents", () => {
         if (args?.include) return settleRead;
         return args?.select?.xeroInvoiceNumber ? linkRead : ownerRead;
       });
+      return recountReads;
+    }
+
+    it("the incremental invoice reconciliation reports an invoice whose kept settle left its recount unwritten as failed (#4095 review, item 3)", async () => {
+      const recountReads = await arrangeKeptSettleWhoseRecountFails();
+
+      const result = await runIncrementalInvoiceReconciliation({
+        membershipReconciliation: { changedInvoiceIds: ["inv_ib_gate"] } as never,
+      });
+
+      expect(recountReads).toHaveLength(1);
+      expect(result).toMatchObject({
+        processed: 1,
+        succeeded: 0,
+        failed: 1,
+        errorDetails: [{ invoiceId: "inv_ib_gate", error: expect.stringContaining("correction note(s) cn_correction could not be recounted") }],
+      });
+    });
+
+    it("recounts an applied correction after a kept settle, and fails the event when the recount could not run, so it is retried (#4095 items 5 and 12)", async () => {
+      const recountReads = await arrangeKeptSettleWhoseRecountFails();
 
       await expect(processStoredXeroInboundEvents()).resolves.toMatchObject({ succeeded: 0, failed: 1 });
 
