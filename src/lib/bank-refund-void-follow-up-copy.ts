@@ -143,7 +143,7 @@ export const RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE =
  * be recorded beside it.
  */
 export const RESOLVE_NOTE_SUPERSEDED_MESSAGE =
-  "A later run of this refund credit note already made its note in Xero, so this job needs no credit note made by hand and is not resolved here. If you made one by hand as well, don't record it: ask the treasurer whether to void it.";
+  "A later run of this refund credit note already made its note in Xero, so this job needs no credit note made by hand and is not resolved here. If you made one by hand as well, don't record it: ask the treasurer whether to void it. If that earlier note was later voided in Xero, follow the voided-note task on the treasurer's refund list instead.";
 
 /**
  * The refusal of a part-done (PARTIAL) refund credit note that names no note

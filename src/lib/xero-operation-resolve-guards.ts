@@ -94,6 +94,16 @@ export async function findRetryRunningOrSince(
  * the original with a hand-made note as well would leave two notes, and $400
  * of coverage, for one $200 refund.
  */
+/**
+ * The shape of a refund-note create on a payment that a run of the same note
+ * could be (#4421): one definition for the single-row and the page reader.
+ */
+const PAYMENT_REFUND_NOTE_CREATE = {
+  entityType: "CREDIT_NOTE",
+  operationType: "CREATE",
+  localModel: "Payment",
+} as const;
+
 export async function findSupersedingRefundNoteRun(
   operation: { id: string; correlationKey: string | null; localId: string | null },
   db: OperationReader = prisma,
@@ -105,13 +115,7 @@ export async function findSupersedingRefundNoteRun(
       OR: [
         { correlationKey: buildXeroOperationRequeueCorrelationKey(operation.id), operationType: XERO_REQUEUE_OPERATION_TYPE },
         ...(operation.correlationKey && operation.localId
-          ? [{
-              correlationKey: operation.correlationKey,
-              entityType: "CREDIT_NOTE",
-              operationType: "CREATE",
-              localModel: "Payment",
-              localId: operation.localId,
-            }]
+          ? [{ ...PAYMENT_REFUND_NOTE_CREATE, correlationKey: operation.correlationKey, localId: operation.localId }]
           : []),
       ],
     },
@@ -143,10 +147,8 @@ export async function findSupersededRefundNoteRowIds(
       ? Promise.resolve([])
       : db.xeroSyncOperation.findMany({
           where: {
+            ...PAYMENT_REFUND_NOTE_CREATE,
             status: { in: [...REFUND_NOTE_RAN_STATUSES] },
-            entityType: "CREDIT_NOTE",
-            operationType: "CREATE",
-            localModel: "Payment",
             correlationKey: { in: keyed.map((operation) => operation.correlationKey!) },
           },
           select: { id: true, correlationKey: true, localId: true },
@@ -158,6 +160,7 @@ export async function findSupersededRefundNoteRowIds(
     if (id) superseded.add(id);
   }
   for (const operation of keyed) {
+    // Same key on the same payment, and not the row itself.
     if (creates.some((create) => create.id !== operation.id && create.correlationKey === operation.correlationKey && create.localId === operation.localId)) {
       superseded.add(operation.id);
     }

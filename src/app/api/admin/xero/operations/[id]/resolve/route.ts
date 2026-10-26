@@ -110,7 +110,10 @@ export async function POST(
     // transaction, so no lock is held across the provider call - and recorded
     // with the resolve. Read first, so every refusal of such a row is audited.
     const shape = refundNoteResolveShape(operation);
-    auditsRefusals ||= shape.kind === "asks-number";
+    // A refund-note row that needs a number, or is refused outright (unreadable
+    // amount; PARTIAL naming no note), audits its refusals even when no number
+    // came with the request.
+    auditsRefusals ||= shape.kind === "asks-number" || shape.kind === "refused";
 
     if (isResolvedInXero(operation) && operation.manuallyResolvedAt) {
       return answerMark({ manuallyResolvedAt: operation.manuallyResolvedAt, xeroObjectNumber: operation.xeroObjectNumber });

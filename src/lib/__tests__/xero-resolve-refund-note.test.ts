@@ -700,6 +700,22 @@ describe("Resolve by hand records the officer's note on a refund credit-note cre
     expect(state.rows.get("op_note")).toMatchObject({ manuallyResolvedAt: null });
   });
 
+  it("audits a refused refund-note row's refusal even when no number came with the request (review round 3)", async () => {
+    const noNumber = { reason: "Made the credit note by hand in Xero" };
+    for (const [row, message] of [
+      [refundNoteRow({ requestPayload: null }), RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE],
+      [refundNoteRow({ status: "PARTIAL" }), RESOLVE_NOTE_PARTIAL_NO_NOTE_MESSAGE],
+    ] as const) {
+      mocks.createAuditLog.mockClear();
+      state.rows.set("op_note", row);
+      const response = await resolve(noNumber);
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toBe(message);
+      expect(mocks.createAuditLog).toHaveBeenCalledWith(refusalAudit(409));
+      expect(state.rows.get("op_note")).toMatchObject({ manuallyResolvedAt: null });
+    }
+  });
+
   it("resolves a refund request's note, a row naming its note and any other row exactly as before: no number, no lock, no note written", async () => {
     for (const row of [
       refundNoteRow({ requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 30_000, refundRequestId: "rr_1" } }),
