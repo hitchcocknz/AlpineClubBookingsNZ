@@ -3601,6 +3601,9 @@ _Split from `INV-PAY-057` (#3220)._
   An edit's credit clamp, zero-dollar decision and stale-intent comparison
   read worth; a guest's acceptance nets credit to the price, its return route
   admitting only credit and cash summing to it.
+- A booking worth $0 has nothing to charge: the cron and confirm-pending-guests
+  confirm it, writing its $0 payment in the claim's transaction
+  (`writeZeroWorthConfirmPayment`); charge-saved-method refuses it (#4399).
 - A finished-stay correction's fee on a stay with nothing captured is recorded
   on the payment and posts its `CHANGE_FEE` line under its modification's key
   at the settle, counting as income once captured.

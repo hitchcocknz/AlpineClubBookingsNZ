@@ -19,6 +19,7 @@ import {
 } from "@/lib/saved-card-charge-attempt";
 import { chargeSavedCardAttempt } from "@/lib/saved-card-charge-request";
 import { savedCardChargeCents } from "@/lib/booking-payment-state";
+import { writeZeroWorthConfirmPayment } from "@/lib/zero-worth-confirm-payment";
 import {
   describeUnsettledPaymentIntent,
   settleSavedCardChargeAttempt,
@@ -307,6 +308,7 @@ export async function POST(
           cause: "SYSTEM_CHANGE",
           actorMemberId: session.user.id,
         });
+        await writeZeroWorthConfirmPayment(tx, bookingId);
 
         return { ok: true as const };
       });
@@ -328,11 +330,6 @@ export async function POST(
       }
 
       await settleHostingCoverageAfterCommit({ bookingId });
-      await prisma.payment.upsert({
-        where: { bookingId },
-        create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
-        update: { amountCents: 0, status: PaymentStatus.SUCCEEDED },
-      });
       await queueXeroInvoice();
       await audit("paid_zero", false);
       if (notifyMember !== false) {
