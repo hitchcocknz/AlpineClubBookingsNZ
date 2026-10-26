@@ -4077,7 +4077,12 @@ the pre-#4217 code). Now:
   unique violation there rolls it back whole and it runs once more.
 - The Internet Banking settle (#4094) takes it after `lock(1)`, the lodge key
   and the member key, and re-reads the payment's figures under it; its rows are
-  read under it. Its figure logic (#3979, `INV-PAY-126`) is unchanged.
+  read under it. Its figure logic (#3979, `INV-PAY-126`) is unchanged, except
+  that a keep also counts an applied correction already synced there, from
+  link rows it reads plainly (#4095). After it commits, outside every lock, a
+  keep or a replay with an applied correction triggers the lock-free inbound
+  recount (`repairRefundedPaymentBusinessState`, no note of its own), whose
+  claim on the row as read loses to any writer in between; it adds no key.
 - A cancellation hand-back's completion decides whether its Xero note stands
   on its own task (#4287, `INV-ADDPAY-043`,
   `cancellationHandBackNotedOnItsOwnRecord`) only after its allocation has
