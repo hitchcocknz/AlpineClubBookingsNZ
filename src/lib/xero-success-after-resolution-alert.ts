@@ -5,24 +5,51 @@
  * Two callers can hold one operation row (#1354). One fails, an officer marks
  * the row resolved in Xero and makes the document by hand, and the other
  * caller's own call of the same keyed request then succeeds. The success still
- * lands, links and all - they are real Xero objects - and the mark stays, so
- * Xero may now hold the item twice. Nothing here guards the write: the outcome
- * guard (`xero-operation-outcome-guard.ts`) decides what lands; this only says
- * so, once per operation.
+ * lands, links and all - they are real Xero objects - and the write leaves the
+ * mark as it found it, so Xero may now hold the item twice. Nothing here guards
+ * the write: the outcome guard (`xero-operation-outcome-guard.ts`) decides what
+ * lands; this only says so, once per operation.
+ *
+ * A success that recorded no Xero object made nothing in Xero to duplicate, so
+ * it raises nothing. One that did may still have adopted the officer's own
+ * document (found by its reference), so the alert asks for a check, not a void.
+ * A row the app itself closed because its credit note was spent outside the app
+ * (#4219, `isClosedByCreditSpentOutsideApp`) had nothing made by hand: its alert
+ * says the credit ledger and Xero may now disagree instead.
+ *
+ * The send is once-ever and best-effort. If it throws before reaching anyone,
+ * or nobody can receive it, `sendAdminAlertOnceEver` gives the claim back or
+ * defers it, but nothing calls again unless another success lands on the row:
+ * the warning in the log is then the only trace (a stated limit, `INV-INT-029`).
  */
 import type { XeroSyncOperation } from "@prisma/client";
 import { sendAdminAlertOnceEver } from "@/lib/admin-alert-once";
 import logger from "@/lib/logger";
-import { isResolvedInXero, resolutionLabel } from "@/lib/xero-operation-resolution";
+import {
+  isClosedByCreditSpentOutsideApp,
+  isResolvedInXero,
+  resolutionLabel,
+} from "@/lib/xero-operation-resolution";
 
 /** The once-ever claim key of one operation's alert. */
 export function xeroSuccessAfterResolutionAlertKey(operationId: string): string {
   return `xero-success-after-resolution:${operationId}`;
 }
 
+/** The alert's body: what happened, and what an officer should check in Xero. */
+function alertMessage(operation: XeroSyncOperation): string {
+  const recorded = `${operation.xeroObjectType ?? "an object"} ${operation.xeroObjectNumber ?? operation.xeroObjectId}`;
+  const succeeded = `another attempt at the same Xero call then succeeded: it recorded ${recorded} in Xero. The operation now shows as succeeded.`;
+  if (isClosedByCreditSpentOutsideApp(operation)) {
+    return `The app closed this Xero operation ("${resolutionLabel(operation.manuallyResolvedReason)}") because its credit note was used in Xero outside the app, and brought the credit ledger into line with Xero; ${succeeded} The credit ledger and Xero may now disagree. Check the credit note's allocations in Xero against the member's credit.`;
+  }
+  return `This Xero operation was marked "${resolutionLabel(operation.manuallyResolvedReason)}", and ${succeeded} If the item was also made by hand in Xero, Xero may now hold it twice. The app may instead have found and used the one made by hand (same reference), leaving only one: check Xero before voiding a duplicate.`;
+}
+
 /**
  * The warning and alert due for a completion's row, or null when none is: the
- * row is SUCCEEDED and carries a resolution mark (`isResolvedInXero`).
+ * row is SUCCEEDED, carries a resolution mark (`isResolvedInXero`) and records
+ * a Xero object.
  *
  * `operation` must be the row as read after the guarded SUCCEEDED write, in
  * the same transaction: that write holds the row's lock until commit and never
@@ -35,14 +62,14 @@ export function xeroSuccessAfterResolutionAlertKey(operationId: string): string 
 export function successAfterResolutionAlert(
   operation: XeroSyncOperation | null,
 ): (() => Promise<void>) | null {
-  if (operation?.status !== "SUCCEEDED" || !isResolvedInXero(operation)) return null;
+  if (operation?.status !== "SUCCEEDED" || !isResolvedInXero(operation) || !operation.xeroObjectId) return null;
   const context = {
     operationId: operation.id,
     localModel: operation.localModel,
     localId: operation.localId,
     xeroObjectId: operation.xeroObjectId,
   };
-  const recorded = `${operation.xeroObjectType ?? "an object"} ${operation.xeroObjectNumber ?? operation.xeroObjectId ?? "(no id recorded)"}`;
+  const errorMessage = alertMessage(operation);
   return async () => {
     logger.warn(
       context,
@@ -57,7 +84,7 @@ export function successAfterResolutionAlert(
         return sendAdminXeroSyncErrorAlert({
           errorType: "XERO_SUCCESS_AFTER_RESOLUTION",
           operation: `${operation.operationType} ${operation.entityType} for ${operation.localModel ?? "record"} ${operation.localId ?? "unknown"} (outbox operation ${operation.id})`,
-          errorMessage: `This Xero operation was marked "${resolutionLabel(operation.manuallyResolvedReason)}", and then another attempt at the same Xero call succeeded: it recorded ${recorded} in Xero. If the item was also made by hand in Xero, Xero now holds it twice. Check Xero and void the duplicate. The operation now shows as succeeded and stays marked resolved.`,
+          errorMessage,
           timestamp: new Date(),
         });
       },

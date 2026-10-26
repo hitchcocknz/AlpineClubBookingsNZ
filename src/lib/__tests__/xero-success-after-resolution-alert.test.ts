@@ -42,6 +42,7 @@ vi.mock("@/lib/xero-hardening", () => ({ maybeNotifyXeroRepeatedFailure: mocks.r
 
 import { completeXeroSyncOperation } from "@/lib/xero-sync";
 import { xeroSuccessAfterResolutionAlertKey } from "@/lib/xero-success-after-resolution-alert";
+import { CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON } from "@/lib/xero-applied-credit-spent-outside-app";
 
 const OPERATION_ID = "op-late";
 const link = { localModel: "Payment", localId: "payment-late", xeroObjectType: "PAYMENT", xeroObjectId: "pay-late", role: "STRIPE_PAYMENT" };
@@ -109,10 +110,57 @@ describe("#4374: a success landing after an officer resolved the operation in Xe
       expect(mocks.send).toHaveBeenCalledWith(expect.objectContaining({
         errorType: "XERO_SUCCESS_AFTER_RESOLUTION",
         operation: "CREATE PAYMENT for Payment payment-late (outbox operation op-late)",
-        errorMessage: expect.stringMatching(/"Resolved in Xero".*PAYMENT pay-late.*void the duplicate/),
+        errorMessage: expect.stringMatching(/"Resolved in Xero".*PAYMENT pay-late.*made by hand.*check Xero before voiding/),
       }));
     },
   );
+
+  it("names the adoption case and never claims the mark stays", async () => {
+    await completeXeroSyncOperation(xeroClaim(OPERATION_ID), completion);
+    const { errorMessage } = mocks.send.mock.calls[0]![0] as { errorMessage: string };
+    // The late call may have found and used the officer's own document by its reference: one document, not two.
+    expect(errorMessage).toContain("found and used the one made by hand (same reference)");
+    expect(errorMessage).toContain("may now hold it twice");
+    // The resolve route can withdraw a mark it has just written (retry overlap), so the alert never promises it stays.
+    expect(errorMessage).not.toMatch(/stays marked/);
+  });
+
+  it("raises nothing when the success recorded no Xero object", async () => {
+    const result = await completeXeroSyncOperation(xeroClaim(OPERATION_ID), { responsePayload: { skipped: true } });
+    expect(result).toMatchObject({ status: "SUCCEEDED", xeroObjectId: null, manuallyResolvedReason: "Raised by hand" });
+    expect(result).not.toHaveProperty("deferredPostCommit");
+    expect(mocks.warn).not.toHaveBeenCalled();
+    expect(mocks.claim).not.toHaveBeenCalled();
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  it("raises nothing on an injected transaction when the success recorded no Xero object", async () => {
+    const result = await completeXeroSyncOperation(xeroClaim(OPERATION_ID), {}, { store: store as never });
+    expect(result?.status).toBe("SUCCEEDED");
+    expect(result).not.toHaveProperty("deferredPostCommit");
+  });
+
+  it("says the credit ledger and Xero may disagree, not that anything was made by hand, on a row the app closed (#4219)", async () => {
+    Object.assign(row, {
+      manuallyResolvedById: null,
+      manuallyResolvedReason: CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON,
+    });
+    await completeXeroSyncOperation(xeroClaim(OPERATION_ID), completion);
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    const { errorMessage } = mocks.send.mock.calls[0]![0] as { errorMessage: string };
+    expect(errorMessage).toMatch(/^The app closed this Xero operation \("Closed: credit used outside the app"\)/);
+    expect(errorMessage).toContain("PAYMENT pay-late");
+    expect(errorMessage).toContain("The credit ledger and Xero may now disagree");
+    expect(errorMessage).not.toMatch(/by hand|twice|void/);
+  });
+
+  it("keeps the made-by-hand wording for an officer's mark that quotes the credit-spent prefix", async () => {
+    // `isClosedByCreditSpentOutsideApp` needs no officer on the mark; an officer's reason alone is still an officer's mark.
+    row.manuallyResolvedReason = CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON;
+    await completeXeroSyncOperation(xeroClaim(OPERATION_ID), completion);
+    const { errorMessage } = mocks.send.mock.calls[0]![0] as { errorMessage: string };
+    expect(errorMessage).toContain("made by hand");
+  });
 
   it("raises nothing for an ordinary success on an unresolved row", async () => {
     row.manuallyResolvedAt = null;
