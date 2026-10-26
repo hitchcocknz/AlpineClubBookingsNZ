@@ -529,6 +529,34 @@ async function cancellationCreditCents(): Promise<number> {
     });
   }, 60_000);
 
+  it("A CORRECTION SYNCED BEFORE A KEPT SETTLE: the settle keeps the stored $300 and recounts the correction after its commit, so the net is the $200 of cash, never $300 (#4095 items 5 and 12)", async () => {
+    await bookAt(30_000);
+    await raiseInvoice();
+    await editPriceTo(20_000);
+    await queueModificationNote(10_000, { noteWording: "invoice-correction" });
+
+    // Synced before the transfer: against an uncaptured receipt it counts nothing.
+    await syncNote(10_000);
+    expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 0, status: "PENDING" });
+
+    // Xero's amount paid reads unquantifiable, so the cash is incomplete and the
+    // settle keeps the stored figure, captured at $300.
+    await paidEffects.syncInternetBankingPaymentsForPaidInvoice(
+      { ...paidInvoice(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] }), amountPaid: "degraded" } as unknown as Invoice,
+      [PAYMENT_ID],
+      CLUB_FORMAT_TEST,
+    );
+    expect(await figures()).toMatchObject({
+      payment: { amountCents: 30_000, refundedAmountCents: 10_000 },
+      primary: { amountCents: 30_000, status: "SUCCEEDED" },
+    });
+    expect(await netCents()).toBe(20_000);
+
+    // The note's own later sync counts it once, not twice.
+    await syncNote(10_000);
+    expect((await figures()).payment).toMatchObject({ amountCents: 30_000, refundedAmountCents: 10_000 });
+  }, 60_000);
+
   it("A NOTE WORDED AS A REFUND still counts as refunded, so the settle keeps the stored figure rather than count the reduction twice", async () => {
     await bookAt(30_000);
     await raiseInvoice();

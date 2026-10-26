@@ -3702,6 +3702,8 @@ _Split from `INV-PAY-057` (#3220)._
   still includes the corrected amount, so the correction keeps counting and the
   net stays the cash. A recount finds a bank-transfer payment's
   modification notes by its invoice, so a later note never drops an earlier one.
+  A kept settle recounts, after its commit, every applied correction already
+  synced, which found no such receipt then (#4095).
 - **The refunded-total repair writes through a claim** on the row it read
   (status, totals, `updatedAt`, which every settle transition touches),
   re-running once from scratch when lost, and never un-refunds a payment whose
@@ -3711,5 +3713,6 @@ _Split from `INV-PAY-057` (#3220)._
   modification refunds.
 - Pinned by `account-credit-modification-notes.test.ts`,
   `xero-credit-note-repairs.test.ts`, `xero-booking-edit-settlement.test.ts`,
-  `xero-repair-known-modification-refund.test.ts` and
+  `xero-repair-known-modification-refund.test.ts`,
+  `kept-settle-correction-recount.test.ts` and
   `ib-settle-from-cash.realdb.test.ts`.

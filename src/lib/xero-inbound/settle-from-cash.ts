@@ -231,6 +231,8 @@ export async function decideInternetBankingReceiptFigure(
    * covers it.
    */
   mixedInvoiceExpectedCents: number | null;
+  /** The invoice-correction notes applied to the invoice, for the recount after a kept settle (#4095). */
+  appliedCorrectionNotes: AppliedCreditNote[];
 }> {
   const { payment } = input;
   const rows = await tx.paymentTransaction.findMany({
@@ -250,6 +252,7 @@ export async function decideInternetBankingReceiptFigure(
   let refundWordedCents = 0;
   let noCashCents = 0;
   let memberCreditCents = 0;
+  const appliedCorrectionNotes: AppliedCreditNote[] = [];
   for (const note of input.invoice.appliedCreditNotes) {
     // The member's own account credit first (#3979 final review): an edit's
     // credit kept as account credit on ANOTHER booking is a modification
@@ -261,6 +264,7 @@ export async function decideInternetBankingReceiptFigure(
     const kind = noteCash.get(note.id);
     if (kind === "refund") refundWordedCents += note.appliedCents;
     else if (kind) noCashCents += note.appliedCents;
+    if (kind === "correction") appliedCorrectionNotes.push(note);
   }
 
   const plan = planInternetBankingCashSettlement({
@@ -291,7 +295,7 @@ export async function decideInternetBankingReceiptFigure(
     input.cash.knownCents > 0 && input.cash.knownCents < expectedCents ? expectedCents : null;
 
   if (plan.kind !== "rewrite") {
-    return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents };
+    return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents, appliedCorrectionNotes };
   }
   const primaryDiffers = uncapturedPrimary.some((row) => row.amountCents !== plan.receiptCents);
   return {
@@ -307,5 +311,6 @@ export async function decideInternetBankingReceiptFigure(
       status: plan.status,
     },
     mixedInvoiceExpectedCents,
+    appliedCorrectionNotes,
   };
 }

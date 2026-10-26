@@ -56,9 +56,11 @@ import {
   retirePendingClearingNote,
 } from "@/lib/invoice-clearing-note-evidence";
 import {
+  type AppliedCreditNote,
   decideInternetBankingReceiptFigure,
   paidInvoiceFacts,
 } from "@/lib/xero-inbound/settle-from-cash";
+import { recountCorrectionsAfterKeptSettle } from "@/lib/xero-inbound/kept-settle-correction-recount";
 import {
   cashSettlementMarkerInTransaction,
   raiseCashSettlementAlert,
@@ -447,8 +449,10 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     // #3979: written inside the transaction, alerted only after it commits.
     // Declared through `as` so the read after the await is not narrowed to null.
     let cashSettlementMarker = null as CashSettlementMarker | null;
+    let keptCorrectionNotes = [] as AppliedCreditNote[];
     const outcome = await prisma.$transaction(async (tx) => {
       cashSettlementMarker = null;
+      keptCorrectionNotes = [];
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
 
       // Pre-lock read: only the lodge key, which is immutable. The booking's
@@ -557,6 +561,7 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
         secondInstrument: secondInstrument !== null,
         invoice: invoiceFacts,
       });
+      if (receiptFigure.plan.kind === "keep") keptCorrectionNotes = receiptFigure.appliedCorrectionNotes;
       const cashSettlementNotice = await readCashSettlementNotice(tx, {
         plan: receiptFigure.plan,
         recordedCents: receiptFigure.receiptCents,
@@ -1413,6 +1418,10 @@ export async function syncInternetBankingPaymentsForPaidInvoice(
     await settleHostingCoverageAfterCommit({
       bookingId: outcome.payment.bookingId,
     });
+
+    // #4095 (`INV-PAY-126`): a kept figure records the receipt at the stored
+    // figure, so a correction already synced against it is recounted now.
+    await recountCorrectionsAfterKeptSettle(invoiceId, keptCorrectionNotes);
 
     // #3979 (`INV-PAY-125`): a kept figure, or cash that disagrees with what
     // the booking owes, is never silent on a booking the settle leaves live:
