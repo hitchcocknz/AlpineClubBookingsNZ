@@ -24,6 +24,7 @@ describe("the demo seed closes every database client it opened (#4412)", () => {
   it("still reaches the application client, so the disconnect is not dead code", () => {
     // If the seed stops reading through `src/lib/prisma`, drop the import and
     // this test together rather than keep a disconnect for a client never used.
-    expect(seed).toMatch(/\bgetClubFormat\(\)/);
+    // The real call, not the comments that name it.
+    expect(seed).toMatch(/=\s*await getClubFormat\(\)/);
   });
 });
