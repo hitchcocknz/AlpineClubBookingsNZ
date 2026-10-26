@@ -35,7 +35,8 @@
  *    on to C (F1); A's stale-tab capture between an unpaid move and its
  *    release takes the invoice back paid (F2); A and B both paid and kept,
  *    both orders - each captured dollar recorded once, the double payment
- *    alerted once (F3).
+ *    alerted once (F3); a carrier whose receipt is still queued gets A's
+ *    invoice unpaid, so its receipt records it rather than standing down (F6).
  *
  * Envelope: identical to `concurrency-lock-races.realdb.test.ts`, which imports
  * this file; the describe runs ONLY when `RUN_CONCURRENCY_RACE_TESTS=1`,
@@ -126,6 +127,8 @@ function deferred() {
       // A capture's receipt is anchored on its ledger row; its payload names the booking.
       await prisma.xeroSyncOperation.deleteMany({ where: { requestPayload: { path: ["bookingId"], equals: BOOKING_ID } } });
       await prisma.xeroObjectLink.deleteMany({ where: { localId: { in: [BOOKING_ID, PAYMENT_ID, ...MODS] } } });
+      // A receipt's payment link is on its ledger row; the fake Xero names its payments.
+      await prisma.xeroObjectLink.deleteMany({ where: { xeroObjectId: { startsWith: "pay_race_3403_" } } });
       await prisma.processedWebhookEvent.deleteMany({ where: { eventId: { startsWith: "evt_race_3403_" } } });
       await prisma.webhookLog.deleteMany({ where: { eventId: { startsWith: "evt_race_3403_" } } });
       await prisma.alertCooldown.deleteMany({ where: { key: { contains: BOOKING_ID } } });
@@ -929,6 +932,67 @@ function deferred() {
         } finally {
           alert.mockRestore();
         }
+      });
+    });
+
+    describe("review 2 (9a0c129d4), F6", () => {
+      it("a carrier with no invoice of its own whose receipt is still queued: the move writes A's invoice unpaid, so B's receipt records B instead of standing down", async () => {
+        await seedPaidBooking();
+        const a = await priceIncrease(MOD_A, A_CENTS);
+        stripe.failCancels = 1;
+        const b = await priceIncrease(MOD_B, B_CENTS, { xeroLeg: false });
+        await payWithCard(b);
+        const [receipt] = await receiptsFor(b);
+        expect(receipt).toMatchObject({ status: "PENDING" });
+
+        // A's cancel lands before the outbox picks B's receipt up: the move onto the captured B.
+        await drainCancels();
+        const invoiceA = await invoiceFor(MOD_A);
+        expect(invoiceA).toMatchObject({ status: "PENDING", waitsOn: b, parkedFrom: a, recordPayment: false });
+        // Unpaid, it is never B's recorder: B's receipt does not stand down to it.
+        const { readCaptureRecorder } = await import("@/lib/additional-capture-recorder");
+        const recorder = await readCaptureRecorder({ bookingId: BOOKING_ID, primaryInvoiceId: "inv_race_3403_primary", paymentIntentId: b, bookingModificationId: MOD_B });
+        expect(recorder).toMatchObject({ kind: "receipt", target: { kind: "CHANGE_INVOICE", operation: { id: invoiceA.id } } });
+
+        // A's invoice reaches Xero (the outbox's create, a seeded fact here), then the receipt
+        // runs through the outbox's claim and the real worker; Xero is a fake.
+        await prisma.xeroSyncOperation.update({ where: { id: invoiceA.id }, data: { status: "SUCCEEDED", completedAt: new Date() } });
+        await prisma.xeroObjectLink.create({
+          data: { localModel: "BookingModification", localId: MOD_A, xeroObjectType: "INVOICE", xeroObjectId: "inv_race_3403_mod_a", role: "SUPPLEMENTARY_INVOICE" },
+        });
+        const [{ claimXeroSyncOperationToRunning }, worker] = await Promise.all([
+          import("@/lib/xero-operation-claim"),
+          import("@/lib/additional-capture-xero-receipt"),
+        ]);
+        expect(await claimXeroSyncOperationToRunning(receipt!.id, { localModel: { in: ["PaymentTransaction"] } })).toBe(true);
+        const sent: Array<{ invoiceId: string; amountCents: number }> = [];
+        await worker.recordAdditionalCaptureReceipt(
+          { syncOperationId: receipt!.id },
+          {
+            getAuthenticatedXeroClient: (async () => ({ xero: {}, tenantId: "tenant_race_3403" })) as never,
+            callXeroApi: (async (_call: unknown, meta: { context: string }) => ({
+              body: {
+                invoices: meta.context.includes("inv_race_3403_mod_a")
+                  ? [{ invoiceID: "inv_race_3403_mod_a", status: "AUTHORISED", amountDue: A_CENTS / 100, payments: [] }]
+                  : [{ invoiceID: "inv_race_3403_primary", status: "AUTHORISED", amountDue: 1_000, payments: [] }],
+              },
+            })) as never,
+            createXeroPaymentForInvoice: async (input: { invoiceId: string; amountCents: number }) => {
+              sent.push({ invoiceId: input.invoiceId, amountCents: input.amountCents });
+              return "pay_race_3403_receipt_b";
+            },
+            readStripeCaptureDocumentDate: async () => null,
+          } as never,
+        );
+
+        // B's capture is recorded once, by its own receipt, against the invoice that bills A's part
+        // of it; no invoice records it. What A's invoice has no room for - B's own change, which
+        // has no invoice - is not guessed onto another document: the receipt tells an officer.
+        expect(await captured(b)).toBe(A_CENTS + B_CENTS);
+        expect(sent).toEqual([{ invoiceId: "inv_race_3403_mod_a", amountCents: A_CENTS }]);
+        expect(await recordersOf(b)).toEqual({ invoicedCents: 0, receipts: 1 });
+        const done = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: receipt!.id }, select: { status: true, responsePayload: true } });
+        expect(done).toMatchObject({ status: "SUCCEEDED", responsePayload: { unrecordedCents: B_CENTS } });
       });
     });
 

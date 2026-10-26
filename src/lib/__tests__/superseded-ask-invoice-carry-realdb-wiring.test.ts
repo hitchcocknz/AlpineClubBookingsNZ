@@ -44,6 +44,7 @@ describe("INV-PAY-140: the superseded-invoice carry proof stays wired into CI (#
       "a move made unpaid by the carrier's own receipt is paid again when A's own capture takes it back",
       "the carrier first: its invoices record all of B; A's own capture is recorded by its own receipt, never stood down",
       "the ask first: A's invoice comes back and records A; B's own invoice records only B's own amount, and an officer is told once that B paid A's change again",
+      "a carrier with no invoice of its own whose receipt is still queued: the move writes A's invoice unpaid, so B's receipt records B instead of standing down",
     ]) {
       expect(suite).toContain(proof);
     }
