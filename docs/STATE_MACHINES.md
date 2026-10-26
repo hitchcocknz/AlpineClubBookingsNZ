@@ -758,7 +758,7 @@ balance of the ask it supersedes.
 
 ```text
 edit raises an ask -> mint the replacement intent
-  -> enqueue CANCEL_PAYMENT_INTENT for every other live ADDITIONAL intent
+  -> enqueue CANCEL_PAYMENT_INTENT for every other live or declined (#4422) ADDITIONAL intent
   -> cancel it SYNCHRONOUSLY, best-effort, BEFORE the new client secret returns
        still cancellable -> transaction FAILED, operation SUCCEEDED
        Stripe already captured it -> handed off to REFUND_SUPERSEDED_PAYMENT
