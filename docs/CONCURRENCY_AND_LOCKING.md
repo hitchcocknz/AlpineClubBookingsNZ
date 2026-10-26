@@ -4083,6 +4083,9 @@ the pre-#4217 code). Now:
   keep or a replay with an applied correction triggers the lock-free inbound
   recount (`repairRefundedPaymentBusinessState`, no note of its own), whose
   claim on the row as read loses to any writer in between; it adds no key.
+  Both run only when exactly one payment matches the invoice
+  (`matchedPayments === 1`): otherwise no payment's share of a correction is
+  known, and neither counts one.
 - A cancellation hand-back's completion decides whether its Xero note stands
   on its own task (#4287, `INV-ADDPAY-043`,
   `cancellationHandBackNotedOnItsOwnRecord`) only after its allocation has
