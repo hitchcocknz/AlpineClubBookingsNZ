@@ -72,7 +72,7 @@ const CHARGE_B_CENTS = 10_000;
 const LEDGER_MIGRATION = "20260509090000_enrich_payment_refund_ledger";
 const CUTOFF_MIGRATION = "20261115010000_card_refund_failed_later_cutoff";
 const LOCK_POLL_TIMEOUT_MS = 5_000;
-const HELD = /failed after the card refund that made it was closed "Paid another way"\. .*settle it with "Paid another way", never with a new refund in the Stripe dashboard\.$/;
+const HELD = /failed after the card refund that made it was closed "Paid another way"\. .*check its record before paying\. .*settle it with "Paid another way", never with a new refund in the Stripe dashboard\. .*ask a developer to reconcile it\.$/;
 
 let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let closeCardRefundPaidAnotherWay: (typeof import("@/lib/card-refund-paid-another-way"))["closeCardRefundPaidAnotherWay"];
@@ -261,11 +261,13 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
       slices,
       idempotencyKey = `booking_cancel_refund_recovery_${BOOKING_ID}`,
       made = false,
+      createdAt = RAISED_AT,
     }: {
       id?: string;
       slices: Array<{ charge: Charge; cents: number }>;
       idempotencyKey?: string;
       made?: boolean;
+      createdAt?: Date;
     }) {
       return prisma.paymentRecoveryOperation.create({
         data: {
@@ -280,7 +282,7 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
           idempotencyKey,
           attempts: made ? 1 : 5,
           nextRetryAt: null,
-          createdAt: RAISED_AT,
+          createdAt,
           succeededAt: made ? new Date((refundCreatedSeconds + 30) * 1000) : null,
         },
       });
@@ -367,6 +369,31 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
     // --------------------------------------------------------------- the bug
 
     describe("closed Paid another way, then its lost card refund recorded late and failed", () => {
+      // #4210 review (C2): the lost-answer shape - Stripe made the refund BEFORE the close, which the app
+      // recorded after it - so the refund fills the closed row's slice (money paid twice).
+      it("made by Stripe before the close and recorded after it: held", async () => {
+        await seedPayment([A]);
+        await seedRefundRow({ slices: [{ charge: A, cents: CHARGE_A_CENTS }] });
+        const frozen = new Date();
+        vi.setSystemTime(new Date((refundCreatedSeconds + 60) * 1000));
+        try {
+          await close(OP_ID, CHARGE_A_CENTS);
+        } finally {
+          vi.setSystemTime(frozen);
+        }
+        const closedRow = await prisma.paymentRecoveryOperation.findUniqueOrThrow({ where: { id: OP_ID } });
+        expect(closedRow.succeededAt!.getTime()).toBeGreaterThan(refundCreatedSeconds * 1000);
+        const late = await stripeRefund("re_race_4210_before_close", A, CHARGE_A_CENTS, "pending");
+        await syncCharge(A, [late]);
+        await deliverRefusal(late);
+
+        const raised = await raisedRows();
+        expect(raised).toEqual([heldRow(late.id, CHARGE_A_CENTS)]);
+        expect(alerts()).toEqual([expect.stringMatching(HELD)]);
+        await expectNeverResent(raised[0]!.id);
+        expect(await owedNow()).toBe(0);
+      });
+
       it.each([
         ["pending", "failed"],
         ["succeeded", "failed"],
@@ -400,7 +427,7 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
         await expectNeverResent(raised[0]!.id);
       });
 
-      it("part close ($120 of $200): held, and Refunds owed reads what the payment still holds - closable by the officer's existing door", async () => {
+      it("part close ($120 of $200): held; Refunds owed reads the $80 the close recorded as no longer owed, which its record shows the officer", async () => {
         await seedPayment([A]);
         await seedRefundRow({ slices: [{ charge: A, cents: CHARGE_A_CENTS }] });
         await close(OP_ID, 12_000, CHARGE_A_CENTS);
@@ -414,12 +441,13 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
         await expectNeverResent(raised[0]!.id);
         // Counted as every dead row is, capped at what the payment still holds: the $80 the close left.
         expect(await owedNow()).toBe(8_000);
-        // Listed for the officer under "Card refunds Stripe gave up on", and settled there.
+        // Listed for the officer under "Card refunds Stripe gave up on". The figure is what the part close
+        // recorded as no longer owed - its record says so - so the alert says to check that record before paying.
         expect((await listDeadCardRefunds()).filter((row) => row.bookingId === BOOKING_ID)).toEqual([
           expect.objectContaining({ operationId: raised[0]!.id, owedCents: 8_000, stripeMayHaveRefunded: false }),
         ]);
-        await close(raised[0]!.id, 8_000);
-        expect(await owedNow()).toBe(0);
+        const record = await prisma.manualRefundTask.findFirstOrThrow({ where: { bookingId: BOOKING_ID, occurrenceKey: { startsWith: "card-refund-paid-another-way:" } } });
+        expect(record).toMatchObject({ amountCents: 12_000, raisedAmountCents: CHARGE_A_CENTS });
         expect(asked).toEqual([]);
       });
 
@@ -473,6 +501,26 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
         expect(await owedNow()).toBe(CHARGE_A_CENTS);
         expect(await runPaymentRecoveryOperationNow(raised[0]!.id, CLUB_FORMAT_TEST)).toBe("succeeded");
         expect(asked).toEqual([{ idempotencyKey: `${failedLaterKey(made.id)}_${TXN_A}_${CHARGE_A_CENTS}`, amountCents: CHARGE_A_CENTS }]);
+      });
+
+      // #4210 review (F1): two edits of one reason send the same metadata, and an edit door raises its row only
+      // after its inline attempt throws - so neither row fills a slice with the refund the first one lost.
+      it("two rows send what it carries and it fills neither: the closed one still holds it", async () => {
+        await seedPayment([A, B]);
+        const after = new Date((refundCreatedSeconds + 120) * 1000);
+        await seedRefundRow({ slices: [{ charge: A, cents: CHARGE_A_CENTS }], idempotencyKey: `race_4210_edit_1_${BOOKING_ID}`, createdAt: after });
+        await seedRefundRow({ id: OP2_ID, slices: [{ charge: B, cents: CHARGE_B_CENTS }], idempotencyKey: `race_4210_edit_2_${BOOKING_ID}`, createdAt: after, made: true });
+        await close(OP_ID, CHARGE_A_CENTS);
+        const lost = await stripeRefund("re_race_4210_two_senders", A, CHARGE_A_CENTS, "pending");
+        // Both rows' runners send exactly this metadata.
+        expect(lost.metadata).toEqual(await stripeRefund("re_race_4210_two_senders", A, CHARGE_A_CENTS, "pending", OP2_ID).then((refund) => refund.metadata));
+        await syncCharge(A, [lost]);
+        await deliverRefusal(lost);
+
+        const raised = await raisedRows();
+        expect(raised).toEqual([heldRow(lost.id, CHARGE_A_CENTS)]);
+        expect(alerts()).toEqual([expect.stringMatching(HELD)]);
+        await expectNeverResent(raised[0]!.id);
       });
 
       it("a close on ANOTHER row of the same payment holds nothing: that close settled only its own row", async () => {

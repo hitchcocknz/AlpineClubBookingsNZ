@@ -302,6 +302,20 @@ export const CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE = {
 } as const;
 
 /**
+ * #4210 review (C3, `INV-SSOT`): THE COMPLETED PAID-ANOTHER-WAY CLOSE RECORDS OF
+ * THESE CARD REFUND ROWS, as a `ManualRefundTask` where clause - the records
+ * above (`CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE`) keyed on any of the rows,
+ * by every key a close of one can carry (`closeKeysOf`). The one composition
+ * every reader of "was this row closed Paid another way" asks.
+ */
+export function cardRefundPaidAnotherWayClosesWhere(paymentRecoveryOperationIds: Iterable<string>) {
+  return {
+    ...CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE,
+    occurrenceKey: { in: [...paymentRecoveryOperationIds].flatMap(closeKeysOf) },
+  };
+}
+
+/**
  * #3827 (`INV-PAY-117`): IS THIS TASK AN EDIT REFUND HAND-BACK? It is a
  * `CANCELLED_BOOKING_HAND_BACK` — reused rather than a new label for the reason
  * #3639 and #3643 give: the previous app version cannot read a label it does

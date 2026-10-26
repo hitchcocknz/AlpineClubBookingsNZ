@@ -22,7 +22,11 @@ import {
   type FailedLaterRefundInput,
 } from "@/lib/card-refund-failed-later";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
-import { bookingModificationRefundReasonForKeyPrefix, SUPERSEDED_PAYMENT_REFUND_METADATA_REASON } from "@/lib/payment-recovery-keys";
+import {
+  bookingModificationRefundReasonForKeyPrefix,
+  cardRefundOperationRefundMetadata,
+  SUPERSEDED_PAYMENT_REFUND_METADATA_REASON,
+} from "@/lib/payment-recovery-keys";
 
 const RAISED_AT = new Date("2026-06-20T00:00:00.000Z");
 const REFUNDED_AT = new Date("2026-06-20T00:00:05.000Z");
@@ -72,6 +76,8 @@ function fakeTx({
   cutoff = null as Date | null,
   recordedStatus = "failed",
   closes = 0,
+  /** #4210 review: the rows a completed close is keyed on; when given, the count answers by the keys asked. */
+  closedRowIds = null as string[] | null,
 } = {}) {
   return {
     $queryRaw: vi.fn(async (strings: TemplateStringsArray) =>
@@ -87,7 +93,13 @@ function fakeTx({
     },
     paymentTransaction: { findUnique: vi.fn(async () => ({ stripePaymentIntentId: transactionIntent })) },
     // #4210: the completed "Paid another way" close records keyed on the rows asked about.
-    manualRefundTask: { count: vi.fn<(args: unknown) => Promise<number>>(async () => closes) },
+    manualRefundTask: {
+      count: vi.fn<(args: unknown) => Promise<number>>(async (args) => {
+        if (!closedRowIds) return closes;
+        const asked = (args as { where: { occurrenceKey: { in: string[] } } }).where.occurrenceKey.in;
+        return closedRowIds.filter((id) => asked.includes(`card-refund-paid-another-way:${id}`)).length;
+      }),
+    },
     auditLog: { create: vi.fn<(args: unknown) => Promise<object>>(async () => ({})) },
     paymentRecoveryOperation: {
       findMany: vi.fn(async () => rows),
@@ -404,7 +416,7 @@ describe("the officers' alert", () => {
     ["raised-dead", /will not be asked for again automatically: pay the member another way and close it under "Card refunds Stripe gave up on"/],
     ["raised-backlog", /before this release .* check whether the member has already been paid back, and close it under "Card refunds Stripe gave up on"/],
     // #4210 (#4361 decision 7): settle it with Paid another way, never a new dashboard refund.
-    ["raised-after-paid-another-way", /\$40\.00 failed after the card refund that made it was closed "Paid another way"\. .*not asked for again automatically\. Check whether the member is still owed anything\. .*settle it with "Paid another way", never with a new refund in the Stripe dashboard\.$/],
+    ["raised-after-paid-another-way", /\$40\.00 failed after the card refund that made it was closed "Paid another way"\. .*not asked for again automatically\. Check whether the member is still owed anything: after a part close the figure can include what that close recorded as no longer owed, so check its record before paying\. .*settle it with "Paid another way", never with a new refund in the Stripe dashboard\. If nothing is left owed, there is nothing to close there: ask a developer to reconcile it\.$/],
     // #4104 review (D2): which refund, and what to do about it.
     ["not-resent", /card refund re_1 of \$40\.00 .*did not make it for this booking .* not asked for again .*refund them again there or pay them another way\. Raise no refund note for it in Xero: the card refund credit note raised while Stripe counted it, if there is one, already records it/],
   ] as const)("says what a %s decision means, once", async (outcome, words) => {
@@ -520,7 +532,7 @@ describe("#4210: held for an officer when the row that made it was closed Paid a
       debt: { outcome: "raised-after-paid-another-way", operationId: "op-new", bookingId: "booking-1", paymentIntentId: "pi_1", amountCents: 4_000, stripeRefundId: "re_1" },
     });
     expect(inserted(tx)).toMatchObject({ status: "PENDING", idempotencyKey: "card_refund_failed_later_re_1", amountCents: 4_000, attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS });
-    expect(String(inserted(tx)?.lastError)).toMatch(/closed "Paid another way".*settle it with "Paid another way", never with a new refund in the Stripe dashboard \(#4210\)/);
+    expect(String(inserted(tx)?.lastError)).toMatch(/closed "Paid another way".*settle it with "Paid another way", never with a new refund in the Stripe dashboard\. .*ask a developer to reconcile it \(#4210\)/);
     // Stripe sent nothing for it: the held row carries no "Stripe may have refunded" warning.
     expect(lastErrorSuggestsStripeMayHaveRefunded(String(inserted(tx)?.lastError))).toBe(false);
   });
@@ -569,6 +581,33 @@ describe("#4210: held for an officer when the row that made it was closed Paid a
     const tx = fakeTx({ rows: [closedRow()], closes: 1 });
     expect(await keep(tx, { ...REFUND, metadata: {} })).toMatchObject({ debt: { outcome: "not-resent" } });
     expect(tx.manualRefundTask.count).not.toHaveBeenCalled();
+  });
+
+  // #4210 review (F1): two edits of one reason send the same metadata, and an edit door raises its row only
+  // after its inline attempt throws - so neither row can fill a slice with a refund made before it.
+  it("MUTATION (F1): two rows send what it carries and it fills neither: the closed one still holds it", async () => {
+    const AFTER = new Date("2026-06-20T00:00:20.000Z");
+    const edit = (id: string, key: string, over: Partial<Row> = {}) => row({ id, idempotencyKey: key, createdAt: AFTER, ...over });
+    const r1 = edit("op-r1", "payment_recovery_modification_refund_mod-1", { status: "SUCCEEDED", attempts: 5, nextRetryAt: null, succeededAt: new Date("2026-06-20T00:00:30.000Z") });
+    const r2 = edit("op-r2", "payment_recovery_modification_refund_mod-2", { status: "SUCCEEDED", attempts: 1, nextRetryAt: null, succeededAt: new Date("2026-06-20T00:00:40.000Z") });
+    const metadata = cardRefundOperationRefundMetadata(r1);
+    expect(cardRefundOperationRefundMetadata(r2)).toEqual(metadata);
+    const tx = fakeTx({ rows: [r1, r2], closedRowIds: ["op-r1"] });
+    expect(await keep(tx, { ...REFUND, metadata })).toMatchObject({ debt: { outcome: "raised-after-paid-another-way" } });
+    expect(inserted(tx)).toMatchObject({ attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, allocationPlan: [expect.objectContaining({ madeByOperationId: null })] });
+    // With no close on either, unchanged: live.
+    const open = fakeTx({ rows: [r1, r2], closedRowIds: [] });
+    expect(await keep(open, { ...REFUND, metadata })).toMatchObject({ debt: { outcome: "raised" } });
+  });
+
+  it("MUTATION (C2): recorded after the close, it fills no slice: held through the row that sent it", async () => {
+    const tx = fakeTx({ rows: [closedRow()], closedRowIds: ["op-cancel"] });
+    const LATER = new Date("2026-06-20T00:01:00.000Z");
+    tx.paymentRefund.findMany = vi.fn(async () => [
+      { stripeRefundId: "re_1", paymentTransactionId: "txn-1", amountCents: 4_000, status: "failed", createdAt: LATER, stripeCreatedAt: LATER },
+    ]);
+    expect(await keep(tx)).toMatchObject({ debt: { outcome: "raised-after-paid-another-way" } });
+    expect(inserted(tx)).toMatchObject({ attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS });
   });
 
   it("a second observer of the same refund writes nothing, so nothing is alerted twice", async () => {
