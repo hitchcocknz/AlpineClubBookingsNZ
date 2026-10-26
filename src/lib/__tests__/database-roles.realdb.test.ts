@@ -50,7 +50,7 @@ const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 const REPO_ROOT = process.cwd();
 const INSUFFICIENT_PRIVILEGE = "42501";
-const FOREIGN_KEY_VIOLATION = "23503";
+const RESTRICT_VIOLATION = "23001";
 const CHECK_VIOLATION = "23514";
 
 const PREFIX = `tac_test_4453_${randomBytes(3).toString("hex")}`;
@@ -504,29 +504,16 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
         expect(unchanged.rows).toEqual([{ narration: "Adjustment agreed with member: roles test" }]);
       });
 
-      it("cannot rewrite a ledger line through its parent's key: both keys are ON UPDATE RESTRICT (S-F1)", async () => {
+      it("cannot rewrite a ledger line through its parent's key: the key-change triggers refuse it (S-F1)", async () => {
         await withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
-          // PostgreSQL reports a RESTRICT action as a foreign-key violation (23503)
-          // naming the key, so the key is what is asserted.
-          const refusedBy = async (sql: string, value: string) => {
-            await client.query("SAVEPOINT parent_key");
-            try {
-              await client.query(sql, [value]);
-              return "ok";
-            } catch (error) {
-              const { code, constraint } = error as { code?: string; constraint?: string };
-              return `${code}:${constraint}`;
-            } finally {
-              await client.query("ROLLBACK TO SAVEPOINT parent_key");
-            }
-          };
+          // The trigger raises restrict_violation (23001) before any referential
+          // action; a foreign-key violation (23503) would mean the key, not the
+          // trigger, refused it.
           await client.query("BEGIN");
-          expect(await refusedBy(`UPDATE "Booking" SET "id" = 'tac4453-renamed' WHERE "id" = $1`, bookingId)).toBe(
-            `${FOREIGN_KEY_VIOLATION}:BookingLedgerLine_bookingId_fkey`,
-          );
-          expect(await refusedBy(`UPDATE "Lodge" SET "id" = 'tac4453-renamed' WHERE "id" = $1`, lodgeId)).toBe(
-            `${FOREIGN_KEY_VIOLATION}:BookingLedgerLine_lodgeId_fkey`,
-          );
+          expect(await sqlstate(client, `UPDATE "Booking" SET "id" = 'tac4453-renamed' WHERE "id" = $1`, [bookingId])).toBe(RESTRICT_VIOLATION);
+          expect(await sqlstate(client, `UPDATE "Lodge" SET "id" = 'tac4453-renamed' WHERE "id" = $1`, [lodgeId])).toBe(RESTRICT_VIOLATION);
+          // Writing the same key back is no change, so ordinary updates are untouched.
+          expect(await sqlstate(client, `UPDATE "Booking" SET "id" = "id" WHERE "id" = $1`, [bookingId])).toBe("ok");
           await client.query("ROLLBACK");
         });
         const lines = await appPrisma.bookingLedgerLine.findMany({ where: { id: ledgerLineId }, select: { bookingId: true, lodgeId: true } });

@@ -48,11 +48,11 @@ backup restore-validation.
 
 With the split, a leaked application credential or an injected query cannot UPDATE a
 ledger line or an audit row by any route. Views over them are read-only,
-`SECURITY DEFINER` routines are refused, and the ledger's foreign keys refuse a
-parent-key change. It also cannot truncate a table, change the schema, or run a
+`SECURITY DEFINER` routines are refused, and a trigger refuses any change to a
+booking's or lodge's key. It also cannot truncate a table, change the schema, or run a
 superuser-only statement. **It can still delete a booking, and deleting a booking
 deletes that booking's ledger lines** through the foreign key's `ON DELETE CASCADE`.
-That route is documented, not closed. `src/lib/__tests__/database-roles.realdb.test.ts`
+That route is documented, not closed (#4482). `src/lib/__tests__/database-roles.realdb.test.ts`
 proves all of this against PostgreSQL, in a required CI job.
 
 To switch, follow [`DEPLOYMENT.md` → "Least-privilege database roles"](DEPLOYMENT.md#least-privilege-database-roles).

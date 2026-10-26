@@ -131,8 +131,8 @@ append-only row, alter or drop a table, `SET ROLE`, or run superuser-only
 statements. It cannot reach a ledger line or audit row by another route either:
 - a view or rule over them is SELECT-only;
 - a `SECURITY DEFINER` routine is refused;
-- changing a booking's or a lodge's key is refused (the ledger's foreign keys are
-  `ON UPDATE RESTRICT`).
+- changing a booking's or a lodge's key is refused (a trigger on each parent,
+  so the foreign keys' `ON UPDATE CASCADE` can never fire).
 
 `src/lib/__tests__/database-roles.realdb.test.ts` proves each of these against
 PostgreSQL. The AI Diagnostics role (ADR-007) and the audit archive database's
@@ -141,7 +141,7 @@ role are separate and unchanged.
 **Deleting a booking still deletes its ledger lines.** `BookingLedgerLine.bookingId`
 is `ON DELETE CASCADE`, and a cascade runs with the table owner's rights, not the
 application's. That is how booking deletion works today. Whether it should change
-belongs to the ledger design, not to these grants.
+belongs to the ledger design, not to these grants; #4482 tracks it.
 
 ### Switching a deployment over (blue/green)
 

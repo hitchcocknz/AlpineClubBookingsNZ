@@ -149,14 +149,15 @@ an UPDATE, DELETE, TRUNCATE, `INSERT … ON CONFLICT DO UPDATE` or
 the code path (`database-roles.realdb.test.ts`). The other routes are closed too:
 - views over the table are SELECT-only for the application;
 - `SECURITY DEFINER` routines are refused;
-- both foreign keys are `ON UPDATE RESTRICT`
-  (`20261125010000_restrict_booking_ledger_key_updates`), so changing a booking's
-  or lodge's key cannot rewrite `bookingId` or `lodgeId`.
+- a booking's or lodge's key cannot be changed at all: a `BEFORE UPDATE OF "id"`
+  trigger on each parent raises `restrict_violation`
+  (`20261125010000_restrict_booking_ledger_key_updates`), so the foreign keys'
+  `ON UPDATE CASCADE` never rewrites `bookingId` or `lodgeId`.
 
 Two things the grant does not cover. Migrations run as the role that owns the
 table. And `bookingId`'s `ON DELETE CASCADE` runs with the owner's rights, so
 **deleting a booking still removes its lines**. That is booking deletion's
-behaviour, and whether it should change belongs to this design, not to the grant.
+behaviour, and whether it should change belongs to this design, not to the grant (#4482).
 
 ### 4.1 Derived quantities, and the one place they are derived
 

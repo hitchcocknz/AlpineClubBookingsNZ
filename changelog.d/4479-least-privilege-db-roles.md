@@ -30,9 +30,9 @@
   give the steps.
 
   Every club gets three smaller changes:
-  - The ledger now refuses a change to a booking's or a lodge's key while a
-    ledger line names it. Nothing in the system makes such a change. This
-    release's deploy needs the reviewed-breaking-migration override.
+  - The database now refuses any change to a booking's or a lodge's key, which
+    a ledger line could be named by. Nothing in the system makes such a change,
+    and the release deploys normally.
   - The nightly backup check, which restores each backup into a spare database,
     no longer needs an administrator account. It also now refuses a spare
     database that is really the live one under another name.

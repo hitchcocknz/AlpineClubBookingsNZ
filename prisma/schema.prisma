@@ -8652,13 +8652,13 @@ model BookingLedgerLine {
 
   lodgeId String @default(dbgenerated("default_lodge_id()"))
 
-  booking    Booking            @relation(fields: [bookingId], references: [id], onDelete: Cascade, onUpdate: Restrict)
+  booking    Booking            @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   /// `Restrict`, not `SetNull`: deleting a line is already forbidden, and a
   /// cascade that blanked another line's pointer would be that forbidden
   /// mutation arriving through the database instead of through code.
   reverses   BookingLedgerLine? @relation("BookingLedgerReversal", fields: [reversesLineId], references: [id], onDelete: Restrict)
   reversedBy BookingLedgerLine? @relation("BookingLedgerReversal")
-  lodge      Lodge              @relation(fields: [lodgeId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  lodge      Lodge              @relation(fields: [lodgeId], references: [id], onDelete: Restrict)
 
   @@index([bookingId, postedAt])
   @@index([anchorKind, anchorId])

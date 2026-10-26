@@ -18,12 +18,12 @@
  * WHAT "APPEND-ONLY" MEANS HERE, exactly. No statement the application role
  * runs can UPDATE a ledger line or an audit row, and no route can either: not a
  * view or rule over them (the re-check below refuses one), not a SECURITY
- * DEFINER routine (refused unless allow-listed), and not a parent-key UPDATE (the
- * ledger's foreign keys are `ON UPDATE RESTRICT`, migration
+ * DEFINER routine (refused unless allow-listed), and not a parent-key UPDATE (a
+ * trigger on "Booking" and "Lodge" refuses any key change, migration
  * `20261125010000_restrict_booking_ledger_key_updates`). ONE route deletes ledger
  * lines on purpose: deleting a booking removes its lines through
  * `BookingLedgerLine.bookingId`'s `ON DELETE CASCADE`, which runs with the table
- * owner's rights. Whether that should change belongs to the ledger design, not to
+ * owner's rights. Whether that should change belongs to the ledger design (#4482), not to
  * this grant.
  *
  * plus a fourth, narrow AUDIT-RETENTION role for the one job that must change

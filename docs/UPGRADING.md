@@ -123,15 +123,12 @@ as a red flag and check the release notes before deploying.
 
 **What changes for everyone.** Two small migrations, plus one behaviour change in backups.
 
-- **`20261125010000_restrict_booking_ledger_key_updates`** makes the booking ledger's
-  two foreign keys `ON UPDATE RESTRICT`, so a booking's or a lodge's key cannot be
-  changed while a ledger line names it. Nothing in the system ever changes those
-  keys.
-  - **Deploy:** this migration drops and re-adds each key, so the deploy guard
-    classifies it as breaking. Run this release with
-    `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1` and a reason. First check that each
-    breaking line the guard prints names a reviewed `yes` row in
-    `docs/BLUE_GREEN_MIGRATION_SAFETY.tsv`.
+- **`20261125010000_restrict_booking_ledger_key_updates`** adds a trigger to
+  `Booking` and to `Lodge` that refuses any change to a row's key, so a key change
+  can never rewrite the ledger lines that name it. Nothing in the system ever
+  changes those keys. The foreign keys are unchanged. It deploys in the normal
+  window with no override: creating each trigger briefly holds back writes to
+  that table, and reads carry on.
 - **`20261125020000_audit_request_data_update_only_clears`** adds a trigger to
   `AuditLog`: an update may clear an entry's IP address or browser details, but never
   set them. Only the nightly anonymisation updates them, and it clears them.
