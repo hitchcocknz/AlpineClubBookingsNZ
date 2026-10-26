@@ -2426,6 +2426,14 @@ or deallocation cannot be resolved at all, because a hand fix in Xero does not
 bring the club's own credit ledger back in line; retry it instead. One marked
 resolved before this release can still be retried.
 
+A Xero call already under way can still succeed after you resolve (#4374,
+`INV-INT-029`): two attempts can share one operation, and one may answer late.
+The operation then shows as succeeded, stays marked resolved, and the finance
+contacts get one **Xero Sync Error** email for it
+(`XERO_SUCCESS_AFTER_RESOLUTION`) naming what the app recorded in Xero. If you
+also made that document by hand, Xero now holds it twice: void the duplicate
+in Xero.
+
 There is no undo on the panel. If you marked one by mistake, fix the Xero side
 by hand, or use **Targeted force sync** for that one booking's invoice: it
 raises the invoice anyway, and its audit entry records that it overrode the

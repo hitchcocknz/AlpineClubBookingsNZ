@@ -3785,7 +3785,8 @@ two callers on one row (the hand-off above) each record their own outcome of
   the same keyed Xero call (#4356, INV-INT-029): an outcome never replaces a
   better one. A failure, or a FAILED or CANCELLED completion, never lands on
   SUCCEEDED or PARTIAL; PARTIAL never lands on SUCCEEDED; SUCCEEDED lands on
-  any row no claim holds. None but SUCCEEDED lands on a repair's marked
+  any row no claim holds, one resolved in Xero included: it keeps the mark and
+  links, and alerts the officers once per operation after commit (#4374). None but SUCCEEDED lands on a repair's marked
   RUNNING claim unless written onto that claim. Every outcome carries the
   claim it was made under (its RUNNING row's `startedAt`, #4373), and none, a
   success included, lands on a RUNNING row another claim holds: a stale-reset

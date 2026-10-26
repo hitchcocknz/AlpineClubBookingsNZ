@@ -1638,6 +1638,21 @@ on `manuallyResolvedAt`.
   missing-invoices list behind **Queue all** leaves those out. Single-booking
   force-sync is the one override: it passes `overrideResolvedInXero`, and its
   audit row names the operation whose mark it overrode.
+- **A late success still lands (#4374, `INV-INT-029`).** A caller sharing the
+  row (#1354) whose own Xero call succeeds after the mark still records its
+  success: the status-guarded write lands on the resolved FAILED or PARTIAL
+  row, keeps the mark, and records its links, which are real Xero objects.
+  The row is read back in the same transaction, under the write's row lock,
+  and when it is SUCCEEDED and `isResolvedInXero`, a warning is logged and the
+  officers get one **Xero Sync Error** alert per operation (`XERO_SUCCESS_AFTER_RESOLUTION`,
+  `sendAdminAlertOnceEver`, key `xero-success-after-resolution:<operation id>`),
+  after commit and outside any transaction
+  (`xero-success-after-resolution-alert.ts`). A caller that hands
+  `completeXeroSyncOperation` its own transaction (`store`) gets the alert back
+  as `deferredPostCommit` and runs it after its commit; a rollback sends
+  nothing. The member-contact completions do this; the only other such caller
+  writes CANCELLED. `xero-success-after-resolution-alert.test.ts` pins the
+  callers.
 - **A refund note resolved by hand names its note (#4421, owner decision
   26 Oct 2026, `INV-INT-028`).** On a FAILED payment refund-note create that
   names no note of its own and counts as its own refund's
