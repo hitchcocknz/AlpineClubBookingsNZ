@@ -217,7 +217,7 @@ describe("processCreditReleaseAskOperation", () => {
     const deps = runnerDeps();
     const read = vi.fn().mockRejectedValue(new Error("Xero unavailable"));
     // Never a throw (which would spend an attempt and, five times over, make the row terminal).
-    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), read)).resolves.toBeUndefined();
+    await expect(processCreditReleaseAskOperation(operation, CLUB_FORMAT_TEST, asDeps(deps), read)).resolves.toBe("waited");
     expect(read).not.toHaveBeenCalled();
     expect(deps.wait).toHaveBeenCalledWith(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
   });

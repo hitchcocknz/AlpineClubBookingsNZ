@@ -377,6 +377,7 @@ vi.mock("@/lib/credit-release-ask", () => ({
   processCreditReleaseAskOperation: vi.fn(
     async (operation: unknown, _format: unknown, deps: { wait: (op: unknown, message: string) => Promise<unknown> }) => {
       await deps.wait(operation, "An unpaid edit request is open on this booking");
+      return "waited" as const;
     },
   ),
 }));
@@ -820,7 +821,9 @@ describe("payment recovery worker", () => {
     );
     const before = Date.now();
 
-    await processPaymentRecoveryOperations({ limit: 1 });
+    const result = await processPaymentRecoveryOperations({ limit: 1 });
+    // A wait is a retry in the run's summary, never a completion.
+    expect(result).toMatchObject({ processed: 1, succeeded: 0, retried: 1, failed: 0 });
 
     const waitWrite = mockPaymentRecoveryUpdateMany.mock.calls
       .map(([args]) => args as { where: Record<string, unknown>; data: Record<string, unknown> })

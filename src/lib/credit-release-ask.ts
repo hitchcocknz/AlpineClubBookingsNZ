@@ -157,7 +157,7 @@ export async function processCreditReleaseAskOperation(
   format: ClubFormat,
   deps: CreditReleaseAskRunnerDeps,
   readInvoiceBalance: XeroInvoiceBalanceReader = readXeroInvoiceBalance,
-): Promise<void> {
+): Promise<"waited" | void> {
   const releaseId = creditReleaseIdForAskRecoveryKey(operation.idempotencyKey);
   if (!releaseId) throw new Error(`Credit-release ask ${operation.id} has no release id in its key`);
 
@@ -228,7 +228,8 @@ export async function processCreditReleaseAskOperation(
       });
       logger.info({ operationId: operation.id, bookingId: operation.bookingId }, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
       await deps.wait(operation, CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE);
-      return;
+      // Not a completion: the runner counts it as a retry, not a success.
+      return "waited";
     }
   }
 

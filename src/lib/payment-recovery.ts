@@ -2470,7 +2470,7 @@ async function holdAdditionalIntentRecoveryClaim<T>(
 async function processCreateAdditionalPaymentIntentOperation(
   operation: PaymentRecoveryOperation,
   format: ClubFormat,
-) {
+): Promise<PaymentRecoveryProcessOutcome> {
   /**
    * #3170 (epic #2797): the `BookingModification` this operation belongs to, read
    * back through the ONE parser rather than by slicing a prefix off the key
@@ -2488,12 +2488,12 @@ async function processCreateAdditionalPaymentIntentOperation(
    */
   if (isCreditReleaseAskRecoveryKey(operation.idempotencyKey)) {
     const { processCreditReleaseAskOperation } = await import("@/lib/credit-release-ask");
-    await processCreditReleaseAskOperation(operation, format, {
+    const answer = await processCreditReleaseAskOperation(operation, format, {
       holdClaim: holdAdditionalIntentRecoveryClaim,
       complete: (operationId) => completePaymentRecoveryOperation(operationId),
       wait: (waiting, message) => waitPaymentRecoveryOperation(waiting, message, format),
     });
-    return;
+    return answer === "waited" ? "waited" : "done";
   }
 
   const bookingModificationId =
@@ -2552,7 +2552,7 @@ async function processCreateAdditionalPaymentIntentOperation(
     // nobody can pay (#4272). Its uncollected shares are recorded and the row closed instead.
     const { closeCancelledEditReviewChargeReplay } = await import("@/lib/edit-financial-review-charge-cancelled");
     const cancelledReplay = { format, operation, bookingModificationId, memberId: bookingOwner(booking).member.id ?? null };
-    if (await closeCancelledEditReviewChargeReplay({ ...cancelledReplay, status: booking.status })) return;
+    if (await closeCancelledEditReviewChargeReplay({ ...cancelledReplay, status: booking.status })) return "done";
     const synced = await syncEditFinancialReviewChargeRequest({
       format,
       bookingId: operation.bookingId,
@@ -2763,14 +2763,14 @@ async function processCreateAdditionalPaymentIntentOperation(
      * one debt is a second debt.
      */
     // #4272: a cancellation landing mid-replay takes the cancelled path, not a retry.
-    if (synced.outcome === "not-raised" && (await closeCancelledEditReviewChargeReplay(cancelledReplay))) return;
+    if (synced.outcome === "not-raised" && (await closeCancelledEditReviewChargeReplay(cancelledReplay))) return "done";
     if (!EDIT_REVIEW_CHARGE_OUTCOME_CLOSES_REPLAY[synced.outcome]) {
       throw new Error(
         `Edit financial review charge request for booking modification ${bookingModificationId} was not raised (${formatCents(synced.totalCents, format)} still owed); leaving the recovery operation open to retry`,
       );
     }
     await completeEditFinancialReviewChargeRecovery(operation);
-    return;
+    return "done";
   }
 
   const payment = await prisma.payment.findUnique({
@@ -2834,7 +2834,7 @@ async function processCreateAdditionalPaymentIntentOperation(
   if (await guard.bookingEndedBeforeAskMint(operation.bookingId, bookingModificationId)) {
     await guard.retireOutstandingAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId });
     await completePaymentRecoveryOperation(operation.id);
-    return;
+    return "done";
   }
 
   /**
@@ -2956,10 +2956,10 @@ async function processCreateAdditionalPaymentIntentOperation(
         "Additional intent recovery found its own row already withdrawn by a price reduction (#4442); no supplementary invoice queued for it",
       );
       await completePaymentRecoveryOperation(operation.id);
-      return;
+      return "done";
     }
     await finishRecoveredAsk(ownRow.stripePaymentIntentId, operation.processingStartedAt);
-    return;
+    return "done";
   }
 
   // A later edit already created a fresh additional intent: it superseded
@@ -2974,7 +2974,7 @@ async function processCreateAdditionalPaymentIntentOperation(
     operation.amountCents <= 0
   ) {
     await completePaymentRecoveryOperation(operation.id);
-    return;
+    return "done";
   }
 
   // #3954 round 7: one resolution, shared with the door's re-issue mint, so
@@ -3151,7 +3151,7 @@ async function processCreateAdditionalPaymentIntentOperation(
       { operationId: operation.id, bookingId: operation.bookingId, paymentIntentId: pi.id },
       "Additional intent recovery lost its claim before writing its row (a price reduction netted it off, #3954); nothing written - the minted intent was never offered to anyone and is left uncollectable",
     );
-    return;
+    return "done";
   }
   await cancelSupersededAdditionalIntentsNow({
     format,
@@ -3165,19 +3165,26 @@ async function processCreateAdditionalPaymentIntentOperation(
   // cancel retires one (a failure throws, to retry), the debt closes - no invoice is owed.
   if (await guard.replayRetiresAskOnEndedBooking({ format, bookingId: operation.bookingId, paymentId: operation.paymentId, paymentIntentId: pi.id })) {
     await completePaymentRecoveryOperation(operation.id);
-    return;
+    return "done";
   }
 
   await finishRecoveredAsk(pi.id, held.heldAt);
+  return "done";
 }
+
+/**
+ * What one processed operation came to: `done`, or `waited` when it was put back to wait
+ * (`waitPaymentRecoveryOperation`, #4253) - which the run counts as a retry, never a success.
+ */
+type PaymentRecoveryProcessOutcome = "done" | "waited";
 
 async function processPaymentRecoveryOperation(
   operation: PaymentRecoveryOperation,
   format: ClubFormat,
-) {
+): Promise<PaymentRecoveryProcessOutcome> {
   if (operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT) {
     await processCancelPaymentIntentOperation(operation);
-    return;
+    return "done";
   }
 
   if (
@@ -3185,22 +3192,21 @@ async function processPaymentRecoveryOperation(
     PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION
   ) {
     await processBookingModificationRefundOperation(operation, format);
-    return;
+    return "done";
   }
 
   if (
     operation.type ===
     PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT
   ) {
-    await processCreateAdditionalPaymentIntentOperation(operation, format);
-    return;
+    return processCreateAdditionalPaymentIntentOperation(operation, format);
   }
 
   if (
     operation.type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT
   ) {
     await processRefundSupersededPaymentOperation(operation, format);
-    return;
+    return "done";
   }
 
   // #2262: the dispatch is EXHAUSTIVE, never a fall-through. The final arm
@@ -3412,8 +3418,9 @@ export async function processPaymentRecoveryOperations(options?: {
     result.processed += 1;
 
     try {
-      await processPaymentRecoveryOperation(operation, format);
-      result.succeeded += 1;
+      // #4253: an operation put back to wait is a retry, never a completion.
+      if ((await processPaymentRecoveryOperation(operation, format)) === "waited") result.retried += 1;
+      else result.succeeded += 1;
     } catch (error) {
       logger.error(
         { err: error, operationId: operation.id, type: operation.type },
