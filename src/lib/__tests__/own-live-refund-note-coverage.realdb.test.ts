@@ -260,7 +260,6 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
 
     beforeEach(async () => {
       await clearRun();
-      vi.restoreAllMocks();
       raceSession.current = { user: { id: OFFICER_ID, role: "ADMIN", accessRoles: [{ role: "ADMIN" }], canLogin: true } };
       await paidBankTransfer();
     });
