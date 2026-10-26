@@ -1225,6 +1225,10 @@ require_env_key() {
 # exact -- `services:` at column 0, the service name at two, its keys at four,
 # and its environment entries at six -- and a line at any other depth cannot be
 # mistaken for one of them.
+#
+# READS TO THE END (#4416): the first match is kept, but awk never exits early.
+# An early `exit` closed the pipe while `printf` was still writing a large
+# render, and under `pipefail` its SIGPIPE turned a found value into a failure.
 compose_service_environment_value() {
   local rendered="$1"
   local service="$2"
@@ -1241,12 +1245,12 @@ compose_service_environment_value() {
     in_service && /^    [^[:space:]]/ {
       in_env = ($0 == "    environment:"); next
     }
-    in_env && index($0, prefix) == 1 {
+    in_env && !found && index($0, prefix) == 1 {
       value = substr($0, length(prefix) + 1)
       sub(/^[[:space:]]+/, "", value)
-      print value
-      exit
+      found = 1
     }
+    END { if (found) print value }
   '
 }
 
