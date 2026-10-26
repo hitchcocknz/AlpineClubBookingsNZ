@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { stripComments } from "@/lib/__tests__/support/strip-comments";
+import { blankLiterals, stripComments } from "@/lib/__tests__/support/strip-comments";
 
 /**
  * #3980 (`INV-PAY-136`, `INV-LOCK-003`'s spirit for a row-lock site): the
@@ -74,8 +74,11 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     const writers: string[] = [];
     for (const file of sourceFiles()) {
       const source = read(file);
-      for (const match of source.matchAll(/\b\w+\.payment\.(update|updateMany|upsert|create|createMany)\(/g)) {
-        const { end } = balancedBrackets(source, match.index! + match[0].length - 1);
+      // Call sites are found over masked text: a `payment.update(` named in a
+      // string is not a call.
+      const structure = blankLiterals(source);
+      for (const match of structure.matchAll(/\b\w+\.payment\.(update|updateMany|upsert|create|createMany)\(/g)) {
+        const { end } = balancedBrackets(source, match.index! + match[0].length - 1, structure);
         const call = source.slice(match.index!, end + 1);
         const data = call.slice(Math.max(0, call.indexOf("data")));
         const variable = /data: (\w+)\b/.exec(data)?.[1];
@@ -124,8 +127,9 @@ describe("the edit's claim on the unlinked primary invoice: call sites (#3980)",
     ]);
     for (const door of doors) {
       const source = read(door);
-      for (const match of source.matchAll(/\b(queueXeroBookingEditSettlement|queueGuestRemovalXeroSettlement)\(/g)) {
-        const { end } = balancedBrackets(source, match.index! + match[0].length - 1);
+      const structure = blankLiterals(source);
+      for (const match of structure.matchAll(/\b(queueXeroBookingEditSettlement|queueGuestRemovalXeroSettlement)\(/g)) {
+        const { end } = balancedBrackets(source, match.index! + match[0].length - 1, structure);
         const call = source.slice(match.index!, end + 1);
         expect(call, door).toMatch(/additionalPaymentIntentId/);
         expect(call, door).not.toMatch(/additionalPaymentIntentId: null\b/);

@@ -1,4 +1,3 @@
-import { balancedBrackets } from "./support/balanced-brackets";
 // #3806 R2 — no production code reads or writes `XeroToken.accessToken` or
 // `XeroToken.refreshToken` any more.
 //
@@ -37,6 +36,9 @@ import path from "node:path";
 
 import { Prisma } from "@prisma/client";
 import { describe, expect, it } from "vitest";
+
+import { balancedBrackets } from "./support/balanced-brackets";
+import { blankLiterals } from "./support/strip-comments";
 
 const REPO_ROOT = process.cwd();
 const SCAN_DIRS = ["src", "scripts", "e2e", "prisma"].map((dir) => path.join(REPO_ROOT, dir));
@@ -97,8 +99,10 @@ function rawSqlNamesTable(source: string): boolean {
 
 /** The argument text of every `xeroToken.<method>(…)` call, balanced. */
 function xeroTokenDelegateCalls(source: string): string[] {
-  return [...source.matchAll(/\bxeroToken\s*\.\s*\w+\s*\(/g)].map((match) =>
-    balancedBrackets(source, match.index + match[0].length - 1).text.slice(1, -1),
+  // Found over masked text: a delegate call named in a comment or string is not one.
+  const structure = blankLiterals(source);
+  return [...structure.matchAll(/\bxeroToken\s*\.\s*\w+\s*\(/g)].map((match) =>
+    balancedBrackets(source, match.index + match[0].length - 1, structure).text.slice(1, -1),
   );
 }
 
