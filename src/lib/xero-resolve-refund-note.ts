@@ -1,4 +1,4 @@
-// #4421 (owner decision 26 Oct 2026, `INV-INT-025`): "RESOLVE BY HAND" ON A
+// #4421 (owner decision 26 Oct 2026, `INV-INT-028`): "RESOLVE BY HAND" ON A
 // PAYMENT REFUND CREDIT-NOTE CREATE RECORDS THE NOTE THE OFFICER MADE.
 //
 // A failed refund-note create that names no note of its own is resolved only

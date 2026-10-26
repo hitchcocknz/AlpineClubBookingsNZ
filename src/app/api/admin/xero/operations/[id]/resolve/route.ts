@@ -118,7 +118,7 @@ export async function POST(
       );
     }
 
-    // #4421 (owner decision 26 Oct 2026, `INV-INT-025`): a payment refund
+    // #4421 (owner decision 26 Oct 2026, `INV-INT-028`): a payment refund
     // note's create that names no note of its own is resolved only with the
     // note the officer made, checked in Xero here - before any transaction,
     // so no lock is held across the provider call - and recorded with the
