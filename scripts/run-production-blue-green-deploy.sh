@@ -2270,7 +2270,8 @@ get_service_image_ref() {
       sub(/^    image:[[:space:]]*/, "")
       gsub(/^["\047]|["\047]$/, "")
       print
-      exit
+      # Keep consuming input: exiting early can SIGPIPE printf on a large render.
+      in_service = 0
     }
   ')" || return 1
   if [ -z "$image_ref" ]; then

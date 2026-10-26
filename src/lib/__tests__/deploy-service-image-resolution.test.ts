@@ -161,4 +161,10 @@ describe("deploy service image resolution (#4393)", () => {
     expect(result.stdout).toBe("");
     expect(result.calls).not.toContain("image inspect");
   });
+
+  it("consumes a large render without a pipefail error after finding the image", () => {
+    const result = lookup({ rendered: `services:\n  app:\n    image: resolved-app:local\nx-large-extension:\n  data: ${"x".repeat(512 * 1024)}\n` });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe("resolved-app:local");
+  });
 });
