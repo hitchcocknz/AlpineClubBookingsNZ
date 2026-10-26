@@ -340,6 +340,11 @@ function resolveArchiveDatabaseUrl(
   if (Object.prototype.hasOwnProperty.call(options, "archiveDatabaseUrl")) {
     return options.archiveDatabaseUrl?.trim() || undefined;
   }
+  return configuredAuditArchiveDatabaseUrl();
+}
+
+/** The audit archive connection the environment configures, if any (#4453: also read by the backup guard). */
+export function configuredAuditArchiveDatabaseUrl(): string | undefined {
   return (
     readEnv("AUDIT_ARCHIVE_DATABASE_URL") ??
     readEnv("AUDIT_LOG_ARCHIVE_DATABASE_URL")

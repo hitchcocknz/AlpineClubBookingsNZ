@@ -135,8 +135,9 @@ as a red flag and check the release notes before deploying.
 - **Backup restore-validation** now leaves the dump's owner and grant statements out
   of its trial restore. So a validation database can be owned by an ordinary role
   instead of a superuser.
-  - The app also refuses a validation URL that points at its own database under
-    another role name.
+  - The app also refuses a validation URL that names the same database as the live
+    one or the audit archive, on any host and under any role. **If your shadow
+    database shares the live database's name** (on another server, say), rename it.
   - If your validation URL names a superuser, replace it with a dedicated role that
     owns only the shadow database
     ([`DEPLOYMENT.md`](../DEPLOYMENT.md#least-privilege-database-roles), "Restore

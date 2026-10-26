@@ -700,6 +700,18 @@ describe("backup", () => {
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 
+  it("refuses a validation URL naming the audit archive database (#4453 review N5)", async () => {
+    process.env.AUDIT_ARCHIVE_DATABASE_URL = "postgresql://archive:archive-pw@archive-host:5432/audit_archive";
+    setConfig({ restoreValidationUrl: "postgresql://check:check-pw@shadow/audit_archive" });
+
+    await expect(runDatabaseBackup()).resolves.toEqual({
+      success: false,
+      error:
+        "The restore-validation URL must point at a disposable shadow database, not the audit archive database",
+    });
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
   it("refuses the live database under another role, as after the #4453 role split", async () => {
     // The app connects as the application role; a validation URL naming the live
     // database as any other role used to slip past a whole-URL comparison, and

@@ -254,10 +254,10 @@ on the next run.
   The validation restore leaves out the dump's owner and grant statements, so this
   role can replay it. **Never enter a superuser connection string there.** The app
   stores and uses that credential, so a compromised app would become a superuser.
-  The app refuses a validation URL whose host, port and database name match its own
-  `DATABASE_URL`, whatever role it names. Give the shadow database a different
-  name, because two names for one host (a container name and its IP address) cannot
-  be told apart.
+  The app refuses a validation URL that names the same database as its own
+  `DATABASE_URL` or the audit archive, whatever host, port or role it gives, so
+  give the shadow database its own name. A URL with no database names the
+  database after its user, as libpq does.
 - **Restoring over the live database from Admin → Backups no longer works** once
   the app is split: the application role may not drop the schema, so PostgreSQL
   refuses the restore before anything is touched. Restore as the operator with

@@ -28,11 +28,16 @@ describe("isSameDatabaseTarget", () => {
     ["other parameters", "postgresql://u:p@postgres:5432/tacbookings?sslmode=disable&options=-c%20x%3D1"],
     ["a host spelled in capitals", "postgresql://u:p@POSTGRES:5432/tacbookings"],
     ["a libpq dbname override", "postgresql://u:p@postgres:5432/scratch?dbname=tacbookings"],
+    ["a trailing-dot host (N5)", "postgresql://u:p@postgres.:5432/tacbookings"],
+    ["a port spelled port=05432 (N5)", "postgresql://u:p@postgres/tacbookings?port=05432"],
+    ["another host or IP for the same name (N5)", "postgresql://u:p@10.0.0.5:5432/tacbookings"],
+    ["no database path, so libpq uses the user name (N5)", "postgresql://tacbookings:p@postgres:5432"],
+    ["no path and a user parameter (N5)", "postgresql://postgres:5432?user=tacbookings"],
   ])("treats %s as the live database", (_label, url) => {
     expect(isSameDatabaseTarget(url, LIVE)).toBe(true);
   });
 
-  it("treats any loopback spelling as one host", () => {
+  it("treats any loopback spelling as one database name", () => {
     expect(
       isSameDatabaseTarget("postgresql://a@localhost/tacbookings", "postgresql://b@127.0.0.1:5432/tacbookings"),
     ).toBe(true);
@@ -40,8 +45,8 @@ describe("isSameDatabaseTarget", () => {
 
   it.each([
     ["another database name", "postgresql://tac_app:app-pw@postgres:5432/tacbookings_restore_check"],
-    ["another host", "postgresql://tac_app:app-pw@shadow:5432/tacbookings"],
-    ["another port", "postgresql://tac_app:app-pw@postgres:5433/tacbookings"],
+    ["another name on another host", "postgresql://tac_app:app-pw@shadow:5432/restore_check"],
+    ["a user-named default that differs", "postgresql://restore_check:p@postgres:5432"],
   ])("allows %s", (_label, url) => {
     expect(isSameDatabaseTarget(url, LIVE)).toBe(false);
   });

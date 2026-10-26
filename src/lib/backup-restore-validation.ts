@@ -11,56 +11,44 @@ import { pipeline } from "node:stream/promises";
 import { StringDecoder } from "node:string_decoder";
 import { createGunzip } from "node:zlib";
 
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
-const DEFAULT_POSTGRES_PORT = "5432";
-
-interface DatabaseTarget {
-  host: string;
-  port: string;
-  database: string;
-}
-
 /**
- * Where a connection string points, ignoring who connects and how. libpq's
- * `host`, `port` and `dbname` query parameters override the URL's own parts, so
- * they are read too; a loopback host is one host whatever its spelling.
+ * The database a connection string names, as libpq resolves it: a `dbname`
+ * parameter wins over the path, and with neither, libpq uses the user name
+ * (`user` parameter, then the URL's user). `null` when it cannot be read.
  */
-function databaseTarget(connectionString: string): DatabaseTarget | null {
+function resolvedDatabaseName(connectionString: string): string | null {
   let parsed: URL;
   try {
     parsed = new URL(connectionString);
   } catch {
     return null;
   }
-  const host = (parsed.searchParams.get("host") ?? parsed.hostname).toLowerCase();
-  const port = parsed.searchParams.get("port") ?? (parsed.port || DEFAULT_POSTGRES_PORT);
-  const database =
-    parsed.searchParams.get("dbname") ?? decodeURIComponent(parsed.pathname.replace(/^\//, ""));
-  return {
-    host: LOOPBACK_HOSTS.has(host) ? "loopback" : host,
-    port,
-    database,
-  };
+  const fromPath = decodeURIComponent(parsed.pathname.replace(/^\//, ""));
+  const name =
+    parsed.searchParams.get("dbname") ||
+    fromPath ||
+    parsed.searchParams.get("user") ||
+    decodeURIComponent(parsed.username);
+  return name || null;
 }
 
 /**
- * True when two connection strings reach the same database: same host, port and
- * database name, whatever the user, password or other parameters.
+ * True when two connection strings may reach the same database. They do when
+ * they NAME the same database, whatever the host, port, user, password or other
+ * parameters (#4453 review N5).
  *
  * The restore-validation step starts with `DROP SCHEMA public CASCADE`, so it must
- * never be handed the live database. The previous guard compared whole URLs,
- * which stopped matching the moment the app's `DATABASE_URL` named a different
- * ROLE from the validation URL — exactly what the least-privilege roles do. An
- * unparseable string counts as the same database: refusing is the safe answer.
- * Two names for one host (a container name and its IP) cannot be told apart
- * here; the validation database must also have a different NAME, which the
- * deployment guide requires.
+ * never be handed the live database (or the audit archive). Comparing hosts
+ * cannot be made reliable — a container name and its IP, `postgres.` with a
+ * trailing dot, `port=05432` — so the rule is the database NAME, which the
+ * deployment guide already requires to differ. An unreadable string counts as
+ * the same database: refusing is the safe answer.
  */
 export function isSameDatabaseTarget(first: string, second: string): boolean {
-  const a = databaseTarget(first);
-  const b = databaseTarget(second);
+  const a = resolvedDatabaseName(first);
+  const b = resolvedDatabaseName(second);
   if (!a || !b) return true;
-  return a.host === b.host && a.port === b.port && a.database === b.database;
+  return a === b;
 }
 
 /** A top-level statement that sets an owner or a privilege, as `pg_dump` writes it. */

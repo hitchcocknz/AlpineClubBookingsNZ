@@ -33,6 +33,7 @@ import {
   resolveBackupConfig,
 } from "@/lib/backup-config";
 import { pruneLocalBackups, storeLocalBackup } from "@/lib/backup-local";
+import { configuredAuditArchiveDatabaseUrl } from "@/lib/audit-retention";
 import {
   isSameDatabaseTarget,
   restoreDumpWithoutOwnershipOrPrivileges,
@@ -123,8 +124,20 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
 
   const sanitizedDatabaseUrl = sanitizePostgresUrlForPgDump(databaseUrl);
   const restoreValidationDatabaseUrl = config.restoreValidationUrl ?? undefined;
-  // Same host, port and database name, whoever connects (#4453): the app's role
-  // and the validation role differ once the database roles are split.
+  // The same database NAME as the live database or the audit archive refuses,
+  // whoever connects and wherever (#4453): the validation starts with DROP SCHEMA.
+  const archiveUrl = configuredAuditArchiveDatabaseUrl();
+  if (
+    restoreValidationDatabaseUrl &&
+    archiveUrl &&
+    isSameDatabaseTarget(restoreValidationDatabaseUrl, archiveUrl)
+  ) {
+    return {
+      success: false,
+      error:
+        "The restore-validation URL must point at a disposable shadow database, not the audit archive database",
+    };
+  }
   if (
     restoreValidationDatabaseUrl &&
     isSameDatabaseTarget(restoreValidationDatabaseUrl, databaseUrl)

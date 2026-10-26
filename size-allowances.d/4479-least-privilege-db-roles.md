@@ -4,10 +4,11 @@ Three already-oversized modules grow because this change keeps one source for
 something that would otherwise be copied, or wires a guard where it applies.
 
 file: src/lib/audit-retention.ts
-lines: 888
+lines: 893
 reason: the optional `AUDIT_RETENTION_DATABASE_URL` client, built by the one
   `createStandaloneClient` helper that the archive client already used, and the
-  job's selection between it and the app client. Moving retention's connection
+  job's selection between it and the app client, and the one reader of the
+  archive URL that the backup guard now shares (`configuredAuditArchiveDatabaseUrl`). Moving retention's connection
   handling to another module would split the job from the client it must run
   on, which is the pairing the realdb test proves.
 
@@ -21,9 +22,10 @@ reason: `buildCreateLoginRoleIfAbsentSql`, `buildStripAllRoleMembershipsSql` and
   builder's statement list is byte-identical.
 
 file: src/lib/backup.ts
-lines: 729
+lines: 742
 reason: the restore-validation step's two call sites for the #4453 review fixes
-  (S-F2, N2): the live-database guard now asks `isSameDatabaseTarget`, and the
+  (S-F2, N2, N5): the guard now asks `isSameDatabaseTarget` against the live and
+  the audit archive databases, with a refusal message for each, and the
   validation restore is one call to the streamed, owner-and-grant-stripping
   `restoreDumpWithoutOwnershipOrPrivileges`. Both helpers live in
   `src/lib/backup-restore-validation.ts`; only the import and the two calls,
