@@ -47,6 +47,7 @@ import {
   DIAGNOSTICS_WRITABLE_CREDENTIAL_KEYS,
 } from "@/lib/ai-diagnostics-config";
 import {
+  withServerNzConnectionTransaction,
   SERVERNZ_PROVIDER,
   SERVERNZ_WRITABLE_CREDENTIAL_KEYS,
 } from "@/lib/servernz-config";
@@ -206,7 +207,7 @@ async function applyVerifyReset(
   // for the PREVIOUS key, so a replacement forgets it until the next download.
   // The server's last reported API version (#49) was that key's answer too and
   // is forgotten with it, in the same write; the next request asks again.
-  if (provider === SERVERNZ_PROVIDER) await forgetServerConnectionAnswers();
+  // ServerNZ resets in the credential transaction below (#4436).
 }
 
 export async function POST(request: Request) {
@@ -266,7 +267,21 @@ export async function POST(request: Request) {
     // The request context travels in so the row keeps its id, IP and user agent.
     // The form posts the value it wants stored; there is no read-modify-write
     // here for a second Full Admin to make stale, so both writes expect `any`.
-    result = credentialWriteResetsXeroTokens(provider, key)
+    result = provider === SERVERNZ_PROVIDER
+      ? await withServerNzConnectionTransaction(async (tx) => {
+          const saved = await setIntegrationCredentialInTransaction({
+            tx,
+            provider,
+            key,
+            value,
+            actor: { kind: "admin", memberId: guard.memberId },
+            expect: { expect: "any" },
+            request: requestContext,
+          });
+          await forgetServerConnectionAnswers(tx);
+          return saved;
+        })
+      : credentialWriteResetsXeroTokens(provider, key)
       ? await withXeroVerifyReset(
           {
             actor: { kind: "admin", memberId: guard.memberId },

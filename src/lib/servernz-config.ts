@@ -26,14 +26,19 @@ import { prisma } from "@/lib/prisma";
 import {
   readIntegrationCredentialRow,
   resolveIntegrationCredential,
-  setIntegrationCredential,
-  deleteIntegrationCredential,
+  setIntegrationCredentialInTransaction,
+  deleteIntegrationCredentialInTransaction,
+  withCredentialTransaction,
 } from "@/lib/integration-credentials";
 import type {
   CredentialActor,
   CredentialVersion,
 } from "@/lib/integration-credential-actor";
-import { forgetServerConnectionAnswers } from "@/lib/servernz-settings";
+import {
+  forgetServerConnectionAnswers,
+  lockServerNzSettings,
+  SERVERNZ_SETTINGS_ID,
+} from "@/lib/servernz-settings";
 
 export const SERVERNZ_PROVIDER = "servernz";
 
@@ -56,13 +61,14 @@ export const SERVERNZ_WRITABLE_CREDENTIAL_KEYS = [
  * is saved again (A -> B -> A), and the version recorder compares it under the
  * settings-row lock (`servernz-version-record.ts`).
  */
-export async function getOperationalServerNzCredential(): Promise<
+export async function getOperationalServerNzCredential(
+  db?: Pick<Prisma.TransactionClient, "integrationCredential">,
+): Promise<
   { apiKey: string; version: CredentialVersion } | undefined
 > {
-  const resolution = await resolveIntegrationCredential(
-    SERVERNZ_PROVIDER,
-    SERVERNZ_CREDENTIAL_KEYS.apiKey,
-  );
+  const resolution = db
+    ? await readIntegrationCredentialRow(db, SERVERNZ_PROVIDER, SERVERNZ_CREDENTIAL_KEYS.apiKey)
+    : await resolveIntegrationCredential(SERVERNZ_PROVIDER, SERVERNZ_CREDENTIAL_KEYS.apiKey);
   return resolution.status === "configured"
     ? { apiKey: resolution.value, version: resolution.version }
     : undefined;
@@ -95,14 +101,18 @@ export async function setServerNzApiKey(
   value: string,
   actor: CredentialActor,
 ): Promise<void> {
-  await setIntegrationCredential({
-    provider: SERVERNZ_PROVIDER,
-    key: SERVERNZ_CREDENTIAL_KEYS.apiKey,
-    value,
-    actor,
-    // The admin form posts the key it wants stored outright; there is no
-    // read-modify-write here to be stale against.
-    expect: { expect: "any" },
+  await withServerNzConnectionTransaction(async (tx) => {
+    await setIntegrationCredentialInTransaction({
+      tx,
+      provider: SERVERNZ_PROVIDER,
+      key: SERVERNZ_CREDENTIAL_KEYS.apiKey,
+      value,
+      actor,
+      // The admin form posts the key it wants stored outright; there is no
+      // read-modify-write here to be stale against.
+      expect: { expect: "any" },
+    });
+    await forgetServerConnectionAnswers(tx);
   });
 }
 
@@ -116,14 +126,38 @@ export async function setServerNzApiKey(
  */
 export async function clearServerNzApiKey(
   actor: CredentialActor,
+  tx?: Prisma.TransactionClient,
 ): Promise<void> {
-  await deleteIntegrationCredential({
+  if (!tx) {
+    return withServerNzConnectionTransaction((client) => clearServerNzApiKey(actor, client));
+  }
+  await deleteIntegrationCredentialInTransaction({
+    tx,
     provider: SERVERNZ_PROVIDER,
     key: SERVERNZ_CREDENTIAL_KEYS.apiKey,
     actor,
     expect: { expect: "any" },
   });
-  await forgetServerConnectionAnswers();
+  await forgetServerConnectionAnswers(tx);
+}
+
+/**
+ * One fence for connection reads and replacements (#4436). Settings first,
+ * credentials second; no HTTP in work. Materialise a fresh-install singleton
+ * before locking it, so a missing row cannot leave concurrent setup unfenced.
+ * Credential caches are invalidated after commit/rollback by the store.
+ */
+export async function withServerNzConnectionTransaction<T>(
+  work: (tx: Prisma.TransactionClient) => Promise<T>,
+): Promise<T> {
+  return withCredentialTransaction([SERVERNZ_PROVIDER], async (tx) => {
+    await tx.serverNzSettings.createMany({
+      data: [{ id: SERVERNZ_SETTINGS_ID }],
+      skipDuplicates: true,
+    });
+    await lockServerNzSettings(tx);
+    return work(tx);
+  }, { timeout: 150_000, maxWait: 10_000 });
 }
 
 export interface ServerNzSetupState {

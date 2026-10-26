@@ -121,9 +121,11 @@ export async function lockServerNzSettings(
  * Read the ServerNZ settings with safe defaults. A missing row or query failure
  * falls back to defaults so the setup page keeps rendering.
  */
-export async function loadServerNzSettings(): Promise<ServerNzSettingsValues> {
+export async function loadServerNzSettings(
+  db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma,
+): Promise<ServerNzSettingsValues> {
   try {
-    const row = await prisma.serverNzSettings.findUnique({
+    const row = await db.serverNzSettings.findUnique({
       where: { id: SERVERNZ_SETTINGS_ID },
     });
     if (!row) return { ...DEFAULTS };
@@ -141,7 +143,9 @@ export async function loadServerNzSettings(): Promise<ServerNzSettingsValues> {
       serverVersion: row.serverVersion,
       serverVersionCheckedAt: row.serverVersionCheckedAt?.toISOString() ?? null,
     };
-  } catch {
+  } catch (error) {
+    // A fenced operational read must fail rather than hide a database failure.
+    if (db !== prisma) throw error;
     return { ...DEFAULTS };
   }
 }
@@ -204,7 +208,7 @@ export async function updateServerNzSettings(input: {
   baseUrl?: string | null;
   otherLodgesEnabled?: boolean;
   updatedByMemberId: string;
-}): Promise<ServerNzSettingsValues> {
+}, db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma): Promise<ServerNzSettingsValues> {
   const data: {
     baseUrl?: string | null;
     otherLodgesEnabled?: boolean;
@@ -214,12 +218,12 @@ export async function updateServerNzSettings(input: {
   if (input.otherLodgesEnabled !== undefined)
     data.otherLodgesEnabled = input.otherLodgesEnabled;
 
-  await prisma.serverNzSettings.upsert({
+  await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },
     create: { id: SERVERNZ_SETTINGS_ID, ...data },
     update: data,
   });
-  return loadServerNzSettings();
+  return loadServerNzSettings(db);
 }
 
 /**
@@ -362,8 +366,10 @@ export async function clearServerVersionCheck(): Promise<void> {
  * leave the row half-forgotten: a stale version pausing a new connection, or a
  * stale owned list editable under a new key.
  */
-export async function forgetServerConnectionAnswers(): Promise<void> {
-  await prisma.serverNzSettings.upsert({
+export async function forgetServerConnectionAnswers(
+  db: Pick<Prisma.TransactionClient, "serverNzSettings"> = prisma,
+): Promise<void> {
+  await db.serverNzSettings.upsert({
     where: { id: SERVERNZ_SETTINGS_ID },
     create: { id: SERVERNZ_SETTINGS_ID },
     update: {
