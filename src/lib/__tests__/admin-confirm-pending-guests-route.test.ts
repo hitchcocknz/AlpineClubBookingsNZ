@@ -1310,6 +1310,22 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
 
   it("confirms a $0 booking to PAID without charging when capacity is available", async () => {
     mocks.bookingFindUnique.mockResolvedValue(makeBooking({ finalPriceCents: 0 }));
+    // #4399: record whether the Payment row is written while the claim's
+    // transaction callback is still running (the tx and root clients share a mock).
+    let inTransaction = false;
+    const upsertInTransaction: boolean[] = [];
+    mocks.transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => {
+      inTransaction = true;
+      try {
+        return await fn(txClient);
+      } finally {
+        inTransaction = false;
+      }
+    });
+    mocks.paymentUpsert.mockImplementation(async () => {
+      upsertInTransaction.push(inTransaction);
+      return {};
+    });
 
     const res = await POST(makeRequest(), { params });
     const body = await res.json();
@@ -1358,8 +1374,9 @@ describe("POST /api/admin/bookings/[id]/confirm-pending-guests", () => {
       create: { bookingId: "b1", amountCents: 0, status: "SUCCEEDED" },
       update: { amountCents: 0, status: "SUCCEEDED" },
     });
-    // #4399: the Payment row is written inside the claim's transaction (before
-    // the after-commit hosting settle), not after it commits.
+    // #4399: the Payment row is written inside the claim's transaction, not
+    // after it commits.
+    expect(upsertInTransaction).toEqual([true]);
     expect(mocks.paymentUpsert.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.settleHosting.mock.invocationCallOrder[0],
     );

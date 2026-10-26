@@ -317,6 +317,24 @@ describe("the amount an unpaid booking owes has one home (#3750)", () => {
     expect(savedCardChargeCents({ finalPriceCents: 10_000, payment: null })).toBe(10_000);
   });
 
+  // #4399: the two pending-guest doors that confirm a booking worth $0 write its
+  // Payment row through one helper, on their claim's transaction client - one
+  // had drifted to writing it after its transaction committed.
+  it("both $0 confirms write their payment row through writeZeroWorthConfirmPayment on the claim's tx (#4399)", () => {
+    for (const file of ["src/lib/cron-confirm-pending.ts", "src/app/api/admin/bookings/[id]/confirm-pending-guests/route.ts"]) {
+      const text = read(file);
+      expect(text, `${file} writes the $0 payment through the helper, on its tx`).toMatch(
+        /\bwriteZeroWorthConfirmPayment\(tx,/,
+      );
+      expect(text, `${file} spells the $0 SUCCEEDED row itself`).not.toMatch(
+        /amountCents:\s*0,\s*status:\s*PaymentStatus\.SUCCEEDED/,
+      );
+    }
+    expect(read("src/app/api/payments/charge-saved-method/route.ts"), "charge-saved-method refuses worth $0 under its locks").toMatch(
+      /if \(savedCardChargeCents\(locked\) === 0\)/,
+    );
+  });
+
   // #3991: the narrative quotes "$X is due" from what it is handed, so every
   // file that resolves one reads the one home, and none hands it the bare price.
   it("every source file that resolves a booking narrative reads the amount owed there", () => {

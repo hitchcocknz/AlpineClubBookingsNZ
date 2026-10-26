@@ -310,7 +310,7 @@ async function expectSettledAtWorth(asked: number[], worthCents = WORTH_CENTS): 
       expect(await prisma.paymentTransaction.count({ where: { paymentId: PAYMENT_ID } })).toBe(0);
     });
 
-    it("#4399: the officer's $0 confirm writes its payment row in the claim's transaction - PAID with a SUCCEEDED $0 payment", async () => {
+    it("#4399: the officer's $0 confirm leaves the booking PAID with a SUCCEEDED $0 payment", async () => {
       await makeWorthZero();
       const asked = stripeChargesAsAsked();
       const response = await json(

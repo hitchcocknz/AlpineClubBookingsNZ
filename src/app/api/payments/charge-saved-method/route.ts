@@ -212,7 +212,7 @@ export async function POST(request: NextRequest) {
         }
         // #4399 (`INV-PAY-119`): worth $0 is refused before any claim; the cron and confirm-pending-guests confirm it free.
         if (savedCardChargeCents(locked) === 0) {
-          return { error: "This booking has nothing to charge - confirm it with Confirm pending guests instead." as const, status: 409 };
+          return { error: "This booking has nothing to charge - confirm it with Confirm pending guests, or it is confirmed at its hold deadline." as const, status: 409 };
         }
         const capacity = await checkCapacityForGuestRanges(
           lodgeId,

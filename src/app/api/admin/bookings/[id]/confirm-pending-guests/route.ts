@@ -19,6 +19,7 @@ import {
 } from "@/lib/saved-card-charge-attempt";
 import { chargeSavedCardAttempt } from "@/lib/saved-card-charge-request";
 import { savedCardChargeCents } from "@/lib/booking-payment-state";
+import { writeZeroWorthConfirmPayment } from "@/lib/zero-worth-confirm-payment";
 import {
   describeUnsettledPaymentIntent,
   settleSavedCardChargeAttempt,
@@ -307,12 +308,7 @@ export async function POST(
           cause: "SYSTEM_CHANGE",
           actorMemberId: session.user.id,
         });
-        // #4399: under the claim's lock(1), as the cron writes it, so no fee-recording edit lands in between.
-        await tx.payment.upsert({
-          where: { bookingId },
-          create: { bookingId, amountCents: 0, status: PaymentStatus.SUCCEEDED },
-          update: { amountCents: 0, status: PaymentStatus.SUCCEEDED },
-        });
+        await writeZeroWorthConfirmPayment(tx, bookingId);
 
         return { ok: true as const };
       });
