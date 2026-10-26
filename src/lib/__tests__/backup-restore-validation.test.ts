@@ -166,7 +166,7 @@ describe("the streamed strip (#4453 review N2)", () => {
       writeFileSync(psql, `#!/bin/sh\n${body}\n`);
       chmodSync(psql, 0o755);
     };
-    const env = () => ({ PATH: `${bin}:${process.env.PATH ?? ""}`, CAPTURE: path.join(dir, "stdin.sql") });
+    const env = (): NodeJS.ProcessEnv => ({ NODE_ENV: "test", PATH: `${bin}:${process.env.PATH ?? ""}`, CAPTURE: path.join(dir, "stdin.sql") });
 
     it("streams the gunzipped, stripped dump into psql's stdin", async () => {
       makePsql('printf "%s\\n" "$@" > "$CAPTURE.args"; cat > "$CAPTURE"');
