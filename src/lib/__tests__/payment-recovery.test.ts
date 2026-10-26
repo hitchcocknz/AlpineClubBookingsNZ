@@ -3425,17 +3425,23 @@ describe("payment recovery worker", () => {
         status,
       });
       mockPaymentFindUnique.mockResolvedValue(payment);
-      mockBookingModificationFindUnique.mockResolvedValueOnce(modification).mockResolvedValueOnce(modification);
-
-      for (const attempts of [1, 2]) {
+      for (const attempts of [1, 2, MAX_PAYMENT_RECOVERY_ATTEMPTS]) {
+        mockBookingModificationFindUnique.mockResolvedValueOnce(modification);
         primeQueue(additionalIntentOperation({ amountCents: 10000, attempts }));
         const result = await processPaymentRecoveryOperations({ limit: 1 });
-        expect(result.failed).toBe(1);
+        expect(result).toMatchObject({
+          succeeded: 0,
+          retried: attempts < MAX_PAYMENT_RECOVERY_ATTEMPTS ? 1 : 0,
+          failed: attempts < MAX_PAYMENT_RECOVERY_ATTEMPTS ? 0 : 1,
+        });
       }
 
       expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
       expect(mockUpsertPaymentIntentTransaction).not.toHaveBeenCalled();
       expect(mockPaymentTransactionFindMany).not.toHaveBeenCalled();
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(expect.objectContaining({
+        errorMessage: expect.stringContaining("cannot safely replay its frozen amount"),
+      }), expect.anything());
       expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
         data: expect.objectContaining({ lastError: expect.stringContaining("cannot safely replay its frozen amount") }),
       }));
