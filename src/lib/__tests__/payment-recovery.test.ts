@@ -3276,7 +3276,7 @@ describe("payment recovery worker", () => {
             stripePaymentIntentId: "pi_original",
             amountCents: 10000,
             refundedAmountCents: 0,
-            status: PaymentStatus.SUCCEEDED,
+            status: PaymentStatus.SUCCEEDED as PaymentStatus,
             createdAt: new Date("2026-05-01T00:00:00.000Z"),
           },
         ],
