@@ -1,5 +1,5 @@
 /**
- * #3403 (`INV-PAY-070`): WHERE A WAITING SUPPLEMENTARY INVOICE'S MONEY WAS FIRST
+ * #3403 (`INV-PAY-140`): WHERE A WAITING SUPPLEMENTARY INVOICE'S MONEY WAS FIRST
  * ASKED FOR. A leaf, so a price reduction can read it without importing the
  * move (`superseded-ask-invoice-carry.ts`) or the outbox.
  */

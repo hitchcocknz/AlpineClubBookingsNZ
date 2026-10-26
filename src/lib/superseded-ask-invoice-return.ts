@@ -1,5 +1,5 @@
 /**
- * #3403 review (M1; `INV-PAY-070`): A CAPTURE OF A SUPERSEDED ASK TAKES ITS
+ * #3403 review (M1; `INV-PAY-140`): A CAPTURE OF A SUPERSEDED ASK TAKES ITS
  * INVOICE BACK.
  *
  * A superseded card change's waiting invoice moves onto the request carrying

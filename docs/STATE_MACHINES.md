@@ -764,7 +764,7 @@ edit raises an ask -> mint the replacement intent
        Stripe already captured it -> handed off to REFUND_SUPERSEDED_PAYMENT
        provider failure -> the queued operation stands; the recovery cron finishes
   -> each superseded ask's WAITING_PAYMENT supplementary invoice, a declined
-       ask's included, re-pointed at the replacing intent (#3403, INV-PAY-070)
+       ask's included, re-pointed at the replacing intent (#3403, INV-PAY-140)
   -> the member's card sees only the replacing intent
 REFUND_SUPERSEDED_PAYMENT completes
   -> reconcile aggregates, THEN one audit row + one REFUNDED BookingEvent
@@ -3791,16 +3791,29 @@ worker finds the operation must wait (busy) -> RUNNING -> PENDING: returns
   createdAt -> FAILED for a person (an operator's retry raises it unwaited)
   it waits only when its edit expected an own note; a note the repair pass
   queues reads that from the edit's history row (#4049)
-supplementary invoice WAITING_PAYMENT on a card ask's intent (INV-PAY-104)
-  -> that intent captured and the money kept -> PENDING (released)
+supplementary invoice WAITING_PAYMENT on a card ask's intent (INV-PAY-104;
+  an officer's or the repair tool's own actions on it are not drawn here)
+  -> that intent captured and the money kept -> the others naming it billed
+     with it fit the capture -> PENDING (released)
+       they would not -> CANCELLED, STALE_WAITING_PAYMENT_CAPTURED, an
+       officer told
+  -> that intent captured and refunded -> left WAITING_PAYMENT for the reaper
   -> a later request supersedes the ask and carries its balance (#3403,
-     INV-PAY-070) -> stays WAITING_PAYMENT, re-pointed at that request
-     (`parkedFromPaymentIntentId` keeps the first intent), under the anchor's
-     key, status-guarded: by the supersede's cancel step, by the minter before
-     it returns its secret, and by the reaper before it would retire it
-     the booking ended, the anchor already linked or another invoice queued
-     for it, or the request would bill more than it asks -> left as it was
-     the request already captured -> released at once
+     INV-PAY-140) -> stays WAITING_PAYMENT, re-pointed at the request that
+     absorbed it (`parkedFromPaymentIntentId` keeps the first intent), under
+     the change's and the carrier's keys, guarded on status, intent and
+     correlation key: by the supersede's cancel step, by the minter before it
+     returns its secret, by an edit leg parking on a failed ask, and by the
+     reaper before it would retire it
+       -> booking ended, change already linked or another invoice queued, the
+          carrier would bill more than it asks, or the payload unreadable ->
+          left as it was
+       -> the carrier already captured -> released at once (unpaid where its
+          receipt records the capture)
+  -> re-pointed, and the FIRST intent is then captured and kept (a declined
+     ask paid from a stale tab) -> returned to that intent, then released
+  -> a price reduction retires the chain -> CANCELLED,
+     ADDITIONAL_ASK_RETIRED_BY_REDUCTION (INV-PAY-120)
   -> the pay door closed and nothing carries it -> CANCELLED,
      STALE_WAITING_PAYMENT (the reaper; only a capture of that same intent
      revives it)

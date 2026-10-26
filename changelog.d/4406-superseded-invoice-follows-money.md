@@ -12,7 +12,14 @@
   paid; the earlier amount is never added to the later invoice. If the member
   never pays, nothing is invoiced, as for any unpaid card change. If the later
   request was already paid when the move happens, the earlier invoice is sent
-  straight away. A declined card on the earlier request is covered too.
+  straight away. A declined card on the earlier request is covered too, and
+  if that declined request is later paid from an old browser tab after all,
+  its invoice goes back to it and records that payment instead.
+
+  Separately, when several invoices wait on one card payment, Xero now records
+  them as paid only while together they add up to no more than the payment;
+  one that would not fit is held back and an officer is told, as a single
+  invoice larger than its payment already was.
 
   Nothing changes for bookings paid by internet banking, where each change's
   invoice is already sent unpaid when it is priced. Invoices the system had

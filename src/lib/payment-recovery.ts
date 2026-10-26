@@ -1686,7 +1686,7 @@ async function markSupersededTransactionFailed(
   if (updated.count > 0) {
     await reconcilePaymentAggregates({ paymentId: operation.paymentId });
   }
-  // #3403 (`INV-PAY-070`): its change's waiting invoice follows the request carrying its balance, before the row completes.
+  // #3403 (`INV-PAY-140`): its change's waiting invoice follows the request carrying its balance, before the row completes.
   await followSupersededAskInvoicesSafely({ paymentId: operation.paymentId });
 }
 

@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * #3403 (`INV-PAY-070`): the real-PostgreSQL proof that a superseded card
+ * #3403 (`INV-PAY-140`): the real-PostgreSQL proof that a superseded card
  * change's waiting Xero invoice follows the request carrying its balance
  * self-skips without `RUN_CONCURRENCY_RACE_TESTS`, and hosted CI reaches it
  * only because the race harness imports it. Lose that import and the proof
@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
  */
 const REPO_ROOT = resolve(__dirname, "../../..");
 
-describe("INV-PAY-070: the superseded-invoice carry proof stays wired into CI (#3403)", () => {
+describe("INV-PAY-140: the superseded-invoice carry proof stays wired into CI (#3403)", () => {
   it("is imported by the race harness CI runs against a real database", () => {
     const harness = readFileSync(
       resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),

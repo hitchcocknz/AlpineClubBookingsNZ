@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { matchesWhere, type WhereRow } from "./support/prisma-where";
 
 /*
-  #3403 (owner decision 26 Oct 2026, "follow the money"; `INV-PAY-070`):
+  #3403 (owner decision 26 Oct 2026, "follow the money"; `INV-PAY-140`):
   A SUPERSEDED CARD CHANGE'S WAITING XERO INVOICE MOVES ONTO THE REQUEST THAT
   CARRIES ITS BALANCE.
 

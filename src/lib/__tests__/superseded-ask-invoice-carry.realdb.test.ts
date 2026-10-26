@@ -1,6 +1,6 @@
 /**
  * Real-PostgreSQL proof for #3403 (owner decision 26 Oct 2026, "follow the
- * money"; `INV-PAY-070`, `INV-PAY-104`): a superseded card change's waiting
+ * money"; `INV-PAY-140`, `INV-PAY-104`): a superseded card change's waiting
  * Xero supplementary invoice moves onto the request that carries its balance.
  *
  * Every state is reached through the real writers: the edit's mint

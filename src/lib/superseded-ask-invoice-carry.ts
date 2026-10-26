@@ -1,5 +1,5 @@
 /**
- * #3403 (owner decision 26 Oct 2026, "follow the money"; `INV-PAY-070`,
+ * #3403 (owner decision 26 Oct 2026, "follow the money"; `INV-PAY-140`,
  * `INV-PAY-104`): A SUPERSEDED CARD CHANGE'S WAITING SUPPLEMENTARY INVOICE
  * MOVES TO THE REQUEST THAT NOW CARRIES ITS BALANCE.
  *

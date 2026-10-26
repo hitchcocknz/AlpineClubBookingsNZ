@@ -1316,12 +1316,16 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // an invoice naming no capture, and an officer's inline Retry of a change's
   // invoice re-asks under the change's key alone, in its own short
   // transaction, before its Xero call. No new raw site, no new key.
-  // #3403 (`INV-PAY-070`): the superseded-invoice move
+  // #3403 (`INV-PAY-140`): the superseded-invoice move
   // (`superseded-ask-invoice-carry.ts`) calls the same helper on each change
   // whose waiting invoice it re-points at the request carrying its balance,
-  // one short transaction per anchor holding nothing else; its callers (the
-  // supersede's cancel step, the minters after their cancels, the reaper) hold
-  // nothing there. Still no new raw site, no new key.
+  // and on that carrier's own key (its change, else the booking - booking
+  // first, else the two changes sorted), one short transaction per change
+  // holding nothing else; its return (`superseded-ask-invoice-return.ts`)
+  // takes it on one change alone, inside a kept capture's release. Their
+  // callers (the supersede's cancel step, the minters after their cancels, an
+  // edit's Xero leg, the reaper, the release) hold nothing there. Still no new
+  // raw site, no new key.
 };
 
 // Every entry here is now a LOCK-ONLY statement (#2289): it selects a constant,

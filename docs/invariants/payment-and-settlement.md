@@ -1253,7 +1253,7 @@ operations, and neither covers the other's ground. Change one, check the other.
 
 ## INV-PAY-104
 
-**Related: `INV-PAY-029`** (when a failed ask is looked at) **and `INV-PAY-070`**
+**Related: `INV-PAY-029`** (when a failed ask is looked at) **and `INV-PAY-140`**
 (a superseded ask's invoice moves to the request carrying its balance, #3403).
 
 - **A waiting supplementary invoice is retired only when the pay door is
@@ -1640,6 +1640,39 @@ release).
   `additional-capture-receipt.realdb.test.ts`,
   `additional-capture-receipt-unattributed.realdb.test.ts` and
   `xero-booking-repair.test.ts`.
+
+## INV-PAY-140
+
+**Related: `INV-PAY-098`** (a later request carries the balance),
+**`INV-PAY-104`** (late-success release), **`INV-PAY-139`** (one recorder).
+
+- **A superseded card change's waiting invoice follows the money** (#3403;
+  owner, 26 Oct 2026). Each change's supplementary invoice waits
+  `WAITING_PAYMENT` on its own ask. When a later request carries that ask's
+  balance, the invoice is re-pointed at the request that absorbed it: the
+  first later row still payable or captured that no superseded-intent
+  operation names (`supersededAskCarriers`).
+- **Each for its own amount.** The carrier's capture releases every invoice
+  naming it; a carrier never paid invoices nothing. Never folded onto the
+  later invoice, which double-bills wherever the earlier one issued. Bank
+  transfer queues each unpaid when priced, so nothing moves there.
+- **Who moves it.** The supersede's cancel step, every superseding minter, an
+  edit leg parking on an already-failed ask, and the reaper before retiring.
+- **Refused, left as it was:** an ended booking, a linked or second queued
+  invoice, or a carrier that would bill more than its amount, or more than it
+  carried for other changes. Decided under the change's and the carrier's
+  supplementary-invoice keys, booking first; writes guarded on status, intent
+  and correlation key. A captured carrier releases at once, unpaid where its
+  receipt records it.
+- **The capture covers them together.** A capture is checked against the sum
+  of every invoice naming it, not each alone.
+- **A capture of the carried ask takes it back.** A declined ask stays
+  confirmable; a kept capture of it returns the invoices first parked on it
+  (`parkedFromPaymentIntentId`) before its release.
+- Pinned by `superseded-ask-invoice-carry.test.ts`,
+  `superseded-ask-invoice-return.test.ts`,
+  `superseded-ask-invoice-carry.realdb.test.ts` and
+  `xero-operation-outbox.test.ts`.
 
 ## INV-PAY-031
 
@@ -2616,14 +2649,8 @@ _Legacy: settles tasks raised before #4317._
   invoice behind the first and RECORDS the shortfall:
   `outcome: "short-sent"` when the invoice exists, `"short-in-flight"` when the
   worker has merely claimed the row. What happens next is `INV-PAY-063`.
-- **A SUPERSEDED CHANGE'S INVOICE FOLLOWS THE MONEY** (#3403, owner decision
-  26 Oct 2026). On the card route it waits `WAITING_PAYMENT` on its change's
-  own intent. When a later request carries that ask's balance ([INV-PAY-098]),
-  the invoice is re-pointed at it (`followSupersededAskInvoicesToCarrier`) by
-  the supersede's cancel, the minter and, before retiring, the reaper. That
-  request's capture releases both invoices, each for its own amount; never
-  paid, nothing is invoiced. Folding the balance onto the later invoice is
-  refused: it double-bills wherever the earlier invoice issued.
+- A superseded change's waiting invoice is no longer orphaned (#3371's gap):
+  it follows the money, `INV-PAY-140`.
 
 ## INV-PAY-063
 

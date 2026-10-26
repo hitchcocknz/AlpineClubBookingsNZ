@@ -208,7 +208,7 @@ export async function queueSupersededAdditionalIntentCancellationRows(options: {
  * are the guarantee; this closes the window in which an old client secret is
  * still confirmable (#3340).
  *
- * #3403 (`INV-PAY-070`): a minter names the intent it just wrote
+ * #3403 (`INV-PAY-140`): a minter names the intent it just wrote
  * (`newPaymentIntentId`), and the superseded asks' waiting Xero supplementary
  * invoices are then moved onto it, before the minter returns its secret. Here
  * as well as in the cancel step because an ask whose card was DECLINED is

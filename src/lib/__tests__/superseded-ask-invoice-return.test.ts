@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { matchesWhere, type WhereRow } from "./support/prisma-where";
 
 /*
-  #3403 review (M1; `INV-PAY-070`): A CAPTURE OF A SUPERSEDED ASK TAKES ITS
+  #3403 review (M1; `INV-PAY-140`): A CAPTURE OF A SUPERSEDED ASK TAKES ITS
   INVOICE BACK. The real module over an in-memory outbox answering through the
   shared Prisma `where` evaluator; only the anchor lock is doubled. The
   PostgreSQL proof - a declined ask paid from a stale tab after its invoice
