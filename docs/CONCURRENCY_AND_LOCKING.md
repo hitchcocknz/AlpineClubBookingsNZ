@@ -2109,8 +2109,9 @@ mispricing a booking.
   the download recorder proposed in open PR #4277 would share the same
   settings-row protocol. No HTTP runs inside these transactions
   (`INV-INT-027`), and they remain disjoint from booking/capacity/credit and
-  money clusters. The #4436 race suite forces a
-  sync and address move in both orders, including a warmed old-key cache.
+  money clusters. The #4436 race suite forces a sync and address move in both
+  orders, including a warmed old-key cache, and a sync holding the old address
+  while the move and a new key's save queue behind it.
 
 - **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
   (`releaseDeletionRequestApprovalClaim`, #2627): takes
