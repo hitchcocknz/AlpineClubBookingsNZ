@@ -580,6 +580,13 @@ import "./saved-card-charge-worth.realdb.test";
 // note a resolved row records (#4321). Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4265-` fixtures.
 import "./own-live-refund-note-coverage.realdb.test";
+// #4421 reuses it to prove "Resolve by hand" on a refund-note create that
+// names no note records the officer's note, and that note then records no
+// other refund: the real resolve route and the real hand-made answer, in
+// sequence both ways and each holding lock(1) past its check while the other
+// queues. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its
+// own `race-4421-` fixtures.
+import "./resolve-records-refund-note.realdb.test";
 // #2374 (AID-5) deliberately is NOT imported here, unlike the two suites above.
 // `ai-diagnostics-select-only-role.realdb.test.ts` provisions and drops a cluster
 // ROLE and revokes `TEMPORARY ... FROM PUBLIC` on the shared throwaway database
