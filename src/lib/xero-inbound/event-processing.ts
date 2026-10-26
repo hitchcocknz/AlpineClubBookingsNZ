@@ -16,6 +16,17 @@ import { reconcileXeroCreditNote } from "./credit-note";
 import type { ClubFormat } from "@/lib/club-format";
 import { clubFormatValues } from "@/lib/club-format-server";
 
+/**
+ * #4095: a reconcile that wrote everything it could but left a refunded-total
+ * recount unwritten (a claim lost twice, or a kept settle's recount that
+ * failed) says so in its result. A stored event fails on it, so it is retried
+ * after its backoff and recounts; a direct caller reads the field itself.
+ */
+function failIfRecountLeftUnsettled<T extends { recountLeftUnsettled?: string }>(result: T): T {
+  if (result.recountLeftUnsettled) throw new Error(result.recountLeftUnsettled);
+  return result;
+}
+
 function isPrismaUniqueConstraintError(error: unknown): boolean {
   return Boolean(
     error &&
@@ -85,11 +96,11 @@ async function processXeroInboundEvent(
     case "CONTACT":
       return reconcileXeroContact(event.resourceId);
     case "INVOICE":
-      return reconcileXeroInvoice(event.resourceId, format);
+      return failIfRecountLeftUnsettled(await reconcileXeroInvoice(event.resourceId, format));
     case "PAYMENT":
       return reconcileXeroPayment(event.resourceId);
     case "CREDITNOTE":
-      return reconcileXeroCreditNote(event.resourceId);
+      return failIfRecountLeftUnsettled(await reconcileXeroCreditNote(event.resourceId));
     default:
       logger.warn(
         {

@@ -282,6 +282,12 @@ export async function reconcileXeroInvoice(
     refreshedSubscriptions: refreshedSubscriptions.size,
     relatedLinksUpdated: relatedLinks.length,
     looksLikeSubscriptionInvoice,
+    // #4095: a stored event fails on a correction its settle could not recount.
+    ...(internetBankingPaymentSync.unrecountedCorrectionNoteIds.length > 0
+      ? {
+          recountLeftUnsettled: `Invoice ${invoice.invoiceID} was settled, but correction note(s) ${internetBankingPaymentSync.unrecountedCorrectionNoteIds.join(", ")} could not be recounted against its receipt; the event is retried to recount them.`,
+        }
+      : {}),
   };
 }
 

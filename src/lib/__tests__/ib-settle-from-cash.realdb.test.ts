@@ -478,6 +478,23 @@ async function cancellationCreditCents(): Promise<number> {
     expect(credited.map((event) => event.reason)).toEqual(["Paid Internet Banking amount held as account credit."]);
   }, 60_000);
 
+  it("A CORRECTION ON A KEPT LATE CAPACITY CANCEL: the stored $300 kept on incomplete cash, $200 paid against $300 less a $100 correction: never a mixed invoice's portion (#4095 item 2)", async () => {
+    await bookAt(30_000, { holdsBeds: false });
+    await raiseInvoice();
+    await editPriceTo(20_000);
+    await queueModificationNote(10_000, { noteWording: "invoice-correction" });
+
+    const result = await paidEffects.syncInternetBankingPaymentsForPaidInvoice(
+      { ...paidInvoice(20_000, { totalCents: 30_000, appliedNotes: [{ id: NOTE_ID, cents: 10_000 }] }), amountPaid: "degraded" } as unknown as Invoice,
+      [PAYMENT_ID],
+      CLUB_FORMAT_TEST,
+    );
+
+    expect((await prisma.booking.findUniqueOrThrow({ where: { id: BOOKING_ID }, select: { status: true } })).status).toBe("CANCELLED");
+    expect(await memberCredit.getMemberCreditBalance(MEMBER_ID)).toBe(20_000);
+    expect(result.partialCashCreditedInternetBankingBookings).toBe(0);
+  }, 60_000);
+
   it("CONTROL: a rise AFTER the invoice stays on its supplementary invoice, so the primary keeps $200", async () => {
     await bookAt(20_000);
     await raiseInvoice();

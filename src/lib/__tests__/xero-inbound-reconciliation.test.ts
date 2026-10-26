@@ -4663,6 +4663,44 @@ describe("processStoredXeroInboundEvents", () => {
       expect(sendAdminBankTransferSettlementFigureAlert).not.toHaveBeenCalled();
     });
 
+    it("recounts an applied correction after a kept settle, and fails the event when the recount could not run, so it is retried (#4095 items 5 and 12)", async () => {
+      // $123.45 invoiced, a $23.45 invoice correction applied and synced, $100.00
+      // paid plus an overpayment Xero gives no applied amount for: the cash is
+      // incomplete, so the settle keeps the stored figure.
+      mockPendingInternetBankingInboundEvent({
+        finalPriceCents: 10000,
+        amountPaid: 100.0,
+        invoiceTotal: 123.45,
+        invoiceCreditNotes: [{ creditNoteID: "cn_correction", appliedAmount: 23.45 }],
+        invoiceOverpayments: [{ overpaymentID: "xover_4095", total: 5 }],
+      });
+      mocks.txPaymentTransactionFindMany.mockResolvedValue([primaryRow()]);
+      mocks.paymentTransactionUpdateMany.mockResolvedValue({ count: 1 });
+      mocks.txOperationFindMany.mockResolvedValue([
+        { xeroObjectId: "cn_correction", localModel: "BookingModification", requestPayload: { noteWording: "invoice-correction" } },
+      ]);
+      mocks.linkFindFirst.mockImplementation(async (args: { where?: { xeroObjectId?: string } }) => {
+        if (args.where?.xeroObjectId === "cn_correction") throw new Error("database went away");
+        return null;
+      });
+
+      await expect(processStoredXeroInboundEvents()).resolves.toMatchObject({ succeeded: 0, failed: 1 });
+
+      // The settle committed and kept the stored figure first.
+      expect(mocks.paymentTransactionUpdateMany.mock.calls[0][0].data).not.toHaveProperty("amountCents");
+      expect(vi.mocked(sendAdminBankTransferSettlementFigureAlert).mock.calls[0][0]).toMatchObject({ keptReason: "cash-incomplete" });
+      expect(mocks.linkFindFirst).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ xeroObjectId: "cn_correction", role: "MODIFICATION_CREDIT_NOTE" }) }),
+      );
+      expect(mocks.inboundUpdate).toHaveBeenCalledWith({
+        where: { id: "evt_ib_gate" },
+        data: expect.objectContaining({
+          status: "FAILED",
+          errorMessage: expect.stringContaining("correction note(s) cn_correction could not be recounted"),
+        }),
+      });
+    });
+
     it("keeps a fold the invoice's correction notes do not exactly explain (#3979 review A)", async () => {
       mockPendingInternetBankingInboundEvent({
         finalPriceCents: 10000,

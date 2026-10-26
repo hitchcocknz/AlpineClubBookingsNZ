@@ -231,6 +231,12 @@ export async function decideInternetBankingReceiptFigure(
    * covers it.
    */
   mixedInvoiceExpectedCents: number | null;
+  /**
+   * The cash a full payment of this receipt brings: the receipt, or less when
+   * the invoice expected less (applied corrections and no-cash notes). Cash
+   * short of the receipt by only those is not a part payment (#4095 item 2).
+   */
+  partialFaceCents: number;
   /** The invoice-correction notes applied to the invoice, for the recount after a kept settle (#4095). */
   appliedCorrectionNotes: AppliedCreditNote[];
 }> {
@@ -293,9 +299,10 @@ export async function decideInternetBankingReceiptFigure(
   // figure that read as nothing is the unquantifiable fallback, not a mix.
   const mixedInvoiceExpectedCents =
     input.cash.knownCents > 0 && input.cash.knownCents < expectedCents ? expectedCents : null;
+  const partialFaceCents = Math.min(receiptCents, expectedCents);
 
   if (plan.kind !== "rewrite") {
-    return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents, appliedCorrectionNotes };
+    return { plan, receiptCents, primaryRowWrite: {}, paymentColumns: null, mixedInvoiceExpectedCents, partialFaceCents, appliedCorrectionNotes };
   }
   const primaryDiffers = uncapturedPrimary.some((row) => row.amountCents !== plan.receiptCents);
   return {
@@ -311,6 +318,7 @@ export async function decideInternetBankingReceiptFigure(
       status: plan.status,
     },
     mixedInvoiceExpectedCents,
+    partialFaceCents,
     appliedCorrectionNotes,
   };
 }

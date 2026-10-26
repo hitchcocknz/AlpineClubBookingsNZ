@@ -445,18 +445,16 @@ export async function reconcileXeroCreditNote(creditNoteId: string) {
     logger.error({ err, creditNoteId: creditNote.creditNoteID }, "Mirroring a credit note spent outside the app failed; the sweep will try again");
   }
 
-  // #4095: a refunded total whose claim was lost twice was left unwritten. Fail
-  // the event after every write above, so the stored event is retried after its
-  // backoff and recounts it, rather than waiting for another note.
-  if (refundedPaymentRepair.unsettledPaymentIds) {
-    throw new Error(
-      `The refunded total of payment(s) ${refundedPaymentRepair.unsettledPaymentIds.join(", ")} lost its claim twice to a concurrent writer while credit note ${creditNote.creditNoteID} was synced; the event is retried to recount it.`,
-    );
-  }
-
   return {
     handled: true,
     kind: "CREDIT_NOTE",
+    // #4095: a refunded total whose claim was lost twice was left unwritten; a
+    // stored event fails on it after every write above, so it is retried.
+    ...(refundedPaymentRepair.unsettledPaymentIds
+      ? {
+          recountLeftUnsettled: `The refunded total of payment(s) ${refundedPaymentRepair.unsettledPaymentIds.join(", ")} lost its claim twice to a concurrent writer while credit note ${creditNote.creditNoteID} was synced; the event is retried to recount it.`,
+        }
+      : {}),
     resourceId: creditNote.creditNoteID,
     creditNoteNumber: creditNote.creditNoteNumber ?? null,
     matchedPayments: paymentCandidates.length,

@@ -1,6 +1,7 @@
 /**
  * The refunded-total recount a bank-transfer settle owes after it KEEPS the
- * stored figure (#4095 items 5 and 12, `INV-PAY-125`, `INV-PAY-126`).
+ * stored figure, or replays one already captured (#4095 items 5 and 12,
+ * `INV-PAY-125`, `INV-PAY-126`).
  *
  * An invoice correction counts as refunded only against a receipt recorded at
  * the stored figure. A correction synced before the settle (or whose sync read
@@ -15,7 +16,10 @@
  * then `repairRefundedPaymentBusinessState`, with its claim on the row it read.
  * A note never synced yet is left to its own sync, which now finds the
  * receipt. Runs after the commit, outside any transaction, and takes no lock of
- * its own; nothing here fails the settle, which has already committed.
+ * its own. The repair writes an absolute total, so running it again on a replay
+ * changes nothing that is already right. A note it could not recount (an error,
+ * or a claim lost twice) is returned, and the inbound event fails on it after
+ * every other write, so the event is retried and the replay recounts it.
  */
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
@@ -29,7 +33,8 @@ import type { AppliedCreditNote } from "./settle-from-cash";
 export async function recountCorrectionsAfterKeptSettle(
   invoiceId: string,
   correctionNotes: readonly AppliedCreditNote[],
-): Promise<void> {
+): Promise<string[]> {
+  const unrecounted: string[] = [];
   for (const note of correctionNotes) {
     try {
       // The status the note's last sync recorded; none yet means it was never
@@ -60,14 +65,17 @@ export async function recountCorrectionsAfterKeptSettle(
       if (repair.unsettledPaymentIds) {
         logger.error(
           { invoiceId, creditNoteId: note.id, paymentIds: repair.unsettledPaymentIds },
-          "The recount after a kept bank-transfer settle lost its claim twice; the note's next sync recounts it (#4095)",
+          "The recount after a kept bank-transfer settle lost its claim twice; the invoice event fails so it is retried (#4095)",
         );
+        unrecounted.push(note.id);
       }
     } catch (err) {
       logger.error(
         { err, invoiceId, creditNoteId: note.id },
-        "Could not recount an invoice correction after a kept bank-transfer settle; the note's next sync recounts it (#4095)",
+        "Could not recount an invoice correction after a kept bank-transfer settle; the invoice event fails so it is retried (#4095)",
       );
+      unrecounted.push(note.id);
     }
   }
+  return unrecounted;
 }

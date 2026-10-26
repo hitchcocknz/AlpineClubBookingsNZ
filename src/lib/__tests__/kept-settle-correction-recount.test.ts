@@ -37,7 +37,7 @@ beforeEach(() => {
 
 describe("recountCorrectionsAfterKeptSettle (#4095 items 5 and 12)", () => {
   it("recounts a synced correction as its own sync does: its contribution by invoice, then the repair", async () => {
-    await recountCorrectionsAfterKeptSettle(INVOICE_ID, [{ id: "note-1", appliedCents: 10_000 }]);
+    await expect(recountCorrectionsAfterKeptSettle(INVOICE_ID, [{ id: "note-1", appliedCents: 10_000 }])).resolves.toEqual([]);
 
     expect(mocks.linkFindFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -80,7 +80,7 @@ describe("recountCorrectionsAfterKeptSettle (#4095 items 5 and 12)", () => {
     expect(mocks.repair).not.toHaveBeenCalled();
   });
 
-  it("never fails the committed settle: a failed or lost recount is logged and the next note still runs", async () => {
+  it("never fails the committed settle: a failed or lost recount is logged and returned, and the next note still runs", async () => {
     mocks.repair
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce({ matchedPaymentIds: ["pay-1"], changedPaymentIds: [], unsettledPaymentIds: ["pay-1"] });
@@ -89,7 +89,7 @@ describe("recountCorrectionsAfterKeptSettle (#4095 items 5 and 12)", () => {
         { id: "note-1", appliedCents: 10_000 },
         { id: "note-2", appliedCents: 5_000 },
       ]),
-    ).resolves.toBeUndefined();
+    ).resolves.toEqual(["note-1", "note-2"]);
     expect(mocks.repair).toHaveBeenCalledTimes(2);
     expect(mocks.loggerError).toHaveBeenCalledTimes(2);
   });
@@ -130,5 +130,10 @@ describe("decideInternetBankingReceiptFigure names the applied corrections (#409
     });
     expect(decided.plan).toMatchObject({ kind: "keep" });
     expect(decided.appliedCorrectionNotes).toEqual([{ id: "correction", appliedCents: 10_000 }]);
+    // Kept at the stored $300, a full payment brings $300 less the $100
+    // correction, the $20 no-cash note and the member's $30 credit: the $200
+    // of cash is no part payment on the cancel arms (#4095 item 2).
+    expect(decided.receiptCents).toBe(30_000);
+    expect(decided.partialFaceCents).toBe(30_000 - 10_000 - 2_000 - 3_000);
   });
 });

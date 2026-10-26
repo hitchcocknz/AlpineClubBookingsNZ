@@ -361,7 +361,12 @@ export async function recordHandMadeRefundNoteLink(
 export async function reconcileHandMadeNoteAfterCompletion(answer: ResolvedBankRefundVoidAnswer | null): Promise<void> {
   if (answer?.answer !== "recorded-in-xero") return;
   try {
-    await reconcileXeroCreditNote(answer.note.creditNoteId);
+    const reconciled = await reconcileXeroCreditNote(answer.note.creditNoteId);
+    // #4095: the re-read itself succeeded; only the refunded-total recount lost
+    // its claim twice, and the note's own inbound event recounts it.
+    if ("recountLeftUnsettled" in reconciled && reconciled.recountLeftUnsettled) {
+      logger.warn({ creditNoteId: answer.note.creditNoteId }, reconciled.recountLeftUnsettled);
+    }
   } catch (error) {
     logger.error({ err: error, creditNoteId: answer.note.creditNoteId }, "Could not re-read a hand-made refund credit note after recording it (#4162)");
     await notifyXeroSyncError({
