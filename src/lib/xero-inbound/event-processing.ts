@@ -4,6 +4,7 @@ import logger from "@/lib/logger";
 import { buildXeroObjectUrl } from "@/lib/xero-links";
 import { canonicalXeroWebhookEventCategory } from "@/lib/xero-webhook-categories";
 import { completeXeroSyncOperation, failXeroSyncOperation, startXeroSyncOperation } from "@/lib/xero-sync";
+import type { XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
 import { redactSensitiveText } from "@/lib/redact-sensitive-json";
 import { isStaleProcessingXeroInboundEvent } from "@/lib/xero-stale-operations";
 import { type ProcessStoredXeroInboundEventsResult, type RunXeroInboundReconciliationCycleResult, type StoredXeroInboundEvent, XeroInboundReplayError } from "./types";
@@ -256,7 +257,7 @@ export async function processStoredXeroInboundEvents(options?: {
       continue;
     }
 
-    let operationId: string | null = null;
+    let claim: XeroOperationClaim | null = null;
 
     try {
       const operation = await startXeroSyncOperation({
@@ -267,10 +268,10 @@ export async function processStoredXeroInboundEvents(options?: {
         replayable: true,
         requestPayload: event.payload,
       });
-      operationId = operation.id;
+      claim = operation;
 
       const reconcileResult = await processXeroInboundEvent(event, format);
-      await completeXeroSyncOperation(operationId, {
+      await completeXeroSyncOperation(operation, {
         responsePayload: reconcileResult,
         xeroObjectType: buildInboundXeroObjectType(event.eventCategory),
         xeroObjectId: event.resourceId,
@@ -293,8 +294,8 @@ export async function processStoredXeroInboundEvents(options?: {
         "Failed to process stored Xero inbound event; automatic retry is deferred"
       );
 
-      if (operationId) {
-        await failXeroSyncOperation(operationId, error);
+      if (claim) {
+        await failXeroSyncOperation(claim, error);
       }
       await markStoredInboundEventFailed(event.id, error);
       await releaseProcessedWebhookEventClaim(event);
