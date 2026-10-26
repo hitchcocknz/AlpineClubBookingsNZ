@@ -122,6 +122,7 @@ import {
   outstandingSupplementaryInvoiceOperationsWhere,
   RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES,
   restatableSupplementaryInvoiceOperationsWhere,
+  stillWaitingOnIntentWhere,
   waitingSupplementaryInvoiceOperationsWhere,
 } from "@/lib/xero-supplementary-invoice-statuses";
 import { formatDateOnly } from "@/lib/date-only";
@@ -1834,16 +1835,14 @@ export async function releaseXeroSupplementaryInvoiceOperationsForPaymentIntent(
  */
 export async function releaseWaitingSupplementaryInvoiceOperations(
   queueOperationIds: string[],
+  /** #3403 review: the capture they were read waiting on; one moved off it since is not its to release. */
+  paymentIntentId?: string,
 ): Promise<{ released: number; queueOperationIds: string[] }> {
-  if (queueOperationIds.length === 0) {
-    return { released: 0, queueOperationIds: [] };
-  }
+  if (queueOperationIds.length === 0) return { released: 0, queueOperationIds: [] };
   const updateResult = await prisma.xeroSyncOperation.updateMany({
     where: {
-      id: {
-        in: queueOperationIds,
-      },
-      status: "WAITING_PAYMENT",
+      id: { in: queueOperationIds },
+      ...(paymentIntentId ? stillWaitingOnIntentWhere(paymentIntentId) : { status: "WAITING_PAYMENT" }),
     },
     data: {
       status: "PENDING",
@@ -1853,10 +1852,7 @@ export async function releaseWaitingSupplementaryInvoiceOperations(
     },
   });
 
-  return {
-    released: updateResult.count,
-    queueOperationIds,
-  };
+  return { released: updateResult.count, queueOperationIds };
 }
 
 /**
@@ -2027,6 +2023,8 @@ export async function restatePendingSupplementaryInvoiceAmount({
       where: {
         id: operation.id,
         status: { in: [...RESTATABLE_SUPPLEMENTARY_INVOICE_STATUSES] },
+        // #3403 review (C1): still waiting on the request it was read on; an invoice a supersession moved since is not written back.
+        ...(typeof payload.paymentIntentId === "string" ? { requestPayload: { path: ["paymentIntentId"], equals: payload.paymentIntentId } } : {}),
       },
       data: {
         requestPayload: {

@@ -566,6 +566,14 @@ import "./manual-reversal-retrying-cancel.realdb.test";
 // failed mint, bumped before it runs and cancelled mid-mint. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4316-` fixtures.
 import "./ended-booking-ask-mint-race.realdb.test";
+// #3403 (`INV-PAY-140`) reuses it to prove a superseded card change's waiting
+// Xero invoice follows the request that carries its balance: released with
+// that request's capture, each invoice for its own amount, retired when it is
+// never paid; and the move forced on the anchor's key against a price
+// reduction's retire and the repair pass's enqueue, in both orders. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3403-`
+// fixtures.
+import "./superseded-ask-invoice-carry.realdb.test";
 // #4357 reuses it to prove every saved-card door charges the booking's worth:
 // a change fee the edit lifecycle's writer recorded on an unsettled payment is
 // charged by the charge-saved-method route and the officer's
