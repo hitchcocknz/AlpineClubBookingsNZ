@@ -453,8 +453,8 @@ Minimum production categories:
   `STRIPE_SECRET_KEY` / `NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY` /
   `STRIPE_WEBHOOK_SECRET` env vars still present are ignored and flagged in setup
   readiness — see the **Upgrade: DB-only provider credentials** runbook below.
-- Xero: **no env vars** (#2079). The Xero client id/secret, webhook key, and
-  token-encryption key are captured **in-app** through the guided setup wizard at
+- Xero: **no env vars** (#2079). The Xero client id/secret and webhook key are
+  captured **in-app** through the guided setup wizard at
   **Admin > Xero > Setup** (#2080; Full Admin only) and stored encrypted; the
   redirect URI derives from `NEXTAUTH_URL`. This
   single connection serves bookings, payments, subscriptions, and the finance
@@ -1500,8 +1500,7 @@ config (`AUTH_SECRET`, `DATABASE_URL`, `NEXTAUTH_URL`, SMTP/SES) is unchanged.
    resolved redirect URI), re-entering the client id and client secret, and
    reconnecting. Each credential write is Full-Admin only, encrypted at rest, and
    audited (metadata only); values are never displayed back. Entering a new value
-   resets the connection, so the wizard has you reconnect on the next step. The
-   wrapped token-encryption key is auto-generated on first use.
+   resets the connection, so the wizard has you reconnect on the next step.
 4. Complete the wizard's **Connect** step (OAuth) so fresh tokens are stored
    under the new key, and confirm the connected organisation name it shows.
 5. Remove the now-ignored `XERO_*` credential env vars from the environment;
@@ -1574,8 +1573,8 @@ a casual refresh. Rotation drops, all at once:
 - **all 2FA enrolments and recovery-code hashes** — every member is forced back
   through two-factor enrollment on next sign-in. **Admin-lockout risk:** an admin
   who cannot immediately re-enroll (lost authenticator) can be locked out.
-- **all stored provider credentials, for every provider in the store** — and the
-  **wrapped Xero token-encryption key**. These fail GCM decryption afterwards and
+- **all stored provider credentials, for every provider in the store**, the
+  Xero tokens among them. These fail GCM decryption afterwards and
   must be re-entered in-app; Xero must be reconnected (re-OAuth) and the Stripe
   webhook re-verified. **This runbook deliberately does not list the providers.**
   It used to name Xero and Stripe only, and stayed that way while Google, the

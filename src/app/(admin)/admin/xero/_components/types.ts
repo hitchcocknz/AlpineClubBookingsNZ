@@ -4,9 +4,9 @@ import type { XeroMappingWritableKey } from "@/lib/xero-account-mapping-keys"
 
 export interface XeroStatus {
   connected: boolean
-  // A token row exists but no longer decrypts (env→DB upgrade / auth-secret
-  // change, #2079): reconnect required, not "connected". Optional for older
-  // response shapes.
+  // A connection exists but its stored token set is unreadable or missing
+  // (auth-secret change, #2079; made before #3454, #3806): reconnect required,
+  // not "connected". Optional for older response shapes.
   needsReentry?: boolean
   tenantId: string | null
   tokenExpiresAt: string | null

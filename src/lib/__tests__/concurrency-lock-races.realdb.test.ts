@@ -275,12 +275,14 @@ import "./edit-financial-review-captured-cancel.realdb.test";
 // never touching the cancelled invoice. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3880-` fixtures.
 import "./edit-financial-review-cancelled-refund-xero.realdb.test";
-// #3454 reuses it to prove the Xero token store's two fences against real row
-// locks: simultaneous refresh-lease claims (this code against itself, and
-// against an older colour's own claim statement) let exactly one through, and a
-// refresh whose credential-store compare-and-set loses rolls the `XeroToken`
-// mirror back with it. Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it clears
-// the singleton `XeroToken` table and its own `xero-oauth` row.
+// #3454 reuses it, and #3806 R2 extends it, to prove the Xero token store's
+// fences against real row locks: simultaneous refresh-lease claims (this code
+// against itself, and against the previous release's own claim statement) let
+// exactly one through, both leases are claimed or neither, a refresh whose
+// credential-store compare-and-set loses rolls everything back, and the previous
+// release keeps reading the store copy after this release's writes. Skipped
+// unless RUN_CONCURRENCY_RACE_TESTS=1; it clears the singleton `XeroToken` and
+// `XeroConnection` tables and its own `xero-oauth` row.
 import "./xero-token-credential-store.realdb.test";
 // #3653 reuses it to prove an organiser-settled child's refund out of the
 // group's combined card payment: recorded once, converged after an ambiguous
