@@ -42,7 +42,9 @@
  * later FAILED - its row no longer counts, so nothing card-side is left to
  * attribute. Since #3640 the writer's floor stops such a subtraction going
  * below the credit, so this can only predate the fix. Those need a person's
- * reading, not the #3640 repair.
+ * reading, not the #3640 repair. So does (#4280) any part of a shortfall only
+ * a close's bank cash explains: attribution is measured against the floor
+ * without that cash, so a payment's #3640 figure is what it was before.
  *
  * REPORT ONLY - IT NEVER WRITES AND NEVER REPAIRS. It issues typed SELECTs
  * through Prisma (`INV-OPS-001`), and calls no provider. #4280: in ONE
@@ -101,9 +103,13 @@ export function deriveRefundedTotalShortfall(
   if (shortfallCents <= 0) {
     return null;
   }
+  // #4280: only the shortfall below the floor WITHOUT the closes' bank cash is
+  // the old arithmetic's to explain; what that cash adds is another reason.
+  const shortfallBeforeClosesCents =
+    expectedRefundedFloorCents({ ...row, paidAnotherWayCents: 0 }) - row.refundedAmountCents;
   const attributableCents =
     row.cardRefundCents > 0
-      ? Math.min(row.cardRefundCents, row.accountCreditCents, shortfallCents)
+      ? Math.max(0, Math.min(row.cardRefundCents, row.accountCreditCents, shortfallBeforeClosesCents))
       : 0;
   return {
     ...row,

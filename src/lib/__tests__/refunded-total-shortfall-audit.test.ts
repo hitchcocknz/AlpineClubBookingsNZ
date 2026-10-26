@@ -81,6 +81,18 @@ describe("deriveRefundedTotalShortfall (#3640)", () => {
     ).toMatchObject({ expectedFloorCents: 20000, shortfallCents: 15000 });
   });
 
+  it("#4280: what only a close's bank cash explains is never attributed to the old arithmetic", () => {
+    // $50 card + $100 credit stored as $300 with a $200 close: the floor
+    // without the close ($150) is met, so the $50 short is the close's, not #3640's.
+    expect(
+      deriveRefundedTotalShortfall(row({ refundedAmountCents: 30000, cardRefundCents: 5000, accountCreditCents: 10000, paidAnotherWayCents: 20000 })),
+    ).toMatchObject({ expectedFloorCents: 35000, shortfallCents: 5000, attributableCents: 0, unattributedCents: 5000 });
+    // Short below the floor without it too: #3640's part is what it was before the close counted.
+    expect(
+      deriveRefundedTotalShortfall(row({ refundedAmountCents: 10000, cardRefundCents: 5000, accountCreditCents: 10000, paidAnotherWayCents: 20000 })),
+    ).toMatchObject({ expectedFloorCents: 35000, shortfallCents: 25000, attributableCents: 5000, unattributedCents: 20000 });
+  });
+
   it("caps the floor at what was captured", () => {
     expect(
       deriveRefundedTotalShortfall(
