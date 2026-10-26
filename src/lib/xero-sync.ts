@@ -24,6 +24,7 @@ import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { isClosedByCreditSpentOutsideApp } from "@/lib/xero-operation-resolution";
 import { outcomeWriteGuard, refusedOutcomeWrite, type XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
+import { successAfterResolutionAlert } from "@/lib/xero-success-after-resolution-alert";
 
 export interface XeroSyncOperationInput {
   direction: string;
@@ -979,33 +980,11 @@ export async function completeXeroSyncOperation(
     ? await completeWithClient(options.store)
     : await prisma.$transaction(completeWithClient);
 
-  // The guarded write holds the row lock until commit. It leaves the manual
-  // resolution stamp untouched, so this is the stamp the success landed on.
-  if (operation?.status === "SUCCEEDED" && operation.manuallyResolvedAt) {
-    const deferredPostCommit = async () => {
-      const context = { operationId, localModel: operation.localModel, localId: operation.localId };
-      logger.warn(context, "Xero success landed after manual resolution; Xero may now hold two documents");
-      const { sendAdminAlertOnceEver } = await import("./admin-alert-once");
-      await sendAdminAlertOnceEver({
-        key: `xero-success-after-manual-resolution:${operationId}`,
-        label: "Xero success after manual resolution alert",
-        context,
-        send: async () => {
-          const { sendAdminXeroSyncErrorAlert } = await import("./email");
-          return sendAdminXeroSyncErrorAlert({
-            errorType: "Success after manual resolution",
-            operation: `${operation.operationType} ${operation.entityType} (${operation.localModel ?? "operation"} ${operation.localId ?? operationId})`,
-            errorMessage: "A Xero call succeeded after this item was marked resolved in Xero by hand. Xero may now hold two documents for this item. Check both documents in Xero and void one if they are duplicates.",
-            timestamp: new Date(),
-          });
-        },
-      });
-    };
-    // An injected store belongs to an enclosing transaction; its owner must
-    // run this thunk only after that transaction commits.
-    if (options?.store) return { ...operation, deferredPostCommit };
-    await deferredPostCommit();
-  }
+  // #4374 (`INV-INT-029`): a success landing on a row resolved in Xero warns and alerts once, after commit. On an
+  // injected store that is its owner's commit: the owner runs the `deferredPostCommit` returned here after it.
+  const resolvedRowAlert = successAfterResolutionAlert(operation);
+  if (resolvedRowAlert && operation && options?.store) return { ...operation, deferredPostCommit: resolvedRowAlert };
+  await resolvedRowAlert?.();
 
   if (operation?.status === "PARTIAL" && options?.alert !== false) {
     try {
