@@ -97,8 +97,24 @@ is a reviewed edit there), `nodeLinker`, `verifyDepsBeforeRun` and
 (`@prisma/engines`, `esbuild`, `prisma`, `unrs-resolver`) are
 approved at one exact version each. Dependabot groups them, and the packages
 that pull them in, into their own `install-scripts` PR, so the ordinary
-minor-and-patch group is not held up. When a bump fails the install with
-`ERR_PNPM_IGNORED_BUILDS <name>@<version>`:
+minor-and-patch group is not held up. That works only because every other npm
+group lists each `install-scripts` pattern under `exclude-patterns`: Dependabot
+scores group matches rather than taking the first, so group order alone let
+them slip into the catch-all (#4364). `verify` runs
+`node scripts/ci/check-allow-builds.mjs` before the install; it fails when the
+two lists differ in either direction, when an approved package matches no
+`install-scripts` pattern, and when an approval no longer matches the version
+`pnpm-lock.yaml` resolves, naming the package and both versions. Adding a
+package to `allowBuilds` therefore also means adding a pattern that matches it
+to both groups in `.github/dependabot.yml`: the `install-scripts` group's
+`patterns` and the other group's `exclude-patterns`. Dependabot groups by the **direct**
+dependency it bumps, not by the approved package. So the direct dependencies
+that pull an approved package in (`pnpm why <package>`; today `tsx`, `vite`,
+`vitest`, `@vitest/coverage-v8`, `@sentry/nextjs`, `prisma`, `@prisma/client`,
+`eslint-config-next`) need a matching pattern too. The check doesn't verify
+those; keep them by hand when adding a direct dependency. When that
+check, or the install itself with `ERR_PNPM_IGNORED_BUILDS <name>@<version>`,
+fails on a bump:
 
 1. Read what that version's install script does (its `package.json`
    `scripts.preinstall`/`install`/`postinstall`, and the file it runs).

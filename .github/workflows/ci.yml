@@ -841,6 +841,15 @@ jobs:
           done
           exit "$found"
 
+      # #4364: an `allowBuilds` approval in pnpm-workspace.yaml that no longer
+      # matches the version pnpm-lock.yaml resolves makes the install below stop
+      # with a bare ERR_PNPM_IGNORED_BUILDS. This names the package and both
+      # versions first, and also fails when `.github/dependabot.yml` would let
+      # such a package slip into the ordinary minor-and-patch group. It reads
+      # three files and nothing else, so it sits with the pre-install gates.
+      - name: Check install-script approvals match the lockfile
+        run: node scripts/ci/check-allow-builds.mjs
+
       # #2909: every workflow job that runs the unit suite must check out full
       # git history, because part of that suite drives git against this
       # repository's own commits (HEAD^1, origin/main). The clock canary once ran
