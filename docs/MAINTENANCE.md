@@ -2430,11 +2430,13 @@ resolved before this release can still be retried.
 
 A Xero call already under way can still succeed after you resolve (#4374,
 `INV-INT-029`): two attempts can share one operation, and one may answer late.
-The operation then shows as succeeded, stays marked resolved, and the finance
-contacts get one **Xero Sync Error** email for it
-(`XERO_SUCCESS_AFTER_RESOLUTION`) naming what the app recorded in Xero. If you
-also made that document by hand, Xero now holds it twice: void the duplicate
-in Xero.
+The operation then shows as succeeded and, if the app recorded a document in
+Xero, the finance contacts get one **Xero Sync Error** email for it
+(`XERO_SUCCESS_AFTER_RESOLUTION`) naming that document. If you also made the
+document by hand, Xero may now hold it twice. The app may instead have found
+and used yours, by its reference, leaving only one: check Xero before voiding
+a duplicate. If that email cannot reach anyone, it is not sent again; the
+operation's succeeded status on the panel is then the only sign.
 
 There is no undo on the panel. If you marked one by mistake, fix the Xero side
 by hand, or use **Targeted force sync** for that one booking's invoice: it

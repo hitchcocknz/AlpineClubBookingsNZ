@@ -555,21 +555,22 @@ outcome of the same keyed Xero call there.
 
 - **One guard, in the two writers.** `completeXeroSyncOperation` and
   `failXeroSyncOperation` (`xero-sync.ts`) guard every outcome write with
-  `outcomeWriteGuard` (`xero-operation-outcome-guard.ts`). Only SUCCEEDED lands on SUCCEEDED, only SUCCEEDED or
-  PARTIAL on PARTIAL; `keepCancelled` also keeps CANCELLED.
-- **Every outcome carries its claim (#4373).** Each writer takes the outcome's
-  claim: the row's id and its RUNNING claim's `startedAt`, from the
-  started row, the outbox or REQUEUE claim (`claimXeroSyncOperationToRunning`)
-  or a retry's claim. No outcome, a success included, lands on a RUNNING row
-  another claim holds: an earlier attempt's late outcome never lands on the
-  claim of a retry after a stale reset or failure.
+  `outcomeWriteGuard` (`xero-operation-outcome-guard.ts`). Only SUCCEEDED
+  lands on SUCCEEDED, only SUCCEEDED or PARTIAL on PARTIAL; `keepCancelled`
+  also keeps CANCELLED.
+- **Every outcome carries its claim (#4373):** the row's id and its RUNNING
+  claim's `startedAt`, from the started row, the outbox or REQUEUE claim
+  (`claimXeroSyncOperationToRunning`) or a retry's claim. No outcome, a
+  success included, lands on a RUNNING row another claim holds, such as a
+  retry's after a stale reset or failure.
 - **A repair's claim is kept too.** The PARTIAL repair and FAILED
   refund-note repair stamp a marker code on their RUNNING claim; no outcome
   but SUCCEEDED lands there unless written onto that claim (`retryClaim`).
 - **A success lands on any row no claim holds** (Xero's answer to the same
-  keyed call), even one resolved in Xero (#4374): it keeps the mark and links,
-  and after commit warns and alerts officers once per operation, as Xero may
-  hold the item twice.
+  keyed call), even one resolved in Xero (#4374). The write leaves the mark;
+  if it recorded a Xero object, after commit it warns and alerts officers
+  once per operation: Xero may hold it twice. Limit: an alert reaching
+  nobody is retried only if another success lands.
 - **A refused write changes nothing.** It answers null, writes no link and
   raises no alert. A missing row throws, or is logged for a guarded caller.
   A success refused for a later claim still records its links, warned.
