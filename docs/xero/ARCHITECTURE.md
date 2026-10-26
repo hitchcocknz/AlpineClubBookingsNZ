@@ -605,10 +605,11 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 
 | Module | Owns |
 | --- | --- |
-| `xero-config` | Resolves the operational connection **from the encrypted DB store** (#2079): client id/secret and webhook key via `IntegrationCredential`, the redirect URI from `NEXTAUTH_URL`, and the auto-generated wrapped token-encryption key. No `XERO_*` credential env vars are read; legacy vars are detected and flagged. |
+| `xero-config` | Resolves the operational connection **from the encrypted DB store** (#2079): client id/secret and webhook key via `IntegrationCredential`, and the redirect URI from `NEXTAUTH_URL` (the wrapped token-encryption key it used to generate was retired by #3806). No `XERO_*` credential env vars are read; legacy vars are detected and flagged. |
 | `xero-oauth` | Consent URL, OAuth callback (`handleXeroCallback`), client construction, disconnect (revoke + clear tokens). |
 | `xero-oauth-state` | CSRF state cookie for the OAuth round-trip. |
-| `xero-token-store` | Token persistence: the authoritative copy in the encrypted credential store (`xero-oauth` / `token-set`, #3454) with the `XeroToken` row written beside it for the blue-green window; connection status; and the **refresh lease** (`claimXeroTokenRefreshLease`) so concurrent instances — and an older deployed colour — don't double-refresh; losers wait for the lease deadline and re-read. |
+| `xero-token-store` | Token persistence: the only copy in the encrypted credential store (`xero-oauth` / `token-set`, #3454); the `XeroConnection` row (#3806) and, for the previous release, the `XeroToken` row; connection status; and the **refresh lease** (`claimXeroTokenRefreshLease`, on both rows) so concurrent instances — and an older deployed colour — don't double-refresh; losers wait for the lease deadline and re-read. |
+| `xero-connection` | `readXeroConnection`: the one reader of the connection's non-secret facts — tenant and token expiry — for every surface that asks "is Xero connected" (#3806). |
 | `xero-api-client` | `getAuthenticatedXeroClient` (refreshes under lease), `callXeroApi` (meters every call into `XeroApiUsageDaily`/`XeroApiUsageEvent`, observes the daily budget and process-local rate-limit cool-downs), `withXeroRetry` (in-process retry for 429/5xx/408), `XeroDailyLimitError`, `XeroTransientOutageError`. |
 | `xero-api-usage` | Daily budget constant and usage recording/summary. |
 | `xero-active-operation-statuses` | The active correlation-key population, shared by enqueue, resolution and repair reads. The census pins it to the partial unique index; supplementary-invoice statuses alias it and wider blockers extend it. |
@@ -702,7 +703,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-hardening` | Historical `XeroObjectLink` backfill, stale canonical-link cleanup, the emailed reconciliation report, repeated-failure alerting. Split into cohesive `xero-hardening-*` sub-modules (#1208 item 5, entry re-exports the public surface); see refactor item 5 for the module map. Cleanup and the report's drift classifications are source-aware for Stripe per-delta refund notes (#2901): see "Repairing Stripe refund-note links" under Flow 3. |
 | `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: unconditionally deactivates local mirrors of notes VOIDED/DELETED in Xero, reactivates wrongly deactivated links (recorded-status only, never past the note-eligible cash — `resolveRefundNoteEligibleCash`, #2902/INV-PAY-050 less late captures Xero never received, #3635 — with notes resolved in Xero counted as coverage; landing short is applied honestly and the self-heal reissues the remainder), refuses payments with a still-executable credit-note operation (queued/running/awaiting-payment, failed-but-retryable, or a queued retry of one). No provider calls; `--apply` is bound to reviewed payment ids. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
 | `xero-refund-note-status-recorder` | Read-only provider GETs that record each linked refund credit note's live Xero status onto ALL of its local links, active or not (`--record-statuses`; run automatically before `--apply`). Exists because inbound reconciliation structurally cannot stamp a status onto an inactive link, and the repair never reactivates an unknown-status note. |
-| `xero-refund-note-status` | The one home for "does this credit-note status still count as refund coverage?" (`VOIDED`/`DELETED` do not) and for reading a link's recorded status — shared by the inbound contribution math, `sumCoveredRefundCreditNoteCents`, cleanup, the drift report and the operator repair so no path can disagree (#2901). |
+| `xero-refund-note-status` | The one home for "does this credit-note status still count as refund coverage?" (`VOIDED`/`DELETED` do not) and for reading a link's recorded status — shared by the inbound contribution math, `sumCoveredRefundCreditNoteCents`, cleanup, the drift report and the operator repair so no path can disagree (#2901). Also "does this create row count toward coverage?" (`countsTowardRefundNoteCoverage`, #4265): only its own note, never a refund request's. |
 | `xero-invoice-rounding-audit` | Read-only diagnostic that replays the pre-#1231 line maths in integer cents to flag issued invoices that would have carried the #1163 rounding drift, across **both** builder callers — per-booking invoices (`Payment.xeroInvoiceId`) and group-settlement invoices (`GroupBookingSettlement.xeroInvoiceId`). Makes **no** live-provider calls and mutates nothing (only `booking.findMany` + `groupBookingSettlement.findMany`). CLI entry: `scripts/audit-xero-invoice-rounding.ts`. See "Historical rounding-drift audit" below. |
 | `xero-credit-sync-checker` | #2501 detect-and-warn reconciliation of **applied account credit**: compares each booking's stamped `BOOKING_APPLIED` sum (BookingApp's known credit, the same figure the #2483 email nets from) against its live Xero invoice `amountCredited`, and warns admins on drift with the exact per-booking amount. Read-only, idempotent, fail-safe. See "Credit-sync drift checker" below. |
 | `xero-cron-runner` | Maps the 8 cron tasks to the workers above, records `CronJobRun` rows, gates on module + connection. |
@@ -737,7 +738,8 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 
 | Table | Role |
 | --- | --- |
-| `XeroToken` | Single-row encrypted OAuth token set + `refreshInProgressUntil` lease. Since #3454 a **mirror** of the credential-store copy, kept for the blue-green window, and still the connection row and the lease row (see "OAuth and token lifecycle"). |
+| `XeroConnection` | Single row (id `default`): the connected tenant, the access token's expiry and the refresh lease. No secret. Kept in step with `XeroToken` by a trigger while that table exists (#3806, see "OAuth and token lifecycle"). |
+| `XeroToken` | RETIRING (#3806). Kept only for the previous release: present while connected, with `tenantId`, `expiresAt` and its `refreshInProgressUntil` lease current; its ciphertext columns are no longer written or read. Dropped in R3. |
 | `XeroSyncOperation` | The ledger. `direction` INBOUND/OUTBOUND, `entityType`, `operationType`, optional `localModel`/`localId`, `idempotencyKey`, `correlationKey`, `replayable`, error fields, redacted request/response payloads, resulting Xero object identity, manual-resolution override fields, and `queueType` (a denormalized, indexed copy of `requestPayload.queueType` set at enqueue — canonical value still lives in the payload; #1271). **Status machine:** `PENDING → RUNNING → SUCCEEDED | FAILED`, plus `WAITING_PAYMENT → PENDING` for supplementary invoices held until their Stripe payment settles. Claims are optimistic `updateMany` transitions, so concurrent workers cannot double-run a row. |
 | `XeroObjectLink` | Local record ⇄ Xero object links with a `role` (e.g. `PRIMARY_INVOICE`, `REFUND_CREDIT_NOTE`, `CONTACT`, `ENTRANCE_FEE_INVOICE`) and `active` flag; unique on (local, xero, role). Canonical single-active scopes are enforced on upsert. |
 | `XeroInboundEvent` | Stored webhook/admin events. **Status machine:** `RECEIVED → PROCESSING → PROCESSED | FAILED` (FAILED retried after a backoff; stale PROCESSING is operator-replayable). Unique `correlationKey` makes webhook delivery idempotent. |
@@ -1612,7 +1614,15 @@ on `manuallyResolvedAt`.
   executed at another watermark than it was queued at. Its amount is never
   read. Owner decision (21 Oct 2026): a voided card refund note is raised
   again automatically, even one resolved in Xero, so officers are told not to
-  replace it by hand as well, which would duplicate it. A resolved row whose
+  replace it by hand as well, which would duplicate it. A row's coverage is
+  its own, live note, and never a refund request's (#4265, owner decision
+  26 Oct 2026; `countsTowardRefundNoteCoverage`, read by this reader and by
+  `sumRefundCreditNoteCoverageOfRowsCents`): a refund request's note answers
+  the request (`INV-PAY-118`), and a row closed as covered by another refund's
+  note (`coveredByExistingNote`, #4258) raised none of its own. Such a row
+  covers nothing, live or voided, and its amount is never read; its key and id
+  are still reported, so the request's own fence holds. A voided request note
+  is #4391's to handle. A resolved row whose
   amount cannot be read, unless its note is voided or deleted (#4250), makes
   the enqueue refuse loudly (error log, "raise it by hand"). `readRefundCreditNoteGap` is the one reader of the gap
   for the self-heal list and the booking page. No new booking invoice is queued
@@ -1831,7 +1841,7 @@ classifier (`src/lib/bank-refund-void-scan.ts`) answers one of:
 | awaiting heal | The mirror is still active: the next night, after the heal. |
 | handled | Its nightly follow-up exists (the key is the claim); a link marker records a spare, a person's answer, or picks in full; or a person's picks add up to its amount (one pick when its amount cannot be read). Nothing more. |
 | deferred | A refund-note create on the payment could still mint (a row whose note Xero voided never counts). Tried again next night; listed on Stuck States after 7 days and counted in the run's summary (`deferredOverdue`). |
-| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
+| spare | Live notes plus notes resolved by hand (`INV-INT-025`, never a resolved row whose own note Xero voided, #4250's shared rule, nor a refund request's note, #4265) still cover every bank hand-back and the eligible card refund cash (`resolveRefundNoteEligibleCash` less paid-another-way cash): nothing moves; a `bankRefundVoid` marker on the link records it. |
 | undo | In one transaction under `lock(1)` then the Payment row: insert the follow-up (`CANCELLED_BOOKING_HAND_BACK`, key `bank-refund-void:<paymentId>:<creditNoteId>`), unwind the amount from the allocation (`unwindLocalRefundAllocation`, oldest first, never below card refunds), reverse the hand-back's `BANK_REFUND` line (`settlementLineReversal`) and recompute the total (`reconcilePaymentAggregates`). No email, booking event or provider call. |
 | unmatched | The amount cannot be read, no single live hand-back line has it, the detail no longer holds it, it recorded a card refund's record (a "Paid another way" close or shortfall), it recorded a card refund itself (#4312, `card-refund`: a note keyed on its `PaymentRefund`, by its payload or its key), or a person has picked part of it: listed on Stuck States. A person picks the live bank refunds it recorded, one at a time, and the same undo runs for each (`pickRefundForUnmatchedVoid`, owner 18 Oct 2026), claimed under `bank-refund-void:<paymentId>:<creditNoteId>:<lineId>`; never a line its own task's live notes still record even in part (shown with its live share, left to a recorded answer), nor one larger than what is left of the note's amount. The pick that leaves nothing to pick writes a `picked` marker. A card refund's record has nothing to pick - its note is re-raised from the repair tool and the answer recorded; nor does a card refund's own note (`isCardMoneyVoidReason`), which takes a recorded answer once Xero is checked: nothing re-raises it, so a person raises it by hand where Xero should still show it. A late capture's refund is no exception: its voided note keeps its credit note's id, so the capture's sizing (`noteLateCaptureRefunds`, `classifyLateCaptureCardNote`) still counts it and a later refund of the capture asks only for itself; any other row with nothing to pick says why and takes a recorded answer. |
 
@@ -1860,8 +1870,13 @@ transaction (`getCreditNotes`, and the payment's invoice for its contact,
 `bank-refund-void-answer.ts`; one retry, 5s wait, "Xero is busy" on a rate
 limit, "try again tomorrow" on the daily limit), checks it is an `ACCRECCREDIT` that is AUTHORISED or PAID, for the
 amount, for the invoice's contact (else the owner's), allocated to no other
-invoice and tracked by nothing else here (this payment's own inactive,
-non-voided link is reactivated), and the completion links it as a per-refund
+invoice, tracked by nothing else here (this payment's own inactive,
+non-voided link is reactivated) and named by no credit-note create, on any
+payment, that is resolved by hand or not yet SUCCEEDED (#4321: with no live
+link, a resolved row counts the note as its own refund's, and the resolve route
+can still flip an unfinished one). A FAILED row an officer resolved after making
+its note by hand names no note - the route records none - so that note is not
+recognised (#4421). The completion links it as a per-refund
 `REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
 commits before that link write is kept under the link's row lock and the answer
 is refused (#4288). After
@@ -2854,59 +2869,101 @@ key, schema change, historical operation or ledger reader cutover is introduced
    records SKIPPED). Saving a Xero client id or secret deletes the tokens too
    (the verify-reset), in the **same transaction** as the credential write.
 
-### Where the tokens are stored (#3454)
+### Where the tokens are stored (#3454, #3806)
 
-**The authoritative copy** is one row of the encrypted integration-credential
-store, provider `xero-oauth`, key `token-set`: a JSON token set encrypted under
-the store's own key derivation. Every write therefore names its actor, commits
-its `integration.credential.*` audit row in the same transaction, and declares
-what it expected to find (`INV-PRIV-020`).
+**The tokens** are one row of the encrypted integration-credential store,
+provider `xero-oauth`, key `token-set`: a JSON token set encrypted under the
+store's own key derivation. Every write therefore names its actor, commits its
+`integration.credential.*` audit row in the same transaction, and declares what
+it expected to find (`INV-PRIV-020`). Since #3806 R2 it is the only copy read:
+a connection whose store copy is missing, unreadable or malformed, or names a
+different organisation from the connection, reads as "reconnect required",
+never as connected. The last case is a copy a release from before #3454 left
+behind when it reconnected to another organisation: it writes only
+`XeroToken`, so the trigger moves the connection and the store keeps the old
+grant.
 
-**The `XeroToken` row is still written, in the same transaction, in the format
-older code reads.** A blue-green deploy runs the previous colour beside the new
-one for a while, and the previous colour reads and refreshes only that row.
-Xero refresh tokens rotate — each is spendable once — so a copy the old code
-could not see would split the connection and strand one side on a spent token.
-Three rules keep it whole:
+**The connection and the refresh lease** are the one `XeroConnection` row: no
+row means not connected. It holds the tenant id, the access token's expiry and
+`refreshInProgressUntil`, and no token, ciphertext or key. Every reader that
+needs only the tenant or expiry (`isXeroConnected`, the health check, the setup
+provider test, setup readiness, the stored financial-year resolution, config
+transfer's tenant stamp, the admin cache key) asks `readXeroConnection`
+(`src/lib/xero-connection.ts`), so they all read the same row. Whether the
+tokens behind it are usable is the token store's `getXeroTokenReadability`.
 
-- **Both copies or neither.** Connect, refresh, disconnect and verify-reset
-  each write both copies in one transaction.
-- **One lease.** The refresh lease stays on `XeroToken.refreshInProgressUntil`,
-  the one the previous colour claims, so at most one process of either colour
-  spends a given refresh token. A refresh's save is fenced twice: the lease
-  guard on the `XeroToken` update, and a compare-and-set on the store copy's
-  version. The claim takes the lease FIRST and reads both copies after, under
-  that row's lock, so the version is the one that belongs to the tokens it hands
-  over. Either fence failing rolls both copies back. Before calling Xero, the
-  refresh checks that its save can succeed (the auth-secret gate and the token
-  key) and refuses without spending the token if not.
-- **A fingerprint, not a clock, decides which copy is current.** The store copy
-  records a hash of the `XeroToken` ciphertext written beside it. A row that no
-  longer matches was rewritten by code that writes only that row — the previous
-  colour — and is the newer copy, so it is read instead; the next write here
-  re-converges them. `updatedAt` was rejected: each container stamps it from its
-  own clock. A lease claim changes only `refreshInProgressUntil`, so it does not
-  move the fingerprint. A read takes the store row FIRST: every writer rewrites
-  or deletes the `XeroToken` row, so a write landing between the two reads
-  always leaves the second read the newer one.
+**The old `XeroToken` row is kept for the previous release (#3454), until R3.**
+A blue-green deploy runs the previous release beside this one, and after a
+rollback it runs alone. It reads, refreshes, connects and disconnects only
+through `XeroToken`, treats no row as not connected, and reads the store copy
+only while the store's `mirror` fingerprint matches a hash of the row's id and
+ciphertext. Xero refresh tokens rotate — each is spendable once — so if the
+two releases disagreed about the current tokens, one side would end up on a
+spent refresh token and the club would have to reconnect. Four rules prevent
+that:
 
-While both colours can run, the `XeroToken` row is also the **connection row**:
-no row means not connected. The table has no singleton constraint, so two
-simultaneous first connects can leave two rows; every reader that does not
-hold a row's lock takes the most recently written one (`XERO_TOKEN_ROW_ORDER`),
-and a won refresh claim reads the row it locked by id. If the auth secret no
-longer passes the capture gate, the refresh refuses before spending the token,
-alerts as "Token Store Unavailable", and the status page reports Xero as not
-connected rather than "Connected". `isXeroConnected` and the readers that need only the
-tenant id or expiry read it, and every write keeps those columns exact.
+- **The row stays present while connected**, with `tenantId` and `expiresAt`
+  current, written in the same transaction as every connect and refresh.
+- **Two leases, claimed together.** A refresh claims
+  `XeroToken.refreshInProgressUntil` first — the lease the previous release
+  claims, so the two releases compete for one refresh token — and then
+  `XeroConnection.refreshInProgressUntil`, the lease that stays when
+  `XeroToken` goes. Losing either rolls the other back. The claim takes the
+  leases FIRST and reads the store copy after, under those rows' locks, so the
+  version a refresh compares-and-sets on belongs to the tokens it hands over. A
+  refresh's save is fenced three times: both lease-guarded updates, and the
+  compare-and-set. Before calling Xero, the refresh checks that its save can
+  succeed (the auth-secret capture gate) and refuses without spending the token
+  if not.
+- **No ciphertext is written or read.** The schema `@ignore`s
+  `XeroToken.accessToken` and `refreshToken`, so the client cannot name them.
+  A connect replaces the row with a fresh one whose ciphertext the database
+  fills with `''`, and records the fingerprint of exactly that; a refresh leaves
+  the row's ciphertext alone and carries the fingerprint it read under the
+  lease. The previous release therefore keeps reading the store copy. Its own
+  writes rewrite both copies together (the #3454 dual-write), so they match too.
+- **A trigger keeps `XeroConnection` in step with `XeroToken`.** After every
+  insert, update, delete or truncate of `XeroToken`, a statement trigger copies
+  the most recently written row's tenant and expiry (`updatedAt`, then `id`,
+  descending — `XERO_TOKEN_ROW_ORDER`) into `XeroConnection`, or deletes it when
+  no row is left. It never touches the lease, and writes nothing when neither
+  value changed. It is one statement reading one snapshot, so a write that
+  commits while it waits for its lock is never written back stale. So the
+  previous release's connect, refresh, reconnect and disconnect reach this
+  release too. Every writer touches `XeroToken` before `XeroConnection`, the
+  order the trigger fixes (CONCURRENCY_AND_LOCKING.md). Two connects at the same
+  moment can leave two `XeroToken` rows; every reader takes the newest, and the
+  next connect or disconnect deletes both.
+
+If the auth secret no longer passes the capture gate, the refresh refuses before
+spending the token, alerts as "Token Store Unavailable", and the status page
+reports Xero as not connected rather than "Connected".
 
 **The token copy is never served from the credential store's cache.** That
 cache holds a provider's rows for up to 45 seconds; a refresh token another
 container rotated a moment ago would be dead in it. The token store reads the
 row through the database on its own (or the lease transaction's) client.
 
-Retiring `XeroToken` — moving the lease and the connection row to a home with no
-secret in it, then dropping the secret columns — is a separate, later change.
+**The wrapped token key is retired.** It encrypted only the `XeroToken`
+ciphertext. This release never generates or reads it, and its next connect,
+disconnect or verify-reset deletes a leftover `xero` / `token_key` row. The
+previous release, while it still runs, generates a new one when it writes the
+tokens and finds none, audited as `xero-token-key-generation`.
+
+**Upgrading to R2.** A connection a #3454 release has refreshed since any
+older release last ran carries a current store copy and keeps working. A
+connection on a release without #3454 (every tagged release so far) has no
+store copy, and one an older release refreshed after #3454 had stored a copy
+holds a spent refresh token there; either needs a reconnect, or a refresh on a
+#3454 build first. [UPGRADING.md](../UPGRADING.md) has the paths and the pre-deploy check.
+Until R3, `XeroToken` may still hold the last ciphertext the previous release
+wrote; after the first refresh here that refresh token has been spent. A
+rollback past #3454, once R2 has connected, refreshed or disconnected, needs a
+reconnect there.
+
+**Retiring `XeroToken` (R3, #3806)** comes after R2 has fully deployed: first a
+release that stops writing `XeroToken` and drops the trigger, then the
+`phase=contract` drop of the table.
 
 ## Guided setup wizard (#2080)
 
@@ -3019,6 +3076,15 @@ after it resolves: the commit that first paints an interactive stepper, and the
 passive effect that places the cursor, are two separate steps. Its length is
 therefore main-thread scheduling rather than network latency, which is why it
 fired under contended CI load and never locally.
+
+**Cursor write order (#4014).** Cursor writes go out one at a time, all as
+keepalive requests, and only the newest write that waited is sent next. Two
+independent writes could reach the server in either order. The row keeps the
+last one committed, so an older step could overwrite a newer one, and the
+wizard then came back from OAuth on Credentials instead of Connect. A write
+still waiting when the page is left, as it is for OAuth, goes out at once as a
+keepalive request, so the newest position is not lost; the next page may still
+read the cursor before that write commits.
 
 **Mock-Xero E2E harness.** A test-only seam (`xero-mock-endpoint.ts`, gated on
 `XERO_MOCK_API_ORIGIN`) routes the consent/token/connections/organisation calls
@@ -3155,7 +3221,7 @@ a mechanism) and the `applyXeroOrgShortCode` cases in
 `src/lib/__tests__/xero-links.test.ts`.
 
 The identifier a Xero URL needs is the organisation **short code** (`!aBc12`),
-*not* the tenant GUID stored on the `XeroToken` row. The GUID is not usable in a
+*not* the tenant GUID stored on the `XeroConnection` row. The GUID is not usable in a
 Xero URL at all, so a link built from it would 404 — the reason every builder
 takes an optional `shortCode` and degrades to a session-scoped `go.xero.com`
 path without it. Both forms are live URLs; the short code only decides whether
@@ -3166,7 +3232,7 @@ The short code is read only from Xero's `getOrganisations` response, so it is
 surfaced on **`/api/admin/xero/organisation`** (alongside the org name and
 financial-year-end month), behind `getXeroConnectedOrganisation`'s 12-hour
 in-process cache. It is deliberately **not** on `/api/admin/xero/status`:
-status is a pure `XeroToken`-row read that every admin surface gating on Xero
+status is a pure connection-row read that every admin surface gating on Xero
 hits (`useXeroStatus`), and hanging a live Xero call off it would spend API
 budget on pages that only ask "is Xero connected?". Client-side, the pages that
 render Xero deep links — the Xero Sync page, the members list and member
@@ -3210,7 +3276,7 @@ connect/disconnect. So after a reconnect to a **different** organisation, a web,
 cron or worker process that did not handle it can keep serving the previous
 organisation's short code until its entry expires. Accepted for screens — they
 re-render, and re-reading per render is the cost the shared cache exists to
-avoid; the alternative (stamping the summary with the `XeroToken` tenant id and
+avoid; the alternative (stamping the summary with the connected tenant id and
 re-reading that row to compare) would put a database round trip on every cache
 hit, including the operations list an admin polls. Not accepted for email: see
 `confirmLive` under rule 3. The bound is stated in full next to

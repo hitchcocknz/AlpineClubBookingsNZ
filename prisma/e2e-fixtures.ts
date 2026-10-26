@@ -333,6 +333,16 @@ export const IB_WINDOW = relMondayWindow(56);
 export const PAID_CANCEL_BOOKING_ID = "e2e-paid-cancel";
 export const PAID_CANCEL_WINDOW = relWindow(300, 2);
 
+// --- Help-widget booking fixture (#4397) ----------------------------------
+// The same shape as the paid-cancel booking, but no spec ever cancels it:
+// e2e/help-widget.spec.ts asserts the refund-schedule block, which renders
+// only while a paid booking is still cancellable. It used to read
+// PAID_CANCEL_BOOKING_ID, which booking-cancel-refund.spec.ts cancels, so the
+// assertion depended on which file ran first. Between the paid-cancel and
+// additional-owed windows, disjoint from both.
+export const HELP_WIDGET_BOOKING_ID = "e2e-help-widget-paid";
+export const HELP_WIDGET_WINDOW = relWindow(310, 2);
+
 // --- Outstanding additional payment fixture (#2350) ----------------------
 // A future-dated PAID booking owned by Nadia whose price was pushed up after it
 // was paid, leaving an uncollected additional payment — the exact state
@@ -524,6 +534,7 @@ export const SEEDED_BOOKING_WINDOWS: ReadonlyArray<{
   WAITLIST_OFFER_WINDOW,
   IB_WINDOW,
   PAID_CANCEL_WINDOW,
+  HELP_WIDGET_WINDOW,
   ADDITIONAL_OWED_WINDOW,
   UNRECONCILED_BOOKING_WINDOW,
   ...BANK_REFUND_VOID_WINDOWS,

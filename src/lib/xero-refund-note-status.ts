@@ -8,7 +8,7 @@
 import type { Prisma } from "@prisma/client";
 import { asRecord, readNumber, readString } from "@/lib/xero-json";
 import { providerAmountToCents } from "@/lib/money-provider-amount";
-import { readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import { isRefundRequestNoteOperation, readRefundRequestIdFromOperation, readRefundRequestIdFromPayload, REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
 import { xeroInstant } from "@/lib/xero-provider-dates";
 
 /**
@@ -503,6 +503,20 @@ export async function readRefundNoteRaisingRow(
  */
 export function isCoveredByExistingNoteRow(row: { responsePayload: unknown }): boolean {
   return asRecord(row.responsePayload)?.coveredByExistingNote === true;
+}
+
+/**
+ * #4265 (owner decision 26 Oct 2026, `INV-INT-025`): THE ONE RULE for which
+ * refund-note create rows count toward a payment's refund-note coverage. A
+ * row covers only its OWN note - never one it closed as covered by
+ * (`isCoveredByExistingNoteRow`, #4258) - and never a refund request's
+ * (`INV-PAY-118`: those notes answer the request, never the payment's refunds).
+ * The third part, LIVE, is read from the note's links (`refundNoteIdSets`), as
+ * every coverage reader does. Such a row still reports its key to the fences;
+ * its amount is never read.
+ */
+export function countsTowardRefundNoteCoverage(row: { requestPayload: unknown; responsePayload: unknown; correlationKey?: string | null; idempotencyKey?: string | null }): boolean {
+  return !isCoveredByExistingNoteRow(row) && !isRefundRequestNoteOperation(row);
 }
 
 /**
