@@ -704,6 +704,7 @@ this (#1208). Shared JSON-guard micro-helpers (`asRecord`/`readString`/
 | `xero-refund-note-link-repair` | Dry-run-first operator repair for Stripe per-delta `REFUND_CREDIT_NOTE` links damaged by the pre-#2901 cleanup loop: unconditionally deactivates local mirrors of notes VOIDED/DELETED in Xero, reactivates wrongly deactivated links (recorded-status only, never past the note-eligible cash — `resolveRefundNoteEligibleCash`, #2902/INV-PAY-050 less late captures Xero never received, #3635 — with notes resolved in Xero counted as coverage; landing short is applied honestly and the self-heal reissues the remainder), refuses payments with a still-executable credit-note operation (queued/running/awaiting-payment, failed-but-retryable, or a queued retry of one). No provider calls; `--apply` is bound to reviewed payment ids. CLI entry: `scripts/xero-refund-note-link-repair.ts`. Runbook: "Repairing Stripe refund-note links (#2901)" under Flow 3. |
 | `xero-refund-note-status-recorder` | Read-only provider GETs that record each linked refund credit note's live Xero status onto ALL of its local links, active or not (`--record-statuses`; run automatically before `--apply`). Exists because inbound reconciliation structurally cannot stamp a status onto an inactive link, and the repair never reactivates an unknown-status note. |
 | `xero-refund-note-status` | The one home for "does this credit-note status still count as refund coverage?" (`VOIDED`/`DELETED` do not) and for reading a link's recorded status — shared by the inbound contribution math, `sumCoveredRefundCreditNoteCents`, cleanup, the drift report and the operator repair so no path can disagree (#2901). Also "does this create row count toward coverage?" (`countsTowardRefundNoteCoverage`, #4265): only its own note, never a refund request's. |
+| `xero-resolve-refund-note` | "Resolve by hand" on a payment refund-note create that names no note (#4421, `INV-INT-028`): which rows ask for the Xero note's number (`refundNoteResolveShape`), the note's check (reusing `verifyHandMadeRefundNote`), and the `lock(1)` claim that records it with the mark, refusing a note any other create row or link records. |
 | `xero-invoice-rounding-audit` | Read-only diagnostic that replays the pre-#1231 line maths in integer cents to flag issued invoices that would have carried the #1163 rounding drift, across **both** builder callers — per-booking invoices (`Payment.xeroInvoiceId`) and group-settlement invoices (`GroupBookingSettlement.xeroInvoiceId`). Makes **no** live-provider calls and mutates nothing (only `booking.findMany` + `groupBookingSettlement.findMany`). CLI entry: `scripts/audit-xero-invoice-rounding.ts`. See "Historical rounding-drift audit" below. |
 | `xero-credit-sync-checker` | #2501 detect-and-warn reconciliation of **applied account credit**: compares each booking's stamped `BOOKING_APPLIED` sum (BookingApp's known credit, the same figure the #2483 email nets from) against its live Xero invoice `amountCredited`, and warns admins on drift with the exact per-booking amount. Read-only, idempotent, fail-safe. See "Credit-sync drift checker" below. |
 | `xero-cron-runner` | Maps the 8 cron tasks to the workers above, records `CronJobRun` rows, gates on module + connection. |
@@ -1630,6 +1631,26 @@ on `manuallyResolvedAt`.
   missing-invoices list behind **Queue all** leaves those out. Single-booking
   force-sync is the one override: it passes `overrideResolvedInXero`, and its
   audit row names the operation whose mark it overrode.
+- **A refund note resolved by hand names its note (#4421, owner decision
+  26 Oct 2026, `INV-INT-028`).** On a payment refund-note create that names no
+  note of its own and counts as its own refund's (`refundNoteResolveShape`,
+  `xero-resolve-refund-note.ts`: the rows the coverage reader above counts),
+  Resolve asks for the number of the credit note the officer made in Xero, and
+  the panel shows that field only there (`resolveAsksCreditNoteNumber`, sent by
+  the list route). The route checks it with the hand-made answer's own
+  `verifyHandMadeRefundNote` before any transaction - approved or paid, a
+  sales credit note for the payment's contact (the invoice the note names,
+  else the payment's, else the owner's) and exactly the row's recorded amount
+  - then, in one transaction under `lock(1)`, re-reads the row and refuses
+  with a 409, writing nothing, when another credit-note create row or any link
+  records the note; the status-guarded claim (FAILED/PARTIAL, unresolved, no
+  note) writes the mark with the note's id and number. A mark withdrawn for a
+  running retry takes the note with it. With the id on the row, the coverage
+  reader and the #4162 answer's guard see the note as any other, so one note
+  records one refund. A refund request's note (#4391), a row that already
+  names its note and every other row resolve as before; a refund-note row
+  whose amount cannot be read is refused. Legacy: a row resolved before #4421
+  names no note and stays so - nothing can backfill a number nobody recorded.
 - **The outbox.** After it claims a row and before any Xero call, the outbox
   asks `findResolvedSiblingSince`: was a sibling for the same document (same
   correlation key) resolved after this copy was queued? If so the copy is
@@ -1874,9 +1895,9 @@ invoice, tracked by nothing else here (this payment's own inactive,
 non-voided link is reactivated) and named by no credit-note create, on any
 payment, that is resolved by hand or not yet SUCCEEDED (#4321: with no live
 link, a resolved row counts the note as its own refund's, and the resolve route
-can still flip an unfinished one). A FAILED row an officer resolved after making
-its note by hand names no note - the route records none - so that note is not
-recognised (#4421). The completion links it as a per-refund
+can still flip an unfinished one). Since #4421 a FAILED row an officer resolves
+after making its note by hand records that note, so it is refused too; a row
+resolved before then names none. The completion links it as a per-refund
 `REFUND_CREDIT_NOTE` naming the follow-up. A void, or a newer reading, that
 commits before that link write is kept under the link's row lock and the answer
 is refused (#4288). After

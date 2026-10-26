@@ -3798,6 +3798,11 @@ FAILED/PARTIAL -> officer marks it resolved in Xero -> done: status unchanged,
   refused while the operation is RUNNING, a live copy of it is queued, or a
   queued retry of it overlaps the mark (the mark is then withdrawn)
   refused for applied-credit allocations and deallocations (retry-only)
+  a payment refund-note create naming no note (#4421, INV-INT-028): the mark
+  needs the Xero note's number, checked in Xero first, and records the note's
+  id and number with it, under lock(1), in one status-guarded claim (also
+  "naming no note"); refused, nothing written, when another create row or a
+  link records that note; a withdrawn mark takes the note with it
 credit-note allocation refused by Xero as more than the note has left (#4218)
   -> FAILED with code CREDIT_NOTE_SPENT_OUTSIDE_APP when a read of the note
   afterwards CONFIRMS it was spent outside the app. Xero's refusal is the

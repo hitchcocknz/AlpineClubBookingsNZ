@@ -511,6 +511,33 @@ Pinned by `xero-operation-retry.test.ts`, `xero-operation-queue.test.ts`,
 `xero-booking-repair.test.ts`, `refunds-missing-credit-notes.test.ts`,
 `booking-provider-mismatches.test.ts`.
 
+### INV-INT-028
+
+A payment refund credit-note create resolved by hand names the Xero note the
+officer made, and that note records no other refund: one note, one refund
+(#4421, owner decision 26 Oct 2026).
+
+- **Asked of one population.** `refundNoteResolveShape`
+  (`xero-resolve-refund-note.ts`) asks for the note's number on exactly the
+  rows `readResolvedRefundCreditNoteCoverage` counts: an outbound refund-note
+  create on a payment, its own refund's (`countsTowardRefundNoteCoverage`),
+  naming no note. A refund request's note (#4391), a row naming its note and
+  every other row resolve as `INV-INT-025` says; an unreadable amount is
+  refused.
+- **Checked as the hand-made answer is.** `verifyHandMadeRefundNote`
+  (`INV-ADDPAY-042`), before any transaction: approved or paid, a sales credit
+  note for the payment's contact and exactly the row's recorded amount.
+- **Recorded once.** Under `lock(1)` - the key the hand-made answer's
+  completion holds - the row is re-read and the note refused, with a 409 and
+  nothing written, when another credit-note create row or any link records it;
+  the status-guarded claim writes the mark with the note's id and number. The
+  answer refuses a note a resolved row names, so either order ends with one
+  record.
+- **Legacy.** A row resolved before #4421 names no note and stays so.
+
+Pinned by `xero-resolve-refund-note.test.ts`,
+`resolve-records-refund-note.realdb.test.ts`, `advisory-lock-guard.test.ts`.
+
 ## Stored outbox payloads (#3971)
 
 ### INV-INT-026
