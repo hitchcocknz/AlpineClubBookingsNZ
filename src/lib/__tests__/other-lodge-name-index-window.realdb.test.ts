@@ -69,6 +69,9 @@ const OLD_UPSERT = `INSERT INTO "OtherLodge" ("id", "name", "location") VALUES (
   });
 
   beforeEach(async () => {
+    // A case whose expected rejection did not come leaves its reverse script's
+    // transaction open (aborted); end it so it cannot poison this one.
+    await client.query("ROLLBACK");
     await client.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
     await client.query(`CREATE SCHEMA ${SCHEMA}`);
     await client.query(`SET search_path TO ${SCHEMA}`);
@@ -80,8 +83,12 @@ const OLD_UPSERT = `INSERT INTO "OtherLodge" ("id", "name", "location") VALUES (
 
   afterAll(async () => {
     if (!client) return;
-    await client.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
-    await client.end();
+    try {
+      await client.query("ROLLBACK");
+      await client.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    } finally {
+      await client.end();
+    }
   });
 
   it("refuses the previous release's name-keyed upsert once the pair is applied", async () => {

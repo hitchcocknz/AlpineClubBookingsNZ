@@ -26,8 +26,8 @@
 -- ORDER BY "name", "id";
 --
 -- Step 2: rename all but one of each set by id, for example
--- UPDATE "OtherLodge" SET "name" = "name" || ' (' || "location" || ')' WHERE
--- "id" = '<id>'; and re-run this script. Rename rather than hide: the next
+-- UPDATE "OtherLodge" SET "name" = "name" || ' (' || COALESCE("location",
+-- "id") || ')' WHERE "id" = '<id>'; and re-run this script. Rename rather than hide: the next
 -- script refuses a hidden lodge that shares any lodge's name too. Bookings and
 -- booking requests name a lodge by id, so they keep it, under its new name.
 -- After rolling back, the previous release matches downloads by name, so a

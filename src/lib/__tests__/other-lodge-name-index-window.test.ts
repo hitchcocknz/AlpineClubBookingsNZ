@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -150,11 +151,22 @@ describe("the other-lodge name-index pair is windowed (#4262)", () => {
     }
   });
 
-  it("keeps each migration's own header in step with its ledger row", () => {
+  // The fork applied both files before the windowed correction, and Prisma
+  // records each applied file's checksum (`migrate dev` compares it), so the
+  // files stay byte-identical to what was applied. The correction lives in the
+  // ledger rows and rollback.sql, which nothing checksums; the rows say their
+  // header comment is superseded.
+  it("leaves each applied migration.sql byte-identical, with the correction in its ledger row", () => {
+    const APPLIED_SHA256: Record<(typeof PAIR)[number], string> = {
+      "20261123040000_other_lodge_hidden_at": "48e00d266f674f36a856e5d4c145fc609687c1f2b2ad593cb72c72c8a5c24ab6",
+      "20261123050000_other_lodge_names_not_unique": "1195dae711e8d47b22e0230cf61b1628d2df9bfca15b96cd5c752d0103309c6a",
+    };
+    const rows = read("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv").split(/\r?\n/);
     for (const name of PAIR) {
-      const sql = read(`prisma/migrations/${name}/migration.sql`);
-      expect(sql).toContain("WINDOWED, NOT OLD-CODE COMPATIBLE");
-      expect(sql).not.toMatch(/^-- OLD-CODE COMPATIBLE/m);
+      const bytes = readFileSync(path.join(REPO_ROOT, `prisma/migrations/${name}/migration.sql`));
+      expect(createHash("sha256").update(bytes).digest("hex"), `${name}/migration.sql changed`).toBe(APPLIED_SHA256[name]);
+      const plan = rows.find((line) => line.startsWith(`${name}\t`))!.split("\t")[4];
+      expect(plan).toContain("THIS ROW SUPERSEDES the migration's header comment");
     }
   });
 });

@@ -575,7 +575,11 @@ lists every one; these are in that class:
   lodges share one, its lodge edit page and the committee booking-officer sync
   could write into another club's lodge. Stop the old web colour **and every
   old worker and cron runner** (the nightly Alpine Central Server sync
-  included) before migrating, and name both migrations in the override reason.
+  included) before migrating. In the shell that runs the deploy, set
+  `ALLOW_BREAKING_BLUE_GREEN_MIGRATIONS=1`, a
+  `BLUE_GREEN_MIGRATION_OVERRIDE_REASON` naming both migrations, and
+  `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` only once everything old has
+  stopped; the window checks below then run as for every windowed migration.
   `OtherLodge` is a small admin registry, so its `ACCESS EXCLUSIVE` locks are
   brief. **Rollback:** run `20261123050000`'s `rollback.sql` first, then
   `20261123040000`'s, and only then start the previous release. Each refuses,
