@@ -204,14 +204,15 @@ export async function claimResolveRecordingRefundNote(input: {
       if (shape.amountCents !== input.note.amountCents) {
         throw new ManualBookingPaymentError("This refund credit note's amount changed while you were resolving it. Reload it and check before resolving.", 409);
       }
-      if (await findRetryRunningOrSince(input.operationId, input.readAt, tx)) {
-        throw new ManualBookingPaymentError(RESOLVE_NOTE_RETRY_RAN_MESSAGE, 409);
-      }
       // Review round 2: a run that already raised this row's note, at any
-      // time, and a live copy of it a self-heal queued since the route's
-      // check, both re-read under the locks.
+      // time - asked first, as the most specific answer - then a retry that
+      // ran or is running since the route read the row, then a live copy a
+      // self-heal queued since the route's check, all re-read under the locks.
       if (await findSupersedingRefundNoteRun({ id: input.operationId, correlationKey: row.correlationKey, localId: row.localId }, tx)) {
         throw new ManualBookingPaymentError(RESOLVE_NOTE_SUPERSEDED_MESSAGE, 409);
+      }
+      if (await findRetryRunningOrSince(input.operationId, input.readAt, tx)) {
+        throw new ManualBookingPaymentError(RESOLVE_NOTE_RETRY_RAN_MESSAGE, 409);
       }
       if (await findQueuedLiveCopy({ id: input.operationId, correlationKey: row.correlationKey, entityType: row.entityType, operationType: row.operationType }, tx)) {
         throw new ManualBookingPaymentError(QUEUED_LIVE_COPY_REFUSAL, 409);

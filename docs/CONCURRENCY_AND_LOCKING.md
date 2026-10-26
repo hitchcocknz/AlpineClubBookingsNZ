@@ -5850,7 +5850,11 @@ The order is the #4162 follow-up's, all in one short transaction:
    payment is read - the #4217 order every refunded-total writer keeps;
 4. the row re-read: still a refund-note create naming no note, unresolved,
    FAILED, its amount still the note's;
-5. no retry of the row ran since the route read it (`findRetryRunningOrSince`:
+5. no run already raised the row's note, at any time
+   (`findSupersedingRefundNoteRun`: its retry, or a create on the payment with
+   the same correlation key, SUCCEEDED or PARTIAL) - asked first, as the most
+   specific answer;
+6. no retry of the row ran since the route read it (`findRetryRunningOrSince`:
    RUNNING, or started or completed at or after the read). A FAILED refund
    note's retry runs on its own REQUEUE row and never claims the original, so
    one that started and finished while the route checked Xero and waited for
@@ -5858,22 +5862,19 @@ The order is the #4162 follow-up's, all in one short transaction:
    post-commit `findRetryOverlappingMark` cannot see it (not RUNNING, started
    after the read). Clock skew between the route's and the drain's instances
    is the one window left. The mark's instant is taken here, after the lock;
-6. no run already raised the row's note, at any time
-   (`findSupersedingRefundNoteRun`: its retry, or a create on the payment with
-   the same correlation key, SUCCEEDED or PARTIAL), and no live copy of it is
-   queued (`findQueuedLiveCopy`, re-asked here because a self-heal can queue
+7. no live copy of it is queued (`findQueuedLiveCopy`, re-asked here because a self-heal can queue
    one between the route's check and the claim; a fresh note under a
    different key is not a copy and is the claim's stated limit);
-7. the note's records read, one read after the other on the transaction
+8. the note's records read, one read after the other on the transaction
    (#1357): any other credit-note create row
    (`creditNoteCreateRowsRecordingWhere`, the spelling the answer's guard uses)
    or any `XeroObjectLink`, except the link this row wrote and a withdrawal
    retired - either refuses with a 409, and the transaction rolls back having
    written nothing;
-8. the status-guarded claim (`updateMany`: FAILED, `manuallyResolvedAt` null,
+9. the status-guarded claim (`updateMany`: FAILED, `manuallyResolvedAt` null,
    `xeroObjectId` null) writing the mark and the note together. A lost claim
    writes nothing and the route answers as for any lost resolve;
-9. the link row last, through the link funnel (`writeHandMadeRefundNoteLink`),
+10. the link row last, through the link funnel (`writeHandMadeRefundNoteLink`),
    which keeps a void or newer reading that committed first under the link's
    row lock (#4288) and then refuses, rolling the claim back. The inbound link
    write and #4161's heal take only the link row (the heal's Payment row

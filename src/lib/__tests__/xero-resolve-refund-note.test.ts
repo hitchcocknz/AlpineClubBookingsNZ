@@ -352,8 +352,8 @@ describe("Resolve by hand records the officer's note on a refund credit-note cre
       "BEGIN",
       "lock(1)",
       "lock Payment row",
-      "read retries",
       "read superseding runs",
+      "read retries",
       "read live copies",
       "read rows recording the note",
       "read links recording the note",
@@ -464,8 +464,9 @@ describe("Resolve by hand records the officer's note on a refund credit-note cre
 
   it("MUTATION (retry race): refuses when a retry of the row ran since the route read it, or is running, and writes nothing", async () => {
     for (const retry of [
-      // Started and finished while the route checked Xero and waited for the lock.
-      (readAt: Date) => requeueRow({ status: "SUCCEEDED", startedAt: new Date(readAt.getTime() + 5), completedAt: new Date(readAt.getTime() + 9) }),
+      // Started and finished while the route checked Xero and waited for the lock (FAILED: it may still
+      // have reached Xero; one that SUCCEEDED is refused as superseding the row, the more specific answer).
+      (readAt: Date) => requeueRow({ status: "FAILED", startedAt: new Date(readAt.getTime() + 5), completedAt: new Date(readAt.getTime() + 9) }),
       // Started before the read, finished after it.
       (readAt: Date) => requeueRow({ status: "FAILED", startedAt: new Date(readAt.getTime() - 50), completedAt: new Date(readAt.getTime() + 1) }),
       // Still running.
