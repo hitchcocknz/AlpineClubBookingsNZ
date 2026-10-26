@@ -20,7 +20,7 @@ import { callXeroApi, getAuthenticatedXeroClient, XeroDailyLimitError } from "@/
 import { getXeroErrorStatusCode } from "@/lib/xero-error-shape";
 import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 import { reconcileXeroCreditNote } from "@/lib/xero-inbound/credit-note";
-import { isRefundCreditNoteLinkCancelledInXero, judgedRefundNoteReading, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
+import { creditNoteCreateRowsRecordingWhere, isRefundCreditNoteLinkCancelledInXero, judgedRefundNoteReading, xeroCreditNoteSnapshotMetadata } from "@/lib/xero-refund-note-status";
 import { xeroInstant } from "@/lib/xero-provider-dates";
 import { upsertXeroObjectLink } from "@/lib/xero-sync";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
@@ -210,6 +210,31 @@ function bookingOwnerXeroContactId(booking: {
   return member?.xeroContactId ?? null;
 }
 
+/**
+ * #4421: what a hand-made note for a payment must match in Xero, read the way
+ * the follow-up's answer reads it: the payment's Xero invoice (or the one its
+ * refund note names, `creditsInvoiceId`), else the booking owner's contact.
+ * Null when the payment is gone. Unlocked: the check it feeds runs before any
+ * transaction opens.
+ */
+export async function readPaymentHandMadeNoteExpectation(
+  paymentId: string,
+  creditsInvoiceId?: string,
+): Promise<Omit<HandMadeNoteExpectation, "expectedAmountCents"> | null> {
+  const payment = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: {
+      xeroInvoiceId: true,
+      booking: { select: { member: { select: { xeroContactId: true } }, organisation: { select: { name: true, xeroContactId: true } } } },
+    },
+  });
+  if (!payment) return null;
+  return {
+    xeroInvoiceId: creditsInvoiceId ?? payment.xeroInvoiceId ?? null,
+    ownerXeroContactId: bookingOwnerXeroContactId(payment.booking),
+  };
+}
+
 /** The statuses a hand-made note may carry: approved or paid (review, money 3). */
 const HAND_MADE_NOTE_LIVE_STATUSES: readonly string[] = ["AUTHORISED", "PAID"];
 
@@ -264,9 +289,9 @@ export async function prepareBankRefundVoidAnswer(input: {
  * checked note as the follow-up's tracked refund note. Refused (rolling the
  * completion back) when another record here already tracks that Xero note,
  * or (#4321) a credit-note create row records it that is resolved by hand in
- * Xero or not yet SUCCEEDED. A row resolved after the officer made its note by
- * hand records no note id (the resolve route writes none), so that note is not
- * recognised here (#4421).
+ * Xero or not yet SUCCEEDED. Since #4421 "Resolve by hand" on a refund-note
+ * row with no note of its own records the note the officer made, so that note
+ * is refused here too (a row resolved before #4421 records none).
  * The one exception (review, money 6): the note is tracked only by this
  * payment's own inactive, non-voided refund-note link - a duplicate the
  * single-note rule turned off - which is reactivated for the follow-up.
@@ -291,18 +316,18 @@ export async function recordHandMadeRefundNoteLink(
   // #4321 (#4265, `INV-INT-025`): nor a note a credit-note create row records
   // that is resolved by hand in Xero - with no live link, that row counts the
   // note as its own refund's coverage - or that is not SUCCEEDED, so an
-  // officer may still resolve it. The resolve route takes none of this
-  // transaction's locks but moves only FAILED/PARTIAL rows, so no resolve can
-  // turn a row this read passed into one it would refuse. A SUCCEEDED row's
+  // officer may still resolve it. A resolve of a row that already names its
+  // note moves only FAILED/PARTIAL rows, so it cannot turn a row this read
+  // passed into one it would refuse; a resolve that records the officer's
+  // hand-made note (#4421) takes this transaction's lock(1) first, so it
+  // commits wholly before this read or waits for this commit and then
+  // refuses the note this answer linked. A SUCCEEDED row's
   // note, its link retired by the single-note rule, is still the spare
   // duplicate reactivated below (review, money 6). Matched on the note's id
   // alone: every writer that records a number records the id.
   const noteRow = await tx.xeroSyncOperation.findFirst({
     where: {
-      xeroObjectType: "CREDIT_NOTE",
-      xeroObjectId: input.note.creditNoteId,
-      entityType: "CREDIT_NOTE",
-      operationType: "CREATE",
+      ...creditNoteCreateRowsRecordingWhere(input.note.creditNoteId),
       OR: [{ manuallyResolvedAt: { not: null } }, { status: { not: "SUCCEEDED" } }],
     },
     select: { id: true },

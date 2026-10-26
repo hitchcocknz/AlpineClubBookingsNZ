@@ -36,18 +36,8 @@ import { xeroSectionId } from "./types"
 import type { XeroOperation } from "./types"
 import { useClubFormat } from "@/components/club-format-provider"
 import { XeroFailureExplanation } from "@/components/admin/xero-failure-explanation"
-
-/**
- * The resolve dialog's text. A credit note's adds the owner's rule (#4250,
- * 21 Oct 2026): a voided card refund note is raised again overnight, even one
- * resolved here, so a replacement made by hand as well would duplicate it.
- */
-export function resolveDialogDescription(entityType: string): string {
-  const base = "How was this resolved in Xero? This drops it off the active failure list."
-  return entityType === "CREDIT_NOTE"
-    ? `${base} If you later void a card refund's credit note in Xero, don't make a replacement by hand: the app raises a fresh one overnight.`
-    : base
-}
+import { resolveDialogDescription } from "./resolve-dialog-copy"
+import { useResolveWithNoteDialog } from "./resolve-with-note-dialog"
 
 export function OperationsPanel({
   connected,
@@ -65,6 +55,7 @@ export function OperationsPanel({
   refreshToken: number
 }) {
   const { prompt, confirmDialog } = useConfirm()
+  const { askResolveWithNote, resolveWithNoteDialog } = useResolveWithNoteDialog()
   // Retry/reset/mark-non-replayable/resolve all write finance-area Xero
   // operations routes; a view-only finance admin browses but cannot act (#1997).
   const canEdit = useAdminAreaEditAccess("finance")
@@ -322,22 +313,33 @@ export function OperationsPanel({
     }
   }
 
-  const resolveOperation = async (operationId: string, entityType: string) => {
-    const reason = await prompt({
-      title: "Resolve this Xero operation?",
-      description: resolveDialogDescription(entityType),
-      inputLabel: "Reason",
-      defaultValue: "Resolved manually in Xero",
-      confirmLabel: "Resolve",
-    })
-    if (reason === null) return
+  const resolveOperation = async (operation: XeroOperation) => {
+    const operationId = operation.id
+    // #4421: a refund credit note the app never raised is resolved with the
+    // number of the note made in Xero; the route checks and records it.
+    let body: { reason: string; creditNoteNumber?: string }
+    if (operation.resolveAsksCreditNoteNumber) {
+      const answer = await askResolveWithNote()
+      if (answer === null) return
+      body = answer
+    } else {
+      const reason = await prompt({
+        title: "Resolve this Xero operation?",
+        description: resolveDialogDescription(operation.entityType),
+        inputLabel: "Reason",
+        defaultValue: "Resolved manually in Xero",
+        confirmLabel: "Resolve",
+      })
+      if (reason === null) return
+      body = { reason }
+    }
     setResolvingOperationId(operationId)
     setError("")
     onMessage("")
     try {
       const data = await postJson<{ message?: string }>(
         `/api/admin/xero/operations/${operationId}/resolve`,
-        { reason },
+        body,
         "Failed to resolve Xero operation"
       )
       onMessage(data.message || "Xero operation marked resolved.")
@@ -438,6 +440,7 @@ export function OperationsPanel({
     >
       <div className="space-y-4">
         {confirmDialog}
+        {resolveWithNoteDialog}
         {error ? <p className="text-sm text-danger">{error}</p> : null}
         <details className="rounded-md border bg-muted p-3 text-xs text-muted-foreground">
           <summary className="cursor-pointer font-medium text-foreground">What do these statuses mean?</summary>
@@ -512,7 +515,7 @@ export function OperationsPanel({
                 markingFailed={markingFailedOperationId === operation.id}
                 onRetry={() => void retryOperation(operation.id)}
                 onMarkNonReplayable={() => void markNonReplayable(operation.id)}
-                onResolve={() => void resolveOperation(operation.id, operation.entityType)}
+                onResolve={() => void resolveOperation(operation)}
                 onMarkFailed={() => void markFailed(operation.id)}
               />
             ))}

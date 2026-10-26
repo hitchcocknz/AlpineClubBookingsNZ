@@ -546,6 +546,13 @@ const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
     invariant: "INV-LOCK-001",
   },
   {
+    site: "claimResolveRecordingRefundNote#1",
+    tier: "GLOBAL",
+    reason:
+      "#4421 (owner decision 26 Oct 2026, INV-INT-025: one note, one refund): 'Resolve by hand' on a payment refund-note create that names no note of its own records the Xero credit note the officer made, with the resolve. Its counterpart is the #4162 hand-made answer (recordHandMadeRefundNoteLink, inside resolveManualRefundTask#1, which holds lock(1) for its whole transaction): both check that no create row or link here records the note and then record it, on ANY payment, so no per-payment row covers the race and a note-id key would be a new advisory key. Under lock(1) whichever commits second sees the first and refuses with a 409, so a note is recorded once. A second resolve offering the same note queues here too. Taken ALONE, as the transaction's first lock; then the row re-read, the note's create rows and links read, and the status-guarded claim (FAILED/PARTIAL, unresolved, no note yet) writes the mark and the note together - a lost claim writes nothing. It touches no Payment, ledger or capacity row, so it takes no narrower key. The Xero check (verifyHandMadeRefundNote) runs before the transaction opens, so no provider call is held under it.",
+    invariant: "INV-LOCK-001",
+  },
+  {
     site: "resolveManualRefundTask#1",
     tier: "GLOBAL",
     reason:

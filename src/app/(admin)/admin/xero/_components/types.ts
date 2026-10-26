@@ -400,6 +400,8 @@ export interface XeroOperation {
   failureRootKey: string | null
   /** #3462: RUNNING past the staleness threshold - offers Mark failed. */
   staleRunning: boolean
+  /** #4421: "Resolve by hand" asks for the number of the credit note made in Xero. */
+  resolveAsksCreditNoteNumber: boolean
 }
 
 export interface XeroInboundEvent {

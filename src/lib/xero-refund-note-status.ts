@@ -520,6 +520,24 @@ export function countsTowardRefundNoteCoverage(row: { requestPayload: unknown; r
 }
 
 /**
+ * `INV-INT-025` (#4321, #4421): THE credit-note create rows that record a
+ * given Xero credit note - on any payment, by the note's id alone, never its
+ * number (an old organisation's, or a reused one). Every writer that records a
+ * number records the id. One spelling, shared by the hand-made answer's guard
+ * (`recordHandMadeRefundNoteLink`) and "Resolve by hand"'s
+ * (`claimResolveRecordingRefundNote`), so "one note, one refund" is asked the
+ * same way from both sides.
+ */
+export function creditNoteCreateRowsRecordingWhere(creditNoteId: string) {
+  return {
+    xeroObjectType: "CREDIT_NOTE",
+    xeroObjectId: creditNoteId,
+    entityType: "CREDIT_NOTE",
+    operationType: "CREATE",
+  } satisfies Prisma.XeroSyncOperationWhereInput;
+}
+
+/**
  * #4162 (`INV-ADDPAY-042`): a refund note's recorded amount in cents - its
  * link's, else its raising row's - or null when neither records one. What the
  * nightly undo of a voided bank-transfer note takes back; null sends the note
