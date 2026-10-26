@@ -8,6 +8,9 @@ describe("balancedBrackets", () => {
     ["[first, [second, third]]", ["first", "[second, third]"]],
     ["()", []],
     ["(first, second,)", ["first", "second"]],
+    ["(/* comment */)", []],
+    ["(first, /* trailing comment */)", ["first"]],
+    ['("", /* explanation */ second)', ['""', '/* explanation */ second']],
   ] as const)("reads %s without absorbing the next call", (text, parts) => {
     const prefix = "before ";
     expect(balancedBrackets(`${prefix}${text}; next()`, prefix.length)).toEqual({

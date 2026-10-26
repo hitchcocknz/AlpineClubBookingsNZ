@@ -27,6 +27,11 @@ export function balancedBrackets(
   const stack: string[] = [];
   let partStart = start + 1;
   const parts: string[] = [];
+  const addPart = (end: number): void => {
+    if (code.slice(partStart, end).trim()) {
+      parts.push(source.slice(partStart, end).trim());
+    }
+  };
   for (let index = start; index < code.length; index += 1) {
     const char = code[index]!;
     const close = CLOSE_FOR[char];
@@ -36,15 +41,15 @@ export function balancedBrackets(
     }
 
     if (stack.length === 0) {
-      parts.push(source.slice(partStart, index));
+      addPart(index);
       return {
         text: source.slice(start, index + 1),
         end: index,
-        parts: parts.map((part) => part.trim()).filter(Boolean),
+        parts,
       };
     }
     if (char === "," && stack.length === 1) {
-      parts.push(source.slice(partStart, index));
+      addPart(index);
       partStart = index + 1;
     }
   }
