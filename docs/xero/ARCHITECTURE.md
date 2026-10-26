@@ -1639,6 +1639,36 @@ on `manuallyResolvedAt`.
   missing-invoices list behind **Queue all** leaves those out. Single-booking
   force-sync is the one override: it passes `overrideResolvedInXero`, and its
   audit row names the operation whose mark it overrode.
+- **A late success still lands (#4374, `INV-INT-029`).** A caller sharing the
+  row (#1354) whose own Xero call succeeds after the mark still records its
+  success: the status-guarded write lands on the resolved FAILED or PARTIAL
+  row, leaves the mark as it finds it, and records its links, which are real
+  Xero objects. The row is read back in the same transaction, under the
+  write's row lock. When it is SUCCEEDED and `isResolvedInXero`, a warning is logged and the officers get one **Xero Sync
+  Error** alert per operation (`XERO_SUCCESS_AFTER_RESOLUTION`,
+  `sendAdminAlertOnceEver`, key
+  `xero-success-after-resolution:<operation id>`), after commit and outside
+  any transaction (`xero-success-after-resolution-alert.ts`). A success that
+  recorded no object still alerts: an applied-credit run allocates through
+  child operations, and a deallocation changes Xero without recording one.
+  - **What it says.** On an officer's mark: Xero may hold the item twice, or
+    the late call may have found and used the officer's own document by its
+    reference, so check Xero before voiding. On a row the app closed because
+    its credit note was spent outside the app (#4219,
+    `isClosedByCreditSpentOutsideApp`): the credit ledger and Xero may now
+    disagree. It never says the
+    mark stays: the resolve route withdraws a mark it has just written when a
+    retry overlaps it.
+  - **Injected transactions.** A caller that hands `completeXeroSyncOperation`
+    its own transaction (`store`) gets the alert back as `deferredPostCommit`
+    and runs it after its commit; a rollback sends nothing. The member-contact
+    completions do this; the only other such caller writes CANCELLED.
+    `xero-success-after-resolution-alert.test.ts` pins the callers, and fails
+    on an options argument it cannot read as text.
+  - **Limit: no retry of its own.** If the send throws before reaching
+    anyone, or nobody can receive it, `sendAdminAlertOnceEver` gives the claim
+    back or defers it, but nothing calls again unless another success lands
+    on the row. The logged warning is then the only trace.
 - **A refund note resolved by hand names its note (#4421, owner decision
   26 Oct 2026, `INV-INT-028`).** On a FAILED payment refund-note create that
   names no note of its own and counts as its own refund's
