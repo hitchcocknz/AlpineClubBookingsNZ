@@ -5749,7 +5749,13 @@ Counterparts:
   (`reconcileHandMadeNoteAfterCompletion`, through the inbound
   `reconcileXeroCreditNote`), so a later void is caught. A void that commits
   before the completion's link write is kept under the link's row lock and the
-  answer is refused with a 409, rolling the completion back (#4288).
+  answer is refused with a 409, rolling the completion back (#4288). Under the
+  same locks the answer also reads, plainly, any refund-note create resolved by
+  hand that records the note, and refuses it (#4321). The resolve route takes
+  none of these locks; a resolve committing after that read is ordered after
+  the answer, so its row finds the note's link live and adds nothing
+  (`INV-INT-025`): the note counts once and that row's refund shows as a gap,
+  never covered twice. No new advisory key.
 
 **A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
 runs the very same undo (`undoUnderLocks`) for an unmatched note: the same
