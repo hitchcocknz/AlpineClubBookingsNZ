@@ -193,7 +193,8 @@ async function getStats(permissionMatrix: Promise<AdminPermissionMatrix>) {
     // Unpaid finished stays (#1709): PAYMENT_PENDING with check-out on or
     // before NZ today — the stay is over but payment is still owing. The
     // predicate is shared with the sidebar Needs Attention badge (#1731) via
-    // src/lib/unpaid-finished-stays.ts so the two surfaces can never drift.
+    // src/lib/unpaid-finished-stays.ts, and the card's deep link comes from
+    // src/lib/unpaid-finished-stays-hrefs.ts, so the two surfaces can never drift.
     prisma.booking.count({
       where: buildUnpaidFinishedStaysWhere(today),
     }),

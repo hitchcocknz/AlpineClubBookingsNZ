@@ -2370,7 +2370,8 @@ Pending self-service account deletion requests are also counted there and link
 admins to the deletion request queue. Unpaid finished stays (#1709/#1731) —
 `PAYMENT_PENDING` bookings whose check-out is on or before NZ today — badge an
 "Unpaid Finished Stays" entry deep-linking to the pre-filtered bookings list;
-its predicate and href live in `src/lib/unpaid-finished-stays.ts`, shared with
+its predicate lives in `src/lib/unpaid-finished-stays.ts` and its href in the
+import-free `src/lib/unpaid-finished-stays-hrefs.ts`, both shared with
 the admin dashboard attention card so the two surfaces never drift. The
 sibling queue "Unpaid Stay Additions" (#1723) — settled
 (`CONFIRMED`/`PAID`/`COMPLETED`, deliberately never `PAYMENT_PENDING` so the

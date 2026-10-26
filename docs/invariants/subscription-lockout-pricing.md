@@ -1267,7 +1267,8 @@ explicit, audited admin act.
 A **finished stay's card obligation never lingers unseen** (#1709, #1723). Two
 **disjoint** admin queues surface every uncollected card obligation on a stay
 whose check-out is on or before NZ today, both driven by the shared
-predicate/href helpers in `src/lib/unpaid-finished-stays.ts` (the dashboard
+predicate helpers in `src/lib/unpaid-finished-stays.ts` and href helpers in
+`src/lib/unpaid-finished-stays-hrefs.ts` (the dashboard
 attention cards, the sidebar Needs Attention badges via `admin-pending-counts`,
 and the bookings-list deep links all consume the same helpers):
 
