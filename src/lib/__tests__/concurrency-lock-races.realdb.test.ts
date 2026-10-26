@@ -537,6 +537,13 @@ import "./resolved-voided-refund-note-coverage.realdb.test";
 // failed write gives the row back PARTIAL. Skipped unless
 // RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4256-` fixtures.
 import "./xero-partial-repair-claim.realdb.test";
+// #4356 reuses it to prove two callers sharing one ACTIVE Xero operation row
+// never let a failure overwrite a recorded success: the real
+// createXeroPaymentForInvoice twice onto one row, each Xero call held on a gate,
+// in both orders, a success replacing an earlier failure, and a late failure
+// kept off a PARTIAL repair's claim. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-4356-` fixtures.
+import "./xero-shared-operation-outcome.realdb.test";
 // #4291 reuses it to prove a refund note Xero voided still recounts the payment
 // whose mirror the void turned off: the retry of a void event that died after
 // its link write finishes the recount, the mirror stays off and the pointer

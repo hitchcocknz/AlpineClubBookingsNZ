@@ -1028,7 +1028,10 @@ note.
    writes nothing over it; that completion also clears the marker code. An
    invoice repair left PARTIAL by an email fault says so in `lastErrorMessage`
    and raises no repeated-failure alert. The FAILED refund-note repair claims
-   its row too (FAILED mode). Mark non-replayable writes only onto a FAILED or
+   its row too (FAILED mode), stamping `REFUND_NOTE_REPAIR_RUNNING`
+   (`XERO_REFUND_NOTE_REPAIR_RUNNING_CODE`, #4356); a stale reset returns it
+   to FAILED. While either marker is on the claim, no other caller's outcome
+   but SUCCEEDED lands on the row (`INV-INT-029`). Mark non-replayable writes only onto a FAILED or
    PARTIAL row, so a retry that claimed it after the officer's read gets the
    409 "a retry is running"; a queued retry of a row marked not replayable is
    closed as skipped. Rows repaired before this release stay partly

@@ -341,6 +341,7 @@ import {
 } from "@/lib/xero-booking-edit-settlement";
 import { XERO_OUTBOX_QUEUE_TYPES } from "@/lib/xero-operation-outbox-payload";
 import { XeroAppliedCreditOperationBusyError, XeroRefundCreditNoteInFlightError } from "@/lib/xero-applied-credit-operation-serialization";
+import { NOT_A_XERO_REPAIR_CLAIM } from "@/lib/xero-operation-outcome-guard";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 
 describe("enqueueXeroEntranceFeeInvoiceOperation", () => {
@@ -2472,7 +2473,7 @@ describe("processQueuedXeroOutboxOperations", () => {
 
     for (const id of ["op_alloc_busy", "op_dealloc_busy"]) {
       expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-        where: { id, status: "RUNNING" },
+        where: { id, status: "RUNNING", ...NOT_A_XERO_REPAIR_CLAIM },
         data: {
           status: "PENDING",
           startedAt: null,
@@ -2504,7 +2505,7 @@ describe("processQueuedXeroOutboxOperations", () => {
     await processQueuedXeroOutboxOperations({ limit: 5 });
 
     expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-      where: { id: "op_dealloc_waiting", status: "RUNNING" },
+      where: { id: "op_dealloc_waiting", status: "RUNNING", ...NOT_A_XERO_REPAIR_CLAIM },
       data: expect.objectContaining({ status: "PENDING", lastErrorCode: BILLED_OFFSET_AWAITING_OWN_NOTE_CODE }),
     });
     // The scan leaves such a row out until its recheck is due; every other
@@ -2558,7 +2559,7 @@ describe("processQueuedXeroOutboxOperations", () => {
       skipped: 1,
     });
     expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-      where: { id: "op_dealloc_retry", status: "RUNNING" },
+      where: { id: "op_dealloc_retry", status: "RUNNING", ...NOT_A_XERO_REPAIR_CLAIM },
       data: {
         status: "PENDING",
         startedAt: null,
@@ -2829,7 +2830,7 @@ describe("processQueuedXeroOutboxOperations", () => {
       skipped: 1,
     });
     expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-      where: { id: "op_hand_back_2", status: "RUNNING" },
+      where: { id: "op_hand_back_2", status: "RUNNING", ...NOT_A_XERO_REPAIR_CLAIM },
       data: { status: "PENDING", startedAt: null, lastErrorCode: null, lastErrorMessage: expect.stringContaining("op_hand_back_1") },
     });
     expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
