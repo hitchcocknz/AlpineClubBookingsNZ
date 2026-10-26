@@ -634,6 +634,11 @@ surface, not just a durability feature:
   destination or credentials. Every config change writes a metadata-only audit
   entry (`backup.config.set`); credential writes audit as
   `integration.credential.set`; run-now audits as `backup.run.now`.
+- **The setup wizard's resume cursor is support-area, and holds nothing
+  sensitive.** `/api/admin/backups/wizard-progress` (#4409) is read with
+  support view and saved with support edit. It stores only which step is open
+  and which steps were acknowledged - never the destination, credentials or
+  settings - and every step re-checks its own gate against live state.
 - **Bucket/region are validated before any CLI call.** They are interpolated into
   `aws s3 cp` (via `execFileSync` array-args, which are injection-safe) and an
   `s3://…` URI, so a strict bucket regex and `^[a-z0-9-]+$` region regex reject
