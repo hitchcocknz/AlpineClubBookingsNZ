@@ -3,7 +3,7 @@ import {
   assertAdditionalAskSizingCurrent,
   lockAdditionalAskQueue,
 } from "@/lib/additional-ask-queue-transaction";
-import { outstandingAdditionalAskCents } from "@/lib/additional-payment-ask";
+import { askSizedOnBalanceCents } from "@/lib/additional-payment-ask";
 import {
   PaymentSource,
   PaymentRecoveryOperationStatus,
@@ -2268,10 +2268,12 @@ type DeferredSupplementaryInvoiceAttempt =
  * except that on the ordinary fork the retry cannot work: the replay has by then
  * written this edit's `ADDITIONAL` PaymentTransaction, and the processor's own
  * "a LATER edit superseded this one" check tests for an additional transaction
- * created after the operation, which that row now is. A second pass would find
- * its own transaction, read it as a supersession, and complete having done
- * nothing at all. So a throw here does not retry the invoice; it converts a
- * missing invoice into a missing invoice plus a spurious FAILED recovery row.
+ * created after the operation, which that row now is. Before #4442 a second
+ * pass found its own transaction, read it as a supersession, and completed
+ * having done nothing at all. A retry now recognises its own row and resumes
+ * these steps (`ownRow` in the replay), but a throw would still mark the
+ * recovery FAILED for a failure this function already records and alerts, so
+ * it stays best-effort.
  *
  * The failure is therefore recorded rather than retried, and it is recoverable
  * where it lands: the booking-vs-Xero repair pass classifies a positive-net
@@ -2314,10 +2316,11 @@ async function raiseDeferredSupplementaryInvoiceForRecoveredIntent(params: {
     // round). A module that fails to load throws exactly like a call that fails,
     // and this function's whole contract is that it does not throw - the docblock
     // above argues at length that a throw from here cannot retry, because the
-    // ordinary fork's replay has already written its ADDITIONAL transaction and
-    // the next pass would read that row as a supersession and complete having
-    // done nothing. An `await import` sitting outside the catch is precisely the
-    // throw that argument does not cover.
+    // ordinary fork's replay has already written its ADDITIONAL transaction (a
+    // retry now resumes from it rather than reading it as a supersession, #4442,
+    // but a throw still marks the recovery FAILED for a failure recorded here).
+    // An `await import` sitting outside the catch is precisely the throw that
+    // argument does not cover.
     const { completeDeferredXeroSupplementaryInvoice } = await import(
       "@/lib/xero-booking-edit-settlement"
     );
@@ -2740,11 +2743,12 @@ async function processCreateAdditionalPaymentIntentOperation(
    * happen HERE, and the position is the point (#3181 fix round). Below the
    * `upsertPaymentIntentTransaction` this replay is about to perform, a transient
    * database error on this one query throws into `failPaymentRecoveryOperation`,
-   * and the retry it buys cannot work: the ADDITIONAL transaction now exists, so
-   * the "a LATER edit superseded this one" check below would find the row THIS
-   * replay wrote, read it as a supersession, and complete the operation having
-   * done nothing at all. A $50 guest add would be collected with no invoice
-   * behind it and the recovery row would read SUCCEEDED.
+   * and before #4442 the retry it bought could not work: the "a LATER edit
+   * superseded this one" check found the row THIS replay wrote, read it as a
+   * supersession, and completed having done nothing, so a $50 guest add was
+   * collected with no invoice behind it. A retry now finds its own row first
+   * (`ownRow`) and resumes the invoice steps, but reading here still keeps a
+   * transient error before any intent or row exists, where it costs nothing.
    *
    * Read here instead and a throw costs nothing: no intent has been minted, no
    * transaction row written, and the next attempt re-runs the whole replay -
@@ -2888,6 +2892,19 @@ async function processCreateAdditionalPaymentIntentOperation(
     (row) => row.kind === PaymentTransactionKind.ADDITIONAL && row.stripePaymentIntentId === operation.paymentIntentId,
   );
   if (ownRow?.stripePaymentIntentId) {
+    // A reduction that retired the ask while this recovery sat PENDING has
+    // already accounted for its money; an invoice parked on the withdrawn
+    // intent would only wait for the reaper, so finish as the lost claim does.
+    // FAILED alone is not the test: a superseded row is FAILED with no
+    // `withdrawnAt`, and its invoice correctly follows the carry.
+    if (ownRow.withdrawnAt) {
+      logger.warn(
+        { operationId: operation.id, bookingId: operation.bookingId, paymentIntentId: ownRow.stripePaymentIntentId },
+        "Additional intent recovery found its own row already withdrawn by a price reduction (#4442); no supplementary invoice queued for it",
+      );
+      await completePaymentRecoveryOperation(operation.id);
+      return;
+    }
     await finishRecoveredAsk(ownRow.stripePaymentIntentId, operation.processingStartedAt);
     return;
   }
@@ -2967,7 +2984,7 @@ async function processCreateAdditionalPaymentIntentOperation(
         // column existed.
         // #4442 review C-F2: but the live balance it was minted over is still
         // known - the read above - and the queue re-reads it like any other.
-        { amountCents: replay.amountCents, carriedCents: 0, paymentBalanceCents: outstandingAdditionalAskCents(payment) }
+        { amountCents: replay.amountCents, carriedCents: 0, paymentBalanceCents: askSizedOnBalanceCents(payment) }
       : replay.ask;
   const askCents = ask.amountCents;
 

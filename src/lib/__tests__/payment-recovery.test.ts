@@ -3882,6 +3882,40 @@ describe("payment recovery worker", () => {
         expect(statements.filter((sql) => sql.includes("pg_advisory_xact_lock(1)")), "and not the global key").toEqual([]);
       });
 
+      /**
+       * #4442 re-lens F1: the same own row, but a price reduction retired it
+       * (`withdrawnAt`) while the recovery sat PENDING. Its money is accounted
+       * for by the reduction, so the retry finishes without parking an invoice
+       * on an intent nobody can pay.
+       */
+      it("#4442 C-F1: a retry whose own row a reduction withdrew completes without the invoice steps", async () => {
+        primeQueue(additionalIntentOperation({ paymentIntentId: "pi_recovered" }));
+        const base = paymentWithIssuedInvoice();
+        mockPaymentFindUnique.mockResolvedValue({
+          ...base,
+          transactions: [
+            ...base.transactions,
+            {
+              id: "txn-own",
+              kind: "ADDITIONAL",
+              stripePaymentIntentId: "pi_recovered",
+              amountCents: 3000,
+              refundedAmountCents: 0,
+              status: PaymentStatus.FAILED,
+              withdrawnAt: new Date("2026-06-02T01:00:00.000Z"),
+              createdAt: new Date("2026-06-02T00:00:00.000Z"),
+            },
+          ],
+        });
+
+        const result = await processPaymentRecoveryOperations({ limit: 1 });
+
+        expect(result.succeeded).toBe(1);
+        expect(mockCreatePaymentIntent).not.toHaveBeenCalled();
+        expect(mockAttachIntentToWaitingOps).not.toHaveBeenCalled();
+        expect(mockCompleteDeferredSupplementaryInvoice).not.toHaveBeenCalled();
+      });
+
       it("raises it against the recovered intent once the mint succeeds", async () => {
         primeQueue(additionalIntentOperation());
         mockPaymentFindUnique.mockResolvedValue(paymentWithIssuedInvoice());

@@ -99,6 +99,11 @@ export function outstandingAdditionalAskCents(
     : 0;
 }
 
+/** The balance an ask was sized on, the one rule the queue re-reads (#4442); `undefined` = never sized. */
+export function askSizedOnBalanceCents(sizedOn: AdditionalAskPayment | null | undefined): number | null {
+  return sizedOn === undefined ? null : outstandingAdditionalAskCents(sizedOn);
+}
+
 /**
  * AN ASK, AND WHAT IT ABSORBED - one value, and the only thing the shared minter
  * will accept (#3371).
@@ -175,7 +180,7 @@ class AdditionalAskValue {
 
   constructor(params: { ownCents: number; carriedCents: number; reissuesUnpaidAsk?: boolean; sizedOn?: AdditionalAskPayment | null }) {
     this.amountCents = params.ownCents + params.carriedCents;
-    this.#paymentBalanceCents = params.sizedOn === undefined ? null : outstandingAdditionalAskCents(params.sizedOn);
+    this.#paymentBalanceCents = askSizedOnBalanceCents(params.sizedOn);
     this.#carriedCents = params.carriedCents;
     this.#reissuesUnpaidAsk = params.reissuesUnpaidAsk ?? false;
   }

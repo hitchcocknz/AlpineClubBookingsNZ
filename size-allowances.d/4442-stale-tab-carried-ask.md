@@ -6,7 +6,7 @@ its replay re-reads the carried balance under the same locks as the others,
 and (review C-F1) a retry that finds its own row resumes its post-write steps.
 
 file: src/lib/payment-recovery.ts
-lines: 3443
+lines: 3460
 reason: the additional-ask replay's own changes, beside the claim, the mint
   and the supersede they guard - the shared queue fence's import and re-read
   (frozen replays included), the claim hold's lock choice and transaction
