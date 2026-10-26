@@ -153,6 +153,13 @@ const MAX_DELETED_LODGES_PER_PULL = MAX_LODGES_PER_PULL;
 // bounds must not fail the WHOLE pull — the lodges still merge and the cursor
 // still advances — it is treated as not sent, and reported so the sync can say
 // so. (API 2.5 dropped the name-only `ownLodgeNames`, #69: names may repeat.)
+/**
+ * Just the NAME of a pulled row, read the way `distributedLodgeSchema` reads
+ * it (#4262 review): a row dropped for breaking some other bound still says a
+ * lodge of that name exists, which the download's by-name keying must count.
+ */
+export const pulledRowNameSchema = z.object({ name: otherLodgeNameSchema });
+
 export const pullEnvelopeSchema = z.object({
   lodges: z.array(z.unknown()).max(MAX_LODGES_PER_PULL),
   cursor: z.string().max(64).nullable(),
@@ -177,6 +184,12 @@ export interface OtherLodgesPullResult {
   count: number;
   /** Rows the server sent that failed the bounds above and were discarded. */
   dropped: number;
+  /**
+   * The names of the dropped rows whose name alone still reads
+   * (`pulledRowNameSchema`), so a lodge dropped by its bounds still counts as
+   * a lodge of that name (#4262 review).
+   */
+  droppedNames: string[];
   /**
    * The lodges the server says this club owns, with their central ids (#62),
    * or `undefined` when the server did not send a valid list. Never defaulted

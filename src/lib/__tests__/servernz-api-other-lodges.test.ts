@@ -601,3 +601,20 @@ describe("pullOtherLodges — the fenced settings snapshot", () => {
     expect(pull.sentOn).toEqual({ baseUrl: "https://central.test", credentialVersion: "test-credential-version" });
   });
 });
+
+// #4262 review (B5): a dropped row's name, when it alone still reads, is kept
+// so the download's by-name keying counts that lodge.
+describe("pullOtherLodges — the names of dropped rows", () => {
+  it("keeps a dropped row's readable name, and none for a row whose name breaks its bounds", async () => {
+    respondWith({
+      lodges: [remoteRow(), remoteRow({ id: "srv_2", bedCapacity: -5 }), { id: "srv_3", name: 42 }],
+      cursor: "c-1",
+      count: 3,
+    });
+
+    const pull = await pullOtherLodges(null);
+
+    expect(pull.dropped).toBe(2);
+    expect(pull.droppedNames).toEqual(["Aorangi Ski Club"]);
+  });
+});

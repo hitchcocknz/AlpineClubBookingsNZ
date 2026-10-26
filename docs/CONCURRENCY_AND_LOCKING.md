@@ -2131,8 +2131,9 @@ mispricing a booking.
   connection replaced while the request was in flight hides, unlinks, creates
   or renames nothing, not only its cursor and owned list. Order: settings row,
   credential read, then `OtherLodge`/`Amenity`/`Lodge` rows and the audit row;
-  the admin other-lodge and Central lodge writers take no settings lock, so
-  they cannot invert it. The record step also re-reads the cursor and keyed
+  the admin other-lodge writers take no settings lock, and the Central lodge
+  writer takes the settings row before its `Lodge` row, so none inverts it.
+  The record step also re-reads the cursor and keyed
   marker under the lock, so a download that ran while another recorded writes
   nothing back. Since #69 the owned list is stored by central id as the server
   sent it, so an admin's rename of the club's own lodge no longer rewrites it
@@ -2140,18 +2141,21 @@ mispricing a booking.
   from the booking/capacity/credit and money clusters. A missing settings row
   refuses every fenced write (no stored address matches).
 - **Central lodge link writer** — `PUT /api/admin/lodges/[id]/central-lodge`
-  (#62; #4262 review): takes `$executeRaw`SELECT 1 FROM "Lodge" WHERE "id" = $1
-  FOR UPDATE`` as the first statement of its transaction, re-reads the link it
-  is replacing under that lock, writes the new `Lodge.centralLodgeId`, and
-  writes its `LODGE_CENTRAL_LINK_UPDATED` audit row on the same transaction
-  client. Two saves therefore serialise, the second reads the first's link as
-  its "before", and no audit row describes a transition that never happened; a
-  write refused by the unique index (409) rolls back with no audit row. It
-  takes no other lock: the owned-lodge check reads the settings row without
-  locking it, so this writer never waits on `ServerNzSettings` while holding a
-  `Lodge` row and cannot invert the download's settings-then-`Lodge` order
-  (the hide and the record step's unlink). Lodge-id keyed; no advisory lock;
-  disjoint from the booking/capacity/credit and money clusters.
+  (#62; #4262 review): in one transaction it first takes the settings row lock
+  (`lockServerNzSettings`) and re-reads the owned-lodge list under it, so a
+  download recording a new list (which unlinks deleted ids under the same
+  lock) cannot land between the ownership check and the write; then it takes
+  `$executeRaw`SELECT 1 FROM "Lodge" WHERE "id" = $1 FOR UPDATE``, re-reads the
+  link it is replacing, writes the new `Lodge.centralLodgeId`, and writes its
+  `LODGE_CENTRAL_LINK_UPDATED` audit row on the same transaction client. Order:
+  settings row, then `Lodge` row — the Other lodges download's own order (its
+  hides and record-step unlink), so neither can wait on the other in reverse.
+  Two saves serialise, the second reads the first's link as its "before", and
+  no audit row describes a transition that never happened; a save refused for
+  ownership (400) or by the unique index (409) rolls back with no audit row.
+  The transaction uses the settings fence's bounded wait
+  (`SERVERNZ_TRANSACTION_OPTIONS`). No advisory lock; disjoint from the
+  booking/capacity/credit and money clusters.
 
 - **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
   (`releaseDeletionRequestApprovalClaim`, #2627): takes

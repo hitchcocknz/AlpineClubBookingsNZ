@@ -229,22 +229,19 @@ export interface ServerNzSetupState {
  * returns the key value. A DB error propagates to the caller.
  */
 export async function getServerNzSetupState(): Promise<ServerNzSetupState> {
-  const apiKeyUpdatedAt = await readServerNzApiKeyStamp();
+  const apiKeyUpdatedAt = await readServerNzApiKeyUpdatedAt();
   return { apiKeySet: apiKeyUpdatedAt !== null, apiKeyUpdatedAt };
 }
 
 /**
- * When the stored API key was last written, or `null` when there is none —
- * metadata only, never the key. A new key, or a new server address (which
- * removes the key), changes it, so it doubles as the CONNECTION's identity: the
- * Other lodges download compares it before and after (#64) so a download that
- * outlived a change of connection records nothing. Read through `db` so it can
- * run under a lock inside the caller's transaction.
+ * When the stored API key was last written, or `null` when there is none:
+ * setup-page metadata only, never the key, and never a connection's identity.
+ * Whether an answer still belongs to the stored connection is decided by the
+ * credential VERSION under the settings lock (`withCurrentServerNzConnection`
+ * and `serverNzAnswerWriter` in `servernz-version-record.ts`, #4262 review).
  */
-export async function readServerNzApiKeyStamp(
-  db: Pick<Prisma.TransactionClient, "integrationCredential"> = prisma,
-): Promise<string | null> {
-  const row = await db.integrationCredential.findFirst({
+async function readServerNzApiKeyUpdatedAt(): Promise<string | null> {
+  const row = await prisma.integrationCredential.findFirst({
     where: {
       provider: SERVERNZ_PROVIDER,
       key: SERVERNZ_CREDENTIAL_KEYS.apiKey,

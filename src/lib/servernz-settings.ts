@@ -128,9 +128,11 @@ export async function loadOwnedOtherLodges(
  * credential rows afterwards. No advisory key or provider call is involved.
  * The connection transaction materialises the singleton before locking it;
  * the recorder can safely decline an answer when the row is absent.
- * The Other lodges download's record step (triyder/AlpineClubBookingsNZ#64)
- * takes the same fence: it re-reads the connection and the cursor under it so
- * an older answer never overwrites a newer one.
+ * Every answer writer goes through the one fence built on it,
+ * `withCurrentServerNzConnection` / `serverNzAnswerWriter`
+ * (`servernz-version-record.ts`): the version recorder and every write of the
+ * Other lodges download (#4262 review). The Central lodge link writer takes it
+ * before its `Lodge` row to re-check the owned list.
  */
 export async function lockServerNzSettings(
   db: Pick<Prisma.TransactionClient, "$executeRaw">,

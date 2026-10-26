@@ -8,6 +8,7 @@ import {
   MAX_SERVER_VERSION_CHARS,
   deletedLodgeSchema,
   distributedLodgeSchema,
+  pulledRowNameSchema,
   pullEnvelopeSchema,
   pushTargetResultSchema,
   sharedPostResultSchema,
@@ -627,10 +628,16 @@ export async function pullOtherLodges(
   // re-fetched and re-fail on every subsequent run.
   const lodges: OtherLodgesPullResult["lodges"] = [];
   let dropped = 0;
+  const droppedNames: string[] = [];
   for (const raw of envelope.lodges) {
     const row = distributedLodgeSchema.safeParse(raw);
-    if (row.success) lodges.push(row.data);
-    else dropped++;
+    if (row.success) {
+      lodges.push(row.data);
+      continue;
+    }
+    dropped++;
+    const named = pulledRowNameSchema.safeParse(raw);
+    if (named.success) droppedNames.push(named.data.name);
   }
 
   // The owned list, validated apart from the rows and the cursor: refused
@@ -657,6 +664,7 @@ export async function pullOtherLodges(
     cursor: envelope.cursor,
     count: envelope.count,
     dropped,
+    droppedNames,
     ownLodges,
     ownLodgesRefused,
     deletedLodgeIds,

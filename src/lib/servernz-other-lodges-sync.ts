@@ -22,6 +22,7 @@ import {
 import {
   hideDeletedLodges,
   mergeDistributedLodge,
+  unlinkDeletedCentralLodges,
   type MergeOutcome,
   type NameConflict,
 } from "@/lib/servernz-other-lodges-merge";
@@ -407,8 +408,12 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
   // bookings that name it onto a different lodge. Each such lodge is then new
   // here, never welded onto a row that may be another lodge of the same name;
   // the unkeyed row is marked not found, for an administrator to hide.
+  // A row the pull dropped for its bounds still names a lodge (#4262 review):
+  // its name counts too, so a lodge sharing it is never taken for the only one.
   const namesInPull = new Map<string, number>();
-  for (const l of lodges) namesInPull.set(l.name, (namesInPull.get(l.name) ?? 0) + 1);
+  for (const name of [...lodges.map((l) => l.name), ...pull.droppedNames]) {
+    namesInPull.set(name, (namesInPull.get(name) ?? 0) + 1);
+  }
   // On `wholeRegistry`, not on `knownIds`: a whole download that dropped a row
   // still keys by name (else every unkeyed row would gain a twin); the dropped
   // row only stops ids from being treated as stale.
@@ -497,11 +502,7 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
       // A club lodge linked to a deleted central lodge in the moments since the
       // hide above (an administrator's Central lodge save) is unlinked again, now
       // that the owned list recorded below no longer names it (#58).
-      if (deletedIds.size > 0) {
-        await tx.$executeRaw(
-          Prisma.sql`UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" IN (${Prisma.join([...deletedIds])})`,
-        );
-      }
+      await unlinkDeletedCentralLodges(tx, [...deletedIds]);
       if (keyed && knownIds !== null) {
         // One bound parameter per id (`Prisma.join`), as the rest of the code
         // base binds lists; an empty registry lists none, so every id goes.

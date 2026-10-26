@@ -299,11 +299,7 @@ async function hideDeletedLodge(
   db: Prisma.TransactionClient,
   centralId: string,
 ): Promise<{ hidden: string | null; unlinked: number }> {
-  // A club lodge LINKED to the deleted central lodge (#62's "Central lodge")
-  // points at nothing now: the link is cleared, and the club lodge answers
-  // nothing until an administrator links it again (#4262: always explicitly).
-  // Raw, like the hide: not an administrator's edit.
-  const unlinked = await db.$executeRaw`UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" = ${centralId}`;
+  const unlinked = await unlinkFromCentralLodges(db, [centralId]);
   const row = await db.otherLodge.findUnique({
     where: { centralId },
     select: { id: true, name: true, hiddenAt: true },
@@ -333,18 +329,58 @@ export async function hideDeletedLodges(
     if (one.hidden !== null) hidden.push(one.hidden);
     unlinked += one.unlinked;
   }
-  if (hidden.length > 0 || unlinked > 0) {
-    await createAuditLog(
-      {
-        action: "alpine_server.other_lodges.hidden",
-        category: "lodge",
-        severity: "info",
-        outcome: "success",
-        summary: "Lodges deleted on the Alpine Central Server were hidden",
-        details: `hidden ${hidden.length}${hidden.length ? ` (${hidden.join(", ")})` : ""}; club lodges unlinked from them ${unlinked}`,
-      },
-      db,
-    );
-  }
+  await auditHiddenAndUnlinked(db, hidden, unlinked);
   return hidden;
+}
+
+/**
+ * The record step's second unlink (#58): a club lodge linked to a deleted
+ * central lodge in the moments since the hides (an administrator's Central
+ * lodge save) is unlinked again, on the record step's fenced transaction, and
+ * audited by the same record as the hides (#4262 review). Returns how many
+ * club lodges it unlinked.
+ */
+export async function unlinkDeletedCentralLodges(
+  db: Prisma.TransactionClient,
+  centralIds: readonly string[],
+): Promise<number> {
+  const unlinked = await unlinkFromCentralLodges(db, centralIds);
+  await auditHiddenAndUnlinked(db, [], unlinked);
+  return unlinked;
+}
+
+/**
+ * THE ONE UNLINK of club lodges from deleted central lodges (#62, #58): a club
+ * lodge LINKED to a deleted central lodge ("Central lodge") points at nothing
+ * now, so the link is cleared, and it answers nothing until an administrator
+ * links it again (#4262: always explicitly). Raw: not an administrator's edit.
+ */
+async function unlinkFromCentralLodges(
+  db: Prisma.TransactionClient,
+  centralIds: readonly string[],
+): Promise<number> {
+  if (centralIds.length === 0) return 0;
+  return db.$executeRaw(
+    Prisma.sql`UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" IN (${Prisma.join([...centralIds])})`,
+  );
+}
+
+/** The download's ONE audit record of what it hid and unlinked; none when it did neither. */
+async function auditHiddenAndUnlinked(
+  db: Prisma.TransactionClient,
+  hidden: readonly string[],
+  unlinked: number,
+): Promise<void> {
+  if (hidden.length === 0 && unlinked === 0) return;
+  await createAuditLog(
+    {
+      action: "alpine_server.other_lodges.hidden",
+      category: "lodge",
+      severity: "info",
+      outcome: "success",
+      summary: "Lodges deleted on the Alpine Central Server were hidden",
+      details: `hidden ${hidden.length}${hidden.length ? ` (${hidden.join(", ")})` : ""}; club lodges unlinked from them ${unlinked}`,
+    },
+    db,
+  );
 }

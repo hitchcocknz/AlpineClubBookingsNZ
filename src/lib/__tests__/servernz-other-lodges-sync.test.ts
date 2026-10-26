@@ -77,7 +77,8 @@ vi.mock("@/lib/servernz-api", () => ({
     const stored = (await mockPullSnapshot()) ?? (await mockLoadSettings());
     const value = typeof since === "function" ? (since as (s: unknown) => unknown)(stored) : since;
     const answer = await mockPullOtherLodges(value);
-    return answer && typeof answer === "object" && !("snapshot" in answer) ? { ...answer, snapshot: stored } : answer;
+    if (!answer || typeof answer !== "object") return answer;
+    return { droppedNames: [], snapshot: stored, ...answer };
   },
 }));
 
@@ -1791,6 +1792,21 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     },
   );
 
+  // #4262 review (B5): a same-named lodge the pull DROPPED for its bounds is
+  // still a lodge of that name, so the one that arrived is not the only one.
+  it("never keys by a name a DROPPED row also has, even when one valid lodge carries it", async () => {
+    const rows = registry([row("ol_9", "Kea Lodge", null)]);
+    mockLoadSettings.mockResolvedValue({ ...SETTINGS, otherLodgesKeyedAt: null });
+    pull([remoteLodge("Kea Lodge", { id: "c-1" })], { dropped: 1, droppedNames: ["Kea Lodge"] });
+
+    await downloadOtherClubsFromServer();
+
+    expect(rows[0].centralId).toBeNull();
+    expect(mockCreate).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ name: "Kea Lodge", centralId: "c-1" }) }),
+    );
+  });
+
   it("still keys the unkeyed row to OUR lodge when ours is the only lodge of its name", async () => {
     const rows = registry([row("ol_9", "Kea Lodge", null)]);
     mockLoadSettings.mockResolvedValue({ ...SETTINGS, otherLodgesKeyedAt: null });
@@ -2233,13 +2249,12 @@ describe("download keyed by the central server's lodge id (#64)", () => {
 
     await downloadOtherClubsFromServer();
 
-    const unlink = mockExecuteRaw.mock.calls.find(
-      ([strings]) => Array.isArray(strings) && (strings as string[]).join("?").startsWith('UPDATE "Lodge"'),
-    );
-    expect((unlink![0] as string[]).join("?")).toBe(
-      'UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" = ?',
-    );
-    expect(unlink![1]).toBe("c-gone");
+    // The one unlink statement, shared with the record step (#4262 review).
+    const unlink = mockExecuteRaw.mock.calls
+      .map(([q]) => q as { sql?: string; values?: unknown[] })
+      .find((q) => q.sql?.startsWith('UPDATE "Lodge"'));
+    expect(unlink?.sql).toBe('UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" IN (?)');
+    expect(unlink?.values).toEqual(["c-gone"]);
   });
 
   it("does nothing for a deleted lodge this site never had, or already hid", async () => {
@@ -2313,6 +2328,26 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     expect(mockExecuteRaw.mock.invocationCallOrder.at(-1)).toBeLessThan(
       mockRecordDownload.mock.invocationCallOrder[0],
     );
+  });
+
+  it("audits the record step's second unlink, on its own transaction, when it unlinked a club lodge (#4262 review)", async () => {
+    registry([]);
+    // Nothing held to hide; an administrator linked a club lodge to the deleted
+    // id in the gap, so only the record step's unlink finds it.
+    mockExecuteRaw.mockImplementation(async (q: { sql?: string }) =>
+      q?.sql?.startsWith('UPDATE "Lodge"') ? 1 : 0,
+    );
+    pull([], { deletedLodgeIds: ["c-gone"] });
+
+    await downloadOtherClubsFromServer();
+
+    expect(mockAuditCreate).toHaveBeenCalledTimes(1);
+    expect(mockAuditCreate.mock.calls[0][0]).toMatchObject({
+      action: "alpine_server.other_lodges.hidden",
+      details: "hidden 0; club lodges unlinked from them 1",
+    });
+    expect(mockAuditCreate.mock.calls[0][1]).toBeDefined();
+    expect(mockAuditCreate.mock.invocationCallOrder[0]).toBeLessThan(mockRecordDownload.mock.invocationCallOrder[0]);
   });
 
   it("writes no audit record when nothing was hidden", async () => {

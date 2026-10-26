@@ -40,7 +40,10 @@ vi.mock("@/lib/audit", () => ({
   createAuditLog: (...args: unknown[]) => mockCreateAuditLog(...args),
 }));
 vi.mock("@/lib/servernz-settings", () => ({
+  SERVERNZ_TRANSACTION_OPTIONS: { timeout: 150_000, maxWait: 10_000 },
   loadServerNzSettings: (...args: unknown[]) => mockSettings(...args),
+  lockServerNzSettings: (db: { $executeRaw: (...args: unknown[]) => unknown }) =>
+    db.$executeRaw(["SELECT 1 FROM \"ServerNzSettings\" WHERE \"id\" = ", " FOR UPDATE"], "default"),
 }));
 vi.mock("@/lib/integration-credentials", () => ({
   getIntegrationCredentialValue: (...args: unknown[]) => mockSecret(...args),
@@ -168,7 +171,7 @@ describe("PUT /api/admin/lodges/[id]/central-lodge", () => {
     );
   });
 
-  it("locks the lodge row first, then reads, writes and audits inside that one transaction (#4262)", async () => {
+  it("locks settings then the lodge row, then checks, reads, writes and audits inside that one transaction (#4262)", async () => {
     const order: string[] = [];
     mockPrisma.$executeRaw.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
       order.push(`lock ${strings.join("?").replace(/\s+/g, " ").trim()} [${values.join(",")}]`);
@@ -185,6 +188,10 @@ describe("PUT /api/admin/lodges/[id]/central-lodge", () => {
     mockCreateAuditLog.mockImplementation(async () => {
       order.push("audit");
     });
+    mockSettings.mockImplementation(async (db?: unknown) => {
+      order.push(db ? "owned (in tx)" : "owned");
+      return { otherLodgesEnabled: true, otherLodgesOwnedLodges: [A, B] };
+    });
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => {
       order.push("begin");
       const value = await fn(mockPrisma);
@@ -192,8 +199,10 @@ describe("PUT /api/admin/lodges/[id]/central-lodge", () => {
       return value;
     });
     expect((await PUT(put({ centralLodgeId: "ol_b" }), params())).status).toBe(200);
-    expect(order.slice(0, 6)).toEqual([
+    expect(order.slice(0, 8)).toEqual([
       "begin",
+      'lock SELECT 1 FROM "ServerNzSettings" WHERE "id" = ? FOR UPDATE [default]',
+      "owned (in tx)",
       'lock SELECT 1 FROM "Lodge" WHERE "id" = ? FOR UPDATE [lodge_1]',
       "read",
       "write",
@@ -212,7 +221,10 @@ describe("PUT /api/admin/lodges/[id]/central-lodge", () => {
       let locked = false;
       const tx = {
         ...mockPrisma,
+        // Settings then Lodge: the first lock statement queues the whole
+        // transaction, as one row lock would; the second is already held.
         $executeRaw: async () => {
+          if (locked) return 1;
           const previous = held;
           held = new Promise<void>((resolve) => { release = resolve; });
           locked = true;
@@ -254,6 +266,19 @@ describe("PUT /api/admin/lodges/[id]/central-lodge", () => {
     mockPrisma.lodge.findUnique.mockResolvedValue({ ...LODGE, centralLodgeId: "ol_a" });
     expect((await PUT(put({ centralLodgeId: null }), params())).status).toBe(200);
     expect(mockPrisma.lodge.update).toHaveBeenCalledWith({ where: { id: "lodge_1" }, data: { centralLodgeId: null } });
+  });
+
+  it("re-checks ownership under the settings lock: a list recorded meanwhile refuses the save (#4262)", async () => {
+    // Outside any transaction the club still owns ol_b; under the lock, the
+    // owned list a download has just recorded no longer names it.
+    mockSettings.mockImplementation(async (db?: unknown) => ({
+      otherLodgesEnabled: true,
+      otherLodgesOwnedLodges: db ? [A] : [A, B],
+    }));
+    const res = await PUT(put({ centralLodgeId: "ol_b" }), params());
+    expect(res.status).toBe(400);
+    expect(mockPrisma.lodge.update).not.toHaveBeenCalled();
+    expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 
   it("refuses a lodge the central server has not said this club owns, writing nothing", async () => {
