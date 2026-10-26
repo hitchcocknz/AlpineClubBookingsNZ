@@ -2079,28 +2079,39 @@ mispricing a booking.
   deliberately **not** taken — the master stays unlocked until step 5, and the
   family-link drift re-check above is what closes that window.
 
-- **Alpine Central Server version recorder** — `src/lib/servernz-version-record.ts`
-  (`recordServerVersionIfCurrent`, #4366): every write of the server's
-  reported API version, from the version check and from a request the server
-  refused for version (409), runs AFTER the HTTP call in one short
-  transaction with a 150s timeout (including row-lock waits) and a 10s pool
-  acquisition maxWait, allowing it to queue behind a lodge merge rather than
-  fail at Prisma's default 5s transaction timeout. It takes `lockServerNzSettings`
-  (`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE`),
-  then re-reads the stored base URL and the API key's credential version and
-  records only if both still equal what the request was built from. The
-  credential version is the stored row's hash (fresh IV on every write), so a
-  key saved again with the same value (A → B → A) is still a new connection.
-  Counterparts: `updateServerNzSettings` writes the new base URL only; the
-  settings route then calls `clearServerNzApiKey`, whose
-  `forgetServerConnectionAnswers` clears the old answers. Key writes and
-  removals likewise commit before their separate forget. The settings writes
-  queue behind a recorder holding the row lock, and the forget clears any
-  recorded answer; a recorder behind a committed connection change instead
-  re-reads the changed identity and drops the late answer. Singleton-keyed; no advisory lock;
-  no provider call inside the transaction; disjoint from the
-  booking/capacity/credit and money clusters. A missing row locks nothing and
-  fails the address re-read, so nothing is recorded.
+- **Alpine Central Server connection and version recorder** —
+  `withServerNzConnectionTransaction` (`src/lib/servernz-config.ts`, #4436)
+  runs request capture, address replacement (`saveServerNzConnectionSettings`,
+  the settings route) and key replacement (`setServerNzApiKey`, the credentials
+  route) under `lockServerNzSettings`. It materialises the singleton
+  with `createMany(skipDuplicates)` before locking, then reads mutable state.
+  Order: settings row first, credential row second, credential audit last;
+  there is no advisory key (`INV-LOCK-001`, `INV-LOCK-002`, `INV-LOCK-003`).
+  Address replacement commits the new address, credential deletion (and its
+  audit) and answer reset together. Key replacement likewise resets answers
+  in its credential transaction. The fence hands its work a branded
+  `ServerNzConnectionTx`, and the address write, key removal and answer reset
+  require that type, so a call outside the fence does not compile. Request
+  builders read the address and uncached decrypted credential through that
+  transaction client, release the lock, then send HTTP using the captured
+  identity. A warmed cross-process credential cache cannot pair an old key
+  with a new address.
+  Every request therefore serialises on the settings row's `FOR UPDATE`; the
+  hold is short, two reads and no HTTP, so requests queue only briefly.
+  `recordServerVersionIfCurrent` (`src/lib/servernz-version-record.ts`, #4366)
+  takes the same settings lock after HTTP, re-reads the address and credential
+  version and records only for the captured identity. A recorder first has its
+  answer cleared by replacement; a replacement first makes the recorder reject
+  the old identity. Both transaction boundaries allow a 150s timeout and 10s
+  pool acquisition maxWait, including a bounded wait behind a lodge merge.
+  The recorder alone can see an absent row and then records nothing. Other
+  settings writers take no credential lock, so cannot invert this order;
+  the download recorder proposed in open PR #4277 would share the same
+  settings-row protocol. No HTTP runs inside these transactions
+  (`INV-INT-027`), and they remain disjoint from booking/capacity/credit and
+  money clusters. The #4436 race suite forces a sync and address move in both
+  orders, including a warmed old-key cache, and a sync holding the old address
+  while the move and a new key's save queue behind it.
 - **Owned-lodge list writer** — `src/lib/servernz-settings.ts` (`lockServerNzSettings`, #64):
   the Other lodges download's record step (`downloadOtherClubsFromServer`)
   takes `$executeRaw`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE``

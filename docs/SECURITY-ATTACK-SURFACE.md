@@ -577,10 +577,12 @@ incident can rely on the following:
 **What the census can and cannot see.** It enumerates every DIRECT CALL of the
 three store mutators, found by walking the tree — not every function that
 ultimately causes a credential to change. A wrapper hides its own callers:
-`clearServerNzApiKey` appears, the admin route that calls it does not. That is
-sound rather than a gap, because a wrapper takes the actor as a REQUIRED
-parameter and so cannot supply one itself — the type is what covers its callers,
-and the census covers the wrapper. It is worth stating plainly because "every
+`setServerNzApiKey` appears, the credentials route that calls it does not;
+`clearServerNzApiKey` appears, `saveServerNzConnectionSettings` and the
+settings route above it do not. That is sound rather than a gap, because a
+wrapper takes the actor as a REQUIRED parameter and so cannot supply one
+itself — the type is what covers its callers, and the census covers the
+wrapper. It is worth stating plainly because "every
 writer" would be a stronger claim than the instrument makes.
 
 - **A database backup + the auth secret decrypts everything.** Anyone who holds
@@ -1185,7 +1187,8 @@ Verified controls already present and intentionally preserved:
   The conditions it requires are stated once, in
   [`dependency-mitigations.d/README.md`](../dependency-mitigations.d/README.md)
   -> "When the wrapper says MITIGATED"; it covers only the copy the audit can
-  see, and the bundled copies it cannot reach are printed on every run.
+  see, and a record's known bundled copies it cannot reach are printed on
+  every run. No record is live since the braces record was retired (#3851).
 - The secret scan reads merge commits. `git log -p` emits no patch for a merge
   commit, and roughly a third of this repository's 7,510 commits are merges, so
   a scan without `--diff-merges=first-parent` never looked at them — and a

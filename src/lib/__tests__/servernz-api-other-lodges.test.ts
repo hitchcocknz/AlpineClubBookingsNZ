@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // ── Mocks ──────────────────────────────────────────────────────────────────
 
 vi.mock("@/lib/servernz-config", () => ({
+  withServerNzConnectionTransaction: async (work: (tx: unknown) => Promise<unknown>) => work({}),
   getOperationalServerNzCredential: vi.fn(async () => ({
     apiKey: "test-api-key",
     version: "test-credential-version",

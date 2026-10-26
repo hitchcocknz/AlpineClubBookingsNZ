@@ -37,3 +37,9 @@ describe("the central-server version recorder's real-database proof stays wired 
     }
   });
 });
+
+
+it("runs the address/key sync interleavings in the shared race harness (#4436)", () => {
+  const harness = readFileSync(resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"), "utf8");
+  expect(harness).toContain('import "./servernz-connection-race.realdb.test";');
+});

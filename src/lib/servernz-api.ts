@@ -42,7 +42,7 @@ import {
   isStoredServerVersionMismatch,
   storableServerVersion,
 } from "@/lib/servernz-api-version";
-import { getOperationalServerNzCredential } from "@/lib/servernz-config";
+import { getOperationalServerNzCredential, withServerNzConnectionTransaction } from "@/lib/servernz-config";
 import {
   loadServerNzSettings,
   validateCentralServerBaseUrl,
@@ -131,10 +131,11 @@ interface ServerNzConnection {
 async function resolveConnection(
   options: { skipVersionGate?: boolean; retriedConnection?: ServerNzConnectionIdentity } = {},
 ): Promise<ServerNzConnection> {
-  const [credential, settings] = await Promise.all([
-    getOperationalServerNzCredential(),
-    loadServerNzSettings(),
-  ]);
+  const [credential, settings] = await withServerNzConnectionTransaction(async (tx) => {
+    const settings = await loadServerNzSettings(tx);
+    const credential = await getOperationalServerNzCredential(tx);
+    return [credential, settings] as const;
+  });
   if (options.retriedConnection && settings.baseUrl !== options.retriedConnection.baseUrl) {
     throw new ServerNzApiError(503, "The Alpine Central Server connection changed during its version check; retry the request.");
   }
