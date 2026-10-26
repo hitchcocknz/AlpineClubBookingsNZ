@@ -153,7 +153,7 @@ export function createOwnershipAndPrivilegeStripStream(): Transform {
       let start = 0;
       for (let end = text.indexOf("\n"); end !== -1; end = text.indexOf("\n", start)) {
         parts.push(text.slice(start, end));
-        out += emit(parts.length === 1 ? parts[0] : parts.join(""));
+        out += emit(parts.join(""));
         parts = [];
         start = end + 1;
       }
