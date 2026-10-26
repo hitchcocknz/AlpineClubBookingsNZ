@@ -114,12 +114,19 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
       return taskId;
     }
 
-    /** Swap in a fake Xero (no provider call) for the length of `run`. */
+    /** Swap in a fake Xero (no provider call) for the length of `run`; the contact and refund-account reads a raising run makes, too. */
     async function withFakeXero<T>(accountingApi: Record<string, unknown>, run: () => Promise<T>): Promise<T> {
       const apiClient = await import("@/lib/xero-api-client");
+      const contacts = await import("@/lib/xero-contacts");
+      const invoicedParty = await import("@/lib/organisation-xero-contacts");
+      const invoicePayments = await import("@/lib/xero-invoice-payments");
       const spies = [
         vi.spyOn(apiClient, "getAuthenticatedXeroClient").mockResolvedValue({ xero: { accountingApi }, tenantId: `tenant-${P}` } as never),
         vi.spyOn(apiClient, "callXeroApi").mockImplementation(((call: () => unknown) => call()) as never),
+        vi.spyOn(invoicedParty, "findOrCreateXeroContactForInvoicedParty").mockResolvedValue(CONTACT_ID),
+        vi.spyOn(contacts, "retryXeroWriteWithContactRepair").mockImplementation((async (options: { run: (input: { contactId: string }) => unknown; currentContactId: string }) =>
+          options.run({ contactId: options.currentContactId })) as never),
+        vi.spyOn(invoicePayments, "resolveRefundSettlement").mockResolvedValue({ kind: "record", bankCode: "090" }),
       ];
       try {
         return await run();
@@ -429,6 +436,54 @@ let CLUB_FORMAT_TEST: (typeof import("@/lib/__tests__/support/club-format-fixtur
         refundedAmountCents: 20_000, coverageCents: 20_000, rowResolved: true, followUpStatus: "OPEN", row: { xeroObjectId: NOTE_X },
       });
       expect(await recordsOfX()).toEqual({ rows: [rowId], links: [{ active: true, resolvedOperationId: rowId, handBackTaskId: null }] });
+    });
+
+    it("MUTATION (#4421 round 2, a retry already raised the note): once the row's retry made CN-0200, a resolve with a hand-made note for the same $200 is refused, and the refund keeps one note", async () => {
+      const { rowId, followUpId } = await failedNoteBesideFollowUp();
+      const NOTE_RETRY = `${P}-0200`;
+
+      // Monday: the officer retries the FAILED row; the real retry queue replays it against a fake Xero that raises CN-0200 and records its refund payment.
+      await withFakeXero(
+        {
+          createCreditNotes: async (_t: string, body: { creditNotes: Array<{ lineItems: Array<{ unitAmount: number }> }> }) => {
+            const total = body.creditNotes[0]!.lineItems[0]!.unitAmount;
+            return { body: { creditNotes: [{ creditNoteID: NOTE_RETRY, creditNoteNumber: "CN-0200", total, remainingCredit: total, status: "AUTHORISED", payments: [] }] } };
+          },
+          createPayments: async () => ({ body: { payments: [{ paymentID: `${P}-refund-payment`, amount: 200, status: "AUTHORISED" }] } }),
+          getCreditNote: async () => ({ body: { creditNotes: [] } }),
+          getCreditNotes: async () => ({ body: { creditNotes: [] } }),
+        },
+        async () => {
+          const { enqueueXeroSyncOperationRetry, processQueuedXeroOperationRetries } = await import("@/lib/xero-operation-queue");
+          await enqueueXeroSyncOperationRetry(rowId, { createdByMemberId: OFFICER_ID });
+          await processQueuedXeroOperationRetries({ limit: 5 }, CLUB_FORMAT_TEST);
+        },
+      );
+      const runs = await prisma.xeroSyncOperation.findMany({
+        where: { localId: PAYMENT_ID, status: { in: ["SUCCEEDED", "PARTIAL"] }, xeroObjectId: NOTE_RETRY },
+        select: { id: true, status: true },
+      });
+      expect(runs.length).toBeGreaterThan(0);
+      // The original stays FAILED naming no note, so before round 2 it still asked for a number.
+      expect(await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: rowId }, select: { status: true, xeroObjectId: true } })).toEqual({ status: "FAILED", xeroObjectId: null });
+      const before = await books(rowId, followUpId);
+      expect(before).toMatchObject({ coverageCents: 20_000, rowResolved: false });
+
+      // The panel says so before anything is typed.
+      const { GET } = await import("@/app/api/admin/xero/operations/route");
+      const listed = await (await GET(new NextRequest(`http://localhost/api/admin/xero/operations?localModel=Payment&localId=${PAYMENT_ID}`))).json();
+      expect(listed.data.find((row: { id: string }) => row.id === rowId)).toMatchObject({
+        resolveAsksCreditNoteNumber: false,
+        resolveRefusal: expect.stringContaining("already made its note"),
+      });
+
+      // Tuesday: the officer resolves the original with a hand-made $200 note X as well.
+      const response = await resolveWithX(rowId);
+      expect(response.status).toBe(409);
+      expect((await response.json()).error).toContain("already made its note");
+      // Before: two live notes, $400 of coverage for a $200 refund. Now: one.
+      expect(await books(rowId, followUpId)).toEqual(before);
+      expect(await recordsOfX()).toEqual({ rows: [], links: [] });
     });
 
     it("MUTATION (#4421, the void path): once Xero voids the note a resolve recorded, the link records the void, nothing covers H2, and the nightly follow-up undoes it and asks once", async () => {

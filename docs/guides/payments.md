@@ -1017,10 +1017,17 @@ A job that only failed after Xero made its credit note (for example the refund
 payment on it failed) already knows its note, so Resolve asks only for a reason.
 Jobs resolved before this change record no note number and stay as they are.
 
+If a retry of the job already made its credit note in Xero (the row then shows
+as already repaired), Resolve says so and refuses: that note stands for the
+refund. Don't make another by hand; if you already did, don't record it, and
+ask the treasurer whether to void it.
+
 If the app cannot read the job's refund amount, Resolve says so before you type
-anything, and Retry refuses it too. Use **Mark non-replayable** on it, and ask
-the treasurer what Xero needs for that refund. Don't also make a credit note by
-hand: the treasurer decides.
+anything, and Retry refuses it too. Use **Mark non-replayable** on it, which
+stops it being run again (it stays listed), and ask the treasurer what Xero
+needs for that refund. Don't also make a credit note by hand: the treasurer
+decides. A part-done job that names no credit note is refused the same way:
+retry it, or ask the treasurer.
 
 ### Follow a payment into Stripe or Xero
 

@@ -59,6 +59,10 @@ export async function findRetryOverlappingMark(
  * finished while the route checked Xero and waited for the lock is missed by
  * `findRetryOverlappingMark` (not RUNNING, started after the read), and the
  * resolve would record the officer's note beside the note the retry raised.
+ * `since` is a JS clock reading on the route's instance and the retry's
+ * `startedAt`/`completedAt` are stamped by the drain's; clock skew between
+ * instances is the one window left, as for `findRetryOverlappingMark`. A retry
+ * that ran and SUCCEEDED earlier is `findSupersedingRefundNoteRun`'s.
  */
 export async function findRetryRunningOrSince(
   operationId: string,
@@ -78,6 +82,91 @@ export async function findRetryRunningOrSince(
     select: { id: true, status: true, startedAt: true },
   });
 }
+
+/**
+ * #4421 review (money, round 2): a run of this refund-note create that has
+ * ALREADY raised its note, at any time - a queued retry of the row (REQUEUE)
+ * that ended SUCCEEDED or PARTIAL, or another create on the payment with the
+ * same correlation key that did (a FAILED row's retry replays on a new inline
+ * row and never closes the original, which stays FAILED naming no note; the
+ * failure overview calls it repaired, `succeededByCorrelation`). Resolving
+ * the original with a hand-made note as well would leave two notes, and $400
+ * of coverage, for one $200 refund.
+ */
+export async function findSupersedingRefundNoteRun(
+  operation: { id: string; correlationKey: string | null; localId: string | null },
+  db: OperationReader = prisma,
+): Promise<{ id: string } | null> {
+  return db.xeroSyncOperation.findFirst({
+    where: {
+      id: { not: operation.id },
+      status: { in: [...REFUND_NOTE_RAN_STATUSES] },
+      OR: [
+        { correlationKey: buildXeroOperationRequeueCorrelationKey(operation.id), operationType: XERO_REQUEUE_OPERATION_TYPE },
+        ...(operation.correlationKey && operation.localId
+          ? [{
+              correlationKey: operation.correlationKey,
+              entityType: "CREDIT_NOTE",
+              operationType: "CREATE",
+              localModel: "Payment",
+              localId: operation.localId,
+            }]
+          : []),
+      ],
+    },
+    select: { id: true },
+  });
+}
+
+/** The statuses of a run that raised its note. */
+const REFUND_NOTE_RAN_STATUSES = ["SUCCEEDED", "PARTIAL"] as const;
+
+/**
+ * The same question, asked of a page of rows at once for the Xero operations
+ * list (`resolveCreditNotePrompt`): which of these rows a run has already
+ * superseded. Two reads, whatever the page size.
+ */
+export async function findSupersededRefundNoteRowIds(
+  operations: Array<{ id: string; correlationKey: string | null; localId: string | null }>,
+  db: OperationReader = prisma,
+): Promise<Set<string>> {
+  if (operations.length === 0) return new Set();
+  const byRequeueKey = new Map(operations.map((operation) => [buildXeroOperationRequeueCorrelationKey(operation.id), operation.id]));
+  const keyed = operations.filter((operation) => operation.correlationKey && operation.localId);
+  const [requeues, creates] = await Promise.all([
+    db.xeroSyncOperation.findMany({
+      where: { operationType: XERO_REQUEUE_OPERATION_TYPE, status: { in: [...REFUND_NOTE_RAN_STATUSES] }, correlationKey: { in: [...byRequeueKey.keys()] } },
+      select: { correlationKey: true },
+    }),
+    keyed.length === 0
+      ? Promise.resolve([])
+      : db.xeroSyncOperation.findMany({
+          where: {
+            status: { in: [...REFUND_NOTE_RAN_STATUSES] },
+            entityType: "CREDIT_NOTE",
+            operationType: "CREATE",
+            localModel: "Payment",
+            correlationKey: { in: keyed.map((operation) => operation.correlationKey!) },
+          },
+          select: { id: true, correlationKey: true, localId: true },
+        }),
+  ]);
+  const superseded = new Set<string>();
+  for (const requeue of requeues) {
+    const id = requeue.correlationKey ? byRequeueKey.get(requeue.correlationKey) : undefined;
+    if (id) superseded.add(id);
+  }
+  for (const operation of keyed) {
+    if (creates.some((create) => create.id !== operation.id && create.correlationKey === operation.correlationKey && create.localId === operation.localId)) {
+      superseded.add(operation.id);
+    }
+  }
+  return superseded;
+}
+
+/** The refusal while a live copy of the same document is queued (#3635 review N3). */
+export const QUEUED_LIVE_COPY_REFUSAL =
+  "A new copy of this Xero document is queued. Wait for it to run or cancel it, then check Xero before resolving this one.";
 
 /**
  * A live copy of the same document queued beside this operation (review N3):

@@ -26,14 +26,16 @@ import {
 import {
   handMadeNoteAlreadyRecordedMessage,
   RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE,
+  RESOLVE_NOTE_PARTIAL_NO_NOTE_MESSAGE,
   RESOLVE_NOTE_RETRY_RAN_MESSAGE,
+  RESOLVE_NOTE_SUPERSEDED_MESSAGE,
 } from "@/lib/bank-refund-void-follow-up-copy";
 import type { ClubFormat } from "@/lib/club-format";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
-import { findRetryRunningOrSince } from "@/lib/xero-operation-resolve-guards";
+import { findQueuedLiveCopy, findRetryRunningOrSince, findSupersedingRefundNoteRun, QUEUED_LIVE_COPY_REFUSAL } from "@/lib/xero-operation-resolve-guards";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
 import { countsTowardRefundNoteCoverage, creditNoteCreateRowsRecordingWhere } from "@/lib/xero-refund-note-status";
 import { isRefundNoteCreateRow } from "@/lib/xero-resolved-in-xero-fences";
@@ -58,25 +60,30 @@ export type RefundNoteResolveRow = {
  * What "Resolve by hand" asks of a row:
  * - `other`: not a payment refund-note create that counts as its own refund's
  *   note - another entity, an account-credit note, a refund request's note
- *   (#4391), a row closed as covered by another note - or not FAILED.
- *   Resolved as before.
+ *   (#4391), a row closed as covered by another note - or neither FAILED nor
+ *   PARTIAL (the route refuses those anyway). Resolved as before.
  * - `records-note`: the row already names its note (a PARTIAL row, say).
  *   Resolved as before; that note is already on record.
- * - `unreadable`: a FAILED refund-note row whose amount cannot be read, so no
- *   note can be checked against it. Refused, pointing at Mark non-replayable.
+ * - `refused`: a refund-note row naming no note that cannot be resolved here -
+ *   a PARTIAL one (review round 2: it would count as covered with no note on
+ *   record), or a FAILED one whose amount cannot be read (no note can be
+ *   checked against it; Mark non-replayable stops it re-running).
  * - `asks-number`: the number of the note the officer made is required.
  *
  * The population is the coverage reader's (`isRefundNoteCreateRow`, built from
  * the constants `readResolvedRefundCreditNoteCoverage` queries with), read by
  * `parsePaymentCreditNoteRetryInput` and `countsTowardRefundNoteCoverage`, so
  * the row this asks a number of is exactly a row whose resolve counts toward
- * the payment's refund-note coverage. FAILED only (review, money F7): a
- * PARTIAL refund-note row raised its note, so it names it.
+ * the payment's refund-note coverage. FAILED only (review, money F7).
+ *
+ * A row a later run already superseded is refused too, but that needs a read
+ * (`findSupersedingRefundNoteRun`), so the route and the claim ask it, and the
+ * list passes its answer in (`resolveCreditNotePrompt`).
  */
 export type RefundNoteResolveShape =
   | { kind: "other" }
   | { kind: "records-note" }
-  | { kind: "unreadable"; paymentId: string }
+  | { kind: "refused"; paymentId: string; message: string }
   | { kind: "asks-number"; paymentId: string; amountCents: number; creditsInvoiceId?: string };
 
 export function refundNoteResolveShape(row: RefundNoteResolveRow): RefundNoteResolveShape {
@@ -86,8 +93,9 @@ export function refundNoteResolveShape(row: RefundNoteResolveRow): RefundNoteRes
   const recorded = parsePaymentCreditNoteRetryInput(row);
   if (recorded && recorded.kind !== "refund") return { kind: "other" };
   if (row.xeroObjectId) return { kind: "records-note" };
+  if (row.status === "PARTIAL") return { kind: "refused", paymentId: row.localId, message: RESOLVE_NOTE_PARTIAL_NO_NOTE_MESSAGE };
   if (row.status !== "FAILED") return { kind: "other" };
-  if (!recorded) return { kind: "unreadable", paymentId: row.localId };
+  if (!recorded) return { kind: "refused", paymentId: row.localId, message: RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE };
   return {
     kind: "asks-number",
     paymentId: row.localId,
@@ -99,18 +107,26 @@ export function refundNoteResolveShape(row: RefundNoteResolveRow): RefundNoteRes
 /**
  * What the Xero operations panel needs before an officer presses Resolve on a
  * row: whether it asks for the note's number and for what amount (review,
- * money F6), or why it will be refused (review, money F2).
+ * money F6), or why it will be refused (review, money F2) - including a row a
+ * later run superseded, which the list reads for the page
+ * (`findSupersededRefundNoteRowIds`) and passes in.
  */
-export function resolveCreditNotePrompt(row: RefundNoteResolveRow): {
+export function resolveCreditNotePrompt(
+  row: RefundNoteResolveRow,
+  superseded = false,
+): {
   resolveAsksCreditNoteNumber: boolean;
   resolveCreditNoteAmountCents: number | null;
   resolveRefusal: string | null;
 } {
   const shape = refundNoteResolveShape(row);
+  if (shape.kind === "asks-number" && superseded) {
+    return { resolveAsksCreditNoteNumber: false, resolveCreditNoteAmountCents: null, resolveRefusal: RESOLVE_NOTE_SUPERSEDED_MESSAGE };
+  }
   return {
     resolveAsksCreditNoteNumber: shape.kind === "asks-number",
     resolveCreditNoteAmountCents: shape.kind === "asks-number" ? shape.amountCents : null,
-    resolveRefusal: shape.kind === "unreadable" ? RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE : null,
+    resolveRefusal: shape.kind === "refused" ? shape.message : null,
   };
 }
 
@@ -191,16 +207,24 @@ export async function claimResolveRecordingRefundNote(input: {
       if (await findRetryRunningOrSince(input.operationId, input.readAt, tx)) {
         throw new ManualBookingPaymentError(RESOLVE_NOTE_RETRY_RAN_MESSAGE, 409);
       }
-      const [recordedByRow, links] = await Promise.all([
-        tx.xeroSyncOperation.findFirst({
-          where: { ...creditNoteCreateRowsRecordingWhere(input.note.creditNoteId), id: { not: input.operationId } },
-          select: { id: true },
-        }),
-        tx.xeroObjectLink.findMany({
-          where: { xeroObjectType: "CREDIT_NOTE", xeroObjectId: input.note.creditNoteId },
-          select: { localModel: true, localId: true, role: true, active: true, metadata: true },
-        }),
-      ]);
+      // Review round 2: a run that already raised this row's note, at any
+      // time, and a live copy of it a self-heal queued since the route's
+      // check, both re-read under the locks.
+      if (await findSupersedingRefundNoteRun({ id: input.operationId, correlationKey: row.correlationKey, localId: row.localId }, tx)) {
+        throw new ManualBookingPaymentError(RESOLVE_NOTE_SUPERSEDED_MESSAGE, 409);
+      }
+      if (await findQueuedLiveCopy({ id: input.operationId, correlationKey: row.correlationKey, entityType: row.entityType, operationType: row.operationType }, tx)) {
+        throw new ManualBookingPaymentError(QUEUED_LIVE_COPY_REFUSAL, 409);
+      }
+      // One after the other on the interactive transaction (#1357).
+      const recordedByRow = await tx.xeroSyncOperation.findFirst({
+        where: { ...creditNoteCreateRowsRecordingWhere(input.note.creditNoteId), id: { not: input.operationId } },
+        select: { id: true },
+      });
+      const links = await tx.xeroObjectLink.findMany({
+        where: { xeroObjectType: "CREDIT_NOTE", xeroObjectId: input.note.creditNoteId },
+        select: { localModel: true, localId: true, role: true, active: true, metadata: true },
+      });
       // The link this row wrote and a withdrawal retired is this row's own,
       // taken back below; any other link records the note for something else.
       const ownWithdrawn = (link: (typeof links)[number]) =>

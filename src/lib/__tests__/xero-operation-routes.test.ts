@@ -287,13 +287,22 @@ describe("Xero operation admin retry routes", () => {
       requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 20_000 }, responsePayload: null,
       xeroObjectType: null, xeroObjectId: null, xeroObjectUrl: null, startedAt: null, completedAt: null, createdAt, updatedAt: createdAt,
     };
-    mocks.xeroOperationFindMany.mockResolvedValue([
+    const listed = [
       { ...refundNote, id: "op_no_note" },
       { ...refundNote, id: "op_partial", status: "PARTIAL", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_own" },
       { ...refundNote, id: "op_request", requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 30_000, refundRequestId: "rr_1" } },
       { ...refundNote, id: "op_unreadable", requestPayload: null },
-    ]);
-    mocks.xeroOperationCount.mockResolvedValue(4);
+      { ...refundNote, id: "op_retried", correlationKey: "payment:pay_1:refund-credit-note:5000:v2" },
+    ];
+    // The page, then (round 2) the superseding-run reads: op_retried's queued retry SUCCEEDED.
+    mocks.xeroOperationFindMany.mockImplementation(async (args: { where: { operationType?: string } }) =>
+      args.where.operationType === "REQUEUE"
+        ? [{ correlationKey: "xero-operation:requeue:op_retried" }]
+        : args.where.operationType === "CREATE" && "status" in args.where
+          ? []
+          : listed,
+    );
+    mocks.xeroOperationCount.mockResolvedValue(5);
     mocks.resolveFailedXeroOperationStates.mockResolvedValue(new Map());
 
     const response = await listOperations(new NextRequest("http://localhost/api/admin/xero/operations"));
@@ -306,6 +315,7 @@ describe("Xero operation admin retry routes", () => {
       ["op_partial", false, null, null],
       ["op_request", false, null, null],
       ["op_unreadable", false, null, expect.stringContaining("Mark non-replayable")],
+      ["op_retried", false, null, expect.stringContaining("A later run of this refund credit note already made its note")],
     ]);
   });
 

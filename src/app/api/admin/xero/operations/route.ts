@@ -10,7 +10,8 @@ import { getXeroOrgShortCode } from "@/lib/xero-link-short-code";
 import { getXeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import { buildLocalAdminUrl } from "@/lib/xero-record-links";
 import { isStaleRunningXeroOperation } from "@/lib/xero-stale-operations";
-import { resolveCreditNotePrompt } from "@/lib/xero-resolve-refund-note";
+import { refundNoteResolveShape, resolveCreditNotePrompt } from "@/lib/xero-resolve-refund-note";
+import { findSupersededRefundNoteRowIds } from "@/lib/xero-operation-resolve-guards";
 import {
   endOfClubDayInclusive,
   requireCalendarDate,
@@ -166,6 +167,11 @@ export async function GET(request: NextRequest) {
     // one.
     const shortCode = await getXeroOrgShortCode();
     const now = new Date();
+    // #4421 review (round 2): a FAILED refund note a later run already
+    // raised is refused on Resolve; the panel says so up front.
+    const superseded = await findSupersededRefundNoteRowIds(
+      operations.filter((operation) => refundNoteResolveShape(operation).kind === "asks-number"),
+    );
 
     return NextResponse.json({
       data: operations.map((operation) => ({
@@ -191,7 +197,7 @@ export async function GET(request: NextRequest) {
         // #4421: the server decides whether "Resolve by hand" asks for the
         // note's number (and for what amount) or will be refused, so the
         // panel and the resolve route agree.
-        ...resolveCreditNotePrompt(operation),
+        ...resolveCreditNotePrompt(operation, superseded.has(operation.id)),
       })),
       total,
       hiddenFailedCount,

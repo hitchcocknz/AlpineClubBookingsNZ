@@ -5856,16 +5856,24 @@ The order is the #4162 follow-up's, all in one short transaction:
    one that started and finished while the route checked Xero and waited for
    the lock would otherwise raise its own note beside the officer's, and the
    post-commit `findRetryOverlappingMark` cannot see it (not RUNNING, started
-   after the read). The mark's instant is taken here, after the lock;
-6. the note's records read: any other credit-note create row
+   after the read). Clock skew between the route's and the drain's instances
+   is the one window left. The mark's instant is taken here, after the lock;
+6. no run already raised the row's note, at any time
+   (`findSupersedingRefundNoteRun`: its retry, or a create on the payment with
+   the same correlation key, SUCCEEDED or PARTIAL), and no live copy of it is
+   queued (`findQueuedLiveCopy`, re-asked here because a self-heal can queue
+   one between the route's check and the claim; a fresh note under a
+   different key is not a copy and is the claim's stated limit);
+7. the note's records read, one read after the other on the transaction
+   (#1357): any other credit-note create row
    (`creditNoteCreateRowsRecordingWhere`, the spelling the answer's guard uses)
    or any `XeroObjectLink`, except the link this row wrote and a withdrawal
    retired - either refuses with a 409, and the transaction rolls back having
    written nothing;
-7. the status-guarded claim (`updateMany`: FAILED, `manuallyResolvedAt` null,
+8. the status-guarded claim (`updateMany`: FAILED, `manuallyResolvedAt` null,
    `xeroObjectId` null) writing the mark and the note together. A lost claim
    writes nothing and the route answers as for any lost resolve;
-8. the link row last, through the link funnel (`writeHandMadeRefundNoteLink`),
+9. the link row last, through the link funnel (`writeHandMadeRefundNoteLink`),
    which keeps a void or newer reading that committed first under the link's
    row lock (#4288) and then refuses, rolling the claim back. The inbound link
    write and #4161's heal take only the link row (the heal's Payment row
@@ -5877,7 +5885,11 @@ queues the same way. After the commit the route's existing running-retry check
 runs (`findRetryOverlappingMark`); a mark it withdraws
 (`withdrawResolveRecordingRefundNote`) takes the note and the link with it, in
 the claim's own order - `lock(1)`, the `Payment` row, the row's `updateMany`
-guarded on that mark and that note, the link retired last. Then the note is read
+guarded on that mark and that note, the link retired last - audited. A
+withdrawal that throws (its 30 s transaction waits on `lock(1)` and the Payment
+row) leaves the mark and the live link while the retry may raise its own note,
+so the route raises a `refund-ledger-divergence` alert naming the operation and
+the note, audits it and tells the officer. Then the note is read
 from Xero once more, outside any lock (`reconcileHandMadeNoteAfterRecording`).
 Every other resolve - a row naming its note, a refund request's note, any other
 entity - takes no lock, as before. Two registered sites,

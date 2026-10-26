@@ -1647,7 +1647,13 @@ on `manuallyResolvedAt`.
   Payment row, it re-reads the row and refuses with a 409, writing nothing,
   when a retry of the row ran since the route read it (`findRetryRunningOrSince`:
   a FAILED refund note's retry runs on its own REQUEUE row and never claims the
-  original), or another credit-note create row or any link records the note;
+  original), when a run already raised the row's note at any time
+  (`findSupersedingRefundNoteRun`: its retry, or a create on the payment with
+  the same correlation key, SUCCEEDED or PARTIAL - the original stays FAILED
+  naming no note, and the failure overview calls it repaired; also asked before
+  the Xero check and shown by the list), when a live copy of the note is queued
+  (`findQueuedLiveCopy`, asked again under the locks), or another credit-note
+  create row or any link records the note;
   the status-guarded claim (FAILED, unresolved, no note) writes the mark with
   the note's id and number, and the answer's own link writer
   (`writeHandMadeRefundNoteLink`) the payment's live per-refund
@@ -1659,11 +1665,16 @@ on `manuallyResolvedAt`.
   once, a card refund's note is raised again. While it is live, the link counts
   the note and the row adds nothing, so it is counted once, and the #4162
   answer's guard refuses it. A mark withdrawn for a running retry retires its
-  link under the same locks; only that row's later resolve takes it back.
-  Refused, and every refusal audited with the number tried: a number for a row
-  that takes none, and a refund-note row whose amount cannot be read - Retry
-  refuses that one too, so the officer marks it non-replayable and asks the
-  treasurer. A refund request's note (#4391), a row that already names its note
+  link under the same locks and is audited; a withdrawal that fails leaves the
+  mark and the live link while the retry may raise its own note, so it raises a
+  `refund-ledger-divergence` alert naming the operation and the note. Only that
+  row's later resolve takes a retired link back. Refused, and every refusal of
+  a resolve that offered or needed a number audited with the number tried and
+  the status, whichever check refused it: a number for a row that takes none,
+  a PARTIAL refund-note row naming no note (it would count as covered with no
+  note on record), and a FAILED one whose amount cannot be read - Retry refuses
+  that one too, so the officer marks it non-replayable (which stops re-runs,
+  not the listing) and asks the treasurer. A refund request's note (#4391), a row that already names its note
   and every other row resolve as before. Legacy: a row resolved before #4421
   names no note and stays so - nothing can backfill a number nobody recorded.
 - **The outbox.** After it claims a row and before any Xero call, the outbox

@@ -15,9 +15,8 @@ import { Label } from "@/components/ui/label"
 import {
   EXAMPLE_CREDIT_NOTE_NUMBER,
   HAND_MADE_CREDIT_NOTE_NUMBER_MAX,
-  RESOLVE_REASON_MAX,
-  RESOLVE_REASON_MIN,
 } from "@/lib/bank-refund-void-follow-up-copy"
+import { XERO_OPERATION_REASON_MAX, XERO_OPERATION_REASON_MIN } from "@/lib/xero-operation-resolution"
 import { resolveDialogDescription } from "./resolve-dialog-copy"
 
 export interface ResolveWithNoteAnswer {
@@ -64,7 +63,7 @@ export function useResolveWithNoteDialog(): {
 
   const number = creditNoteNumber.trim()
   const trimmedReason = reason.trim()
-  const ready = number.length > 0 && trimmedReason.length >= RESOLVE_REASON_MIN && !checking
+  const ready = number.length > 0 && trimmedReason.length >= XERO_OPERATION_REASON_MIN && !checking
 
   const close = () => {
     if (inFlight.current) return
@@ -129,7 +128,7 @@ export function useResolveWithNoteDialog(): {
             <Label htmlFor="resolve-credit-note-reason">Reason</Label>
             <Input
               id="resolve-credit-note-reason"
-              maxLength={RESOLVE_REASON_MAX}
+              maxLength={XERO_OPERATION_REASON_MAX}
               value={reason}
               disabled={checking}
               onChange={(event) => setReason(event.target.value)}
