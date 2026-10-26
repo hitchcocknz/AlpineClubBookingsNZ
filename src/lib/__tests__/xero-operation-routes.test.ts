@@ -279,6 +279,33 @@ describe("Xero operation admin retry routes", () => {
     });
   });
 
+  it("tells the panel which rows' Resolve asks for the Xero note number: a refund note's create that names no note (#4421)", async () => {
+    const createdAt = new Date("2026-04-14T09:00:00Z");
+    const refundNote = {
+      direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: "pay_1",
+      status: "FAILED", queueType: "REFUND_CREDIT_NOTE", correlationKey: "payment:pay_1:refund-credit-note:20000:v2", idempotencyKey: null,
+      requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 20_000 }, responsePayload: null,
+      xeroObjectType: null, xeroObjectId: null, xeroObjectUrl: null, startedAt: null, completedAt: null, createdAt, updatedAt: createdAt,
+    };
+    mocks.xeroOperationFindMany.mockResolvedValue([
+      { ...refundNote, id: "op_no_note" },
+      { ...refundNote, id: "op_partial", status: "PARTIAL", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_own" },
+      { ...refundNote, id: "op_request", requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 30_000, refundRequestId: "rr_1" } },
+    ]);
+    mocks.xeroOperationCount.mockResolvedValue(3);
+    mocks.resolveFailedXeroOperationStates.mockResolvedValue(new Map());
+
+    const response = await listOperations(new NextRequest("http://localhost/api/admin/xero/operations"));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data.map((row: { id: string; resolveAsksCreditNoteNumber: boolean }) => [row.id, row.resolveAsksCreditNoteNumber])).toEqual([
+      ["op_no_note", true],
+      ["op_partial", false],
+      ["op_request", false],
+    ]);
+  });
+
   it("filters failed operations by resolved failure state before pagination", async () => {
     const createdAt = new Date("2026-04-14T09:00:00Z");
     const active = {
