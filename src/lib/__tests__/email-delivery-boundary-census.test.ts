@@ -1,4 +1,6 @@
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { ciEnvHeredocs } from "./helpers/ci-env-heredocs";
@@ -168,6 +170,19 @@ function withoutDotenvComments(text: string): string {
     .join("\n");
 }
 
+/**
+ * #4411: the repository-root dotenv files Git TRACKS (`.env.example`,
+ * `.env.staging.example`), never whatever sits in the working tree. A developer
+ * who follows the docs (`cp .env.staging.example .env.staging`) has an untracked
+ * `.env.staging` with real settings in it, which is not what this census judges
+ * - it judges what the tracked files say. Deduplicated, because a mid-merge
+ * index lists a conflicted path once per stage.
+ */
+function trackedRootDotenvFiles(root: string): string[] {
+  const listed = execFileSync("git", ["ls-files", "-z", "--", ".env*"], { cwd: root, encoding: "utf8" });
+  return [...new Set(listed.split("\0").filter((name) => /^\.env($|\.)/.test(name)))].sort();
+}
+
 /** `NAME: "true"` / `NAME='TRUE'` / `NAME=true`, quoting and case normalised. */
 function flagIsTrue(text: string, name: string): boolean {
   return new RegExp(`\\b${name}\\s*[:=]\\s*["']?\\s*true\\s*["']?`, "i").test(text);
@@ -188,8 +203,7 @@ function captureCandidateBlocks(): ConfigBlock[] {
   const root = process.cwd();
   const blocks: ConfigBlock[] = [];
 
-  for (const name of readdirSync(root).sort()) {
-    if (!/^\.env($|\.)/.test(name)) continue;
+  for (const name of trackedRootDotenvFiles(root)) {
     blocks.push({ id: name, text: withoutDotenvComments(readRepoFile(name)) });
   }
 
@@ -322,6 +336,27 @@ describe("email delivery boundary census (INV-CONFIG-004)", () => {
    * is a different question and is asserted in `env-delivery-census.test.ts`.
    * This one is about what the tracked files SAY.
    */
+  it("#4411: reads only the root dotenv files Git tracks, so an untracked copy is ignored", () => {
+    // The repository's own tracked set.
+    expect(trackedRootDotenvFiles(process.cwd())).toEqual([".env.example", ".env.staging.example"]);
+
+    // A throwaway repository: one tracked example, the documented untracked copy
+    // beside it (relaying to a capture host without the flag), and a tracked
+    // file that only ends in `.env`.
+    const repo = mkdtempSync(path.join(os.tmpdir(), "census-4411-"));
+    try {
+      const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, stdio: "ignore" });
+      git("init", "-q");
+      writeFileSync(path.join(repo, ".env.example"), "EMAIL_SERVER_HOST=smtp.example.invalid\n");
+      writeFileSync(path.join(repo, ".env.staging"), "EMAIL_SERVER_HOST=mailpit\n");
+      writeFileSync(path.join(repo, "not.env"), "\n");
+      git("add", ".env.example", "not.env");
+      expect(trackedRootDotenvFiles(repo)).toEqual([".env.example"]);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("declares USE_LOCAL_CAPTURE in every block that relays to a capture container", () => {
     const blocks = captureCandidateBlocks();
 
