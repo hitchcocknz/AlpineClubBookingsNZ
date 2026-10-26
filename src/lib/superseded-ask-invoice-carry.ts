@@ -24,28 +24,35 @@
  *   intent named), which also covers an A whose card was DECLINED - a FAILED
  *   ask is carried but never cancelled again, so the cancel step never runs
  *   for it;
+ * - an edit's Xero leg (`queueXeroBookingEditSettlement`) that parked its
+ *   invoice on an ask already FAILED, through
+ *   `followSupersededAskInvoicesForIntentSafely`: a leg landing after the
+ *   supersession's own move;
  * - the waiting-invoice reaper, before it retires an invoice whose booking no
- *   longer names its intent: the backstop for a crash between the two above.
+ *   longer names its intent: the backstop for a crash between the others.
  *
  * WHAT MOVES, and what is refused (each refusal leaves the row exactly as it
  * was, to the reaper and the booking-vs-Xero repair pass as before):
- * - the CARRIER is the payment's newest ADDITIONAL card row, PENDING,
- *   PROCESSING or SUCCEEDED and not withdrawn, on a booking that has not ended
- *   (CANCELLED or BUMPED) or been deleted; a caller naming its new intent must
- *   be naming that row;
- * - the SUPERSEDED rows are the FAILED, unwithdrawn ones before it and after
- *   the last captured row - the unpaid chain the carrier's `carriedAskCents`
- *   absorbed. A withdrawn row is a price reduction's (`retireUnpaidAskChain`),
- *   which retires and counts its own invoices;
+ * - the CARRIER of a FAILED, unwithdrawn ask is the first later ADDITIONAL card
+ *   row that can carry money - still payable, or captured - and that no
+ *   superseded-intent operation names (`supersededAskCarriers`), on a booking
+ *   that has not ended (CANCELLED or BUMPED) or been deleted; a caller naming
+ *   its new intent must be naming the payment's newest row;
  * - the INVOICES are supplementary-invoice creates anchored on a booking
- *   change, still `WAITING_PAYMENT` on one of those rows' intents, carrying no
- *   error code and no resolve mark (`INV-INT-025`);
- * - per anchor, under `lockSupplementaryInvoiceAnchor` (the key the enqueue
- *   decides "is an invoice already going out?" under), the anchor must have no
- *   active supplementary-invoice link and no other outstanding operation;
+ *   change, still `WAITING_PAYMENT` on one of the carried asks' intents,
+ *   carrying no error code and no resolve mark (`INV-INT-025`);
+ * - under the change's key and the carrier's (`moveLockKeys`), the change must
+ *   have no active supplementary-invoice link and no other outstanding
+ *   operation;
  * - the carrier must cover what would then wait on it: everything naming it
  *   bills at most its `amountCents`, and what bills changes other than its own
  *   (`captureChangeId`) at most its `carriedAskCents`.
+ *
+ * A CAPTURE OF THE CARRIED ASK ITSELF (a declined ask is never cancelled at
+ * Stripe, so a stale tab can still pay it) takes its invoice back: the
+ * late-capture release returns every invoice first parked on that intent to it
+ * before it releases (`returnMovedInvoicesToCapturedIntent`), so the capture
+ * that paid the change is the one it records.
  *
  * THE WRITE is a status-guarded `updateMany` (`WAITING_PAYMENT`, the intent it
  * waited on, no error code, no resolve mark), so a row a reduction retired, a
@@ -54,11 +61,11 @@
  * (`SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY`, kept through a later move), which
  * is how a reduction still reads the invoice as the superseded row's own money
  * (`supplementaryInvoiceWaitedFirstOn`). One short transaction per anchor holding
- * that one key; no provider call runs inside, and the late-capture release
- * runs after it commits.
+ * its keys; no provider call runs inside, and the late-capture release runs
+ * after it commits.
  *
  * NOT TOUCHED: an invoice the reaper already retired (`STALE_WAITING_PAYMENT`)
- * on a superseded intent. With these three callers no new one is retired while
+ * on a superseded intent. With these callers no new one is retired while
  * a live carrier exists; one retired before this change is left to the repair
  * pass's `MISSING_SUPPLEMENTARY_INVOICE`, because a retired row is revived only
  * by a capture of its OWN intent, and widening that to another intent would
@@ -68,29 +75,25 @@ import { PaymentSource, PaymentStatus, PaymentTransactionKind, type Prisma } fro
 
 import { isAdditionalAskRetiredBookingStatus } from "@/lib/additional-payment-chase";
 import { anchorCaptureHasReceipt, captureChangeId } from "@/lib/additional-capture-receipt-link";
+import { findActiveSupplementaryInvoiceLink } from "@/lib/late-capture-xero-receipt";
 import logger from "@/lib/logger";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
-import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
+import { isCapturedTransactionStatus, isOpenIntentTransactionStatus } from "@/lib/payment-transaction-status";
 import { prisma } from "@/lib/prisma";
+import { SUPERSEDED_INTENT_OPERATION_TYPES } from "@/lib/superseded-intent-ownership";
 import { asRecord } from "@/lib/xero-json";
-import { lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
-import {
-  XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-  supplementaryInvoiceBilledCents,
-} from "@/lib/xero-operation-outbox-payload";
+import { kickQueuedXeroOutboxOperationsIfConnected, lockSupplementaryInvoiceAnchor } from "@/lib/xero-operation-outbox";
+import { supplementaryInvoiceBilledCents } from "@/lib/xero-operation-outbox-payload";
 import {
   SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY,
   supplementaryInvoiceWaitedFirstOn,
 } from "@/lib/supplementary-invoice-parked-from";
-import { OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES } from "@/lib/xero-supplementary-invoice-statuses";
+import {
+  SUPPLEMENTARY_INVOICE_CREATE_WHERE,
+  outstandingSupplementaryInvoiceOperationsWhere,
+  supplementaryInvoicesNamingIntentWhere,
+} from "@/lib/xero-supplementary-invoice-statuses";
 import { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } from "@/lib/xero-supplementary-invoice-late-capture";
-
-/** The ledger statuses of a carrier the member can still pay, or has paid. */
-const LIVE_CARRIER_STATUSES = new Set<PaymentStatus>([
-  PaymentStatus.PENDING,
-  PaymentStatus.PROCESSING,
-  PaymentStatus.SUCCEEDED,
-]);
 
 export type SupersededAskInvoiceRefusal =
   | "not-the-carrier"
@@ -102,13 +105,13 @@ export type SupersededAskInvoiceRefusal =
   | "changed-under-lock";
 
 export type SupersededAskInvoiceCarryResult = {
-  /** The request the invoices now wait on, or null when there is none. */
-  carrierPaymentIntentId: string | null;
-  /** How many waiting invoices were moved onto it by this call. */
+  /** The requests invoices now wait on (each carrier something moved onto, or would have). */
+  carrierPaymentIntentIds: string[];
+  /** How many waiting invoices were moved onto a carrier by this call. */
   moved: number;
   /** One entry per anchor (or the whole call) left as it was, and why. */
   refusals: Array<{ anchorId: string | null; reason: SupersededAskInvoiceRefusal }>;
-  /** True when the carrier was already captured and its late-capture release ran. */
+  /** True when a carrier was already captured and its late-capture release ran. */
   releasedOnCapturedCarrier: boolean;
 };
 
@@ -134,57 +137,78 @@ const LEDGER_ROW_SELECT = {
   reason: true,
 } as const;
 
-const SUPPLEMENTARY_INVOICE_CREATE = {
-  direction: "OUTBOUND",
-  entityType: "INVOICE",
-  operationType: "CREATE",
-  queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-} as const;
+/** One request and the superseded asks whose balance it carried. */
+export type CarriedChain = { carrier: LedgerRow; superseded: LedgerRow[] };
 
-/** The carrier and the superseded rows it carries, read from one payment's ADDITIONAL card ledger. */
-export function carrierAndSupersededRows(rows: readonly LedgerRow[]): {
-  carrier: LedgerRow | null;
-  superseded: LedgerRow[];
-} {
-  const carrier = rows.at(-1) ?? null;
-  if (
-    !carrier?.stripePaymentIntentId ||
-    carrier.withdrawnAt ||
-    !LIVE_CARRIER_STATUSES.has(carrier.status)
-  ) {
-    return { carrier: null, superseded: [] };
+/**
+ * WHICH REQUEST CARRIED WHICH, read from one payment's ADDITIONAL card ledger,
+ * oldest first. A FAILED, unwithdrawn ask was carried by the FIRST later row
+ * that can carry money: one still payable (`isOpenIntentTransactionStatus`) or
+ * captured (`isCapturedTransactionStatus`, refunded or not - its capture
+ * happened), which is the row whose `carriedAskCents` absorbed it
+ * (`INV-PAY-098`). Each FAILED ask it passes on the way is carried there too:
+ * a request superseded in turn hands its whole carried balance on.
+ *
+ * Passed over, neither carrying nor carried: a row a price reduction withdrew
+ * (`retireUnpaidAskChain` retires and counts its own invoices), and a row a
+ * superseded-intent operation names (`supersededIntentIds`) - being cancelled,
+ * or captured late and so refunded (`lateCaptureRefundState`), so the money it
+ * asked for is carried by the request after it.
+ *
+ * Not `unpaidChain` (`additional-ask-reduction.ts`, review S3): that asks what
+ * the payment still owes NOW (the rows after the last capture, ending in the
+ * live ask); this asks, for every carried ask, which row took its balance -
+ * including a capture since, which the reduction's chain starts after.
+ */
+export function supersededAskCarriers(
+  rows: readonly LedgerRow[],
+  supersededIntentIds: ReadonlySet<string>,
+): CarriedChain[] {
+  const chains: CarriedChain[] = [];
+  let carried: LedgerRow[] = [];
+  for (const row of rows) {
+    if (row.withdrawnAt || !row.stripePaymentIntentId) continue;
+    if (row.status === PaymentStatus.FAILED) {
+      carried.push(row);
+      continue;
+    }
+    const canCarry = isOpenIntentTransactionStatus(row.status) || isCapturedTransactionStatus(row.status);
+    if (!canCarry || supersededIntentIds.has(row.stripePaymentIntentId)) continue;
+    if (carried.length > 0) chains.push({ carrier: row, superseded: carried });
+    carried = [];
   }
-  const before = rows.slice(0, -1);
-  let lastCaptured = -1;
-  before.forEach((row, index) => {
-    if (isCapturedTransactionStatus(row.status)) lastCaptured = index;
-  });
-  const superseded = before
-    .slice(lastCaptured + 1)
-    .filter(
-      (row) =>
-        row.status === PaymentStatus.FAILED &&
-        !row.withdrawnAt &&
-        row.stripePaymentIntentId !== null &&
-        row.stripePaymentIntentId !== carrier.stripePaymentIntentId,
-    );
-  return { carrier, superseded };
+  return chains;
 }
 
-async function readAdditionalCardRows(
-  store: Pick<Prisma.TransactionClient, "paymentTransaction">,
+/** The payment's ADDITIONAL card ledger, and the intents a superseded-intent operation names. */
+async function readLedger(
+  store: Pick<Prisma.TransactionClient, "paymentTransaction" | "paymentRecoveryOperation">,
   paymentId: string,
-): Promise<LedgerRow[]> {
-  return store.paymentTransaction.findMany({
+): Promise<{ rows: LedgerRow[]; chains: CarriedChain[] }> {
+  const rows = await store.paymentTransaction.findMany({
     where: { paymentId, kind: PaymentTransactionKind.ADDITIONAL, source: PaymentSource.STRIPE },
     orderBy: [...LEDGER_ROWS_OLDEST_FIRST],
     select: LEDGER_ROW_SELECT,
   });
+  const intentIds = rows.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : []));
+  const supersededOps =
+    intentIds.length === 0
+      ? []
+      : await store.paymentRecoveryOperation.findMany({
+          where: { paymentIntentId: { in: intentIds }, type: { in: [...SUPERSEDED_INTENT_OPERATION_TYPES] } },
+          select: { paymentIntentId: true },
+        });
+  const supersededIntentIds = new Set(supersededOps.flatMap((op) => (op.paymentIntentId ? [op.paymentIntentId] : [])));
+  return { rows, chains: supersededAskCarriers(rows, supersededIntentIds) };
+}
+
+function intentsOf(rows: readonly LedgerRow[]): string[] {
+  return rows.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : []));
 }
 
 function waitingOnIntentsWhere(intentIds: readonly string[]): Prisma.XeroSyncOperationWhereInput {
   return {
-    ...SUPPLEMENTARY_INVOICE_CREATE,
+    ...SUPPLEMENTARY_INVOICE_CREATE_WHERE,
     status: "WAITING_PAYMENT",
     localModel: "BookingModification",
     localId: { not: null },
@@ -196,7 +220,7 @@ function waitingOnIntentsWhere(intentIds: readonly string[]): Prisma.XeroSyncOpe
 
 /**
  * Move the waiting supplementary invoices of a payment's superseded card asks
- * onto the request that now carries their balance. Throws only on a database
+ * onto the request that carries their balance. Throws only on a database
  * failure; `followSupersededAskInvoicesSafely` is the callers' spelling.
  */
 export async function followSupersededAskInvoicesToCarrier({
@@ -204,11 +228,11 @@ export async function followSupersededAskInvoicesToCarrier({
   carrierPaymentIntentId,
 }: {
   paymentId: string;
-  /** A minter names the intent it just wrote; it must still be the payment's newest live row. */
+  /** A minter names the intent it just wrote; it must still be the payment's newest row. */
   carrierPaymentIntentId?: string;
 }): Promise<SupersededAskInvoiceCarryResult> {
   const result: SupersededAskInvoiceCarryResult = {
-    carrierPaymentIntentId: null,
+    carrierPaymentIntentIds: [],
     moved: 0,
     refusals: [],
     releasedOnCapturedCarrier: false,
@@ -219,9 +243,9 @@ export async function followSupersededAskInvoicesToCarrier({
   });
   if (!payment) return result;
 
-  const { carrier, superseded } = carrierAndSupersededRows(await readAdditionalCardRows(prisma, paymentId));
-  if (!carrier?.stripePaymentIntentId || superseded.length === 0) return result;
-  if (carrierPaymentIntentId && carrier.stripePaymentIntentId !== carrierPaymentIntentId) {
+  const { rows, chains } = await readLedger(prisma, paymentId);
+  if (chains.length === 0) return result;
+  if (carrierPaymentIntentId && rows.at(-1)?.stripePaymentIntentId !== carrierPaymentIntentId) {
     result.refusals.push({ anchorId: null, reason: "not-the-carrier" });
     return result;
   }
@@ -230,38 +254,44 @@ export async function followSupersededAskInvoicesToCarrier({
     return result;
   }
 
-  const supersededIntentIds = superseded.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : []));
-  const waiting = await prisma.xeroSyncOperation.findMany({
-    where: waitingOnIntentsWhere(supersededIntentIds),
-    select: { localId: true },
-  });
-  const anchors = [...new Set(waiting.flatMap((row) => (row.localId ? [row.localId] : [])))].sort();
-  if (anchors.length === 0) return result;
-  result.carrierPaymentIntentId = carrier.stripePaymentIntentId;
-
-  for (const anchorId of anchors) {
-    const verdict = await moveAnchorOntoCarrier({
-      bookingId: payment.bookingId,
-      paymentId,
-      anchorId,
-      carrierId: carrier.id,
-      carrierPaymentIntentId: carrier.stripePaymentIntentId,
+  const movedOnto = new Map<string, string>();
+  for (const { carrier, superseded } of chains) {
+    const carrierIntentId = carrier.stripePaymentIntentId as string;
+    const waiting = await prisma.xeroSyncOperation.findMany({
+      where: waitingOnIntentsWhere(intentsOf(superseded)),
+      select: { localId: true },
     });
-    if (verdict.moved > 0) result.moved += verdict.moved;
-    else if (verdict.refusal) result.refusals.push({ anchorId, reason: verdict.refusal });
+    const anchors = [...new Set(waiting.flatMap((row) => (row.localId ? [row.localId] : [])))].sort();
+    if (anchors.length === 0) continue;
+    result.carrierPaymentIntentIds.push(carrierIntentId);
+    let movedHere = 0;
+    for (const anchorId of anchors) {
+      const verdict = await moveAnchorOntoCarrier({
+        bookingId: payment.bookingId,
+        paymentId,
+        anchorId,
+        carrier: { id: carrier.id, paymentIntentId: carrierIntentId, key: captureChangeId(carrier) ?? payment.bookingId },
+      });
+      if (verdict.moved > 0) movedHere += verdict.moved;
+      else if (verdict.refusal) result.refusals.push({ anchorId, reason: verdict.refusal });
+    }
+    result.moved += movedHere;
+    if (movedHere > 0) movedOnto.set(carrier.id, carrierIntentId);
   }
 
+  // Read AFTER the moves committed: a capture whose own release ran before
+  // them could not see these invoices, and its row is committed before that
+  // release reads, so either it released them or this read sees it captured.
+  // The one release (`INV-PAY-104`) then decides them, outside any lock,
+  // exactly as a capture would; a second release finds nothing waiting.
+  for (const [carrierId, carrierIntentId] of movedOnto) {
+    const now = await prisma.paymentTransaction.findUnique({ where: { id: carrierId }, select: { status: true } });
+    if (!now || !isCapturedTransactionStatus(now.status)) continue;
+    const released = await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(carrierIntentId);
+    result.releasedOnCapturedCarrier = true;
+    if (released.released > 0) void kickQueuedXeroOutboxOperationsIfConnected({ limit: released.released }).catch(() => null);
+  }
   if (result.moved > 0) {
-    // Read AFTER the moves committed: a capture whose own release ran before
-    // them could not see these invoices, and its row is committed before that
-    // release reads, so either it released them or this read sees it captured.
-    // The one release (`INV-PAY-104`) then decides them, outside any lock,
-    // exactly as a capture would; a second release finds nothing waiting.
-    const now = await prisma.paymentTransaction.findUnique({ where: { id: carrier.id }, select: { status: true } });
-    if (now && isCapturedTransactionStatus(now.status)) {
-      await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(carrier.stripePaymentIntentId);
-      result.releasedOnCapturedCarrier = true;
-    }
     logger.info(
       { paymentId, ...result },
       "Moved a superseded card change's waiting Xero supplementary invoices onto the request that carries its balance (#3403)",
@@ -277,78 +307,74 @@ export async function followSupersededAskInvoicesToCarrier({
 }
 
 /**
+ * The keys a move takes, in the one order (`INV-LOCK-002`): the booking's
+ * before any change's, and two changes' sorted. The change's key decides "is
+ * an invoice already going out for it?" (the enqueue's question); the
+ * CARRIER's - the change its capture pays for, else the booking, where its
+ * receipt decides who records it (`INV-PAY-139`) - makes the cover check and
+ * the recorder decision one act with every other move onto it and with that
+ * receipt (review C2, C3).
+ */
+function moveLockKeys(anchorId: string, carrierKey: string, bookingId: string): string[] {
+  if (carrierKey === anchorId) return [anchorId];
+  if (carrierKey === bookingId) return [bookingId, anchorId];
+  return [anchorId, carrierKey].sort();
+}
+
+/**
  * One anchor's move, in one short transaction holding that anchor's key and
- * nothing else. Everything decided here is re-read under the key.
+ * the carrier's and nothing else. Everything decided here is re-read under them.
  */
 async function moveAnchorOntoCarrier(input: {
   bookingId: string;
   paymentId: string;
   anchorId: string;
-  carrierId: string;
-  carrierPaymentIntentId: string;
+  carrier: { id: string; paymentIntentId: string; key: string };
 }): Promise<{ moved: number; refusal: SupersededAskInvoiceRefusal | null }> {
   return prisma.$transaction(async (tx) => {
-    await lockSupplementaryInvoiceAnchor(tx, input.anchorId);
+    for (const key of moveLockKeys(input.anchorId, input.carrier.key, input.bookingId)) {
+      await lockSupplementaryInvoiceAnchor(tx, key);
+    }
 
-    // The ledger again, under the key: a reduction may have withdrawn the rows,
-    // a cancel ended the booking, or a newer request superseded the carrier.
-    const [rows, booking] = await Promise.all([
-      readAdditionalCardRows(tx, input.paymentId),
+    // The ledger again, under the keys: a reduction may have withdrawn the
+    // rows, a cancel ended the booking, or a newer request superseded the carrier.
+    const [{ chains }, booking] = await Promise.all([
+      readLedger(tx, input.paymentId),
       tx.booking.findUnique({ where: { id: input.bookingId }, select: { status: true, deletedAt: true } }),
     ]);
-    const { carrier, superseded } = carrierAndSupersededRows(rows);
-    if (carrier?.id !== input.carrierId || !carrier.stripePaymentIntentId) {
-      return { moved: 0, refusal: "changed-under-lock" as const };
-    }
+    const chain = chains.find((candidate) => candidate.carrier.id === input.carrier.id);
+    if (!chain) return { moved: 0, refusal: "changed-under-lock" as const };
     if (!booking || isAdditionalAskRetiredBookingStatus(booking.status) || booking.deletedAt) {
       return { moved: 0, refusal: "booking-ended" as const };
     }
-    const supersededIntentIds = superseded.flatMap((row) => (row.stripePaymentIntentId ? [row.stripePaymentIntentId] : []));
-    if (supersededIntentIds.length === 0) return { moved: 0, refusal: "changed-under-lock" as const };
+    const { carrier } = chain;
+    const carrierIntentId = input.carrier.paymentIntentId;
 
     const moving = await tx.xeroSyncOperation.findMany({
-      where: { ...waitingOnIntentsWhere(supersededIntentIds), localId: input.anchorId },
-      select: { id: true, requestPayload: true },
+      where: { ...waitingOnIntentsWhere(intentsOf(chain.superseded)), localId: input.anchorId },
+      select: { id: true, requestPayload: true, correlationKey: true },
     });
     if (moving.length === 0) return { moved: 0, refusal: null };
     const movingIds = moving.map((operation) => operation.id);
 
-    const linked = await tx.xeroObjectLink.findFirst({
-      where: {
-        localModel: "BookingModification",
-        localId: input.anchorId,
-        xeroObjectType: "INVOICE",
-        role: "SUPPLEMENTARY_INVOICE",
-        active: true,
-      },
-      select: { id: true },
-    });
-    if (linked) return { moved: 0, refusal: "invoice-already-linked" as const };
+    const anchor = { localModel: "BookingModification" as const, localId: input.anchorId };
+    if (await findActiveSupplementaryInvoiceLink([anchor], tx)) {
+      return { moved: 0, refusal: "invoice-already-linked" as const };
+    }
     const otherOutstanding = await tx.xeroSyncOperation.findFirst({
-      where: {
-        ...SUPPLEMENTARY_INVOICE_CREATE,
-        localModel: "BookingModification",
-        localId: input.anchorId,
-        id: { notIn: movingIds },
-        status: { in: [...OUTSTANDING_SUPPLEMENTARY_INVOICE_STATUSES] },
-      },
+      where: { ...outstandingSupplementaryInvoiceOperationsWhere(anchor), id: { notIn: movingIds } },
       select: { id: true },
     });
     if (otherOutstanding) return { moved: 0, refusal: "another-invoice-queued" as const };
 
-    // NEVER BILL MORE THAN THE CARRIER ASKS FOR. What already names it (any
-    // status but CANCELLED: released or sent still billed its money) plus what
-    // moves must fit its amount, and what bills changes other than its own
-    // must fit the part it carried.
+    // NEVER BILL MORE THAN THE CARRIER ASKS FOR. What already names it plus
+    // what moves must fit its amount, and what bills changes other than its
+    // own (`captureChangeId`; with none, every change's) must fit the part it
+    // carried (review M3: the sum, never one change at a time).
     const movingBilled = moving.map((operation) => supplementaryInvoiceBilledCents(operation.requestPayload));
     if (movingBilled.some((cents) => cents === null)) return { moved: 0, refusal: "unreadable-invoice" as const };
     const onCarrier = await tx.xeroSyncOperation.findMany({
-      where: {
-        ...SUPPLEMENTARY_INVOICE_CREATE,
-        id: { notIn: movingIds },
-        status: { not: "CANCELLED" },
-        requestPayload: { path: ["paymentIntentId"], equals: carrier.stripePaymentIntentId },
-      },
+      where: { ...supplementaryInvoicesNamingIntentWhere(carrierIntentId), id: { notIn: movingIds } },
       select: { localId: true, requestPayload: true },
     });
     const onCarrierBilled = onCarrier.map((operation) => ({
@@ -364,41 +390,44 @@ async function moveAnchorOntoCarrier(input: {
       sum(onCarrierBilled.filter((entry) => entry.localId !== ownChangeId).map((entry) => entry.cents));
     if (
       movingCents + sum(onCarrierBilled.map((entry) => entry.cents)) > carrier.amountCents ||
-      (ownChangeId !== null && carriedOnCarrierCents > carrier.carriedAskCents) ||
-      (ownChangeId === null && movingCents > carrier.carriedAskCents)
+      carriedOnCarrierCents > carrier.carriedAskCents
     ) {
       return { moved: 0, refusal: "carrier-would-overbill" as const };
     }
 
     // A capture already recorded by its own receipt (`INV-PAY-139`) keeps one
     // recorder: the moved invoice then goes out unpaid, as the late-capture
-    // re-queue revives one.
+    // re-queue revives one. Decided under the carrier's key, where that
+    // receipt decides too.
     const carrierCaptured = isCapturedTransactionStatus(carrier.status);
     let moved = 0;
     for (const operation of moving) {
       const payload = asRecord(operation.requestPayload) ?? {};
-      const firstIntentId = supplementaryInvoiceWaitedFirstOn(payload);
       const unpaid =
         carrierCaptured &&
         payload.recordPayment !== false &&
         (await anchorCaptureHasReceipt(tx, {
           bookingId: input.bookingId,
           bookingModificationId: input.anchorId,
-          paymentIntentId: carrier.stripePaymentIntentId,
+          paymentIntentId: carrierIntentId,
         }));
+      // Guarded on what was read: the status, the intent and the correlation
+      // key, which an unlocked restate rewrites whenever it raises the amount
+      // (review C1) - so a raise landing since is never written back over.
       const written = await tx.xeroSyncOperation.updateMany({
         where: {
           id: operation.id,
           status: "WAITING_PAYMENT",
           manuallyResolvedAt: null,
           lastErrorCode: null,
+          correlationKey: operation.correlationKey,
           requestPayload: { path: ["paymentIntentId"], equals: payload.paymentIntentId as string },
         },
         data: {
           requestPayload: {
             ...payload,
-            paymentIntentId: carrier.stripePaymentIntentId,
-            [SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY]: firstIntentId,
+            paymentIntentId: carrierIntentId,
+            [SUPPLEMENTARY_INVOICE_PARKED_FROM_KEY]: supplementaryInvoiceWaitedFirstOn(payload),
             ...(unpaid ? { recordPayment: false } : {}),
           } as Prisma.InputJsonObject,
         },
@@ -407,6 +436,20 @@ async function moveAnchorOntoCarrier(input: {
     }
     return { moved, refusal: moved > 0 ? null : ("changed-under-lock" as const) };
   });
+}
+
+/**
+ * Move the superseded asks' invoices for the payment whose card request this
+ * is, when that request is itself a FAILED ask (review M5): an edit's Xero leg
+ * that parks its invoice on an ask a later request already superseded - and
+ * whose move already ran, finding nothing - follows it at once, rather than
+ * waiting for the reaper's backstop.
+ */
+export async function followSupersededAskInvoicesForIntentSafely(paymentIntentId: string): Promise<void> {
+  const row = await prisma.paymentTransaction
+    .findUnique({ where: { stripePaymentIntentId: paymentIntentId }, select: { paymentId: true, status: true } })
+    .catch(() => null);
+  if (row?.status === PaymentStatus.FAILED) await followSupersededAskInvoicesSafely({ paymentId: row.paymentId });
 }
 
 /**

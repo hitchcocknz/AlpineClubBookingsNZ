@@ -93,6 +93,7 @@ const PROVIDER_CAPTURED_UNRECORDED_CODE = "PROVIDER_CAPTURED_UNRECORDED";
 
 type WaitingOperationVerdict =
   | "retire"
+  | "moved"
   | "keep"
   | "keep-deferred"
   | "captured"
@@ -107,7 +108,7 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
    * FAILED for at least this long (F19, #1887).
    */
   failedTransactionGraceHours?: number;
-}): Promise<{ reaped: number; released: number; queueOperationIds: string[] }> {
+}): Promise<{ reaped: number; released: number; moved: number; queueOperationIds: string[] }> {
   const ageInDays = options?.ageInDays ?? STALE_WAITING_PAYMENT_AGE_DAYS;
   const ageThreshold = new Date(Date.now() - ageInDays * 24 * 60 * 60 * 1000);
   const failedGraceHours =
@@ -128,6 +129,7 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
   const unrecordedCaptures: Array<{ id: string; paymentIntentId: string }> = [];
   let kept = 0;
   let deferred = 0;
+  let moved = 0;
   for (const operation of waitingOperations) {
     const payload = operation.requestPayload as
       | { paymentIntentId?: string | null }
@@ -157,6 +159,7 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
     if (verdict === "retire") reapable.push({ id: operation.id, paymentIntentId });
     else if (verdict === "captured") capturedIntentIds.add(paymentIntentId);
     else if (verdict === "keep") kept += 1;
+    else if (verdict === "moved") moved += 1;
     else if (verdict === "keep-deferred") deferred += 1;
     else {
       kept += 1;
@@ -196,14 +199,15 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
     }
   }
 
-  if (kept > 0 || deferred > 0 || released > 0) {
+  if (kept > 0 || deferred > 0 || released > 0 || moved > 0) {
     logger.info(
-      { kept, deferredStripeReads: deferred, released },
+      { kept, deferredStripeReads: deferred, released, movedToCarrier: moved },
       "Kept WAITING_PAYMENT Xero outbox operations the member can still pay, and released those already paid",
     );
   }
 
   let reaped = 0;
+  let reapedIds = reapableIds;
   if (reapable.length > 0) {
     // Guarded on the intent each row was judged on, as well as the status
     // (#3403): a superseded change's invoice moved onto the request that
@@ -226,6 +230,14 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
       });
       reaped += updateResult.count;
     }
+    // Report only the rows this run cancelled (review X5): one moved or released since its verdict is not.
+    if (reaped < reapableIds.length) {
+      const cancelled = await prisma.xeroSyncOperation.findMany({
+        where: { id: { in: reapableIds }, status: "CANCELLED", lastErrorCode: STALE_WAITING_PAYMENT_ERROR_CODE },
+        select: { id: true },
+      });
+      reapedIds = cancelled.map((row) => row.id);
+    }
     if (reaped > 0) {
       logger.info(
         { reaped, ageInDays },
@@ -237,7 +249,8 @@ export async function reapStaleWaitingPaymentXeroOutboxOperations(options?: {
   return {
     reaped,
     released,
-    queueOperationIds: [...new Set([...reapableIds, ...releasedIds])],
+    moved,
+    queueOperationIds: [...new Set([...reapedIds, ...releasedIds])],
   };
 }
 
@@ -333,7 +346,7 @@ async function decideWaitingOperation(params: {
       },
       select: { id: true },
     });
-    return stillHere ? "retire" : "keep";
+    return stillHere ? "retire" : "moved";
   }
   const door: AdditionalPaymentDoorInput = {
     bookingStatus: payment.booking.status,

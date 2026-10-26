@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   lockAnchor: vi.fn(),
   anchorCaptureHasReceipt: vi.fn(),
   releaseForCapture: vi.fn(),
+  kick: vi.fn(),
   /** Runs just before an operation write, to model a writer landing between read and write. */
   beforeOperationWrite: { value: null as null | (() => void) },
 }));
@@ -31,6 +32,7 @@ const store = {
   transactions: [] as Row[],
   operations: [] as Row[],
   links: [] as Row[],
+  recoveryOps: [] as Row[],
 };
 
 const where = (rows: Row[], filter: unknown) =>
@@ -55,10 +57,15 @@ vi.mock("@/lib/prisma", () => {
     paymentTransaction: {
       // Array order is ledger order (oldest first).
       findMany: async (args: { where: unknown }) => where(store.transactions, args.where).map((row) => ({ ...row })),
-      findUnique: async ({ where: { id } }: { where: { id: string } }) => {
-        const row = store.transactions.find((candidate) => candidate.id === id);
-        return row ? { status: row.status } : null;
+      findUnique: async ({ where }: { where: { id?: string; stripePaymentIntentId?: string } }) => {
+        const row = store.transactions.find((candidate) =>
+          where.id ? candidate.id === where.id : candidate.stripePaymentIntentId === where.stripePaymentIntentId,
+        );
+        return row ? { status: row.status, paymentId: row.paymentId } : null;
       },
+    },
+    paymentRecoveryOperation: {
+      findMany: async (args: { where: unknown }) => where(store.recoveryOps, args.where).map((row) => ({ ...row })),
     },
     xeroSyncOperation: {
       findMany: async (args: { where: unknown }) => where(store.operations, args.where).map((row) => ({ ...row })),
@@ -82,6 +89,7 @@ vi.mock("@/lib/logger", () => ({
 }));
 vi.mock("@/lib/xero-operation-outbox", () => ({
   lockSupplementaryInvoiceAnchor: mocks.lockAnchor,
+  kickQueuedXeroOutboxOperationsIfConnected: mocks.kick,
 }));
 vi.mock("@/lib/additional-capture-receipt-link", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/additional-capture-receipt-link")),
@@ -92,9 +100,10 @@ vi.mock("@/lib/xero-supplementary-invoice-late-capture", () => ({
 }));
 
 import {
-  carrierAndSupersededRows,
+  followSupersededAskInvoicesForIntentSafely,
   followSupersededAskInvoicesSafely,
   followSupersededAskInvoicesToCarrier,
+  supersededAskCarriers,
 } from "@/lib/superseded-ask-invoice-carry";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { supplementaryInvoiceWaitedFirstOn } from "@/lib/supplementary-invoice-parked-from";
@@ -128,6 +137,7 @@ function waitingInvoice(anchor: string, intent: string, cents: number, overrides
     localId: anchor,
     manuallyResolvedAt: null,
     lastErrorCode: null,
+    correlationKey: `key_${anchor}_${cents}`,
     requestPayload: {
       queueType: "SUPPLEMENTARY_INVOICE",
       bookingId: "booking_1",
@@ -160,7 +170,10 @@ beforeEach(() => {
   store.transactions = [];
   store.operations = [];
   store.links = [];
+  store.recoveryOps = [];
   mocks.beforeOperationWrite.value = null;
+  mocks.kick.mockReset();
+  mocks.kick.mockResolvedValue(null);
   mocks.lockAnchor.mockReset();
   mocks.anchorCaptureHasReceipt.mockReset();
   mocks.anchorCaptureHasReceipt.mockResolvedValue(false);
@@ -168,41 +181,56 @@ beforeEach(() => {
   mocks.releaseForCapture.mockResolvedValue({ released: 2, queueOperationIds: [], outcome: "released" });
 });
 
-describe("which request carries which (`carrierAndSupersededRows`)", () => {
+describe("which request carries which (`supersededAskCarriers`)", () => {
   const row = (id: string, status: string, overrides: Partial<Row> = {}) =>
-    ask(id, { status, ...overrides }) as Parameters<typeof carrierAndSupersededRows>[0][number] & Row;
+    ask(id, { status, ...overrides }) as Parameters<typeof supersededAskCarriers>[0][number] & Row;
+  const read = (rows: ReturnType<typeof row>[], supersededIntents: string[] = []) =>
+    supersededAskCarriers(rows, new Set(supersededIntents)).map((chain) => [
+      chain.carrier.id,
+      chain.superseded.map((superseded) => superseded.id),
+    ]);
 
-  it("the newest live row carries the FAILED, unwithdrawn rows since the last capture", () => {
+  it("the first later row that can carry money carries the FAILED, unwithdrawn rows before it", () => {
     const rows = [row("paid", "SUCCEEDED"), row("a1", "FAILED"), row("a2", "FAILED"), row("b", "PENDING")];
-    const { carrier, superseded } = carrierAndSupersededRows(rows);
-    expect(carrier?.id).toBe("txn_b");
-    expect(superseded.map((r) => r.id)).toEqual(["txn_a1", "txn_a2"]);
+    expect(read(rows)).toEqual([["txn_b", ["txn_a1", "txn_a2"]]]);
   });
 
   it("a captured carrier still carries", () => {
-    const { carrier, superseded } = carrierAndSupersededRows([row("a", "FAILED"), row("b", "SUCCEEDED")]);
-    expect(carrier?.id).toBe("txn_b");
-    expect(superseded.map((r) => r.id)).toEqual(["txn_a"]);
+    expect(read([row("a", "FAILED"), row("b", "SUCCEEDED")])).toEqual([["txn_b", ["txn_a"]]]);
+  });
+
+  it.each(["PARTIALLY_REFUNDED", "REFUNDED"])("a %s carrier still carries: its capture happened (review M4)", (status) => {
+    expect(read([row("a", "FAILED"), row("b", status)])).toEqual([["txn_b", ["txn_a"]]]);
+  });
+
+  it("a capture after the carried ask, then a newer request: the CAPTURE carried it, not the newest (review C4)", () => {
+    const rows = [row("a", "FAILED"), row("b", "SUCCEEDED"), row("c", "PENDING")];
+    expect(read(rows)).toEqual([["txn_b", ["txn_a"]]]);
+  });
+
+  it("two chains on one payment, each to its own carrier", () => {
+    const rows = [row("a", "FAILED"), row("b", "SUCCEEDED"), row("c", "FAILED"), row("d", "PENDING")];
+    expect(read(rows)).toEqual([
+      ["txn_b", ["txn_a"]],
+      ["txn_d", ["txn_c"]],
+    ]);
+  });
+
+  it("a row a superseded-intent operation names (being cancelled, or captured late and refunded) passes it on", () => {
+    const rows = [row("a", "FAILED"), row("b", "REFUNDED"), row("c", "PENDING")];
+    expect(read(rows, ["pi_b"])).toEqual([["txn_c", ["txn_a"]]]);
   });
 
   it.each([
     ["FAILED (declined, or itself superseded)", "FAILED", {}],
     ["withdrawn by a reduction", "PENDING", { withdrawnAt: new Date() }],
-    ["refunded", "REFUNDED", {}],
   ])("nothing carries when the newest row is %s", (_label, status, overrides) => {
-    const { carrier, superseded } = carrierAndSupersededRows([row("a", "FAILED"), row("b", status, overrides)]);
-    expect(carrier).toBeNull();
-    expect(superseded).toEqual([]);
+    expect(read([row("a", "FAILED"), row("b", status, overrides)])).toEqual([]);
   });
 
-  it("a withdrawn row is a reduction's to account for, and a row before a capture was carried by it", () => {
-    const rows = [
-      row("before", "FAILED"),
-      row("paid", "SUCCEEDED"),
-      row("withdrawn", "FAILED", { withdrawnAt: new Date() }),
-      row("b", "PENDING"),
-    ];
-    expect(carrierAndSupersededRows(rows).superseded).toEqual([]);
+  it("a withdrawn row is a reduction's to account for: neither carried nor carrying", () => {
+    const rows = [row("paid", "SUCCEEDED"), row("withdrawn", "FAILED", { withdrawnAt: new Date() }), row("b", "PENDING")];
+    expect(read(rows)).toEqual([]);
   });
 });
 
@@ -212,14 +240,14 @@ describe("the move (`followSupersededAskInvoicesToCarrier`)", () => {
 
     const result = await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
 
-    expect(result).toEqual({ carrierPaymentIntentId: "pi_b", moved: 1, refusals: [], releasedOnCapturedCarrier: false });
+    expect(result).toEqual({ carrierPaymentIntentIds: ["pi_b"], moved: 1, refusals: [], releasedOnCapturedCarrier: false });
     expect(payloadOf("op_mod_a")).toMatchObject({ paymentIntentId: "pi_b", parkedFromPaymentIntentId: "pi_a", priceDiffCents: 5000, recordPayment: true });
     expect(statusOf("op_mod_a")).toBe("WAITING_PAYMENT");
     // B's own invoice is untouched: never folded together.
     expect(payloadOf("op_mod_b")).toMatchObject({ paymentIntentId: "pi_b", priceDiffCents: 3000 });
     expect(payloadOf("op_mod_b")).not.toHaveProperty("parkedFromPaymentIntentId");
-    expect(mocks.lockAnchor).toHaveBeenCalledTimes(1);
-    expect(mocks.lockAnchor.mock.calls[0]![1]).toBe("mod_a");
+    // The change's key and the carrier's, sorted (review C2, C3).
+    expect(mocks.lockAnchor.mock.calls.map((call) => call[1])).toEqual(["mod_a", "mod_b"]);
     // B is not captured: nothing is released.
     expect(mocks.releaseForCapture).not.toHaveBeenCalled();
     // A reduction attributes it to A's own money.
@@ -331,7 +359,7 @@ describe("the move (`followSupersededAskInvoicesToCarrier`)", () => {
 
     const result = await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
 
-    expect(result).toEqual({ carrierPaymentIntentId: null, moved: 0, refusals: [], releasedOnCapturedCarrier: false });
+    expect(result).toEqual({ carrierPaymentIntentIds: [], moved: 0, refusals: [], releasedOnCapturedCarrier: false });
     expect(mocks.lockAnchor).not.toHaveBeenCalled();
     expect(JSON.stringify(store.operations)).toBe(before);
   });
@@ -387,7 +415,7 @@ describe("what it refuses, leaving the row exactly as it was", () => {
   it("no live carrier: the newest request was itself declined", async () => {
     aSupersededByB({ b: { status: "FAILED" } });
     const result = await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
-    expect(result).toEqual({ carrierPaymentIntentId: null, moved: 0, refusals: [], releasedOnCapturedCarrier: false });
+    expect(result).toEqual({ carrierPaymentIntentIds: [], moved: 0, refusals: [], releasedOnCapturedCarrier: false });
     expect(payloadOf("op_mod_a").paymentIntentId).toBe("pi_a");
   });
 
@@ -408,6 +436,7 @@ describe("what it refuses, leaving the row exactly as it was", () => {
       xeroObjectType: "INVOICE",
       role: "SUPPLEMENTARY_INVOICE",
       active: true,
+      xeroObjectId: "inv_mod_a",
     });
     await refused("invoice-already-linked");
   });
@@ -462,6 +491,78 @@ describe("what it refuses, leaving the row exactly as it was", () => {
     expect(result.moved).toBe(0);
     expect(result.refusals).toEqual([{ anchorId: "mod_a", reason: "changed-under-lock" }]);
     expect(JSON.stringify(payloadOf("op_mod_a"))).toBe(before);
+  });
+});
+
+describe("review round (db90565cb)", () => {
+  it("C1: a restate raising the invoice between the move's read and its write is never written back over", async () => {
+    aSupersededByB({ b: { amountCents: 9000, carriedAskCents: 6000 } });
+    mocks.beforeOperationWrite.value = () => {
+      const row = store.operations.find((candidate) => candidate.id === "op_mod_a")!;
+      row.requestPayload = { ...(row.requestPayload as Record<string, unknown>), priceDiffCents: 6000 };
+      row.correlationKey = "key_mod_a_6000";
+    };
+
+    const result = await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
+
+    expect(result.moved).toBe(0);
+    expect(result.refusals).toEqual([{ anchorId: "mod_a", reason: "changed-under-lock" }]);
+    // The raise stands, on A, for the next move (or the reaper's) to decide afresh.
+    expect(payloadOf("op_mod_a")).toMatchObject({ paymentIntentId: "pi_a", priceDiffCents: 6000 });
+  });
+
+  it("M3: a carrier naming no change (a credit-release ask) is held to what it CARRIED, summed over every change", async () => {
+    // B carried $60 of A1 and A2; A1's $50 already moved onto it, so A2's $30 would make $80.
+    store.transactions.push(
+      ask("a1", { status: "FAILED" }),
+      ask("a2", { status: "FAILED", bookingModificationId: "mod_a2" }),
+      ask("b", { amountCents: 9000, carriedAskCents: 6000, bookingModificationId: null, reason: "credit_release" }),
+    );
+    store.operations.push(
+      waitingInvoice("mod_a1", "pi_b", 5000, { requestPayload: { ...waitingInvoice("mod_a1", "pi_b", 5000).requestPayload as object, parkedFromPaymentIntentId: "pi_a1" } }),
+      waitingInvoice("mod_a2", "pi_a2", 3000),
+    );
+
+    const result = await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
+
+    expect(result.refusals).toEqual([{ anchorId: "mod_a2", reason: "carrier-would-overbill" }]);
+    expect(payloadOf("op_mod_a2").paymentIntentId).toBe("pi_a2");
+  });
+
+  it("C2: a carrier naming no change is keyed on the booking, taken BEFORE the change's key", async () => {
+    aSupersededByB({ b: { bookingModificationId: null, reason: "credit_release" } });
+    await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
+    expect(mocks.lockAnchor.mock.calls.map((call) => call[1])).toEqual(["booking_1", "mod_a"]);
+  });
+
+  it("C4: the capture that absorbed A carries it, though a newer request exists - A's invoice is released on that capture", async () => {
+    store.transactions.push(
+      ask("a", { status: "FAILED" }),
+      ask("b", { status: "SUCCEEDED", amountCents: 8000, carriedAskCents: 5000 }),
+      ask("c", { bookingModificationId: "mod_c" }),
+    );
+    store.operations.push(waitingInvoice("mod_a", "pi_a", 5000));
+
+    const result = await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
+
+    expect(result).toMatchObject({ carrierPaymentIntentIds: ["pi_b"], moved: 1, releasedOnCapturedCarrier: true });
+    expect(payloadOf("op_mod_a").paymentIntentId).toBe("pi_b");
+    expect(mocks.releaseForCapture).toHaveBeenCalledWith("pi_b");
+  });
+
+  it("nit: a release on a captured carrier kicks the outbox for what it released", async () => {
+    aSupersededByB({ b: { status: "SUCCEEDED" } });
+    await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
+    expect(mocks.kick).toHaveBeenCalledWith({ limit: 2 });
+  });
+
+  it("M5: an edit's Xero leg on an already-FAILED ask follows its carrier; on a live ask it does nothing", async () => {
+    aSupersededByB();
+    await followSupersededAskInvoicesForIntentSafely("pi_b");
+    expect(payloadOf("op_mod_a").paymentIntentId).toBe("pi_a");
+
+    await followSupersededAskInvoicesForIntentSafely("pi_a");
+    expect(payloadOf("op_mod_a")).toMatchObject({ paymentIntentId: "pi_b", parkedFromPaymentIntentId: "pi_a" });
   });
 });
 

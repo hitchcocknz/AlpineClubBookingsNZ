@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   getPaymentIntent: vi.fn(),
   // #3403: the reaper's backstop move; its own module is tested on its own.
   followSupersededAskInvoicesSafely: vi.fn(),
+  returnMovedInvoicesToCapturedIntent: vi.fn(async () => 0),
   updateManyOperation: vi.fn(),
   updateOperation: vi.fn(),
   startXeroSyncOperation: vi.fn(),
@@ -273,7 +274,17 @@ vi.mock("@/lib/xero-token-store", () => ({
 // was cancelled at the provider (locally a cancel and a decline are both FAILED).
 vi.mock("@/lib/superseded-ask-invoice-carry", () => ({
   followSupersededAskInvoicesSafely: mocks.followSupersededAskInvoicesSafely,
+  followSupersededAskInvoicesForIntentSafely: vi.fn(async () => undefined),
 }));
+// #3403 review (M1): proven in its own suite and against PostgreSQL; here it returns nothing.
+vi.mock("@/lib/superseded-ask-invoice-return", () => ({
+  returnMovedInvoicesToCapturedIntent: mocks.returnMovedInvoicesToCapturedIntent,
+}));
+
+/** #3403 review (M2): the late-capture release's one read of every invoice naming the capture. */
+function namesTheCapture(where: { status?: unknown; id?: unknown }): boolean {
+  return (where.status as { not?: string } | undefined)?.not === "CANCELLED" && where.id === undefined;
+}
 vi.mock("@/lib/stripe", () => ({
   getPaymentIntent: mocks.getPaymentIntent,
 }));
@@ -3829,6 +3840,7 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
     expect(result).toEqual({
       reaped: 1,
       released: 0,
+      moved: 0,
       queueOperationIds: ["op_waiting_1"],
     });
   });
@@ -4081,10 +4093,11 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
     mocks.findManyOperations.mockImplementation(
       async (args: { where: { status: string; requestPayload?: unknown } }) => {
         if (!args.where.requestPayload) return waiting;
-        return args.where.status === "WAITING_PAYMENT"
+        return namesTheCapture(args.where)
           ? [
               {
                 id: "op_paid",
+                status: "WAITING_PAYMENT",
                 localModel: "BookingModification",
                 localId: "mod_1",
                 requestPayload: {
@@ -4105,12 +4118,13 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
 
     expect(retireCall()).toBeUndefined();
     expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-      where: { id: { in: ["op_paid"] }, status: "WAITING_PAYMENT" },
+      where: { id: { in: ["op_paid"] }, status: "WAITING_PAYMENT", requestPayload: { path: ["paymentIntentId"], equals: "pi_paid" } },
       data: expect.objectContaining({ status: "PENDING" }),
     });
     expect(result).toEqual({
       reaped: 0,
       released: 1,
+      moved: 0,
       queueOperationIds: ["op_paid"],
     });
   });
@@ -4141,6 +4155,7 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
     expect(result).toEqual({
       reaped: 1,
       released: 0,
+      moved: 0,
       queueOperationIds: ["op_cancelled_booking"],
     });
   });
@@ -4178,10 +4193,11 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
       mocks.findManyOperations.mockImplementation(
         async (args: { where: { status: string; requestPayload?: unknown } }) => {
           if (!args.where.requestPayload) return waiting;
-          return args.where.status === "WAITING_PAYMENT"
+          return namesTheCapture(args.where)
             ? [
                 {
                   id: "op_held",
+                  status: "WAITING_PAYMENT",
                   localModel: "BookingModification",
                   localId: "mod_1",
                   requestPayload: {
@@ -4220,7 +4236,7 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
       expect(released()).toBe(false);
       // Decided in the sweep itself, never handed to the release as "captured".
       expect(mocks.findUniqueManualRefundTask).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ reaped: 0, released: 0, queueOperationIds: [] });
+      expect(result).toEqual({ reaped: 0, released: 0, moved: 0, queueOperationIds: [] });
     });
 
     it("retires it once the refund is approved (task COMPLETED)", async () => {
@@ -4241,10 +4257,10 @@ describe("reapStaleWaitingPaymentXeroOutboxOperations", () => {
 
       expect(retireCall()).toBeUndefined();
       expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-        where: { id: { in: ["op_held"] }, status: "WAITING_PAYMENT" },
+        where: { id: { in: ["op_held"] }, status: "WAITING_PAYMENT", requestPayload: { path: ["paymentIntentId"], equals: "pi_held" } },
         data: expect.objectContaining({ status: "PENDING" }),
       });
-      expect(result).toEqual({ reaped: 0, released: 1, queueOperationIds: ["op_held"] });
+      expect(result).toEqual({ reaped: 0, released: 1, moved: 0, queueOperationIds: ["op_held"] });
     });
   });
 
@@ -4427,6 +4443,7 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
   });
   const waitingOperation = (id = "op_waiting", priceDiffCents = 12000) => ({
     id,
+    status: "WAITING_PAYMENT",
     localModel: "BookingModification",
     localId: "mod_1",
     requestPayload: payload(priceDiffCents),
@@ -4434,14 +4451,21 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
 
   let waiting: unknown[] = [];
   let retired: unknown[] = [];
+  /** #3403 review (M2): invoices naming the capture already released or sent. */
+  let alreadyNaming: unknown[] = [];
   beforeEach(() => {
     vi.clearAllMocks();
     waiting = [];
     retired = [];
+    alreadyNaming = [];
     mocks.findManyOperations.mockReset();
     mocks.findManyOperations.mockImplementation(
-      async (args: { where: { status: string } }) =>
-        args.where.status === "WAITING_PAYMENT" ? waiting : retired,
+      async (args: { where: { status: unknown; id?: unknown } }) =>
+        namesTheCapture(args.where)
+          ? [...alreadyNaming, ...waiting]
+          : (args.where.status as { not?: string }).not
+            ? alreadyNaming
+            : retired,
     );
     mocks.updateManyOperation.mockReset();
     mocks.updateManyOperation.mockResolvedValue({ count: 1 });
@@ -4483,16 +4507,19 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
     const result =
       await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
 
+    // #3403 review (M2): one read of every invoice naming the capture, not CANCELLED.
     expect(mocks.findManyOperations).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          status: "WAITING_PAYMENT",
+          status: { not: "CANCELLED" },
           queueType: "SUPPLEMENTARY_INVOICE",
+          requestPayload: { path: ["paymentIntentId"], equals: "pi_late" },
         }),
       }),
     );
+    expect(mocks.returnMovedInvoicesToCapturedIntent).toHaveBeenCalledWith("pi_late");
     expect(mocks.updateManyOperation).toHaveBeenCalledWith({
-      where: { id: { in: ["op_waiting"] }, status: "WAITING_PAYMENT" },
+      where: { id: { in: ["op_waiting"] }, status: "WAITING_PAYMENT", requestPayload: { path: ["paymentIntentId"], equals: "pi_late" } },
       data: expect.objectContaining({ status: "PENDING" }),
     });
     expect(result).toEqual({
@@ -4526,6 +4553,46 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
     mocks.updateManyOperation.mockResolvedValue({ count: 0 });
     await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
     expect(mocks.sendAdminXeroSyncErrorAlert).not.toHaveBeenCalled();
+  });
+
+  describe("#3403 review (M2): the capture covers every invoice naming it TOGETHER, never one at a time", () => {
+    it("two waiting invoices that each fit but together do not: the first goes out, the second is cancelled unsent", async () => {
+      // A superseded change's $70 moved onto a $120 capture beside the request's own $60.
+      waiting = [waitingOperation("op_moved", 7000), waitingOperation("op_own", 6000)];
+
+      const result = await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+
+      expect(writeWith((data) => data.status === "PENDING").flatMap((args) => (args.where.id as { in: string[] }).in)).toEqual(["op_moved"]);
+      expect(capturedStamps().map((args) => args.where.id)).toEqual(["op_own"]);
+      expect(result.released).toBe(1);
+    });
+
+    it("an invoice already released on the capture counts: a waiting one that alone fits is not issued over it", async () => {
+      alreadyNaming = [{ ...waitingOperation("op_released", 7000), status: "PENDING" }];
+      waiting = [waitingOperation("op_raised", 6000)];
+
+      await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+
+      expect(capturedStamps().map((args) => args.where.id)).toEqual(["op_raised"]);
+      expect(writeWith((data) => data.status === "PENDING")).toEqual([]);
+    });
+
+    it("a retired invoice is revived only while it and the others naming the capture fit it", async () => {
+      alreadyNaming = [{ ...waitingOperation("op_released", 7000), status: "PENDING" }];
+      retired = [retiredOperation({ priceDiffCents: 6000 })];
+
+      const result = await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+
+      expect(reviveCalls()).toEqual([]);
+      expect(capturedStamps().map((args) => args.where.id)).toEqual(["op_retired"]);
+      expect(result.outcome).toBe("alerted");
+    });
+
+    it("a refunded capture takes nothing back (M1): the return runs only for a capture the club keeps", async () => {
+      mocks.findFirstRecoveryOperation.mockResolvedValue({ id: "recovery_superseded" });
+      await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+      expect(mocks.returnMovedInvoicesToCapturedIntent).not.toHaveBeenCalled();
+    });
   });
 
   it("re-queues the retired row itself, under the change's anchor lock, when the capture covers it", async () => {
@@ -5122,6 +5189,9 @@ describe("restatePendingSupplementaryInvoiceAmount (#3170)", () => {
         // operation the outbox claimed between the two statements matches
         // nothing here, so the write cannot contradict an ask already going out.
         status: { in: ["PENDING", "WAITING_PAYMENT"] },
+        // #3403 review (C1): and still on the request it was read on, so a
+        // superseded change's invoice moved since is never written back.
+        requestPayload: { path: ["paymentIntentId"], equals: "pi_additional_1" },
       },
       data: {
         requestPayload: expect.objectContaining({
