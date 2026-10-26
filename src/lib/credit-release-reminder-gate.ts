@@ -6,7 +6,7 @@ import {
   type AdditionalAskChainRow,
 } from "@/lib/additional-ask-cause";
 import { loadBankTransferOffer, type BankTransferOffer } from "@/lib/credit-release-bank-transfer";
-import { signalCreditReleaseToOfficers } from "@/lib/credit-release-officer-signal";
+import { signalCreditReleaseToOfficers } from "@/lib/release-ask-officer-signal";
 import logger from "@/lib/logger";
 import { openBalanceCents, readXeroInvoiceBalance, type XeroInvoiceBalanceReader } from "@/lib/xero-invoice-balance";
 

@@ -15,7 +15,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/lib/prisma", () => ({ prisma: mocks.prisma }));
 vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.audit }));
-vi.mock("@/lib/payment-recovery", () => ({ enqueueAdditionalPaymentIntentRecovery: mocks.enqueue }));
+vi.mock("@/lib/payment-recovery", () => ({ createAdditionalPaymentIntentRecoveryOnce: mocks.enqueue }));
 vi.mock("@/lib/credit-release-xero-payment", () => ({ recordCreditReleasePayments: mocks.record }));
 vi.mock("@/lib/credit-release-ask-close", () => ({ closeCreditReleaseAsksPaidInXero: mocks.close }));
 vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } }));
@@ -48,7 +48,8 @@ beforeEach(() => {
   mocks.prisma.memberCredit.findMany.mockResolvedValue([]);
   mocks.prisma.paymentRecoveryOperation.findMany.mockResolvedValue([]);
   mocks.prisma.payment.findFirst.mockResolvedValue({ id: "pay-1" });
-  mocks.enqueue.mockResolvedValue(undefined);
+  // Created by this call: the ordinary case.
+  mocks.enqueue.mockResolvedValue(true);
   mocks.record.mockResolvedValue({ recorded: 0, held: 0, failed: 0, waiting: 0 });
   mocks.close.mockResolvedValue({ closed: 0, left: 0 });
 });
@@ -212,11 +213,35 @@ describe("the backlog (#4253 release 2, D4)", () => {
       { id: "rel-1", amountCents: 4000, appliedToBookingId: "bk-1" },
       { id: "rel-2", amountCents: 3000, appliedToBookingId: "bk-2" },
     ]);
-    mocks.enqueue.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error("db down"));
+    mocks.enqueue.mockResolvedValueOnce(true).mockRejectedValueOnce(new Error("db down"));
     await expect(runCreditReleaseBacklog()).rejects.toThrow("db down");
     expect(mocks.audit).toHaveBeenCalledWith(
       expect.objectContaining({ metadata: expect.objectContaining({ releaseIds: ["rel-1"] }) }),
     );
+  });
+
+  it("counts and names only the requests THIS run created, when another payments cycle raised one first", async () => {
+    switches({ metadata: { enabled: true, perRun: 2 } });
+    mocks.prisma.memberCredit.findMany.mockResolvedValue([
+      { id: "rel-1", amountCents: 4000, appliedToBookingId: "bk-1" },
+      { id: "rel-2", amountCents: 3000, appliedToBookingId: "bk-2" },
+      { id: "rel-3", amountCents: 2000, appliedToBookingId: "bk-3" },
+    ]);
+    // The overlapping cycle won rel-1's row; this run creates rel-2 and rel-3.
+    mocks.enqueue.mockResolvedValueOnce(false).mockResolvedValue(true);
+    expect(await runCreditReleaseBacklog()).toBe(2);
+    expect(mocks.audit).toHaveBeenCalledTimes(1);
+    expect(mocks.audit).toHaveBeenCalledWith(
+      expect.objectContaining({ metadata: expect.objectContaining({ releaseIds: ["rel-2", "rel-3"] }) }),
+    );
+  });
+
+  it("writes no batch row when the overlapping cycle raised every request first", async () => {
+    switches({ metadata: { enabled: true } });
+    mocks.prisma.memberCredit.findMany.mockResolvedValue([{ id: "rel-1", amountCents: 4000, appliedToBookingId: "bk-1" }]);
+    mocks.enqueue.mockResolvedValue(false);
+    expect(await runCreditReleaseBacklog()).toBe(0);
+    expect(mocks.audit).not.toHaveBeenCalled();
   });
 
   it("writes no audit row for a batch that took nothing", async () => {

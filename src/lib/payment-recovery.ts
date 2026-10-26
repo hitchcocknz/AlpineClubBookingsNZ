@@ -446,22 +446,45 @@ export async function enqueueAdditionalPaymentIntentRecovery({
 }) {
   return store.paymentRecoveryOperation.upsert({
     where: { idempotencyKey },
-    create: {
-      type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
-      status: PaymentRecoveryOperationStatus.PENDING,
-      bookingId,
-      paymentId,
-      paymentIntentId: stripeIdempotencyKey,
-      amountCents,
-      hadIssuedXeroInvoice,
-      idempotencyKey,
-      nextRetryAt,
-    },
+    create: additionalIntentRecoveryRow({ bookingId, paymentId, idempotencyKey, amountCents, stripeIdempotencyKey, hadIssuedXeroInvoice, nextRetryAt }),
     update: {
       bookingId,
       paymentId,
     },
   });
+}
+
+type AdditionalIntentRecoveryRowInput = Omit<Parameters<typeof enqueueAdditionalPaymentIntentRecovery>[0], "store"> & { nextRetryAt: Date };
+
+/** The row an additional-intent recovery is created as: one shape for the upsert above and the insert below. */
+function additionalIntentRecoveryRow(input: AdditionalIntentRecoveryRowInput) {
+  return {
+    type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+    status: PaymentRecoveryOperationStatus.PENDING,
+    bookingId: input.bookingId,
+    paymentId: input.paymentId,
+    paymentIntentId: input.stripeIdempotencyKey,
+    amountCents: input.amountCents,
+    hadIssuedXeroInvoice: input.hadIssuedXeroInvoice,
+    idempotencyKey: input.idempotencyKey,
+    nextRetryAt: input.nextRetryAt,
+  };
+}
+
+/**
+ * #4253 release 2 (`INV-ADDPAY-050`): the same row, created only where no row has the key, and
+ * whether THIS call created it (`INSERT ... ON CONFLICT DO NOTHING`). For a caller that counts and
+ * audits the rows it raised: two overlapping payment cycles both see the upsert succeed, so both
+ * counted the same release and wrote two batch rows for it.
+ */
+export async function createAdditionalPaymentIntentRecoveryOnce(
+  input: Omit<AdditionalIntentRecoveryRowInput, "nextRetryAt"> & { nextRetryAt?: Date },
+): Promise<boolean> {
+  const created = await prisma.paymentRecoveryOperation.createMany({
+    data: [additionalIntentRecoveryRow({ ...input, nextRetryAt: input.nextRetryAt ?? new Date() })],
+    skipDuplicates: true,
+  });
+  return created.count === 1;
 }
 
 /**

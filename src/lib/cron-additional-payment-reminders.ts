@@ -14,7 +14,7 @@ import {
 import { ASK_CAUSE_ROWS, additionalAskCause } from "@/lib/additional-ask-cause";
 import type { BankTransferOffer } from "@/lib/credit-release-bank-transfer";
 import { prepareCreditReleaseReminder } from "@/lib/credit-release-reminder-gate";
-import { canReceiveChaseEmail } from "@/lib/additional-payment-chase-reachability";
+import { canReceiveChaseEmail } from "@/lib/reminder-recipient-reachability";
 import { bookingOwner } from "@/lib/booking-owner";
 import { readBookingNoEmails } from "@/lib/booking-email-suppression";
 import { clubToday, dateOnlyInstantOf } from "@/lib/club-time";

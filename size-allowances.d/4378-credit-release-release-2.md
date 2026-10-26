@@ -32,9 +32,11 @@ reason: the required-token guidance table is keyed by token for every template; 
   whose save is refused is told only a token name.
 
 file: src/lib/payment-recovery.ts
-lines: 3504
+lines: 3527
 reason: a released-credit request blocked by an unpaid edit request must wait without
   spending its attempts (`waitPaymentRecoveryOperation`). The wait goes through the one
   failure chokepoint, `markPaymentRecoveryOperationFailed`, which is private to this module
   and pinned there by the terminal-failure census; a second module writing the row would be
-  the second route to FAILED that census exists to refuse.
+  the second route to FAILED that census exists to refuse. The insert-once variant of the
+  additional-intent row (`createAdditionalPaymentIntentRecoveryOnce`) shares the row builder
+  with the existing upsert here, so the row has one shape.

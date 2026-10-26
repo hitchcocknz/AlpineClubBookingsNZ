@@ -10,7 +10,7 @@ vi.mock("@/lib/prisma", () => ({ prisma: { auditLog: { findFirst: mocks.findFirs
 vi.mock("@/lib/audit", () => ({ createAuditLog: mocks.audit }));
 vi.mock("@/lib/logger", () => ({ default: mocks.logger }));
 
-import { signalCreditReleaseToOfficers } from "@/lib/credit-release-officer-signal";
+import { signalCreditReleaseToOfficers } from "@/lib/release-ask-officer-signal";
 
 /*
   #4253 release 2 (`INV-ADDPAY-051`): why a released-credit request is no longer chased by the app

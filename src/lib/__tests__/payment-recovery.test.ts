@@ -422,6 +422,7 @@ import {
   buildRefundRequestRefundMetadata,
   bookingModificationRefundReasonForKeyPrefix,
   completeCanceledSupersededPaymentIntentRecovery,
+  createAdditionalPaymentIntentRecoveryOnce,
   enqueueBookingCancellationRefundRecovery,
   enqueueBookingModificationRefundRecovery,
   enqueueCapacityClaimFailedRefundRecovery,
@@ -777,6 +778,35 @@ describe("payment recovery worker", () => {
       }),
       CLUB_FORMAT_TEST,
     );
+  });
+
+  it("#4253: creates a released-credit request's row only once, and says whether this call created it", async () => {
+    const input = {
+      bookingId: "booking-1",
+      paymentId: "payment-1",
+      idempotencyKey: "credit_release_ask_rel-1",
+      amountCents: 4000,
+      stripeIdempotencyKey: "credit_release_ask_pi_rel-1",
+      hadIssuedXeroInvoice: false,
+    };
+    mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 1 });
+    expect(await createAdditionalPaymentIntentRecoveryOnce(input)).toBe(true);
+    expect(mockPaymentRecoveryCreateMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          type: PaymentRecoveryOperationType.CREATE_ADDITIONAL_PAYMENT_INTENT,
+          status: PaymentRecoveryOperationStatus.PENDING,
+          idempotencyKey: "credit_release_ask_rel-1",
+          paymentIntentId: "credit_release_ask_pi_rel-1",
+          hadIssuedXeroInvoice: false,
+          nextRetryAt: expect.any(Date),
+        }),
+      ],
+      skipDuplicates: true,
+    });
+    // Another pass created it first.
+    mockPaymentRecoveryCreateMany.mockResolvedValueOnce({ count: 0 });
+    expect(await createAdditionalPaymentIntentRecoveryOnce(input)).toBe(false);
   });
 
   it("#4253: a released-credit request waiting on an unpaid edit goes back to wait, its attempt handed back, never terminal", async () => {

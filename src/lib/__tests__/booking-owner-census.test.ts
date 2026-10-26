@@ -523,8 +523,8 @@ const OPTIONAL_OWNER_READ_SITES: readonly string[] = [
   // admin health snapshot that renders the address with its own `?? ""`.
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:1432",
   "src/lib/member-guest-consent-service.ts:1344",
-  "src/lib/payment-recovery.ts:2620",
-  "src/lib/payment-recovery.ts:2672",
+  "src/lib/payment-recovery.ts:2673",
+  "src/lib/payment-recovery.ts:2725",
   "src/lib/xero-admin-health.ts:394",
 ];
 
@@ -792,7 +792,7 @@ const UNROOTED_ORGANISATION_SELECTIONS: readonly string[] = [
   // `booking.findUniqueOrThrow`/`findMany` selects, and Booking declares
   // `organisation`.
   "src/lib/booking-owner-name.ts:12",
-  "src/lib/cron-additional-payment-reminders.ts:454",
+  "src/lib/cron-additional-payment-reminders.ts:439",
   "src/lib/cron-confirm-pending.ts:189",
   "src/lib/diagnostics/tools/packs/booking-evidence.ts:885",
   // #3740: `resolveManualRefundTask`'s select, moved out of that module to keep

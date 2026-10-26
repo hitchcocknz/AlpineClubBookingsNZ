@@ -1871,7 +1871,9 @@ _Legacy: settles tasks raised before #4317._
   re-reads the ledger and what Xero shows due on the booking's invoice, and
   closes with an audit where nothing is still owed, so a release already settled
   in Xero by hand is never asked for. A release is looked at once (its recovery
-  row), so repeating or resuming is harmless.
+  row, inserted once), so repeating or resuming is harmless, and a pass counts
+  and names only the rows it inserted: two overlapping payment cycles never
+  write two batch rows for one release.
 - **An operator runs it.** Set bank details first [INV-ADDPAY-049], then turn it on
   once the previous colour has drained. Home: `credit-release-ask-sweep.ts`.
 
@@ -1895,5 +1897,5 @@ _Legacy: settles tasks raised before #4317._
 - **The officers are told once.** The request (or the edit it waits on) stays on
   the queues that already show unpaid money; one
   `payment.credit_release_ask.left_to_officers` audit row on the booking, written
-  once per key, says why the app stopped (`credit-release-officer-signal.ts`).
+  once per key, says why the app stopped (`release-ask-officer-signal.ts`).
 - Home: `credit-release-reminder-gate.ts`, `credit-release-ask.ts`.

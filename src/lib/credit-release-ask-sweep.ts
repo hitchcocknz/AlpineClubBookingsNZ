@@ -6,7 +6,7 @@ import { createAuditLog } from "@/lib/audit";
 import { closeCreditReleaseAsksPaidInXero, type CreditReleaseCloseResult } from "@/lib/credit-release-ask-close";
 import { recordCreditReleasePayments, type CreditReleasePaymentRunResult } from "@/lib/credit-release-xero-payment";
 import logger from "@/lib/logger";
-import { enqueueAdditionalPaymentIntentRecovery } from "@/lib/payment-recovery";
+import { createAdditionalPaymentIntentRecoveryOnce } from "@/lib/payment-recovery";
 import {
   buildCreditReleaseAskRecoveryIdempotencyKey,
   buildCreditReleaseAskStripeIdempotencyKey,
@@ -124,7 +124,7 @@ export async function enqueueCreditReleaseAsks(
     since?: Date;
     /** Only releases written before this (the backlog's ceiling: the writer's floor). */
     before?: Date;
-    /** Called with each release a request was raised for, in order. */
+    /** Called with each release THIS call raised a request for, in order. */
     onEnqueued?: (releaseId: string) => void;
   },
 ): Promise<number> {
@@ -167,7 +167,7 @@ export async function enqueueCreditReleaseAsks(
       logger.warn({ releaseId: release.id }, "A credit release names a booking with no payment; no request raised");
       continue;
     }
-    await enqueueAdditionalPaymentIntentRecovery({
+    const created = await createAdditionalPaymentIntentRecoveryOnce({
       bookingId: release.appliedToBookingId as string,
       paymentId: payment.id,
       idempotencyKey,
@@ -176,6 +176,9 @@ export async function enqueueCreditReleaseAsks(
       // No supplementary invoice, ever: the money rides on the booking's own invoice.
       hadIssuedXeroInvoice: false,
     });
+    // Another pass (the cron leader and a manual run overlapping) raised it first: not this
+    // run's, so neither counted nor named in this run's batch row.
+    if (!created) continue;
     enqueued += 1;
     options.onEnqueued?.(release.id);
   }

@@ -36,7 +36,7 @@ import {
 import { bookingLedgerResidualCents, outstandingAdditionalAskCents } from "@/lib/additional-payment-ask";
 import { sizeCreditReleaseAsk } from "@/lib/credit-release-ask-size";
 import { createAuditLog } from "@/lib/audit";
-import { signalCreditReleaseToOfficers } from "@/lib/credit-release-officer-signal";
+import { signalCreditReleaseToOfficers } from "@/lib/release-ask-officer-signal";
 import { bookingOwner } from "@/lib/booking-owner";
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";

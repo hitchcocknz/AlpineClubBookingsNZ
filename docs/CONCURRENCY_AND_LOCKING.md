@@ -5267,7 +5267,10 @@ operation rows a failing payment can create.
 The backlog batch (`runCreditReleaseBacklog`) is the same enqueue with a ceiling, one more
 read of two `XeroSyncCursor` rows and one audit write; it takes no lock and no claim, and a
 release it has taken is never taken again because the enqueue keys on the release
-(`INV-ADDPAY-050`). The reminder chase for these requests (`INV-ADDPAY-048`) changes only
+(`INV-ADDPAY-050`). The row is inserted once (`createAdditionalPaymentIntentRecoveryOnce`,
+`ON CONFLICT DO NOTHING`), and a pass counts and audits only the rows it inserted, so two
+overlapping payment cycles (the cron leader and a manual run) can each take up to `perRun`
+releases but never the same one, and never write two batch rows for one release. The reminder chase for these requests (`INV-ADDPAY-048`) changes only
 the stamp boundary of the existing guarded claim in `cron-additional-payment-reminders.ts`
 (the slot's start, or half an interval before now, whichever is earlier). The Xero invoice
 read and the bank-transfer offer that decide whether a released-credit reminder goes

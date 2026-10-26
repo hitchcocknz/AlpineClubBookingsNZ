@@ -47,7 +47,7 @@ vi.mock("@/lib/ended-booking-ask-guard", () => ({
   replayRetiresAskOnEndedBooking: mocks.retireAfterWrite,
 }));
 vi.mock("@/lib/payment-recovery-alert", () => ({ alertPaymentRecoveryOfficers: mocks.alertOfficers }));
-vi.mock("@/lib/credit-release-officer-signal", () => ({ signalCreditReleaseToOfficers: mocks.signalOfficers }));
+vi.mock("@/lib/release-ask-officer-signal", () => ({ signalCreditReleaseToOfficers: mocks.signalOfficers }));
 
 import {
   CREDIT_RELEASE_WAITING_ON_EDIT_MESSAGE,

@@ -64,7 +64,7 @@ vi.mock("@/lib/credit-release-bank-transfer", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/credit-release-bank-transfer")),
   loadBankTransferOffer: mockLoadBankTransferOffer,
 }));
-vi.mock("@/lib/credit-release-officer-signal", () => ({ signalCreditReleaseToOfficers: mockSignalOfficers }));
+vi.mock("@/lib/release-ask-officer-signal", () => ({ signalCreditReleaseToOfficers: mockSignalOfficers }));
 
 import { CREDIT_RELEASE_ASK_REASON } from "@/lib/credit-release-ask-keys";
 import { sendAdditionalPaymentReminders } from "@/lib/cron-additional-payment-reminders";
