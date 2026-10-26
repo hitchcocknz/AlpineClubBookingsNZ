@@ -2,7 +2,8 @@
 
 import { fireEvent, render, screen } from "@/lib/__tests__/support/club-time-render";
 import { describe, expect, it, vi } from "vitest";
-import { OperationItem, resolveDialogDescription } from "@/app/(admin)/admin/xero/_components/operations-panel";
+import { OperationItem } from "@/app/(admin)/admin/xero/_components/operations-panel";
+import { resolveDialogDescription } from "@/app/(admin)/admin/xero/_components/resolve-dialog-copy";
 import type { XeroOperation } from "@/app/(admin)/admin/xero/_components/types";
 
 function makeOperation(overrides: Partial<XeroOperation> = {}): XeroOperation {
@@ -41,6 +42,9 @@ function makeOperation(overrides: Partial<XeroOperation> = {}): XeroOperation {
     failureStateReason: null,
     failureRootKey: null,
     staleRunning: false,
+    resolveAsksCreditNoteNumber: false,
+    resolveCreditNoteAmountCents: null,
+    resolveRefusal: null,
     ...overrides,
   };
 }
