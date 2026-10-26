@@ -50,6 +50,8 @@ const INVOICE_ID = "race-4356-invoice";
 const PAYMENT_KEY = ["race-4356", "invoice-payment", "v1"].join(":");
 const PARTIAL_OPERATION_ID = "race-4356-op-partial";
 const PARTIAL_INVOICE_KEY = ["race-4356", "invoice", "key"].join("-");
+const REFUND_NOTE_OPERATION_ID = "race-4356-op-refund-note";
+const REFUND_NOTE_KEY = ["race-4356", "refund-note", "key"].join("-");
 
 type Deferred<T = void> = { promise: Promise<T>; resolve: (value: T) => void };
 function deferred<T = void>(): Deferred<T> {
@@ -293,6 +295,80 @@ let sync: typeof import("@/lib/xero-sync");
       const repaired = await readPartial();
       expect(repaired.status).toBe("SUCCEEDED");
       expect(repaired.responsePayload).toMatchObject({ payment: { paymentID: "race-4356-xero-payment-repaired" } });
+    });
+
+    // Review: the composed `where` (the marker OR beside status) against real
+    // PostgreSQL. A refund-note repair's claim refuses a late failure from a
+    // caller that does not hold it; the claim's own write, guarded by its
+    // `onlyIfRunningSince`, still lands.
+    it("MUTATION: a late failure never lands on a refund-note repair's claim, while the claim's own guarded write does", async () => {
+      const claimedAt = new Date("2026-07-01T00:00:00.000Z");
+      await prisma.xeroSyncOperation.create({
+        data: {
+          id: REFUND_NOTE_OPERATION_ID,
+          direction: "OUTBOUND",
+          entityType: "CREDIT_NOTE",
+          operationType: "CREATE",
+          localModel: "Payment",
+          localId: LOCAL_ID,
+          status: "RUNNING",
+          idempotencyKey: REFUND_NOTE_KEY,
+          correlationKey: REFUND_NOTE_KEY,
+          lastErrorCode: "REFUND_NOTE_REPAIR_RUNNING",
+          startedAt: claimedAt,
+        },
+      });
+      const readClaim = () => prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: REFUND_NOTE_OPERATION_ID } });
+
+      await expect(
+        sync.failXeroSyncOperation(REFUND_NOTE_OPERATION_ID, new Error("Xero 409: a request with this key is in progress")),
+      ).resolves.toBeNull();
+      expect(await readClaim()).toMatchObject({ status: "RUNNING", lastErrorCode: "REFUND_NOTE_REPAIR_RUNNING", completedAt: null });
+      expect(repeatedFailureAlert).not.toHaveBeenCalled();
+
+      await expect(
+        sync.failXeroSyncOperation(REFUND_NOTE_OPERATION_ID, new Error("Xero 503 on the refund note"), undefined, {
+          onlyIfRunningSince: claimedAt,
+        }),
+      ).resolves.toMatchObject({ id: REFUND_NOTE_OPERATION_ID, status: "FAILED" });
+      expect(await readClaim()).toMatchObject({ status: "FAILED", lastErrorMessage: expect.stringContaining("Xero 503 on the refund note") });
+    });
+
+    it("MUTATION: a PARTIAL completion after a SUCCEEDED on the same row is refused: the row stays SUCCEEDED and its link is unchanged", async () => {
+      const wCall = scripted({ paymentId: "race-4356-xero-payment-w" });
+      script = [wCall];
+      const w = pay();
+      wCall.gate.resolve();
+      await expect(w).resolves.toBe("race-4356-xero-payment-w");
+      const [succeeded] = await rows();
+      expect(succeeded).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "race-4356-xero-payment-w" });
+      const linkBefore = await prisma.xeroObjectLink.findFirstOrThrow({ where: { localId: LOCAL_ID, xeroObjectType: "PAYMENT" } });
+
+      await expect(
+        sync.completeXeroSyncOperation(succeeded!.id, {
+          status: "PARTIAL",
+          responsePayload: { payment: null },
+          xeroObjectType: "PAYMENT",
+          xeroObjectId: "race-4356-xero-payment-partial",
+          lastErrorMessage: "Xero 503 on the payment write",
+          extraLinks: [
+            {
+              localModel: "Payment",
+              localId: LOCAL_ID,
+              xeroObjectType: "PAYMENT",
+              xeroObjectId: "race-4356-xero-payment-partial",
+              role: "STRIPE_PAYMENT",
+            },
+          ],
+        }),
+      ).resolves.toBeNull();
+
+      const row = await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: succeeded!.id } });
+      expect(row).toMatchObject({ status: "SUCCEEDED", xeroObjectId: "race-4356-xero-payment-w", lastErrorCode: null, lastErrorMessage: null });
+      expect(row.completedAt).toEqual(succeeded!.completedAt);
+      expect(await countedFailures()).toBe(0);
+      expect(repeatedFailureAlert).not.toHaveBeenCalled();
+      expect(await prisma.xeroObjectLink.findMany({ where: { localId: LOCAL_ID, xeroObjectType: "PAYMENT" } })).toEqual([linkBefore]);
     });
   },
 );

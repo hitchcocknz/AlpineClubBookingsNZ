@@ -31,5 +31,7 @@ describe("the shared operation row's real-database proof stays wired into CI (#4
     expect(suite).toContain("L succeeds first, then W fails");
     expect(suite).toContain("W fails, then L succeeds: the success replaces the failure");
     expect(suite).toContain("a late failure never lands on a PARTIAL repair's claim");
+    expect(suite).toContain("a late failure never lands on a refund-note repair's claim");
+    expect(suite).toContain("a PARTIAL completion after a SUCCEEDED on the same row is refused");
   });
 });
