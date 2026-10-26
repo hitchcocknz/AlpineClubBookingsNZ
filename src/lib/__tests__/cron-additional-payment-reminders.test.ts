@@ -259,12 +259,41 @@ describe("sendAdditionalPaymentReminders", () => {
         checkOut: { lte: TODAY },
         payment: {
           is: {
-            transactions: {
-              some: { kind: "ADDITIONAL", reason: CREDIT_RELEASE_ASK_REASON, withdrawnAt: null },
-            },
+            AND: [
+              { transactions: { some: { kind: "ADDITIONAL", reason: CREDIT_RELEASE_ASK_REASON, withdrawnAt: null } } },
+              // The horizon is the newest request's age: day 28's reminder plus a fortnight.
+              { transactions: { some: { kind: "ADDITIONAL", createdAt: { gte: new Date(NOW.getTime() - 42 * DAY) } } } },
+            ],
           },
         },
       });
+    });
+
+    it("moves a merged request onto the weekly chase once the stay has ended, still worded as both", async () => {
+      const finished = { checkIn: new Date("2026-10-01T00:00:00.000Z"), checkOut: new Date("2026-10-03T00:00:00.000Z") };
+      const edit = new Date(NOW.getTime() - 8 * DAY);
+      const rows = [
+        { createdAt: edit, reason: null, carriedAskCents: 4_000, withdrawnAt: null },
+        creditReleaseRow(new Date(NOW.getTime() - 12 * DAY)),
+      ];
+      // The edit chase's day-3 reminder went out; the week-1 reminder is now due.
+      const result = await sentFor(rows, new Date(edit.getTime() + 3 * DAY), finished);
+      expect(result.initialSentBookingIds).toEqual(["booking-1"]);
+      expect(mockSendAdditionalPaymentReminderEmail).toHaveBeenCalledWith(
+        expect.objectContaining({ askCause: "mixed" }),
+        CLUB_FORMAT_TEST,
+      );
+    });
+
+    it("leaves an ordinary change on a finished stay to the officers' queue", async () => {
+      const finished = { checkIn: new Date("2026-10-01T00:00:00.000Z"), checkOut: new Date("2026-10-03T00:00:00.000Z") };
+      const edit = new Date(NOW.getTime() - 8 * DAY);
+      const result = await sentFor(
+        [{ createdAt: edit, reason: null, carriedAskCents: 0, withdrawnAt: null }],
+        new Date(edit.getTime() + 3 * DAY),
+        finished,
+      );
+      expect(result.initialSentBookingIds).toEqual([]);
     });
   });
 

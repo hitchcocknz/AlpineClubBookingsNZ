@@ -518,10 +518,15 @@ function resolveChaseFor(params: {
   });
 
   // A request that is only for credit used elsewhere keeps its own repeating
-  // chase; one that also carries a change the member made (or is just that
-  // change) keeps the edit chase, whose first wait and last-chance email suit it.
+  // chase. One that also carries a change the member made keeps the edit chase,
+  // whose first wait and last-chance email suit it, until the stay ends; after
+  // that its released-credit share is still owed, so it moves to the repeating
+  // chase too, still worded as both (`INV-ADDPAY-048`). Just a change stops at
+  // check-out, as it always has.
+  const cause = additionalAskCause(payment.transactions);
   const repeating =
-    additionalAskCause(payment.transactions) === "credit-release";
+    cause === "credit-release" ||
+    (cause === "mixed" && params.booking.checkOut.getTime() <= params.today.getTime());
   const kind = repeating
     ? resolveCreditReleaseChase({
         now: params.now,

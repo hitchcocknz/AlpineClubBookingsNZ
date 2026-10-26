@@ -714,7 +714,8 @@ positive delta -> additional payment or supplementary Xero invoice
   re-issue's - #4316, INV-ADDPAY-044)
 uncollected additional payment -> reminder at +3 days, reminder 2 days before
   check-in, admin re-send on demand; stops at check-out (never auto-cancelled);
-  a credit-release request is instead reminded weekly, four times after the request, past check-out (INV-ADDPAY-048)
+  a credit-release request is instead reminded weekly, four times after the request, past check-out,
+  and so is a request an edit merged into once the stay has ended (INV-ADDPAY-048)
 uncollected review-raised request -> WITHDRAWN by a finance officer (#3528)
 negative delta -> first cancels or shrinks an unpaid price ask (#3954), then
   Stripe refund or source-linked member credit for what is left

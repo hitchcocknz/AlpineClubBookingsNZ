@@ -1832,7 +1832,8 @@ _Legacy: settles tasks raised before #4317._
   take their sentence from `additional-ask-cause.ts`, and none says a change
   raised the total where the request is only the released credit.
 - **An edit on an unpaid release merges into ONE request** for the member
-  (carried, `INV-PAY-098`), worded as both, on the edit chase. One card payment
+  (carried, `INV-PAY-098`), worded as both, on the edit chase until check-out
+  and on this weekly chase after it (its released credit is still owed). One card payment
   is recorded against both invoices: the release's own money on the booking's
   invoice by the sweep [INV-ADDPAY-046], the edit's own on its supplementary
   invoice.

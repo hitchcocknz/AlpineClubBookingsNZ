@@ -92,24 +92,29 @@ export function buildAdditionalOwedWhere(): Prisma.BookingWhereInput {
 }
 
 /**
- * A finished stay whose newest unpaid request is for credit used elsewhere in the club's
- * accounts and young enough to still have reminders to send (`INV-ADDPAY-048`): the one kind
- * of request the reminder cron keeps chasing after check-out. Narrowing only; the cron
- * re-decides in memory with the cause read from the ledger rows.
+ * A finished stay whose unpaid request includes credit used elsewhere in the club's
+ * accounts (alone, or merged with an edit) and whose newest request is young enough
+ * to still have reminders to send (`INV-ADDPAY-048`): the one kind of request the
+ * reminder cron keeps chasing after check-out. Narrowing only; the cron re-decides
+ * in memory with the cause read from the ledger rows.
  */
 export function buildFinishedCreditReleaseChaseWhere(today: Date, now: Date): Prisma.BookingWhereInput {
   return {
     checkOut: { lte: today },
     payment: {
       is: {
-        transactions: {
-          some: {
-            kind: "ADDITIONAL",
-            reason: CREDIT_RELEASE_ASK_REASON,
-            withdrawnAt: null,
-            createdAt: { gte: new Date(now.getTime() - CREDIT_RELEASE_CHASE_HORIZON_DAYS * 86_400_000) },
+        AND: [
+          { transactions: { some: { kind: "ADDITIONAL", reason: CREDIT_RELEASE_ASK_REASON, withdrawnAt: null } } },
+          // The horizon runs from the NEWEST request, which a merged one's edit row is.
+          {
+            transactions: {
+              some: {
+                kind: "ADDITIONAL",
+                createdAt: { gte: new Date(now.getTime() - CREDIT_RELEASE_CHASE_HORIZON_DAYS * 86_400_000) },
+              },
+            },
           },
-        },
+        ],
       },
     },
   };
