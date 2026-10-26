@@ -480,6 +480,76 @@ describe("#3954: a billed-offset invoice-correction note is not a cash refund", 
   });
 });
 
+// #4095 (PR #4437 review, L1): the recount adds a note's allocations up per
+// note, by the rule the kept settle uses (`sumAppliedCentsByCreditNote`), and
+// counts one allocation once however many links hold it.
+describe("a modification note's allocations are summed per note, each allocation once (#4095 L1)", () => {
+  type AllocationLink = { localId: string; xeroObjectId: string; metadata: Record<string, unknown>; updatedAt: Date };
+  const allocation = (xeroObjectId: string, invoiceId: string, amountCents: number, updatedAt = "2026-06-01T00:00:00.000Z"): AllocationLink => ({
+    localId: "pay-1",
+    xeroObjectId,
+    metadata: { creditNoteId: "cn-refund", invoiceId, amountCents },
+    updatedAt: new Date(updatedAt),
+  });
+  let paymentLinks: AllocationLink[] = [];
+  let invoiceLinks: AllocationLink[] = [];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    paymentLinks = [];
+    invoiceLinks = [];
+    mocks.paymentUpdate.mockResolvedValue({});
+    mocks.xeroObjectLinkFindMany.mockImplementation(async ({ where }: { where: { role?: unknown; localModel?: string } }) => {
+      if (where.role === "MODIFICATION_CREDIT_NOTE_ALLOCATION") return where.localModel === "Payment" ? paymentLinks : invoiceLinks;
+      if (where.role === "MODIFICATION_CREDIT_NOTE") return [{ xeroObjectId: "cn-refund", metadata: { status: "AUTHORISED" } }];
+      return [];
+    });
+    // A cash refund note, so no no-cash or correction rule applies.
+    mocks.xeroSyncOperationFindMany.mockResolvedValue([
+      { xeroObjectId: "cn-refund", requestPayload: { refundMethod: "internet-banking" } },
+    ]);
+  });
+
+  const recount = () =>
+    repairRefundedPaymentBusinessState({
+      creditNoteId: "cn-current",
+      creditNote: { status: "AUTHORISED", total: 0 } as never,
+      directPaymentIds: [],
+      modificationRefundAmountsByPaymentId: new Map([["pay-1", 0]]),
+    });
+  const refundedWrites = () =>
+    mocks.paymentUpdate.mock.calls.map((call) => call[0].data.refundedAmountCents).filter((cents) => cents !== undefined);
+
+  it("MUTATION: a note applied as $60 and $40 counts 6000 + 4000 = 10000, never one part", async () => {
+    // Two allocations, one per invoice, on the payment's own (older) links: the
+    // sync writes one link per note and invoice, its parts already summed.
+    mocks.paymentFindMany.mockResolvedValue([payment({ source: PaymentSource.INTERNET_BANKING, amountCents: 30_000 })]);
+    paymentLinks = [allocation("alloc-60", "inv-1", 6000), allocation("alloc-40", "inv-2", 4000)];
+
+    await recount();
+    expect(refundedWrites()).toEqual([10_000]);
+  });
+
+  it("one allocation held by the payment's link and found by its invoice too counts once", async () => {
+    mocks.paymentFindMany.mockResolvedValue([payment({ source: PaymentSource.INTERNET_BANKING, amountCents: 30_000, xeroInvoiceId: "inv-1" })]);
+    paymentLinks = [allocation("alloc-60", "inv-1", 6000)];
+    invoiceLinks = [{ ...allocation("alloc-60", "inv-1", 6000), localId: "mod-1" }];
+
+    await recount();
+    expect(refundedWrites()).toEqual([6000]);
+  });
+
+  it("MUTATION: an older amount left active beside the re-synced allocation counts the newest only, never both", async () => {
+    // Applied at $60 by the app, then raised to $100 in Xero: the sync writes a
+    // new link (its id carries the amount) and the $60 one stays active.
+    mocks.paymentFindMany.mockResolvedValue([payment({ source: PaymentSource.INTERNET_BANKING, amountCents: 30_000 })]);
+    paymentLinks = [allocation("alloc-100", "inv-1", 10_000, "2026-06-15T00:00:00.000Z"), allocation("alloc-60", "inv-1", 6000)];
+
+    await recount();
+    expect(refundedWrites()).toEqual([10_000]);
+  });
+});
+
 describe("an organiser-settled child's mirror is raised only by Stripe evidence (#3653)", () => {
   beforeEach(() => {
     vi.clearAllMocks();

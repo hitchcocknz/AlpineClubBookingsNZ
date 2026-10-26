@@ -35,7 +35,7 @@ import {
   LEGACY_PRIMARY_BACKFILL_REASON,
 } from "@/lib/payment-transaction-status";
 import { readModificationNoteCash } from "@/lib/xero-inbound/account-credit-modification-notes";
-import { getCreditNoteIdFromAllocationMetadata } from "@/lib/xero-inbound/amounts";
+import { type CreditNoteAllocationCents, getCreditNoteIdFromAllocationMetadata, sumAppliedCentsByCreditNote } from "@/lib/xero-inbound/amounts";
 import { isIncludedRefundCreditNoteStatus, readRefundCreditNoteLinkStatus } from "@/lib/xero-refund-note-status";
 import type { IbSettlementKeptReason } from "@/lib/ib-settlement-figure-note";
 
@@ -317,8 +317,9 @@ export async function decideInternetBankingReceiptFigure(
   isPartPayment: (mint: { mintableCents: number; mintPartial: boolean }) => boolean;
   /**
    * The invoice-correction notes applied to the invoice, one per note with its
-   * applied amounts summed (a note allocated twice counts whole), for the
-   * recount after a kept settle (#4095); none when several payments match it.
+   * applied amounts summed (`sumAppliedCentsByCreditNote`: a note allocated
+   * twice counts whole), for the recount after a kept settle (#4095); none
+   * when several payments match it.
    */
   appliedCorrectionNotes: AppliedCreditNote[];
 }> {
@@ -340,7 +341,7 @@ export async function decideInternetBankingReceiptFigure(
   let refundWordedCents = 0;
   let noCashCents = 0;
   let memberCreditCents = 0;
-  const correctionCentsByNoteId = new Map<string, number>();
+  const appliedCorrections: CreditNoteAllocationCents[] = [];
   for (const note of input.invoice.appliedCreditNotes) {
     // The member's own account credit first (#3979 final review): an edit's
     // credit kept as account credit on ANOTHER booking is a modification
@@ -352,14 +353,15 @@ export async function decideInternetBankingReceiptFigure(
     const kind = noteCash.get(note.id);
     if (kind === "refund") refundWordedCents += note.appliedCents;
     else if (kind) noCashCents += note.appliedCents;
-    if (kind === "correction") {
-      correctionCentsByNoteId.set(note.id, (correctionCentsByNoteId.get(note.id) ?? 0) + note.appliedCents);
-    }
+    // Each entry the invoice lists is one application of its note.
+    if (kind === "correction") appliedCorrections.push({ creditNoteId: note.id, appliedCents: note.appliedCents });
   }
   // On an invoice matched to several payments no payment's share of a
   // correction is known, as the note's own sync finds (one payment per invoice).
   const appliedCorrectionNotes: AppliedCreditNote[] =
-    input.matchedPayments === 1 ? [...correctionCentsByNoteId].map(([id, appliedCents]) => ({ id, appliedCents })) : [];
+    input.matchedPayments === 1
+      ? [...sumAppliedCentsByCreditNote(appliedCorrections)].map(([id, appliedCents]) => ({ id, appliedCents }))
+      : [];
 
   const plan = planInternetBankingCashSettlement({
     refundedAmountCents: payment.refundedAmountCents,
