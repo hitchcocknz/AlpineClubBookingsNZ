@@ -30,8 +30,10 @@ export function parseE2eShard(value) {
  * shard.
  */
 export const PLAYWRIGHT_TEST_FILE = /\.(?:spec|test)\.[cm]?[jt]sx?$/;
-/** The two test-dir subfolders that belong to other projects, never `chromium`. */
-export const NOT_CHROMIUM_DIRS = ["multi-lodge", "pre-setup"];
+/** The test-dir subfolders that belong to other projects, never `chromium`. */
+export const MULTI_LODGE_DIR = "multi-lodge";
+export const PRE_SETUP_DIR = "pre-setup";
+export const NOT_CHROMIUM_DIRS = [MULTI_LODGE_DIR, PRE_SETUP_DIR];
 const NOT_CHROMIUM_RELATIVE = new RegExp(`^(?:${NOT_CHROMIUM_DIRS.join("|")})/`);
 
 /**

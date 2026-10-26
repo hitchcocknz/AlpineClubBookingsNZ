@@ -283,9 +283,24 @@ describe("e2e.yml's required gates and their runners", () => {
     for (const entry of entries.filter((item) => item.name.startsWith("E2E shard ("))) {
       expect(entry.name).toBe(`E2E shard (${entry.shard})`);
       expect(entry.multi_lodge).toBe("");
+      // No extra Playwright arguments: `--list`, a never-matching `--grep` or a
+      // narrower `--project` would let a shard pass without running its slice.
+      expect(entry.playwright_args).toBe("");
     }
+    expect(entries).toHaveLength(4);
     const multiLodge = entries.filter((item) => item.multi_lodge === "1");
     expect(multiLodge).toEqual([expect.objectContaining({ name: "E2E multi-lodge run (1/1)", shard: "", playwright_args: "--project=multi-lodge" })]);
+  });
+
+  // The gate fails fast on any completed, non-success job whose name is still
+  // a template. Safe only while no templated job can be skipped for a
+  // legitimate reason: no job-level `if:` on one, in either gated workflow.
+  it("gives no templated job a job-level if, so the gate's fail-fast cannot misfire", () => {
+    for (const [file, parsed] of [["ci.yml", workflow], ["e2e.yml", e2e]]) {
+      for (const [id, job] of Object.entries(parsed.jobs)) {
+        if (String(job.name ?? "").includes("${{")) expect(job.if, `${file} ${id}`).toBeUndefined();
+      }
+    }
   });
 
   it("skips heavy steps only on an explicit needed=false, never on a missing answer", () => {
@@ -300,14 +315,19 @@ describe("e2e.yml's required gates and their runners", () => {
   it("keeps every secret out of the seeded-database artifact", () => {
     const dbJob = e2eText.slice(e2eText.indexOf("\n  e2e-db:"), e2eText.indexOf("\n  e2e-runner:"));
     expect(dbJob).toContain("bash scripts/e2e-stack.sh snapshot");
-    expect(dbJob.split("\n").filter((line) => !/^\s*#/.test(line)).join("\n")).not.toMatch(/\bsecrets\b/);
+    expect(JSON.stringify(e2e.jobs["e2e-db"])).not.toMatch(/\bsecrets\b/);
     // Nothing workflow-wide reaches the job either.
     expect(e2e.env).toBeUndefined();
     const stack = readFileSync(path.join(root, "scripts", "e2e-stack.sh"), "utf8");
     const body = (name) => stack.slice(stack.indexOf(`\n${name}() {`), stack.indexOf("\n}\n", stack.indexOf(`\n${name}() {`)));
     for (const name of ["seed_database", "snapshot", "reset_database", "capture_fixture_date"]) {
+      expect(stack.indexOf(`\n${name}() {`), `${name}() must exist`).toBeGreaterThan(-1);
       expect(body(name), name).not.toMatch(/seed-stripe-credentials|STRIPE/);
     }
+    // Every shell function `snapshot` calls is one of those checked above.
+    const called = [...body("snapshot").matchAll(/^\s*([a-z_]+)(?:\s|$)/gm)].map((match) => match[1]);
+    const checkedOrBuiltin = new Set(["seed_database", "reset_database", "capture_fixture_date", "local", "echo", "mkdir", "compose", "cp", "snapshot"]);
+    expect(called.filter((name) => !checkedOrBuiltin.has(name))).toEqual([]);
     expect(stack.slice(stack.indexOf("prepare() {"))).toContain("e2e/setup/seed-stripe-credentials.ts");
   });
 });

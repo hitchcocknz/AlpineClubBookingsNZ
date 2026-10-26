@@ -1,12 +1,28 @@
+import path from "node:path";
+
 import { defineConfig, devices } from "@playwright/test";
 
-import { PLAYWRIGHT_TEST_FILE, notChromiumIgnore, parseE2eShard, shardTestMatch } from "./scripts/ci/e2e-spec-shard.mjs";
+import {
+  MULTI_LODGE_DIR,
+  PLAYWRIGHT_TEST_FILE,
+  PRE_SETUP_DIR,
+  notChromiumIgnore,
+  parseE2eShard,
+  shardTestMatch,
+} from "./scripts/ci/e2e-spec-shard.mjs";
 
 // Browser E2E suite for the Critical journeys in docs/END_TO_END_TEST_MATRIX.md.
 // It drives the staging Docker Compose stack (docker-compose.staging.yml) seeded
 // with prisma/seed.ts + prisma/demo-seed.ts. Run via `pnpm run test:e2e`, which
 // prepares the stack and database first; see docs/E2E_PLAYWRIGHT.md.
 const baseURL = process.env.E2E_BASE_URL ?? "http://localhost:3001";
+
+// The test directory, resolved from this file rather than the shell's working
+// directory: Playwright resolves `testDir` the same way, so the shard
+// partition and the `chromium` ignore always point where the tests are, from
+// any cwd (#4397).
+const E2E_DIR = path.join(__dirname, "e2e");
+const specsUnder = (dir: string) => new RegExp(`${dir}/.*\\.spec\\.ts`);
 
 // Multi-lodge coverage (issue #1568; a blocking CI check since #1655) runs as
 // a separate opt-in project, seeded with a second active lodge
@@ -48,11 +64,11 @@ const shard = parseE2eShard(process.env.E2E_SHARD);
 if (shard && excludedSpecs.length > 0) {
   throw new Error("E2E_SHARD and E2E_EXCLUDE_SPECS cannot be combined (#4397).");
 }
-const shardSpecs = shard ? shardTestMatch("./e2e", shard) : null;
+const shardSpecs = shard ? shardTestMatch(E2E_DIR, shard) : null;
 const includePreSetup = !shard || shard.index === 1;
 
 export default defineConfig({
-  testDir: "./e2e",
+  testDir: E2E_DIR,
   outputDir: "./test-results",
   // Specs share seeded personas and assert on lodge capacity, so they must not
   // interleave. One worker keeps every capacity/conflict assertion deterministic.
@@ -95,7 +111,7 @@ export default defineConfig({
       // Unsharded, Playwright's default test-file shape, stated once so the
       // shard partition and this project agree by construction.
       testMatch: shardSpecs ?? PLAYWRIGHT_TEST_FILE,
-      testIgnore: [notChromiumIgnore("./e2e"), ...excludedSpecs],
+      testIgnore: [notChromiumIgnore(E2E_DIR), ...excludedSpecs],
     },
     // The pre-setup gate on the wire (#2420). Runs LAST — `dependencies` on the
     // main project — because it un-completes site-style setup, which makes every
@@ -107,7 +123,7 @@ export default defineConfig({
       ? [
           {
             name: "pre-setup",
-            testMatch: /pre-setup\/.*\.spec\.ts/,
+            testMatch: specsUnder(PRE_SETUP_DIR),
             testIgnore: excludedSpecs,
             use: { ...devices["Desktop Chrome"] },
             dependencies: ["chromium"],
@@ -121,7 +137,7 @@ export default defineConfig({
       ? [
           {
             name: "multi-lodge",
-            testMatch: /multi-lodge\/.*\.spec\.ts/,
+            testMatch: specsUnder(MULTI_LODGE_DIR),
             testIgnore: excludedSpecs,
             use: { ...devices["Desktop Chrome"] },
           },
