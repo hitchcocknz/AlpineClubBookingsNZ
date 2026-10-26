@@ -521,19 +521,21 @@ export async function repairRefundedPaymentBusinessState(input: {
   };
 
   const lostPaymentIds: string[] = [];
+  let unsettledPaymentIds: string[] = [];
   for (const payment of payments) {
     const outcome = await repairOne(payment);
     if (outcome === "updated") updatedPayments += 1; // #4288: a "recount" wrote nothing; its retry counts its own write
     if (outcome === "lost" || outcome === "recount") lostPaymentIds.push(payment.id);
   }
 
-  // One retry at most, for a lost claim or (#4288) a counted note that no longer counts; a second is left to the next sync.
+  // One retry at most, for a lost claim or (#4288) a counted note that no longer counts; a second fails the inbound event, retried after its backoff (#4095).
   if (lostPaymentIds.length > 0) {
     if (input.retryPaymentIds) {
       logger.warn(
         { creditNoteId: input.creditNoteId, paymentIds: lostPaymentIds },
-        "Refunded-payment repair lost its claim twice to a concurrent writer; the next sync recomputes it (#3979)"
+        "Refunded-payment repair lost its claim twice to a concurrent writer; the caller fails its event so it is retried (#3979, #4095)"
       );
+      unsettledPaymentIds = lostPaymentIds;
     } else {
       // Decide once more from scratch for those payments: every input is read
       // again - the rows, the links, which notes count, and the current note's
@@ -549,13 +551,11 @@ export async function repairRefundedPaymentBusinessState(input: {
         retryPaymentIds: lostPaymentIds,
       });
       updatedPayments += retry.updatedPayments;
+      unsettledPaymentIds = retry.unsettledPaymentIds ?? [];
     }
   }
 
-  return {
-    matchedPayments: payments.length,
-    updatedPayments,
-  };
+  return { matchedPayments: payments.length, updatedPayments, ...(unsettledPaymentIds.length > 0 ? { unsettledPaymentIds } : {}) };
 }
 
 export async function resolveAccountCreditPaymentsFromMemberCredits(creditNoteId: string) {

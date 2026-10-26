@@ -5731,6 +5731,69 @@ describe("processStoredXeroInboundEvents", () => {
     expect(accountingApi.getCreditNote).toHaveBeenCalledTimes(1);
   });
 
+  it("fails a credit-note event whose refunded-total claim was lost twice, so it is retried rather than left unwritten (#4095 item 6)", async () => {
+    mocks.inboundFindMany.mockResolvedValue([
+      {
+        id: "evt_cn_lost",
+        source: "webhook",
+        eventCategory: "CREDITNOTE",
+        eventType: "UPDATE",
+        resourceId: "cn_lost_1",
+        correlationKey: "corr_cn_lost",
+        payload: { eventCategory: "CREDITNOTE", eventType: "UPDATE", resourceId: "cn_lost_1" },
+      },
+    ]);
+    mocks.processedCreate.mockResolvedValueOnce({ id: "processed_cn_lost" });
+    mocks.linkFindMany.mockResolvedValue([
+      { localModel: "Payment", localId: "pay_lost_1", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_lost_1", role: "REFUND_CREDIT_NOTE", active: true, metadata: { status: "AUTHORISED", total: 50 } },
+    ]);
+    mocks.paymentFindMany.mockResolvedValue([
+      { id: "pay_lost_1", xeroRefundCreditNoteId: "cn_lost_1", amountCents: 5000, refundedAmountCents: 0, status: "SUCCEEDED" },
+    ]);
+    // A concurrent writer moves the row before each claim: both passes lose it.
+    mocks.paymentUpdateMany.mockResolvedValue({ count: 0 });
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) =>
+      callback({
+        $executeRaw: vi.fn(async () => 1),
+        xeroObjectLink: { findMany: mocks.linkFindMany },
+        payment: { findFirst: vi.fn(async () => ({ id: "pay_lost_1" })), updateMany: mocks.paymentUpdateMany },
+      }),
+    );
+    mocks.getAuthenticatedXeroClient.mockResolvedValue({
+      xero: {
+        accountingApi: {
+          getCreditNote: vi.fn().mockResolvedValue({
+            body: {
+              creditNotes: [
+                { creditNoteID: "cn_lost_1", creditNoteNumber: "CN-LOST-1", status: "AUTHORISED", total: 50, appliedAmount: 0, remainingCredit: 0, allocations: [], payments: [] },
+              ],
+            },
+          }),
+        },
+      },
+      tenantId: "tenant_1",
+    });
+
+    await expect(processStoredXeroInboundEvents()).resolves.toEqual({
+      found: 1,
+      processed: 1,
+      succeeded: 0,
+      failed: 1,
+      skipped: 0,
+    });
+    expect(mocks.inboundUpdate).toHaveBeenCalledWith({
+      where: { id: "evt_cn_lost" },
+      data: expect.objectContaining({
+        status: "FAILED",
+        errorMessage: expect.stringContaining("payment(s) pay_lost_1 lost its claim twice"),
+      }),
+    });
+    // The links were written first; the retry recounts.
+    expect(mocks.upsertXeroObjectLink).toHaveBeenCalledWith(
+      expect.objectContaining({ localId: "pay_lost_1", xeroObjectId: "cn_lost_1", role: "REFUND_CREDIT_NOTE" }),
+    );
+  });
+
   it("logs a webhook category that has no reconciler instead of treating it as handled work", async () => {
     mocks.inboundFindMany.mockResolvedValue([
       {

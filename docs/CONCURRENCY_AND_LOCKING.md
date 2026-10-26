@@ -5933,7 +5933,8 @@ unless the payment's pointer names the note. For a payment holding the note's
 own refund-note row, A decides in one short transaction, inline in the recount:
 the Payment row (`lockPaymentForRefundedTotal`, `FOR NO KEY UPDATE`), then a
 plain re-read of that link row, then the as-read claim, or nothing when the row
-no longer counts (one retry at most; a second is left to the next sync). An
+no longer counts (one retry at most; a second fails the inbound event, which
+is retried after its backoff, #4095). An
 unchanged verdict also checks the payment as read under the lock. No provider
 call runs in it, and it takes no other lock. Its budget is `{ maxWait: 10_000,
 timeout: 30_000 }`, copied from `additional-payment-withdraw.ts`, because the

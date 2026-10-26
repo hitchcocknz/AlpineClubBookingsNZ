@@ -789,7 +789,7 @@ describe("#4288: the claim and the re-read of the note's own row, under the Paym
     mocks.xeroObjectLinkFindMany.mockImplementation(async ({ where }: { where: { xeroObjectId?: string; role?: string } }) => linkReads(where));
   });
 
-  it("MUTATION (bounded): a note that stops counting under the lock on every pass is retried once, then left to the next sync", async () => {
+  it("MUTATION (bounded): a note that stops counting under the lock on every pass is retried once, then handed back unsettled (#4095)", async () => {
     mocks.paymentFindMany.mockResolvedValue([payment({ refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })]);
     let passes = 0;
     mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
@@ -799,11 +799,31 @@ describe("#4288: the claim and the re-read of the note's own row, under the Paym
       return callback(lockedTx(() => [NOTE_ROW("VOIDED")]));
     });
 
-    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0 });
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0, unsettledPaymentIds: ["pay-1"] });
     expect(passes).toBe(2);
     // Nothing is written on a pass whose note stopped counting.
     expect(mocks.paymentUpdateMany).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ paymentIds: ["pay-1"] }), expect.stringContaining("next sync recomputes it"));
+    expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ paymentIds: ["pay-1"] }), expect.stringContaining("fails its event so it is retried"));
+  });
+
+  it("a claim lost on both passes is handed back unsettled, so the caller fails its event to be retried (#4095 item 6)", async () => {
+    mocks.paymentFindMany.mockResolvedValue([payment({ refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+    mocks.paymentUpdateMany.mockResolvedValue({ count: 0 });
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => {
+      if (mocks.transaction.mock.calls.length > 5) throw new Error("the recount retried without bound");
+      return callback(lockedTx(() => [NOTE_ROW("AUTHORISED")]));
+    });
+
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0, unsettledPaymentIds: ["pay-1"] });
+    expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(2);
+  });
+
+  it("a claim lost once and won on the retry settles: nothing is handed back", async () => {
+    mocks.paymentFindMany.mockResolvedValue([payment({ refundedAmountCents: 5000, status: PaymentStatus.PARTIALLY_REFUNDED })]);
+    mocks.paymentUpdateMany.mockResolvedValueOnce({ count: 0 }).mockResolvedValueOnce({ count: 1 });
+    mocks.transaction.mockImplementation(async (callback: (tx: unknown) => Promise<unknown>) => callback(lockedTx(() => [NOTE_ROW("AUTHORISED")])));
+
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 1 });
   });
 
   it("MUTATION (claim): the claim is taken under the lock after the re-read, never without it", async () => {
@@ -835,7 +855,9 @@ describe("#4288: the claim and the re-read of the note's own row, under the Paym
       return callback(lockedTx(() => [NOTE_ROW(voidedNow ? "VOIDED" : "AUTHORISED")]));
     });
 
-    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0 });
+    // The retry's unlocked read still saw the note live, so it too stopped on the locked
+    // re-read: handed back, and the event's retry reads the voided note afresh (#4095).
+    await expect(repair()).resolves.toEqual({ matchedPayments: 1, updatedPayments: 0, unsettledPaymentIds: ["pay-1"] });
     // First pass: its $100 claim is on the $50 it read, so the officer's $175 loses it. Second: nothing is written.
     expect(mocks.paymentUpdateMany).toHaveBeenCalledTimes(1);
     expect(mocks.paymentUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ refundedAmountCents: 5000 }) }));

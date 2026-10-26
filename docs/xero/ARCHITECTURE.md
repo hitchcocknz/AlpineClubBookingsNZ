@@ -1174,8 +1174,9 @@ limit: a void that commits after the locked re-read is the order "the recount,
 then the void, then the void's own recount". On a bank transfer that last recount
 lowers the total back. On a card the ledger is raise-only (`INV-ADDPAY-021`,
 #1353), so the recount's raise stands and the existing refund-ledger-divergence
-alert fires for a person to check. A recount that would need a second retry is
-left to the next sync.
+alert fires for a person to check. A recount that would need a second retry
+fails its inbound event after every other write, and the stored event is
+retried after its backoff (#4095), not left until another note arrives.
 
 A live reading's allocations and refund payments are skipped only for a payment
 whose row, in either refund-note role, is VOIDED/DELETED when they are written
