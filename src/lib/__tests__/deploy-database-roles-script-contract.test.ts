@@ -96,7 +96,7 @@ describe("require_least_privilege_roles_complete", () => {
 
 describe("require_safe_database_password", () => {
   it.each(["DB_PASSWORD", "APP_DB_PASSWORD", "MIGRATION_DB_PASSWORD"])(
-    "refuses a %% in %s, which a connection string would percent-decode",
+    "refuses a percent sign in %s, which a connection string would percent-decode",
     (key) => {
       const result = run("require_safe_database_password", `${key}=abc%41def\n`);
       expect(result.status).toBe(1);

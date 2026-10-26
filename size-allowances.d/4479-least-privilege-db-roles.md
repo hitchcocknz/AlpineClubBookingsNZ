@@ -1,7 +1,7 @@
 # File-size allowances for #4479 — least-privilege database roles (#4453)
 
-Two already-oversized modules grow because this change keeps one source for
-something that would otherwise be copied.
+Three already-oversized modules grow because this change keeps one source for
+something that would otherwise be copied, or wires a guard where it applies.
 
 file: src/lib/audit-retention.ts
 lines: 888
@@ -12,8 +12,19 @@ reason: the optional `AUDIT_RETENTION_DATABASE_URL` client, built by the one
   on, which is the pairing the realdb test proves.
 
 file: src/lib/diagnostics/tools/provision-role.ts
-lines: 1165
-reason: `buildCreateLoginRoleIfAbsentSql` and `buildStripAllRoleMembershipsSql`
-  became shared exports so the new role builder reuses the AI Diagnostics
-  builder's role-creation and membership-strip SQL instead of copying it
-  (INV-SSOT). The diagnostics builder's statement list is byte-identical.
+lines: 1185
+reason: `buildCreateLoginRoleIfAbsentSql`, `buildStripAllRoleMembershipsSql` and
+  `LEAST_PRIVILEGE_ROLE_ATTRIBUTES` became shared exports so the new role
+  builder reuses the AI Diagnostics builder's role-creation, membership-strip
+  and attribute SQL instead of copying it (INV-SSOT), and `quoteLiteral` now
+  refuses a backslash for both builders (review S-F7). The diagnostics
+  builder's statement list is byte-identical.
+
+file: src/lib/backup.ts
+lines: 736
+reason: the restore-validation step's two call sites for the #4453 review fix
+  (S-F2): the live-database guard now asks `isSameDatabaseTarget`, and the
+  validation restore strips owner and grant statements. Both helpers live in
+  the new pure `src/lib/backup-restore-validation.ts`; only the import and the
+  two calls, with a line of reason each, are here, beside the psql invocations
+  they change.
