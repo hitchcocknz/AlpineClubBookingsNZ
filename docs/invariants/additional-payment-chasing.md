@@ -1829,7 +1829,8 @@ _Legacy: settles tasks raised before #4317._
   newest ADDITIONAL ledger rows (the newest row plus each older row it carried):
   `edit`, `credit-release`, or `mixed`. The booking timeline, the officer panel,
   the member card's fallback line, the pre-arrival note and the request email
-  take their sentence from `additional-ask-cause.ts`, and none says a change
+  (with a customised body's `{{askCauseSentence}}`) take their sentence from
+  `additional-ask-cause.ts`, and none says a change
   raised the total where the request is only the released credit.
 - **An edit on an unpaid release merges into ONE request** for the member
   (carried, `INV-PAY-098`), worded as both, on the edit chase until check-out

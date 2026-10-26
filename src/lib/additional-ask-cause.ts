@@ -146,6 +146,24 @@ export function memberCardLeadParts(cause: AdditionalAskCause): { lead: string; 
   return { lead: "A recent booking modification means ", trail: " is still owing on this booking. Please complete payment to finalise the modification." };
 }
 
+/**
+ * The request email's opening after "Hi {name}, " - why the amount is owed - in the two pieces
+ * either side of the amount. The built-in email puts the figure between them; the editable body's
+ * `{{askCauseSentence}}` is the whole sentence (`paymentRequestCauseSentence`). Only the two causes
+ * the request email is sent for; the pure-credit wording is the owner-approved text (`INV-ADDPAY-045`).
+ */
+export function paymentRequestCauseParts(cause: "credit-release" | "mixed"): { lead: string; trail: string } {
+  const trail = " of your booking has not been paid.";
+  if (cause === "mixed") return { lead: "a change to your booking, and account credit applied to it that was used elsewhere in the club's accounts, mean ", trail };
+  return { lead: "the account credit applied to your booking was used elsewhere in the club's accounts, so ", trail };
+}
+
+/** The request email's cause sentence as plain text; `amount` is already formatted. */
+export function paymentRequestCauseSentence(cause: "credit-release" | "mixed", amount: string): string {
+  const { lead, trail } = paymentRequestCauseParts(cause);
+  return `${lead}${amount}${trail}`;
+}
+
 /** The pre-arrival reminder's outstanding-amount note; `amount` is already formatted. */
 export function preArrivalOutstandingNote(cause: AdditionalAskCause, amount: string): string {
   if (cause === "credit-release") return `There is still ${amount} to pay on this booking because account credit applied to it was used elsewhere in the club's accounts. Please pay it from your booking page before you arrive.`;

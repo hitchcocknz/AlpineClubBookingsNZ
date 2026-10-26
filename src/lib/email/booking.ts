@@ -57,7 +57,7 @@ import {
   wholeLodgeGuestNamesUrgencyNote,
 } from "../email-message-notes";
 import { CLUB_NAME } from "@/config/club-identity";
-import { preArrivalOutstandingNote, type AdditionalAskCause } from "@/lib/additional-ask-cause";
+import { paymentRequestCauseSentence, preArrivalOutstandingNote, type AdditionalAskCause } from "@/lib/additional-ask-cause";
 import { bankTransferNoteText, loadBankTransferOffer } from "@/lib/credit-release-bank-transfer";
 import { EMAIL_DEFAULT_LODGE_NAME } from "@/lib/email-message-settings";
 import { financialReviewNote } from "@/lib/booking-financial-review-copy";
@@ -1380,7 +1380,15 @@ export async function sendAdditionalPaymentReminderEmail(params: {
       requestedOn: emailClubDate(params.requestedOn),
       checkIn: emailCalendarDay(params.checkIn),
       checkOut: emailCalendarDay(params.checkOut),
-      ...(creditRelease ? { bankTransferNote: bankTransferNoteText(bankTransfer) } : {}),
+      ...(creditRelease
+        ? {
+            askCauseSentence: paymentRequestCauseSentence(
+              params.askCause === "mixed" ? "mixed" : "credit-release",
+              formatMoneyCents(params.additionalAmountCents, format),
+            ),
+            bankTransferNote: bankTransferNoteText(bankTransfer),
+          }
+        : {}),
     },
     lodgeId: params.lodgeId,
   });

@@ -6,8 +6,8 @@
  * for size. The arrival instructions block is shared from `./booking`, where
  * the confirmation email also uses it.
  */
-import { preArrivalOutstandingNote, type AdditionalAskCause } from "@/lib/additional-ask-cause";
-import type { BankTransferOffer } from "@/lib/credit-release-bank-transfer";
+import { paymentRequestCauseParts, preArrivalOutstandingNote, type AdditionalAskCause } from "@/lib/additional-ask-cause";
+import { bankTransferNoteHtml, type BankTransferOffer } from "@/lib/credit-release-bank-transfer";
 import { arrivalInstructionsSection } from "./booking";
 import { escapeHtml } from "./escape";
 import {
@@ -163,11 +163,10 @@ export function additionalPaymentReminderTemplate(params: {
   `);
 }
 
-/** The bank-transfer offer as a paragraph (escaped, line breaks kept), or nothing. */
+/** The bank-transfer offer as a paragraph (`bankTransferNoteHtml`), or nothing. */
 function bankTransferParagraph(offer: BankTransferOffer | null | undefined): string {
   if (!offer) return "";
-  const lines = offer.instructions.split("\n").map((line) => escapeHtml(line)).join("<br>");
-  return "\n    " + paragraph(`You can also pay by bank transfer. Use the payment reference <strong>${escapeHtml(offer.reference)}</strong>.<br>${lines}`);
+  return "\n    " + paragraph(bankTransferNoteHtml(offer));
 }
 
 /**
@@ -191,11 +190,9 @@ export function creditReleasedPaymentRequestTemplate(params: {
 },
   format: ClubFormat,
 ): string {
-  const amount = escapeHtml(formatCents(params.additionalAmountCents, format));
-  const opening =
-    params.cause === "mixed"
-      ? "a change to your booking, and account credit applied to it that was used elsewhere in the club's accounts, mean " + amount + " of your booking has not been paid."
-      : "the account credit applied to your booking was used elsewhere in the club's accounts, so " + amount + " of your booking has not been paid.";
+  // The cause sentence the editable body's {{askCauseSentence}} carries, from the same helper.
+  const { lead, trail } = paymentRequestCauseParts(params.cause === "mixed" ? "mixed" : "credit-release");
+  const opening = lead + escapeHtml(formatCents(params.additionalAmountCents, format)) + trail;
   return layout(`
     ${heading("Payment Needed")}
     ${paragraph("Hi " + escapeHtml(params.firstName) + ", " + opening)}

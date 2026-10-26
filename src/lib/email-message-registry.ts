@@ -5,6 +5,8 @@ import {
 } from "@/lib/email-message-audit-defaults";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
 import { creditReleaseCadenceSummary } from "@/lib/additional-payment-chase";
+import { paymentRequestCauseSentence } from "@/lib/additional-ask-cause";
+import { bankTransferNoteText, SAMPLE_BANK_TRANSFER_OFFER } from "@/lib/credit-release-bank-transfer";
 import { ibSettlementFigureParagraph } from "@/lib/ib-settlement-figure-note";
 import { duplicateCaptureKeptAction, duplicateCaptureKeptParagraph } from "@/lib/duplicate-capture-kept-note";
 import { supersededCaptureRefusedAction, supersededCaptureRefusedParagraph } from "@/lib/superseded-capture-refused-note";
@@ -517,6 +519,10 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "requestedOn",
     "checkIn",
     "checkOut",
+    // #4253 release 2: the only words that say WHY - credit used elsewhere, or that and a change
+    // merged into one request. A fixed sentence is wrong for one of the two, so an override saved
+    // from the release-1 default is flagged stale and a re-save must put the token in.
+    "askCauseSentence",
   ],
   // #3827 (D-3813-7): an approved appeal is refunded to the card OR promised
   // by bank transfer, and only {{refundSentence}} says which. An override
@@ -1627,9 +1633,10 @@ export function sampleValue(token: string): string {
   // send builds it, so the preview reads as a member reads it instead of
   // printing the token's own name mid-paragraph. Empty on a live send when
   // nothing is owed. The amount reconciles with the sample below.
-  if (token === "bankTransferNote") {
-    return "You can also pay by bank transfer. Use the payment reference INV-1234.\nAccount name: Sample Club\nAccount number: 00-0000-0000000-00\n\n";
-  }
+  if (token === "bankTransferNote") return bankTransferNoteText(SAMPLE_BANK_TRANSFER_OFFER);
+  // #4253 release 2: previewed as the pure released-credit arm, the case the email is named for;
+  // the merged arm is the sender's other branch. The amount reconciles with the sample below.
+  if (token === "askCauseSentence") return paymentRequestCauseSentence("credit-release", "$123.45");
   if (token === "outstandingAdditionalNote") {
     return "There is still $123.45 to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.";
   }
@@ -2086,6 +2093,9 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // #4253 release 2: the bank-transfer offer on a request for credit used elsewhere, composed
   // whole by the sender and empty until the club writes its bank details (card-only until then).
   "bankTransferNote",
+  // #4253 release 2: why a request for credit used elsewhere is owed, with the amount -
+  // `paymentRequestCauseSentence`, so a merged request says both causes in a customised body too.
+  "askCauseSentence",
   // #3672: the organiser's booking detail page, for the mid-stay joiner alert.
   "organiserBookingUrl",
   "organiserName",

@@ -424,8 +424,11 @@ Two consequences worth knowing before you edit one:
   to a booking was used in the club's accounts outside the app, the member is asked
   to pay that amount by card with **Payment Needed For Your Lodge Booking**, not the
   "a change to your booking" reminder, because nothing about their stay changed. It
-  needs `{{additionalAmount}}`, `{{requestedOn}}`, `{{checkIn}}` and `{{checkOut}}`
-  and says the credit was used elsewhere in the club's accounts (#4253). Put
+  needs `{{additionalAmount}}`, `{{requestedOn}}`, `{{checkIn}}`, `{{checkOut}}` and
+  `{{askCauseSentence}}`, which says why the amount is owed: the credit was used
+  elsewhere in the club's accounts, or that and a change to the booking when the two
+  were merged into one request (#4253). A customised body saved before
+  `{{askCauseSentence}}` existed is flagged stale; put it back in when you re-save. Put
   `{{bankTransferNote}}` on a line of its own above the Pay Now line: it prints the
   whole bank-transfer paragraph (with the booking's invoice number as the payment
   reference) when the club has written its bank details, and nothing otherwise, so

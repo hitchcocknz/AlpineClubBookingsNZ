@@ -20,6 +20,8 @@ vi.mock("@/lib/email-theme", () => ({
 vi.mock("@/lib/logger", () => ({ default: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } }));
 
 import { sendAdditionalPaymentReminderEmail } from "@/lib/email/booking";
+import { EMAIL_AUDIT_DEFAULTS } from "@/lib/email-message-audit-defaults";
+import { renderTemplateString } from "@/lib/email-message-renderer";
 
 /*
   #4253 release 2 (`INV-ADDPAY-048`, `INV-ADDPAY-049`): the request email's cause wording and its
@@ -79,6 +81,27 @@ describe("sendAdditionalPaymentReminderEmail for credit used elsewhere", () => {
     expect(sent().templateData.bankTransferNote).toBe("");
   });
 
+  it("hands a customised body the cause sentence, in the owner-approved words for the released credit", async () => {
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "credit-release" }, CLUB_FORMAT_TEST);
+    expect(sent().templateData.askCauseSentence).toBe(
+      "the account credit applied to your booking was used elsewhere in the club's accounts, so $45.00 of your booking has not been paid.",
+    );
+  });
+
+  it("hands a customised body both causes where an edit was merged into the request", async () => {
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "mixed" }, CLUB_FORMAT_TEST);
+    expect(sent().templateData.askCauseSentence).toBe(
+      "a change to your booking, and account credit applied to it that was used elsewhere in the club's accounts, mean $45.00 of your booking has not been paid.",
+    );
+  });
+
+  it("a club's customised body, saved from the default, still says both causes on a merged request", async () => {
+    await sendAdditionalPaymentReminderEmail({ ...params, askCause: "mixed" }, CLUB_FORMAT_TEST);
+    const body = renderTemplateString(EMAIL_AUDIT_DEFAULTS["credit-released-payment-request"].defaultBody, sent().templateData);
+    expect(body).toContain("Hi Tara, a change to your booking, and account credit applied to it that was used elsewhere");
+    expect(body).not.toContain("the account credit applied to your booking was used elsewhere");
+  });
+
   it("never mentions a booking change where the request is only the released credit", async () => {
     await sendAdditionalPaymentReminderEmail({ ...params, askCause: "credit-release" }, CLUB_FORMAT_TEST);
     expect(sent().html).toMatch(/used elsewhere in the club's accounts/);
@@ -99,6 +122,7 @@ describe("sendAdditionalPaymentReminderEmail for an ordinary change", () => {
     expect(mocks.loadOffer).not.toHaveBeenCalled();
     expect(sent().templateName).toBe("additional-payment-reminder");
     expect(sent().templateData).not.toHaveProperty("bankTransferNote");
+    expect(sent().templateData).not.toHaveProperty("askCauseSentence");
   });
 
   it("reads an absent cause as an ordinary change", async () => {

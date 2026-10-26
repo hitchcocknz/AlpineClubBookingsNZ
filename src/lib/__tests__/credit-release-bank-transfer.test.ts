@@ -10,7 +10,13 @@ vi.mock("@/lib/booking-message-settings", () => ({
   buildBookingMessageGlobalData: mocks.club,
 }));
 
-import { bankTransferNoteText, loadBankTransferOffer } from "@/lib/credit-release-bank-transfer";
+import {
+  bankTransferNoteHtml,
+  bankTransferNoteText,
+  loadBankTransferOffer,
+  SAMPLE_BANK_TRANSFER_OFFER,
+} from "@/lib/credit-release-bank-transfer";
+import { sampleValue } from "@/lib/email-message-registry";
 
 /*
   #4253 release 2, D6 (`INV-ADDPAY-049`): the bank-transfer offer on a request for credit used
@@ -67,5 +73,15 @@ describe("bankTransferNoteText", () => {
     expect(bankTransferNoteText({ instructions: "Account 12", reference: "INV-1" })).toBe(
       "You can also pay by bank transfer. Use the payment reference INV-1.\nAccount 12\n\n",
     );
+  });
+});
+
+describe("the offer's one spelling", () => {
+  it("is shared by the plain-text note, the built-in paragraph and the editor's sample", () => {
+    const offer = { instructions: "Account <12>", reference: "INV-1" };
+    const lead = "You can also pay by bank transfer. Use the payment reference ";
+    expect(bankTransferNoteText(offer).startsWith(`${lead}INV-1.`)).toBe(true);
+    expect(bankTransferNoteHtml(offer)).toBe(`${lead}<strong>INV-1</strong>.<br>Account &lt;12&gt;`);
+    expect(sampleValue("bankTransferNote")).toBe(bankTransferNoteText(SAMPLE_BANK_TRANSFER_OFFER));
   });
 });
