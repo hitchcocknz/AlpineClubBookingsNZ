@@ -33,6 +33,7 @@
  */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 
 import type { PrismaClient } from "@prisma/client";
@@ -41,6 +42,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { FROZEN_TEST_CLOCK_BASE_ISO } from "./helpers/clock";
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
+import { stripOwnershipAndPrivilegeStatements } from "@/lib/backup-restore-validation";
 import { buildDatabaseRolesSql } from "@/lib/database-roles";
 import { buildAiDiagnosticsRoleSql } from "@/lib/diagnostics/tools/provision-role";
 
@@ -48,6 +50,8 @@ const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const RACE_DB_URL = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
 const REPO_ROOT = process.cwd();
 const INSUFFICIENT_PRIVILEGE = "42501";
+const FOREIGN_KEY_VIOLATION = "23503";
+const CHECK_VIOLATION = "23514";
 
 const PREFIX = `tac_test_4453_${randomBytes(3).toString("hex")}`;
 const ROLES = {
@@ -55,6 +59,7 @@ const ROLES = {
   app: `${PREFIX}_app`,
   auditRetention: `${PREFIX}_retention`,
   diagnostics: `${PREFIX}_diag`,
+  restoreCheck: `${PREFIX}_restorecheck`,
 } as const;
 // Test-only secrets, long enough for the CLI and URL-safe.
 const PASSWORDS = {
@@ -62,11 +67,14 @@ const PASSWORDS = {
   app: "test-4453-application-password-not-a-secret",
   auditRetention: "test-4453-retention-password-not-a-secret",
   diagnostics: "test-4453-diagnostics-password-not-a-secret",
+  // Built, not written: a readable literal reads to gitleaks as a secret.
+  restoreCheck: "c".repeat(28),
 } as const;
 const DATABASES = {
   fresh: `${PREFIX}_fresh`,
   upgrade: `${PREFIX}_upgrade`,
   restore: `${PREFIX}_restore`,
+  restoreCheck: `${PREFIX}_restorecheck`,
 } as const;
 
 type RoleKey = keyof typeof ROLES;
@@ -143,6 +151,28 @@ function runTool(command: string, args: string[], input?: string) {
     throw new Error(`${command} is not on PATH; this suite needs the PostgreSQL client tools.`);
   }
   return result;
+}
+
+/**
+ * The deploy script's post-migrate grants check (#4453 review, O-F2), lifted out
+ * of `scripts/run-production-blue-green-deploy.sh` between its markers and run
+ * here as shipped, with the same psql variables.
+ */
+function deployGrantsCheck(database: string): string {
+  const script = readFileSync(path.join(REPO_ROOT, "scripts/run-production-blue-green-deploy.sh"), "utf8");
+  const block = script.slice(
+    script.indexOf("# BEGIN least-privilege-grants-check"),
+    script.indexOf("# END least-privilege-grants-check"),
+  );
+  const sql = block.slice(block.indexOf("<<'SQL'\n") + "<<'SQL'\n".length, block.indexOf("\nSQL\n"));
+  expect(sql).toContain("SELECT coalesce(string_agg(c.relname");
+  const result = runTool(
+    "psql",
+    ["-v", "ON_ERROR_STOP=1", "-v", `migration_role=${ROLES.migrator}`, "-v", `app_role=${ROLES.app}`, "-Atq", "-f", "-", urlFor(database)],
+    `${sql}\n`,
+  );
+  expect(result.status, result.stderr).toBe(0);
+  return result.stdout.trim();
 }
 
 /** SQLSTATE of a refused statement, or "ok" when PostgreSQL ran it. */
@@ -333,6 +363,18 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
         expect(rows).toEqual([]);
       });
 
+      it("runs after AI Diagnostics provisioning took TEMPORARY away from PUBLIC", async () => {
+        const { rows } = await withClient(urlFor(DATABASES.upgrade), (client) =>
+          client.query(
+            `SELECT has_database_privilege($1, current_database(), 'TEMPORARY') AS diag,
+                    has_database_privilege($2, current_database(), 'TEMPORARY') AS migrator,
+                    has_database_privilege($3, current_database(), 'TEMPORARY') AS app`,
+            [ROLES.diagnostics, ROLES.migrator, ROLES.app],
+          ),
+        );
+        expect(rows[0]).toEqual({ diag: false, migrator: true, app: true });
+      });
+
       it("lets the migration role run the DDL and data statements a migration is made of", async () => {
         await withClient(urlFor(DATABASES.upgrade, "migrator"), async (client) => {
           await client.query("BEGIN");
@@ -343,6 +385,9 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
             `ALTER TYPE "LedgerSide" ADD VALUE IF NOT EXISTS 'TAC4453_PROBE'`,
             `UPDATE "AuditLog" SET "summary" = "summary" WHERE false`,
             `CREATE OR REPLACE FUNCTION tac4453_probe() RETURNS int LANGUAGE sql AS 'SELECT 1'`,
+            // Migrations use temp tables, and AI Diagnostics provisioning (run on
+            // this database above) revoked TEMPORARY from PUBLIC (S-F10).
+            `CREATE TEMP TABLE tac4453_probe_temp ("x" INT) ON COMMIT DROP`,
           ]) {
             expect(await sqlstate(client, statement), statement).toBe("ok");
           }
@@ -352,11 +397,12 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
 
       it("gives a table a later migration creates the application's grants at once (default privileges)", async () => {
         await withClient(urlFor(DATABASES.upgrade, "migrator"), (client) =>
-          client.query(`CREATE TABLE "Tac4453Later" ("id" INT PRIMARY KEY, "note" TEXT)`),
+          client.query(`CREATE TABLE "Tac4453Later" ("id" INT PRIMARY KEY, "note" TEXT, "seq" SERIAL)`),
         );
         await withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
           await client.query("BEGIN");
-          expect(await sqlstate(client, `INSERT INTO "Tac4453Later" VALUES (1, 'a')`)).toBe("ok");
+          // "seq" draws on its sequence, which the default privileges also cover.
+          expect(await sqlstate(client, `INSERT INTO "Tac4453Later" ("id", "note") VALUES (1, 'a')`)).toBe("ok");
           expect(await sqlstate(client, `UPDATE "Tac4453Later" SET "note" = 'b' WHERE "id" = 1`)).toBe("ok");
           expect(await sqlstate(client, `SELECT * FROM "Tac4453Later"`)).toBe("ok");
           expect(await sqlstate(client, `DELETE FROM "Tac4453Later" WHERE "id" = 1`)).toBe("ok");
@@ -414,6 +460,13 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
 
       it("keeps ordinary tables fully usable through Prisma", async () => {
         await appPrisma.booking.update({ where: { id: bookingId }, data: { finalPriceCents: 90 } });
+        // PaymentTransaction.insertionSeq is the schema's one autoincrement: the
+        // application role's sequence grant is exercised here (O-F8).
+        const payment = await appPrisma.payment.create({ data: { bookingId, amountCents: 90 } });
+        const transaction = await appPrisma.paymentTransaction.create({
+          data: { paymentId: payment.id, kind: "PRIMARY", amountCents: 90 },
+        });
+        expect(transaction.insertionSeq).toBeGreaterThan(0);
         const scratch = await appPrisma.lodge.create({ data: { id: "tac4453-scratch", name: "Scratch", slug: "tac4453-scratch" } });
         await appPrisma.lodge.delete({ where: { id: scratch.id } });
         expect((await appPrisma.booking.findUniqueOrThrow({ where: { id: bookingId } })).finalPriceCents).toBe(90);
@@ -449,6 +502,67 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
           client.query(`SELECT "narration" FROM "BookingLedgerLine" WHERE "id" = $1`, [ledgerLineId]),
         );
         expect(unchanged.rows).toEqual([{ narration: "Adjustment agreed with member: roles test" }]);
+      });
+
+      it("cannot rewrite a ledger line through its parent's key: both keys are ON UPDATE RESTRICT (S-F1)", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
+          // PostgreSQL reports a RESTRICT action as a foreign-key violation (23503)
+          // naming the key, so the key is what is asserted.
+          const refusedBy = async (sql: string, value: string) => {
+            await client.query("SAVEPOINT parent_key");
+            try {
+              await client.query(sql, [value]);
+              return "ok";
+            } catch (error) {
+              const { code, constraint } = error as { code?: string; constraint?: string };
+              return `${code}:${constraint}`;
+            } finally {
+              await client.query("ROLLBACK TO SAVEPOINT parent_key");
+            }
+          };
+          await client.query("BEGIN");
+          expect(await refusedBy(`UPDATE "Booking" SET "id" = 'tac4453-renamed' WHERE "id" = $1`, bookingId)).toBe(
+            `${FOREIGN_KEY_VIOLATION}:BookingLedgerLine_bookingId_fkey`,
+          );
+          expect(await refusedBy(`UPDATE "Lodge" SET "id" = 'tac4453-renamed' WHERE "id" = $1`, lodgeId)).toBe(
+            `${FOREIGN_KEY_VIOLATION}:BookingLedgerLine_lodgeId_fkey`,
+          );
+          await client.query("ROLLBACK");
+        });
+        const lines = await appPrisma.bookingLedgerLine.findMany({ where: { id: ledgerLineId }, select: { bookingId: true, lodgeId: true } });
+        expect(lines).toEqual([{ bookingId, lodgeId }]);
+      });
+
+      it("still deletes a booking's ledger lines with the booking: the documented ON DELETE CASCADE", async () => {
+        const doomed = "tac4453-deleted-booking";
+        await appPrisma.booking.create({
+          data: {
+            id: doomed,
+            lodgeId,
+            organisationId: "tac4453-organisation",
+            checkIn: new Date("2026-09-01T00:00:00.000Z"),
+            checkOut: new Date("2026-09-02T00:00:00.000Z"),
+            totalPriceCents: 100,
+            finalPriceCents: 100,
+          },
+        });
+        await appPrisma.bookingLedgerLine.create({
+          data: {
+            bookingId: doomed, lodgeId, side: "ADJUSTMENT", kind: "AGREED_ADJUSTMENT", sign: 1, quantity: 1,
+            unitCents: 100, amountCents: 100, guestNames: [], anchorKind: "REVIEW_TASK", anchorId: "tac4453-delete",
+            narration: "Adjustment agreed with member: deleted with its booking",
+          },
+        });
+        await appPrisma.booking.delete({ where: { id: doomed } });
+        expect(await appPrisma.bookingLedgerLine.count({ where: { bookingId: doomed } })).toBe(0);
+      });
+
+      it("may create a temporary table, which nothing else grants it once AI Diagnostics revoked PUBLIC's", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
+          await client.query("BEGIN");
+          expect(await sqlstate(client, `CREATE TEMP TABLE tac4453_app_temp ("x" INT) ON COMMIT DROP`)).toBe("ok");
+          await client.query("ROLLBACK");
+        });
       });
 
       it("cannot run superuser-only or owner-only statements", async () => {
@@ -508,6 +622,32 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
       });
     });
 
+    describe("backup restore-validation without a superuser (S-F2)", () => {
+      it("restores the application role's dump, owners and grants stripped, as a role that owns only the shadow database", async () => {
+        expect(appDumpSql).toContain("OWNER TO");
+        await admin.query(`CREATE ROLE "${ROLES.restoreCheck}" LOGIN NOSUPERUSER PASSWORD '${PASSWORDS.restoreCheck}'`);
+        await admin.query(`CREATE DATABASE "${DATABASES.restoreCheck}" OWNER "${ROLES.restoreCheck}"`);
+        const target = urlFor(DATABASES.restoreCheck, "restoreCheck");
+        const reset = () =>
+          runTool("psql", ["-q", "-v", "ON_ERROR_STOP=1", "-c", "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;", target]);
+
+        // The dump as taken still needs the roles' owner: refused without one.
+        expect(reset().status).toBe(0);
+        const unstripped = runTool("psql", ["-q", "-v", "ON_ERROR_STOP=1", target], appDumpSql);
+        expect(unstripped.status).not.toBe(0);
+
+        // What `validateBackupRestore` feeds psql: the same dump, owners and grants removed.
+        expect(reset().status).toBe(0);
+        const stripped = runTool("psql", ["-q", "-v", "ON_ERROR_STOP=1", target], stripOwnershipAndPrivilegeStatements(appDumpSql));
+        expect(stripped.status, stripped.stderr).toBe(0);
+        const { rows } = await withClient(target, (client) =>
+          client.query(`SELECT (SELECT count(*) FROM "BookingLedgerLine")::int AS lines, (SELECT count(*) FROM "Booking")::int AS bookings`),
+        );
+        expect(rows[0].lines).toBeGreaterThan(0);
+        expect(rows[0].bookings).toBeGreaterThan(0);
+      });
+    });
+
     describe("the audit-retention role", () => {
       const now = new Date(FROZEN_TEST_CLOCK_BASE_ISO);
       const daysAgo = (days: number) => new Date(now.getTime() - days * 86_400_000);
@@ -552,6 +692,19 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
         await expect(
           runAuditLogRetentionJob({ now, db: appPrisma, archiveDatabaseUrl: null }),
         ).rejects.toThrow(/permission denied|42501/i);
+      });
+
+      it("may clear request data but never set it: the AuditLog trigger refuses, whoever asks (S-F4)", async () => {
+        const target = await appPrisma.auditLog.create({ data: { action: "tac4453.forge", ipAddress: "203.0.113.11", userAgent: "probe" } });
+        for (const role of ["auditRetention", undefined] as const) {
+          await withClient(urlFor(DATABASES.upgrade, role), async (client) => {
+            await client.query("BEGIN");
+            expect(await sqlstate(client, `UPDATE "AuditLog" SET "ipAddress" = '198.51.100.1' WHERE "id" = $1`, [target.id])).toBe(CHECK_VIOLATION);
+            expect(await sqlstate(client, `UPDATE "AuditLog" SET "userAgent" = 'forged' WHERE "id" = $1`, [target.id])).toBe(CHECK_VIOLATION);
+            expect(await sqlstate(client, `UPDATE "AuditLog" SET "ipAddress" = NULL, "userAgent" = NULL WHERE "id" = $1`, [target.id])).toBe("ok");
+            await client.query("ROLLBACK");
+          });
+        }
       });
 
       it("can do nothing else: no INSERT, no other column, no other table", async () => {
@@ -600,6 +753,62 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
         expect(await privilegeSnapshot(DATABASES.upgrade)).toEqual(before);
       });
 
+      it("narrows a view over the ledger to SELECT, which the default privileges had made writable (S-F3)", async () => {
+        await withClient(urlFor(DATABASES.upgrade, "migrator"), (client) =>
+          client.query(`CREATE VIEW "Tac4453LedgerView" AS SELECT * FROM "BookingLedgerLine"`),
+        );
+        const writeThroughView = () =>
+          withClient(urlFor(DATABASES.upgrade, "app"), async (client) => {
+            await client.query("BEGIN");
+            const code = await sqlstate(client, `UPDATE "Tac4453LedgerView" SET "narration" = 'rewritten'`);
+            await client.query("ROLLBACK");
+            return code;
+          });
+        // The hole the review reproduced: a new view gets the default table grants.
+        expect(await writeThroughView()).toBe("ok");
+        // The deploy script's post-migrate check would stop a deploy here.
+        expect(deployGrantsCheck(DATABASES.upgrade)).toBe("Tac4453LedgerView");
+
+        const rerun = provisionWithCli(DATABASES.upgrade);
+        expect(rerun.status, `${rerun.stdout}\n${rerun.stderr}`).toBe(0);
+        expect(await writeThroughView()).toBe(INSUFFICIENT_PRIVILEGE);
+        expect(deployGrantsCheck(DATABASES.upgrade)).toBe("");
+        await withClient(urlFor(DATABASES.upgrade, "migrator"), (client) => client.query(`DROP VIEW "Tac4453LedgerView"`));
+      });
+
+      it("passes the deploy script's post-migrate check, and fails it for a table the superuser made (O-F2)", async () => {
+        expect(deployGrantsCheck(DATABASES.upgrade)).toBe("");
+        await withClient(urlFor(DATABASES.upgrade), (client) => client.query(`CREATE TABLE "Tac4453HandMade" ("id" INT)`));
+        expect(deployGrantsCheck(DATABASES.upgrade)).toBe("Tac4453HandMade");
+        await withClient(urlFor(DATABASES.upgrade), (client) => client.query(`DROP TABLE "Tac4453HandMade"`));
+      });
+
+      it("stops within its lock timeout, changing nothing, when a reader holds a table it must hand over (O-F1)", async () => {
+        await withClient(urlFor(DATABASES.upgrade), (client) => client.query(`ALTER TABLE "Member" OWNER TO CURRENT_USER`));
+        const holder = new Client({ connectionString: urlFor(DATABASES.upgrade) });
+        await holder.connect();
+        try {
+          await holder.query("BEGIN");
+          await holder.query(`SELECT 1 FROM "Member" LIMIT 1`);
+          const started = process.hrtime.bigint();
+          const blocked = provisionWithCli(DATABASES.upgrade);
+          expect(blocked.status).toBe(1);
+          expect(blocked.stderr).toContain("Retry in a quiet window");
+          expect(Number(process.hrtime.bigint() - started) / 1e6).toBeLessThan(60_000);
+        } finally {
+          await holder.query("ROLLBACK").catch(() => {});
+          await holder.end().catch(() => {});
+        }
+        const owner = () =>
+          withClient(urlFor(DATABASES.upgrade), (client) =>
+            client.query(`SELECT pg_get_userbyid(relowner) AS owner FROM pg_class WHERE oid = '"Member"'::regclass`),
+          );
+        expect((await owner()).rows[0].owner).not.toBe(ROLES.migrator);
+        const retried = provisionWithCli(DATABASES.upgrade);
+        expect(retried.status, `${retried.stdout}\n${retried.stderr}`).toBe(0);
+        expect((await owner()).rows[0].owner).toBe(ROLES.migrator);
+      });
+
       it("refuses to commit when the application role could still change a ledger line", async () => {
         const statements = buildDatabaseRolesSql({
           databaseName: DATABASES.upgrade,
@@ -616,6 +825,11 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
             `GRANT SELECT ON "Member" TO "${ROLES.auditRetention}"`,
             `GRANT "${ROLES.migrator}" TO "${ROLES.app}"`,
             `ALTER ROLE "${ROLES.app}" CREATEROLE`,
+            // S-F3: a view the app may write through, and a SECURITY DEFINER routine.
+            `CREATE VIEW "Tac4453Breach" AS SELECT * FROM "BookingLedgerLine"; GRANT UPDATE ON "Tac4453Breach" TO "${ROLES.app}"`,
+            `CREATE FUNCTION tac4453_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'`,
+            // O-F8: a migrated schema missing an append-only relation.
+            `ALTER TABLE "AuditLog" RENAME TO "Tac4453AuditLogMoved"`,
           ]) {
             await client.query("BEGIN");
             await client.query(breach);
