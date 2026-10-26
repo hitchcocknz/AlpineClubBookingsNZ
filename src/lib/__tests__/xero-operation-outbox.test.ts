@@ -4562,7 +4562,7 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
       await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
 
     expect(capturedStamps()[0]).toEqual({
-      where: { id: "op_waiting", status: "WAITING_PAYMENT" },
+      where: { id: "op_waiting", status: "WAITING_PAYMENT", requestPayload: { path: ["paymentIntentId"], equals: "pi_late" } },
       data: expect.objectContaining({ status: "CANCELLED" }),
     });
     expect(
@@ -4579,6 +4579,25 @@ describe("releaseXeroSupplementaryInvoiceForCapturedPaymentIntent (#3641)", () =
     mocks.updateManyOperation.mockResolvedValue({ count: 0 });
     await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
     expect(mocks.sendAdminXeroSyncErrorAlert).not.toHaveBeenCalled();
+  });
+
+  it("#3403 review 2 (F4): a refusal never cancels an invoice taken back by a superseded ask's own capture since it was read", async () => {
+    waiting = [waitingOperation("op_waiting", 23000)];
+    // The row the refusal read now waits on the ask that took it back: only a
+    // write guarded on the intent it was read on matches nothing.
+    const now = { status: "WAITING_PAYMENT", paymentIntentId: "pi_taken_back" };
+    mocks.updateManyOperation.mockImplementation(async (args: { where: { status?: unknown; requestPayload?: { equals?: unknown } } }) => ({
+      count:
+        args.where.status === now.status && (args.where.requestPayload === undefined || args.where.requestPayload.equals === now.paymentIntentId)
+          ? 1
+          : 0,
+    }));
+
+    const result = await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent("pi_late");
+
+    expect(capturedStamps().map((args) => args.where.id)).toEqual(["op_waiting"]);
+    expect(mocks.sendAdminXeroSyncErrorAlert).not.toHaveBeenCalled();
+    expect(result.outcome).not.toBe("alerted");
   });
 
   describe("#3403 review (M2): the capture covers every invoice naming it TOGETHER, never one at a time", () => {
