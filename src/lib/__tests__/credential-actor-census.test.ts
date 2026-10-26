@@ -141,11 +141,14 @@ const CREDENTIAL_WRITE_SITES: Record<string, string> = {
     "setIntegrationCredential (forwarded) actor / (forwarded) writeExpectation",
   // #3454: a Xero client id or secret is written INSIDE the verify-reset's
   // transaction, so the token destruction it causes commits with it; every
-  // other credential takes the ordinary writer.
+  // other credential takes the ordinary writer, except ServerNZ below (#4436).
   "src/app/api/admin/integrations/credentials/route.ts::POST#0":
     "setIntegrationCredentialInTransaction admin / any",
   "src/app/api/admin/integrations/credentials/route.ts::POST#1":
     "setIntegrationCredential admin / any",
+  // #4436: ServerNZ key save and answer reset share the settings fence.
+  "src/app/api/admin/integrations/credentials/route.ts::POST.saved#0":
+    "setIntegrationCredentialInTransaction admin / any",
   "src/lib/club-post-mirror.ts::ensurePushRegistration#0":
     "setIntegrationCredential system / any",
   "src/lib/google-config.ts::clearGoogleVerified#0":
@@ -172,9 +175,9 @@ const CREDENTIAL_WRITE_SITES: Record<string, string> = {
   "src/lib/mirotalk-config-write.ts::setMirotalkSecret#0":
     "setIntegrationCredential (forwarded) params.actor / (forwarded) params.expect",
   "src/lib/servernz-config.ts::clearServerNzApiKey#0":
-    "deleteIntegrationCredential (forwarded) actor / any",
+    "deleteIntegrationCredentialInTransaction (forwarded) actor / any",
   "src/lib/servernz-config.ts::setServerNzApiKey#0":
-    "setIntegrationCredential (forwarded) actor / any",
+    "setIntegrationCredentialInTransaction (forwarded) actor / any",
   "src/lib/stripe-config.ts::clearStripeWebhookVerified#0":
     "deleteIntegrationCredential (forwarded) actor / any",
   "src/lib/stripe-config.ts::recordStripeWebhookVerified#0":

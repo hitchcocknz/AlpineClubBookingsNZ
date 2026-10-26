@@ -25,7 +25,6 @@ import type { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import {
   readIntegrationCredentialRow,
-  resolveIntegrationCredential,
   setIntegrationCredentialInTransaction,
   deleteIntegrationCredentialInTransaction,
   withCredentialTransaction,
@@ -38,6 +37,7 @@ import {
   forgetServerConnectionAnswers,
   lockServerNzSettings,
   SERVERNZ_SETTINGS_ID,
+  SERVERNZ_TRANSACTION_OPTIONS,
 } from "@/lib/servernz-settings";
 
 export const SERVERNZ_PROVIDER = "servernz";
@@ -54,7 +54,8 @@ export const SERVERNZ_WRITABLE_CREDENTIAL_KEYS = [
 /**
  * The operational ServerNZ API key together with the version token of the row
  * it was decrypted from (#4366), or `undefined` when unconfigured or unreadable.
- * Both come from ONE read of the stored row, so the version names exactly the
+ * The caller supplies its fenced transaction client; this read bypasses the
+ * provider cache. Both come from ONE stored row, so the version names exactly the
  * key a request is sent with, even when this process's cached copy is behind a
  * write made elsewhere. The version is the connection's durable identity: every
  * write re-encrypts under a fresh IV, so it moves even when the same key value
@@ -62,13 +63,13 @@ export const SERVERNZ_WRITABLE_CREDENTIAL_KEYS = [
  * settings-row lock (`servernz-version-record.ts`).
  */
 export async function getOperationalServerNzCredential(
-  db?: Pick<Prisma.TransactionClient, "integrationCredential">,
+  db: Pick<Prisma.TransactionClient, "integrationCredential">,
 ): Promise<
   { apiKey: string; version: CredentialVersion } | undefined
 > {
-  const resolution = db
-    ? await readIntegrationCredentialRow(db, SERVERNZ_PROVIDER, SERVERNZ_CREDENTIAL_KEYS.apiKey)
-    : await resolveIntegrationCredential(SERVERNZ_PROVIDER, SERVERNZ_CREDENTIAL_KEYS.apiKey);
+  const resolution = await readIntegrationCredentialRow(
+    db, SERVERNZ_PROVIDER, SERVERNZ_CREDENTIAL_KEYS.apiKey,
+  );
   return resolution.status === "configured"
     ? { apiKey: resolution.value, version: resolution.version }
     : undefined;
@@ -157,7 +158,7 @@ export async function withServerNzConnectionTransaction<T>(
     });
     await lockServerNzSettings(tx);
     return work(tx);
-  }, { timeout: 150_000, maxWait: 10_000 });
+  }, SERVERNZ_TRANSACTION_OPTIONS);
 }
 
 export interface ServerNzSetupState {

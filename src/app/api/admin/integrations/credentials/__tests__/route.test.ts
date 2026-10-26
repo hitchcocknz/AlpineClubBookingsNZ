@@ -17,10 +17,15 @@ const mocks = vi.hoisted(() => ({
   loggerError: vi.fn(),
   findMany: vi.fn(),
   forgetServerConnectionAnswers: vi.fn(),
+  lockServerNzSettings: vi.fn(),
+  tx: { serverNzSettings: { createMany: vi.fn() } },
 }));
 
 vi.mock("@/lib/servernz-settings", () => ({
   forgetServerConnectionAnswers: mocks.forgetServerConnectionAnswers,
+  lockServerNzSettings: mocks.lockServerNzSettings,
+  SERVERNZ_SETTINGS_ID: "default",
+  SERVERNZ_TRANSACTION_OPTIONS: { timeout: 150_000, maxWait: 10_000 },
 }));
 
 vi.mock("@/lib/session-guards", () => ({ requireAdmin: mocks.requireAdmin }));
@@ -38,6 +43,7 @@ vi.mock("@/lib/prisma", () => ({
 // type argument makes Semgrep skip the rest of this file while still exiting 0.
 vi.mock("@/lib/integration-credentials", async (importOriginal) => ({
   ...((await importOriginal()) as typeof import("@/lib/integration-credentials")),
+  withCredentialTransaction: async (_providers: unknown, work: (tx: unknown) => Promise<unknown>) => work(mocks.tx),
   setIntegrationCredential: mocks.setIntegrationCredential,
   // The in-transaction write is the same writer with the caller's `tx`, so the
   // same double serves both and every assertion below reads either.
@@ -224,6 +230,19 @@ describe("POST /api/admin/integrations/credentials", () => {
     expect(res.status).toBe(200);
     // #49: and the server's last reported version with it, in one write.
     expect(mocks.forgetServerConnectionAnswers).toHaveBeenCalledTimes(1);
+    expect(mocks.forgetServerConnectionAnswers).toHaveBeenCalledWith(mocks.tx);
+    expect(mocks.setIntegrationCredential).toHaveBeenCalledWith(expect.objectContaining({ tx: mocks.tx }));
+    expect(mocks.lockServerNzSettings).toHaveBeenCalledWith(mocks.tx);
+    expect(mocks.lockServerNzSettings.mock.invocationCallOrder[0]).toBeLessThan(mocks.setIntegrationCredential.mock.invocationCallOrder[0]);
+    expect(mocks.setIntegrationCredential.mock.invocationCallOrder[0]).toBeLessThan(mocks.forgetServerConnectionAnswers.mock.invocationCallOrder[0]);
+  });
+
+  it("does not report success when the connection-answer reset fails", async () => {
+    asFullAdmin();
+    mocks.forgetServerConnectionAnswers.mockRejectedValueOnce(new Error("reset failed"));
+    const res = await POST(makeRequest({ provider: "servernz", key: "api_key", value: "replacement" }));
+    expect(res.status).toBe(500);
+    expect(await res.text()).not.toContain("replacement");
   });
 
   it("does NOT forget the owned-lodge list on another provider's write", async () => {

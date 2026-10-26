@@ -16,6 +16,9 @@ import { isBlockedDestinationHost } from "@/lib/private-destination-hosts";
 
 export const SERVERNZ_SETTINGS_ID = "default";
 
+/** Bounded settings-row contention, including a lodge merge holding the row. */
+export const SERVERNZ_TRANSACTION_OPTIONS = { timeout: 150_000, maxWait: 10_000 };
+
 export interface ServerNzSettingsValues {
   baseUrl: string | null;
   otherLodgesEnabled: boolean;
@@ -101,15 +104,12 @@ export async function loadOwnedOtherLodgeNames(
 }
 
 /**
- * Lock the settings row for the rest of the caller's transaction (#4366, the
- * row lock #4277 adds as `lockServerNzSettings`). Taken by the version
- * recorder, which re-reads the connection (address and credential version)
- * under it before recording, so an answer that outlived a change of connection
- * is never written over the new one. Every connection change writes this row
- * (a new address, and the forget that follows a key change), so it queues
- * behind a recorder holding it, and a recorder behind it re-reads what it
- * committed. A row lock on a singleton, not an advisory key: nothing else
- * orders against it. A missing row (never configured) locks nothing.
+ * Lock the settings row for the caller's transaction (#4366, #4436).
+ * Request capture, connection replacement and version recording share this
+ * fence. Each reads mutable connection state only after locking, and takes
+ * credential rows afterwards. No advisory key or provider call is involved.
+ * The connection transaction materialises the singleton before locking it;
+ * the recorder can safely decline an answer when the row is absent.
  */
 export async function lockServerNzSettings(
   db: Pick<Prisma.TransactionClient, "$executeRaw">,

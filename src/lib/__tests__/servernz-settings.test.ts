@@ -57,6 +57,11 @@ describe("loadServerNzSettings", () => {
   });
 });
 
+it("propagates a fenced settings read failure instead of reporting defaults (#4436)", async () => {
+  const db = { serverNzSettings: { findUnique: vi.fn().mockRejectedValue(new Error("database unavailable")) } };
+  await expect(loadServerNzSettings(db as never)).rejects.toThrow("database unavailable");
+});
+
 describe("normalizeBaseUrl", () => {
   it("trims, drops trailing slashes, and treats blank as unset", () => {
     expect(normalizeBaseUrl("  https://central.test/  ")).toBe("https://central.test");
