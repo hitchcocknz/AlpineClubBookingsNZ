@@ -60,7 +60,7 @@ import AdminBookingsPage from "@/app/(admin)/admin/bookings/page";
 import { DiagnosticsViewStatePublisher } from "@/components/help-widget/diagnostics-view-state-publisher";
 import type { DiagnosticsViewState } from "@/components/help-widget/help-widget-context";
 import { getDiagnosticsPageContextRoute } from "@/lib/diagnostics/page-context/registry";
-import { buildUnpaidFinishedStaysHref } from "@/lib/unpaid-finished-stays";
+import { buildUnpaidFinishedStaysHref } from "@/lib/unpaid-finished-stays-hrefs";
 import { loadEffectiveModuleFlags } from "@/lib/module-settings";
 import { prisma } from "@/lib/prisma";
 import { auth } from "@/lib/auth";

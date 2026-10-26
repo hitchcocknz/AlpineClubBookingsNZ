@@ -81,7 +81,7 @@ import { useClubTime } from "@/components/club-time-provider";
 import {
   buildUnpaidFinishedStaysHref,
   buildUnsettledAdditionalStaysHref,
-} from "@/lib/unpaid-finished-stays";
+} from "@/lib/unpaid-finished-stays-hrefs";
 import { openAdminCommandPalette } from "@/lib/admin-command-palette-events";
 
 interface NavSection {

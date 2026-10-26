@@ -75,12 +75,11 @@ import { HutLeaderHandoversCard } from "@/components/admin/hut-leader-handovers-
 import { countActiveLodges } from "@/lib/lodges";
 import { OPEN_DELETION_REQUEST_STATUSES } from "@/lib/deletion-request-decision";
 import {
-  buildUnpaidFinishedStaysHref,
   buildUnpaidFinishedStaysWhere,
   buildUnsettledAdditionalFinishedStaysWhere,
-  buildUnsettledAdditionalStaysHref,
   buildUnsettledAdditionalUpcomingStaysWhere,
 } from "@/lib/unpaid-finished-stays";
+import { buildUnpaidFinishedStaysHref, buildUnsettledAdditionalStaysHref } from "@/lib/unpaid-finished-stays-hrefs";
 
 // #2264: the upcoming check-ins list renders its date range in a fixed-width
 // column, so it stays compact — day plus short month, no year. F3 (#3079)
