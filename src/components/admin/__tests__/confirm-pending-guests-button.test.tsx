@@ -68,7 +68,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
       />
     );
 
@@ -112,7 +112,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
       />
     );
 
@@ -146,7 +146,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod={false}
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
       />
     );
 
@@ -173,7 +173,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod={false}
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
       />
     );
 
@@ -202,7 +202,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
       />
     );
 
@@ -242,7 +242,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
       />,
     );
 
@@ -288,7 +288,7 @@ describe("ConfirmPendingGuestsButton", () => {
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     const { SUPERSEDED_CHARGE_NOT_SETTLED_BODY, SUPERSEDED_CHARGE_NOT_SETTLED_MESSAGE } = await import("@/lib/payment-recovery-contract");
     stubFetch({ ok: false, body: SUPERSEDED_CHARGE_NOT_SETTLED_BODY });
-    render(<ConfirmPendingGuestsButton bookingId="b1" hasSavedPaymentMethod finalPriceCents={10000} />);
+    render(<ConfirmPendingGuestsButton bookingId="b1" hasSavedPaymentMethod savedCardChargeCents={10000} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Confirm pending guests" }));
     fireEvent.click(screen.getByRole("button", { name: "Charge and confirm" }));
@@ -322,7 +322,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
       />,
     );
 
@@ -403,7 +403,7 @@ describe("ConfirmPendingGuestsButton", () => {
         <ConfirmPendingGuestsButton
           bookingId="b1"
           hasSavedPaymentMethod
-          finalPriceCents={10000}
+          savedCardChargeCents={10000}
         />,
       );
 
@@ -432,7 +432,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={0}
+        savedCardChargeCents={0}
       />
     );
 
@@ -467,7 +467,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
         noEmails
       />
     );
@@ -517,7 +517,7 @@ describe("ConfirmPendingGuestsButton", () => {
       <ConfirmPendingGuestsButton
         bookingId="b1"
         hasSavedPaymentMethod
-        finalPriceCents={10000}
+        savedCardChargeCents={10000}
         noEmails={false}
       />
     );

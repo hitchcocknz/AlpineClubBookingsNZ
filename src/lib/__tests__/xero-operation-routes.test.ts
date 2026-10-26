@@ -279,6 +279,46 @@ describe("Xero operation admin retry routes", () => {
     });
   });
 
+  it("tells the panel which rows' Resolve asks for the Xero note number and for what amount, and which it will refuse (#4421)", async () => {
+    const createdAt = new Date("2026-04-14T09:00:00Z");
+    const refundNote = {
+      direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: "pay_1",
+      status: "FAILED", queueType: "REFUND_CREDIT_NOTE", correlationKey: "payment:pay_1:refund-credit-note:20000:v2", idempotencyKey: null,
+      requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 20_000 }, responsePayload: null,
+      xeroObjectType: null, xeroObjectId: null, xeroObjectUrl: null, startedAt: null, completedAt: null, createdAt, updatedAt: createdAt,
+    };
+    const listed = [
+      { ...refundNote, id: "op_no_note" },
+      { ...refundNote, id: "op_partial", status: "PARTIAL", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_own" },
+      { ...refundNote, id: "op_request", requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 30_000, refundRequestId: "rr_1" } },
+      { ...refundNote, id: "op_unreadable", requestPayload: null },
+      { ...refundNote, id: "op_retried", correlationKey: "payment:pay_1:refund-credit-note:5000:v2" },
+    ];
+    // The page, then (round 2) the superseding-run reads: op_retried's queued retry SUCCEEDED.
+    mocks.xeroOperationFindMany.mockImplementation(async (args: { where: { operationType?: string } }) =>
+      args.where.operationType === "REQUEUE"
+        ? [{ correlationKey: "xero-operation:requeue:op_retried" }]
+        : args.where.operationType === "CREATE" && "status" in args.where
+          ? []
+          : listed,
+    );
+    mocks.xeroOperationCount.mockResolvedValue(5);
+    mocks.resolveFailedXeroOperationStates.mockResolvedValue(new Map());
+
+    const response = await listOperations(new NextRequest("http://localhost/api/admin/xero/operations"));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    type Listed = { id: string; resolveAsksCreditNoteNumber: boolean; resolveCreditNoteAmountCents: number | null; resolveRefusal: string | null };
+    expect(body.data.map((row: Listed) => [row.id, row.resolveAsksCreditNoteNumber, row.resolveCreditNoteAmountCents, row.resolveRefusal])).toEqual([
+      ["op_no_note", true, 20_000, null],
+      ["op_partial", false, null, null],
+      ["op_request", false, null, null],
+      ["op_unreadable", false, null, expect.stringContaining("Mark non-replayable")],
+      ["op_retried", false, null, expect.stringContaining("A later run of this refund credit note already made its note")],
+    ]);
+  });
+
   it("filters failed operations by resolved failure state before pagination", async () => {
     const createdAt = new Date("2026-04-14T09:00:00Z");
     const active = {
@@ -341,6 +381,67 @@ describe("Xero operation admin retry routes", () => {
       failureState: "ACTIVE",
       failureStateReason: "Still failing",
     });
+  });
+
+  it("counts the failed rows a failure-state filter hides, repaired and resolved alike (#4220)", async () => {
+    const createdAt = new Date("2026-04-14T09:00:00Z");
+    const row = (id: string) => ({
+      id,
+      direction: "OUTBOUND",
+      entityType: "CONTACT",
+      operationType: "CREATE",
+      localModel: "Member",
+      localId: id,
+      status: "FAILED",
+      replayable: true,
+      requestPayload: {},
+      createdAt,
+      updatedAt: createdAt,
+    });
+    mocks.xeroOperationFindMany.mockResolvedValue([row("op_a"), row("op_b"), row("op_c")]);
+    // 3 unresolved FAILED rows: one still active, two repaired. 4 more were
+    // marked resolved, which the candidate query already leaves out.
+    mocks.xeroOperationCount.mockResolvedValue(4);
+    mocks.resolveFailedXeroOperationStates.mockImplementation(async (ops: Array<{ id: string }>) =>
+      new Map(
+        ops.map((op) => [
+          op.id,
+          {
+            state: op.id === "op_a" ? "ACTIVE" : "REPAIRED",
+            reason: "r",
+            rootKey: op.id,
+            representativeOperationId: op.id,
+          },
+        ])
+      )
+    );
+
+    const response = await listOperations(
+      new NextRequest("http://localhost/api/admin/xero/operations?status=FAILED&failureState=ACTIVE&entityType=CONTACT")
+    );
+
+    const body = await response.json();
+    expect(body.total).toBe(1);
+    expect(body.hiddenFailedCount).toBe(2 + 4);
+    // The resolved rows are counted under the same filters as the list itself.
+    expect(mocks.xeroOperationCount).toHaveBeenCalledWith({
+      where: { entityType: "CONTACT", status: "FAILED", manuallyResolvedAt: { not: null } },
+    });
+  });
+
+  it("reports nothing hidden, and runs no extra count, when no failure-state filter is set (#4220)", async () => {
+    mocks.xeroOperationFindMany.mockResolvedValue([]);
+    mocks.xeroOperationCount.mockResolvedValue(0);
+
+    const response = await listOperations(
+      new NextRequest("http://localhost/api/admin/xero/operations?status=FAILED")
+    );
+
+    const body = await response.json();
+    expect(body.hiddenFailedCount).toBe(0);
+    // Literal Failed list: the one count is the page total, with the plain filter.
+    expect(mocks.xeroOperationCount).toHaveBeenCalledTimes(1);
+    expect(mocks.xeroOperationCount).toHaveBeenCalledWith({ where: { status: "FAILED" } });
   });
 
   it("queues retry requests through the background worker route", async () => {
@@ -984,6 +1085,29 @@ describe("Xero operation admin retry routes", () => {
       expect(write.data).not.toHaveProperty("responsePayload");
       await expect(response.json()).resolves.toMatchObject({
         message: expect.stringContaining("returned to PARTIAL"),
+      });
+    });
+
+    // #4356: the FAILED refund-note repair's own marker sends it back where it came from.
+    it("MUTATION: returns a stuck FAILED refund-note repair to FAILED, carrying its last error (#4356)", async () => {
+      mocks.xeroOperationFindUnique.mockResolvedValue({ ...stuckRow, lastErrorCode: "REFUND_NOTE_REPAIR_RUNNING" });
+      mocks.xeroOperationUpdateMany.mockResolvedValue({ count: 1 });
+
+      const response = await markFailedOperation(markRequest(), params);
+
+      expect(response.status).toBe(200);
+      expect(mocks.xeroOperationUpdateMany).toHaveBeenCalledTimes(1);
+      expect(mocks.xeroOperationUpdateMany).toHaveBeenCalledWith({
+        where: {
+          id: "op_stuck",
+          status: "RUNNING",
+          startedAt: { equals: stuckSince, lt: new Date("2026-06-30T23:45:00.000Z") },
+        },
+        data: expect.objectContaining({
+          status: "FAILED",
+          lastErrorCode: "ORPHANED_STALE_RUNNING",
+          lastErrorMessage: expect.stringContaining(`The last error recorded before it stuck: ${stuckRow.lastErrorMessage}`),
+        }),
       });
     });
 

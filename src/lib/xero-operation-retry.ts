@@ -62,7 +62,7 @@ import {
 } from "@/lib/xero-refund-method";
 import { queuedReviewTaskId } from "@/lib/xero-review-task-key";
 import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
-import { XERO_PARTIAL_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
+import { XERO_PARTIAL_REPAIR_RUNNING_CODE, XERO_REFUND_NOTE_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
 
 export const PARTIAL_REPAIR_CLAIM_LOST_MESSAGE =
   "The payment was sent to Xero, but this operation was reset while it ran. Retry it once to close it.";
@@ -84,6 +84,7 @@ import { xeroDocumentDateForClubToday } from "@/lib/xero-provider-dates";
 import type { ClubFormat } from "@/lib/club-format";
 import { readRefundRequestIdFromPayload } from "@/lib/refund-request-credit-note";
 import { findResolvedSiblingSince } from "@/lib/xero-resolved-in-xero-fences";
+import { cardRefundIdOfNoteRow } from "@/lib/card-refund-own-note-share";
 import {
   isStrayInvoiceAfterCloseOutcome,
   membershipChargeNeedsNoInvoice,
@@ -374,8 +375,8 @@ async function runWithClaimedOriginal<T>(
   run: (claimedAt: Date) => Promise<T>,
   // #4256: a PARTIAL repair claims only PARTIAL and stamps its marker code; a
   // throw, or a stale reset of a dead run, gives the row back PARTIAL with its
-  // payload, so it stays repairable.
-  options?: { from: "PARTIAL" },
+  // payload, so it stays repairable. #4356: `marker` marks a FAILED repair's claim, of FAILED only.
+  options?: { from: "PARTIAL"; marker?: never } | { from?: never; marker: typeof XERO_REFUND_NOTE_REPAIR_RUNNING_CODE },
 ): Promise<T> {
   const claimedAt = new Date();
   const claimed = await prisma.xeroSyncOperation.updateMany({
@@ -383,14 +384,14 @@ async function runWithClaimedOriginal<T>(
     // does a mark non-replayable.
     where: {
       id: operationId,
-      status: options ? options.from : { in: ["FAILED", "PARTIAL"] },
+      status: options?.from ?? (options?.marker ? "FAILED" : { in: ["FAILED", "PARTIAL"] }),
       manuallyResolvedAt: null,
       replayable: true,
     },
     data: {
       status: "RUNNING",
       startedAt: claimedAt,
-      ...(options ? { lastErrorCode: XERO_PARTIAL_REPAIR_RUNNING_CODE } : {}),
+      ...(options ? { lastErrorCode: options.from ? XERO_PARTIAL_REPAIR_RUNNING_CODE : options.marker } : {}),
     },
   });
   if (claimed.count !== 1) {
@@ -403,7 +404,7 @@ async function runWithClaimedOriginal<T>(
     return await run(claimedAt);
   } catch (error) {
     try {
-      if (options) {
+      if (options?.from) {
         // Not `abandonedClaimErrors`: the original is back to PARTIAL, not FAILED.
         await prisma.xeroSyncOperation.updateMany({
           where: { id: operationId, status: "RUNNING", startedAt: claimedAt },
@@ -1829,10 +1830,10 @@ export async function retryXeroSyncOperation(
     if (operation.localModel === "Payment") {
       const refundCreditNoteRepair = parseRefundCreditNoteRepairInput(operation);
       if (refundCreditNoteRepair) {
-        // #4256: claimed like the PARTIAL repair; a throw abandons it to FAILED.
+        // #4256: claimed like the PARTIAL repair; a throw abandons it to FAILED. #4356: marked (`INV-INT-029`).
         await runWithClaimedOriginal(operation.id, (claimedAt) =>
           repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claimedAt),
-        );
+        { marker: XERO_REFUND_NOTE_REPAIR_RUNNING_CODE });
         return { message: "Repaired Xero refund credit note follow-up actions." };
       }
 
@@ -1853,6 +1854,7 @@ export async function retryXeroSyncOperation(
         // #3827 (D-3813-8): a refund request's own note is never a per-delta
         // note - it is keyed by its request, for exactly its amount.
         const retriedReviewTaskId = queuedReviewTaskId(operation);
+        const retriedCardRefundId = cardRefundIdOfNoteRow(operation);
         const deltaWatermarkCents = retryInput.refundRequestId
           ? undefined
           : retryInput.watermarkCents ??
@@ -1874,6 +1876,8 @@ export async function retryXeroSyncOperation(
           ...(retryInput.paidAnotherWayTaskId ? { paidAnotherWayTaskId: retryInput.paidAnotherWayTaskId } : {}),
           ...(retryInput.creditsInvoiceId ? { creditsInvoiceId: retryInput.creditsInvoiceId } : {}),
           ...(retryInput.handBackTaskId ? { handBackTaskId: retryInput.handBackTaskId } : {}),
+          // #4312: the card refund this row answers - its payload, else its key, which an older worker's rewrite keeps.
+          ...(retriedCardRefundId ? { cardRefundId: retriedCardRefundId } : {}),
           ...(retryInput.refundRequestId ? { refundRequestId: retryInput.refundRequestId } : {}),
           ...(options?.requeueOperationId ? { requeueOperationId: options.requeueOperationId } : {}),
           ...(retriedReviewTaskId ? { reviewTaskId: retriedReviewTaskId } : {}),

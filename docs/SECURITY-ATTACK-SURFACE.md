@@ -129,14 +129,14 @@ the row, not open work. Open findings now live in labelled GitHub issues
 | `/api/admin/members/[id]/lodge-access` | Admin session via the shared `requireAdmin()` guard (per-method test-enforced, #1132). | Admin. | `MemberLodgeAccess` grant rows for one member: `BOOKING_RESTRICTION` rows (which lodges the member may book) and `STAFF` rows (kiosk-account lodge binding). | None. | Admin role plus active guard; Zod strict schema (max 50 lodge ids per kind); unknown lodge ids rejected 400; PUT replaces the member's rows for both kinds in one transaction. | Structured audit log `MEMBER_LODGE_ACCESS_UPDATED` recording previous and new lodge-id sets per kind. | **Authorization-granting surface.** Editing these rows changes what a member may book and which lodge a kiosk (STAFF) account binds to — it grants/removes access, so it must stay Full-admin-guarded and fully audited. A wrong STAFF grant re-homes a shared kiosk device to another lodge. No self-widening path exists (only admins reach it), but treat it as security-sensitive configuration like `access-roles`. |
 | `/api/admin/bed-allocation/rooms/bulk`, `/api/admin/lockers/bulk` | Admin session. Rooms-bulk via `requireBedInventoryWrite()` (admin plus `bookings:edit` and the Bed Allocation module capability); lockers-bulk via the shared `requireAdmin()` guard. | Admin. | Bulk-created `LodgeRoom`/`LodgeBed` and `Locker` rows for a resolved active lodge. | None. | Admin/module guard; Zod strict schemas cap batch size (`MAX_BULK_ROOMS`, `MAX_BULK_BEDS_PER_ROOM`, `MAX_BULK_LOCKERS = 100`); target lodge validated active or 400; a clashing name prefix is rejected (409) before any rows are written; the whole batch is created in one transaction. | Structured audit logs `BED_ALLOCATION_ROOMS_BULK_CREATED` and `locker.bulk_created` with lodge id and counts. | Write-amplification surface: one admin call seeds many rows. Batch caps and transactional all-or-nothing creation bound the amplification; keep the caps in place and the clash pre-check ahead of the write. Name uniqueness is `[lodgeId, name]`; null-lodge rows still clash at every lodge until the contract release enforces NOT NULL. |
 | `/api/finance/bookings/metrics`, `/api/finance/sync/**`, `/api/finance/legacy-dashboard/**` | Finance viewer or manager guard depending on route. Legacy auth route redirects/204s for viewer access. | Finance viewer/manager; not lodge accounts. | Finance snapshots, booking metrics, finance sync run state, operational Xero organisation/config status. | Operational Xero API through the finance sync service. | `requireFinanceViewerApiAccess()` or `requireFinanceManagerApiAccess()`; active and force-password-change checks; shared admin-managed Xero connection. | Logger for sync/Xero failures; sync status records. | Privileged but not always admin. #618 should review finance role assignment and legacy dashboard bridge; #614 should cover ordinary member/admin-without-finance denial. |
-| `/api/cron`, `/api/cron/payments`, `/api/cron/xero`, `/api/cron/issue-reports` | Shared `x-cron-secret` header matching `CRON_SECRET`. | Operator or a custom deployment's external scheduler with the cron secret; the supported deployment runs the same work in its cron leader. | Pending booking confirmation, payment recovery, expired Internet Banking hold release, waiting-invoice reaping, the held late-capture alert retry, the owed kept-capture alert, Xero outbox/retry/inbound reconciliation, issue-report digest, cron run rows. | Stripe through payment recovery, Xero through operational sync, email alerts/digests. | Constant-time compare in each route, task allowlists, module-state gating for Xero tasks. | Logger; `CronJobRun` records per task (`payment-recovery`, `internet-banking-hold-release`, `xero-waiting-invoice-reaper`, `late-capture-held-alert`, `duplicate-capture-kept-alert`, and the general and Xero jobs); provider/service logs. | Cron guard is centralised in `requireCronSecret()` and covered by missing/wrong/different-length secret tests (#613/#614 closed). |
+| `/api/cron`, `/api/cron/payments`, `/api/cron/xero`, `/api/cron/issue-reports` | Shared `x-cron-secret` header matching `CRON_SECRET`. | Operator or a custom deployment's external scheduler with the cron secret; the supported deployment runs the same work in its cron leader. | Pending booking confirmation, payment recovery, expired Internet Banking hold release, waiting-invoice reaping, the held late-capture alert retry, the owed kept-capture alert, the released-credit card request and its Xero payment, Xero outbox/retry/inbound reconciliation, issue-report digest, cron run rows. | Stripe through payment recovery, Xero through operational sync, email alerts/digests. | Constant-time compare in each route, task allowlists, module-state gating for Xero tasks. | Logger; `CronJobRun` records per task (`payment-recovery`, `internet-banking-hold-release`, `xero-waiting-invoice-reaper`, `late-capture-held-alert`, `duplicate-capture-kept-alert`, and the general and Xero jobs); provider/service logs. | Cron guard is centralised in `requireCronSecret()` and covered by missing/wrong/different-length secret tests (#613/#614 closed). |
 | `/api/deploy/runtime-status` | Shared `x-cron-secret` header matching `CRON_SECRET`. | Blue/green deploy script or operator with cron secret. | Runtime role, cron-enabled flag, club time zone and environment-role declaration kind only. | None. | Shared `requireCronSecret()` helper (constant-time compare). | None. | Resolved under #613 (closed): now uses the shared cron/deploy guard helper rather than a duplicated local compare. Before the cutover the deploy asks it from inside the container with `node`'s `fetch`, the secret read from the container's own environment, so a non-2xx body reaches the deploy log (#3965). |
 | `/api/deploy/warmup` | Shared `x-cron-secret` header matching `CRON_SECRET`. | Blue/green deploy script or operator with cron secret. | A warm-up report: route counts, failed public paths with their HTTP result and cache-verification result, warnings, and the gate verdict. No page content, no member data, and the release identifier is never returned — the caller sends the release it EXPECTS and receives only match/mismatch (#2566). | Its own public pages, over its own loopback origin. The path list comes from the release's build output and the `published` `PageContent` rows; no request input reaches it, so it is not an SSRF pivot. Requests are capped by a configurable concurrency (default 3), a per-request timeout, and a whole-gate deadline, and a second concurrent run is refused (409). | Shared `requireCronSecret()` helper (constant-time compare); every query parameter is refused unless it is a whole number in range or a hex commit id, so a mistyped tolerance cannot silently widen the gate; `force-dynamic` so no response is ever stored. | The deploy log carries the whole report; nothing is written to the database. | Warms only addresses `isFixedNonceWebsitePath()` claims, so admin, member, auth and API routes are structurally unreachable from it, and drafts are excluded at the database read. It stays a GET because the deploy's warm-up gate still calls it with busybox `wget`, which cannot POST, and warming is idempotent, so the verb costs nothing. |
 | `/api/webhooks/stripe` | Stripe signature. No session auth by design. | Stripe. | Stripe event payload, payment intent/setup intent state through service. | Stripe webhook verification and downstream payment handling. | Resolves the signing secret from the encrypted `IntegrationCredential` store via the shared resolver (`getOperationalStripeWebhookSecret`), **fail-closed**: no/unreadable secret or a resolver error ⇒ reject (HTTP 500), never accept — #2082, the legacy `STRIPE_WEBHOOK_SECRET` env var is no longer read. Requires `stripe-signature`; bounded raw body read before signature verification. | Logger for signature/body-limit errors; service-level records. | Do not add session auth. Event idempotency is handled by `ProcessedWebhookEvent`; keep Stripe event coverage under payment-integrity review. The setup wizard's webhook **Verify** reads a marker freshness-scoped against the stored signing secret (#2082); [when it is written](#the-background-writers-in-full-2723). |
 | `/api/webhooks/xero` | Xero HMAC signature. No session auth by design. | Xero. | Xero inbound event records, webhook logs, reconciliation queue. | Xero reconciliation cycle after response. | Resolves the webhook signing key from the encrypted `IntegrationCredential` store via the shared resolver (`getOperationalXeroWebhookKey`), **fail-closed**: no key ⇒ reject (never accept unsigned) — #2079, the legacy `XERO_WEBHOOK_KEY` env var is no longer read. Requires `x-xero-signature`, bounded body read, HMAC with `timingSafeEqual`, object payload, array `events`, and max-event cap; invalid or unverifiable signatures return 401. A valid-signature **empty-events** POST is Xero's intent-to-receive (ITR) validation ping (#2081): the route records a `WebhookValidationReceipt` marker stamped with the receipt time and a non-reversible SHA-256 fingerprint of the resolved webhook key (never the key itself), then returns 200. | `recordWebhookLog()`, Xero inbound event records, `WebhookValidationReceipt` (ITR marker), logger. | Do not add session auth. Replay/idempotency relies on Xero inbound correlation keys and async reconciliation. The setup wizard's webhook **Verify** reads the ITR marker via `/api/admin/xero/webhook/verify-status` (any admin can read; only Full Admin can write the key) and is **freshness-scoped**: green only for a marker newer than a server-issued verify-start AND matching the current key's fingerprint, so a stale marker or one under a replaced key can never satisfy a new verify. Exposure contract (#2079): the key/fingerprint never leaves the server — only booleans/timestamps do. |
 | `/api/webhooks/ses-sns` | AWS SNS signature verification. No session auth by design. | AWS SNS for SES feedback. | Processed webhook ids, email suppression/failure records, webhook logs. | SNS certificate verification, SES feedback ingestion. | Bounded JSON envelope validation, SNS signature verification, and `SES_SNS_TOPIC_ARN` allowlisting unless a non-production unsafe override is set. | `recordWebhookLog()`, logger; duplicate event ids are idempotent. | `SES_SNS_TOPIC_ARN` must stay configured for deployed environments; unsafe missing-topic override is local-only. |
-| `/api/webhooks/servernz-posts` | HMAC over `timestamp.body` with the Alpine Central Server push secret from the encrypted `IntegrationCredential` store, five-minute window, constant-time compare. No session auth by design. | The Alpine Central Server. | Nothing from the body: a verified push only schedules the authenticated message-board pull. | The pull inside `runMirrorSync`, after the response. | Module off answers 200 `ignored` (so the server stops retrying); no stored secret answers 401; bounded 16 KiB body; a body that is not a JSON object is refused 400 BEFORE the signature, so a captured free-beds question cannot ring the doorbell. | Logger. | `INV-INT-028`. |
-| `/api/webhooks/servernz-availability` | HMAC over `timestamp.text` with the same push secret, where the text is route-specific (`availability`, lodge, from, to), five-minute window, constant-time compare, judged BEFORE the query is parsed. No session auth by design. | The Alpine Central Server's public lodge search. | Free beds per night and their minimum for one linked lodge; never a guest, member or booking. | None: a read. | Rate-limited first; `alpineCentralServer` module off, `otherLodgesEnabled` off, an unknown, unowned, unlinked or inactive lodge are all the same 404; the stay is capped at 30 nights and 365 days ahead. | Logger. | `INV-INT-028`; counts only, by design. |
+| `/api/webhooks/servernz-posts` | HMAC over `timestamp.body` with the Alpine Central Server push secret from the encrypted `IntegrationCredential` store, five-minute window, constant-time compare. No session auth by design. | The Alpine Central Server. | Nothing from the body: a verified push only schedules the authenticated message-board pull. | The pull inside `runMirrorSync`, after the response. | Module off answers 200 `ignored` (so the server stops retrying); no stored secret answers 401; bounded 16 KiB body; a body that is not a JSON object is refused 400 BEFORE the signature, so a captured free-beds question cannot ring the doorbell. | Logger. | `INV-INT-030`. |
+| `/api/webhooks/servernz-availability` | HMAC over `timestamp.text` with the same push secret, where the text is route-specific (`availability`, lodge, from, to), five-minute window, constant-time compare, judged BEFORE the query is parsed. No session auth by design. | The Alpine Central Server's public lodge search. | Free beds per night and their minimum for one linked lodge; never a guest, member or booking. | None: a read. | Rate-limited first; `alpineCentralServer` module off, `otherLodgesEnabled` off, an unknown, unowned, unlinked or inactive lodge are all the same 404; the stay is capped at 30 nights and 365 days ahead. | Logger. | `INV-INT-030`; counts only, by design. |
 | GitHub Actions, Dockerfile, Compose, deployment scripts | CI/deployment boundary, not app-session auth. | Maintainer, GitHub Actions, deploy operator. | Repository, package lock, Docker images, GHCR packages, environment variables, migrations. | npm, Docker, GHCR, Semgrep, gitleaks, Trivy, CodeQL if enabled by repo settings. | CI gates: audit, lint, tests, production build in CI only, Semgrep, gitleaks, Docker image security. Compose uses read-only app container, tmpfs cache, no-new-privileges, resource limits. | GitHub logs and deploy logs. | #619 should review workflow permissions, package publishing, secret scopes, image provenance, and deploy env contracts. |
 
 ## External Integration Review (#616)
@@ -375,8 +375,10 @@ exists because `DEPLOYMENT.md`'s rotation runbook did keep one, named two
 providers, and fell four behind as the rest landed. Anything that turns on
 "which credentials does rotating the auth secret strand" answers from this list.
 
-- `xero` — client id, client secret, webhook key, and the wrapped Xero
-  token-encryption key (#2079).
+- `xero` — client id, client secret and webhook key (#2079). Until #3806 R2 it
+  also held the wrapped Xero token-encryption key, now retired; a leftover row
+  is deleted on the next connect, disconnect or verify-reset, and the previous
+  release may write one again until it has drained.
 - `stripe` — secret key, publishable key, webhook signing secret (#2082).
 - `google` — OAuth client id and secret, plus a non-secret `verified_at`
   marker (#2087).
@@ -430,8 +432,8 @@ behind the code again the way the runbook did.
 ### Who changed a credential, and when (#2723)
 
 **Every mutation of this store names its writer, and the store refuses one that
-does not.** `actor` is a required argument on `setIntegrationCredential`,
-`ensureGeneratedCredential` and `deleteIntegrationCredential`, so a write with
+does not.** `actor` is a required argument on `setIntegrationCredential` and
+`deleteIntegrationCredential`, so a write with
 no attribution does not compile; `assertCredentialActor` catches the value that
 gets past the type (a cast, untyped JavaScript, a forwarded value); and
 `credential-actor-census.test.ts` walks the tree for a writer that skips the
@@ -471,8 +473,6 @@ this page already learnt about once, from the rotation runbook two sections up.
   re-read. Verify-reset drops it whenever any Stripe credential is rewritten.
 - `servernz-push-registration` — the shared-post sync registered this install
   for pushes and stored the secret the central server issued.
-- `xero-token-key-generation` — first use of Xero token encryption generated
-  (or, after an auth-secret change, replaced) the wrapped token key.
 - `xero-token-refresh` — the Xero access token was near expiry, so the API
   client spent the refresh token under the shared refresh lease and stored the
   rotated pair (#3454). Connecting, disconnecting and the verify-reset each have
@@ -509,10 +509,9 @@ emits on a success, a database failure, a lost race and a refused actor. That is
 a claim about the store's own doors; a caller that catches a value and logs it
 itself is outside that boundary.
 
-**Reads make no mutation noise.** The Xero token path calls
-`ensureGeneratedCredential` on every token decrypt; it returns the existing key
-and writes nothing, so no audit row. A delete that matches no row writes none
-either, which keeps verify-reset from burying the real deletions. The Stripe
+**Reads make no mutation noise.** The Xero token path reads the token set on
+every API call and writes nothing, so no audit row. A delete that matches no row
+writes none either, which keeps verify-reset from burying the real deletions. The Stripe
 webhook marker follows the same rule from the other side: the route calls its
 writer on every signature-verified event
 ([when it is written](#the-background-writers-in-full-2723)), so it is written
@@ -534,17 +533,35 @@ incident can rely on the following:
   `cause: verify-reset` naming the credential that caused it
   (`causedByCredential`, a name and never a value). A treasurer asking why the
   connection broke now gets both halves.
-- **The old `XeroToken` table is still written, for now.** A blue-green deploy
-  runs the previous colour beside this one for a while, and that colour reads and
-  refreshes only `XeroToken`. Xero refresh tokens can be spent once, so this
-  release keeps that row current in the same transaction as every write and
-  keeps the refresh lease on it, so the two colours can never both spend one
-  refresh token. Writes the previous colour makes during that window are not
-  attributed, because that code predates this contract. In this release only
-  the token store may write `XeroToken`: the credential census reports any other
-  writer, raw SQL or migration that rewrites it, because the token store reads
-  that row as the newer copy when it no longer matches. Retiring the table is a
-  separate, later change.
+- **This release no longer writes or reads token ciphertext in `XeroToken`
+  (#3806 R2).** A blue-green deploy runs the previous release (#3454) beside
+  this one for a while, and after a rollback it runs alone; it reads,
+  refreshes, connects and disconnects through `XeroToken` and the store copy.
+  So this release keeps that row present while connected, with its tenant and
+  expiry current, and claims the previous release's refresh lease beside its
+  own; Xero refresh tokens can be spent once, so the two releases still compete
+  for one. It never writes or reads the row's two ciphertext columns: the
+  schema ignores them, a row it creates gets an empty value, and its
+  credential-store copy carries the fingerprint the previous release checks,
+  so that release keeps reading the store copy. **The row is not empty yet:**
+  until this release's first connect replaces it, or R3 drops the table, it
+  still holds the last ciphertext #3454 wrote, encrypted under the wrapped key
+  below; after this release's first refresh that refresh token has been spent.
+  The previous release's own writes are attributed through the store as this
+  release's are (the tokens entered the store with it). Only the token store
+  may write `XeroToken`: the credential census reports any other writer, raw
+  SQL or migration that rewrites it, because the previous release would read a
+  rewritten row as the newer copy, and no production raw SQL may name the
+  table at all. The connection facts and the lease live in `XeroConnection`,
+  which holds no secret; a test pins its six fields. The table is dropped in a
+  later release.
+- **The wrapped Xero token key is retired here (#3806 R2).** It encrypted only
+  the `XeroToken` ciphertext. This release never generates or reads it, and its
+  next connect, disconnect or verify-reset deletes the row under that
+  operation's actor. While the previous release still runs it generates a new
+  key whenever it writes the tokens and finds none, and records that as
+  `xero-token-key-generation`, so such rows can appear after this release
+  ships until that release has drained.
 - **A member's second factor** — the TOTP secret (`Member.totpSecret`) and the
   recovery codes — stays where it is, encrypted or hashed at rest; it is not a
   provider credential. Enrolment, replacing the recovery codes and the
@@ -577,8 +594,7 @@ writer" would be a stronger claim than the instrument makes.
   secret it would silently hold live, decryptable credentials.
 - **Rotation blast radius.** Rotating the auth secret strands the credentials of
   **every** provider in the list above — all seven namespaces, not just the two an
-  operator is likely to be thinking about — plus the wrapped Xero token key, on
-  top of dropping sessions and all 2FA enrolments/recovery codes. See the
+  operator is likely to be thinking about — on top of dropping sessions and all 2FA enrolments/recovery codes. See the
   auth-secret rotation runbook in `DEPLOYMENT.md`, which sequences the re-entry
   and points back here for what has to be re-entered.
 - **Decrypt-before-verify on webhook paths.** Both the Xero webhook route
@@ -631,6 +647,11 @@ surface, not just a durability feature:
   destination or credentials. Every config change writes a metadata-only audit
   entry (`backup.config.set`); credential writes audit as
   `integration.credential.set`; run-now audits as `backup.run.now`.
+- **The setup wizard's resume cursor is support-area, and holds nothing
+  sensitive.** `/api/admin/backups/wizard-progress` (#4409) is read with
+  support view and saved with support edit. It stores only which step is open
+  and which steps were acknowledged - never the destination, credentials or
+  settings - and every step re-checks its own gate against live state.
 - **Bucket/region are validated before any CLI call.** They are interpolated into
   `aws s3 cp` (via `execFileSync` array-args, which are injection-safe) and an
   `s3://…` URI, so a strict bucket regex and `^[a-z0-9-]+$` region regex reject

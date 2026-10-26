@@ -120,6 +120,8 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/backups/restore": "support",
   "/api/admin/backups/run": "support",
   "/api/admin/backups/status": "support",
+  // #4409: the Backups setup wizard's resume cursor, under its own area.
+  "/api/admin/backups/wizard-progress": "support",
   "/api/admin/bed-allocation": "bookings",
   "/api/admin/bed-allocation/allocations": "bookings",
   "/api/admin/bed-allocation/allocations/bulk": "bookings",

@@ -40,6 +40,9 @@ import {
   isEditFinancialReviewAdditionalIntentRecoveryKey,
   stripeIdempotencyKeyForAskAmount,
 } from "@/lib/payment-recovery-keys";
+import {
+  isCreditReleaseAskRecoveryKey,
+} from "@/lib/credit-release-ask-keys";
 import { staleIntentAction } from "@/lib/stale-intent-action";
 
 /** The Stripe metadata `type` every additional ask's intent carries. */
@@ -48,7 +51,8 @@ export const ADDITIONAL_ASK_INTENT_TYPE = "modification_additional";
 /**
  * The reason the recovery runner writes on the ledger row it records, and the
  * Stripe metadata reason it sent before #4036. A request whose key names no
- * door below still sends it, from both minters alike.
+ * door below still sends it, from both minters alike. A refused replay never
+ * adopts an intent carrying it (#4079, `isIntentForOrdinaryAskPlan`).
  */
 export const ORDINARY_ASK_RECOVERY_REASON = "modification_additional_recovery";
 
@@ -161,7 +165,7 @@ export function planOrdinaryAskMint({
 
 /**
  * #4036 review: how far after its recovery row's creation an intent under a
- * DOOR's reason may have been created and still be that door's. Allows for the
+ * door's reason may have been created and still be that door's. Allows for the
  * clock difference between Stripe and the database, and nothing more.
  */
 export const DOOR_INTENT_CLOCK_SKEW_MS = 60 * 1000;
@@ -169,17 +173,24 @@ export const DOOR_INTENT_CLOCK_SKEW_MS = 60 * 1000;
 /**
  * Whether `intent` is the ask `plan` describes, minted by an earlier request
  * under its key with other parameters: this booking, an additional ask, this
- * door's reason (or the pre-#4036 runner's), this amount in this currency, and
- * still unpaid (`staleIntentAction`'s `reissue`, the one unpaid reading). The
- * customer is deliberately not compared - a different one is one way the
- * earlier request differed. Whether the intent is already on the ledger, and
- * whether it is the only one, is `mintOrdinaryAskIntent`'s to ask.
+ * door's reason, this amount in this currency, and still unpaid
+ * (`staleIntentAction`'s `reissue`, the one unpaid reading). The customer is
+ * deliberately not compared - a different one is one way the earlier request
+ * differed. Whether the intent is already on the ledger, and whether it is the
+ * only one, is `mintOrdinaryAskIntent`'s to ask.
  *
- * #4036 review: an intent under the DOOR's reason must have been created by
- * the time its recovery row was (`DOOR_INTENT_CLOCK_SKEW_MS` allowed for), since
- * the row is written only once the door's own create has failed. A later one is
- * another edit's door minting now, not this ask's. An intent under the old
- * runner's reason is minted after the row by design, and is not held to it.
+ * #4036 review: the intent must have been created by the time its recovery row
+ * was (`DOOR_INTENT_CLOCK_SKEW_MS` allowed for), since the row is written only
+ * once the door's own create has failed. A later one is another edit's door
+ * minting now, not this ask's.
+ *
+ * #4079: an intent under `ORDINARY_ASK_RECOVERY_REASON` is never a match. Only
+ * the pre-#4036 runner sent it for a door's key, and a deployment that ran
+ * #4077 for a day has no such row left (one that upgrades straight past it ends
+ * a leftover row through the dead-recovery path); a
+ * plan whose key names no door sends it now, and its earlier request was a
+ * runner's, after the row - a lost-claim runner's mint or a currency
+ * re-issue's, which this match cannot tell apart, so that refusal fails closed.
  */
 export function isIntentForOrdinaryAskPlan(
   intent: { amount: number; currency: string; status: string; created?: number; metadata?: Record<string, string> | null },
@@ -188,14 +199,13 @@ export function isIntentForOrdinaryAskPlan(
   recoveryCreatedAt: Date,
 ): boolean {
   const metadata = intent.metadata ?? {};
-  const byDoor = metadata.reason === plan.metadata.reason && metadata.reason !== ORDINARY_ASK_RECOVERY_REASON;
   return (
     metadata.bookingId === plan.bookingId &&
     metadata.type === ADDITIONAL_ASK_INTENT_TYPE &&
-    (byDoor
-      ? typeof intent.created === "number" &&
-        intent.created * 1000 <= recoveryCreatedAt.getTime() + DOOR_INTENT_CLOCK_SKEW_MS
-      : metadata.reason === ORDINARY_ASK_RECOVERY_REASON) &&
+    metadata.reason === plan.metadata.reason &&
+    metadata.reason !== ORDINARY_ASK_RECOVERY_REASON &&
+    typeof intent.created === "number" &&
+    intent.created * 1000 <= latestAdoptableIntentCreatedAt(recoveryCreatedAt).getTime() &&
     intent.amount === plan.amountCents &&
     intent.currency === currency &&
     staleIntentAction(intent) === "reissue"
@@ -203,13 +213,22 @@ export function isIntentForOrdinaryAskPlan(
 }
 
 /**
+ * The latest moment an intent this recovery row's refused replay may adopt was
+ * created: the row's creation plus the clock skew. #4079: also the upper bound
+ * of the replay's Stripe scan, so a busy account's later intents never fill it.
+ */
+export function latestAdoptableIntentCreatedAt(recoveryCreatedAt: Date): Date {
+  return new Date(recoveryCreatedAt.getTime() + DOOR_INTENT_CLOCK_SKEW_MS);
+}
+
+/**
  * #4036 review: whether ANOTHER unfinished additional-ask recovery row of the
  * same booking could be the one that minted `intent` - so adopting it here
  * could hand one edit's intent to two. Its own intent, named on the row; or an
  * ordinary ask's request for the same amount whose reason the intent carries:
- * the row's door's, or the pre-#4036 runner's, which any ordinary row's replay
- * may have sent. A row whose key names no door (rewritten to an intent id, say)
- * could have sent any reason. A review charge's and a re-issue's requests carry
+ * the row's door's (#4079: no longer the pre-#4036 runner's, whose rows are
+ * gone). A row whose key names no door (rewritten to an intent id, say) could
+ * have sent any reason. A review charge's and a re-issue's requests carry
  * reasons of their own (`INV-PAY-120`), so their rows never match.
  */
 export function couldRecoveryRowOwnIntent(
@@ -219,6 +238,8 @@ export function couldRecoveryRowOwnIntent(
   if (row.paymentIntentId === intent.id) return true;
   const bookingModificationId = bookingModificationIdForAdditionalIntentRecoveryKey(row.idempotencyKey);
   if (
+    // #4253: a credit-release request sends a reason of its own (`INV-ADDPAY-045`).
+    isCreditReleaseAskRecoveryKey(row.idempotencyKey) ||
     isEditFinancialReviewAdditionalIntentRecoveryKey(row.idempotencyKey) ||
     (bookingModificationId && row.paymentIntentId === buildReissuedAskStripeIdempotencyKey(bookingModificationId))
   ) {
@@ -226,7 +247,6 @@ export function couldRecoveryRowOwnIntent(
   }
   if (intent.amount !== row.amountCents) return false;
   const reason = intent.metadata?.reason;
-  if (reason === ORDINARY_ASK_RECOVERY_REASON) return true;
   const door = ordinaryAskDoorForStripeKey(row.paymentIntentId, row.bookingId, bookingModificationId);
   return door === null || ORDINARY_ASK_DOORS[door].reason === reason;
 }

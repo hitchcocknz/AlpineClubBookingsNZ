@@ -1465,8 +1465,11 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // 377 -> 379 unpinned (#4162): a voided bank-transfer refund note undone and
     // one answered by a person, unpinned `payment` (507 sites minus 128 pinned).
     // 379 -> 380 unpinned (#4219): the credit-note convergence's `xero` row, unpinned.
-    // 128 -> 130 pinned, 380 -> 382 unpinned (central-server lane merged with main, 25 Oct 2026): main's 128/380 plus this lane's +4 (#62, #58 x2, #77), disjoint; RE-MEASURED on the merged tree.
-    ).toEqual({ pinned: 130, unpinned: 382 });
+    // 380 -> 381 unpinned (#4338): its close of a concurrent attempt's failed row, unpinned `xero`.
+    // 381 -> 386 unpinned (#4253): the released-credit request's five rows, all unpinned.
+    // 386 -> 388 unpinned (#4270): the credit-note mirror's two `xero` rows, unpinned.
+    // 128/388 -> 130/390. RE-MEASURED with `pnpm run audit:census` on the merged tree (central-server lane + main, 26 Oct 2026): this lane's four sites and upstream's are disjoint, composed, never added.
+    ).toEqual({ pinned: 130, unpinned: 390 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

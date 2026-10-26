@@ -51,6 +51,7 @@
  *
  * No provider call is made under a lock or inside a transaction (`INV-LOCK-004`).
  */
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import type { Invoice } from "xero-node";
 import { PaymentSource } from "@prisma/client";
 import logger from "@/lib/logger";
@@ -168,7 +169,7 @@ const PROVIDERS: AdditionalCaptureReceiptProviders = {
   readStripeCaptureDocumentDate,
 };
 
-const OUTSTANDING_STATUSES = new Set(["PENDING", "RUNNING", "WAITING_PAYMENT"]);
+const OUTSTANDING_STATUSES = new Set<string>(XERO_ACTIVE_OPERATION_STATUSES);
 
 /**
  * WHY A ROW IS REFUSED, in the officer's words. Each names what to check; none
@@ -422,6 +423,7 @@ export async function recordAdditionalCaptureReceipt(
     if (recorder.kind === "supplementary-invoice") {
       return standDown("SUCCEEDED", "recorded-by-supplementary-invoice", { operationId: recorder.operationId });
     }
+    if (recorder.kind === "credit-release-sweep") return standDown("SUCCEEDED", "recorded-by-credit-release-sweep");
     const { gap, target: supplementary, alreadyRecordedCents } = recorder;
     // Only the part no other writer recorded: the primary's payment, or the
     // gap invoice's, may have taken some of it (round 3, F2).

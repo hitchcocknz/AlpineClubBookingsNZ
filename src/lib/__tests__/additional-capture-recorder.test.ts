@@ -116,7 +116,7 @@ describe("readCaptureRecorder (B, C)", () => {
       ),
     },
     xeroObjectLink: { findFirst: vi.fn() },
-    paymentTransaction: { findUnique: vi.fn() },
+    paymentTransaction: { findUnique: vi.fn(), findMany: vi.fn() },
     bookingModification: {},
     manualRefundTask: {},
   };
@@ -132,13 +132,54 @@ describe("readCaptureRecorder (B, C)", () => {
     vi.clearAllMocks();
     found = { naming: null, covering: null, own: null };
     store.xeroObjectLink.findFirst.mockResolvedValue(null);
-    store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 8_000 });
+    store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 8_000, paymentId: "pay_1" });
+    store.paymentTransaction.findMany.mockResolvedValue([]);
     mocks.readPrimaryInvoiceFeeAtLink.mockResolvedValue(figures);
     mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(null);
   });
 
   it("is the receipt where nothing else records the capture", async () => {
     await expect(read()).resolves.toEqual({ kind: "receipt", figures, gap: null, target: null, alreadyRecordedCents: 0 });
+  });
+
+  describe("a capture that collected credit-release money (#4253)", () => {
+    const ledgerRow = (over: Record<string, unknown>) => ({
+      id: "row",
+      source: "STRIPE",
+      status: "PENDING",
+      reason: "credit_released_outside_app",
+      amountCents: 4_000,
+      carriedAskCents: 0,
+      withdrawnAt: null,
+      stripePaymentIntentId: "pi_release",
+      ...over,
+    });
+
+    it("stands down where the sweep records all of it", async () => {
+      store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 4_000, paymentId: "pay_1" });
+      store.paymentTransaction.findMany.mockResolvedValue([ledgerRow({ id: "r1", status: "SUCCEEDED" })]);
+      await expect(readCaptureRecorder({ ...input, paymentIntentId: "pi_release", bookingModificationId: null }, store as never)).resolves.toEqual({
+        kind: "credit-release-sweep",
+      });
+    });
+
+    it("records only the rest of a capture it shares with an edit's own money", async () => {
+      store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 6_500, paymentId: "pay_1" });
+      store.paymentTransaction.findMany.mockResolvedValue([
+        ledgerRow({ id: "r1", status: "PENDING" }),
+        ledgerRow({ id: "r2", reason: "edit_price_increase", amountCents: 6_500, carriedAskCents: 4_000, status: "SUCCEEDED", stripePaymentIntentId: "pi_edit" }),
+      ]);
+      const recorder = await readCaptureRecorder({ ...input, paymentIntentId: "pi_edit", bookingModificationId: null }, store as never);
+      expect(recorder).toMatchObject({ kind: "receipt", alreadyRecordedCents: 4_000 });
+    });
+
+    it("stands down for a capture the sweep holds for an officer", async () => {
+      store.paymentTransaction.findUnique.mockResolvedValue({ amountCents: 4_000, paymentId: "pay_1" });
+      store.paymentTransaction.findMany.mockResolvedValue([ledgerRow({ id: "r1", status: "PARTIALLY_REFUNDED" })]);
+      await expect(readCaptureRecorder({ ...input, paymentIntentId: "pi_release", bookingModificationId: null }, store as never)).resolves.toEqual({
+        kind: "credit-release-sweep",
+      });
+    });
   });
 
   it("MUTATION round 4 (item 4): is the supplementary invoice naming the intent, read first and on its own, whatever a gap covers", async () => {
@@ -224,6 +265,16 @@ describe("readCaptureRecorder (B, C)", () => {
     expect(ownRead?.where).toMatchObject({ localModel: "BookingModification", localId: "mod_change", status: { not: "CANCELLED" } });
   });
 
+  it("MUTATION #3403 review 2 (F3): is the receipt where the change's own paid invoice names ANOTHER capture - the request that carried its balance", async () => {
+    // A superseded ask's stale-tab capture: the change's invoice was moved onto, and paid by, the carrier.
+    found.own = { id: "op_change_invoice", status: "SUCCEEDED", requestPayload: { recordPayment: true, paymentIntentId: "pi_carrier" } };
+    store.xeroObjectLink.findFirst.mockResolvedValue({ id: "link_change", xeroObjectId: "inv_change", active: true });
+    await expect(read()).resolves.toEqual({ kind: "receipt", figures, gap: null, target: null, alreadyRecordedCents: 0 });
+    // Naming this capture, it still records it.
+    found.own = { id: "op_change_invoice", status: "SUCCEEDED", requestPayload: { recordPayment: true, paymentIntentId: "pi_change" } };
+    await expect(read()).resolves.toEqual({ kind: "supplementary-invoice", operationId: "op_change_invoice" });
+  });
+
   it("is the receipt, against the gap invoice, where the capture's change is one the gap bills for", async () => {
     const gap = { operation: { id: "op_gap" }, link: { xeroObjectId: "inv_gap", active: true }, anchorIds: ["mod_change"] };
     mocks.findPrimaryInvoiceGapInvoice.mockResolvedValue(gap);
@@ -300,6 +351,8 @@ describe("readSupplementaryRecordedIntents (round 3, F3)", () => {
           // Round 5: an unpaid invoice naming its intent records nothing either.
           { localModel: "BookingModification", localId: "mod_unpaid_named", requestPayload: { paymentIntentId: "pi_unpaid_named", recordPayment: false } },
           { localModel: "BookingModification", localId: "mod_gap", requestPayload: { primaryInvoiceGap: true, recordPayment: true } },
+          // #3403 review 2 (F3): moved onto, and paid by, the request that carried its balance.
+          { localModel: "BookingModification", localId: "mod_moved", requestPayload: { paymentIntentId: "pi_carrier", recordPayment: true } },
         ]),
       },
     };
@@ -312,9 +365,11 @@ describe("readSupplementaryRecordedIntents (round 3, F3)", () => {
         { paymentIntentId: "pi_gap", bookingModificationId: "mod_gap" },
         { paymentIntentId: "pi_none", bookingModificationId: null },
         { paymentIntentId: "pi_unpaid_named", bookingModificationId: "mod_unpaid_named" },
+        { paymentIntentId: "pi_superseded_ask", bookingModificationId: "mod_moved" },
+        { paymentIntentId: "pi_carrier", bookingModificationId: "mod_carrier" },
       ],
       store as never,
     );
-    expect([...recorded].sort()).toEqual(["pi_named", "pi_paid"]);
+    expect([...recorded].sort()).toEqual(["pi_carrier", "pi_named", "pi_paid"]);
   });
 });

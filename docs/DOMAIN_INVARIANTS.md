@@ -345,6 +345,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-136` | An edit racing the primary invoice create is refused or measured |
 | `INV-PAY-137` | An IB organiser-paid joiner's refund goes to the organiser, on its mirror |
 | `INV-PAY-139` | A change capture nothing else records is recorded once, against its invoice |
+| `INV-PAY-140` | A superseded card change's waiting invoice follows the carrying request |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |
@@ -729,6 +730,9 @@ Prefix `INV-ADDPAY`.
 | `INV-ADDPAY-042` | A voided bank-transfer refund note is undone once, then asked once |
 | `INV-ADDPAY-043` | A later bank-transfer hand-back gets its own note, sized on its task |
 | `INV-ADDPAY-044` | An edit's after-commit mint leaves no live ask on an ended booking |
+| `INV-ADDPAY-045` | Credit released after a Xero offset is asked for once, by card |
+| `INV-ADDPAY-046` | A released-credit card payment is recorded on the booking's own invoice |
+| `INV-ADDPAY-047` | A bank-transfer card refund gets its own note, keyed on its refund |
 
 ## Analytics And Privacy
 
@@ -908,7 +912,9 @@ File: [`invariants/integrations.md`](invariants/integrations.md). Prefix
 | `INV-INT-025` | Resolved in Xero means done: no automatic retry or re-mint |
 | `INV-INT-026` | Outbox workers never read a target from a redacted payload key |
 | `INV-INT-027` | Central-server syncing pauses on any API version difference, integer-compared |
-| `INV-INT-028` | Free-beds answer: module and toggle on, signed first, counts only |
+| `INV-INT-028` | A refund note resolved by hand records its Xero note, once |
+| `INV-INT-029` | A recorded Xero operation success is never overwritten by a worse outcome |
+| `INV-INT-030` | Free-beds answer: module and toggle on, signed first, counts only |
 
 ## Operations
 

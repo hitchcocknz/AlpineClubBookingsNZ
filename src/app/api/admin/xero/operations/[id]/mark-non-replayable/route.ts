@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { XERO_OPERATION_REASON_MAX, XERO_OPERATION_REASON_MIN } from "@/lib/xero-operation-resolution";
 import { createAuditLog } from "@/lib/audit";
 import { prisma } from "@/lib/prisma";
 import { requireAdmin } from "@/lib/session-guards";
@@ -7,7 +8,7 @@ import { getXeroOperationRetryMeta } from "@/lib/xero-operation-retry";
 import logger from "@/lib/logger";
 
 const reviewSchema = z.object({
-  reason: z.string().trim().min(3).max(500),
+  reason: z.string().trim().min(XERO_OPERATION_REASON_MIN).max(XERO_OPERATION_REASON_MAX),
 });
 
 export async function POST(

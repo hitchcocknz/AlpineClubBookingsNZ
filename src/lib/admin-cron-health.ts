@@ -374,6 +374,20 @@ export function getAdminCronJobDefinitions(
     ),
     defineCronJob(
       {
+        // #4253. The sixth task of the same cycle: asks members for credit released
+        // after a credit note was spent in Xero, records the card payment in Xero,
+        // and closes a request Xero shows paid.
+        jobName: "credit-release-asks",
+        label: "Released credit payment requests",
+        schedule: "*/15 * * * *",
+        timezone: clubTimeZone,
+        expectedLocalTime: `Every 15 minutes in ${clubTimeZone}`,
+        staleAfterMinutes: FIFTEEN_MINUTE_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
         jobName: "xero-membership-refresh",
         label: "Xero membership refresh",
         schedule: "0 2 * * *",
@@ -457,6 +471,18 @@ export function getAdminCronJobDefinitions(
       {
         jobName: "xero-operation-replay",
         label: "Xero operation replay",
+        schedule: "*/15 * * * *",
+        timezone: clubTimeZone,
+        expectedLocalTime: `Every 15 minutes in ${clubTimeZone}`,
+        staleAfterMinutes: FIFTEEN_MINUTE_STALE_AFTER_MINUTES,
+      },
+      globalDisabledReason
+    ),
+    defineCronJob(
+      {
+        // #4270: runs in the inbound reconcile's slot, right after it.
+        jobName: "xero-credit-note-outside-spend-mirror",
+        label: "Credit notes used in Xero",
         schedule: "*/15 * * * *",
         timezone: clubTimeZone,
         expectedLocalTime: `Every 15 minutes in ${clubTimeZone}`,

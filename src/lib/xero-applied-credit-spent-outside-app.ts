@@ -36,7 +36,7 @@
  * an owner who changed) writes nothing and says why; the caller keeps the
  * original failure.
  */
-import { BookingStatus, CreditType } from "@prisma/client";
+import { BookingStatus, CreditType, type Prisma } from "@prisma/client";
 import { prisma } from "./prisma";
 import logger from "@/lib/logger";
 import { createAuditLog } from "./audit";
@@ -52,10 +52,11 @@ import {
   type XeroNoteAllocation,
   type XeroNotePayment,
 } from "./xero-credit-note-spent-outside-app";
+import { outsideSpendCents, spendIsExplained } from "./xero-credit-note-outside-spend";
 import {
-  BOOKING_INVOICE_LINK_MODELS,
   creditNoteReleaseDescription,
   creditNoteWriteDownDescription,
+  creditNoteWriteDownWhere,
   writtenDownCentsByCreditNote,
 } from "./xero-credit-note-write-down";
 
@@ -89,50 +90,65 @@ export interface ConvergeInput {
   /** The note's total and remaining credit in Xero, from the same read. */
   noteTotalCents: number | null;
   remainingCents: number;
+  /**
+   * The caller's own allocation operation that failed (#4338). When a concurrent
+   * run already converged the booking, its close ran before this row failed, so
+   * this run closes it.
+   */
+  failedOperationId?: string | null;
 }
 
 /**
- * How much of the note Xero shows spent on things the app has no record of: the
- * allocations to invoices that are not a booking's and the payments it did not
- * make. An invoice is a booking's if a payment's `xeroInvoiceId` is it or a booking
- * `XeroObjectLink` names it; a payment is the app's if a link names it.
+ * Close failed allocation attempts through the resolution fields an officer's
+ * mark uses (`INV-INT-025`): done, never re-run, off the Active list.
+ * Status-guarded, so a retry's claim and this close cannot both win.
  */
-async function outsideSpendCents(
-  tx: Pick<typeof prisma, "xeroObjectLink" | "payment">,
-  allocations: readonly XeroNoteAllocation[],
-  payments: readonly XeroNotePayment[],
-): Promise<number> {
-  const invoiceIds = [...new Set(allocations.map((a) => a.invoiceId))];
-  const paymentIds = [...new Set(payments.map((p) => p.paymentId))];
-  const [invoiceLinks, localPayments, paymentLinks] = await Promise.all([
-    invoiceIds.length
-      ? tx.xeroObjectLink.findMany({
-          // Only a booking's invoice is "the app's own" here: those are the ones the inbound sync
-          // mirrors. An offset against a subscription or other invoice moved the member's credit
-          // and nothing else will record it.
-          where: { xeroObjectType: "INVOICE", xeroObjectId: { in: invoiceIds }, localModel: { in: [...BOOKING_INVOICE_LINK_MODELS] } },
-          select: { xeroObjectId: true },
-        })
-      : [],
-    invoiceIds.length
-      ? tx.payment.findMany({ where: { xeroInvoiceId: { in: invoiceIds } }, select: { xeroInvoiceId: true } })
-      : [],
-    paymentIds.length
-      ? tx.xeroObjectLink.findMany({
-          where: { xeroObjectType: "PAYMENT", xeroObjectId: { in: paymentIds } },
-          select: { xeroObjectId: true },
-        })
-      : [],
-  ]);
-  const knownInvoices = new Set([
-    ...invoiceLinks.map((l) => l.xeroObjectId),
-    ...localPayments.flatMap((p) => (p.xeroInvoiceId ? [p.xeroInvoiceId] : [])),
-  ]);
-  const knownPayments = new Set(paymentLinks.map((l) => l.xeroObjectId));
-  return (
-    allocations.filter((a) => !knownInvoices.has(a.invoiceId)).reduce((sum, a) => sum + a.cents, 0) +
-    payments.filter((p) => !knownPayments.has(p.paymentId)).reduce((sum, p) => sum + p.cents, 0)
-  );
+function closeFailedAllocations(tx: Prisma.TransactionClient, match: Prisma.XeroSyncOperationWhereInput, at: Date) {
+  return tx.xeroSyncOperation.updateMany({
+    where: {
+      ...match,
+      entityType: "ALLOCATION",
+      localModel: "MemberCreditNoteAllocation",
+      status: { in: ["FAILED", "PARTIAL"] },
+      manuallyResolvedAt: null,
+    },
+    data: {
+      manuallyResolvedAt: at,
+      manuallyResolvedReason: CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON,
+      // Done: nothing is left to retry, so no Retry is offered.
+      replayable: false,
+    },
+  });
+}
+
+/**
+ * Did a converge run for this booking and note (#4338)? Its release (a marked
+ * positive application to the booking) and its write-down (a marked negative row
+ * stamped with the note) carry the same `outsideSpendConvergedAt`.
+ */
+async function convergeEvidenceExists(
+  tx: Prisma.TransactionClient,
+  memberId: string,
+  bookingId: string,
+  creditNoteId: string,
+): Promise<boolean> {
+  const releases = await tx.memberCredit.findMany({
+    where: {
+      memberId,
+      appliedToBookingId: bookingId,
+      type: CreditType.BOOKING_APPLIED,
+      amountCents: { gt: 0 },
+      outsideSpendConvergedAt: { not: null },
+    },
+    select: { outsideSpendConvergedAt: true },
+  });
+  const releasedAt = releases.flatMap((r) => (r.outsideSpendConvergedAt ? [r.outsideSpendConvergedAt] : []));
+  if (releasedAt.length === 0) return false;
+  const writeDown = await tx.memberCredit.findFirst({
+    where: { ...creditNoteWriteDownWhere(memberId, [creditNoteId]), outsideSpendConvergedAt: { in: releasedAt } },
+    select: { id: true },
+  });
+  return writeDown !== null;
 }
 
 export async function convergeCreditNoteSpentOutsideApp(input: ConvergeInput): Promise<ConvergeResult> {
@@ -166,18 +182,47 @@ export async function convergeCreditNoteSpentOutsideApp(input: ConvergeInput): P
     }
     await assertNoAppliedCreditDeallocationFence(paymentId, tx);
 
+    // A concurrent run converged first. Its close ran before this caller's own
+    // attempt failed, so that row is closed here or it stays on the Active list.
+    // Only on that run's evidence: its release for this booking and its write-down
+    // for this note, minted together. Without it the row stays FAILED.
+    const alreadyConverged = async (): Promise<ConvergeResult> => {
+      if (input.failedOperationId && (await convergeEvidenceExists(tx, lockedOwnerId, bookingId, creditNoteId))) {
+        const closedAt = new Date();
+        const closed = await closeFailedAllocations(tx, { id: input.failedOperationId }, closedAt);
+        if (closed.count > 0) {
+          await createAuditLog(
+            {
+              action: "xero.credit_note.spent_outside_app_attempt_closed",
+              subjectMemberId: lockedOwnerId,
+              targetId: bookingId,
+              entityType: "Booking",
+              entityId: bookingId,
+              category: "xero",
+              severity: "info",
+              outcome: "success",
+              summary: "Credit note used outside the app: a concurrent attempt's failed allocation closed",
+              details: CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON,
+              metadata: { creditNoteId, operationId: input.failedOperationId },
+            },
+            tx,
+          );
+        }
+      }
+      return { converged: false, reason: "already-converged" };
+    };
     const slices = await tx.memberCreditNoteAllocation.findMany({
       where: { appliedToBookingId: bookingId, xeroCreditNoteId: creditNoteId },
     });
     const [slice, ...otherSlices] = slices;
     if (!slice && (await unallocatedAppliedCents(bookingId, tx)) === 0) {
-      // A concurrent run converged this booking first: nothing is left to allocate.
-      return { converged: false, reason: "already-converged" };
+      // Nothing is left to allocate.
+      return alreadyConverged();
     }
     if (!slice || otherSlices.length > 0) return { converged: false, reason: "no-single-slice" };
     if (slice.amountCents < requestedCents) {
       // A concurrent partial converge already shrank this slice below what was refused.
-      return { converged: false, reason: "already-converged" };
+      return alreadyConverged();
     }
     const heldInXero = await sliceHeldInXero(tx, slice.id);
     if (heldInXero) return { converged: false, reason: "slice-already-in-xero" };
@@ -190,12 +235,14 @@ export async function convergeCreditNoteSpentOutsideApp(input: ConvergeInput): P
 
     // What Xero shows spent on things the app has no record of, less what this
     // routine has already written down for the note. The slice bounds the rest.
-    // The explained-shortfall rail: Xero's list must account for exactly what the
-    // note has lost (its total less what remains). A list that does not add up (a
-    // removed entry still shown, an amount we could not read) is not acted on.
-    const listedCents =
-      input.xeroAllocations.reduce((sum, a) => sum + a.cents, 0) + input.xeroPayments.reduce((sum, p) => sum + p.cents, 0);
-    if (input.noteTotalCents === null || listedCents !== input.noteTotalCents - input.remainingCents) {
+    if (
+      !spendIsExplained({
+        allocations: input.xeroAllocations,
+        payments: input.xeroPayments,
+        totalCents: input.noteTotalCents,
+        remainingCents: input.remainingCents,
+      })
+    ) {
       return { converged: false, reason: "unexplained-spend" };
     }
     const spent = await outsideSpendCents(tx, input.xeroAllocations, input.xeroPayments);
@@ -253,23 +300,8 @@ export async function convergeCreditNoteSpentOutsideApp(input: ConvergeInput): P
       data: { creditAppliedCents: await deriveBookingAppliedCreditCents(bookingId, tx) },
     });
 
-    // Close this slice's failed allocation attempts through the resolution fields
-    // an officer's mark uses (`INV-INT-025`): done, never re-run, off the Active list.
-    const closed = await tx.xeroSyncOperation.updateMany({
-      where: {
-        entityType: "ALLOCATION",
-        localModel: "MemberCreditNoteAllocation",
-        localId: slice.id,
-        status: { in: ["FAILED", "PARTIAL"] },
-        manuallyResolvedAt: null,
-      },
-      data: {
-        manuallyResolvedAt: convergedAt,
-        manuallyResolvedReason: CREDIT_SPENT_OUTSIDE_APP_RESOLUTION_REASON,
-        // Done: nothing is left to retry, so no Retry is offered.
-        replayable: false,
-      },
-    });
+    // Close this slice's failed allocation attempts.
+    const closed = await closeFailedAllocations(tx, { localId: slice.id }, convergedAt);
 
     await createAuditLog(
       {
@@ -338,6 +370,7 @@ export async function convergedForNamedFailure(
     xeroPayments: error.xeroPayments,
     noteTotalCents: error.totalCents,
     remainingCents: error.remainingCents,
+    failedOperationId: error.operationId,
   });
   return result.converged || result.reason === "already-converged";
 }

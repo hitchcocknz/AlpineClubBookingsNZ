@@ -179,8 +179,9 @@ import {
 import { CLUB_NAME } from "@/config/club-identity";
 import { PRIMARY_INVOICE_NOTHING_LEFT_DUE_REASON } from "@/lib/xero-primary-invoice-fee-at-link";
 import { PARTIAL_REPAIR_EMAIL_STILL_FAILED_MESSAGE } from "@/lib/xero-partial-invoice-repair-amount";
-import { XERO_PARTIAL_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
+import { XERO_PARTIAL_REPAIR_RUNNING_CODE, XERO_REFUND_NOTE_REPAIR_RUNNING_CODE } from "@/lib/xero-stale-operations";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { cardRefundNoteKeyTag } from "@/lib/card-refund-paid-another-way-cash";
 
 function makeOperation(overrides: Record<string, unknown> = {}) {
   return {
@@ -810,6 +811,48 @@ describe("retryXeroSyncOperation", () => {
       repairExistingLink: true,
       watermarkCents: 0,
     });
+  });
+
+  it("MUTATION (#4312): a failed card refund note whose payload an older worker rewrote still retries as that refund's own note, from its key", async () => {
+    // `createXeroCreditNote` rewrites the payload before the Xero call; an older
+    // release's worker writes no `cardRefundId`, but the row's key still names it.
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        entityType: "CREDIT_NOTE",
+        localId: "pay_9",
+        queueType: "REFUND_CREDIT_NOTE",
+        correlationKey: `payment:pay_9:refund-credit-note${cardRefundNoteKeyTag("re_late")}0:v3`,
+        requestPayload: {
+          creditNotes: [{ lineItems: [{ unitAmount: 30 }] }],
+          allocation: { invoiceId: "inv_1", amount: 30 },
+        },
+      })
+    );
+
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+    expect(mocks.createXeroCreditNote).toHaveBeenCalledWith("pay_9", 3000, {
+      createdByMemberId: "admin_1",
+      repairExistingLink: true,
+      watermarkCents: 0,
+      cardRefundId: "re_late",
+    });
+  });
+
+  it("#4312: a card refund note's payload names its refund first", async () => {
+    mocks.findUniqueOperation.mockResolvedValue(
+      makeOperation({
+        entityType: "CREDIT_NOTE",
+        localId: "pay_9",
+        queueType: "REFUND_CREDIT_NOTE",
+        correlationKey: `payment:pay_9:refund-credit-note${cardRefundNoteKeyTag("re_key")}0:v3`,
+        requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 3000, cardRefundId: "re_payload" },
+      })
+    );
+
+    await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST, { createdByMemberId: "admin_1" });
+
+    expect(mocks.createXeroCreditNote.mock.calls[0]![2]).toMatchObject({ cardRefundId: "re_payload" });
   });
 
   it("MUTATION (#3880 F2): an inline row (no queue type) re-enters delta mode from the watermark its payload recorded", async () => {
@@ -3970,14 +4013,16 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
   describe("the FAILED refund-note repair claims its row too (review F3)", () => {
     const failedRefundNote = () => ({ ...partialRefundNote(), status: "FAILED" });
 
-    it("MUTATION: claims FAILED/PARTIAL before it settles, with no repair marker, and completes onto the claim", async () => {
+    // #4356: its own marker, not the PARTIAL one, so a stale reset still gives
+    // it back FAILED, and no other caller's late outcome lands on the claim.
+    it("MUTATION: claims FAILED only before it settles, with its own repair marker, and completes onto the claim", async () => {
       mocks.findUniqueOperation.mockResolvedValue(failedRefundNote());
       await retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST);
 
       const claim = mocks.updateManyOperation.mock.calls[0][0];
       expect(claim).toEqual({
-        where: { id: "op_123", status: { in: ["FAILED", "PARTIAL"] }, manuallyResolvedAt: null, replayable: true },
-        data: { status: "RUNNING", startedAt: expect.any(Date) },
+        where: { id: "op_123", status: "FAILED", manuallyResolvedAt: null, replayable: true },
+        data: { status: "RUNNING", startedAt: expect.any(Date), lastErrorCode: XERO_REFUND_NOTE_REPAIR_RUNNING_CODE },
       });
       expect(mocks.updateManyOperation.mock.invocationCallOrder[0]).toBeLessThan(
         mocks.finishRefundCreditNoteSettlement.mock.invocationCallOrder[0],
@@ -3985,6 +4030,23 @@ describe("PARTIAL repairs claim the original before they write or call Xero (#42
       expect(mocks.finishRefundCreditNoteSettlement).toHaveBeenCalledWith(
         expect.objectContaining({ operationId: "op_123", onlyIfRunningSince: claim.data.startedAt }),
       );
+    });
+
+    // #4356: a row another caller completed PARTIAL after the read is not this repair's to take.
+    it("MUTATION: a row that went PARTIAL after its read is already claimed, and it settles nothing", async () => {
+      mocks.findUniqueOperation
+        .mockResolvedValueOnce(failedRefundNote())
+        .mockResolvedValueOnce({ manuallyResolvedAt: null, requestPayload: null });
+      // The row now reads PARTIAL: only a claim that still matches PARTIAL takes it.
+      mocks.updateManyOperation.mockImplementation(async (args: { where: { status?: unknown } }) => ({
+        count: args.where.status === "FAILED" ? 0 : 1,
+      }));
+
+      await expect(retryXeroSyncOperation("op_123", CLUB_FORMAT_TEST)).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("already claimed"),
+      });
+      noSideEffect();
     });
 
     it("MUTATION: a resolve landing before its claim makes it settle nothing", async () => {

@@ -204,6 +204,7 @@ export const REGISTRY_KEY_RENDERERS: Record<string, string> = {
   "booking-review-approved": "bookingReviewApprovedTemplate",
   "booking-review-rejected": "bookingReviewRejectedTemplate",
   "checkin-reminder": "checkinReminderTemplate",
+  "credit-released-payment-request": "creditReleasedPaymentRequestTemplate",
   "hosting-coverage-lost": "hostingCoverageLostTemplate",
   "policy-exception-request-expired": "policyExceptionRequestExpiredTemplate",
   "pre-arrival-reminder": "preArrivalReminderTemplate",

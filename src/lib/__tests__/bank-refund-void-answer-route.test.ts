@@ -40,7 +40,7 @@ function request(body: unknown) {
   return new Request("http://localhost/api/admin/payments/manual-refund-tasks/t1", { method: "POST", body: JSON.stringify(body) }) as never;
 }
 const params = Promise.resolve({ id: "follow-up-1" });
-const verified = { creditNoteId: "cn-hand", creditNoteNumber: "CN-0123", amountCents: 20_000, status: "AUTHORISED", total: 200 };
+const verified = { creditNoteId: "cn-hand", creditNoteNumber: "CN-0123", amountCents: 20_000, status: "AUTHORISED", total: 200, updatedDateUTC: null };
 
 beforeEach(() => {
   vi.clearAllMocks();

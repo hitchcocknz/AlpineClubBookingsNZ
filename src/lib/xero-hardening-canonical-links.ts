@@ -36,6 +36,7 @@ import { findBlockingRefundCreditNoteOperationId } from "@/lib/xero-refund-note-
 import {
   isPerDeltaRefundNoteLink,
   isRefundCreditNoteLinkCancelledInXero,
+  isRefundNoteLinkOf,
 } from "@/lib/xero-refund-note-status";
 import type {
   CanonicalLinkExpectation,
@@ -85,12 +86,7 @@ export function isPerRefundCreditNoteLink(
   link: Pick<CanonicalLinkRecord, "localModel" | "localId" | "role" | "xeroObjectType"> & { metadata: unknown },
   stripePaymentIds: ReadonlySet<string>
 ): boolean {
-  return (
-    link.localModel === "Payment" &&
-    link.role === "REFUND_CREDIT_NOTE" &&
-    link.xeroObjectType === "CREDIT_NOTE" &&
-    (stripePaymentIds.has(link.localId) || isPerDeltaRefundNoteLink(link.metadata))
-  );
+  return isRefundNoteLinkOf(link) && (stripePaymentIds.has(link.localId) || isPerDeltaRefundNoteLink(link.metadata));
 }
 
 /**
@@ -104,12 +100,7 @@ export function isPerRefundCreditNoteLink(
 export function isCancelledRefundCreditNoteMirror(
   link: Pick<CanonicalLinkRecord, "localModel" | "role" | "xeroObjectType"> & { metadata: unknown }
 ): boolean {
-  return (
-    link.localModel === "Payment" &&
-    link.role === "REFUND_CREDIT_NOTE" &&
-    link.xeroObjectType === "CREDIT_NOTE" &&
-    isRefundCreditNoteLinkCancelledInXero(link.metadata)
-  );
+  return isRefundNoteLinkOf(link) && isRefundCreditNoteLinkCancelledInXero(link.metadata);
 }
 
 /** The shape of a refund-note link the heal re-checks and re-writes. */
