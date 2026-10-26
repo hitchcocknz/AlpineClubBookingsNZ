@@ -60,6 +60,19 @@ vi.mock("@/lib/auth", () => ({ auth: mocks.auth }));
 vi.mock("@/lib/session-guards", () => ({
   requireActiveSessionUser: mocks.requireActiveSessionUser,
 }));
+// #4442: the mint's queue fence (lock, re-read, refuse) is proved by its own unit
+// suite and against a real server (`superseded-ask-invoice-carry.realdb.test.ts`).
+// This suite is about the route, so the queue runs its writes on the global
+// double, where these cases' supersede reads were written.
+vi.mock("@/lib/additional-ask-queue-transaction", async () => {
+  const { prisma } = await import("@/lib/prisma");
+  return {
+    lockAdditionalAskQueue: async () => undefined,
+    assertAdditionalAskSizingCurrent: async () => undefined,
+    withAdditionalAskQueueTransaction: (_paymentId: string, _ask: unknown, write: (store: unknown) => unknown) =>
+      write(prisma),
+  };
+});
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     $transaction: mocks.transaction,

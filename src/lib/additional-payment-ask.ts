@@ -162,7 +162,7 @@ class AdditionalAskValue {
    */
   readonly #carriedCents: number;
 
-  /** Live balance observed when sizing, distinct from folded waiting re-issues. */
+  /** #4442: the live ask's unpaid balance it was sized on (not a folded re-issue's), else null. Private as `#carriedCents` is. */
   readonly #paymentBalanceCents: number | null;
 
   /**
@@ -180,13 +180,11 @@ class AdditionalAskValue {
     this.#reissuesUnpaidAsk = params.reissuesUnpaidAsk ?? false;
   }
 
-  get paymentBalanceCents(): number | null {
-    return this.#paymentBalanceCents;
-  }
-
   get carriedCents(): number {
     return this.#carriedCents;
   }
+
+  get paymentBalanceCents(): number | null { return this.#paymentBalanceCents; }
 
   /** Private for the reason `#carriedCents` is: a spread cannot carry it. */
   get reissuesUnpaidAsk(): boolean {
@@ -201,12 +199,7 @@ class AdditionalAskValue {
 export type AdditionalAsk = AdditionalAskValue;
 
 /** The only place an `AdditionalAsk` comes into existence. */
-function buildAdditionalAsk(params: {
-  ownCents: number;
-  carriedCents: number;
-  reissuesUnpaidAsk?: boolean;
-  paymentBalanceCents?: number;
-}): AdditionalAsk {
+function buildAdditionalAsk(params: ConstructorParameters<typeof AdditionalAskValue>[0]): AdditionalAsk {
   return new AdditionalAskValue(params);
 }
 
@@ -340,10 +333,7 @@ export function raiseReviewChargeAsk({
  * the club's currency changed since it was minted (#3567). The figure and its
  * carried part come back off the row: nothing new is asked for or absorbed.
  */
-export function restateAdditionalAsk(request: {
-  amountCents: number;
-  carriedAskCents: number;
-}): AdditionalAsk {
+export function restateAdditionalAsk(request: CarriedAskRecord): AdditionalAsk {
   return buildAdditionalAsk({
     ownCents: request.amountCents - request.carriedAskCents,
     carriedCents: request.carriedAskCents,
@@ -460,20 +450,14 @@ export function reductionLeftAfterUnpaidAskCents({
  * and it is marked a re-issue so the minter mints it on a credit-paid booking
  * too (`reissuesUnpaidAsk`).
  */
-export function reissueUnpaidAdditionalAsk({
-  askLeftCents,
-  payment,
-}: {
+export function reissueUnpaidAdditionalAsk({ askLeftCents, payment }: {
   askLeftCents: number;
+  /** #4442: the `Payment` a mint sized it on, whose live ask it then carries too. */
   payment?: AdditionalAskPayment | null;
 }): AdditionalAsk {
   if (askLeftCents <= 0) return NO_ADDITIONAL_ASK;
-  return buildAdditionalAsk({
-    ownCents: 0,
-    carriedCents: askLeftCents,
-    reissuesUnpaidAsk: true,
-    ...(payment !== undefined ? { paymentBalanceCents: outstandingAdditionalAskCents(payment) } : {}),
-  });
+  const paymentBalanceCents = payment === undefined ? undefined : outstandingAdditionalAskCents(payment);
+  return buildAdditionalAsk({ ownCents: 0, carriedCents: askLeftCents, reissuesUnpaidAsk: true, paymentBalanceCents });
 }
 
 /**

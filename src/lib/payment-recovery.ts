@@ -1,4 +1,4 @@
-import { assertAdditionalAskSizingCurrent } from "@/lib/additional-ask-queue-transaction";
+import { assertAdditionalAskSizingCurrent, lockAdditionalAskQueue } from "@/lib/additional-ask-queue-transaction";
 import {
   PaymentSource,
   PaymentRecoveryOperationStatus,
@@ -2384,10 +2384,8 @@ async function holdAdditionalIntentRecoveryClaim<T>(
   write: (store: Prisma.TransactionClient) => Promise<T>,
 ): Promise<{ value: T; heldAt: Date } | null> {
   return prisma.$transaction(async (tx) => {
-    // #4442: exclude capture/settlement before taking the Payment row.
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(1)`;
-    // #4217 (`INV-LOCK-002`): the Payment row before the recovery row, as a reduction netting this ask off takes them.
-    await lockPaymentForRefundedTotal(tx, operation.paymentId);
+    // #4217, #4442 (`INV-LOCK-002`): the global key, then the Payment row, before the recovery row, as a reduction netting this ask off takes them.
+    await lockAdditionalAskQueue(tx, operation.paymentId);
     const heldAt = new Date();
     const held = await tx.paymentRecoveryOperation.updateMany({
       where: {

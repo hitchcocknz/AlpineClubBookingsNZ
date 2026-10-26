@@ -95,6 +95,19 @@ vi.mock("@/lib/booking-ledger-credit-sync", () => ({
   syncBookingLedgerCredits: vi.fn().mockResolvedValue(undefined),
 }));
 
+// #4442: the mint's queue fence (lock, re-read, refuse) is proved by its own unit
+// suite and against a real server (`superseded-ask-invoice-carry.realdb.test.ts`).
+// This suite is about the route, so the queue runs its writes on the global
+// double, where these cases' supersede reads were written.
+vi.mock("@/lib/additional-ask-queue-transaction", async () => {
+  const { prisma } = await import("@/lib/prisma");
+  return {
+    lockAdditionalAskQueue: async () => undefined,
+    assertAdditionalAskSizingCurrent: async () => undefined,
+    withAdditionalAskQueueTransaction: (_paymentId: string, _ask: unknown, write: (store: unknown) => unknown) =>
+      write(prisma),
+  };
+});
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     /*
@@ -1935,6 +1948,8 @@ describe("PUT /api/bookings/[id]/modify", () => {
       paymentTransactionId: "txn_old",
       paymentIntentId: "pi_old",
       amountCents: 7000,
+      // #4442: queued in the mint's own transaction, beside its row.
+      store: expect.anything(),
     });
   });
 

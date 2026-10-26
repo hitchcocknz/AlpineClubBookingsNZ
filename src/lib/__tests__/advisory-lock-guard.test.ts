@@ -128,21 +128,11 @@ const TWO_TIER_LOCK_INVARIANTS = ["INV-LOCK-001", "INV-LOCK-002", "INV-LOCK-003"
  */
 const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
   {
-    site: "withAdditionalAskQueueTransaction#1",
+    // The one spelling of the carrying-ask queue's order, taken by the inline
+    // mint, the re-issue's completion and the recovery runner's claim hold.
+    site: "lockAdditionalAskQueue#1",
     tier: "GLOBAL",
-    reason: "#4442: re-read carried money before the new ask and its cancellation records commit; exclude capture/settlement, then take the Payment row.",
-    invariant: "INV-LOCK-002",
-  },
-  {
-    site: "writeReissuedAskUnderRecovery#1",
-    tier: "GLOBAL",
-    reason: "#4442: a re-issued ask re-reads its carried balance before writing, excluding capture/settlement before the Payment row and recovery claim.",
-    invariant: "INV-LOCK-002",
-  },
-  {
-    site: "holdAdditionalIntentRecoveryClaim#1",
-    tier: "GLOBAL",
-    reason: "#4442: recovery's mint re-checks carried money after excluding capture/settlement and before the Payment row and recovery claim; a lost claim writes nothing.",
+    reason: "#4442: a new additional ask re-reads the live ask's balance it carries before its row and its supersede's cancel rows commit; global before the Payment row and any recovery-row claim, so a capture of that ask is either seen and refused or owned by the cancel row.",
     invariant: "INV-LOCK-002",
   },
   // ── App Router handlers ───────────────────────────────────────────────────

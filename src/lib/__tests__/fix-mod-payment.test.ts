@@ -64,6 +64,19 @@ vi.mock("@/lib/booking-ledger-modification-sync", () => ({
   postModificationLedgerLines: vi.fn().mockResolvedValue(undefined),
   postReviewClosureLedgerLines: vi.fn().mockResolvedValue(undefined),
 }));
+// #4442: the mint's queue fence (lock, re-read, refuse) is proved by its own unit
+// suite and against a real server (`superseded-ask-invoice-carry.realdb.test.ts`).
+// This suite is about the route, so the queue runs its writes on the global
+// double, where these cases' supersede reads were written.
+vi.mock("@/lib/additional-ask-queue-transaction", async () => {
+  const { prisma } = await import("@/lib/prisma");
+  return {
+    lockAdditionalAskQueue: async () => undefined,
+    assertAdditionalAskSizingCurrent: async () => undefined,
+    withAdditionalAskQueueTransaction: (_paymentId: string, _ask: unknown, write: (store: unknown) => unknown) =>
+      write(prisma),
+  };
+});
 vi.mock("@/lib/prisma", () => ({
   prisma: {
     // #4217: the ledger writers lock the Payment row first.
@@ -1976,6 +1989,8 @@ describe("POST /api/bookings/[id]/guests — price increase", () => {
       paymentTransactionId: "txn_earlier_extra",
       paymentIntentId: "pi_earlier_extra",
       amountCents: 4000,
+      // #4442: queued in the mint's own transaction, beside its row.
+      store: expect.anything(),
     });
   });
 
@@ -2917,6 +2932,8 @@ describe("GET /api/bookings/[id]/additional-payment-secret", () => {
       status: "PENDING",
       reason: "edit_financial_review_charge",
       stripeCustomerId: "cus_1",
+      // #4442: written in the re-issue's queue transaction.
+      store: expect.anything(),
     });
     // ...the old-currency ask is retired through the durable cancel...
     expect(mockEnqueuePaymentIntentCancellationRecovery).toHaveBeenCalledWith({
@@ -2925,6 +2942,7 @@ describe("GET /api/bookings/[id]/additional-payment-secret", () => {
       paymentTransactionId: "ptx_1",
       paymentIntentId: "pi_additional",
       amountCents: 3000,
+      store: expect.anything(),
     });
     // ...and the payment's outstanding ask now names the new intent.
     expect(mockPaymentUpdate).toHaveBeenCalledWith(
