@@ -36,8 +36,14 @@ describe("INV-PAY-140: the superseded-invoice carry proof stays wired into CI (#
       "two bank-transfer edits: each invoice was queued unpaid when priced; nothing waits and nothing moves",
       "M1: a DECLINED A paid from a stale tab after its invoice moved takes it back: A's capture records A's invoice",
       "C4: a capture after A, then a newer request: A's invoice moves onto the capture that absorbed it, never dropped",
-      "C2: the move onto a captured carrier queues behind the CARRIER's key, where its receipt decides, then releases",
+      "C2 (review 2, F5): the move onto a captured carrier against that carrier's REAL receipt deciding, on the carrier's key",
+      "the receipt decides first: it records B, and A's invoice moved onto B goes out unpaid",
+      "the move decides first: the receipt already running counts, so A's invoice still goes out unpaid and the receipt records B against it",
       "C5: B's capture lands while the move waits on A's key - the move, reading under the key, releases A's invoice itself",
+      "F1: A moved to B, then B captured late while C supersedes - both invoices follow on to C, never stranded on the refunded B",
+      "a move made unpaid by the carrier's own receipt is paid again when A's own capture takes it back",
+      "the carrier first: its invoices record all of B; A's own capture is recorded by its own receipt, never stood down",
+      "the ask first: A's invoice comes back and records A; B's own invoice records only B's own amount, and an officer is told once that B paid A's change again",
     ]) {
       expect(suite).toContain(proof);
     }
