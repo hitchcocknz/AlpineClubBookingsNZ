@@ -30,6 +30,16 @@ import { requireAdmin } from "@/lib/session-guards";
  * lifecycle, settlement or capacity cohort, takes no advisory lock, and
  * INV-LOCK-001/002 are unaffected. The unique index is what stops one central
  * lodge being linked to two local ones, including under two concurrent saves.
+ *
+ * The transition and its audit row are ONE serialised step (#4262 review):
+ * the save locks this `Lodge` row (`SELECT 1 … FOR UPDATE`) as the first
+ * statement of its transaction, reads the link it is replacing under that
+ * lock, writes the new one and writes `LODGE_CENTRAL_LINK_UPDATED` on the same
+ * transaction client. Two administrators saving at once queue on the row, so
+ * the second reads the first's link as its "before" and no audit row describes
+ * a transition that never happened; a refused write (409) leaves no audit row.
+ * Keyed on the immutable lodge id; the only lock this route takes. See
+ * docs/CONCURRENCY_AND_LOCKING.md -> "Central lodge link writer".
  */
 
 const paramsSchema = z.object({ id: z.string().min(1) });
@@ -160,20 +170,44 @@ export async function PUT(
     }
   }
 
-  // Before and after in one transaction, so the audit row describes a real
-  // transition even when two administrators save at once.
+  // Lock, read, write and audit in ONE transaction (see the header), so the
+  // audit row describes the transition that actually happened even when two
+  // administrators save at once.
+  const lodgeId = parsedParams.data.id;
+  const actorId = guard.session.user.id;
   let before: { centralLodgeId: string | null } | null = null;
   try {
     before = await prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT 1 FROM "Lodge" WHERE "id" = ${lodgeId} FOR UPDATE`;
       const current = await tx.lodge.findUnique({
-        where: { id: parsedParams.data.id },
+        where: { id: lodgeId },
         select: { centralLodgeId: true },
       });
       if (!current) return null;
       await tx.lodge.update({
-        where: { id: parsedParams.data.id },
+        where: { id: lodgeId },
         data: { centralLodgeId: body.centralLodgeId },
       });
+      // Category `admin`, like every writer under `/api/admin/lodges/`
+      // (INV-PRIV-013; see `LODGE_GATED_ADMIN_CATEGORIES_2765` in the audit census).
+      await createAuditLog(
+        {
+          action: "LODGE_CENTRAL_LINK_UPDATED",
+          memberId: actorId,
+          actorMemberId: actorId,
+          entityType: "Lodge",
+          entityId: lodgeId,
+          category: "admin",
+          severity: "important",
+          outcome: "success",
+          summary: "Central lodge link updated",
+          metadata: {
+            before: { centralLodgeId: current.centralLodgeId },
+            after: { centralLodgeId: body.centralLodgeId },
+          },
+        },
+        tx,
+      );
       return current;
     });
   } catch (error) {
@@ -196,25 +230,7 @@ export async function PUT(
     return NextResponse.json({ error: "Lodge not found" }, { status: 404 });
   }
 
-  // Category `admin`, like every writer under `/api/admin/lodges/`
-  // (INV-PRIV-013; see `LODGE_GATED_ADMIN_CATEGORIES_2765` in the audit census).
-  await createAuditLog({
-    action: "LODGE_CENTRAL_LINK_UPDATED",
-    memberId: guard.session.user.id,
-    actorMemberId: guard.session.user.id,
-    entityType: "Lodge",
-    entityId: parsedParams.data.id,
-    category: "admin",
-    severity: "important",
-    outcome: "success",
-    summary: "Central lodge link updated",
-    metadata: {
-      before: { centralLodgeId: before.centralLodgeId },
-      after: { centralLodgeId: body.centralLodgeId },
-    },
-  });
-
-  const settings = await readSettings(parsedParams.data.id);
+  const settings = await readSettings(lodgeId);
   if (!settings) {
     return NextResponse.json({ error: "Lodge not found" }, { status: 404 });
   }

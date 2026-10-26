@@ -1425,6 +1425,16 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
   "src/app/api/members/[id]/photo/route.ts": 2,
+  // Central lodge link writer (#62, #4262 review): the PUT locks its own
+  // `Lodge` row (`SELECT 1 … FOR UPDATE`) as the first statement of its
+  // transaction, re-reads the link it replaces under it, writes the new one
+  // and its `LODGE_CENTRAL_LINK_UPDATED` audit row on the same client, so two
+  // saves serialise and each audit row records a real transition. The only
+  // lock it takes: no advisory key and no settings-row lock, so it cannot
+  // invert the download's settings -> Lodge order. Lodge-id keyed; disjoint
+  // from booking/money writers. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // "Central lodge link writer".
+  "src/app/api/admin/lodges/[id]/central-lodge/route.ts": 1,
   // Alpine Central Server connection/recorder (#4366, #4436): `lockServerNzSettings`
   // locks the singleton settings row (`SELECT 1 … FOR UPDATE`) so
   // `recordServerVersionIfCurrent` re-reads the connection (address and API-key

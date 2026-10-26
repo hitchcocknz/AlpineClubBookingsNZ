@@ -2123,6 +2123,19 @@ mispricing a booking.
   and no longer takes this lock. Singleton-keyed; no advisory lock; disjoint
   from the booking/capacity/credit and money clusters. A missing row (never
   configured) locks nothing, and its first upsert is the only writer then.
+- **Central lodge link writer** — `PUT /api/admin/lodges/[id]/central-lodge`
+  (#62; #4262 review): takes `$executeRaw`SELECT 1 FROM "Lodge" WHERE "id" = $1
+  FOR UPDATE`` as the first statement of its transaction, re-reads the link it
+  is replacing under that lock, writes the new `Lodge.centralLodgeId`, and
+  writes its `LODGE_CENTRAL_LINK_UPDATED` audit row on the same transaction
+  client. Two saves therefore serialise, the second reads the first's link as
+  its "before", and no audit row describes a transition that never happened; a
+  write refused by the unique index (409) rolls back with no audit row. It
+  takes no other lock: the owned-lodge check reads the settings row without
+  locking it, so this writer never waits on `ServerNzSettings` while holding a
+  `Lodge` row and cannot invert the download's settings-then-`Lodge` order
+  (the hide and the record step's unlink). Lodge-id keyed; no advisory lock;
+  disjoint from the booking/capacity/credit and money clusters.
 
 - **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
   (`releaseDeletionRequestApprovalClaim`, #2627): takes

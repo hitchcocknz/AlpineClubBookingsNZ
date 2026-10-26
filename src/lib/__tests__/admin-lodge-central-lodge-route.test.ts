@@ -18,6 +18,8 @@ const { mockPrisma, mockRequireAdmin, mockCreateAuditLog, mockSettings, mockSecr
       lodge: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn() },
       // The owned lodges' local copies, for the options' labels (#69).
       otherLodge: { findMany: vi.fn() },
+      // The PUT's row lock (`SELECT 1 FROM "Lodge" ... FOR UPDATE`).
+      $executeRaw: vi.fn(),
       $transaction: vi.fn(),
     };
     client.$transaction.mockImplementation(async (fn: (tx: typeof client) => unknown) => fn(client));
@@ -69,6 +71,8 @@ beforeEach(() => {
   );
   mockPrisma.lodge.findMany.mockResolvedValue([{ id: "lodge_1", centralLodgeId: null }]);
   mockPrisma.lodge.update.mockResolvedValue({});
+  mockPrisma.$executeRaw.mockResolvedValue(1);
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => fn(mockPrisma));
   mockPrisma.otherLodge.findMany.mockResolvedValue([]);
   mockSettings.mockResolvedValue({ otherLodgesEnabled: true, otherLodgesOwnedLodges: [A, B] });
   mockSecret.mockResolvedValue("secret");
@@ -158,7 +162,92 @@ describe("PUT /api/admin/lodges/[id]/central-lodge", () => {
         entityId: "lodge_1",
         metadata: { before: { centralLodgeId: null }, after: { centralLodgeId: "ol_b" } },
       }),
+      // On the transaction client: the audit row commits or rolls back with
+      // the transition it describes (#4262).
+      mockPrisma,
     );
+  });
+
+  it("locks the lodge row first, then reads, writes and audits inside that one transaction (#4262)", async () => {
+    const order: string[] = [];
+    mockPrisma.$executeRaw.mockImplementation(async (strings: TemplateStringsArray, ...values: unknown[]) => {
+      order.push(`lock ${strings.join("?").replace(/\s+/g, " ").trim()} [${values.join(",")}]`);
+      return 1;
+    });
+    mockPrisma.lodge.findUnique.mockImplementation(async ({ where }: { where: { id?: string } }) => {
+      order.push("read");
+      return where.id ? { ...LODGE } : null;
+    });
+    mockPrisma.lodge.update.mockImplementation(async () => {
+      order.push("write");
+      return {};
+    });
+    mockCreateAuditLog.mockImplementation(async () => {
+      order.push("audit");
+    });
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => {
+      order.push("begin");
+      const value = await fn(mockPrisma);
+      order.push("commit");
+      return value;
+    });
+    expect((await PUT(put({ centralLodgeId: "ol_b" }), params())).status).toBe(200);
+    expect(order.slice(0, 6)).toEqual([
+      "begin",
+      'lock SELECT 1 FROM "Lodge" WHERE "id" = ? FOR UPDATE [lodge_1]',
+      "read",
+      "write",
+      "audit",
+      "commit",
+    ]);
+  });
+
+  it("serialises two saves on the row lock, so each audit row records the transition that happened (#4262)", async () => {
+    // One stored link, one row lock: a model of what PostgreSQL does, so two
+    // saves issued together interleave the way two requests can.
+    let stored: string | null = null;
+    let held: Promise<void> = Promise.resolve();
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => unknown) => {
+      let release = () => {};
+      let locked = false;
+      const tx = {
+        ...mockPrisma,
+        $executeRaw: async () => {
+          const previous = held;
+          held = new Promise<void>((resolve) => { release = resolve; });
+          locked = true;
+          await previous;
+          return 1;
+        },
+        lodge: {
+          ...mockPrisma.lodge,
+          findUnique: async ({ where }: { where: { id?: string } }) => {
+            await Promise.resolve();
+            return where.id ? { ...LODGE, centralLodgeId: stored } : null;
+          },
+          update: async ({ data }: { data: { centralLodgeId: string | null } }) => {
+            await Promise.resolve();
+            stored = data.centralLodgeId;
+            return {};
+          },
+        },
+      };
+      try {
+        return await fn(tx as typeof mockPrisma);
+      } finally {
+        if (locked) release();
+      }
+    });
+    const [first, second] = await Promise.all([
+      PUT(put({ centralLodgeId: "ol_a" }), params()),
+      PUT(put({ centralLodgeId: "ol_b" }), params()),
+    ]);
+    expect([first.status, second.status]).toEqual([200, 200]);
+    const transitions = mockCreateAuditLog.mock.calls.map(([entry]) => entry.metadata);
+    expect(transitions).toEqual([
+      { before: { centralLodgeId: null }, after: { centralLodgeId: "ol_a" } },
+      { before: { centralLodgeId: "ol_a" }, after: { centralLodgeId: "ol_b" } },
+    ]);
   });
 
   it("unlinks with null", async () => {
@@ -189,6 +278,7 @@ describe("PUT /api/admin/lodges/[id]/central-lodge", () => {
     const res = await PUT(put({ centralLodgeId: "ol_a" }), params());
     expect(res.status).toBe(409);
     expect((await res.json()).error).toContain("Iwikau");
+    // The refused write throws before the audit, inside the same transaction.
     expect(mockCreateAuditLog).not.toHaveBeenCalled();
   });
 
