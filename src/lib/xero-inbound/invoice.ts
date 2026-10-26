@@ -326,7 +326,7 @@ export async function runIncrementalInvoiceReconciliation(options: {
         await notifyXeroSyncError({
           errorType: "refund-ledger-divergence",
           operation: `incremental-invoice-reconciliation:recount:${invoiceId}`,
-          errorMessage: `${reconciled.recountLeftUnsettled} Nothing retries it on its own; check the payment's refunded total against Xero, or replay the invoice's inbound event.`,
+          errorMessage: `${reconciled.recountLeftUnsettled} Nothing retries it on its own; check the payment's refunded total against Xero.`,
         });
       }
       failIfRecountLeftUnsettled(reconciled);
