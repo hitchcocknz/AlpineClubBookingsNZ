@@ -17,10 +17,11 @@ export async function assertAdditionalAskSizingCurrent(
   ask: AdditionalAsk,
 ): Promise<void> {
   if (ask.paymentBalanceCents === null) return;
-  const payment = await store.payment.findUniqueOrThrow({
+  const payment = await store.payment.findUnique({
     where: { id: paymentId },
     select: { additionalAmountCents: true, additionalPaymentStatus: true },
   });
+  if (!payment) throw new Error(`Payment ${paymentId} not found while checking the carried ask`);
   const current = sizeAdditionalAsk({ priceDiffCents: 0, changeFeeCents: 0, payment });
   if (current.carriedCents !== ask.paymentBalanceCents) {
     throw new Error("The carried additional ask changed while its replacement was being minted; retry and re-plan");

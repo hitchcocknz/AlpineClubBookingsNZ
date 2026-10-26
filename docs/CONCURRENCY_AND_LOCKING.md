@@ -3089,6 +3089,20 @@ captured (`payment_intent.succeeded` → settle) must still become `SUCCEEDED`, 
 settle legitimately overwrites `FAILED` → `SUCCEEDED`. `lock(1)` guarantees the
 two run whole-before-whole; it is not a veto on that transition.
 
+**#4442: an additional ask's queue excludes a capture of the balance it carries.**
+The inline mint (`withAdditionalAskQueueTransaction`), re-issue completion
+(`writeReissuedAskUnderRecovery`) and recovery claim
+(`holdAdditionalIntentRecoveryClaim`) take the existing global key before the
+Payment row and any recovery-row claim. Before writing the new intent's row
+and the superseded intents' durable cancellations, they re-read the live ask's
+mirrored unpaid balance through `sizeAdditionalAsk`. A changed balance refuses
+and rolls back the queue; recovery re-plans it. Folded waiting re-issues remain
+separate from that live balance. A capture first is therefore excluded from the
+replacement; a queue first leaves a cancellation record for the webhook's
+superseded-capture path. Stripe mint and cancellation calls stay outside these
+transactions. No new keyspace or capacity participant (`INV-LOCK-001` through
+`INV-LOCK-003`).
+
 **#3653 adds the organiser child's refund out of the combined card payment
 (`INV-PAY-114`).** Three writers join this cohort and mint no keyspace. The edit
 doors write a child's refund debt (`reserveOrganiserChildModificationRefund`)

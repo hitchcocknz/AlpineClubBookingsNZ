@@ -63,7 +63,7 @@ vi.mock("@/lib/prisma", () => ({
       return write(prisma);
     },
     $executeRaw: vi.fn(),
-    payment: { findUniqueOrThrow: mocks.sizingRead },
+    payment: { findUnique: mocks.sizingRead },
     paymentTransaction: {
       findMany: mocks.supersedeRead,
       // #3954 round 7: the door re-reads its new intent's row before queueing
@@ -78,6 +78,11 @@ vi.mock("@/lib/payment-recovery", () => ({
   enqueueAdditionalPaymentIntentRecovery: mocks.enqueueRecovery,
   enqueueBookingModificationRefundRecovery: mocks.enqueueRefundRecovery,
   processPaymentRecoveryOperations: mocks.processRecovery,
+}));
+
+// Invoice movement has its own contract suites; this suite observes the queue boundary.
+vi.mock("@/lib/superseded-ask-invoice-carry", () => ({
+  followSupersededAskInvoicesSafely: async () => null,
 }));
 
 import { resolveClubFormat } from "@/lib/club-format";

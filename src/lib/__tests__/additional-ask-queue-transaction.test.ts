@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ transaction: vi.fn(), lockPayment: vi.fn(), re
 vi.mock("@/lib/prisma", () => ({ prisma: { $transaction: mocks.transaction } }));
 vi.mock("@/lib/payment-transactions", () => ({ lockPaymentForRefundedTotal: mocks.lockPayment }));
 
-import { sizeAdditionalAsk, sizeReviewChargeAsk, restateAdditionalAsk } from "@/lib/additional-payment-ask";
+import { sizeAdditionalAsk, sizeReviewChargeAsk, restateAdditionalAsk, raiseReviewChargeAsk } from "@/lib/additional-payment-ask";
 import { sizeReissuedAskReplay } from "@/lib/additional-ask-recovery-replay";
 import { withAdditionalAskQueueTransaction } from "@/lib/additional-ask-queue-transaction";
 
@@ -16,7 +16,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.transaction.mockImplementation(async (write) => write({
     $executeRaw: mocks.global,
-    payment: { findUniqueOrThrow: mocks.read },
+    payment: { findUnique: mocks.read },
   }));
   mocks.read.mockResolvedValue(unpaid);
 });
@@ -27,6 +27,7 @@ describe("additional ask queue's sizing fence (#4442)", () => {
     ["review charge", () => sizeReviewChargeAsk({ shareTotalCents: 3000, payment: unpaid })],
     ["re-issued reduction", () => sizeReissuedAskReplay({ frozenAmountCents: 3000, payment: unpaid })],
     ["currency re-issue", () => restateAdditionalAsk({ amountCents: 7000, carriedAskCents: 2000 })],
+    ["raised ask currency re-issue", () => raiseReviewChargeAsk({ shareTotalCents: 6000, request: { amountCents: 7000, carriedAskCents: 2000 } })],
   ])("refuses %s when A captures after sizing, before any B write or cancellation", async (_name, size) => {
     const ask = size();
     mocks.read.mockResolvedValue(captured);
@@ -55,6 +56,14 @@ describe("additional ask queue's sizing fence (#4442)", () => {
     mocks.read.mockResolvedValue(captured);
     await expect(withAdditionalAskQueueTransaction("payment", ask, write)).rejects.toThrow("retry and re-plan");
     expect(write).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a missing payment without writing the replacement", async () => {
+    mocks.read.mockResolvedValue(null);
+    const ask = sizeAdditionalAsk({ priceDiffCents: 3000, changeFeeCents: 0, payment: unpaid });
+    const write = vi.fn();
+    await expect(withAdditionalAskQueueTransaction("payment", ask, write)).rejects.toThrow("not found");
+    expect(write).not.toHaveBeenCalled();
   });
 
   it("refuses a failed sizing re-read without queueing anything", async () => {

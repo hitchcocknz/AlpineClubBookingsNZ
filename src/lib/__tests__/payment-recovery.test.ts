@@ -142,6 +142,7 @@ vi.mock("@/lib/edit-financial-review-charge", () => ({
 
 vi.mock("@/lib/prisma", () => {
   const prisma = {
+    $executeRaw: async () => 0,
     paymentRecoveryOperation: {
       findMany: (...args: unknown[]) => mockPaymentRecoveryFindMany(...args),
       findUnique: (...args: unknown[]) => mockPaymentRecoveryFindUnique(...args),

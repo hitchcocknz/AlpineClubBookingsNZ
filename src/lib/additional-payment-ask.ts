@@ -262,6 +262,7 @@ export function sizeAdditionalAsk({
 
 /** The stored ADDITIONAL row a review charge's later share reads back. */
 export interface CarriedAskRecord {
+  amountCents: number;
   carriedAskCents: number;
 }
 
@@ -330,6 +331,7 @@ export function raiseReviewChargeAsk({
   return buildAdditionalAsk({
     ownCents: shareTotalCents,
     carriedCents: request.carriedAskCents,
+    paymentBalanceCents: request.amountCents,
   });
 }
 

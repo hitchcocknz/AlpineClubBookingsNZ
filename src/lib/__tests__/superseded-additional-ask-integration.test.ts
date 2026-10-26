@@ -139,14 +139,13 @@ vi.mock("@/lib/prisma", () => {
     insertionSeq: ++ledger.seq,
   });
 
-  return {
-    prisma: {
+  const prisma = {
       // #4217: the ledger writers lock the Payment row first; a single-writer
       // fake has nothing to wait on.
       $executeRaw: async () => 0,
       payment: {
-        findUnique: async (args: { where: Row; include?: Row }) => {
-          onlyArgs(args, ["where", "include"]);
+        findUnique: async (args: { where: Row; include?: Row; select?: Row }) => {
+          onlyArgs(args, ["where", "include", "select"]);
           const { where, include } = args;
           if (include) {
             onlyArgs(include, ["transactions"]);
@@ -232,8 +231,8 @@ vi.mock("@/lib/prisma", () => {
           return row ? { ...row } : null;
         },
       },
-    },
   };
+  return { prisma: { ...prisma, $transaction: (write: (tx: typeof prisma) => unknown) => write(prisma) } };
 });
 
 vi.mock("@/lib/stripe", () => ({

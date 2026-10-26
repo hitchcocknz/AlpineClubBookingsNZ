@@ -638,7 +638,7 @@ export async function createModificationAdditionalPaymentIntent(
     // synchronous cancel exists to close.
     const queued = await withAdditionalAskQueueTransaction(paymentId, result.additionalAsk, async (store) => {
       await upsertPaymentIntentTransaction({
-        paymentId: result.paymentId,
+        paymentId,
         kind: PaymentTransactionKind.ADDITIONAL,
         paymentIntentId: pi.id,
         amountCents: result.additionalAsk.amountCents,

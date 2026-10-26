@@ -563,6 +563,42 @@ function deferred() {
       await Promise.all([holderClient?.$disconnect(), observerClient?.$disconnect()]);
     });
 
+    it("#4442: A captures after B is sized; B is withheld and recovery asks only for B's own change", async () => {
+      await seedPaidBooking();
+      const a = await priceIncrease(MOD_A, A_CENTS);
+      const create = stripeRaceHooks.create!;
+      // Real webhook on real rows, after the sizing read and before B's queue
+      // transaction. No cancel row exists yet, so A settles normally.
+      stripeRaceHooks.create = async (args) => {
+        stripeRaceHooks.create = create;
+        await payWithCard(a);
+        return create(args);
+      };
+      await expect(priceIncrease(MOD_B, B_CENTS)).rejects.toThrow("ask was not minted");
+      const refusedIntent = stripe.created.at(-1)!;
+      expect(stripe.intents.get(refusedIntent)?.amount).toBe(A_CENTS + B_CENTS);
+      expect(await captured(a)).toBe(A_CENTS);
+      expect(await prisma.paymentTransaction.findUnique({ where: { stripePaymentIntentId: refusedIntent } })).toBeNull();
+      expect(await prisma.paymentRecoveryOperation.count({ where: {
+        paymentIntentId: a, type: "CANCEL_PAYMENT_INTENT",
+      } })).toBe(0);
+      expect(await invoiceFor(MOD_A)).toMatchObject({ status: "PENDING", waitsOn: a });
+
+      const retry = await prisma.paymentRecoveryOperation.findFirstOrThrow({ where: {
+        bookingId: BOOKING_ID, type: "CREATE_ADDITIONAL_PAYMENT_INTENT", status: "PENDING",
+      } });
+      const { runPaymentRecoveryOperationNow } = await import("@/lib/payment-recovery");
+      await runPaymentRecoveryOperationNow(retry.id, CLUB_FORMAT_TEST);
+      const b = stripe.created.at(-1)!;
+      expect(b).not.toBe(refusedIntent);
+      expect(stripe.intents.get(b)?.amount).toBe(B_CENTS);
+      expect(await prisma.paymentTransaction.findUniqueOrThrow({ where: { stripePaymentIntentId: b } }))
+        .toMatchObject({ amountCents: B_CENTS, carriedAskCents: 0 });
+      await payWithCard(b);
+      expect(await captured(b)).toBe(B_CENTS);
+      expect(await paidTwiceAlerts()).toBe(0);
+    });
+
     it("A -> B -> B captured: both invoices go out, each for its own amount, and their payments sum to the capture", async () => {
       await seedPaidBooking();
       const a = await priceIncrease(MOD_A, A_CENTS);
