@@ -24,18 +24,31 @@ import {
   type VerifiedHandMadeRefundNote,
 } from "@/lib/bank-refund-void-answer";
 import {
+  alreadyResolvedWithNoteMessage,
   handMadeNoteAlreadyRecordedMessage,
   RESOLVE_NOTE_AMOUNT_UNREADABLE_MESSAGE,
+  RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE,
   RESOLVE_NOTE_PARTIAL_NO_NOTE_MESSAGE,
   RESOLVE_NOTE_RETRY_RAN_MESSAGE,
   RESOLVE_NOTE_SUPERSEDED_MESSAGE,
+  RESOLVE_NOTE_WITHDRAW_FAILED_MESSAGE,
 } from "@/lib/bank-refund-void-follow-up-copy";
+import { clubFormatValues } from "@/lib/club-format-server";
+import logger from "@/lib/logger";
+import { notifyXeroSyncError } from "@/lib/xero-error-alert";
 import type { ClubFormat } from "@/lib/club-format";
 import { ManualBookingPaymentError } from "@/lib/payment-reconciliation";
 import { lockPaymentForRefundedTotal } from "@/lib/payment-transactions";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
-import { findQueuedLiveCopy, findRetryRunningOrSince, findSupersedingRefundNoteRun, QUEUED_LIVE_COPY_REFUSAL } from "@/lib/xero-operation-resolve-guards";
+import {
+  findQueuedLiveCopy,
+  findRetryOverlappingMark,
+  findRetryRunningOrSince,
+  findSupersedingRefundNoteRun,
+  QUEUED_LIVE_COPY_REFUSAL,
+  retryRunningRefusal,
+} from "@/lib/xero-operation-resolve-guards";
 import { parsePaymentCreditNoteRetryInput } from "@/lib/xero-payment-credit-note-payload";
 import { countsTowardRefundNoteCoverage, creditNoteCreateRowsRecordingWhere } from "@/lib/xero-refund-note-status";
 import { isRefundNoteCreateRow } from "@/lib/xero-resolved-in-xero-fences";
@@ -326,3 +339,118 @@ const RESOLVE_ROW_SELECT = {
   xeroObjectId: true,
   manuallyResolvedAt: true,
 } satisfies Prisma.XeroSyncOperationSelect;
+
+/** A refusal the resolve route answers, and audits where a number was offered or needed. */
+export type ResolveRefusal = { status: number; message: string };
+
+/**
+ * #3635 review N5: a mark another officer just wrote may still be withdrawn
+ * (it is checked against running retries after it is written), so "already
+ * resolved" is answered only when the same check would keep it. #4421 review
+ * (concurrency F6): an officer who offered a note is told which note the mark
+ * recorded, and refused when it is not the one they offered.
+ */
+export async function answerExistingResolveMark(
+  id: string,
+  mark: { manuallyResolvedAt: Date; xeroObjectNumber: string | null },
+  offeredNumber: string | undefined,
+): Promise<{ refused: ResolveRefusal } | { message: string }> {
+  const conflict = await findRetryOverlappingMark(id, mark.manuallyResolvedAt);
+  if (conflict) return { refused: { status: 409, message: retryRunningRefusal(conflict) } };
+  if (offeredNumber) {
+    const message = alreadyResolvedWithNoteMessage(mark.xeroObjectNumber);
+    return mark.xeroObjectNumber === offeredNumber ? { message } : { refused: { status: 409, message } };
+  }
+  return { message: "Xero operation was already resolved." };
+}
+
+/**
+ * The resolve route's refund-note half (#4421), for a row that asks a number:
+ * the number is required; a run that already raised the row's note refuses
+ * before any Xero call (review round 2); then the note is checked in Xero
+ * (`verifyResolvedRefundNote`, no transaction open) and claimed with the
+ * resolve (`claimResolveRecordingRefundNote`). A refusal from either comes
+ * back as such; a lost claim as `claimed: false`.
+ */
+export async function resolveRecordingRefundNote(input: {
+  operation: { id: string; correlationKey: string | null; localId: string | null };
+  shape: Extract<RefundNoteResolveShape, { kind: "asks-number" }>;
+  offeredNumber: string | undefined;
+  readAt: Date;
+  reason: string;
+  resolvedById: string;
+}): Promise<{ refused: ResolveRefusal } | { claimed: false } | { claimed: true; note: VerifiedHandMadeRefundNote; resolvedAt: Date }> {
+  if (!input.offeredNumber) return { refused: { status: 400, message: RESOLVE_NOTE_NUMBER_REQUIRED_MESSAGE } };
+  if (await findSupersedingRefundNoteRun(input.operation)) {
+    return { refused: { status: 409, message: RESOLVE_NOTE_SUPERSEDED_MESSAGE } };
+  }
+  try {
+    const note = await verifyResolvedRefundNote({ shape: input.shape, creditNoteNumber: input.offeredNumber, format: await clubFormatValues() });
+    const claim = await claimResolveRecordingRefundNote({
+      operationId: input.operation.id,
+      paymentId: input.shape.paymentId,
+      note,
+      readAt: input.readAt,
+      reason: input.reason,
+      resolvedById: input.resolvedById,
+    });
+    return claim.outcome === "claimed" ? { claimed: true, note, resolvedAt: claim.resolvedAt } : { claimed: false };
+  } catch (error) {
+    if (error instanceof ManualBookingPaymentError) return { refused: { status: error.status, message: error.message } };
+    throw error;
+  }
+}
+
+/**
+ * #4421 review (round 2): a mark that recorded a note, withdrawn because a
+ * retry turned out to be running beside it. The withdrawal is audited (the
+ * note was written and is now taken back). If it fails - its transaction takes
+ * `lock(1)` and the Payment row - the mark and the live link stay committed
+ * while a retry may raise its own note: the double-note case the withdrawal
+ * exists to stop. So that failure raises a refund-ledger alert naming the
+ * operation and the note, is audited, and the officer is told.
+ */
+export async function withdrawRecordedNoteOrAlert(input: {
+  operationId: string;
+  paymentId: string;
+  resolvedAt: Date;
+  note: VerifiedHandMadeRefundNote;
+  previousXeroObjectType: string | null;
+  retryRefusal: string;
+  auditFailure: (summary: string, details: string, metadata: Record<string, unknown>) => Promise<unknown>;
+}): Promise<ResolveRefusal> {
+  const metadata = {
+    operationId: input.operationId,
+    creditNoteId: input.note.creditNoteId,
+    creditNoteNumber: input.note.creditNoteNumber,
+    amountCents: input.note.amountCents,
+  };
+  try {
+    await withdrawResolveRecordingRefundNote({
+      operationId: input.operationId,
+      paymentId: input.paymentId,
+      resolvedAt: input.resolvedAt,
+      creditNoteId: input.note.creditNoteId,
+      previousXeroObjectType: input.previousXeroObjectType,
+    });
+  } catch (error) {
+    logger.error({ err: error, ...metadata }, "Could not withdraw a resolve that recorded a hand-made refund credit note while a retry runs (#4421)");
+    await notifyXeroSyncError({
+      errorType: "refund-ledger-divergence",
+      operation: `xero-resolve-withdraw:${input.operationId}`,
+      errorMessage: `Xero operation ${input.operationId} was marked resolved by hand, recording credit note ${input.note.creditNoteNumber}, while a retry of it was running, and the app could not take that mark back. The retry may raise its own credit note for the same refund: check Xero for two notes and void one.`,
+    }).catch(() => undefined);
+    await input.auditFailure("Resolve by hand recorded a credit note it could not withdraw while a retry ran", RESOLVE_NOTE_WITHDRAW_FAILED_MESSAGE, {
+      ...metadata,
+      result: "withdrawal failed: retry running",
+      status: 500,
+    });
+    return { status: 500, message: RESOLVE_NOTE_WITHDRAW_FAILED_MESSAGE };
+  }
+  await input.auditFailure("Resolve by hand withdrawn: a retry was running", input.retryRefusal, {
+    ...metadata,
+    result: "withdrawn: retry running",
+    status: 409,
+  });
+  return { status: 409, message: input.retryRefusal };
+}

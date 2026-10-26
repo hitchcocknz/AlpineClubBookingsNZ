@@ -35,10 +35,8 @@ import { FAILURE_FILTER_LABELS, FailedViewNotice } from "./failed-view-notice"
 import { xeroSectionId } from "./types"
 import type { XeroOperation } from "./types"
 import { useClubFormat } from "@/components/club-format-provider"
-import { formatCents } from "@/lib/utils"
 import { XeroFailureExplanation } from "@/components/admin/xero-failure-explanation"
-import { resolveDialogDescription } from "./resolve-dialog-copy"
-import { useResolveWithNoteDialog } from "./resolve-with-note-dialog"
+import { useResolveOperation } from "./use-resolve-operation"
 
 export function OperationsPanel({
   connected,
@@ -56,8 +54,6 @@ export function OperationsPanel({
   refreshToken: number
 }) {
   const { prompt, confirmDialog } = useConfirm()
-  const { openResolveWithNote, resolveWithNoteDialog } = useResolveWithNoteDialog()
-  const clubFormat = useClubFormat()
   // Retry/reset/mark-non-replayable/resolve all write finance-area Xero
   // operations routes; a view-only finance admin browses but cannot act (#1997).
   const canEdit = useAdminAreaEditAccess("finance")
@@ -247,6 +243,15 @@ export function OperationsPanel({
     statusFilter,
   ])
 
+  const { resolveOperation, resolveWithNoteDialog } = useResolveOperation({
+    prompt,
+    setError,
+    onMessage,
+    setResolvingOperationId,
+    fetchOperations,
+    onRefreshDiagnostics,
+  })
+
   useEffect(() => {
     if (connected && open) void fetchOperations()
   }, [connected, fetchOperations, open])
@@ -312,71 +317,6 @@ export function OperationsPanel({
       setError(err instanceof Error ? err.message : "Failed to queue failed Xero operations")
     } finally {
       setRetryingAllFailed(false)
-    }
-  }
-
-  const resolveOperation = async (operation: XeroOperation) => {
-    const operationId = operation.id
-    // #4421: a row the route will refuse says why before anything is typed.
-    if (operation.resolveRefusal) {
-      onMessage("")
-      setError(operation.resolveRefusal)
-      return
-    }
-    // #4421: a refund credit note the app never raised is resolved with the
-    // number of the note made in Xero; the route checks and records it while
-    // the dialog stays open, and a refusal is shown in the dialog.
-    if (operation.resolveAsksCreditNoteNumber) {
-      openResolveWithNote({
-        amountLabel: operation.resolveCreditNoteAmountCents === null ? null : formatCents(operation.resolveCreditNoteAmountCents, clubFormat),
-        submit: async (answer) => {
-          setResolvingOperationId(operationId)
-          setError("")
-          onMessage("")
-          try {
-            const data = await postJson<{ message?: string }>(
-              `/api/admin/xero/operations/${operationId}/resolve`,
-              answer,
-              "Failed to resolve Xero operation"
-            )
-            onMessage(data.message || "Xero operation marked resolved.")
-            await fetchOperations()
-            onRefreshDiagnostics()
-            return null
-          } catch (err) {
-            return err instanceof Error ? err.message : "Failed to resolve Xero operation"
-          } finally {
-            setResolvingOperationId(null)
-          }
-        },
-      })
-      return
-    }
-    const reason = await prompt({
-      title: "Resolve this Xero operation?",
-      description: resolveDialogDescription(operation.entityType),
-      inputLabel: "Reason",
-      defaultValue: "Resolved manually in Xero",
-      confirmLabel: "Resolve",
-    })
-    if (reason === null) return
-    const body = { reason }
-    setResolvingOperationId(operationId)
-    setError("")
-    onMessage("")
-    try {
-      const data = await postJson<{ message?: string }>(
-        `/api/admin/xero/operations/${operationId}/resolve`,
-        body,
-        "Failed to resolve Xero operation"
-      )
-      onMessage(data.message || "Xero operation marked resolved.")
-      await fetchOperations()
-      onRefreshDiagnostics()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to resolve Xero operation")
-    } finally {
-      setResolvingOperationId(null)
     }
   }
 

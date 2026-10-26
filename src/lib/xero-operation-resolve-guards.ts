@@ -7,6 +7,7 @@ import { prisma } from "@/lib/prisma";
 import { buildXeroOperationRequeueCorrelationKey } from "@/lib/xero-operation-queue";
 import { XERO_REQUEUE_OPERATION_TYPE } from "@/lib/xero-hardening-shared";
 import { isStaleRunningXeroOperation } from "@/lib/xero-stale-operations";
+import { isAppliedCreditLedgerOperation } from "@/lib/xero-applied-credit-operation-serialization";
 
 type OperationReader = Pick<Prisma.TransactionClient, "xeroSyncOperation">;
 
@@ -205,4 +206,58 @@ export function retryRunningRefusal(
     return "A retry of this Xero operation has been running for a long time and looks stuck. Use Reset stale running operations on the Xero operations screen, then check Xero before resolving it.";
   }
   return "A retry of this Xero operation is running, so it was not marked resolved. Wait for the retry to finish, then check Xero: if the retry stood down because of this attempt, nothing ran and you can resolve it again.";
+}
+
+/**
+ * The resolve route's checks before any mark (moved here from the route,
+ * #4421, so the route stays within its size budget): the refusal to answer,
+ * or null when the row may be marked.
+ */
+export async function resolvePrecheckRefusal(operation: {
+  id: string;
+  status: string;
+  startedAt: Date | null;
+  queueType: string | null;
+  requestPayload: unknown;
+  correlationKey: string | null;
+  entityType: string;
+  operationType: string;
+}): Promise<string | null> {
+  // #3635 decision 3: a retry that claimed the operation itself.
+  if (operation.status === "RUNNING") return retryRunningRefusal(operation);
+  if (operation.status !== "FAILED" && operation.status !== "PARTIAL") {
+    return "Only failed or partially-completed Xero operations can be resolved.";
+  }
+  // #3635 decision 1 (`INV-INT-025`): resolving does not converge the local
+  // credit ledger, and a resolved deallocation would fence the booking's
+  // cancel and credit writes for good.
+  if (isAppliedCreditLedgerOperation(operation)) {
+    return "An applied-credit allocation or deallocation cannot be marked resolved in Xero, because fixing Xero by hand does not bring the club's own credit ledger back in line. Retry it instead.";
+  }
+  // #3635 review N3: a live copy of the same document queued beside this one
+  // would mint a second document after the mark (re-checked under the claim's
+  // locks for a recorded note, #4421).
+  if (await findQueuedLiveCopy(operation)) return QUEUED_LIVE_COPY_REFUSAL;
+  return null;
+}
+
+/**
+ * #3635 (`INV-INT-025`): the plain mark, status-guarded - the mirror of the
+ * retry claims' `manuallyResolvedAt: null` guard, so a retry that claimed the
+ * row after the route's read wins. True when this call wrote it.
+ */
+export async function claimResolvedInXeroMark(input: { id: string; resolvedAt: Date; reason: string; resolvedById: string }): Promise<boolean> {
+  const claimed = await prisma.xeroSyncOperation.updateMany({
+    where: { id: input.id, status: { in: ["FAILED", "PARTIAL"] }, manuallyResolvedAt: null },
+    data: { manuallyResolvedAt: input.resolvedAt, manuallyResolvedReason: input.reason, manuallyResolvedById: input.resolvedById },
+  });
+  return claimed.count === 1;
+}
+
+/** #3635 decision 3: the plain mark taken back when a retry turned out to be running beside it. */
+export async function withdrawResolvedInXeroMark(id: string, resolvedAt: Date): Promise<void> {
+  await prisma.xeroSyncOperation.updateMany({
+    where: { id, manuallyResolvedAt: resolvedAt },
+    data: { manuallyResolvedAt: null, manuallyResolvedReason: null, manuallyResolvedById: null },
+  });
 }
