@@ -526,6 +526,11 @@ export function AlpineServerSetup({ initialState }: { initialState: InitialState
                   The registry of other clubs&apos; lodges (name, location, booking
                   officer, beds).
                 </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  The central lodge search shows a lodge&apos;s free beds only once
+                  its Central lodge link is saved (Lodges, then Configure, then
+                  Central lodge), even for a club with one lodge.
+                </p>
                 <p className="mt-1 text-xs text-muted-foreground">
                   Last upload {fmt(clubTime, lastUpload)} · last download {fmt(clubTime, lastDownload)}
                 </p>

@@ -199,8 +199,10 @@ available unknown". It also answers nothing while **Other
 lodges** sharing is off. The server names the lodge by its **permanent central
 id**, and your site answers for the local lodge linked to it under **Admin →
 Lodges → Configure → Central lodge** (see [Lodges](lodges.md#configure-a-lodge)).
-A club with one active lodge that owns one central lodge needs no setting: the
-two are linked automatically. Since server API 2.2 each download also records
+**Every club saves that link, even a club with one lodge**: a lodge with no saved
+link answers nothing, so the search shows its free beds as unknown. A club with
+one active lodge that owns one central lodge finds it already chosen when it
+clicks **Edit** there, and **Save** links it. Since server API 2.2 each download also records
 the owned lodges' ids beside their names, and they are forgotten with the list.
 
 The same list decides which entries your **Booking Officer** committee role is

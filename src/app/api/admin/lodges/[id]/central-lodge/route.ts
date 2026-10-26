@@ -36,7 +36,8 @@ const paramsSchema = z.object({ id: z.string().min(1) });
 
 const putSchema = z
   .object({
-    // Null clears the link; the one-lodge default may then apply.
+    // Null clears the link, and the lodge then answers nothing (#4262: every
+    // club links explicitly; there is no one-lodge default).
     centralLodgeId: z.string().trim().min(1).max(OWNED_CENTRAL_LODGE_ID_MAX).nullable(),
   })
   .strict();
@@ -81,12 +82,17 @@ async function readSettings(lodgeId: string) {
      */
     ownedLodges: owned === null ? null : await labelOwnedLodges(owned),
     /**
-     * The owned central lodge this lodge actually answers for — by its link or
-     * by the one-lodge default — decided by the endpoint's resolver; or null.
+     * The owned central lodge this lodge actually answers for — by its saved
+     * link — decided by the endpoint's resolver; or null.
      */
     answersForCentralLodgeId: status.answersFor,
     /** The other local lodge holding the only owned central lodge's link, if any. */
     linkHeldBy: status.heldBy,
+    /**
+     * The central lodge the card preselects on Edit for a one-lodge club that
+     * owns one central lodge (#4262): a suggestion, answered for only once saved.
+     */
+    suggestedCentralLodgeId: status.suggested,
     /** Whether Other lodges sharing is on; the endpoint answers nothing while it is off. */
     otherLodgesEnabled: settings.otherLodgesEnabled,
     /**

@@ -7,8 +7,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  * Pinned: the permission on each verb; only an OWNED central lodge can be
  * linked; one central lodge links to one local lodge (the unique index, as a
  * 409 naming the holder); null unlinks; the audit row records before and after
- * under the lodge subsystem's `admin` category; and the GET reports the
- * one-lodge default for THIS lodge only.
+ * under the lodge subsystem's `admin` category; and the GET reports what
+ * THIS lodge answers for, by its saved link only, and the one-lodge club's
+ * suggestion as a suggestion (#4262: no automatic link).
  */
 
 const { mockPrisma, mockRequireAdmin, mockCreateAuditLog, mockSettings, mockSecret } = vi.hoisted(() => ({
@@ -107,6 +108,7 @@ describe("GET /api/admin/lodges/[id]/central-lodge", () => {
       ],
       answersForCentralLodgeId: null,
       linkHeldBy: null,
+      suggestedCentralLodgeId: null,
       otherLodgesEnabled: true,
       registeredWithCentralServer: true,
     });
@@ -117,12 +119,20 @@ describe("GET /api/admin/lodges/[id]/central-lodge", () => {
   // lodge); here only that the page reports the resolver's verdict.
   it("reports what the endpoint's resolver answers for", async () => {
     mockSettings.mockResolvedValue({ otherLodgesEnabled: true, otherLodgesOwnedLodges: [A] });
-    // The page's own lodge read, then the resolver's explicit-link lookup
-    // (none); the one-lodge default then applies to lodge_1.
-    mockPrisma.lodge.findUnique.mockResolvedValueOnce({ ...LODGE }).mockResolvedValueOnce(null);
+    mockPrisma.lodge.findUnique.mockImplementation(async ({ where }: { where: { id?: string; centralLodgeId?: string } }) =>
+      where.id ? { ...LODGE, centralLodgeId: "ol_a" } : { id: "lodge_1", name: "Whakapapa", active: true },
+    );
     const body = await (await GET(new Request("http://localhost"), params())).json();
     expect(body.answersForCentralLodgeId).toBe("ol_a");
+    expect(body.suggestedCentralLodgeId).toBeNull();
+  });
+
+  it("answers for nothing in a one-lodge club until the link is saved, and only suggests it (#4262)", async () => {
+    mockSettings.mockResolvedValue({ otherLodgesEnabled: true, otherLodgesOwnedLodges: [A] });
+    const body = await (await GET(new Request("http://localhost"), params())).json();
+    expect(body.answersForCentralLodgeId).toBeNull();
     expect(body.linkHeldBy).toBeNull();
+    expect(body.suggestedCentralLodgeId).toBe("ol_a");
   });
 
   it("reports whether this site holds the push secret", async () => {

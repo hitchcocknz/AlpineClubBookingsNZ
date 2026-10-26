@@ -5,9 +5,10 @@
 --
 -- YOU PROBABLY DO NOT NEED IT: the release before #62 never names these
 -- columns, so routing traffic back needs no schema reverse. What dropping them
--- loses: each lodge's "Central lodge" link (re-chosen by an administrator, or
--- the one-lodge default applies again) and the owned-lodge ids (re-sent by the
--- central server on every pull, so the next download restores them).
+-- loses: each lodge's "Central lodge" link (saved again by an administrator
+-- after re-upgrading; every club links explicitly, #4262) and the owned-lodge
+-- ids (re-sent by the central server on every pull, so the next download
+-- restores them).
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
 -- 20261123020000 as APPLIED, so `prisma migrate deploy` skips it and the

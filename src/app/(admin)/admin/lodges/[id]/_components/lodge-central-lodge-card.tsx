@@ -27,8 +27,10 @@ import {
  *
  * The central server's public lodge search asks this site how many beds are
  * free, naming the lodge by its permanent central id. This card is where an
- * administrator links the two. A club with one active lodge that owns one
- * central lodge needs nothing here: the card says it is linked automatically.
+ * administrator links the two, and EVERY club saves its link here, a one-lodge
+ * club included (owner decision, 24 Oct 2026, #4262): an unlinked lodge
+ * answers nothing. For a club with one active lodge that owns one central
+ * lodge, Edit preselects that lodge, and Save is still what links it.
  *
  * The canonical settings pattern, as `lodge-roster-settings-card.tsx`: read-only
  * on mount, a staged Edit -> Save/Cancel step, Save dirty-gated, every edit
@@ -52,6 +54,8 @@ interface CentralLodgeResponse {
   ownedLodges: OwnedLodge[] | null;
   answersForCentralLodgeId: string | null;
   linkHeldBy: string | null;
+  /** Preselected on Edit for a one-lodge club (#4262); never an answer until saved. */
+  suggestedCentralLodgeId: string | null;
   otherLodgesEnabled: boolean;
   registeredWithCentralServer: boolean;
 }
@@ -69,6 +73,7 @@ function toDraft(body: CentralLodgeResponse): CentralLodgeDraft {
     ownedLodges: body.ownedLodges,
     answersForCentralLodgeId: body.answersForCentralLodgeId,
     linkHeldBy: body.linkHeldBy,
+    suggestedCentralLodgeId: body.suggestedCentralLodgeId,
     otherLodgesEnabled: body.otherLodgesEnabled,
     registeredWithCentralServer: body.registeredWithCentralServer,
   };
@@ -145,10 +150,9 @@ export function LodgeCentralLodgeCard({ lodgeId }: { lodgeId: string }) {
 
   const owned = draft.ownedLodges;
   const linkedName = nameOf(owned, draft.centralLodgeId);
-  // What the endpoint actually answers for, from the server's resolver: the
-  // card never re-derives the one-lodge rule.
-  const answersName = nameOf(owned, draft.answersForCentralLodgeId);
-  const defaultName = draft.centralLodgeId === null ? answersName : null;
+  // The server's suggestion for a one-lodge club (#4262): offered on Edit,
+  // linked only by Save. The card never re-derives it.
+  const suggestedName = nameOf(owned, draft.suggestedCentralLodgeId);
   // A stored link to a lodge the club no longer owns stays visible, so an
   // administrator can see why the lodge is not answering and clear it.
   const staleLink = draft.centralLodgeId !== null && linkedName === null;
@@ -170,13 +174,24 @@ export function LodgeCentralLodgeCard({ lodgeId }: { lodgeId: string }) {
   } else if (staleLink) {
     state =
       "Linked to a lodge the central server no longer says this club owns, so nothing is answered. Choose again or clear it.";
-  } else if (defaultName) {
-    state = `Linked automatically to ${defaultName}, because this club has one lodge and owns one central lodge.`;
   } else if (draft.linkHeldBy) {
     state = `Not linked: the club's central lodge is linked to ${draft.linkHeldBy}. Unlink it there to use it here.`;
+  } else if (suggestedName) {
+    state = `Not linked yet, so the central server's lodge search shows its free beds as unknown. Click Edit: ${suggestedName} is chosen for you, and Save links it. Every lodge needs its link saved here, even in a club with one lodge.`;
   } else {
-    state = "Not linked, so the central server's lodge search shows its free beds as unknown.";
+    state =
+      "Not linked, so the central server's lodge search shows its free beds as unknown. Click Edit, choose this lodge's entry and Save to link it.";
   }
+
+  // Edit preselects the suggestion (#4262) as an unsaved change, so Save is
+  // what links it and Cancel leaves the lodge unlinked.
+  const startEditing = () => {
+    section.startEditing();
+    const suggestion = draft.suggestedCentralLodgeId;
+    if (draft.centralLodgeId === null && suggestion !== null) {
+      section.setDraft({ centralLodgeId: suggestion });
+    }
+  };
 
   return (
     <div>
@@ -201,7 +216,7 @@ export function LodgeCentralLodgeCard({ lodgeId }: { lodgeId: string }) {
               describeReason={false}
               variant="outline"
               size="sm"
-              onClick={section.startEditing}
+              onClick={startEditing}
               disabled={owned === null}
               {...section.editTriggerProps}
             >
@@ -229,9 +244,7 @@ export function LodgeCentralLodgeCard({ lodgeId }: { lodgeId: string }) {
                   })
                 }
               >
-                <option value={NOT_LINKED}>
-                  {defaultName ? `Not linked (automatically ${defaultName})` : "Not linked"}
-                </option>
+                <option value={NOT_LINKED}>Not linked</option>
                 {owned.map((lodge) => (
                   <option key={lodge.id} value={lodge.id}>
                     {lodge.label}

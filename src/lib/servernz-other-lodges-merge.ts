@@ -278,8 +278,9 @@ export async function hideDeletedLodge(
   centralId: string,
 ): Promise<{ hidden: string | null; unlinked: number }> {
   // A club lodge LINKED to the deleted central lodge (#62's "Central lodge")
-  // points at nothing now: the link is cleared, so the one-lodge default can
-  // link it to a successor. Raw, like the hide: not an administrator's edit.
+  // points at nothing now: the link is cleared, and the club lodge answers
+  // nothing until an administrator links it again (#4262: always explicitly).
+  // Raw, like the hide: not an administrator's edit.
   const unlinked = await prisma.$executeRaw`UPDATE "Lodge" SET "centralLodgeId" = NULL WHERE "centralLodgeId" = ${centralId}`;
   const row = await prisma.otherLodge.findUnique({
     where: { centralId },
