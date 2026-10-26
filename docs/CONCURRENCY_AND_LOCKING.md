@@ -4533,8 +4533,10 @@ another PRIMARY row, credit consumption or hold reset. Both replays, this one
 and the early unlocked one, re-run the post-commit invoice and credit-allocation
 enqueue on a live booking (`internet-banking-switch-replay.ts`), after the
 transaction and holding nothing, re-reading the booking's live state first so
-a cancel that committed since the unlocked read queues nothing: both enqueues are idempotent, and the retry is
-what heals a first switch whose enqueue failed after its commit. For a request that reaches the locked switch path, a concurrent cancellation or deletion wins before the already-IB replay.
+a cancel that committed since the unlocked read queues nothing: both enqueues
+are idempotent, and the retry is what heals a first switch whose enqueue failed
+after its commit. For a request that reaches the locked switch path, a
+concurrent cancellation or deletion wins before the already-IB replay.
 Status alone cannot claim a switch: whole-lodge and ordinary no-hold switches
 leave the booking's status unchanged (#4019).
 The switch and both card mint doors (the pay route and the

@@ -16,10 +16,18 @@
  *
  * - a `payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } }`
  *   load (the order `INV-PAY-133` gives the ledger);
- * - a `postStoredBookingConfirmationLedgerLines(...)` call in the THEN branch
- *   of an `if` that reads the unpaid whole-lodge answer: a whole-lodge booking
- *   reaching PAID at $0 through an edit bypasses the ordinary settle, which is
- *   what posts its confirmation lines.
+ * - a `postStoredBookingConfirmationLedgerLines(...)` call that runs only when
+ *   the unpaid whole-lodge answer is true: a whole-lodge booking reaching PAID
+ *   at $0 through an edit bypasses the ordinary settle, which is what posts its
+ *   confirmation lines. Exactly two shapes count as that guard (`GUARD_SHAPES`):
+ *   1. the THEN branch of `if (<guard>) { ... post ... }`;
+ *   2. a statement after a guard clause `if (!(<guard>)) return;` (or `throw`)
+ *      in the same block.
+ *   `<guard>` reads the answer (`isUnpaidConfirmedWholeLodge(...)`, or the
+ *   local the date door stores it in) through nothing but `&&` and parentheses:
+ *   under a `!`, a `||` or a `?:` it no longer proves the answer was true. The
+ *   walk from the post to its guard stops at any function boundary, so a
+ *   closure defined under the guard (and perhaps never called) does not count.
  *
  * The door set is pinned EXACTLY: a new caller of either function fails here
  * until it is added, which is the moment to give it both.
@@ -60,8 +68,12 @@ const EXPECTED_DOORS = [
 ];
 const TRANSACTIONS_LOAD = "payment:{include:{transactions:{orderBy:[...LEDGER_ROWS_OLDEST_FIRST]}}}";
 const CONFIRMATION_POSTER = "postStoredBookingConfirmationLedgerLines";
-/** An `if` condition that reads the unpaid whole-lodge answer, called or stored. */
+/** The unpaid whole-lodge answer, called or stored in a local. */
 const UNPAID_GUARD = /unpaidConfirmedWholeLodge/i;
+/** The two guard shapes this census accepts, for its failure message. */
+const GUARD_SHAPES =
+  "inside `if (<guard>) { ... }`, or after `if (!(<guard>)) return;` (or `throw`) in the same block, " +
+  "where <guard> reads isUnpaidConfirmedWholeLodge(...) through nothing but `&&` and parentheses";
 
 type DoorScan = { readers: string[]; loadsTransactions: boolean; postsConfirmation: boolean };
 
@@ -73,10 +85,37 @@ function enclosingFunction(node: ts.Node): ts.Node {
   return node.getSourceFile();
 }
 
-/** Is `node` in the THEN branch of an `if` (below `scope`) whose condition reads the unpaid whole-lodge answer? */
-function guardedByUnpaidWholeLodge(node: ts.Node, scope: ts.Node, source: ts.SourceFile): boolean {
+/** Does `expr` being true prove the unpaid whole-lodge answer true? Only `&&` and parentheses may sit between. */
+function provesUnpaid(expr: ts.Expression): boolean {
+  if (ts.isParenthesizedExpression(expr)) return provesUnpaid(expr.expression);
+  if (ts.isBinaryExpression(expr) && expr.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+    return provesUnpaid(expr.left) || provesUnpaid(expr.right);
+  }
+  if (ts.isCallExpression(expr) && ts.isIdentifier(expr.expression)) return expr.expression.text === "isUnpaidConfirmedWholeLodge";
+  return ts.isIdentifier(expr) && UNPAID_GUARD.test(expr.text);
+}
+
+/** `if (!(<guard>)) return;` (or `throw`), with no else: what follows it in the block runs only when the guard holds. */
+function isGuardClause(statement: ts.Statement): boolean {
+  if (!ts.isIfStatement(statement) || statement.elseStatement) return false;
+  const condition = statement.expression;
+  if (!ts.isPrefixUnaryExpression(condition) || condition.operator !== ts.SyntaxKind.ExclamationToken) return false;
+  const exits = (s: ts.Statement): boolean =>
+    ts.isReturnStatement(s) || ts.isThrowStatement(s) ||
+    (ts.isBlock(s) && s.statements.length === 1 && exits(s.statements[0]!));
+  return provesUnpaid(condition.operand) && exits(statement.thenStatement);
+}
+
+/** Does `node` run only once the unpaid whole-lodge answer is true, within `scope` (`GUARD_SHAPES`)? */
+function guardedByUnpaidWholeLodge(node: ts.Node, scope: ts.Node): boolean {
   for (let child = node, at = node.parent; at && at !== scope; child = at, at = at.parent) {
-    if (ts.isIfStatement(at) && at.thenStatement === child && UNPAID_GUARD.test(at.expression.getText(source))) return true;
+    // A closure defined under the guard runs whenever it is called, if ever.
+    if (ts.isFunctionLike(at)) return false;
+    if (ts.isIfStatement(at) && at.thenStatement === child && provesUnpaid(at.expression)) return true;
+    if (ts.isBlock(at) || ts.isSourceFile(at)) {
+      const index = at.statements.indexOf(child as ts.Statement);
+      if (at.statements.slice(0, Math.max(index, 0)).some(isGuardClause)) return true;
+    }
   }
   return false;
 }
@@ -123,7 +162,7 @@ function scanDoor(file: string, code: string): DoorScan {
       ts.isCallExpression(node) &&
       ts.isIdentifier(node.expression) &&
       node.expression.text === CONFIRMATION_POSTER &&
-      guardedByUnpaidWholeLodge(node, scope, source))),
+      guardedByUnpaidWholeLodge(node, scope))),
   };
 }
 
@@ -160,7 +199,7 @@ describe("INV-PAY-141: whole-lodge unpaid readers load transactions and post con
   it.each(EXPECTED_DOORS)("%s posts confirmation lines after a whole-lodge settle at zero dollars", (door) => {
     expect(
       doors.get(door)?.postsConfirmation,
-      `INV-PAY-141: ${door} must call ${CONFIRMATION_POSTER} when a whole-lodge edit settles at $0`,
+      `INV-PAY-141: ${door} must call ${CONFIRMATION_POSTER} when a whole-lodge edit settles at $0, guarded ${GUARD_SHAPES}`,
     ).toBe(true);
   });
 
@@ -204,5 +243,35 @@ describe("INV-PAY-141: whole-lodge unpaid readers load transactions and post con
         "}\n",
     );
     expect(elsewhere).toMatchObject({ loadsTransactions: false, postsConfirmation: true });
+  });
+
+  /** A door whose lifecycle call is followed by `body`, for the guard-shape fixtures. */
+  const doorWith = (body: string) =>
+    scanDoor(
+      "fixture.ts",
+      "async function door(tx) {\n" +
+        "  const b = await tx.booking.findUnique({ include: { payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } } } });\n" +
+        "  const lifecycle = await applyLifecycleTransitions(tx, { booking: b });\n" +
+        body +
+        "\n}\n",
+    ).postsConfirmation;
+  const POST = "await postStoredBookingConfirmationLedgerLines(tx, b.id);";
+
+  it.each([
+    ["a negated guard", `  if (!(lifecycle.zeroDollarAutoPaid && isUnpaidConfirmedWholeLodge(b))) { ${POST} }`],
+    ["a guard under ||", `  if (lifecycle.zeroDollarAutoPaid || !isUnpaidConfirmedWholeLodge(b)) ${POST}`],
+    ["a guard under ?:", `  if (lifecycle.zeroDollarAutoPaid ? isUnpaidConfirmedWholeLodge(b) : true) ${POST}`],
+    ["a closure defined under the guard", `  if (lifecycle.zeroDollarAutoPaid && isUnpaidConfirmedWholeLodge(b)) { const later = async () => { ${POST} }; }`],
+    ["a guard clause that does not exit", `  if (!(lifecycle.zeroDollarAutoPaid && isUnpaidConfirmedWholeLodge(b))) { log(); }\n  ${POST}`],
+  ])("refuses %s", (_label, body) => {
+    expect(doorWith(body)).toBe(false);
+  });
+
+  it.each([
+    ["the then-branch of a stored answer", `  const unpaidConfirmedWholeLodge = isUnpaidConfirmedWholeLodge(b);\n  if (zeroDollarAutoPaid && unpaidConfirmedWholeLodge) { ${POST} }`],
+    ["a guard clause that returns", `  if (!(lifecycle.zeroDollarAutoPaid && isUnpaidConfirmedWholeLodge(b))) return;\n  ${POST}`],
+    ["a guard clause that throws", `  if (!(lifecycle.zeroDollarAutoPaid && isUnpaidConfirmedWholeLodge(b))) { throw new Error("x"); }\n  ${POST}`],
+  ])("accepts %s", (_label, body) => {
+    expect(doorWith(body)).toBe(true);
   });
 });
