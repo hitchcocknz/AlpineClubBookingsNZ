@@ -391,6 +391,11 @@ let sync: typeof import("@/lib/xero-sync");
         return { id: operationId, startedAt };
       }
 
+      // Pinned here, not assumed: the shared race harness can leave the clock moved.
+      beforeEach(() => {
+        vi.setSystemTime(at(0));
+      });
+
       afterEach(() => {
         vi.setSystemTime(new Date(FROZEN_TEST_CLOCK_BASE_ISO));
       });
