@@ -69,6 +69,12 @@ export const SINGLETON_MODELS_REGISTERED_ELSEWHERE: Record<string, string> = {
  * a real, currently singleton-shaped model (both asserted by the guard test).
  */
 export const MODEL_LEVEL_EXCLUSIONS: Record<string, string> = {
+  XeroConnection:
+    "this install's live Xero connection (#3806): the connected tenant, the " +
+    "token expiry and the refresh lease. It belongs to the grant an " +
+    "administrator authorised on THIS install, whose tokens never leave its " +
+    "credential store, so it cannot travel; a target install connects its own " +
+    "Xero — instance-local",
   XeroGroupingSettings:
     "Xero member-grouping mode is bound to the SOURCE install's connected Xero " +
     "organisation (tenant) and its contact-group configuration; Xero settings are " +

@@ -2276,8 +2276,8 @@ once.
 > rotating it **invalidates every member's enrolled authenticator and recovery
 > codes at once** — on their next sign-in each member is forced back through
 > two-factor enrollment. Since #2079 the blast radius also includes **all stored
-> provider credentials** (Xero client id/secret/webhook key) **and the wrapped
-> Xero token-encryption key**: after rotation those fail decryption and must be
+> provider credentials** (Xero client id/secret/webhook key) **and the stored
+> Xero tokens**: after rotation those fail decryption and must be
 > re-entered in-app, and Xero must be reconnected (re-OAuth). Schedule rotation
 > as a maintenance action with advance member communication and a support plan
 > for anyone who cannot immediately re-enroll (e.g. members who no longer have
@@ -2474,7 +2474,7 @@ its list of processors. Suggested wording:
 ## Operational Xero
 
 **Xero credentials are DB-only (#2079).** The Xero OAuth client id/secret, the
-webhook signing key, and the token-encryption key live **only** in the encrypted
+webhook signing key, and the connection's tokens live **only** in the encrypted
 `IntegrationCredential` store and are captured in-app through the **guided setup
 wizard at Admin > Xero > Setup** (#2080; Full Admin only) — it walks you through
 creating the Xero app with copy-paste-exact values, entering the credentials, and
@@ -2486,8 +2486,9 @@ shown for copy-paste in the wizard. There are **no**
 any are still present they are **ignored** and setup readiness raises a warning
 naming them for removal (never silently honoured). Credentials are encrypted at
 rest with AES-256-GCM under a key derived from `AUTH_SECRET`/`NEXTAUTH_SECRET`
-via HKDF-SHA256; the wrapped Xero token-encryption key is auto-generated on
-first use (a strong auth secret is required — see the auth-secret note above).
+via HKDF-SHA256 (a strong auth secret is required — see the auth-secret note
+above). The separate wrapped Xero token-encryption key earlier releases
+generated is retired (#3806).
 
 The wizard then finishes the connection (#2081): an optional **Webhooks** step
 shows the delivery URL (`{origin}/api/webhooks/xero`), captures Xero's webhook

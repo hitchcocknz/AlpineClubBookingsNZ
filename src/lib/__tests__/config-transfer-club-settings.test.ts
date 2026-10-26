@@ -63,7 +63,7 @@ const SINGLETON_DELEGATES = [
 /** Build a stub DB whose singleton delegates return the given rows (else null). */
 function stubDb(rows: Record<string, Record<string, unknown> | null>): ReadDb {
   const db: Record<string, unknown> = {
-    xeroToken: { findFirst: vi.fn().mockResolvedValue(null) },
+    xeroConnection: { findUnique: vi.fn().mockResolvedValue(null) },
   };
   for (const name of SINGLETON_DELEGATES) {
     db[name] = {

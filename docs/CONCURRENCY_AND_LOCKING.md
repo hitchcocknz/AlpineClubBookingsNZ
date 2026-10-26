@@ -177,32 +177,56 @@ to FAILED, which then needs Resolve in Xero or a by-hand payment check. Proven a
 
 `xero-token-store.ts` composes no booking, capacity, membership or money
 mutation and takes **no advisory lock**. One rotating refresh token may be
-spent only once, so a refresh first claims `XeroToken.refreshInProgressUntil`
-with a status-guarded `updateMany` (`NULL` or expired → this lease). PostgreSQL
-re-evaluates that predicate after the row lock, so of two simultaneous claimants
-exactly one wins. The losers wait out the lease and re-read. The Xero call runs
-outside any transaction (`INV-INT-003`).
+spent only once, so a refresh first claims a lease with a status-guarded
+`updateMany` (`NULL` or expired → this lease). PostgreSQL re-evaluates that
+predicate after the row lock, so of two simultaneous claimants exactly one wins.
+The losers wait out the lease and re-read. The Xero call runs outside any
+transaction (`INV-INT-003`).
 
-**The claim takes the lease first and reads the tokens second, in the same
-transaction.** The winning `updateMany` holds the `XeroToken` row lock until the
-claim commits, and every writer of either copy (a connect, a refresh save, a
-disconnect, a verify-reset, of either colour) takes that row first. So the two
-copies the claim then reads are a consistent pair. Reading first and claiming
-second let a reconnect commit between the reads, and the refresh then overwrote
-it (#3454 review).
+**Since #3806 R2 there are two lease rows, claimed together.** The previous
+release (#3454) claims only `XeroToken.refreshInProgressUntil`, so this release
+claims that one first — that is where the two releases exclude each other — and
+then `XeroConnection.refreshInProgressUntil`, the lease that stays when
+`XeroToken` is dropped (R3). If the second is held, the first is rolled back:
+no process holds half a lease. Release and save clear both. While no
+`XeroToken` row exists, only `XeroConnection`'s is claimed.
+
+**Lock order: `XeroToken`, then `XeroConnection`.** A statement trigger on
+`XeroToken` syncs `XeroConnection` at the end of each `XeroToken` statement, so
+every writer of either release that touches both tables touches `XeroToken`
+first. The token store's claim, save, release, connect and delete keep that
+order, so no cycle forms with the previous release's writers. The sync is ONE
+statement, reading one snapshot taken once its `XeroConnection` lock is
+granted, so a refresh, connect or disconnect committing while it waits is
+never half-seen and written back stale. It row-locks the connection only to
+change its tenant or expiry, so a lease claim (which changes neither) waits on
+no `XeroConnection` writer; otherwise it waits only for a row another
+transaction is writing or inserting at the same moment. Two connects at the
+same moment can still leave two `XeroToken` rows, as under #3454: every reader
+takes the most recently written one, and the next connect or disconnect
+deletes both (`saveXeroTokens`).
+
+**The claim takes the leases first and reads the tokens second, in the same
+transaction.** The winning `updateMany`s hold both rows' locks until the claim
+commits, and every writer of the token set (a connect, a refresh save, a
+disconnect, a verify-reset, of either release) takes one of those rows first. So
+the store copy the claim then reads is the one that belongs to its lease.
+Reading first and claiming second let a reconnect commit between the reads, and
+the refresh then overwrote it (#3454 review).
 
 **Before the Xero call, the refresh proves its save can succeed**
-(`assertXeroTokensCanBeStored`: the auth-secret capture gate and the wrapped
-token key). Otherwise it refuses without spending the refresh token.
+(`assertXeroTokensCanBeStored`: the auth-secret capture gate). Otherwise it
+refuses without spending the refresh token.
 
-Since #3454 the save is one short transaction with two fences. The first is the
-lease-guarded `XeroToken` update, so a reconnect or an expired lease matches
-nothing. The second is a compare-and-set on the credential-store copy, against
-the version the claim read under its lock. Losing either rolls back both copies. The lease
-stays on `XeroToken` because a deployed older colour claims exactly that column.
-Moving it would let one old and one new process spend the same token.
-`xero-token-credential-store.realdb.test.ts` proves both fences against real row
-locks, including against the old colour's own claim statement.
+The save is one short transaction with three fences: the lease-guarded
+`XeroToken` update (when a row was claimed), the lease-guarded `XeroConnection`
+update, and a compare-and-set on the credential-store copy against the version
+the claim read under its locks. A reconnect, a later claim or a writer that
+bypassed the leases makes it lose, and losing any rolls back all three.
+`xero-token-credential-store.realdb.test.ts` proves the dual claim and the
+fences against real row locks, including against the previous release's own
+claim statement, and forces both of the trigger's interleavings with a queued
+table lock.
 
 ## The lock families
 
@@ -5754,7 +5778,17 @@ Counterparts:
   (`reconcileHandMadeNoteAfterCompletion`, through the inbound
   `reconcileXeroCreditNote`), so a later void is caught. A void that commits
   before the completion's link write is kept under the link's row lock and the
-  answer is refused with a 409, rolling the completion back (#4288).
+  answer is refused with a 409, rolling the completion back (#4288). Under the
+  same locks the answer also reads, plainly, the credit-note creates naming the
+  note, and refuses it when any is resolved by hand or not yet SUCCEEDED
+  (#4321). The resolve route takes none of these locks, so the condition is
+  one a resolve cannot flip: the route moves only FAILED/PARTIAL rows to
+  resolved, and a SUCCEEDED row is never resolved. A resolve committing after
+  the read therefore finds the answer already refused, never one note
+  recording two refunds - which nothing would ask about again, as the refund
+  gap readers cover card payments only. Proven against real
+  PostgreSQL with that resolve committing while the completion holds its locks
+  (`own-live-refund-note-coverage.realdb.test.ts`). No new advisory key.
 
 **A person's pick** (`pickRefundForUnmatchedVoid`, owner decision 18 Oct 2026)
 runs the very same undo (`undoUnderLocks`) for an unmatched note: the same

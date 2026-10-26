@@ -452,6 +452,29 @@ describe("POST /api/payments/charge-saved-method", () => {
     );
   });
 
+  it("#4399: a booking worth $0 is refused under the locks before any claim, attempt row or Stripe call", async () => {
+    primeBooking(makeBooking({ finalPriceCents: 0 }));
+
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(409);
+    expect((await response.json()).error).toMatch(/nothing to charge/);
+    expect(mockBookingUpdateMany).not.toHaveBeenCalled();
+    expect(mockPaymentTransactionCreate).not.toHaveBeenCalled();
+    expect(mockChargePaymentMethod).not.toHaveBeenCalled();
+    expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+  });
+
+  it("#4399: a $0 price still owing a recorded change fee is charged the fee, not refused", async () => {
+    primeBooking(makeBooking({ finalPriceCents: 0, payment: { ...makeBooking().payment, changeFeeCents: 2500 } }));
+    mockChargePaymentMethod.mockResolvedValue({ id: "pi_fee_1", status: "succeeded", amount: 2500 });
+
+    const response = await POST(makeRequest());
+
+    expect(response.status).toBe(200);
+    expect(mockChargePaymentMethod).toHaveBeenCalledWith(expect.objectContaining({ amountCents: 2500 }));
+  });
+
   it("#4300: a charge the settle refuses as superseded answers not paid, queues no invoice and releases the claim", async () => {
     mockChargePaymentMethod.mockResolvedValue({ id: "pi_superseded", status: "succeeded", amount: 12500 });
     mockMarkBookingPaymentSucceeded.mockResolvedValueOnce({ outcome: "superseded_capture", bookingId: "booking-1", bumpedBookingIds: [] });

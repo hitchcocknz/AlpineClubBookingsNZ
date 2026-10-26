@@ -1,4 +1,5 @@
 import { savedCardChargeCents } from "@/lib/booking-payment-state";
+import { writeZeroWorthConfirmPayment } from "@/lib/zero-worth-confirm-payment";
 import { handOffSupersededCaptureAfterRefusal } from "@/lib/superseded-paid-intent";
 import { BookingEventType, BookingStatus, PaymentSource, PaymentStatus, PaymentTransactionKind, Prisma } from "@prisma/client";
 import { OPEN_INTENT_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
@@ -622,18 +623,7 @@ async function resolveHoldWindowUnderLock(
         cause: "SYSTEM_CHANGE",
       });
 
-      await tx.payment.upsert({
-        where: { bookingId: booking.id },
-        create: {
-          bookingId: booking.id,
-          amountCents: 0,
-          status: PaymentStatus.SUCCEEDED,
-        },
-        update: {
-          amountCents: 0,
-          status: PaymentStatus.SUCCEEDED,
-        },
-      });
+      await writeZeroWorthConfirmPayment(tx, booking.id);
 
       return { type: "confirmed_zero", booking };
     }
