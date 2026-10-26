@@ -22,7 +22,7 @@ reason: `buildCreateLoginRoleIfAbsentSql`, `buildStripAllRoleMembershipsSql` and
   builder's statement list is byte-identical.
 
 file: src/lib/backup.ts
-lines: 745
+lines: 746
 reason: the restore-validation step's two call sites for the #4453 review fixes
   (S-F2, N2, N5, R4): the guard now asks `isSameDatabaseTarget` against the live
   and the audit archive databases, with a refusal message for each, and the

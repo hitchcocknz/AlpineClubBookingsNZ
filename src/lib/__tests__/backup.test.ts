@@ -699,6 +699,8 @@ describe("backup", () => {
     expect(execFileSyncMock).toHaveBeenCalledWith("pg_dump", expect.anything(), expect.anything());
     expect(execFileSyncMock).not.toHaveBeenCalledWith("psql", expect.anything(), expect.anything());
     expect(vi.mocked(restoreDumpWithoutOwnershipOrPrivileges)).not.toHaveBeenCalled();
+    // A misconfigured URL now dumps every night, so the old dumps still age out.
+    expect(readdirSyncMock).toHaveBeenCalled();
   }
 
   it("refuses restore validation when the shadow URL points at the source database, still taking the backup", async () => {

@@ -257,6 +257,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     if (validationRefusal) {
       logger.error({ job: "backup" }, validationRefusal);
       cleanupS3Readback(s3ReadbackPath);
+      cleanupOldBackups(config.retentionDays);
       return {
         success: false,
         filename,
