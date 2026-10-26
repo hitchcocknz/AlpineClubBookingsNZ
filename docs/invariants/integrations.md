@@ -481,8 +481,8 @@ re-run, never offered for retry, never re-minted beside (owner decision,
 28 Sep 2026) - but still reported.
 
 - **One predicate.** `isResolvedInXero` (`xero-operation-resolution.ts`); a
-  `where` clause spells it on `manuallyResolvedAt`. The mark leaves the row
-  `FAILED`/`PARTIAL`, so status alone reads it as live.
+  `where` clause spells it on `manuallyResolvedAt`. Marking preserves status;
+  late success may leave it `SUCCEEDED` (#4374).
 - **Retries refuse it.** `getXeroOperationRetryMeta` refuses first; retry and
   requeue answer 409; the drain closes that queued row `CANCELLED`.
 - **Enqueues and the outbox respect it.** A resolved refund note covers its
@@ -492,11 +492,12 @@ re-run, never offered for retry, never re-minted beside (owner decision,
   queued while the latest create is resolved; only single-booking force-sync
   overrides, and audits it. The outbox cancels, before any Xero call, a copy
   queued before a sibling was resolved.
-- **Resolve and retry.** The route refuses while the operation is RUNNING, a
-  live copy is queued, or a queued retry is RUNNING or started before the mark
-  and completed after it - checked after the mark is written, which is then
-  withdrawn. What remains: clock skew between instances, and a caller of
-  `retryXeroSyncOperation` that bypasses the drain.
+- **Resolve and retry.** Refuse RUNNING operations, queued live copies, or retries
+  RUNNING or spanning the mark; withdraw the mark after that post-write check.
+  Limits: clock skew and `retryXeroSyncOperation` bypassing the drain.
+- **Late success stays.** Keep its links and resolution stamp; WARN and alert
+  officers after commit through `sendAdminAlertOnceEver`, keyed by operation.
+  Xero may hold duplicates; compare and void one if duplicated (`INV-INT-029`).
 - **Applied-credit operations are retry-only.** The route refuses them, and a
   mark on one written before this release is void on the retry path.
 - **Done is not absent.** `getBlockingOperation` returns `retryable`, `blocked`
@@ -547,11 +548,9 @@ Pinned by `xero-resolve-refund-note.test.ts`,
 
 ### INV-INT-029
 
-A recorded Xero outcome is never replaced by a worse one, and never lands on
-another attempt's claim. Two callers can hold one operation row: a start that
-loses the insert race on the one-ACTIVE-row index (#1354) is handed the
-winner's row, and both make the same keyed Xero call and record their own
-outcome there.
+Recorded Xero outcomes never worsen or land on another attempt's claim.
+Callers sharing the winner's row after losing the ACTIVE-row insert race
+(#1354) each record their keyed call's outcome.
 
 - **One guard, in the two writers.** `completeXeroSyncOperation` and
   `failXeroSyncOperation` (`xero-sync.ts`) take `outcomeWriteGuard`
@@ -568,15 +567,18 @@ outcome there.
 - **A repair's claim is kept too.** The PARTIAL repair and the FAILED
   refund-note repair stamp a marker code on their RUNNING claim, and no outcome
   but SUCCEEDED lands there unless written onto that claim (`retryClaim`).
-- **A success lands on any row no claim holds.** It is Xero's answer to the
-  same keyed call.
+- **Success lands on any unclaimed row.** After manual resolution, keep links
+  and stamp, WARN and alert once per operation through `sendAdminAlertOnceEver`
+  (#4374). Read the stamp under the write lock; deliver after commit. Injected
+  store callers run the returned `deferredPostCommit` only after commit.
 - **A refused write changes nothing.** It answers null, writes no link and
   raises no alert. A missing row throws, or is logged for a guarded caller.
   A success refused for a later claim still records its links, warned.
 - **Claims, resets and marks write directly,** guarded as before. The outbox
   and REQUEUE hand-backs to PENDING touch only their own claim.
 
-Pinned by `xero-sync.test.ts` and, against real PostgreSQL,
+Pinned by `xero-sync.test.ts`, `xero-late-manual-resolution.test.ts`,
+`xero-contacts-tx-boundary.test.ts` and, against real PostgreSQL,
 `xero-shared-operation-outcome.realdb.test.ts`.
 
 ## Stored outbox payloads (#3971)

@@ -1,0 +1,1 @@
+- **Officers are alerted when Xero succeeds after a manual resolution (#4374).** A late success keeps its real document links and the officer’s resolution record. A warning and one officer alert per operation ask officers to compare the possible duplicate documents in Xero and void one if needed.
