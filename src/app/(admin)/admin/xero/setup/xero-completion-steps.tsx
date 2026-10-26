@@ -12,7 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { CopyField } from "@/components/admin/integration-wizard";
+import { CopyField, useStepSaving } from "@/components/admin/integration-wizard";
 import type { WizardStepHelpers } from "@/components/admin/integration-wizard";
 import { ViewOnlyActionButton } from "@/components/admin/view-only-action";
 import { ADMIN_FULL_ADMIN_ONLY_ACTION_REASON } from "@/hooks/use-admin-area-edit-access";
@@ -86,7 +86,7 @@ export function WebhooksStep({
   const keySet = context.credentials.webhook_key.set;
 
   const [webhookKey, setWebhookKey] = useState("");
-  const [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useStepSaving(helpers);
   const [verifying, setVerifying] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");

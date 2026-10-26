@@ -1,10 +1,10 @@
 import type { Page, Response } from "@playwright/test";
 
-export const WIZARD_PROGRESS_PATH = "/api/admin/integrations/wizard-progress";
+import { wizardProgressPath } from "../../src/lib/integration-wizard-progress-routes";
 
 /**
  * Resolves with the response to the integration wizard's save of `stepId` as
- * its resume cursor (`POST /api/admin/integrations/wizard-progress`). Call it
+ * its resume cursor (`POST` to the route `wizardProgressPath` names, #4409). Call it
  * BEFORE the click that moves the wizard onto `stepId`, and await it before the
  * page navigates away.
  *
@@ -25,7 +25,7 @@ export function wizardCursorSave(
     (response) => {
       const request = response.request();
       if (request.method() !== "POST") return false;
-      if (new URL(response.url()).pathname !== WIZARD_PROGRESS_PATH) return false;
+      if (new URL(response.url()).pathname !== wizardProgressPath(wizardId)) return false;
       const body = request.postDataJSON() as {
         wizardId?: unknown;
         currentStepId?: unknown;
