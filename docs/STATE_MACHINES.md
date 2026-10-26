@@ -3785,13 +3785,15 @@ two callers on one row (the hand-off above) each record their own outcome of
   the same keyed Xero call (#4356, INV-INT-029): an outcome never replaces a
   better one. A failure, or a FAILED or CANCELLED completion, never lands on
   SUCCEEDED or PARTIAL; PARTIAL never lands on SUCCEEDED; SUCCEEDED lands on
-  any row no claim holds. None but SUCCEEDED lands on a repair's marked
-  RUNNING claim unless written onto that claim. Every outcome carries the
-  claim it was made under (its RUNNING row's `startedAt`, #4373), and none, a
-  success included, lands on a RUNNING row another claim holds: a stale-reset
-  or failed attempt's late outcome never lands on the retry's claim, so the
-  row stays RUNNING for the retry and the booking invoice retry's
-  settle-time fence. A refused write answers null: no link, no
+  any row no claim holds, one resolved in Xero included: it leaves the mark,
+  keeps the links and, if it recorded a Xero object, alerts the officers once
+  per operation after commit (#4374). None but SUCCEEDED lands on a repair's
+  marked RUNNING claim unless written onto that claim. Every outcome carries
+  the claim it was made under (its RUNNING row's `startedAt`, #4373), and
+  none, a success included, lands on a RUNNING row another claim holds: a
+  stale-reset or failed attempt's late outcome never lands on the retry's
+  claim, so the row stays RUNNING for the retry and the booking invoice
+  retry's settle-time fence. A refused write answers null: no link, no
   repeated-failure alert
 worker claims operation -> provider call -> success or retryable failure
 success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier
