@@ -455,15 +455,15 @@ Nothing is sent to the member and nothing is raised in Xero until you answer:
   invoice for a note to credit, the app refuses and says so: use the next
   answer with a note you made in Xero.
 - **Yes, it has gone → Yes, I already recorded it in Xero myself.** Type the
-  number of the credit note you made in Xero (for example `CN-0789`). The app
+  number of the credit note you made in Xero (for example `CN-0123`). The app
   reads it from Xero and checks that it is a sales credit note, **approved or
   paid**, for exactly this amount, for the **same contact** as the booking's
   invoice, and not allocated to another invoice. It also refuses a note the app
   already records for another refund, including one whose Xero operation is
-  unfinished or that you marked resolved (#4321). It cannot recognise a note
-  you made by hand for a failed operation you then marked resolved, as the app
-  never learns that note's number (#4421), so never give a
-  note that already records another refund. If not, it tells you why and
+  unfinished or that you marked resolved (#4321), including a note you made by
+  hand for a failed refund credit note and gave when you resolved it (#4421).
+  A failed operation resolved before that change records no note number, so
+  never give a note that already records another refund. If not, it tells you why and
   nothing changes. If
   Xero is busy, try again in a minute; if Xero's daily limit has been
   reached, try again tomorrow; if the booking has no Xero invoice and its
@@ -990,6 +990,44 @@ There is no **View booking** link on these rows. A deleted booking's page opens 
 for a Full Admin, and a cancelled booking's page needs Bookings access that a
 Finance Viewer does not have, so the booking's identifier is printed as text for you
 to quote instead of a link that would not work for you.
+
+### Resolve a refund credit note Xero could not raise
+
+When the app could not raise a refund's credit note in Xero, the job shows as
+**Failed** under **Xero → Operations**. Retry it if you can. If you make the
+credit note yourself in Xero instead (#4421):
+
+1. Make one sales credit note in Xero for exactly that refund's amount, for the
+   booking's Xero contact (the member's, or the organisation's), leave it
+   unallocated to any other invoice, and approve it.
+2. On the failed job, choose **Resolve (fixed in Xero)**. The box shows the
+   amount the note must be for. Type the credit note's number as Xero shows it
+   (for example `CN-0123`) and a short reason, then **Resolve**.
+3. The box stays open while the app reads the note from Xero and checks it is
+   approved or paid, for that amount and that contact, and not allocated to
+   another invoice. It then records the note against the job and keeps track of
+   it, so if the note is ever voided in Xero, the refund comes back to you as a
+   voided note does. It refuses a note already recorded against another refund
+   or booking here (one credit note records one refund), and refuses while a
+   retry of the job is running or has just run, as that retry may have made a
+   note itself. If anything does not match, the box says why, keeps what you
+   typed, and nothing changes.
+
+A job that only failed after Xero made its credit note (for example the refund
+payment on it failed) already knows its note, so Resolve asks only for a reason.
+Jobs resolved before this change record no note number and stay as they are.
+
+If a retry of the job already made its credit note in Xero (the row then shows
+as already repaired), Resolve says so and refuses: that note stands for the
+refund. Don't make another by hand; if you already did, don't record it, and
+ask the treasurer whether to void it.
+
+If the app cannot read the job's refund amount, Resolve says so before you type
+anything, and Retry refuses it too. Use **Mark non-replayable** on it, which
+stops it being run again (it stays listed), and ask the treasurer what Xero
+needs for that refund. Don't also make a credit note by hand: the treasurer
+decides. A part-done job that names no credit note is refused the same way:
+retry it, or ask the treasurer.
 
 ### Follow a payment into Stripe or Xero
 

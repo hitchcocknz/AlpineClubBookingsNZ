@@ -279,6 +279,46 @@ describe("Xero operation admin retry routes", () => {
     });
   });
 
+  it("tells the panel which rows' Resolve asks for the Xero note number and for what amount, and which it will refuse (#4421)", async () => {
+    const createdAt = new Date("2026-04-14T09:00:00Z");
+    const refundNote = {
+      direction: "OUTBOUND", entityType: "CREDIT_NOTE", operationType: "CREATE", localModel: "Payment", localId: "pay_1",
+      status: "FAILED", queueType: "REFUND_CREDIT_NOTE", correlationKey: "payment:pay_1:refund-credit-note:20000:v2", idempotencyKey: null,
+      requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 20_000 }, responsePayload: null,
+      xeroObjectType: null, xeroObjectId: null, xeroObjectUrl: null, startedAt: null, completedAt: null, createdAt, updatedAt: createdAt,
+    };
+    const listed = [
+      { ...refundNote, id: "op_no_note" },
+      { ...refundNote, id: "op_partial", status: "PARTIAL", xeroObjectType: "CREDIT_NOTE", xeroObjectId: "cn_own" },
+      { ...refundNote, id: "op_request", requestPayload: { queueType: "REFUND_CREDIT_NOTE", refundAmountCents: 30_000, refundRequestId: "rr_1" } },
+      { ...refundNote, id: "op_unreadable", requestPayload: null },
+      { ...refundNote, id: "op_retried", correlationKey: "payment:pay_1:refund-credit-note:5000:v2" },
+    ];
+    // The page, then (round 2) the superseding-run reads: op_retried's queued retry SUCCEEDED.
+    mocks.xeroOperationFindMany.mockImplementation(async (args: { where: { operationType?: string } }) =>
+      args.where.operationType === "REQUEUE"
+        ? [{ correlationKey: "xero-operation:requeue:op_retried" }]
+        : args.where.operationType === "CREATE" && "status" in args.where
+          ? []
+          : listed,
+    );
+    mocks.xeroOperationCount.mockResolvedValue(5);
+    mocks.resolveFailedXeroOperationStates.mockResolvedValue(new Map());
+
+    const response = await listOperations(new NextRequest("http://localhost/api/admin/xero/operations"));
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    type Listed = { id: string; resolveAsksCreditNoteNumber: boolean; resolveCreditNoteAmountCents: number | null; resolveRefusal: string | null };
+    expect(body.data.map((row: Listed) => [row.id, row.resolveAsksCreditNoteNumber, row.resolveCreditNoteAmountCents, row.resolveRefusal])).toEqual([
+      ["op_no_note", true, 20_000, null],
+      ["op_partial", false, null, null],
+      ["op_request", false, null, null],
+      ["op_unreadable", false, null, expect.stringContaining("Mark non-replayable")],
+      ["op_retried", false, null, expect.stringContaining("A later run of this refund credit note already made its note")],
+    ]);
+  });
+
   it("filters failed operations by resolved failure state before pagination", async () => {
     const createdAt = new Date("2026-04-14T09:00:00Z");
     const active = {
