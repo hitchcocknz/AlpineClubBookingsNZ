@@ -88,17 +88,23 @@ describe("require_least_privilege_roles_complete", () => {
     expect(result.stderr).toContain("MIGRATION_DB_USER and AUDIT_RETENTION_DATABASE_URL must be set too");
   });
 
-  it("refuses a shell AUDIT_RETENTION_DATABASE_URL that disagrees with .env without printing either password (N1)", () => {
+  const retentionUrl = (secret: string) => `postgresql://tac_audit_retention:${secret}@postgres:5432/tacbookings`;
+  const COMPLETE_SPLIT = `APP_DB_USER=tac_app\nMIGRATION_DB_USER=tac_migrator\nAUDIT_RETENTION_DATABASE_URL=${retentionUrl("r".repeat(24))}\n`;
+
+  it.each([
+    ["AUDIT_RETENTION_DATABASE_URL (N1)", "AUDIT_RETENTION_DATABASE_URL", retentionUrl],
+    ["APP_DB_PASSWORD", "APP_DB_PASSWORD", (secret: string) => secret],
+    ["MIGRATION_DB_PASSWORD", "MIGRATION_DB_PASSWORD", (secret: string) => secret],
+  ])("refuses a shell %s that disagrees with .env without printing either password", (_label, key, value) => {
     const inEnvFile = `${"0123456789abcdef".repeat(2)}`;
     const inShell = `${"fedcba9876543210".repeat(2)}`;
-    const url = (secret: string) => `postgresql://tac_audit_retention:${secret}@postgres:5432/tacbookings`;
-    const result = run(
-      "require_least_privilege_roles_complete",
-      `APP_DB_USER=tac_app\nMIGRATION_DB_USER=tac_migrator\nAUDIT_RETENTION_DATABASE_URL=${url(inEnvFile)}\n`,
-      { AUDIT_RETENTION_DATABASE_URL: url(inShell) },
-    );
+    const envFile =
+      key === "AUDIT_RETENTION_DATABASE_URL"
+        ? `APP_DB_USER=tac_app\nMIGRATION_DB_USER=tac_migrator\nAUDIT_RETENTION_DATABASE_URL=${value(inEnvFile)}\n`
+        : `${COMPLETE_SPLIT}${key}=${value(inEnvFile)}\n`;
+    const result = run("require_least_privilege_roles_complete", envFile, { [key]: value(inShell) });
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("AUDIT_RETENTION_DATABASE_URL disagrees between this shell and .env");
+    expect(result.stderr).toContain(`${key} disagrees between this shell and .env`);
     const output = result.stdout + result.stderr;
     for (const secret of [inEnvFile, inShell]) {
       // Not the password, nor any 8-character run of it.
@@ -106,6 +112,17 @@ describe("require_least_privilege_roles_complete", () => {
         expect(output).not.toContain(secret.slice(start, start + 8));
       }
     }
+  });
+
+  it("allows role passwords still exported from step 2 when they match .env", () => {
+    const appPassword = "a".repeat(24);
+    const migrationPassword = "m".repeat(24);
+    const result = run(
+      "require_least_privilege_roles_complete",
+      `${COMPLETE_SPLIT}APP_DB_PASSWORD=${appPassword}\nMIGRATION_DB_PASSWORD=${migrationPassword}\n`,
+      { APP_DB_PASSWORD: appPassword, MIGRATION_DB_PASSWORD: migrationPassword },
+    );
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("still names a disagreeing role NAME, which is not a secret", () => {

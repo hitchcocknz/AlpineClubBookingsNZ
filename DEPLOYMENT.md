@@ -201,7 +201,9 @@ stack in [Staging](#staging)), then repeat on production.
    Compose gives that last one to the cron leader only. All three belong together:
    once the app role is split, the retention job needs its own role, because the
    application role may no longer change audit rows. The deploy script refuses
-   `APP_DB_USER` without the other two.
+   `APP_DB_USER` without the other two. It also refuses a role password still
+   exported from step 2 that differs from `.env`, because Compose would use the
+   shell value; `unset` it, or open a fresh shell, before deploying.
 4. **Deploy** as usual (`scripts/run-production-blue-green-deploy.sh`). The
    `migrate` service now runs as the migration role, and the new colour and the cron
    leader start as the application role. The old colour keeps its superuser

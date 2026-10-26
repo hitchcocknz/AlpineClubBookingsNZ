@@ -1841,7 +1841,12 @@ require_least_privilege_roles_complete() {
   for key in APP_DB_USER MIGRATION_DB_USER; do
     require_exported_value_matches_env_file "$key"
   done
-  require_exported_secret_matches_env_file AUDIT_RETENTION_DATABASE_URL
+  # Step 2 of the DEPLOYMENT.md roles procedure has the operator export the two
+  # role passwords; one left exported and since changed in .env would reach the
+  # containers instead of the .env value (#4453 review). Checked only when set.
+  for key in APP_DB_PASSWORD MIGRATION_DB_PASSWORD AUDIT_RETENTION_DATABASE_URL; do
+    require_exported_secret_matches_env_file "$key"
+  done
 
   app_user="$(trim_whitespace "$(get_env_file_value APP_DB_USER)")"
   [ -n "$app_user" ] || return 0
