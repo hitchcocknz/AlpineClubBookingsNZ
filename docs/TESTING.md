@@ -1533,10 +1533,17 @@ CI runs every one of these files in the advisory `realdb-all` job (#4458), in
 one `vitest run` on one Postgres service, with `RUN_CONCURRENCY_RACE_TESTS=1`.
 The file list is `scripts/ci/realdb-files.mjs`: every `*.realdb.test.*` file
 under `src/` minus `scripts/ci/realdb-quarantine.txt`, which names a suite that
-is red for a known reason, with its issue. Add a realdb file and it joins the
-job with no edit. `realdb-ci-coverage-census.test.ts` fails when a file is
+is red for a known reason, or cannot share the process, with its issue or PR.
+Add a realdb file and it joins the job with no edit. `realdb-ci-coverage-census.test.ts` fails when a file is
 neither run nor quarantined, when the job stops setting
 `RUN_CONCURRENCY_RACE_TESTS=1`, or when any other job names `realdb-all`. The
+job points `DATA_MIGRATION_VERIFICATION_DATABASE_URL` at the same race service
+(those three suites create scratch databases of their own), and its last step,
+`scripts/ci/check-realdb-ran.mjs`, reads Vitest's JSON report and fails when a
+listed file is missing from it, passed no test, or skipped any: a suite whose
+gate is unset skips green otherwise. The seed suite
+(`booking-ledger-history-seed`) is quarantined because
+`scripts/booking-ledger-seed-gate.sh` runs it against a database of its own. The
 per-file steps in `migration-drift` and `data-migration-verification` stay: they
 are required checks and this job is not.
 

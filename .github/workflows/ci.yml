@@ -1407,11 +1407,18 @@ jobs:
   # `scripts/ci/realdb-quarantine.txt`. The census reads the same two sources,
   # so a new realdb file is either run here or named in the quarantine.
   # The per-file steps in `migration-drift` and `data-migration-verification`
-  # stay: they are required, this job is not.
+  # stay: they are required, this job is not. The last step fails the job when a
+  # listed file skipped itself or never ran (`scripts/ci/check-realdb-ran.mjs`),
+  # so a suite whose gate is unset cannot read as green. The one suite that
+  # cannot share this process (booking-ledger-history-seed, run by
+  # `scripts/booking-ledger-seed-gate.sh`) is in the quarantine file.
   realdb-all:
     name: Real-PostgreSQL suites (all, advisory)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # PR CI measured this job at 9m02s (#4476): 20 minutes leaves room for a
+    # slower runner and growing suites, where 45 would let a hung run hold a
+    # runner for most of an hour.
+    timeout-minutes: 20
     permissions:
       contents: read
     services:
@@ -1467,6 +1474,12 @@ jobs:
         run: |
           pnpm exec tsx -e 'import { assertSafeRaceDbUrl } from "./src/lib/__tests__/support/race-db-url"; assertSafeRaceDbUrl(process.env.CONCURRENCY_RACE_DATABASE_URL ?? "", "CI endpoint");'
           printf 'CONCURRENCY_RACE_DATABASE_URL=%s\n' "$CONCURRENCY_RACE_DATABASE_URL" >> "$GITHUB_ENV"
+          # Three suites (data-migration-verification, the school backfill's
+          # fail-closed proof, pending-adult resolution) skip without this URL.
+          # Each creates and drops scratch databases of its own on the server it
+          # names, so the race service serves them; the data-migration job's
+          # separate service is not needed. It is the validated race URL.
+          printf 'DATA_MIGRATION_VERIFICATION_DATABASE_URL=%s\n' "$CONCURRENCY_RACE_DATABASE_URL" >> "$GITHUB_ENV"
 
       - name: Migrate dedicated race database
         env:
@@ -1475,12 +1488,27 @@ jobs:
 
       # One `vitest run` over every file, so the log shows each one executed.
       # The list is a script, not a shell glob: a glob would not reach a file in
-      # a new directory, and the census could not measure it.
+      # a new directory, and the census could not measure it. The script's
+      # output is captured with a failing command, never `mapfile < <(...)`
+      # (which hides its exit status), and an empty list stops the step: with no
+      # paths `vitest run` would run the whole unit suite instead.
       - name: Run every real-PostgreSQL suite
         run: |
-          mapfile -t files < <(node scripts/ci/realdb-files.mjs)
+          set -euo pipefail
+          files_text=$(node scripts/ci/realdb-files.mjs)
+          if [ -z "$files_text" ]; then
+            echo "scripts/ci/realdb-files.mjs listed no files" >&2
+            exit 1
+          fi
+          mapfile -t files <<< "$files_text"
           echo "Running ${#files[@]} real-PostgreSQL files"
-          pnpm exec vitest run "${files[@]}"
+          pnpm exec vitest run --reporter=default --reporter=json --outputFile.json="$RUNNER_TEMP/realdb-report.json" "${files[@]}"
+
+      # A suite that skips itself, or a path Vitest matched to nothing, reads as
+      # green above. This fails the job unless every listed file ran tests, none
+      # of them skipped.
+      - name: Require every listed suite to have really run
+        run: node scripts/ci/check-realdb-ran.mjs "$RUNNER_TEMP/realdb-report.json"
 
   # #2686: the CRITICAL half of this job is a REQUIRED status check, so the job
   # carries an explicit `name:` — the required context is
