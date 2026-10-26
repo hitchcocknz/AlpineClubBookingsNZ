@@ -139,7 +139,7 @@ describe("verify_least_privilege_role_grants", () => {
         preamble,
         "verify_least_privilege_role_grants",
       ].join("\n");
-      return spawnSync("bash", ["-c", harness], { cwd: dir, env: { PATH: process.env.PATH ?? "" }, encoding: "utf8" });
+      return spawnSync("bash", ["-c", harness], { cwd: dir, env: { NODE_ENV: "test", PATH: process.env.PATH ?? "" }, encoding: "utf8" });
     };
 
     const clean = runWith(stub("", 0));
