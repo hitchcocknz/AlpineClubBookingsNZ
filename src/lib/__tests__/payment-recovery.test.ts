@@ -3414,7 +3414,7 @@ describe("payment recovery worker", () => {
       ["zero-net change", { priceDiffCents: 0, changeFeeCents: 0 }, PaymentStatus.SUCCEEDED],
       ["refunded capture", null, PaymentStatus.REFUNDED],
       ["partly refunded capture", null, PaymentStatus.PARTIALLY_REFUNDED],
-    ])("refuses an unverifiable frozen replay after a capture (%s), on every retry", async (_name, modification, status) => {
+    ] as const)("refuses an unverifiable frozen replay after a capture (%s), on every retry", async (_name, modification, status) => {
       const payment = paymentWithAsk(7000, PaymentStatus.SUCCEEDED);
       payment.transactions.push({
         ...payment.transactions[0]!,

@@ -45,7 +45,7 @@
  *    committed - from inside B's mint, while B's queue waits on the global key,
  *    and inside the recovery runner's replay - withholds B, and the replay
  *    asks for B's own change alone: A's balance is never asked for twice;
- *    and a frozen replay (no figure to re-derive) is refused in the same window.
+ *    and a frozen replay (no figure to re-derive) stays refused on its next retry.
  *
  * M1, F2 and F3 prove the take-back for a declined ask no live cancel row owns.
  * Since #4422 a supersede cancels a declined ask, so they reach that state the
