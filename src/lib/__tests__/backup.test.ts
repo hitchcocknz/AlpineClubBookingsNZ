@@ -673,4 +673,23 @@ describe("backup", () => {
 
     expect(execFileSyncMock).not.toHaveBeenCalled();
   });
+
+  it("refuses the live database under another role, as after the #4453 role split", async () => {
+    // The app connects as the application role; a validation URL naming the live
+    // database as any other role used to slip past a whole-URL comparison, and
+    // the validation step starts with DROP SCHEMA public CASCADE.
+    process.env.DATABASE_URL =
+      "postgresql://tac_app:app-pw@postgres:5432/tacbookings?connection_limit=10&pool_timeout=10";
+    setConfig({
+      restoreValidationUrl: "postgresql://tac_restore_check:other-pw@postgres/tacbookings?sslmode=disable",
+    });
+
+    await expect(runDatabaseBackup()).resolves.toEqual({
+      success: false,
+      error:
+        "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL",
+    });
+
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
 });

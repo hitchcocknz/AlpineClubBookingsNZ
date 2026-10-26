@@ -33,6 +33,10 @@ import {
   resolveBackupConfig,
 } from "@/lib/backup-config";
 import { pruneLocalBackups, storeLocalBackup } from "@/lib/backup-local";
+import {
+  isSameDatabaseTarget,
+  stripOwnershipAndPrivilegeStatements,
+} from "@/lib/backup-restore-validation";
 
 const BACKUP_DIR = "/tmp/tacbookings-backups";
 const S3_BACKUP_PREFIX = "tacbookings_s3backup";
@@ -119,9 +123,11 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
 
   const sanitizedDatabaseUrl = sanitizePostgresUrlForPgDump(databaseUrl);
   const restoreValidationDatabaseUrl = config.restoreValidationUrl ?? undefined;
+  // Same host, port and database name, whoever connects (#4453): the app's role
+  // and the validation role differ once the database roles are split.
   if (
     restoreValidationDatabaseUrl &&
-    sanitizePostgresUrlForPgDump(restoreValidationDatabaseUrl) === sanitizedDatabaseUrl
+    isSameDatabaseTarget(restoreValidationDatabaseUrl, databaseUrl)
   ) {
     return {
       success: false,
@@ -644,8 +650,11 @@ function validateBackupRestore(
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  // Owners and grants are left out of the validation restore only (#4453), so a
+  // non-superuser that owns just the shadow database can run it. The backup
+  // file itself is unchanged.
   execFileSync("psql", [sanitizedRestoreUrl, "-v", "ON_ERROR_STOP=1"], {
-    input: sql,
+    input: stripOwnershipAndPrivilegeStatements(sql.toString("utf8")),
     timeout: BACKUP_COMMAND_TIMEOUT_MS,
     maxBuffer: BACKUP_COMMAND_MAX_BUFFER_BYTES,
     env: restoreEnv,
