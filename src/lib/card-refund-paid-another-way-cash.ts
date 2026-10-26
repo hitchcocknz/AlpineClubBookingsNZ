@@ -280,10 +280,12 @@ export async function readPaidAnotherWayCash(db: CashStore, paymentId: string): 
  * A close is final: nothing undoes it (#4162 leaves a card refund's record to
  * the card pipeline), and one close per refund operation (its claim).
  *
- * NOT read here (owner, 26 Oct 2026): a cancel's card refund shortfall paid
- * back, and every ordinary bank hand-back - #4162 can undo a hand-back's
- * refund while its task still reads completed, so its record is no proof the
- * money stands. Neither raises the floor.
+ * NOT read here, so neither raises the floor:
+ * - a card or capacity refund shortfall paid back: outside this bounded
+ *   repair (owner, 26 Oct 2026), though #4162 never undoes one;
+ * - an ordinary bank hand-back: #4162 can undo its refund while its task still
+ *   reads completed, so its record is no proof the money stands.
+ * The cost of the first, on a payment with several charges, is #4488.
  *
  * `scope` is one payment - read on the caller's transaction client, under the
  * Payment row its writer holds - or every payment, for the audit's one
