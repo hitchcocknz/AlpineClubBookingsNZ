@@ -33,34 +33,31 @@ and the other instances. Two lanes adding records never touch the same file.
 A record is a security-policy decision, not a convenience. Before one is
 committed:
 
-1. **The authorising act is the owner's approval comment, authored by
-   `thatskiff33`, on the pull request that adds or changes the record**. The
-   GitHub **Approve** that the code-owner rule once added (the owner's
-   [third decision on #3843](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3843#issuecomment-5967784861))
-   was retired on 7 Oct 2026 (#3959); the approval comment was not. Agent text
-   is never that approval (`AGENTS.md` -> "Pre-authorisation and
-   attributability").
+1. **It merges under the agent merge gate, not on an owner comment** (owner
+   decision, 27 Oct 2026, #4473). This replaces the earlier rule that an owner
+   approval comment authorised every record (#3843). The pull request needs:
+   - the `AGENTS.md` merge gate (#3959);
+   - one **security lens**, named in the ready comment with its head SHA. It
+     checks the advisory, the patch and the expiry.
 
-   The record's `ownerDecisions` **cite the decision records** — the issue
-   comments that set down what the owner decided on the plan, the patch and the
-   expiry. They are evidence for a reviewer, not the authorisation. In
-   particular, the URLs in the retired #3843 record were **agent-authored
-   records of an owner decision** taken in a session pop-up (each is posted by
-   `thatskiff33-agents` and says so); the owner's own on-repo act is the
-   approval comment on the pull request that ships the record.
+   The record's `ownerDecisions` cite the **decision records**: the issue
+   comments that set down the plan, the patch review and the expiry. Each new
+   or extended record is listed in the owner's twice-daily queue
+   ([`SEKRETON_ORCHESTRATOR.md`](../docs/agents/SEKRETON_ORCHESTRATOR.md)) for
+   visibility, not approval.
 2. **There is a reviewed patch**, applied through pnpm's `patchedDependencies`
    to exactly the affected `package@version`, and copied into the Docker
    dependency stage. A record never stands in for a repair; it only lets the
    gate recognise one.
 3. **It expires within 14 days.** The wrapper refuses a record whose expiry is
    more than 14 days after the moment it runs. Extending it is a new reviewed
-   change with a new owner approval.
-4. **The pull request that adds it is High risk** and merges only on the
-   owner's approval comment, then the `AGENTS.md` merge gate (#3959).
+   change under the same gate.
+4. **The pull request that adds it is High risk**, and merges under the
+   `AGENTS.md` merge gate (#3959) with the security lens above.
 
 Prefer, in order: upgrading; an override recorded in `docs/MAINTENANCE.md`;
 waiting for upstream with the check red. A record is for the narrow case where
-none of those is available and the owner has decided the repair is sound.
+none of those is available and the reviewed patch is sound.
 
 ## The entry contract
 
@@ -142,7 +139,8 @@ withdrawn (the #3843 record was retired on the withdrawal, in
 [#3851](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3851)),
 and delete an expired one rather than leave it: an expired record changes
 nothing — the check is red either way — but the directory should say what is
-true. One pull request, which needs the owner's approval comment:
+true. One pull request, under the `AGENTS.md` merge gate (no owner comment
+needed, #4473):
 
 1. Upgrade to the fixed release (or, if the advisory was withdrawn, confirm the
    audit no longer reports it; if retiring with neither, accept the red check).
