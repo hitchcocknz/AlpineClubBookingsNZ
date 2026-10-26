@@ -1430,10 +1430,12 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // `recordServerVersionIfCurrent` re-reads the connection (address and API-key
   // credential version) under it before it records the server's answer; a
   // connection change and request capture now take the same fence before
-  // touching credentials (settings -> credential -> audit). #4277 adds a
-  // second caller of the same one statement (the download record step). No
+  // touching credentials (settings -> credential -> audit). Open PR #4277
+  // would add a second caller of the same one statement (the download record
+  // step). No
   // advisory key; disjoint from booking/money writers. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> "Alpine Central Server version recorder".
+  // docs/CONCURRENCY_AND_LOCKING.md -> "Alpine Central Server connection and
+  // version recorder".
   "src/lib/servernz-settings.ts": 1,
   // Adult-member-hosting queue participants (#2597): the shared helper mints
   // one reviewed `FOR UPDATE` protocol for member merge over master, loser and

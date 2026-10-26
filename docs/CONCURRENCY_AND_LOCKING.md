@@ -2081,17 +2081,20 @@ mispricing a booking.
 
 - **Alpine Central Server connection and version recorder** —
   `withServerNzConnectionTransaction` (`src/lib/servernz-config.ts`, #4436)
-  runs request capture, settings-route address replacement and credential-route
-  key replacement under `lockServerNzSettings`. It materialises the singleton
+  runs request capture, address replacement (`saveServerNzConnectionSettings`,
+  the settings route) and key replacement (`setServerNzApiKey`, the credentials
+  route) under `lockServerNzSettings`. It materialises the singleton
   with `createMany(skipDuplicates)` before locking, then reads mutable state.
   Order: settings row first, credential row second, credential audit last;
   there is no advisory key (`INV-LOCK-001`, `INV-LOCK-002`, `INV-LOCK-003`).
   Address replacement commits the new address, credential deletion (and its
-  audit) and answer reset together. Key replacement and disconnect likewise
-  reset answers in their credential transaction. Request builders read the
+  audit) and answer reset together. Key replacement likewise resets answers
+  in its credential transaction. Request builders read the
   address and uncached decrypted credential through that transaction client,
   release the lock, then send HTTP using the captured identity. A warmed
   cross-process credential cache cannot pair an old key with a new address.
+  Every request therefore serialises on the settings row's `FOR UPDATE`; the
+  hold is short, two reads and no HTTP, so requests queue only briefly.
   `recordServerVersionIfCurrent` (`src/lib/servernz-version-record.ts`, #4366)
   takes the same settings lock after HTTP, re-reads the address and credential
   version and records only for the captured identity. A recorder first has its
@@ -2100,9 +2103,10 @@ mispricing a booking.
   pool acquisition maxWait, including a bounded wait behind a lodge merge.
   The recorder alone can see an absent row and then records nothing. Other
   settings writers take no credential lock, so cannot invert this order;
-  the #4277 download recorder shares the same settings-row protocol. No HTTP
-  runs inside these transactions (`INV-INT-027`), and they remain disjoint from
-  booking/capacity/credit and money clusters. The #4436 race suite forces a
+  the download recorder proposed in open PR #4277 would share the same
+  settings-row protocol. No HTTP runs inside these transactions
+  (`INV-INT-027`), and they remain disjoint from booking/capacity/credit and
+  money clusters. The #4436 race suite forces a
   sync and address move in both orders, including a warmed old-key cache.
 
 - **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
