@@ -4131,7 +4131,12 @@ per call through `withStoreTransaction`: the `Payment` row locked first
 (`lockPaymentForRefundedTotal`, `SELECT 1 ... FOR NO KEY UPDATE`), then
 `PaymentRefund` rows inserted with `ON CONFLICT DO NOTHING` in refund-id order,
 then the transaction row's compare-and-set, then the `Payment` aggregate and its
-booking-ledger lines. No provider call runs inside it.
+booking-ledger lines. No provider call runs inside it. A failed refund's floor
+(#4280, `INV-PAY-141`) reads the payment's "Paid another way" close records on
+that same client, under the `Payment` row: the close takes `lock(1)`, then that
+row, before it writes its record, so the writer sees a close whole or waits for
+it. No key is added. Proved in both orders by
+`card-refund-reversal-bank-cash-floor.realdb.test.ts`.
 
 **One order for the refunded total: `Payment` row, then refund rows, then
 transaction rows** — and, in a transaction that also takes the per-member
