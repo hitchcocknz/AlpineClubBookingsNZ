@@ -383,6 +383,13 @@ import "./additional-capture-receipt.realdb.test";
 // booking's lock, taken before the anchor's) - still has one recorder. Skipped
 // unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own `race-3953u-` fixtures.
 import "./additional-capture-receipt-unattributed.realdb.test";
+// #4324 reuses it to prove a late change capture a treasurer kept on a
+// cancelled, invoiced booking has one recorder: the keep against the repair
+// tool's supplementary invoice and its own kept-capture action, a webhook
+// replay after the keep, and an approval while the receipt's worker runs.
+// Skipped unless RUN_CONCURRENCY_RACE_TESTS=1; it owns and cleans its own
+// `race-4324-` fixtures.
+import "./kept-change-capture-record.realdb.test";
 // #3854 reuses it to prove a group organiser's settlement posts its children's
 // money to the booking ledger through the real card settle, the Internet Banking
 // invoice's inbound reconcile, the organiser cancel's refund plan and #3653's

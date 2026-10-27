@@ -1339,6 +1339,22 @@ const SCOPED_ADVISORY_LOCK_INVENTORY: Record<string, number> = {
   // an invoice naming no capture, and an officer's inline Retry of a change's
   // invoice re-asks under the change's key alone, in its own short
   // transaction, before its Xero call. No new raw site, no new key.
+  // #4324 (`INV-PAY-144`): the keep's decision for a kept change capture
+  // (`planKeptLateCaptureXeroRecord`) takes it on the change (else the
+  // booking) AFTER the approval task's row - the dismissal's claim, or the
+  // repair tool's own `lockKeptLateCaptureTask` - and as its last lock; the
+  // approval's settlement takes it the same way (`lockKeptCaptureAnchor`),
+  // after the approval's claim and before its first outbox write; a
+  // paid-another-way close takes it after lock(1), the Payment row and the
+  // task row, inside its plan, so a change capture's record is read and its
+  // kept-capture invoice queued under it; and the receipt's worker, where its
+  // unlocked read finds the capture no longer kept, decides again in a short
+  // transaction under it before any Xero call - in every case its plan store
+  // reads the task again under it and closes the row there if no longer kept.
+  // 4384-R2: a #3980 gap invoice's enqueue takes it on every change its
+  // amount bills, sorted, never the booking's, before asking whether a kept
+  // capture's own invoice bills any of them. Same site, no new key.
+  // Task row -> anchor, never the reverse. No new raw site, no new key.
   // #3403 (`INV-PAY-140`): the superseded-invoice move
   // (`superseded-ask-invoice-carry.ts`) calls the same helper on each change
   // whose waiting invoice it re-points at the request carrying its balance,
@@ -1426,6 +1442,8 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // worker's send-time decision lock the #3639 approval task's row
   // (`SELECT 1 … FOR UPDATE`), the row the dismissal, reopen and approval
   // claims write. No advisory key; the dismissal's claim already holds the row.
+  // #4324: the keep's decision (`planKeptLateCaptureXeroRecord`, dismissal and
+  // repair) takes it first and the change's supplementary-invoice anchor after.
   // See docs/CONCURRENCY_AND_LOCKING.md -> "Kept late-capture task row".
   "src/lib/xero-kept-late-capture-invoice.ts": 1,
   // Member-photo upload (POST) and remove (DELETE) each lock the member row
