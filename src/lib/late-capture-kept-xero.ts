@@ -369,7 +369,7 @@ export async function finishKeptLateCaptureXeroRecord(
       // The canonical recorder refuses this enqueue if the invoice records it.
       const released = result.outcome === "released" || result.outcome === "requeued" || result.outcome === "already-released";
       const receipt = released
-        ? await enqueueAdditionalCaptureReceiptOperation(plan.paymentIntentId, { keptLateCapture: true })
+        ? await enqueueAdditionalCaptureReceiptOperation(plan.paymentIntentId, { keptLateCapture: true, requireUnpaidChangeInvoice: true })
         : null;
       // A dashboard refund taken before the keep found no receipt then.
       await creditBackLateCaptureRefunds(plan.paymentIntentId);

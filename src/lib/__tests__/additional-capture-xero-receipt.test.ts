@@ -1224,6 +1224,25 @@ describe("enqueueAdditionalCaptureReceiptOperation", () => {
       expect(mocks.startXeroSyncOperation).toHaveBeenCalledWith(expect.objectContaining({ store: keepTx }));
     });
 
+    for (const target of [null, { kind: "GAP_INVOICE" }]) {
+      it(`a release losing a refusal never falls back to ${target?.kind ?? "the primary"}`, async () => {
+        mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ target }));
+        await expect(enqueueAdditionalCaptureReceiptOperation("pi_change", {
+          store: keepTx as never, keptLateCapture: true, requireUnpaidChangeInvoice: true,
+        })).resolves.toEqual({ outcome: "not-eligible", reason: "no-unpaid-change-invoice" });
+        expect(mocks.startXeroSyncOperation).not.toHaveBeenCalled();
+      });
+    }
+
+    it("a release's follow-up records only its canonical unpaid change invoice, read under the anchor", async () => {
+      mocks.readCaptureRecorder.mockResolvedValue(receiptRecorder({ target: { kind: "CHANGE_INVOICE" } }));
+      await expect(enqueueAdditionalCaptureReceiptOperation("pi_change", {
+        store: keepTx as never, keptLateCapture: true, requireUnpaidChangeInvoice: true,
+      })).resolves.toMatchObject({ outcome: "queued" });
+      expect(mocks.lockSupplementaryInvoiceAnchor.mock.invocationCallOrder[0])
+        .toBeLessThan(mocks.readCaptureRecorder.mock.invocationCallOrder[0]!);
+    });
+
     it("queues nothing for a capture no longer kept", async () => {
       keepTx.manualRefundTask.findUnique.mockResolvedValue({ status: "OPEN" });
       await expect(

@@ -966,7 +966,7 @@ describe("a waiting unpaid change invoice's kept capture", () => {
 
   it("releases the invoice, queues its receipt through the recorder, then credits earlier refunds", async () => {
     await finishKeptLateCaptureXeroRecord({ kind: "change-payment", paymentIntentId: "pi_late" });
-    expect(mocks.enqueueAdditionalCaptureReceiptOperation).toHaveBeenCalledWith("pi_late", { keptLateCapture: true });
+    expect(mocks.enqueueAdditionalCaptureReceiptOperation).toHaveBeenCalledWith("pi_late", { keptLateCapture: true, requireUnpaidChangeInvoice: true });
     expect(mocks.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.enqueueAdditionalCaptureReceiptOperation.mock.invocationCallOrder[0]!);
     expect(mocks.enqueueAdditionalCaptureReceiptOperation.mock.invocationCallOrder[0])

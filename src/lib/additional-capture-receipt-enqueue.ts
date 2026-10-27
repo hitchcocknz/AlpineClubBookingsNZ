@@ -54,6 +54,7 @@ export type AdditionalCaptureReceiptEnqueueResult =
         | "no-primary-invoice"
         | "booking-cancelled"
         | "capture-not-kept"
+        | "no-unpaid-change-invoice"
         | "not-a-card-booking"
         | "recorded-by-primary-invoice"
         | "recorded-by-supplementary-invoice"
@@ -81,6 +82,8 @@ export async function enqueueAdditionalCaptureReceiptOperation(
     store?: Prisma.TransactionClient;
     /** #4324: a kept late capture on a cancelled booking (`queueKeptLateCaptureRecord` only). */
     keptLateCapture?: boolean;
+    /** Follow a change-invoice release only while its unpaid invoice still bills this capture. */
+    requireUnpaidChangeInvoice?: true;
   },
 ): Promise<AdditionalCaptureReceiptEnqueueResult> {
   const db = options?.store ?? prisma;
@@ -150,6 +153,12 @@ export async function enqueueAdditionalCaptureReceiptOperation(
     );
     if (recorder.kind !== "receipt") {
       return { outcome: "not-eligible" as const, reason: `recorded-by-${recorder.kind}` as const };
+    }
+    // A release losing another caller's refusal can say already-released.
+    // Under this same anchor, require the recorder's live unpaid change target;
+    // falling back to the primary would pay an invoice that never billed it.
+    if (options?.requireUnpaidChangeInvoice && recorder.target?.kind !== "CHANGE_INVOICE") {
+      return { outcome: "not-eligible", reason: "no-unpaid-change-invoice" };
     }
     const operation = await startXeroSyncOperation({
       ...ADDITIONAL_CAPTURE_RECEIPT_OPERATION,
