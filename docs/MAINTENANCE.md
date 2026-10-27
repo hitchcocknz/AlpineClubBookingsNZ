@@ -2304,7 +2304,7 @@ that way offers refundable headroom that is not there, so a later cancel or
 refund could pay the same money out twice.
 `scripts/audit-refunded-total-shortfall.ts` lists each captured payment whose
 stored refunded total is below its counted card refunds plus its account-credit
-settlements plus (#4280, `INV-PAY-144`) the bank cash its "Paid another way"
+settlements plus (#4280, `INV-PAY-141`) the bank cash its "Paid another way"
 closes recorded, with the shortfall; each line shows that cash as `paid another
 way`. It is READ-ONLY and repairs nothing: whether and how to repair is the
 owner's decision, taken on this report.
