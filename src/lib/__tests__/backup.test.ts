@@ -558,6 +558,11 @@ describe("backup", () => {
       "tacbookings-2026-06-30T00-00-00-000Z.sql.gz.s3-readback",
       "tacbookings-2026-06-30T00-00-00-000Z.sql.gz.partial",
     ];
+    // A config import's backup can run alongside the cron one.
+    const CONCURRENT_RUN = [
+      "tacbookings-2026-06-30T23-59-30-000Z.sql.gz",
+      "tacbookings-2026-06-30T23-59-50-000Z.sql.gz.partial",
+    ];
     let currentDump: string | undefined;
 
     beforeEach(() => {
@@ -565,12 +570,19 @@ describe("backup", () => {
       vi.mocked(streamPgDump).mockImplementation(async ({ filepath }) => {
         currentDump = path.basename(filepath);
       });
-      // A fresh dump is never pruned for its age: mtime is "now".
       readdirSyncMock.mockImplementation((() => [
         ...STALE_SPOOL,
         "unrelated.sql.gz",
+        ...CONCURRENT_RUN,
         ...(currentDump ? [currentDump] : []),
       ]) as never);
+      // Stale files are past the grace window; another live run's files are fresh.
+      statSyncMock.mockImplementation(((file: string) => ({
+        size: 1024,
+        mtimeMs: STALE_SPOOL.includes(path.basename(String(file)))
+          ? Date.now() - 2 * 60 * 60 * 1000
+          : Date.now(),
+      })) as never);
     });
 
     const unlinked = () =>
@@ -608,6 +620,13 @@ describe("backup", () => {
       vi.mocked(streamPgDump).mockRejectedValue(new Error("dump failed"));
       await expect(runDatabaseBackup()).resolves.toMatchObject({ success: false });
       expect(unlinked()).toEqual(STALE_SPOOL);
+    });
+
+    it("leaves another live run's dump and partial in place", async () => {
+      setConfig({ bucket: "tacbookings-backups" });
+      await expect(runDatabaseBackup()).resolves.toMatchObject({ success: true });
+      expect(unlinked()).toEqual(expect.arrayContaining(STALE_SPOOL));
+      for (const file of CONCURRENT_RUN) expect(unlinked()).not.toContain(file);
     });
 
     it("removes this run's dump too when S3 received it but the run then failed", async () => {
@@ -762,6 +781,12 @@ describe("backup", () => {
       const file = dumpedFile();
       return ["tacbookings-stale.sql.gz", ...(file ? [path.basename(file)] : [])];
     }) as never);
+    statSyncMock.mockImplementation(((file: string) => ({
+      size: 1024,
+      mtimeMs: String(file).endsWith("tacbookings-stale.sql.gz")
+        ? Date.now() - 2 * 60 * 60 * 1000
+        : Date.now(),
+    })) as never);
     const result = await runDatabaseBackup();
     expect(result).toMatchObject({
       success: false,

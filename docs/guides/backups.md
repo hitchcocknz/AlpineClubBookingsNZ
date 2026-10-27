@@ -18,9 +18,11 @@ Docker deployments mount the disk-backed `backup_spool` volume at
 `/tmp/tacbookings-backups`, separate from `/tmp`'s memory-backed storage. Recreate
 the app and cron containers when upgrading so this mount takes effect. Custom
 deployments must also keep that staging directory on disk, with space for two
-compressed dumps and one S3 readback. It is working space, not a destination: each
-run removes every older dump, readback and interrupted `.partial` file, and keeps
-the latest dump only while no destination received it.
+compressed dumps and one S3 readback, more while a configuration import runs its
+own backup beside the nightly one. It is working space, not a destination: each
+run removes its own files and every other dump, readback and interrupted
+`.partial` file over an hour old, and keeps its dump only while no destination
+received it.
 
 There are two ways in:
 

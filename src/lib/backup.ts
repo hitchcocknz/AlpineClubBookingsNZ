@@ -41,6 +41,12 @@ import {
 const BACKUP_DIR = "/tmp/tacbookings-backups";
 /** Dumps, S3 readbacks and interrupted `.partial` writes in the spool. */
 const SPOOL_FILE_PATTERN = /^tacbookings-.*\.sql\.gz(?:\.s3-readback|\.partial)?$/;
+/**
+ * Another run's spool files are left alone until this old. A config import can
+ * run a backup alongside the cron one; every command is bounded by
+ * BACKUP_COMMAND_TIMEOUT_MS, so an hour outlasts any live run.
+ */
+const SPOOL_FOREIGN_FILE_GRACE_MS = 60 * 60 * 1000;
 const S3_BACKUP_PREFIX = "tacbookings_s3backup";
 const MIN_BACKUP_SIZE_BYTES = 128;
 export const BACKUP_COMMAND_TIMEOUT_MS = 120_000;
@@ -139,6 +145,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
 
   // The spool keeps at most this run's completed dump, and only while no
   // destination received it (#4487).
+  let ownFilename: string | undefined;
   let spoolDump: string | undefined;
   let delivered = false;
 
@@ -151,6 +158,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const filename = `tacbookings-${timestamp}.sql.gz`;
     const filepath = path.join(BACKUP_DIR, filename);
+    ownFilename = filename;
 
     await runPgDump(filepath, sanitizedDatabaseUrl);
 
@@ -334,7 +342,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     return { success: false, error: `pg_dump failed: ${message}` };
   } finally {
     // The spool persists across restarts, so every run, failed or not, prunes it.
-    pruneBackupSpool(delivered ? undefined : spoolDump);
+    pruneBackupSpool(ownFilename, delivered ? undefined : spoolDump);
   }
 }
 
@@ -730,17 +738,22 @@ async function validateBackupRestore(
 }
 
 /**
- * The spool is working space, not a destination (#4487): remove every dump,
- * readback and `.partial` except `keep`, the dump of a run no destination
- * received. Destination retention lives with each destination.
+ * The spool is working space, not a destination (#4487): remove this run's
+ * dump, readback and `.partial` except `keep`, the dump of a run no destination
+ * received, and any other run's spool file once it is past the grace window.
+ * Destination retention lives with each destination.
  */
-function pruneBackupSpool(keep: string | undefined) {
+function pruneBackupSpool(own: string | undefined, keep: string | undefined) {
+  const foreignCutoff = Date.now() - SPOOL_FOREIGN_FILE_GRACE_MS;
   try {
     if (!existsSync(BACKUP_DIR)) return;
     for (const file of readdirSync(BACKUP_DIR)) {
       if (file === keep || !SPOOL_FILE_PATTERN.test(file)) continue;
+      const filepath = path.join(BACKUP_DIR, file);
       try {
-        unlinkSync(path.join(BACKUP_DIR, file));
+        const ownFile = own !== undefined && file.startsWith(own);
+        if (!ownFile && statSync(filepath).mtimeMs >= foreignCutoff) continue;
+        unlinkSync(filepath);
         logger.info({ file, job: "backup" }, "Removed backup spool file");
       } catch (err) {
         logger.error({ err, file, job: "backup" }, "Backup spool cleanup error");
