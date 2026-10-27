@@ -23,7 +23,7 @@ describe("streamPgDump", () => {
     input = {
       filepath: path.join(dir, "dump.sql.gz"),
       argvUrl: "postgresql://fixture@unused/synthetic",
-      env: { PATH: dir },
+      env: { NODE_ENV: "test", PATH: dir },
       timeoutMs: 10_000,
     };
   });
