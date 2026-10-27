@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
-import { bashFixturePath, bashGateArgs } from "../src/lib/__tests__/helpers/bash-fixture-path.ts";
+import { bashFixturePath, bashGateArgs } from "../src/lib/__tests__/helpers/bash-fixture-path";
 
 const root = path.resolve(import.meta.dirname, "..");
-const scratchDirs = [];
+const scratchDirs: string[] = [];
 
 // Synthetic pg_dump-shaped SQL: no production dump or credentials are used.
 // COPY data and routine bodies deliberately resemble privilege statements.
@@ -33,7 +33,10 @@ afterEach(() => {
   for (const dir of scratchDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function runDrill(format, { failRestore = false } = {}) {
+function runDrill(
+  format: "plain" | "gzip" | "custom" | "corrupt",
+  { failRestore = false } = {},
+) {
   const dir = mkdtempSync(path.join(tmpdir(), "restore-drill-test-"));
   scratchDirs.push(dir);
   const bin = path.join(dir, "bin");
@@ -88,7 +91,7 @@ exec bash scripts/backup-restore-drill.sh "$@"
 }
 
 describe("backup restore drill --from-dump", () => {
-  for (const format of ["plain", "gzip"]) {
+  for (const format of ["plain", "gzip"] as const) {
     it(`restores ${format} SQL without deployment roles and preserves row/routine data`, () => {
       const { result, dir, source, contents } = runDrill(format);
       expect(result.error).toBeUndefined();
@@ -111,7 +114,7 @@ describe("backup restore drill --from-dump", () => {
     expect(result.stdout).toContain("RESULT: PASS");
   }, 20_000);
 
-  for (const format of ["plain", "gzip", "custom"]) {
+  for (const format of ["plain", "gzip", "custom"] as const) {
     it(`does not report a pass after a ${format} restore failure`, () => {
       const { result } = runDrill(format, { failRestore: true });
       expect(result.error).toBeUndefined();
