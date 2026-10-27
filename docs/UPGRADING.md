@@ -119,6 +119,24 @@ as a red flag and check the release notes before deploying.
 
 ## Unreleased
 
+### Nightly backups stream to a disk-backed spool volume (#4487)
+
+**What changes.** The nightly backup no longer holds the whole `pg_dump` output in
+memory. It compresses the dump straight into `/tmp/tacbookings-backups`, which is now
+a new disk-backed named volume, `backup_spool`, instead of part of `/tmp`'s
+memory-backed tmpfs. A dump that fails or times out removes its partial file and
+reports failure before anything is copied or uploaded.
+
+**What you do.** Nothing beyond the normal deploy. The new volume is created and
+mounted when the app and cron containers are recreated, which the normal deploy
+does. The image seeds the directory's ownership, so the app can write to it. Leave
+room on the host disk for the compressed dumps kept for the retention window, plus
+one S3 readback copy; the retention window prunes the spool.
+
+**Not a destination.** The spool is working space on the same host as the database.
+It does not count as a backup destination, so a club with no S3 bucket and no
+local backup directory still sees `backup-not-durable`.
+
 ### Optional: stop connecting the app as the database superuser (#4453)
 
 **What changes for everyone.** Two small migrations, plus one behaviour change in backups.
