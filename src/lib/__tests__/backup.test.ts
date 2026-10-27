@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "child_process";
 import path from "node:path";
+import { streamPgDump } from "@/lib/backup-dump";
 import {
   existsSync,
   mkdirSync,
   readdirSync,
   statSync,
   unlinkSync,
-  writeFileSync,
 } from "fs";
+
+vi.mock("@/lib/backup-dump", () => ({ streamPgDump: vi.fn() }));
 
 vi.mock("child_process", () => ({
   execFileSync: vi.fn(),
@@ -23,7 +25,6 @@ vi.mock("fs", async () => {
     readdirSync: vi.fn(),
     statSync: vi.fn(),
     unlinkSync: vi.fn(),
-    writeFileSync: vi.fn(),
   };
 });
 
@@ -99,7 +100,6 @@ describe("backup", () => {
   const readdirSyncMock = vi.mocked(readdirSync);
   const statSyncMock = vi.mocked(statSync);
   const unlinkSyncMock = vi.mocked(unlinkSync);
-  const writeFileSyncMock = vi.mocked(writeFileSync);
   const loggerErrorMock = vi.mocked(logger.error);
   const resolveBackupConfigMock = vi.mocked(resolveBackupConfig);
 
@@ -109,6 +109,7 @@ describe("backup", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(streamPgDump).mockReset().mockResolvedValue(undefined);
     process.env = { ...originalEnv };
     // A live source database URL stays env-driven (bootstrap config).
     process.env.DATABASE_URL =
@@ -323,12 +324,11 @@ describe("backup", () => {
     await expect(runDatabaseBackup()).resolves.toMatchObject({ success: true });
 
     // The URL on argv has the password stripped…
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "pg_dump",
-      ["postgresql://postgres@postgres:5432/tacbookings"],
+    expect(streamPgDump).toHaveBeenCalledWith(
       expect.objectContaining({
+        argvUrl: "postgresql://postgres@postgres:5432/tacbookings",
         env: expect.objectContaining({ PGPASSWORD: "postgres" }),
-      })
+      }),
     );
   });
 
@@ -460,12 +460,11 @@ describe("backup", () => {
       sizeBytes: 1024,
     });
 
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      "pg_dump",
-      ["postgresql://postgres@postgres:5432/tacbookings?sslmode=require"],
+    expect(streamPgDump).toHaveBeenCalledWith(
       expect.objectContaining({
+        argvUrl: "postgresql://postgres@postgres:5432/tacbookings?sslmode=require",
         env: expect.objectContaining({ PGPASSWORD: "postgres" }),
-      })
+      }),
     );
   });
 
@@ -489,14 +488,12 @@ describe("backup", () => {
     // does not — where the reader needs to be told what to install.
     vi.mocked(resolveBackupConfig).mockResolvedValue(makeConfig());
     vi.mocked(existsSync).mockReturnValue(true);
-    const enoent = Object.assign(new Error("spawnSync pg_dump ENOENT"), {
+    const enoent = Object.assign(new Error("spawn pg_dump ENOENT"), {
       code: "ENOENT",
-      syscall: "spawnSync pg_dump",
+      syscall: "spawn pg_dump",
       path: "pg_dump",
     });
-    vi.mocked(execFileSync).mockImplementation(() => {
-      throw enoent;
-    });
+    vi.mocked(streamPgDump).mockRejectedValue(enoent);
 
     const result = await runDatabaseBackup();
 
@@ -537,20 +534,16 @@ describe("backup", () => {
   it("fails closed when pg_dump exits non-zero", async () => {
     process.env.DATABASE_URL =
       "postgresql://postgres:postgres@postgres:5432/tacbookings?connection_limit=5&pool_timeout=10";
-    execFileSyncMock.mockImplementation((file) => {
-      if (file === "pg_dump") {
-        throw new Error('pg_dump: error: invalid URI query parameter: "connection_limit"');
-      }
+    vi.mocked(streamPgDump).mockRejectedValue(new Error("pg_dump exited 1: failed"));
 
-      return Buffer.from("") as never;
-    });
-
-    await expect(runDatabaseBackup()).resolves.toEqual({
+    const result = await runDatabaseBackup();
+    expect(result).toEqual({
       success: false,
       error: expect.stringContaining("pg_dump failed:"),
     });
 
-    expect(writeFileSyncMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(buildBackupCronOutcome(result).status).toBe("FAILURE");
   });
 
   it("verifies S3 readback after upload before declaring success", async () => {
@@ -696,7 +689,7 @@ describe("backup", () => {
       sizeBytes: 1024,
       error: `${reason}. The backup was taken and stored; its restore validation was skipped.`,
     });
-    expect(execFileSyncMock).toHaveBeenCalledWith("pg_dump", expect.anything(), expect.anything());
+    expect(streamPgDump).toHaveBeenCalled();
     expect(execFileSyncMock).not.toHaveBeenCalledWith("psql", expect.anything(), expect.anything());
     expect(vi.mocked(restoreDumpWithoutOwnershipOrPrivileges)).not.toHaveBeenCalled();
     // A misconfigured URL now dumps every night, so the old dumps still age out.

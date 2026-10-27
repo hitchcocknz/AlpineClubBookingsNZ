@@ -8,6 +8,12 @@ The managed database-backup surface. It configures where nightly PostgreSQL
 backups are stored, shows backup status and history, and lets you run a backup on
 demand.
 
+The database dump is compressed directly into a temporary file as it is read,
+so a growing database does not require the whole dump to fit in the backup
+process's memory. The completed file is then copied to the configured local
+directory or uploaded to S3. A failed or timed-out dump removes its partial file
+and reports the run as failed before either destination receives it.
+
 There are two ways in:
 
 - **Guided setup wizard** (`/admin/backups/setup`) — the **Database Backups** card

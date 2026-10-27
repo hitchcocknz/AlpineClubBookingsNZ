@@ -23,10 +23,9 @@ import {
   readdirSync,
   unlinkSync,
   statSync,
-  writeFileSync,
 } from "fs";
 import path from "path";
-import { gzipSync } from "zlib";
+import { streamPgDump } from "@/lib/backup-dump";
 import logger from "@/lib/logger";
 import {
   isAnyBackupDestinationEnabled,
@@ -146,7 +145,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     const filename = `tacbookings-${timestamp}.sql.gz`;
     const filepath = path.join(BACKUP_DIR, filename);
 
-    runPgDump(filepath, sanitizedDatabaseUrl);
+    await runPgDump(filepath, sanitizedDatabaseUrl);
 
     // Verify the file was created and has content
     if (!existsSync(filepath)) {
@@ -540,11 +539,12 @@ export function buildPostgresEnvironment(password?: string): NodeJS.ProcessEnv {
 export function describeMissingCommand(err: unknown): string | null {
   const error = err as NodeJS.ErrnoException & { syscall?: string; path?: string };
   if (error?.code !== "ENOENT") return null;
-  // `spawnSync <cmd>` is the syscall on a failed LAUNCH; a missing file reports
+  // `spawn[Sync] <cmd>` is the syscall on a failed LAUNCH; a missing file reports
   // `open` or `copyfile` instead. That distinction is the whole guard.
-  if (!error.syscall?.startsWith("spawnSync")) return null;
+  const syscall = error.syscall ?? "";
+  if (!/^spawn(?:Sync)? /.test(syscall)) return null;
 
-  const command = error.path ?? error.syscall.replace("spawnSync ", "").trim();
+  const command = error.path ?? syscall.replace(/^spawn(?:Sync)? /, "").trim();
   const provider =
     command === "aws"
       ? "the AWS CLI"
@@ -557,16 +557,14 @@ export function describeMissingCommand(err: unknown): string | null {
   );
 }
 
-function runPgDump(filepath: string, sanitizedDatabaseUrl: string) {
+async function runPgDump(filepath: string, sanitizedDatabaseUrl: string) {
   const { argvUrl, password } = splitPostgresPassword(sanitizedDatabaseUrl);
-  const dump = execFileSync("pg_dump", [argvUrl], {
-    timeout: BACKUP_COMMAND_TIMEOUT_MS,
-    maxBuffer: BACKUP_COMMAND_MAX_BUFFER_BYTES,
+  await streamPgDump({
+    filepath,
+    argvUrl,
+    timeoutMs: BACKUP_COMMAND_TIMEOUT_MS,
     env: buildPostgresEnvironment(password),
-    stdio: ["ignore", "pipe", "pipe"],
   });
-
-  writeFileSync(filepath, gzipSync(dump));
 }
 
 function buildAwsEnvironment(
