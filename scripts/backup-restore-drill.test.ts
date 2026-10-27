@@ -35,7 +35,7 @@ afterEach(() => {
 
 function runDrill(
   format: "plain" | "gzip" | "custom" | "corrupt",
-  { failRestore = false } = {},
+  { failRestore = false, failFilter = false } = {},
 ) {
   const dir = mkdtempSync(path.join(tmpdir(), "restore-drill-test-"));
   scratchDirs.push(dir);
@@ -61,7 +61,9 @@ if [[ " $* " == *" pg_restore "* ]]; then
   [[ "$DRILL_TEST_FAIL_RESTORE" != 1 ]]
 elif [[ " $* " == *" psql "* && " $* " == *" -i "* ]]; then
   cat > "$DRILL_TEST_DIR/restored.sql"
-  cmp "$DRILL_TEST_DIR/expected.sql" "$DRILL_TEST_DIR/restored.sql" || exit 1
+  if [[ "$DRILL_TEST_FAIL_FILTER" != 1 ]]; then
+    cmp "$DRILL_TEST_DIR/expected.sql" "$DRILL_TEST_DIR/restored.sql" || exit 1
+  fi
   [[ "$DRILL_TEST_FAIL_RESTORE" != 1 ]]
 elif [[ " $* " == *" psql -tAX "* ]]; then
   echo 0
@@ -70,6 +72,14 @@ fi
   writeFileSync(path.join(bin, "pnpm"), `#!/usr/bin/env bash
 touch "$DRILL_TEST_DIR/migrated"
 `, { mode: 0o755 });
+  if (failFilter) {
+    // The ownership filter dies mid-stream: psql accepts the partial SQL it got,
+    // so only the pipeline's own exit status can stop a false PASS.
+    writeFileSync(path.join(bin, "node"), `#!/usr/bin/env bash
+head -n 1
+exit 1
+`, { mode: 0o755 });
+  }
   const driver = path.join(dir, "run.sh");
   writeFileSync(driver, `export PATH="$DRILL_TEST_DIR/bin:$PATH"
 exec bash scripts/backup-restore-drill.sh "$@"
@@ -81,6 +91,7 @@ exec bash scripts/backup-restore-drill.sh "$@"
       TMPDIR: bashFixturePath(dir, root),
       DRILL_TEST_DIR: bashFixturePath(dir, root),
       DRILL_TEST_FAIL_RESTORE: failRestore ? "1" : "0",
+      DRILL_TEST_FAIL_FILTER: failFilter ? "1" : "0",
     },
   ), {
     cwd: root,
@@ -121,6 +132,20 @@ describe("backup restore drill --from-dump", () => {
       expect(result.status).toBe(1);
       expect(result.stdout).not.toContain("RESULT: PASS");
       expect(result.stdout).not.toContain("Running migrations forward");
+    }, 20_000);
+  }
+
+  for (const format of ["plain", "gzip"] as const) {
+    it(`does not report a pass when the ownership filter fails mid-stream on ${format} input`, () => {
+      const { result, dir } = runDrill(format, { failFilter: true });
+      expect(result.error).toBeUndefined();
+      expect(result.status).not.toBe(0);
+      expect(result.stdout).not.toContain("RESULT: PASS");
+      expect(result.stdout).not.toContain("Running migrations forward");
+      // psql received the filter's partial output and accepted it.
+      expect(readFileSync(path.join(dir, "restored.sql"), "utf8")).toBe(
+        `${schemaAndData.split("\n")[0]}\n`,
+      );
     }, 20_000);
   }
 
