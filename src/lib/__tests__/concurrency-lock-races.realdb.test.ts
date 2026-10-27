@@ -624,6 +624,11 @@ import "./servernz-version-record-race.realdb.test";
 
 // #4436: address/key replacement and request capture share the settings fence.
 import "./servernz-connection-race.realdb.test";
+// #4262: the other-lodge name-index pair's windowed declaration measured, not
+// asserted: the previous release's name-keyed upsert refused once it applies,
+// and each reverse script's duplicate-name refusal and order. Skipped unless
+// RUN_CONCURRENCY_RACE_TESTS=1; it owns and drops its own scratch schema.
+import "./other-lodge-name-index-window.realdb.test";
 // #4421 reuses it to prove "Resolve by hand" on a refund-note create that
 // names no note records the officer's note, and that note then records no
 // other refund: the real resolve route and the real hand-made answer, in
