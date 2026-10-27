@@ -3,7 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { stripComments } from "./support/strip-comments";
+import { blankLiterals, stripComments } from "./support/strip-comments";
+import { balancedBrackets } from "./support/balanced-brackets";
 
 /**
  * CT-6 (#2991) — the final escape-hatch census, as a RATCHET.
@@ -82,34 +83,16 @@ interface DefaultedCall {
  */
 export function findDefaultedZoneCalls(source: string): DefaultedCall[] {
   const found: DefaultedCall[] = [];
+  const structure = blankLiterals(source);
   for (const helper of ZONE_DEFAULTING_HELPERS) {
     const pattern = new RegExp("\\b" + helper + "\\s*\\(", "g");
     let match: RegExpExecArray | null;
-    while ((match = pattern.exec(source)) !== null) {
+    while ((match = pattern.exec(structure)) !== null) {
       // A definition or an import mention is not a call site.
       const before = source.slice(Math.max(0, match.index - 40), match.index);
       if (/\b(function|import|export)\s[^\n]*$/.test(before)) continue;
 
-      let index = match.index + match[0].length;
-      let depth = 1;
-      let current = "";
-      const parts: string[] = [];
-      while (index < source.length && depth > 0) {
-        const character = source[index];
-        if ("([{".includes(character)) depth++;
-        else if (")]}".includes(character)) {
-          depth--;
-          if (depth === 0) break;
-        }
-        if (character === "," && depth === 1) {
-          parts.push(current);
-          current = "";
-        } else current += character;
-        index++;
-      }
-      if (current.trim() !== "") parts.push(current);
-
-      const arity = parts.filter((part) => part.trim() !== "").length;
+      const arity = balancedBrackets(source, match.index + match[0].length - 1, structure).parts.length;
       const zoneGiven = ZONE_IS_FIRST_ARGUMENT.has(helper)
         ? arity >= 1
         : arity >= 2;
@@ -157,28 +140,12 @@ export function findHostClockReads(source: string): number {
  */
 export function findLocalMidnightConstruction(source: string): number {
   let found = 0;
+  const structure = blankLiterals(source);
   const pattern = /new\s+Date\s*\(/g;
   let match: RegExpExecArray | null;
-  while ((match = pattern.exec(source)) !== null) {
-    let index = match.index + match[0].length;
-    let depth = 1;
-    let current = "";
-    const parts: string[] = [];
-    while (index < source.length && depth > 0) {
-      const character = source[index];
-      if ("([{".includes(character)) depth++;
-      else if (")]}".includes(character)) {
-        depth--;
-        if (depth === 0) break;
-      }
-      if (character === "," && depth === 1) {
-        parts.push(current);
-        current = "";
-      } else current += character;
-      index++;
-    }
-    if (current.trim() !== "") parts.push(current);
-    if (parts.filter((part) => part.trim() !== "").length >= 3) found++;
+  while ((match = pattern.exec(structure)) !== null) {
+    const { parts } = balancedBrackets(source, match.index + match[0].length - 1, structure);
+    if (parts.length >= 3) found++;
   }
   return found;
 }
@@ -392,6 +359,19 @@ describe("the scanner counts what it claims to count", () => {
     // Neither is an ordinary instant or a parse.
     expect(findLocalMidnightConstruction('new Date("2026-08-01T00:00:00Z");')).toBe(0);
     expect(findLocalMidnightConstruction("new Date(ms);")).toBe(0);
+  });
+
+  it("ignores call-shaped prose while scanning executable template interpolations", () => {
+    const source = [
+      'const message = "new Date(value); getTodayDateOnly()";',
+      '// new Date(2026, 7, 1); getTodayDateOnly()',
+      'const example = `new Date(2026, 7, 1); getTodayDateOnly()`;',
+      'const result = `${getTodayDateOnly()} ${new Date(2026, 7, 1)}`;',
+    ].join("\n");
+    expect(findDefaultedZoneCalls(source)).toEqual([
+      { helper: "getTodayDateOnly", line: 4 },
+    ]);
+    expect(findLocalMidnightConstruction(source)).toBe(1);
   });
 });
 

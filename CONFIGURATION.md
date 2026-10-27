@@ -1245,7 +1245,7 @@ test/demo mode or disabled:
 | ----------------------- | ---------------------------------------------------------------- |
 | `APP_ENVIRONMENT_ROLE`  | **Required.** Whether this installation is the club's live site or a copy: exactly `production` or `non-production`. Nothing is inferred; see "Environment Role" below and [`docs/guides/environment-role.md`](docs/guides/environment-role.md). |
 | `DATABASE_URL`          | PostgreSQL connection string used by Prisma.                     |
-| `DB_PASSWORD`           | PostgreSQL password used by Docker Compose.                      |
+| `DB_PASSWORD`           | PostgreSQL password used by Docker Compose. It is the operator (superuser) `tac`'s password, and every service's password unless the least-privilege roles below are set. |
 | `AUTH_SECRET`           | Auth.js session secret. Also the root of 2FA-secret and in-app provider-credential encryption (#2079) — use a strong value (>= 32 chars); rotating it is a planned maintenance event (see `DEPLOYMENT.md`). |
 | `NEXTAUTH_SECRET`       | Legacy Auth.js secret fallback; keep aligned with `AUTH_SECRET`. |
 | `NEXTAUTH_URL`          | Exact app origin, for example `http://localhost:3000`.           |
@@ -2655,6 +2655,7 @@ rate-limited, or temporarily unavailable.
 | `BACKUP_LOCAL_DIR`                    | Path **inside the container** that mount lands on (default `/backups`). What the app writes to, and the value `/admin/backups` pre-fills. A path saved on that page overrides it. |
 | `AUDIT_ARCHIVE_DATABASE_URL`          | Preferred optional archive database for audit retention.                    |
 | `AUDIT_LOG_ARCHIVE_DATABASE_URL`      | Backward-compatible archive database alias.                                 |
+| `AUDIT_RETENTION_DATABASE_URL`        | Optional connection to the **primary** database as the audit-retention role (#4453). The nightly audit retention job anonymises and prunes `AuditLog` through it. Empty uses `DATABASE_URL`, as before. Required once `APP_DB_USER` is set (the deploy script refuses the switch without it), because the application role may only INSERT and SELECT audit rows. Compose gives it to the cron-leader `app` service only. Use `connection_limit=2`. See "Least-privilege database roles" below. |
 | `SHADOW_DATABASE_URL`                 | Optional Prisma shadow database URL for migration validation.               |
 | `AI_DIAGNOSTICS_DATABASE_URL`         | Dedicated **non-superuser, SELECT-only** database role for AI Diagnostics tool reads (ADR-007). Required before the AI Diagnostics module can be used; never the app's `DATABASE_URL`. Provision with `pnpm run diagnostics:provision-role`. See [`docs/ai-diagnostics/deployment.md`](docs/ai-diagnostics/deployment.md). |
 
@@ -2682,6 +2683,33 @@ rate-limited, or temporarily unavailable.
 > are write-only and never returned to the browser or an audit row; the S3
 > destination (bucket/region) and credentials can only be changed by a Full
 > Admin.
+
+### Least-privilege database roles
+
+Optional (#4453). These variables split the Compose stack's single superuser connection into
+separate roles: a migration role that owns the schema, and an application role that may
+only INSERT and SELECT the booking ledger and the audit log. Create the roles first with
+`pnpm run db:provision-roles --apply`. The procedure, and what changes for backups and
+restores, is in [`DEPLOYMENT.md` → "Least-privilege database roles"](DEPLOYMENT.md#least-privilege-database-roles).
+Each one left empty keeps today's behaviour.
+
+| Variable | Read by | Description |
+| --- | --- | --- |
+| `APP_DB_USER` / `APP_DB_PASSWORD` | `docker-compose.yml` | The role and password both web slots and the cron leader connect as. Empty: `tac` / `DB_PASSWORD`. |
+| `MIGRATION_DB_USER` / `MIGRATION_DB_PASSWORD` | `docker-compose.yml` | The role and password the `migrate` service runs `prisma migrate deploy` as. Empty: `tac` / `DB_PASSWORD`. Only the credentials change; the pool size and the migration lock timeout stay. |
+| `AUDIT_RETENTION_DB_USER` / `AUDIT_RETENTION_DB_PASSWORD` | `db:provision-roles` | The audit-retention role's name (default `tac_audit_retention`) and password. The app reads the role only through `AUDIT_RETENTION_DATABASE_URL`. |
+| `DB_ROLES_PROVISION_DATABASE_URL` | `db:provision-roles` | The operator (superuser) connection the script provisions with. Defaults to `DATABASE_URL`. |
+
+`db:provision-roles` also reads `APP_DB_USER` and `MIGRATION_DB_USER` (defaults `tac_app` and
+`tac_migrator`) and the three passwords. It refuses any password shorter than 20 characters
+or containing `@ / : ? # %` or whitespace, because Compose puts each password into a URL
+unencoded, and a backslash, which could end a SQL literal early. The deploy script refuses a
+`DB_PASSWORD`, `APP_DB_PASSWORD` or `MIGRATION_DB_PASSWORD` containing the same URL-unsafe
+characters (one set, pinned by `database-roles-password-charset.test.ts`). It also refuses
+`APP_DB_USER` unless `MIGRATION_DB_USER` and `AUDIT_RETENTION_DATABASE_URL` are set too. Without
+`--apply` the script is a dry run: it prints the SQL, with every password replaced by a
+placeholder, and connects to nothing. Every `--apply` resets all three passwords, so deploy
+straight after one.
 
 ## Legacy Finance Bridge
 

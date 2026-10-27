@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
+import { balancedBrackets } from "./support/balanced-brackets";
 import {
   blankLiterals,
   blankLiteralsWithSpans,
@@ -127,6 +128,14 @@ const TWO_TIER_LOCK_INVARIANTS = ["INV-LOCK-001", "INV-LOCK-002", "INV-LOCK-003"
  * the order is half of what makes the site correct.
  */
 const GLOBAL_LOCK_SITE_REGISTRY: readonly RegisteredGlobalLockSite[] = [
+  {
+    // The one spelling of the carrying-ask queue's order, taken by the inline
+    // mint, the re-issue's completion and the recovery runner's claim hold.
+    site: "lockAdditionalAskQueue#1",
+    tier: "GLOBAL",
+    reason: "#4442: a new additional ask re-reads the live ask's balance it carries before its row and its supersede's cancel rows commit; global before the Payment row and any recovery-row claim, so a capture of that ask is either seen and refused or owned by the cancel row.",
+    invariant: "INV-LOCK-002",
+  },
   // ── App Router handlers ───────────────────────────────────────────────────
   {
     site: "POST /api/admin/bookings/[id]/confirm-pending-guests#1",
@@ -1742,22 +1751,13 @@ const ADVISORY_LOCK_CALL = /pg_(?:try_)?advisory_xact_lock\(/g;
  * would score `SELECT pg_advisory_xact_lock(\n  1\n)` as a scoped key.
  */
 function firstLockArgument(text: string, openParenIndex: number): string | null {
-  let depth = 0;
-  const limit = Math.min(text.length, openParenIndex + 2000);
-  for (let i = openParenIndex; i < limit; i += 1) {
-    const character = text[i];
-    if (character === "(") {
-      depth += 1;
-      continue;
-    }
-    if (character === ")") {
-      depth -= 1;
-      if (depth === 0) return text.slice(openParenIndex + 1, i);
-      continue;
-    }
-    if (character === "," && depth === 1) return text.slice(openParenIndex + 1, i);
+  try {
+    // `text` is already masked (`maskedSource`), and a raw statement it restored
+    // must be read as code, so it is its own structure.
+    return balancedBrackets(text, openParenIndex, text).parts[0] ?? "";
+  } catch {
+    return null;
   }
-  return null;
 }
 
 /**

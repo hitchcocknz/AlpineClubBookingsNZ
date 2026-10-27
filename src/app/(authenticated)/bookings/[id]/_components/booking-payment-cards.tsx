@@ -1,3 +1,4 @@
+import { additionalAskCause } from "@/lib/additional-ask-cause";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { BoundClubFormat } from "@/lib/club-format-bound";
 import { BookingPaymentSection } from "@/components/booking-payment-section";
@@ -393,6 +394,7 @@ export function BookingPaymentCards({
             latestAdditionalTransactionCreatedAt:
               booking.payment.transactions[0]?.createdAt ?? null,
           })}
+          askCause={additionalAskCause(booking.payment.transactions)}
           canResend={canSeeAdminTools}
           canWithdraw={canEditFinance}
         />

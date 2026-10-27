@@ -701,8 +701,14 @@ export const AUDIT_CENSUS_TOTALS = {
   // 514 -> 516 (#4270): `xero.credit_note.outside_spend_mirrored` and `.outside_spend_restored`, the
   // inbound credit-note mirror's rows, awaited `createAuditLog` inside its own transaction, under `xero`.
   // RE-MEASURED with `pnpm run audit:census`.
-
-  writeSites: 520, // RE-MEASURED with `pnpm run audit:census` on the merged tree (central-server lane + main, 26 Oct 2026): this lane's four sites and upstream's are disjoint, composed, never added.
+  // 516 -> 517 (#4253 release 2): `payment.credit_release_ask.backlog_batch_taken`, the audit row of
+  // each batch the switchable backlog run takes up, an awaited `createAuditLog` under `payment`.
+  // RE-MEASURED with `pnpm run audit:census`.
+  // 517 -> 518 (#4253 release 2 fix round): `payment.credit_release_ask.left_to_officers`, the one
+  // note that a released-credit request was left to the officers (waiting on an edit, or its
+  // reminder withheld), an awaited `createAuditLog` under `payment`. RE-MEASURED with `pnpm run audit:census`.
+  // 518 -> 522: the central-server lane (#4262) merged. RE-MEASURED with `pnpm run audit:census` on the merged tree (central-server lane + main b7466a631, 27 Oct 2026): the lane's four sites and upstream's are disjoint, composed, never added.
+  writeSites: 522,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -915,8 +921,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // 148 -> 149 (#4338): its close of a concurrent attempt's failed allocation, in the same transaction.
     // 149 -> 154 (#4253): the released-credit request's five rows, above.
     // 154 -> 156 (#4270): the credit-note mirror's two rows, in its transaction.
-
-    createAuditLog: { total: 159, uncategorised: 0 }, // RE-MEASURED with `pnpm run audit:census` on the merged tree (central-server lane + main, 26 Oct 2026): this lane's four sites and upstream's are disjoint, composed, never added.
+    // 157 -> 158 (#4253 release 2 fix round): the left-to-officers note, above.
+    // 158 -> 161: the central-server lane (#4262) merged. RE-MEASURED with `pnpm run audit:census` on the merged tree (central-server lane + main b7466a631, 27 Oct 2026): the lane's four sites and upstream's are disjoint, composed, never added.
+    createAuditLog: { total: 161, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1124,7 +1131,9 @@ export const AUDIT_CENSUS_TOTALS = {
     // answered by a person - the payment's figures, read by the same people.
     // 60 -> 64 (#4253): a released-credit request raised, not raised, and closed because Xero shows
     // the invoice paid (at ask time and by the sweep) - the payment's figures, read by the same people.
-    payment: 64,
+    // 64 -> 65 (#4253 release 2): the backlog run's batch row, read by the same people.
+    // 65 -> 66 (#4253 release 2 fix round): the left-to-officers note, read by the same people.
+    payment: 66,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
