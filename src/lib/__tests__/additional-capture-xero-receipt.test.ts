@@ -545,6 +545,21 @@ describe("recordAdditionalCaptureReceipt", () => {
       );
     });
 
+    it("keeps the receipt successful when the post-record refund follow-up cannot read its task", async () => {
+      const failure = new Error("task lookup unavailable");
+      mocks.completeXeroSyncOperation.mockImplementationOnce(async () => {
+        // Only the follow-up fails; the locked planning reads already succeeded.
+        mocks.findUniqueTask.mockRejectedValueOnce(failure);
+      });
+      const seam = providers();
+      await expect(run(seam)).resolves.toBe("xero_payment_1");
+      expect(seam.createXeroPaymentForInvoice).toHaveBeenCalledTimes(1);
+      expect(mocks.completeXeroSyncOperation).toHaveBeenCalledTimes(1);
+      expect(mocks.failXeroSyncOperation).not.toHaveBeenCalled();
+      expect(mocks.creditBackLateCaptureRefunds).not.toHaveBeenCalled();
+      expect(mocks.queueWaitingPaidAnotherWayNote).not.toHaveBeenCalled();
+    });
+
     it("MUTATION: caps it at Xero's AmountDue, tells an officer the rest, and never raises a gap invoice on a cancelled booking", async () => {
       invoices[PRIMARY] = { amountDue: 5000 };
       const seam = providers();

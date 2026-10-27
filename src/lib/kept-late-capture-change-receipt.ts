@@ -110,17 +110,17 @@ export async function keptReceiptStillKeptElseClosed(
  * credit check retries the note step.
  */
 export async function answerKeptLateCaptureRefunds(paymentIntentId: string): Promise<void> {
-  if (!(await hasLateCaptureApprovalTask(paymentIntentId))) return;
-  // Imported here: those modules reach the outbox, which dispatches to the receipt's worker.
-  const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
-  await creditBackLateCaptureRefunds(paymentIntentId);
   try {
+    if (!(await hasLateCaptureApprovalTask(paymentIntentId))) return;
+    // Imported here: those modules reach the outbox, which dispatches to the receipt's worker.
+    const { creditBackLateCaptureRefunds } = await import("@/lib/late-capture-refund-credit-note");
+    await creditBackLateCaptureRefunds(paymentIntentId);
     const { queueWaitingPaidAnotherWayNote } = await import("@/lib/paid-another-way-receipt-note");
     await queueWaitingPaidAnotherWayNote(paymentIntentId);
   } catch (err) {
     logger.error(
       { err, paymentIntentId },
-      "Failed to queue a paid-another-way close's note after a kept capture's receipt; the nightly credit check retries it",
+      "Failed to follow up refund notes after a kept capture's receipt; the nightly credit check retries them",
     );
   }
 }
