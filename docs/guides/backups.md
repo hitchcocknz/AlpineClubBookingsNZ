@@ -14,6 +14,12 @@ process's memory. The completed file is then copied to the configured local
 directory or uploaded to S3. A failed or timed-out dump removes its partial file
 and reports the run as failed before either destination receives it.
 
+Docker deployments mount the disk-backed `backup_spool` volume at
+`/tmp/tacbookings-backups`, separate from `/tmp`'s memory-backed storage. Recreate
+the app and cron containers when upgrading so this mount takes effect. Custom
+deployments must also keep that staging directory on disk, with space for retained
+compressed dumps and S3 readback; the configured retention window prunes it.
+
 There are two ways in:
 
 - **Guided setup wizard** (`/admin/backups/setup`) — the **Database Backups** card
@@ -213,7 +219,7 @@ finishes or fails — so a restore is always traceable even if it dies part-way.
 | Symptom | Likely cause | Fix |
 | --- | --- | --- |
 | Banner: "credentials could not be decrypted" and backups failing | The app auth secret (`AUTH_SECRET`/`NEXTAUTH_SECRET`) was rotated, so stored credentials can no longer be decrypted | Re-enter the S3 access key/secret on this page (see the auth-secret rotation runbook in [`DEPLOYMENT.md`](../../DEPLOYMENT.md)) |
-| Status shows "Local only" / cron records `FAILURE` `backup-not-durable` | No S3 destination configured, so dumps land on ephemeral tmpfs | Set the S3 bucket + credentials (Full Admin) |
+| Status shows "Local only" / cron records `FAILURE` `backup-not-durable` | No durable destination configured; the staging volume alone does not count as a configured backup destination | Configure S3 credentials or enable local backups (Full Admin for destination changes) |
 | "Run backup now" is disabled | You lack support-edit access, backups are disabled, a run is already in progress, or credentials need re-entry | Resolve the specific condition shown in the status card |
 | Warning listing `BACKUP_*` environment variables | Legacy env config is still set but no longer read | Re-enter the values in-app, then remove the variables from the environment |
 | "Changing the backup destination requires Full Admin access." | You have support-edit but not Full Admin | A Full Admin must change the bucket/region, the local backup directory, and credentials |

@@ -546,6 +546,22 @@ describe("backup", () => {
     expect(buildBackupCronOutcome(result).status).toBe("FAILURE");
   });
 
+  it("prunes expired spool dumps and readbacks even when the run fails", async () => {
+    vi.mocked(streamPgDump).mockRejectedValue(new Error("dump failed"));
+    readdirSyncMock.mockReturnValue([
+      "tacbookings-expired.sql.gz",
+      "tacbookings-expired.sql.gz.s3-readback",
+      "unrelated.sql.gz",
+    ] as never);
+    statSyncMock.mockReturnValue({ size: 1024, mtimeMs: 0 } as never);
+
+    await expect(runDatabaseBackup()).resolves.toMatchObject({ success: false });
+    expect(unlinkSyncMock.mock.calls.map(([file]) => path.basename(String(file)))).toEqual([
+      "tacbookings-expired.sql.gz",
+      "tacbookings-expired.sql.gz.s3-readback",
+    ]);
+  });
+
   it("verifies S3 readback after upload before declaring success", async () => {
     setConfig({
       bucket: "tacbookings-backups",

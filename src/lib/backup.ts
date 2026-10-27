@@ -256,7 +256,6 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     if (validationRefusal) {
       logger.error({ job: "backup" }, validationRefusal);
       cleanupS3Readback(s3ReadbackPath);
-      cleanupOldBackups(config.retentionDays);
       return {
         success: false,
         filename,
@@ -299,9 +298,6 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
 
     cleanupS3Readback(s3ReadbackPath);
 
-    // Clean up old local backups
-    cleanupOldBackups(config.retentionDays);
-
     return {
       success: true,
       filename,
@@ -325,6 +321,9 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     const message = err instanceof Error ? err.message : String(err);
     logger.error({ err, job: "backup" }, "pg_dump failed");
     return { success: false, error: `pg_dump failed: ${message}` };
+  } finally {
+    // The spool persists across restarts; failures must not bypass retention.
+    cleanupOldBackups(config.retentionDays);
   }
 }
 
@@ -344,8 +343,8 @@ export function buildBackupCronOutcome(result: BackupResult): BackupCronOutcome 
       }
     }
 
-    // "Not durable" means the dump exists ONLY in the container's ephemeral
-    // /tmp, which a restart discards. A club that has deliberately configured a
+    // "Not durable" means the dump exists ONLY in working storage, with no
+    // configured backup destination. A club that has deliberately configured a
     // local directory has a destination, so this no longer fails their nightly
     // run — but a local directory sits on the same host as the database, so it
     // is not off-site, and the operator guide says so rather than this pretending
@@ -725,12 +724,11 @@ async function validateBackupRestore(
 function cleanupOldBackups(retentionDays: number) {
   const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
 
-  if (!existsSync(BACKUP_DIR)) return;
-
   try {
+    if (!existsSync(BACKUP_DIR)) return;
     const files = readdirSync(BACKUP_DIR);
     for (const file of files) {
-      if (!file.startsWith("tacbookings-") || !file.endsWith(".sql.gz")) continue;
+      if (!file.startsWith("tacbookings-") || !/\.sql\.gz(?:\.s3-readback)?$/.test(file)) continue;
       const filepath = path.join(BACKUP_DIR, file);
       const stats = statSync(filepath);
       if (stats.mtimeMs < cutoff) {
