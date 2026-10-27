@@ -34,6 +34,7 @@ const HELPERS = [
   "trim_whitespace",
   "env_assignment_pattern",
   "compose_env_file_value",
+  "strip_matching_quotes",
   "printable_deploy_value",
   "get_env_file_value",
   "require_exported_value_matches_env_file",
