@@ -348,6 +348,7 @@ Prefix `INV-PAY`.
 | `INV-PAY-140` | A superseded card change's waiting invoice follows the carrying request |
 | `INV-PAY-141` | A card refund's reversal keeps Paid another way bank cash |
 | `INV-PAY-142` | A refund failing after a Paid another way close is held |
+| `INV-PAY-143` | A kept change capture is recorded by the document its evidence names |
 | `INV-PAY-031` | Organiser-pays settlement applies only if payment matches the settleable children |
 | `INV-PAY-032` | Group children confirmed before payment have a reaper releasing beds and notifying |
 | `INV-PAY-033` | Reverted group children end terminally: a second reap window cancels once |

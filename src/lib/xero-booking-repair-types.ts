@@ -8,7 +8,7 @@ import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement
 import type { PaidAnotherWayReceiptState } from "@/lib/paid-another-way-receipt-note";
 import type { PaidBackRefundRequest } from "@/lib/xero-inbound/refund-request-paid-back";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
-import type { AdditionalCaptureReceiptEvidence } from "./xero-booking-repair-additional-capture";
+import type { AdditionalCaptureReceiptEvidence, KeptChangeCaptureRepairEvidence } from "./xero-booking-repair-additional-capture";
 
 export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "MISSING_PRIMARY_INVOICE",
@@ -25,6 +25,9 @@ export const XERO_BOOKING_REPAIR_FINDING_CODES = [
   "KEPT_LATE_CAPTURE_WITHOUT_XERO_INVOICE",
   // #3953 (`INV-PAY-139`): a change's card capture no Xero invoice records.
   "ADDITIONAL_CAPTURE_NOT_RECORDED_IN_XERO",
+  // #4324 (`INV-PAY-143`): a kept late capture for a booking change on a
+  // cancelled, invoiced booking that Xero does not record.
+  "KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO",
   // #3635 round-3 R5: a kept capture an officer recorded by hand in Xero was
   // refunded; the app raises no note for it, so an officer records the refund
   // by hand too. Report-only, never actionable.
@@ -97,6 +100,8 @@ export const XERO_BOOKING_REPAIR_ACTION_TYPES = [
   "QUEUE_KEPT_LATE_CAPTURE_INVOICE",
   // #3953: that capture's receipt, which reads Xero before it records anything.
   "QUEUE_ADDITIONAL_CAPTURE_RECEIPT",
+  // #4324: the keep's own decision for a kept change capture, under its locks.
+  "QUEUE_KEPT_LATE_CAPTURE_RECORD",
   // #3924 round 8: a paid-another-way close's note, once its receipt is in Xero.
   "QUEUE_PAID_ANOTHER_WAY_REFUND_NOTE",
   // #3548: operator-applied only (`--apply-action`), through the one settle.
@@ -507,6 +512,12 @@ export interface BookingClassificationContext {
     string,
     { taskId: string; raisedAt: Date; operations: XeroOperationRecord[] }
   >;
+  /**
+   * #4324: of those, the kept CHANGE captures on a cancelled booking whose
+   * primary invoice exists, by intent (`loadKeptChangeCaptureEvidence`).
+   * Absent, none to check.
+   */
+  keptChangeCaptures?: Map<string, KeptChangeCaptureRepairEvidence>;
   /**
    * #3635 round-3 N1/R5: EVERY #3639 approval task on this booking, whatever
    * its status, by intent, with the Xero rows anchored on it. A kept invoice

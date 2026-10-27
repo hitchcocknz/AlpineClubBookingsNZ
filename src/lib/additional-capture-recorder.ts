@@ -17,6 +17,10 @@
  *    (`coveredPaymentIntentIds`, {@link attributeGapCash}).
  *  - A CHANGE'S OWN SUPPLEMENTARY INVOICE - one on the change, or one naming
  *    the capture's intent - is that capture's document.
+ *  - #4324 (`INV-PAY-143`): A KEPT LATE CAPTURE'S OWN INVOICE
+ *    (`KEPT_LATE_CAPTURE_INVOICE`, in any status but CANCELLED) records the
+ *    capture it was queued for, where the treasurer's keep found nothing
+ *    billing its change.
  *
  * {@link readCaptureRecorder} is the one reading of that: the receipt's
  * enqueue asks it under the per-anchor supplementary-invoice lock, its worker
@@ -28,7 +32,10 @@ import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
-import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
+import {
+  XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+  XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
+} from "@/lib/xero-operation-outbox-payload";
 import {
   GAP_COVERED_CENTS_KEY,
   GAP_COVERED_INTENTS_KEY,
@@ -70,6 +77,8 @@ export type CaptureRecorder =
   | { kind: "credit-release-sweep" }
   /** A supplementary invoice records it: one naming the intent, covering all of it, or the change's own paid one. */
   | { kind: "supplementary-invoice"; operationId: string | null }
+  /** #4324: the kept-capture invoice a treasurer's keep queued for it records it. */
+  | { kind: "kept-late-capture-invoice"; operationId: string }
   /**
    * Nothing else records all of it, so the capture's own receipt records the
    * rest: against `target` where there is one, otherwise the primary.
@@ -167,6 +176,16 @@ async function readBaseCaptureRecorder(
     select: { ...SUPPLEMENTARY_SELECT, localModel: true, localId: true },
   });
   if (naming && recordsPayment(naming.requestPayload)) return { kind: "supplementary-invoice", operationId: naming.id };
+  // #4324: the kept-capture invoice queued for it - its payload names the intent.
+  const kept = await store.xeroSyncOperation.findFirst({
+    where: {
+      queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+      status: { not: "CANCELLED" },
+      requestPayload: { path: ["paymentIntentId"], equals: input.paymentIntentId },
+    },
+    select: { id: true },
+  });
+  if (kept) return { kind: "kept-late-capture-invoice", operationId: kept.id };
 
   const figures = await readPrimaryInvoiceFeeAtLink(input.bookingId, input.primaryInvoiceId, store);
   if (figures?.atLink.paymentIntentIdsRecordedAtLink?.includes(input.paymentIntentId)) {

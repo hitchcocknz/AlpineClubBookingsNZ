@@ -3964,8 +3964,28 @@ change's card capture kept, nothing parked on its intent, primary invoice
   or created under the change's supplementary-invoice anchor lock - unless the
   booking is cancelled or paid by internet banking, or another writer records
   the capture (the primary's payment, the change's own supplementary invoice,
-  or one naming or covering it); a replay, or the webhook and the confirm
-  route at once, find it (already-released)
+  or one naming or covering it, or a kept-capture invoice); a replay, or the
+  webhook and the confirm route at once, find it (already-released)
+late change capture KEPT on a cancelled, invoiced booking (the #3639 task
+  DISMISSED; #4324, INV-PAY-143) -> the keep's one decision, under the task row
+  then the change's anchor lock (the repair tool's QUEUE_KEPT_LATE_CAPTURE_RECORD
+  runs the same), after finding the capture's receipt or kept invoice:
+    a change invoice naming the capture, live or reaper-retired -> the
+      late-success release, after commit
+    a #3980 gap invoice billing it (one of its anchors, in Xero or on its
+      way, never voided), or the primary billing it (settled against it, or
+      no supplementary invoice, and the change did not race the primary's
+      create), or a live supplementary invoice ->
+      ADDITIONAL_CAPTURE_RECEIPT PENDING (task re-read
+      DISMISSED under the lock); a replayed release finds it (already-released)
+    nothing billing it (every supplementary invoice withdrawn, or raced
+      past the primary with no gap invoice billing it) ->
+      KEPT_LATE_CAPTURE_INVOICE PENDING, less what another writer records
+      (readCaptureRecorder); nothing where another records all of it
+    no change readable -> nothing; the repair tool names it
+  approval after a reopen, under the task row then the anchor: a receipt that
+    stored no decision (PENDING, FAILED) -> CANCELLED, code
+    KEPT_LATE_CAPTURE_WITHDRAWN; one that stored it is left to send
   supplementary enqueue for the change (or naming the capture), under its
     anchor lock: raised unpaid where a capture of it has a receipt linked,
     RUNNING or carrying a stored decision
@@ -3980,8 +4000,8 @@ change's card capture kept, nothing parked on its intent, primary invoice
       PLANNING under that lock and it goes on
     payment already linked -> SUCCEEDED, no Xero call
     another writer records the capture -> SUCCEEDED (stood down)
-    capture no longer kept, booking cancelled or paid by internet banking
-      -> CANCELLED
+    capture no longer kept, booking cancelled (save a capture its approval
+      task kept, #4324) or paid by internet banking -> CANCELLED
     its target - the gap invoice for its change, or the change's own invoice
       raised unpaid - PENDING, RUNNING or WAITING_PAYMENT -> busy -> back to
       PENDING (no failure)
@@ -3990,13 +4010,17 @@ change's card capture kept, nothing parked on its intent, primary invoice
     room on that target, else the primary (the capture less any part another
       writer recorded) -> decision stored under the change's anchor lock (the
       change from its stamp or a review charge's reason, else the booking's)
-      after who records it is read again there (another recorder by now ->
+      after who records it is read again there (a kept capture's task no
+      longer DISMISSED -> CANCELLED, stood down; another recorder by now ->
       SUCCEEDED, stood down; the target moved -> busy; no change known and a
       paid invoice on the booking naming no capture, or a pre-#3641 change
       invoice's payment linked in Xero -> refused) ->
       Xero payment (or an earlier run's, found by
       reference) -> SUCCEEDED, ADDITIONAL_CAPTURE_PAYMENT link; cash left over
-      -> officer alerted; a refund note named another invoice -> flagged
+      -> officer alerted; a refund note named another invoice -> flagged; a
+      kept capture's refunds credited back and a waiting paid-another-way
+      note queued (#4324)
+    on a cancelled booking: no #3980 re-check - nothing new is billed there
     not captured, Xero unreadable, nothing due, gap invoice not in Xero, the
       invoice's own payment still owed, a retry's room gone, or a stored
       decision another document now records with no payment of its own in
@@ -4019,7 +4043,10 @@ PostgreSQL, `xero-shared-operation-outcome.realdb.test.ts` (#4356).
 A change capture's receipt is pinned by `additional-capture-xero-receipt.test.ts`,
 `additional-capture-recorder.test.ts` and, against real PostgreSQL,
 `additional-capture-receipt.realdb.test.ts` and
-`additional-capture-receipt-unattributed.realdb.test.ts` (#3953).
+`additional-capture-receipt-unattributed.realdb.test.ts` (#3953); a kept change
+capture's decision by `late-capture-kept-xero.test.ts`,
+`xero-kept-late-capture-ledger.test.ts` and, against real PostgreSQL,
+`kept-change-capture-record.realdb.test.ts` (#4324).
 
 ## Cron And Recovery Lifecycle
 

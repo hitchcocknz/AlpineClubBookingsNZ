@@ -73,7 +73,7 @@ import { createXeroKeptLateCaptureInvoice } from "@/lib/xero-kept-late-capture-i
 import { recordAdditionalCaptureReceipt } from "@/lib/additional-capture-xero-receipt";
 import { outboxScanSpacesWaitingReceipts } from "@/lib/additional-capture-receipt-gate";
 import { primaryInvoiceGapPayload } from "@/lib/additional-capture-receipt-payload";
-import { anchorCaptureHasReceipt, bookingHasUnattributedCaptures } from "@/lib/additional-capture-receipt-link";
+import { anchorCaptureHasReceipt, bookingHasUnattributedCaptures, keptInvoiceBillsChangeCapture } from "@/lib/additional-capture-receipt-link";
 import { isXeroConnected } from "@/lib/xero-token-store";
 import { createXeroInvoiceForGroupSettlement } from "@/lib/xero-group-settlement-invoices";
 import {
@@ -1487,8 +1487,14 @@ interface XeroSupplementaryInvoiceEnqueueOptions {
   paymentIntentId?: string | null;
   waitForConfirmedAdditionalPayment?: boolean;
   recordPayment?: boolean;
-  /** #3953 (`INV-PAY-139`): a #3980 gap invoice, and the captures its own payment takes (none when unpaid). */
-  primaryInvoiceGap?: { coveredCaptures: ReadonlyArray<{ paymentIntentId: string; cents: number }> };
+  /**
+   * #3953 (`INV-PAY-139`): a #3980 gap invoice, and the captures its own payment takes (none when unpaid).
+   * #4324 (4384-R2): `billedChangeIds`, every racing edit its combined amount bills (its anchors).
+   */
+  primaryInvoiceGap?: {
+    coveredCaptures: ReadonlyArray<{ paymentIntentId: string; cents: number }>;
+    billedChangeIds?: readonly string[];
+  };
 }
 
 /**
@@ -1658,7 +1664,9 @@ async function enqueueSupplementaryInvoiceForAnchor(
   const decide = async (tx: Prisma.TransactionClient) => {
     // #3953 round 7: where the booking has a change capture no change can be read from, its receipt decides under the BOOKING's key, so this takes that key first (booking, then anchor - the one order; nothing takes them the other way). Round 9: only for an invoice naming no capture, the one kind that might record such a capture.
     if (localId !== bookingId && (options?.recordPayment ?? true) && !options?.primaryInvoiceGap && !options?.paymentIntentId && (await bookingHasUnattributedCaptures(tx, bookingId))) await lockSupplementaryInvoiceAnchor(tx, bookingId);
-    await lockSupplementaryInvoiceAnchor(tx, localId);
+    // #4324 (4384-R2, `INV-PAY-143`): a gap invoice bills every anchor its amount covers, so it takes each one's key, sorted (the one order), before asking whether a kept capture's own invoice bills any of them.
+    const billedChangeIds = [...new Set([localId, ...(options?.primaryInvoiceGap?.billedChangeIds ?? [])])].sort();
+    for (const anchorId of billedChangeIds) await lockSupplementaryInvoiceAnchor(tx, anchorId);
 
     const existingLink = await tx.xeroObjectLink.findFirst({
       where: {
@@ -1736,6 +1744,10 @@ async function enqueueSupplementaryInvoiceForAnchor(
       };
     }
 
+    // #4324 (`INV-PAY-143`): a change its kept late capture's own invoice bills gets no second invoice, paid or unpaid.
+    let keptBilledChangeId: string | undefined;
+    for (const id of localModel === "BookingModification" ? billedChangeIds : []) if (!keptBilledChangeId && (await keptInvoiceBillsChangeCapture(tx, id))) keptBilledChangeId = id;
+    if (keptBilledChangeId) return { queueOperationId: null, outcome: "none" as XeroSupplementaryInvoiceEnqueueOutcome, refusedBy: "kept-late-capture-invoice" as const, keptBilledChangeId, message: "A kept late card payment's own Xero invoice already bills this booking change." };
     // #3953 round 6: a capture its own receipt records (or is recording) is never recorded again here; a gap invoice decides its own cash.
     const recordPayment = (options?.recordPayment ?? true) && (Boolean(options?.primaryInvoiceGap) || !(await anchorCaptureHasReceipt(tx, { bookingId, bookingModificationId: localModel === "BookingModification" ? localId : null, paymentIntentId: options?.paymentIntentId ?? null })));
     const queuedOperation = await startXeroSyncOperation({

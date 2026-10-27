@@ -87,19 +87,92 @@ export function bookingHasPrimaryXeroInvoice(input: {
 }
 
 /**
- * WHICH DOCUMENT RECORDS A KEPT CAPTURE. A change payment on a booking whose
- * original invoice exists keeps its own supplementary invoice (released by the
- * late-capture release). Everything else - the booking's own payment, and a
- * change payment on a booking Xero never invoiced (#3635 review F3) - gets the
- * kept-capture invoice, which needs no original.
+ * WHICH DOCUMENT RECORDS A KEPT CAPTURE, first cut. The booking's own payment,
+ * and a change payment on a booking Xero never invoiced (#3635 review F3), get
+ * the kept-capture invoice, which needs no original. A change payment on a
+ * booking whose original invoice exists is decided by what the change's own
+ * Xero records show (#4324, {@link keptChangeCaptureRoute}).
  */
 export function keptLateCaptureRecordRoute(input: {
   captureKind: "PRIMARY" | "ADDITIONAL";
   bookingHasPrimaryInvoice: boolean;
-}): "change-invoice" | "kept-invoice" {
+}): "by-change-evidence" | "kept-invoice" {
   return input.captureKind === "ADDITIONAL" && input.bookingHasPrimaryInvoice
-    ? "change-invoice"
+    ? "by-change-evidence"
     : "kept-invoice";
+}
+
+/**
+ * #4324: what the change a kept capture pays for shows in Xero, read under the
+ * per-anchor supplementary-invoice lock (`readKeptChangeCaptureEvidence`).
+ */
+export type KeptChangeCaptureEvidence = {
+  /**
+   * A supplementary invoice naming the capture's intent that the late-success
+   * release answers from: in any status but CANCELLED, or retired by the
+   * reaper (`STALE_WAITING_PAYMENT`, or its captured and covered stamps). Or
+   * (#3403) one moved off that intent onto a carrier and still waiting there,
+   * which the release returns to it first.
+   */
+  answeredByChangeInvoice: boolean;
+  /** The change the capture pays for (`captureChangeId`); null when none can be read. */
+  changeId: string | null;
+  /**
+   * The primary invoice bills the change: #3980's settlement marker, and the
+   * primary did not miss it (`primaryMissedChange`).
+   */
+  settledAgainstPrimary: boolean;
+  /**
+   * The change's own supplementary invoices, never the #3980 gap invoice:
+   * `none` never asked for, `live` one not CANCELLED (or linked in Xero),
+   * `withdrawn` every one CANCELLED.
+   */
+  changeInvoices: "none" | "live" | "withdrawn";
+  /**
+   * The #3980 gap invoice bills the change (`primaryInvoiceGapBillsChange`:
+   * the change is one of its anchors, and it is in Xero or may still get
+   * there, never voided), so the capture is a payment on it
+   * (`readCaptureRecorder`).
+   */
+  billedByGapInvoice: boolean;
+  /**
+   * The change raced the primary's create, so the primary never billed it
+   * (`primaryInvoiceMissedChange`); only a gap invoice still billing it does.
+   */
+  primaryMissedChange: boolean;
+};
+
+export type KeptChangeCaptureRoute = "change-invoice" | "receipt" | "kept-invoice" | "change-unknown";
+
+/**
+ * #4324 (owner decision 25 Oct 2026, Q1 "split on the evidence";
+ * `INV-PAY-143`): WHICH DOCUMENT RECORDS A KEPT CHANGE CAPTURE on a cancelled
+ * booking whose primary invoice exists. Pure; decided once, under the
+ * change's anchor lock (`queueKeptLateCaptureRecord`), and read by the repair
+ * tool's finding.
+ *
+ * - `change-invoice`: a change invoice already answers the capture; the
+ *   late-success release sends, revives or alerts on it.
+ * - `receipt`: a #3980 gap invoice still bills the change, the primary
+ *   invoice bills it (settled against it and not missed by it, or a change
+ *   that never had a supplementary invoice and did not race the primary), or
+ *   the change's own invoice is live. The capture's own receipt records it
+ *   against the invoice that bills it, capped at what Xero shows due
+ *   (`INV-PAY-139`).
+ * - `kept-invoice`: nothing bills it - the change's supplementary invoice was
+ *   withdrawn or retired, or it raced the primary and its gap invoice was
+ *   voided or withdrawn; the kept-capture invoice does (`INV-PAY-110`).
+ * - `change-unknown`: no change can be read from the capture; nothing is
+ *   queued, and the repair tool names it for an officer.
+ */
+export function keptChangeCaptureRoute(evidence: KeptChangeCaptureEvidence): KeptChangeCaptureRoute {
+  if (evidence.answeredByChangeInvoice) return "change-invoice";
+  if (evidence.changeId === null) return "change-unknown";
+  if (evidence.billedByGapInvoice || evidence.settledAgainstPrimary) return "receipt";
+  if (evidence.changeInvoices === "live") return "receipt";
+  if (evidence.changeInvoices === "withdrawn") return "kept-invoice";
+  // Codex re-review: no own invoice - the primary bills it unless it raced the primary.
+  return evidence.primaryMissedChange ? "kept-invoice" : "receipt";
 }
 
 /**
