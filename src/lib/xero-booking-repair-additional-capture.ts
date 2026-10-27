@@ -540,24 +540,33 @@ export function keptChangeCaptureQueuesKeptInvoice(
 }
 
 /**
- * #4324 (`INV-PAY-144`): whether a kept late capture of this change - on a
- * cancelled booking, the only place one is kept - is recorded by its
- * kept-capture invoice: one asked for on its approval task, or one this pass
- * raises ({@link keptChangeCaptureQueuesKeptInvoice}). That invoice bills the
- * change's money as well as recording it, so a supplementary invoice for the
- * change would count it twice - as income on both, or as a receivable left
+ * #4324 (`INV-PAY-144`): whether a late capture of this change is recorded by
+ * its kept-capture invoice: one asked for on its approval task, or one this
+ * pass raises ({@link keptChangeCaptureQueuesKeptInvoice}). That invoice bills
+ * the change's money as well as recording it, so a supplementary invoice for
+ * the change would count it twice - as income on both, or as a receivable left
  * open for ever - and the repair tool raises none.
+ *
+ * Review F1 (concurrency, `INV-SSOT`): the asked-for half is the in-memory
+ * reading of the supplementary enqueue's own refusal
+ * (`keptInvoiceBillsChangeCapture`): a live kept-capture invoice on the
+ * approval task of ANY capture of the change (`captureChangeId`), whatever
+ * that task's status now - a paid-another-way close queues one on a COMPLETED
+ * task - so the dry run never lists an invoice the enqueue refuses.
  */
 export function keptInvoiceBillsChange(
-  context: Pick<BookingClassificationContext, "keptLateCaptures" | "keptChangeCaptures">,
+  context: Pick<BookingClassificationContext, "booking" | "lateCaptureTasks" | "keptChangeCaptures">,
   modificationId: string,
   captures: ReadonlyArray<{ stripePaymentIntentId: string | null; status: PaymentStatus; amountCents: number }>,
 ): boolean {
+  for (const row of context.booking.payment?.transactions ?? []) {
+    if (row.kind !== "ADDITIONAL" || !row.stripePaymentIntentId) continue;
+    if (captureChangeId({ bookingModificationId: row.bookingModificationId ?? null, reason: row.reason ?? null }) !== modificationId) continue;
+    const task = context.lateCaptureTasks.get(row.stripePaymentIntentId);
+    if (task && keptLateCaptureInvoiceAsked(task.operations)) return true;
+  }
   for (const [paymentIntentId, found] of context.keptChangeCaptures ?? []) {
     if (found.evidence.changeId !== modificationId) continue;
-    const kept = context.keptLateCaptures.get(paymentIntentId);
-    if (kept === undefined) continue;
-    if (keptLateCaptureInvoiceAsked(kept.operations)) return true;
     const transaction = captures.find((capture) => capture.stripePaymentIntentId === paymentIntentId);
     if (transaction && keptChangeCaptureQueuesKeptInvoice(found, transaction)) return true;
   }

@@ -4698,7 +4698,7 @@ describe("runBookingXeroRepair", () => {
           return findings;
         };
         const unknown = (recordedElsewhere: boolean): KeptChangeCaptureRepairEvidence => ({
-          evidence: { answeredByChangeInvoice: false, changeId: null, settledAgainstPrimary: false, changeInvoices: "none", billedByGapInvoice: false, primaryMissedChange: false },
+          evidence: { answeredByChangeInvoice: false, unpaidInvoiceNamesCapture: false, changeId: null, settledAgainstPrimary: false, changeInvoices: "none", billedByGapInvoice: false, primaryMissedChange: false },
           route: "change-unknown",
           receiptOperations: [],
           receiptLinked: false,
@@ -4824,7 +4824,7 @@ describe("runBookingXeroRepair", () => {
 
         it("review I11: one predicate - a kept invoice bills the change only where it is asked for, or this pass raises it", () => {
           const found = (over: Partial<KeptChangeCaptureRepairEvidence> = {}): KeptChangeCaptureRepairEvidence => ({
-            evidence: { answeredByChangeInvoice: false, changeId: "mod_change", settledAgainstPrimary: false, changeInvoices: "withdrawn", billedByGapInvoice: false, primaryMissedChange: false },
+            evidence: { answeredByChangeInvoice: false, unpaidInvoiceNamesCapture: false, changeId: "mod_change", settledAgainstPrimary: false, changeInvoices: "withdrawn", billedByGapInvoice: false, primaryMissedChange: false },
             route: "kept-invoice",
             receiptOperations: [],
             receiptLinked: false,
@@ -4833,9 +4833,10 @@ describe("runBookingXeroRepair", () => {
             primaryInvoiceIdSynced: true,
             ...over,
           });
-          const context = (entry: KeptChangeCaptureRepairEvidence, operations: unknown[] = []) => ({
-            keptLateCaptures: new Map([["pi_kept", { taskId: "task_kept", raisedAt: RAISED_AT, operations: operations as never }]]),
-            keptChangeCaptures: new Map([["pi_kept", entry]]),
+          const context = (entry: KeptChangeCaptureRepairEvidence | null, operations: unknown[] = [], status = "DISMISSED") => ({
+            booking: pricedChange() as never,
+            lateCaptureTasks: new Map([["pi_kept", { taskId: "task_kept", status, operations: operations as never }]]),
+            keptChangeCaptures: new Map<string, KeptChangeCaptureRepairEvidence>(entry ? [["pi_kept", entry]] : []),
           });
           const captures = [{ stripePaymentIntentId: "pi_kept", status: "SUCCEEDED" as const, amountCents: 8000 }];
           expect(keptInvoiceBillsChange(context(found()), "mod_change", captures)).toBe(true);
@@ -4845,6 +4846,26 @@ describe("runBookingXeroRepair", () => {
           expect(keptInvoiceBillsChange(context(found({ route: "receipt" })), "mod_change", captures)).toBe(false);
           expect(keptInvoiceBillsChange(context(found({ recordedElsewhere: true }), [keptOperation("PENDING")]), "mod_change", captures)).toBe(true);
           expect(keptInvoiceBillsChange(context(found()), "mod_other", captures)).toBe(false);
+          // Review F1: one asked for on a task in ANY status - the enqueue's own reading (`keptInvoiceBillsChangeCapture`).
+          expect(keptInvoiceBillsChange(context(null, [keptOperation("SUCCEEDED")], "COMPLETED"), "mod_change", captures)).toBe(true);
+          expect(keptInvoiceBillsChange(context(null, [keptOperation("CANCELLED")], "COMPLETED"), "mod_change", captures)).toBe(false);
+          expect(keptInvoiceBillsChange(context(null, [keptOperation("SUCCEEDED")], "COMPLETED"), "mod_other", captures)).toBe(false);
+        });
+
+        it("MUTATION review F1 (`INV-SSOT`): a paid-another-way close queued the kept invoice on a COMPLETED task - the dry run lists no supplementary invoice the enqueue would refuse", async () => {
+          const keptRow = { ...keptOperation("SUCCEEDED"), requestPayload: { ...keptOperation("SUCCEEDED").requestPayload, capturedCents: 8000 } };
+          const deps = createDependencies({
+            bookings: [pricedChange()],
+            operations: [withdrawnAsk(), keptRow],
+            modificationsById: { mod_change: { newData: {} } },
+            lateCaptureApprovalTasks: [
+              { id: "task_kept", bookingId: "booking_1", lateCaptureApprovalIntentId: "pi_kept", status: "COMPLETED", createdAt: RAISED_AT },
+            ],
+          });
+          const report = await runBookingXeroRepair(CLUB_FORMAT_TEST, { dependencies: deps, scope: { all: true } });
+          const bookingReport = report.passes[0].bookings[0];
+          expect(bookingReport.actions.some((a) => a.type === "QUEUE_SUPPLEMENTARY_INVOICE")).toBe(false);
+          expect(bookingReport.findings.some((finding) => finding.code === "MISSING_SUPPLEMENTARY_INVOICE")).toBe(false);
         });
 
         it("control: the same change with its capture not kept still gets its supplementary invoice", async () => {
