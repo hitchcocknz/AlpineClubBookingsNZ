@@ -97,6 +97,7 @@ async function clean(): Promise<void> {
   await prisma.xeroSyncOperation.deleteMany({
     where: { localId: { in: [CHANGE_TX_ID, PRIMARY_TX_ID, PAYMENT_ID, BOOKING_ID, MODIFICATION_ID, FIRST_ANCHOR_ID, TASK_ID] } },
   });
+  await prisma.xeroObjectLink.deleteMany({ where: { localModel: "BookingModification", localId: MODIFICATION_ID } });
   await prisma.manualRefundTask.deleteMany({ where: { bookingId: BOOKING_ID } });
   await prisma.paymentTransaction.deleteMany({ where: { paymentId: PAYMENT_ID } });
   await prisma.bookingModification.deleteMany({ where: { bookingId: BOOKING_ID } });
@@ -580,6 +581,9 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     await prisma.xeroSyncOperation.updateMany({
       where: { id: invoice.queueOperationId!, status: "PENDING" },
       data: { status: "SUCCEEDED", completedAt: new Date() },
+    });
+    await prisma.xeroObjectLink.create({
+      data: { localModel: "BookingModification", localId: MODIFICATION_ID, xeroObjectType: "INVOICE", xeroObjectId: "race-4324-unpaid-invoice", role: "SUPPLEMENTARY_INVOICE", active: true },
     });
     await expect(dismiss()).resolves.toMatchObject({ kind: "receipt-queued" });
     const rows = await receiptRows();
