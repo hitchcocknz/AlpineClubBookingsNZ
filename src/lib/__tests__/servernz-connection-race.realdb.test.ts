@@ -3,10 +3,19 @@
  * No HTTP leaves this process. The shared race harness imports this suite;
  * ordinary unit runs skip it. Singleton fixtures are owned sequentially with
  * the #4366 suite, and only the guarded disposable race database is accepted.
+ *
+ * #4262 review: the Other lodges download's writes (hides, unlinks, merges,
+ * the record step) are fenced on the connection its pull was sent on. The last
+ * two cases replace the key while the pull is in flight and prove that its
+ * deletions and renames change nothing; the control proves the same answer
+ * applies when the connection stands. They own `race-4262-` rows.
  */
 import type { PrismaClient } from "@prisma/client";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
+// The seeded and answered server version is whatever THIS build expects, so the
+// suite proves the connection race on any API version the lane is built for.
+import { SERVERNZ_EXPECTED_SERVER_VERSION } from "@/lib/servernz-api-version";
 import { assertSafeRaceDbUrl } from "@/lib/__tests__/support/race-db-url";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
@@ -19,6 +28,7 @@ let prisma: (typeof import("@/lib/prisma"))["prisma"];
 let settings: typeof import("@/lib/servernz-settings");
 let config: typeof import("@/lib/servernz-config");
 let api: typeof import("@/lib/servernz-api");
+let lodgeSync: typeof import("@/lib/servernz-other-lodges-sync");
 let observer: PrismaClient;
 const savedAuthSecret = process.env.AUTH_SECRET;
 const fetchMock = vi.fn();
@@ -32,6 +42,9 @@ function latch() {
 (RUN ? describe : describe.skip)("central-server address move versus sync — real PostgreSQL (#4436)", { timeout: 60_000 }, () => {
   async function clean() {
     await prisma.auditLog.deleteMany({ where: { memberId: ACTOR_ID } });
+    await prisma.auditLog.deleteMany({ where: { action: "alpine_server.other_lodges.hidden", details: { contains: "race-4262" } } });
+    await prisma.lodge.deleteMany({ where: { id: { startsWith: "race-4262-" } } });
+    await prisma.otherLodge.deleteMany({ where: { id: { startsWith: "race-4262-" } } });
     await prisma.integrationCredential.deleteMany({ where: { provider: "servernz", key: "api_key" } });
     await prisma.serverNzSettings.deleteMany({ where: { id: "default" } });
   }
@@ -88,6 +101,7 @@ function latch() {
     settings = await import("@/lib/servernz-settings");
     config = await import("@/lib/servernz-config");
     api = await import("@/lib/servernz-api");
+    lodgeSync = await import("@/lib/servernz-other-lodges-sync");
     const [{ PrismaClient: Client }, { createPrismaPgAdapter }] = await Promise.all([
       import("@prisma/client"), import("@/lib/prisma-adapter"),
     ]);
@@ -99,7 +113,7 @@ function latch() {
     await clean();
     const { encryptCredential, INTEGRATION_CREDENTIAL_LABEL } = await import("@/lib/integration-crypto");
     await prisma.serverNzSettings.create({ data: {
-      id: "default", baseUrl: OLD_URL, serverVersion: "2.1", otherLodgesOwnedNames: ["Old lodge"],
+      id: "default", baseUrl: OLD_URL, serverVersion: SERVERNZ_EXPECTED_SERVER_VERSION, otherLodgesOwnedNames: ["Old lodge"],
     } });
     await prisma.integrationCredential.create({ data: {
       provider: "servernz", key: "api_key",
@@ -164,7 +178,7 @@ function latch() {
     // read both, so the move (and the key save behind it) waits.
     const NEW_KEY = "race-4436-new-key";
     fetchMock.mockImplementation(async (url: string | URL) => new Response(JSON.stringify(
-      String(url).endsWith("/api/v1/version") ? { version: "2.1", match: true } : { lodges: [], cursor: null, count: 0 },
+      String(url).endsWith("/api/v1/version") ? { version: SERVERNZ_EXPECTED_SERVER_VERSION, match: true } : { lodges: [], cursor: null, count: 0 },
     )));
     const readAddress = latch();
     const resumeReader = latch();
@@ -209,6 +223,77 @@ function latch() {
     expect(move.status).toBe("fulfilled");
     expect(sync.status).toBe("rejected");
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  describe("an Other lodges download whose connection is replaced in flight (#4262 review)", () => {
+    const STAMP = "2026-07-01T00:00:00.000Z";
+    const PULL = {
+      lodges: [{ id: "race-4262-c-2", name: "race-4262 Renamed", updatedAt: STAMP }],
+      cursor: "race-4262-cursor",
+      count: 1,
+      ownLodges: [],
+      deletedLodges: [{ id: "race-4262-c-gone", deletedAt: STAMP }],
+    };
+
+    async function seedRegistry() {
+      await prisma.serverNzSettings.update({
+        where: { id: "default" },
+        data: { otherLodgesEnabled: true, otherLodgesKeyedAt: new Date(STAMP), otherLodgesOwnedLodges: [] },
+      });
+      await prisma.otherLodge.createMany({ data: [
+        { id: "race-4262-gone", name: "race-4262 Gone", centralId: "race-4262-c-gone" },
+        { id: "race-4262-two", name: "race-4262 Old", centralId: "race-4262-c-2" },
+      ] });
+      await prisma.lodge.create({ data: {
+        id: "race-4262-lodge", name: "race-4262 Club Lodge", slug: "race-4262-club-lodge", centralLodgeId: "race-4262-c-gone",
+      } });
+    }
+
+    async function state() {
+      const [gone, two, lodge, stored, audits] = await Promise.all([
+        prisma.otherLodge.findUnique({ where: { id: "race-4262-gone" }, select: { hiddenAt: true } }),
+        prisma.otherLodge.findUnique({ where: { id: "race-4262-two" }, select: { name: true } }),
+        prisma.lodge.findUnique({ where: { id: "race-4262-lodge" }, select: { centralLodgeId: true } }),
+        prisma.serverNzSettings.findUnique({ where: { id: "default" }, select: { otherLodgesCursor: true } }),
+        prisma.auditLog.count({ where: { action: "alpine_server.other_lodges.hidden", details: { contains: "race-4262" } } }),
+      ]);
+      return {
+        goneHidden: gone?.hiddenAt != null,
+        twoName: two?.name,
+        link: lodge?.centralLodgeId ?? null,
+        cursor: stored?.otherLodgesCursor ?? null,
+        audits,
+      };
+    }
+
+    it("hides, unlinks, renames and records NOTHING once the key is replaced while the pull is in flight", async () => {
+      await seedRegistry();
+      fetchMock.mockImplementation(async () => {
+        // The administrator's key replacement commits while the request is out.
+        await config.setServerNzApiKey("race-4262-new-key", { kind: "admin", memberId: ACTOR_ID });
+        return new Response(JSON.stringify(PULL));
+      });
+
+      const result = await lodgeSync.downloadOtherClubsFromServer();
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(await state()).toEqual({
+        goneHidden: false, twoName: "race-4262 Old", link: "race-4262-c-gone", cursor: null, audits: 0,
+      });
+      expect(result).toMatchObject({ hiddenLodges: [], updated: 0, renamed: 0 });
+    });
+
+    it("applies the same answer when the connection stands (the control)", async () => {
+      await seedRegistry();
+      fetchMock.mockImplementation(async () => new Response(JSON.stringify(PULL)));
+
+      const result = await lodgeSync.downloadOtherClubsFromServer();
+
+      expect(await state()).toEqual({
+        goneHidden: true, twoName: "race-4262 Renamed", link: null, cursor: "race-4262-cursor", audits: 1,
+      });
+      expect(result).toMatchObject({ hiddenLodges: ["race-4262 Gone"], renamed: 1 });
+    });
   });
 
   it("waits for an address change in flight and sends no old key to the new address", async () => {

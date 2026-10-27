@@ -4063,6 +4063,8 @@ alpine-server-other-lodges-sync (03:00) -> module on -> base URL set
      -> mismatch        -> SKIPPED server-version-mismatch   (before the claim)
      -> could not check -> last answer stands; continues
      -> match/unchecked -> item enabled? -> claim -> upload -> download -> SUCCESS
+                                                                  -> download stopped (connection-changed | superseded)
+                                                                     -> SKIPPED stopped; the next pass repeats it
 club-post-mirror-sync / push webhook -> key set -> checkServerVersion
      -> mismatch -> skipped server-version-mismatch          (before commsSyncStartedAt)
 club-post-share-retry -> isServerSyncPaused (stored answer, no call)
@@ -4074,6 +4076,15 @@ server's last answer, so the first run after either side is upgraded records a
 matching answer and resumes with no manual step. A SKIPPED run with reason
 `server-version-mismatch` is therefore the expected state while the two sides
 differ, not a failure to recover from; the setup page shows both numbers.
+
+A download that stops before recording its cursor (#4262 review: the
+connection was replaced while it ran, or another download recorded first) ends
+the pass as `status: "stopped"` with that reason, recorded SKIPPED
+(`alpineServerSyncRunStatus`). That bends the #4375 rule above, where SKIPPED
+means no work: a stopped pass may already have uploaded rows and merged some
+lodges before it stopped. It is SKIPPED rather than SUCCESS because its cursor
+and owned list were not recorded, so the pass is not complete and the next one
+repeats the download; the run's summary keeps the reason.
 
 ### A recovery failure no retry fixes (#4081)
 
