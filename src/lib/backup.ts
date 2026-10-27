@@ -20,12 +20,12 @@ import { execFileSync } from "child_process";
 import {
   existsSync,
   mkdirSync,
-  readdirSync,
   unlinkSync,
   statSync,
 } from "fs";
 import path from "path";
 import { streamPgDump } from "@/lib/backup-dump";
+import { BACKUP_DIR, pruneBackupSpool, S3_READBACK_SUFFIX } from "@/lib/backup-spool";
 import logger from "@/lib/logger";
 import {
   isAnyBackupDestinationEnabled,
@@ -38,15 +38,6 @@ import {
   restoreDumpWithoutOwnershipOrPrivileges,
 } from "@/lib/backup-restore-validation";
 
-const BACKUP_DIR = "/tmp/tacbookings-backups";
-/** Dumps, S3 readbacks and interrupted `.partial` writes in the spool. */
-const SPOOL_FILE_PATTERN = /^tacbookings-.*\.sql\.gz(?:\.s3-readback|\.partial)?$/;
-/**
- * Another run's spool files are left alone until this old. A config import can
- * run a backup alongside the cron one; every command is bounded by
- * BACKUP_COMMAND_TIMEOUT_MS, so an hour outlasts any live run.
- */
-const SPOOL_FOREIGN_FILE_GRACE_MS = 60 * 60 * 1000;
 const S3_BACKUP_PREFIX = "tacbookings_s3backup";
 const MIN_BACKUP_SIZE_BYTES = 128;
 export const BACKUP_COMMAND_TIMEOUT_MS = 120_000;
@@ -158,9 +149,10 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const filename = `tacbookings-${timestamp}.sql.gz`;
     const filepath = path.join(BACKUP_DIR, filename);
-    ownFilename = filename;
 
     await runPgDump(filepath, sanitizedDatabaseUrl);
+    // Only now is the name ours: a same-millisecond run may hold it (#4487).
+    ownFilename = filename;
 
     // Verify the file was created and has content
     if (!existsSync(filepath)) {
@@ -619,7 +611,7 @@ function uploadAndVerifyS3Readback({
   secretAccessKey: string | null;
 }) {
   const s3Uri = `s3://${s3Bucket}/${s3Key}`;
-  const readbackPath = path.join(BACKUP_DIR, `${filename}.s3-readback`);
+  const readbackPath = path.join(BACKUP_DIR, `${filename}${S3_READBACK_SUFFIX}`);
   const env = buildAwsEnvironment(accessKeyId, secretAccessKey);
 
   execFileSync("aws", ["s3", "cp", filepath, s3Uri, "--region", s3Region], {
@@ -735,31 +727,4 @@ async function validateBackupRestore(
     bookingCount,
     paymentCount,
   };
-}
-
-/**
- * The spool is working space, not a destination (#4487): remove this run's
- * dump, readback and `.partial` except `keep`, the dump of a run no destination
- * received, and any other run's spool file once it is past the grace window.
- * Destination retention lives with each destination.
- */
-function pruneBackupSpool(own: string | undefined, keep: string | undefined) {
-  const foreignCutoff = Date.now() - SPOOL_FOREIGN_FILE_GRACE_MS;
-  try {
-    if (!existsSync(BACKUP_DIR)) return;
-    for (const file of readdirSync(BACKUP_DIR)) {
-      if (file === keep || !SPOOL_FILE_PATTERN.test(file)) continue;
-      const filepath = path.join(BACKUP_DIR, file);
-      try {
-        const ownFile = own !== undefined && file.startsWith(own);
-        if (!ownFile && statSync(filepath).mtimeMs >= foreignCutoff) continue;
-        unlinkSync(filepath);
-        logger.info({ file, job: "backup" }, "Removed backup spool file");
-      } catch (err) {
-        logger.error({ err, file, job: "backup" }, "Backup spool cleanup error");
-      }
-    }
-  } catch (err) {
-    logger.error({ err, job: "backup" }, "Backup spool cleanup error");
-  }
 }

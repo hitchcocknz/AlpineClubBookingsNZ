@@ -130,7 +130,8 @@ reports failure before anything is copied or uploaded.
 **What you do.** Nothing beyond the normal deploy. The new volume is created and
 mounted when the app and cron containers are recreated, which the normal deploy
 does. The image seeds the directory's ownership, so the app can write to it. Leave
-room on the host disk for two compressed dumps plus one S3 readback copy. The spool
+room on the host disk for two compressed dumps plus one S3 readback copy, and one
+more dump for each further failed run within an hour. The spool
 keeps a run's dump only while no destination received it; each run also removes
 anything over an hour old, including any `.partial` file a killed dump left.
 

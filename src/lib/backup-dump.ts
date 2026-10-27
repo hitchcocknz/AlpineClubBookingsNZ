@@ -4,9 +4,12 @@ import { link, rm, unlink } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 
+/** A dump still being written; it gets its final name only once complete. */
+export const PARTIAL_SUFFIX = ".partial";
+
 /**
  * Stream a plain SQL dump to disk; neither stdout nor stderr grows with the DB.
- * It is written to `<filepath>.partial` and appears at `filepath` only once
+ * It is written under PARTIAL_SUFFIX and appears at `filepath` only once
  * complete, so a killed process never leaves a truncated dump under the final name.
  */
 export async function streamPgDump(input: {
@@ -41,7 +44,7 @@ export async function streamPgDump(input: {
     dump.kill("SIGKILL");
   }, input.timeoutMs);
   // A timestamp collision must not truncate or remove another run's backup.
-  const partialPath = `${input.filepath}.partial`;
+  const partialPath = `${input.filepath}${PARTIAL_SUFFIX}`;
   let ownsFile = false;
   const output = createWriteStream(partialPath, { flags: "wx" });
   output.on("open", () => { ownsFile = true; });

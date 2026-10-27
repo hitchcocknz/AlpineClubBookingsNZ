@@ -10,7 +10,10 @@ import {
   unlinkSync,
 } from "fs";
 
-vi.mock("@/lib/backup-dump", () => ({ streamPgDump: vi.fn() }));
+vi.mock("@/lib/backup-dump", async (importOriginal) => ({
+  ...((await importOriginal()) as typeof import("@/lib/backup-dump")),
+  streamPgDump: vi.fn(),
+}));
 
 vi.mock("child_process", () => ({
   execFileSync: vi.fn(),
@@ -627,6 +630,32 @@ describe("backup", () => {
       await expect(runDatabaseBackup()).resolves.toMatchObject({ success: true });
       expect(unlinked()).toEqual(expect.arrayContaining(STALE_SPOOL));
       for (const file of CONCURRENT_RUN) expect(unlinked()).not.toContain(file);
+    });
+
+    it("never removes the files of a run that won a same-millisecond name collision", async () => {
+      let taken: string | undefined;
+      vi.mocked(streamPgDump).mockImplementation(async ({ filepath }) => {
+        taken = path.basename(filepath);
+        throw Object.assign(new Error("EEXIST: file already exists"), { code: "EEXIST" });
+      });
+      readdirSyncMock.mockImplementation((() =>
+        taken ? [...STALE_SPOOL, taken, `${taken}.partial`, `${taken}.s3-readback`] : STALE_SPOOL) as never);
+      await expect(runDatabaseBackup()).resolves.toMatchObject({ success: false });
+      expect(taken).toMatch(/^tacbookings-.*\.sql\.gz$/);
+      expect(unlinked()).toEqual(STALE_SPOOL);
+    });
+
+    it("removes this run's own S3 readback when the readback size check fails", async () => {
+      setConfig({ bucket: "tacbookings-backups" });
+      readdirSyncMock.mockImplementation((() =>
+        currentDump ? [currentDump, `${currentDump}.s3-readback`] : []) as never);
+      statSyncMock.mockImplementation(((file: string) => ({
+        size: String(file).endsWith(".s3-readback") ? 999 : 1024,
+        mtimeMs: Date.now(),
+      })) as never);
+      await expect(runDatabaseBackup()).resolves.toMatchObject({ success: false });
+      // Nothing received the dump, so it stays; its readback is this run's to remove.
+      expect(unlinked()).toEqual([`${currentDump}.s3-readback`]);
     });
 
     it("removes this run's dump too when S3 received it but the run then failed", async () => {

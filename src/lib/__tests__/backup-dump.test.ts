@@ -102,6 +102,14 @@ describe("streamPgDump", () => {
     expect(leftovers()).toEqual(["dump.sql.gz"]);
   }, 15_000);
 
+  it("refuses another run's in-progress partial without truncating or removing it", async () => {
+    command('process.stdout.write("new SQL");');
+    writeFileSync(`${input.filepath}.partial`, "another run's dump in progress");
+    await expect(streamPgDump(input)).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(`${input.filepath}.partial`, "utf8")).toBe("another run's dump in progress");
+    expect(leftovers()).toEqual(["dump.sql.gz.partial"]);
+  }, 15_000);
+
   it("keeps peak memory flat when a synthetic dump grows from 16 to 512 MiB", async () => {
     // Real processes and streams, isolated from Vitest's heap. The producer reuses
     // one chunk and honours backpressure; resourceUsage catches even synchronous

@@ -19,7 +19,7 @@ Docker deployments mount the disk-backed `backup_spool` volume at
 the app and cron containers when upgrading so this mount takes effect. Custom
 deployments must also keep that staging directory on disk, with space for two
 compressed dumps and one S3 readback, more while a configuration import runs its
-own backup beside the nightly one. It is working space, not a destination: each
+own backup beside the nightly one or runs fail repeatedly within an hour. It is working space, not a destination: each
 run removes its own files and every other dump, readback and interrupted
 `.partial` file over an hour old, and keeps its dump only while no destination
 received it.

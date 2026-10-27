@@ -1522,9 +1522,9 @@ with `read_only: true` and mounts `/tmp` as tmpfs, but `/tmp/tacbookings-backups
 is the disk-backed `backup_spool` named volume (#4487): dumps are compressed into
 it as they stream, so a large database never has to fit in RAM. It is only a
 working area on the same host as the database, so it is not a backup destination.
-Each run, failed or not, removes its own files and anything over an hour old, so
-another backup still running is untouched; it keeps its own dump only while no
-destination received it. A dump in progress is written as
+Each run that starts a dump, failed or not, removes its own files and anything
+over an hour old, so another backup still running is untouched; it keeps its own
+dump only while no destination received it. A dump in progress is written as
 `<name>.partial` and given its final name only once complete. A healthy scheduled backup
 needs at least one destination to hold the dump: a verified S3 upload (upload,
 then readback with a size check) or a copy in the configured local backup
