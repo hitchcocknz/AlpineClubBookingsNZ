@@ -7,11 +7,11 @@
  *
  *   1. the previous release's download upsert (`INSERT ... ON CONFLICT
  *      ("name")`, the statement a native Prisma upsert keyed on `name` sends)
- *      works before `20261123040000` and is refused once it commits — so the
+ *      works before `20261126040000` and is refused once it commits — so the
  *      pair is not old-code compatible and must be windowed;
  *   2. each `rollback.sql` refuses, changing nothing, while lodges share a name
  *      its restored index cannot hold — the duplicate-name recovery limit;
- *   3. run in the wrong order, `20261123040000`'s reverse stops and changes
+ *   3. run in the wrong order, `20261126040000`'s reverse stops and changes
  *      nothing; run newest first after renaming, the pair reverses and the old
  *      upsert works again.
  *
@@ -35,8 +35,8 @@ const SCHEMA = "other_lodge_window_4262";
 const MIGRATIONS = path.join(process.cwd(), "prisma", "migrations");
 const sqlOf = (name: string, file: "migration.sql" | "rollback.sql") =>
   readFileSync(path.join(MIGRATIONS, name, file), "utf8");
-const HIDDEN_AT = "20261123040000_other_lodge_hidden_at";
-const NAMES_NOT_UNIQUE = "20261123050000_other_lodge_names_not_unique";
+const HIDDEN_AT = "20261126040000_other_lodge_hidden_at";
+const NAMES_NOT_UNIQUE = "20261126050000_other_lodge_names_not_unique";
 
 /** The previous release's download create, as its native upsert sends it. */
 const OLD_UPSERT = `INSERT INTO "OtherLodge" ("id", "name", "location") VALUES ($1, $2, $3)

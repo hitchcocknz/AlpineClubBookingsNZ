@@ -563,8 +563,8 @@ lists every one; these are in that class:
   the `OtherLodgeRoomType` type, losing what a 2.1 server sent. It is not
   idempotent, and rolling forward afterwards means re-applying `migration.sql`
   by hand, because `_prisma_migrations` still records it as applied.
-- `20261123040000_other_lodge_hidden_at` and
-  `20261123050000_other_lodge_names_not_unique` (#4262, Alpine Central Server
+- `20261126040000_other_lodge_hidden_at` and
+  `20261126050000_other_lodge_names_not_unique` (#4262, Alpine Central Server
   API 2.4 and 2.5) — one window, never applied apart. Together they replace
   the unique index on `OtherLodge.name`, first with one over visible lodges and
   then with a plain index, because two lodges may share a name. The previous
@@ -581,8 +581,8 @@ lists every one; these are in that class:
   `BLUE_GREEN_OLD_APP_AND_WORKERS_STOPPED=1` only once everything old has
   stopped; the window checks below then run as for every windowed migration.
   `OtherLodge` is a small admin registry, so its `ACCESS EXCLUSIVE` locks are
-  brief. **Rollback:** run `20261123050000`'s `rollback.sql` first, then
-  `20261123040000`'s, and only then start the previous release. Each refuses,
+  brief. **Rollback:** run `20261126050000`'s `rollback.sql` first, then
+  `20261126040000`'s, and only then start the previous release. Each refuses,
   before it changes anything, while lodges share a name that its restored index
   cannot hold (`other_lodge_names_rollback_blocked`: two visible lodges;
   `other_lodge_hidden_rollback_blocked`: any two lodges, hidden or not). That is
@@ -682,8 +682,8 @@ occupancy calculation that cannot see held unnamed adults.
 **Reverse every pending windowed migration in application order, newest
 first.** Stop all new app/worker processes first. The full order is:
 
-1. `20261123050000_other_lodge_names_not_unique` and then
-   `20261123040000_other_lodge_hidden_at` (other lodges, #4262), when present.
+1. `20261126050000_other_lodge_names_not_unique` and then
+   `20261126040000_other_lodge_hidden_at` (other lodges, #4262), when present.
    They are the newest, and they touch only `OtherLodge`; each refuses while
    lodges share a name, as their entry above says.
 2. `20261112010000_other_lodge_beds_and_facilities` (other lodges, API 2.1),

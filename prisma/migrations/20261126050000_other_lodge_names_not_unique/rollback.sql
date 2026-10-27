@@ -1,14 +1,14 @@
--- Reverse script for 20261123050000_other_lodge_names_not_unique (#69).
+-- Reverse script for 20261126050000_other_lodge_names_not_unique (#69).
 --
 -- That migration is declared `old_code_compatible=windowed` in
 -- docs/BLUE_GREEN_MIGRATION_SAFETY.tsv, together with
--- 20261123040000_other_lodge_hidden_at (owner decision, 24 Oct 2026, #4262):
+-- 20261126040000_other_lodge_hidden_at (owner decision, 24 Oct 2026, #4262):
 -- its rollback boundary is the MIGRATE step. Prisma never applies, checksums
 -- or reads this file: run it by hand, as the migration role, against the
 -- database being rolled back, with every web colour and worker stopped.
 --
 -- ORDER: newest first. Run THIS script, then
--- 20261123040000_other_lodge_hidden_at/rollback.sql. This one alone does not
+-- 20261126040000_other_lodge_hidden_at/rollback.sql. This one alone does not
 -- restore the previous release: that release needs the FULL unique index on
 -- name, which only the second script restores (and the second refuses to run
 -- first: the index it drops exists only once this one has restored it).
@@ -35,8 +35,8 @@
 -- server; the row that kept the name takes the server's copy.
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
--- 20261123050000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
--- migration.sql BY HAND, after 20261123040000's, before the release serves
+-- 20261126050000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
+-- migration.sql BY HAND, after 20261126040000's, before the release serves
 -- traffic. This script is not idempotent: a second run fails on the index it
 -- dropped, which is the safe direction.
 

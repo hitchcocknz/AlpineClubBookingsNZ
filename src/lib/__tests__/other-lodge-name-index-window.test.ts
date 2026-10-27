@@ -12,9 +12,9 @@ import { MIGRATION_GATE_TIMEOUT_MS } from "./helpers/migration-gate-timeouts";
  * The other-lodge name-index transition is a WINDOWED migration pair (#4262;
  * owner decision 24 Oct 2026: the enforced maintenance-window repair).
  *
- * `20261123040000_other_lodge_hidden_at` drops the full unique index on
+ * `20261126040000_other_lodge_hidden_at` drops the full unique index on
  * `OtherLodge.name`, which the previous release's download upsert needs for its
- * `ON CONFLICT ("name")`; `20261123050000_other_lodge_names_not_unique` then
+ * `ON CONFLICT ("name")`; `20261126050000_other_lodge_names_not_unique` then
  * drops the last uniqueness on the name that release's owned-by-name readers
  * rely on. Neither matches a breaking-SQL pattern (a `DROP INDEX` is not one),
  * so the ledger's `windowed` declaration is the ONLY thing that makes the
@@ -30,8 +30,8 @@ import { MIGRATION_GATE_TIMEOUT_MS } from "./helpers/migration-gate-timeouts";
 const REPO_ROOT = process.cwd();
 const VALIDATOR = "scripts/validate-blue-green-migrations.sh";
 const PAIR = [
-  "20261123040000_other_lodge_hidden_at",
-  "20261123050000_other_lodge_names_not_unique",
+  "20261126040000_other_lodge_hidden_at",
+  "20261126050000_other_lodge_names_not_unique",
 ] as const;
 const files = PAIR.map((name) => `prisma/migrations/${name}/migration.sql`);
 const read = (relative: string) => readFileSync(path.join(REPO_ROOT, relative), "utf8");
@@ -158,8 +158,8 @@ describe("the other-lodge name-index pair is windowed (#4262)", () => {
   // header comment is superseded.
   it("leaves each applied migration.sql byte-identical, with the correction in its ledger row", () => {
     const APPLIED_SHA256: Record<(typeof PAIR)[number], string> = {
-      "20261123040000_other_lodge_hidden_at": "48e00d266f674f36a856e5d4c145fc609687c1f2b2ad593cb72c72c8a5c24ab6",
-      "20261123050000_other_lodge_names_not_unique": "1195dae711e8d47b22e0230cf61b1628d2df9bfca15b96cd5c752d0103309c6a",
+      "20261126040000_other_lodge_hidden_at": "48e00d266f674f36a856e5d4c145fc609687c1f2b2ad593cb72c72c8a5c24ab6",
+      "20261126050000_other_lodge_names_not_unique": "1195dae711e8d47b22e0230cf61b1628d2df9bfca15b96cd5c752d0103309c6a",
     };
     const rows = read("docs/BLUE_GREEN_MIGRATION_SAFETY.tsv").split(/\r?\n/);
     for (const name of PAIR) {
