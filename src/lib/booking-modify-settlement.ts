@@ -301,7 +301,7 @@ export async function applyPaymentAdjustments(
       // #3340 (`INV-PAY-047`, `INV-ADDPAY-023`). A bare `netAmountCents` here is
       // the money leak: minting the new ADDITIONAL intent retires every other
       // outstanding ask on this payment
-      // (`queueSupersededAdditionalIntentCancellations`), so a delta-sized ask
+      // (`queueSupersededAdditionalIntentCancellationRows`), so a delta-sized ask
       // DELETES the unpaid balance of the one it replaces. Two +$70 edits on a
       // $130 paid booking asked $70 and lost $70, permanently and silently.
       //

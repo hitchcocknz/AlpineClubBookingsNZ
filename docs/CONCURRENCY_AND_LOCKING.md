@@ -2079,28 +2079,39 @@ mispricing a booking.
   deliberately **not** taken — the master stays unlocked until step 5, and the
   family-link drift re-check above is what closes that window.
 
-- **Alpine Central Server version recorder** — `src/lib/servernz-version-record.ts`
-  (`recordServerVersionIfCurrent`, #4366): every write of the server's
-  reported API version, from the version check and from a request the server
-  refused for version (409), runs AFTER the HTTP call in one short
-  transaction with a 150s timeout (including row-lock waits) and a 10s pool
-  acquisition maxWait, allowing it to queue behind a lodge merge rather than
-  fail at Prisma's default 5s transaction timeout. It takes `lockServerNzSettings`
-  (`SELECT 1 FROM "ServerNzSettings" WHERE "id" = $1 FOR UPDATE`),
-  then re-reads the stored base URL and the API key's credential version and
-  records only if both still equal what the request was built from. The
-  credential version is the stored row's hash (fresh IV on every write), so a
-  key saved again with the same value (A → B → A) is still a new connection.
-  Counterparts: `updateServerNzSettings` writes the new base URL only; the
-  settings route then calls `clearServerNzApiKey`, whose
-  `forgetServerConnectionAnswers` clears the old answers. Key writes and
-  removals likewise commit before their separate forget. The settings writes
-  queue behind a recorder holding the row lock, and the forget clears any
-  recorded answer; a recorder behind a committed connection change instead
-  re-reads the changed identity and drops the late answer. Singleton-keyed; no advisory lock;
-  no provider call inside the transaction; disjoint from the
-  booking/capacity/credit and money clusters. A missing row locks nothing and
-  fails the address re-read, so nothing is recorded.
+- **Alpine Central Server connection and version recorder** —
+  `withServerNzConnectionTransaction` (`src/lib/servernz-config.ts`, #4436)
+  runs request capture, address replacement (`saveServerNzConnectionSettings`,
+  the settings route) and key replacement (`setServerNzApiKey`, the credentials
+  route) under `lockServerNzSettings`. It materialises the singleton
+  with `createMany(skipDuplicates)` before locking, then reads mutable state.
+  Order: settings row first, credential row second, credential audit last;
+  there is no advisory key (`INV-LOCK-001`, `INV-LOCK-002`, `INV-LOCK-003`).
+  Address replacement commits the new address, credential deletion (and its
+  audit) and answer reset together. Key replacement likewise resets answers
+  in its credential transaction. The fence hands its work a branded
+  `ServerNzConnectionTx`, and the address write, key removal and answer reset
+  require that type, so a call outside the fence does not compile. Request
+  builders read the address and uncached decrypted credential through that
+  transaction client, release the lock, then send HTTP using the captured
+  identity. A warmed cross-process credential cache cannot pair an old key
+  with a new address.
+  Every request therefore serialises on the settings row's `FOR UPDATE`; the
+  hold is short, two reads and no HTTP, so requests queue only briefly.
+  `recordServerVersionIfCurrent` (`src/lib/servernz-version-record.ts`, #4366)
+  takes the same settings lock after HTTP, re-reads the address and credential
+  version and records only for the captured identity. A recorder first has its
+  answer cleared by replacement; a replacement first makes the recorder reject
+  the old identity. Both transaction boundaries allow a 150s timeout and 10s
+  pool acquisition maxWait, including a bounded wait behind a lodge merge.
+  The recorder alone can see an absent row and then records nothing. Other
+  settings writers take no credential lock, so cannot invert this order;
+  the download recorder proposed in open PR #4277 would share the same
+  settings-row protocol. No HTTP runs inside these transactions
+  (`INV-INT-027`), and they remain disjoint from booking/capacity/credit and
+  money clusters. The #4436 race suite forces a sync and address move in both
+  orders, including a warmed old-key cache, and a sync holding the old address
+  while the move and a new key's save queue behind it.
 
 - **Deletion-request approval release** — `src/lib/deletion-request-decision.ts`
   (`releaseDeletionRequestApprovalClaim`, #2627): takes
@@ -3077,6 +3088,51 @@ their status-guard `notIn` set BY DESIGN: a settlement marked `FAILED` by a
 captured (`payment_intent.succeeded` → settle) must still become `SUCCEEDED`, so
 settle legitimately overwrites `FAILED` → `SUCCEEDED`. `lock(1)` guarantees the
 two run whole-before-whole; it is not a veto on that transition.
+
+**#4442: an additional ask's queue excludes a capture of the balance it carries.**
+A replacement ask carries the unpaid balance of the live ask it supersedes
+(`INV-PAY-098`), sized before its Stripe mint; its row and its supersede's
+cancel rows are written after. Every writer of that row - the inline mint
+(`withAdditionalAskQueueTransaction`: the edit doors, a review charge and the
+currency re-issue), the re-issue's completion (`writeReissuedAskUnderRecovery`)
+and the recovery runner's claim hold (`holdAdditionalIntentRecoveryClaim`) - first
+takes `lockAdditionalAskQueue`: the existing global key, then the `Payment`
+row, before any recovery-row claim (`INV-LOCK-002`; registered once,
+`lockAdditionalAskQueue#1`, `INV-LOCK-003`). Each runs on
+`ADDITIONAL_ASK_QUEUE_TRANSACTION_OPTIONS` (`maxWait` 10s, `timeout` 30s, the
+`additional-payment-withdraw.ts` budget), because its intent already exists at
+Stripe. Under the locks it re-reads the live balance through
+`outstandingAdditionalAskCents`, the rule every ask constructor recorded it with
+(`AdditionalAsk.paymentBalanceCents`, from the `Payment` the caller read), and
+refuses any change with `CarriedAskChangedError`, rolling back the whole queue:
+the minted secret was never offered, and the recovery row re-plans from the
+`Payment` as it then stands. The pay page's currency re-issue answers that
+refusal 409 `ADDITIONAL_PAYMENT_CHANGED` (reload). The capture's settle
+(`markPaymentIntentTransactionSucceeded`) writes under the same `Payment` row,
+so a capture committed first is read and refused. A capture landing later is
+owned by the cancel row the queue committed: the webhook's or the runner's
+superseded-capture hand-off refunds it, and the late-success release reads that
+cancel row (`lateCaptureRefundState`) and leaves the invoice unsent, even where
+the webhook's unlocked cancel-row check ran before the queue committed. Folded
+waiting re-issues are not that live balance and stay owed. A frozen replay (no
+figure it can re-derive) is fenced the same way on the balance its own read
+saw. If an additional capture is already on the ledger, a frozen replay refuses
+before minting on every attempt: its amount cannot distinguish the paid balance
+from this change's own debt. The existing retry exhaustion alerts an officer to
+reconcile the payments and collect only what remains owed. This includes fully
+or partly refunded captures, whose effect on the frozen debt is also unknown.
+
+The runner's re-stamp after the Stripe cancels writes nothing and fences only a
+reduction, which orders on the `Payment` row, so it takes that row alone, not
+the global key. A retry whose attempt wrote its row and then failed (that
+re-stamp timing out, say) finds its OWN row - the intent the recovery recorded -
+and resumes the post-write steps (the waiting invoice's attach, the deferred
+invoice, completion) instead of reading the row as a later edit's overtake.
+Stripe mint and cancel calls stay outside these transactions; no new key
+(`INV-LOCK-001` through `INV-LOCK-003`). Proved against a real server in
+`superseded-ask-invoice-carry.realdb.test.ts` (including a capture committing
+while the queue waits on the global key, and a frozen replay) and
+`additional-ask-reduction.realdb.test.ts` (the re-issue's door and runner).
 
 **#3653 adds the organiser child's refund out of the combined card payment
 (`INV-PAY-114`).** Three writers join this cohort and mint no keyspace. The edit
@@ -4075,7 +4131,12 @@ per call through `withStoreTransaction`: the `Payment` row locked first
 (`lockPaymentForRefundedTotal`, `SELECT 1 ... FOR NO KEY UPDATE`), then
 `PaymentRefund` rows inserted with `ON CONFLICT DO NOTHING` in refund-id order,
 then the transaction row's compare-and-set, then the `Payment` aggregate and its
-booking-ledger lines. No provider call runs inside it.
+booking-ledger lines. No provider call runs inside it. A failed refund's floor
+(#4280, `INV-PAY-141`) reads the payment's "Paid another way" close records on
+that same client, under the `Payment` row: the close takes `lock(1)`, then that
+row, before it writes its record, so the writer sees a close whole or waits for
+it. No key is added. Proved in both orders by
+`card-refund-reversal-bank-cash-floor.realdb.test.ts`.
 
 **One order for the refunded total: `Payment` row, then refund rows, then
 transaction rows** — and, in a transaction that also takes the per-member
@@ -5217,7 +5278,9 @@ ordinary additional-ask replay holds (`holdAdditionalIntentRecoveryClaim`): the
 Stripe intent is minted first, outside every lock, under a key that names the
 release; the request's row, its audit row and the cancellation rows of the asks
 it supersedes are written in one claimed transaction; the supersede cancels run
-after it. It takes no advisory key of its own. A cancel that commits between the
+after it. It takes no advisory key of its own; since #4442 the claim hold it
+shares takes the global key, then the `Payment` row, before the recovery row
+(`lockAdditionalAskQueue`). A cancel that commits between the
 runner's ended-booking read and its row write is caught by the second read
 (`INV-ADDPAY-044`), which retires the request.
 
@@ -5227,13 +5290,33 @@ holds no lock and reads Xero outside any transaction. A repeat is harmless
 because the Xero idempotency key is stable, and the retry cap bounds the
 operation rows a failing payment can create.
 
+The backlog batch (`runCreditReleaseBacklog`) is the same enqueue with a ceiling, one more
+read of two `XeroSyncCursor` rows and one audit write; it takes no lock and no claim, and a
+release it has taken is never taken again because the enqueue keys on the release
+(`INV-ADDPAY-050`). The row is inserted once (`createAdditionalPaymentIntentRecoveryOnce`,
+`ON CONFLICT DO NOTHING`), and a pass counts and audits only the rows it inserted, so two
+overlapping payment cycles (the cron leader and a manual run) can each take up to `perRun`
+releases but never the same one, and never write two batch rows for one release. The reminder chase for these requests (`INV-ADDPAY-048`) changes only
+the stamp boundary of the existing guarded claim in `cron-additional-payment-reminders.ts`
+(the slot's start, or half an interval before now, whichever is earlier). The Xero invoice
+read and the bank-transfer offer that decide whether a released-credit reminder goes
+(`credit-release-reminder-gate.ts`, `INV-ADDPAY-051`) run before that claim and outside any
+transaction, in the cron and in the manual re-send alike; a withheld reminder claims nothing,
+and its one audit note is written outside any lock. A release waiting behind an unpaid edit
+request goes back through the recovery runner's one failure write
+(`markPaymentRecoveryOperationFailed`), fenced on the attempt its worker holds, with that
+attempt handed back; it takes no lock and changes no money.
+
 Closing a request Xero shows paid (`credit-release-ask-close.ts`) is a
 settlement-money writer: it cancels the card payment at Stripe first, outside
 any lock, and leaves a succeeded or processing intent alone. It then takes the
 global key and the `Payment` row lock (`INV-LOCK-001`: the global key alone, then the row), fences the
-request row (unpaid, unwithdrawn, carrying nothing) with a status-guarded
-`updateMany`, and writes the bank-cash row in the same transaction; a lost fence writes
-nothing. Registered in `advisory-lock-guard.test.ts`
+request row (unpaid, unwithdrawn, and carrying exactly what it carried when it was read)
+with a status-guarded `updateMany`, and writes the bank-cash row in the same transaction; a
+lost fence writes nothing. A request that carried earlier ones is closed only when every row
+it carried is a credit-release request (read before the provider call; carried rows never
+change once carried, and the re-read requires the payment still to name this request as its
+live ask, so nothing can have been folded in since). Registered in `advisory-lock-guard.test.ts`
 (`closeCreditReleaseAsksPaidInXero#1`).
 
 ## Credit restoration: exactly-once is now STRUCTURAL (#1636)

@@ -713,7 +713,9 @@ positive delta -> additional payment or supplementary Xero invoice
   FAILED by the minter - the door's, the recovery runner's or a currency
   re-issue's - #4316, INV-ADDPAY-044)
 uncollected additional payment -> reminder at +3 days, reminder 2 days before
-  check-in, admin re-send on demand; stops at check-out (never auto-cancelled)
+  check-in, admin re-send on demand; stops at check-out (never auto-cancelled);
+  a credit-release request is instead reminded weekly, four times after the request, past check-out,
+  and so is a request an edit merged into once the stay has ended (INV-ADDPAY-048)
 uncollected review-raised request -> WITHDRAWN by a finance officer (#3528)
 negative delta -> first cancels or shrinks an unpaid price ask (#3954), then
   Stripe refund or source-linked member credit for what is left
@@ -2250,18 +2252,29 @@ inbound fence records its conflict the same way, under the
 
 ```text
 (release row written by the outside-spend converge)
-  -> recovery row `credit_release_ask_<releaseId>`        (sweep; off until the writer switch is on)
+  -> recovery row `credit_release_ask_<releaseId>`        (sweep; off until the writer switch is on;
+                                                            earlier releases only behind the backlog switch)
   -> closed, nothing asked    (not a release / ended booking / payment not captured /
                                organiser-settled / invoice paid in Xero / nothing owed /
                                below the card minimum, the last with an officer alert)
+  -> waiting                  (an unpaid edit request is open: back to the longest retry interval,
+                               no attempt spent, never terminal; officers told once, INV-ADDPAY-051)
   -> ADDITIONAL row PENDING (reason credit_released_outside_app, carries any live ask)
        -> SUCCEEDED by card  -> payment recorded on the booking's invoice (sweep, XeroObjectLink)
-       -> FAILED+withdrawn   when Xero shows the invoice PAID: card payment cancelled first,
+       -> FAILED+withdrawn   when Xero shows the invoice PAID (the request alone, or carrying only
+                               earlier released credit): card payment cancelled first,
                                bank-cash row written in the same transaction
-       -> superseded         by a later ask that carries it (INV-PAY-098)
+       -> superseded         by a later ask that carries it (INV-PAY-098): an edit made while
+                               the request is unpaid MERGES into one request (cause "mixed"),
+                               chased and worded as both
+  chase while unpaid (INV-ADDPAY-048): request email now, reminders at 7, 14, 21 and 28
+                               days; after the fourth reminder only the officers' queues chase
+  reminder withheld for an officer (INV-ADDPAY-051): Xero shows the invoice owing less than the
+                               request's released credit, or not open (paid, voided, unapproved),
+                               or the request cannot be matched to it (none, a 404, no amount due)
 ```
 
-`INV-ADDPAY-045`, `INV-ADDPAY-046`.
+`INV-ADDPAY-045`, `INV-ADDPAY-046`, `INV-ADDPAY-048`, `INV-ADDPAY-050`, `INV-ADDPAY-051`.
 
 ### Manual refund task lifecycle (#2262)
 
@@ -3806,13 +3819,15 @@ two callers on one row (the hand-off above) each record their own outcome of
   the same keyed Xero call (#4356, INV-INT-029): an outcome never replaces a
   better one. A failure, or a FAILED or CANCELLED completion, never lands on
   SUCCEEDED or PARTIAL; PARTIAL never lands on SUCCEEDED; SUCCEEDED lands on
-  any row no claim holds. None but SUCCEEDED lands on a repair's marked
-  RUNNING claim unless written onto that claim. Every outcome carries the
-  claim it was made under (its RUNNING row's `startedAt`, #4373), and none, a
-  success included, lands on a RUNNING row another claim holds: a stale-reset
-  or failed attempt's late outcome never lands on the retry's claim, so the
-  row stays RUNNING for the retry and the booking invoice retry's
-  settle-time fence. A refused write answers null: no link, no
+  any row no claim holds, one resolved in Xero included: it leaves the mark,
+  keeps the links and, if it recorded a Xero object, alerts the officers once
+  per operation after commit (#4374). None but SUCCEEDED lands on a repair's
+  marked RUNNING claim unless written onto that claim. Every outcome carries
+  the claim it was made under (its RUNNING row's `startedAt`, #4373), and
+  none, a success included, lands on a RUNNING row another claim holds: a
+  stale-reset or failed attempt's late outcome never lands on the retry's
+  claim, so the row stays RUNNING for the retry and the booking invoice
+  retry's settle-time fence. A refused write answers null: no link, no
   repeated-failure alert
 worker claims operation -> provider call -> success or retryable failure
 success -> SUCCEEDED clears lastErrorCode and lastErrorMessage, so an earlier

@@ -1,4 +1,4 @@
--- Reverse script for 20261125010000_add_booking_request_apply_account_credit (#4019).
+-- Reverse script for 20261125030000_add_booking_request_apply_account_credit (#4019).
 --
 -- Prisma never applies, checksums or reads this file: run it by hand, as the
 -- migration role, against the database being rolled back.
@@ -9,7 +9,7 @@
 -- live on MemberCredit and are untouched here.
 --
 -- RE-UPGRADING after running this: `_prisma_migrations` still records
--- 20261125010000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
+-- 20261125030000 as APPLIED, so `prisma migrate deploy` skips it. Re-apply
 -- migration.sql BY HAND before the release serves traffic; every row then
 -- reads false again, and a member re-ticks the election on a new request.
 

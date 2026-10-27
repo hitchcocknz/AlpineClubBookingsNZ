@@ -141,6 +141,24 @@ tree for either (the `stored-night-price-repair-census` pattern), the §6 census
 reports PostgreSQL's update and delete counts for the table as information, and
 the write door exposes only `create` and `createMany`.
 
+The database can enforce this as well (#4453). A deployment that uses the
+[least-privilege roles](../../DEPLOYMENT.md#least-privilege-database-roles)
+connects the application as a role holding only INSERT and SELECT on this table:
+an UPDATE, DELETE, TRUNCATE, `INSERT … ON CONFLICT DO UPDATE` or
+`SELECT … FOR UPDATE` against a line is refused with SQLSTATE `42501`, whatever
+the code path (`database-roles.realdb.test.ts`). The other routes are closed too:
+- views over the table are SELECT-only for the application;
+- `SECURITY DEFINER` routines are refused;
+- a booking's or lodge's key cannot be changed at all: a `BEFORE UPDATE OF "id"`
+  trigger on each parent raises `restrict_violation`
+  (`20261125010000_restrict_booking_ledger_key_updates`), so the foreign keys'
+  `ON UPDATE CASCADE` never rewrites `bookingId` or `lodgeId`.
+
+Two things the grant does not cover. Migrations run as the role that owns the
+table. And `bookingId`'s `ON DELETE CASCADE` runs with the owner's rights, so
+**deleting a booking still removes its lines**. That is booking deletion's
+behaviour, and whether it should change belongs to this design, not to the grant (#4482).
+
 ### 4.1 Derived quantities, and the one place they are derived
 
 ```

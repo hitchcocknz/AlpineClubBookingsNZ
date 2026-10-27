@@ -339,7 +339,7 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
     as `finalPrice + changeFee = net paid + credit + uncollected ask`.
   - **An ask is sized so the mirror still holds after it.** Minting a replacement
     ADDITIONAL PaymentIntent RETIRES every other outstanding ask on the payment
-    (`queueSupersededAdditionalIntentCancellations`), so an ask sized on one
+    (`queueSupersededAdditionalIntentCancellationRows`), so an ask sized on one
     edit's own delta deletes the unpaid balance of the ask it replaces. Two
     consecutive +$70 edits on a $130 paid booking asked $70 and lost $70,
     permanently and silently. The ask is therefore the edit's own net PLUS the unpaid balance of the ask it
@@ -475,8 +475,8 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `ON CONFLICT DO NOTHING` insert recorded it, in a counted status, made no
   earlier than the second the ledger-writers migration finished on this install
   (an older one is already in the mirror); it subtracts a counted refund it sees
-  move to failed or cancelled, never below the payment's account credit plus
-  its card refunds still counted (a refund the old formula never added, failing
+  move to failed or cancelled, never below the payment's floor
+  ([`INV-PAY-141`](#inv-pay-141); a refund the old formula never added, failing
   later, takes nothing). Rows, mirror and aggregate commit in one transaction.
 - **Every later write of that column is one compare-and-set**, re-read and
   retried: the writer above, #1491's fold, `applyLocalRefundAllocation`, which
@@ -492,6 +492,39 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
 - Pinned by `payment-transactions-refunds.test.ts` and
   `card-refund-mirror-races.realdb.test.ts`. Totals the old formula left short
   are listed by `pnpm run payments:audit-refunded-total`, never repaired by code.
+
+## INV-PAY-141
+
+**Related: `INV-PAY-103`** (the one card-refund writer) and **`INV-PAY-122`**
+(closing a dead card refund).
+
+- **A card refund's reversal never takes a payment's refunded total below the
+  bank cash its "Paid another way" closes recorded** (#4280; owner, 22 and 26
+  Oct 2026). `INV-PAY-103`'s floor on a counted refund moving to failed or
+  cancelled is the captured amount, or less: card refunds still counted, plus
+  account credit, plus that cash (`expectedRefundedFloorCents`), less what the
+  payment's other charges hold. A late refund the cap kept out takes none of it.
+- **The cash** is each completed close record's `amountCents`
+  (`CARD_REFUND_PAID_ANOTHER_WAY_TASK_WHERE`): for a part close, what was paid.
+  Its note's state changes nothing. One reader,
+  `readPaidAnotherWayCloseBankCashByPayment`, on the writer's client under the
+  Payment row it holds.
+- **Only those closes.** Card and capacity shortfalls are outside this bounded
+  repair (owner, 26 Oct 2026; #4162 never undoes them). Ordinary bank
+  hand-backs are excluded because #4162 can undo one while its task reads
+  completed.
+- The floor only bounds a subtraction: it never raises a total and writes no
+  row. No new lock (`INV-LOCK-001`).
+- **Limits.** A charge's floor nets the other charges' mirrors in full, so
+  shortfall or hand-back cash on another charge can still let it drop, unseen
+  by the audit (#4488): card A $200 closed, a $100 shortfall paid on B, A's
+  capped late refund failing takes A to $100. Overstated account credit (pre-#1636 restores) can hold
+  a total too high: the fail-safe direction.
+- **History is reported, never rewritten** by the refunded-total audit, in one
+  read-only snapshot. Rolling the code back restores the old subtraction.
+- Pinned by `card-refund-reversal-bank-cash-floor.realdb.test.ts`,
+  `payment-transactions-refunds.test.ts` and
+  `refunded-total-shortfall-audit.test.ts`.
 
 ## INV-PAY-002
 
@@ -1055,10 +1088,10 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   module's one `applyCreditToBooking` call sits inside the member-choice branch,
   before the legacy mint. The member-choice branch (#4019) mints no receivable
   at approval; the switch route mints it later at the effective price
-  ([`INV-PAY-141`](#inv-pay-141)).
+  ([`INV-PAY-142`](#inv-pay-142)).
 
 
-## INV-PAY-141
+## INV-PAY-142
 
 **Related: `INV-PAY-059`, `INV-MOD-012`, `INV-LOCK-002`.**
 
@@ -2407,22 +2440,19 @@ _Legacy: settles tasks raised before #4317._
   ADDITIONAL PaymentIntent cancels every other live one on the payment
   ([INV-ADDPAY-023]). [INV-PAY-047] sizes an ordinary edit's ask accordingly; a
   settled review's charge is the SAME rule over its own figure, that edit's
-  settled shares ([INV-PAY-062]). Until #3371 it passed the bare sum, deleting
-  an earlier change's unpaid extra.
+  settled shares ([INV-PAY-062]).
   - **The carried amount is its own stored fact**,
     `PaymentTransaction.carriedAskCents`, and is a PART of `amountCents`, never
-    an addition. Once the retired row is cancelled nothing can derive it, so
-    recording it is provenance, not duplication.
+    an addition: once the retired row is cancelled nothing can derive it.
   - **It never joins the derived share total.** [INV-PAY-062]'s refuse-to-lower
     rule is safe only because that sum never decreases, and that monotonicity is
     why this path can refuse a stale lowering with no lock across a provider
     call ([`CONCURRENCY_AND_LOCKING.md`](../CONCURRENCY_AND_LOCKING.md)). Two
     concurrent raises are ordered by [INV-PAY-112]'s claim, not by it.
-  - **A later share reads it off the row, never off the payment**, which mirrors
+  - **A later share reads it off the row, never the payment**, which mirrors
     this request by then.
   - **The accounting leg never sees it.** [INV-PAY-070] bills one invoice per
-    edit, and this is not that edit's money, so every figure handed to that leg
-    has the carried part taken out.
+    edit, so every figure handed to that leg has the carried part taken out.
   - **The obligation is structural.** `AdditionalAsk`
     (`src/lib/additional-payment-ask.ts`) is a module-private class holding the
     carried part in a `#private` field, so it can be neither built nor spread
@@ -2431,6 +2461,10 @@ _Legacy: settles tasks raised before #4317._
     refuses a deliberate assertion, so the call-site census refuses it.
   - **A FAILED mint carries nothing**: it retired nothing, so the earlier ask is
     still live for the replay to read.
+  - **Re-checked before it is written** (#4442): its queue re-reads the carried
+    live balance under the global key, then the `Payment` row, and refuses any
+    change (`assertAdditionalAskSizingCurrent`;
+    `superseded-ask-invoice-carry.realdb.test.ts`).
 
 ## INV-PAY-112
 
