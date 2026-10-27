@@ -39,6 +39,8 @@ import {
 } from "@/lib/backup-restore-validation";
 
 const BACKUP_DIR = "/tmp/tacbookings-backups";
+/** Dumps, S3 readbacks and interrupted `.partial` writes in the spool. */
+const SPOOL_FILE_PATTERN = /^tacbookings-.*\.sql\.gz(?:\.s3-readback|\.partial)?$/;
 const S3_BACKUP_PREFIX = "tacbookings_s3backup";
 const MIN_BACKUP_SIZE_BYTES = 128;
 export const BACKUP_COMMAND_TIMEOUT_MS = 120_000;
@@ -135,6 +137,11 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
         ? "The restore-validation URL must point at a disposable shadow database, not the live DATABASE_URL"
         : undefined;
 
+  // The spool keeps at most this run's completed dump, and only while no
+  // destination received it (#4487).
+  let spoolDump: string | undefined;
+  let delivered = false;
+
   try {
     // Ensure backup directory exists
     if (!existsSync(BACKUP_DIR)) {
@@ -178,6 +185,8 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
       };
     }
 
+    spoolDump = filename;
+
     // The local destination, written from the SAME verified dump the S3 upload
     // uses — after the empty/too-small checks above, so a corrupt dump is never
     // copied into the directory an operator would restore from.
@@ -188,6 +197,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
       try {
         localPath = storeLocalBackup(filepath, config.localPath);
         storedLocally = true;
+        delivered = true;
         // Same retention window as S3, by owner instruction — one number for the
         // whole feature.
         localPruned = pruneLocalBackups(config.localPath, config.retentionDays);
@@ -231,6 +241,7 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
         });
 
         uploadedToS3 = true;
+        delivered = true;
         s3ReadbackVerified = true;
         s3ReadbackSizeBytes = readback.sizeBytes;
         s3ReadbackPath = readback.filepath;
@@ -322,8 +333,8 @@ export async function runDatabaseBackup(): Promise<BackupResult> {
     logger.error({ err, job: "backup" }, "pg_dump failed");
     return { success: false, error: `pg_dump failed: ${message}` };
   } finally {
-    // The spool persists across restarts; failures must not bypass retention.
-    cleanupOldBackups(config.retentionDays);
+    // The spool persists across restarts, so every run, failed or not, prunes it.
+    pruneBackupSpool(delivered ? undefined : spoolDump);
   }
 }
 
@@ -719,24 +730,23 @@ async function validateBackupRestore(
 }
 
 /**
- * Remove backup files older than the configured retention window.
+ * The spool is working space, not a destination (#4487): remove every dump,
+ * readback and `.partial` except `keep`, the dump of a run no destination
+ * received. Destination retention lives with each destination.
  */
-function cleanupOldBackups(retentionDays: number) {
-  const cutoff = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
-
+function pruneBackupSpool(keep: string | undefined) {
   try {
     if (!existsSync(BACKUP_DIR)) return;
-    const files = readdirSync(BACKUP_DIR);
-    for (const file of files) {
-      if (!file.startsWith("tacbookings-") || !/\.sql\.gz(?:\.s3-readback)?$/.test(file)) continue;
-      const filepath = path.join(BACKUP_DIR, file);
-      const stats = statSync(filepath);
-      if (stats.mtimeMs < cutoff) {
-        unlinkSync(filepath);
-        logger.info({ file, job: "backup" }, "Cleaned up old backup");
+    for (const file of readdirSync(BACKUP_DIR)) {
+      if (file === keep || !SPOOL_FILE_PATTERN.test(file)) continue;
+      try {
+        unlinkSync(path.join(BACKUP_DIR, file));
+        logger.info({ file, job: "backup" }, "Removed backup spool file");
+      } catch (err) {
+        logger.error({ err, file, job: "backup" }, "Backup spool cleanup error");
       }
     }
   } catch (err) {
-    logger.error({ err, job: "backup" }, "Backup cleanup error");
+    logger.error({ err, job: "backup" }, "Backup spool cleanup error");
   }
 }

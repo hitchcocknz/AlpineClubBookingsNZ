@@ -28,6 +28,12 @@ vi.mock("fs", async () => {
   };
 });
 
+// The local destination's own file writes are covered by backup-local.test.ts.
+vi.mock("@/lib/backup-local", () => ({
+  storeLocalBackup: vi.fn(() => "/srv/backups/stored.sql.gz"),
+  pruneLocalBackups: vi.fn(() => []),
+}));
+
 vi.mock("@/lib/logger", () => ({
   default: {
     error: vi.fn(),
@@ -546,20 +552,73 @@ describe("backup", () => {
     expect(buildBackupCronOutcome(result).status).toBe("FAILURE");
   });
 
-  it("prunes expired spool dumps and readbacks even when the run fails", async () => {
-    vi.mocked(streamPgDump).mockRejectedValue(new Error("dump failed"));
-    readdirSyncMock.mockReturnValue([
-      "tacbookings-expired.sql.gz",
-      "tacbookings-expired.sql.gz.s3-readback",
-      "unrelated.sql.gz",
-    ] as never);
-    statSyncMock.mockReturnValue({ size: 1024, mtimeMs: 0 } as never);
+  describe("backup spool keeps at most the latest undelivered dump (#4487)", () => {
+    const STALE_SPOOL = [
+      "tacbookings-2026-06-30T00-00-00-000Z.sql.gz",
+      "tacbookings-2026-06-30T00-00-00-000Z.sql.gz.s3-readback",
+      "tacbookings-2026-06-30T00-00-00-000Z.sql.gz.partial",
+    ];
+    let currentDump: string | undefined;
 
-    await expect(runDatabaseBackup()).resolves.toMatchObject({ success: false });
-    expect(unlinkSyncMock.mock.calls.map(([file]) => path.basename(String(file)))).toEqual([
-      "tacbookings-expired.sql.gz",
-      "tacbookings-expired.sql.gz.s3-readback",
-    ]);
+    beforeEach(() => {
+      currentDump = undefined;
+      vi.mocked(streamPgDump).mockImplementation(async ({ filepath }) => {
+        currentDump = path.basename(filepath);
+      });
+      // A fresh dump is never pruned for its age: mtime is "now".
+      readdirSyncMock.mockImplementation((() => [
+        ...STALE_SPOOL,
+        "unrelated.sql.gz",
+        ...(currentDump ? [currentDump] : []),
+      ]) as never);
+    });
+
+    const unlinked = () =>
+      unlinkSyncMock.mock.calls.map(([file]) => path.basename(String(file)));
+    const spoolLeft = () =>
+      [...STALE_SPOOL, ...(currentDump ? [currentDump] : [])].filter(
+        (file) => !unlinked().includes(file),
+      );
+
+    it("leaves no spool file once S3 holds a verified copy", async () => {
+      setConfig({ bucket: "tacbookings-backups" });
+      await expect(runDatabaseBackup()).resolves.toMatchObject({ success: true, uploadedToS3: true });
+      expect(currentDump).toMatch(/^tacbookings-.*\.sql\.gz$/);
+      expect(spoolLeft()).toEqual([]);
+      expect(unlinked()).not.toContain("unrelated.sql.gz");
+    });
+
+    it("leaves no spool file once the local destination holds a copy", async () => {
+      setConfig({ enabled: false, localEnabled: true, localPath: "/srv/backups" });
+      await expect(runDatabaseBackup()).resolves.toMatchObject({ success: true, storedLocally: true });
+      expect(spoolLeft()).toEqual([]);
+    });
+
+    it("keeps exactly this run's dump when no destination received it", async () => {
+      // Enabled with no bucket: the backup-not-durable case.
+      const result = await runDatabaseBackup();
+      expect(buildBackupCronOutcome(result).resultSummary).toMatchObject({
+        healthSignal: "backup-not-durable",
+      });
+      expect(spoolLeft()).toEqual([currentDump]);
+      expect(result.filename).toBe(currentDump);
+    });
+
+    it("removes stale dumps, readbacks and partials when the dump fails", async () => {
+      vi.mocked(streamPgDump).mockRejectedValue(new Error("dump failed"));
+      await expect(runDatabaseBackup()).resolves.toMatchObject({ success: false });
+      expect(unlinked()).toEqual(STALE_SPOOL);
+    });
+
+    it("removes this run's dump too when S3 received it but the run then failed", async () => {
+      setConfig({
+        bucket: "tacbookings-backups",
+        restoreValidationUrl: "postgresql://check:check-pw@shadow/tacbookings_restore",
+      });
+      vi.mocked(restoreDumpWithoutOwnershipOrPrivileges).mockRejectedValueOnce(new Error("restore broke"));
+      await expect(runDatabaseBackup()).resolves.toMatchObject({ success: false, uploadedToS3: true });
+      expect(spoolLeft()).toEqual([]);
+    });
   });
 
   it("verifies S3 readback after upload before declaring success", async () => {
@@ -698,6 +757,11 @@ describe("backup", () => {
    * refused database, and the run reports failure with the reason.
    */
   async function expectBackupTakenValidationRefused(reason: string) {
+    const dumpedFile = () => vi.mocked(streamPgDump).mock.calls[0]?.[0].filepath;
+    readdirSyncMock.mockImplementation((() => {
+      const file = dumpedFile();
+      return ["tacbookings-stale.sql.gz", ...(file ? [path.basename(file)] : [])];
+    }) as never);
     const result = await runDatabaseBackup();
     expect(result).toMatchObject({
       success: false,
@@ -708,8 +772,12 @@ describe("backup", () => {
     expect(streamPgDump).toHaveBeenCalled();
     expect(execFileSyncMock).not.toHaveBeenCalledWith("psql", expect.anything(), expect.anything());
     expect(vi.mocked(restoreDumpWithoutOwnershipOrPrivileges)).not.toHaveBeenCalled();
-    // A misconfigured URL now dumps every night, so the old dumps still age out.
+    // No destination received it, so the dump stays in the spool; older ones go.
     expect(readdirSyncMock).toHaveBeenCalled();
+    expect(result.filename).toBeTruthy();
+    expect(unlinkSyncMock.mock.calls.map(([file]) => path.basename(String(file)))).toEqual([
+      "tacbookings-stale.sql.gz",
+    ]);
   }
 
   it("refuses restore validation when the shadow URL points at the source database, still taking the backup", async () => {
