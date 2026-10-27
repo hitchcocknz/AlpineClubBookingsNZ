@@ -274,7 +274,7 @@ export async function applyAdditionalCaptureReceiptAction(
 
 /**
  * #4324 (owner decision 25 Oct 2026, Q3 "apply automatically";
- * `INV-PAY-143`): THE REPAIR TOOL'S HALF OF A KEPT CHANGE CAPTURE - a late
+ * `INV-PAY-144`): THE REPAIR TOOL'S HALF OF A KEPT CHANGE CAPTURE - a late
  * card payment for a booking change that a treasurer kept on a cancelled
  * booking whose primary Xero invoice exists, which Xero never recorded.
  *
@@ -540,7 +540,7 @@ export function keptChangeCaptureQueuesKeptInvoice(
 }
 
 /**
- * #4324 (`INV-PAY-143`): whether a kept late capture of this change - on a
+ * #4324 (`INV-PAY-144`): whether a kept late capture of this change - on a
  * cancelled booking, the only place one is kept - is recorded by its
  * kept-capture invoice: one asked for on its approval task, or one this pass
  * raises ({@link keptChangeCaptureQueuesKeptInvoice}). That invoice bills the

@@ -608,7 +608,7 @@ export function classifyBookingContext(
             actionKeys: [action.key],
           });
         } else if (!blockingOperation && keptInvoiceBillsChange(context, modification.id, capturedPaymentTransactions)) {
-          // #4324 (`INV-PAY-143`): a kept late capture's own invoice bills and records this change; never a second invoice.
+          // #4324 (`INV-PAY-144`): a kept late capture's own invoice bills and records this change; never a second invoice.
         } else if (!blockingOperation && primaryInvoiceEditTimingRefusal) {
           /**
            * REPORTED, NEVER APPLIED, AND NEVER SILENTLY SKIPPED (#3199).
@@ -2005,7 +2005,7 @@ export function classifyBookingContext(
           }),
         }) !== "kept-invoice" && !keptLateCaptureInvoiceAsked(kept.operations)
       ) {
-        // #4324 (`INV-PAY-143`): decided by its change's evidence; one given a kept-capture invoice is retried below.
+        // #4324 (`INV-PAY-144`): decided by its change's evidence; one given a kept-capture invoice is retried below.
         addKeptChangeCaptureFinding({ findings, actionMap, booking, payment, transaction, kept, found: context.keptChangeCaptures?.get(transaction.stripePaymentIntentId) });
         continue;
       }

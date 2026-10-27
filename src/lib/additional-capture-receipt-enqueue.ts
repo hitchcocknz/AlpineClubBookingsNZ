@@ -22,7 +22,7 @@
  *
  * Not for a booking paid by internet banking (that settlement is the
  * treasurer's, never a Stripe receipt), nor for a cancelled booking - save
- * one case (#4324, `INV-PAY-143`): a late capture a treasurer KEPT whose
+ * one case (#4324, `INV-PAY-144`): a late capture a treasurer KEPT whose
  * change the primary invoice bills, queued by the keep's one decision
  * (`queueKeptLateCaptureRecord`, `keptLateCapture`) on its own transaction,
  * which holds the approval task's row; under the anchor lock the task is read

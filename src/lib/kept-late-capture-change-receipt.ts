@@ -1,5 +1,5 @@
 /**
- * #4324 (owner decision 25 Oct 2026; `INV-PAY-143`): A KEPT CHANGE CAPTURE'S
+ * #4324 (owner decision 25 Oct 2026; `INV-PAY-144`): A KEPT CHANGE CAPTURE'S
  * OWN RECEIPT on a cancelled booking. Where a treasurer keeps a late card
  * payment for a booking change whose primary invoice bills that change, the
  * keep's decision (`planKeptLateCaptureXeroRecord`) queues the capture's own

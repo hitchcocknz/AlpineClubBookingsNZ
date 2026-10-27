@@ -1417,7 +1417,19 @@ kind of booking request; a public or school request always has
 VERIFIED -> APPROVED -> CONVERTED  (officer approves with a priced headcount; a
                                 CONFIRMED booking is created, owned by the
                                 requesting login member, with wholeLodgeHold
-                                stamped by the approving admin)
+                                stamped by the approving admin. With the
+                                Internet Banking and Xero modules both on it
+                                carries NO Payment row: the member pays from
+                                the booking page by card, or switches it to
+                                Internet Banking, which mints the receivable
+                                and raises the invoice then — the same
+                                CONFIRMED -> PAID settlement every card or
+                                IB capture takes. Credit the member asked for
+                                on the request is applied at approval; credit
+                                covering the whole price lands it PAID here.
+                                With either module off, the legacy shape: a
+                                PENDING INTERNET_BANKING Payment row invoiced
+                                post-commit)
 PRICED   -> APPROVED -> CONVERTED  (same transition, defensive: see the note
                                 below — nothing sanctioned puts a member-origin
                                 row in PRICED, and the approval accepts it
@@ -1426,6 +1438,15 @@ PRICED   -> APPROVED -> CONVERTED  (same transition, defensive: see the note
 VERIFIED -> DECLINED           (officer declines; the note is audit-log-only)
 VERIFIED -> CANCELLED          (the MEMBER withdraws it)
 ```
+
+Opening card entry leaves the unpaid approval CONFIRMED with an uncaptured
+Stripe PRIMARY attempt. It still reaches the applied-credit clamp, $0
+settlement and finished-stay collection queue (`INV-PAY-140`); received,
+refunded, invoiced or unverified payment evidence does not enter that branch.
+Concurrent Internet Banking switches re-read the payment source under the
+existing global/lodge locks and replay the winner's persisted hold fields
+without another receivable (`INV-LOCK-002`); the replay re-runs the
+idempotent invoice enqueue after the transaction.
 
 **Why `PRICED` appears above when the prose below says these rows never reach it.**
 Both are true and the difference matters. Nothing sanctioned can price a
@@ -3967,7 +3988,7 @@ change's card capture kept, nothing parked on its intent, primary invoice
   or one naming or covering it, or a kept-capture invoice); a replay, or the
   webhook and the confirm route at once, find it (already-released)
 late change capture KEPT on a cancelled, invoiced booking (the #3639 task
-  DISMISSED; #4324, INV-PAY-143) -> the keep's one decision, under the task row
+  DISMISSED; #4324, INV-PAY-144) -> the keep's one decision, under the task row
   then the change's anchor lock (the repair tool's QUEUE_KEPT_LATE_CAPTURE_RECORD
   runs the same), after finding the capture's receipt or kept invoice:
     a change invoice naming the capture, paid or awaiting release -> the

@@ -233,7 +233,7 @@ describe("readCaptureRecorder (B, C)", () => {
     );
   });
 
-  it("MUTATION #4324 (INV-PAY-143): is the kept late capture's own invoice queued for it, before anything the primary or a gap took", async () => {
+  it("MUTATION #4324 (INV-PAY-144): is the kept late capture's own invoice queued for it, before anything the primary or a gap took", async () => {
     found = { naming: null, covering: gapCovering(3_000), own: null, kept: { id: "op_kept" } };
     await expect(read()).resolves.toEqual({ kind: "kept-late-capture-invoice", operationId: "op_kept" });
     expect(store.xeroSyncOperation.findFirst).toHaveBeenCalledWith({

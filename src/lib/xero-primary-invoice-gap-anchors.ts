@@ -251,7 +251,7 @@ export async function readPrimaryInvoiceGapBilling(
 }
 
 /**
- * #4324 Codex re-review (`INV-PAY-143`): DID THE PRIMARY INVOICE MISS THIS
+ * #4324 Codex re-review (`INV-PAY-144`): DID THE PRIMARY INVOICE MISS THIS
  * MARKED CHANGE? #3980's settlement marker says the edit expected the primary
  * to bill it; one that raced the primary's create was billed by the gap
  * invoice instead, if at all. Read from the create's snapshot where it stored
@@ -268,7 +268,7 @@ export function primaryInvoiceMissedChange(
 }
 
 /**
- * #4324 review N2 (`INV-PAY-143`, `INV-SSOT`): DOES THIS GAP INVOICE BILL THIS
+ * #4324 review N2 (`INV-PAY-144`, `INV-SSOT`): DOES THIS GAP INVOICE BILL THIS
  * CHANGE? Read from {@link findPrimaryInvoiceGapInvoice}'s own answer, the one
  * `readCaptureRecorder` targets a change's capture at: the change is one of its
  * racing anchors (any of them, not only the first it is anchored on), and the

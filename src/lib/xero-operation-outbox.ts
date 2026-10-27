@@ -1664,7 +1664,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
   const decide = async (tx: Prisma.TransactionClient) => {
     // #3953 round 7: where the booking has a change capture no change can be read from, its receipt decides under the BOOKING's key, so this takes that key first (booking, then anchor - the one order; nothing takes them the other way). Round 9: only for an invoice naming no capture, the one kind that might record such a capture.
     if (localId !== bookingId && (options?.recordPayment ?? true) && !options?.primaryInvoiceGap && !options?.paymentIntentId && (await bookingHasUnattributedCaptures(tx, bookingId))) await lockSupplementaryInvoiceAnchor(tx, bookingId);
-    // #4324 (4384-R2, `INV-PAY-143`): a gap invoice bills every anchor its amount covers, so it takes each one's key, sorted (the one order), before asking whether a kept capture's own invoice bills any of them.
+    // #4324 (4384-R2, `INV-PAY-144`): a gap invoice bills every anchor its amount covers, so it takes each one's key, sorted (the one order), before asking whether a kept capture's own invoice bills any of them.
     const billedChangeIds = [...new Set([localId, ...(options?.primaryInvoiceGap?.billedChangeIds ?? [])])].sort();
     for (const anchorId of billedChangeIds) await lockSupplementaryInvoiceAnchor(tx, anchorId);
 
@@ -1744,7 +1744,7 @@ async function enqueueSupplementaryInvoiceForAnchor(
       };
     }
 
-    // #4324 (`INV-PAY-143`): a change its kept late capture's own invoice bills gets no second invoice, paid or unpaid.
+    // #4324 (`INV-PAY-144`): a change its kept late capture's own invoice bills gets no second invoice, paid or unpaid.
     let keptBilledChangeId: string | undefined;
     for (const id of localModel === "BookingModification" ? billedChangeIds : []) if (!keptBilledChangeId && (await keptInvoiceBillsChangeCapture(tx, id))) keptBilledChangeId = id;
     if (keptBilledChangeId) return { queueOperationId: null, outcome: "none" as XeroSupplementaryInvoiceEnqueueOutcome, refusedBy: "kept-late-capture-invoice" as const, keptBilledChangeId, message: "A kept late card payment's own Xero invoice already bills this booking change." };

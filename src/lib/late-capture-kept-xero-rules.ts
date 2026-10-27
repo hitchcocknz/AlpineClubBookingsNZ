@@ -146,7 +146,7 @@ export type KeptChangeCaptureRoute = "change-invoice" | "receipt" | "kept-invoic
 
 /**
  * #4324 (owner decision 25 Oct 2026, Q1 "split on the evidence";
- * `INV-PAY-143`): WHICH DOCUMENT RECORDS A KEPT CHANGE CAPTURE on a cancelled
+ * `INV-PAY-144`): WHICH DOCUMENT RECORDS A KEPT CHANGE CAPTURE on a cancelled
  * booking whose primary invoice exists. Pure; decided once, under the
  * change's anchor lock (`queueKeptLateCaptureRecord`), and read by the repair
  * tool's finding.

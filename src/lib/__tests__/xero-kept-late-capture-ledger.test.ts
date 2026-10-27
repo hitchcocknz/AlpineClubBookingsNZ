@@ -36,7 +36,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
  *    locks `card-refund-paid-another-way.test.ts` pins. What it queues is the
  *    REAL enqueue, and the receipt's worker and the cash evidence are real.
  *
- * #4324 (`INV-PAY-143`): a kept change capture whose primary invoice bills the
+ * #4324 (`INV-PAY-144`): a kept change capture whose primary invoice bills the
  * change is recorded by the REAL receipt enqueue and worker
  * (`recordAdditionalCaptureReceipt`) against a fake Xero whose AmountDue is
  * read from the ledger (cases e3, e4).
@@ -774,7 +774,7 @@ describe("a kept late capture is counted once in Xero", () => {
   });
 
   /**
-   * #4324 (`INV-PAY-143`): a change invoice the reaper RETIRED still answers
+   * #4324 (`INV-PAY-144`): a change invoice the reaper RETIRED still answers
    * the capture it names (`RETIRED_CODES_ANSWERING_CAPTURE`), though every row
    * the change has is CANCELLED - so the keep leaves it to the late-success
    * release and never raises the kept-capture invoice or a receipt beside it.
@@ -909,7 +909,7 @@ describe("a kept late capture is counted once in Xero", () => {
  */
 /**
  * #4324 (owner decision 25 Oct 2026, Q1 "split on the evidence";
- * `INV-PAY-143`): a kept CHANGE capture on a paid-cancelled booking whose
+ * `INV-PAY-144`): a kept CHANGE capture on a paid-cancelled booking whose
  * primary invoice exists. The paid cancel leaves the primary standing, so
  * where it bills the change it still shows the change owing; the capture is
  * then a payment on it (e3), never a second invoice. Where nothing bills the

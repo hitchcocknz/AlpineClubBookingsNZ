@@ -329,7 +329,7 @@ describe("planKeptLateCaptureXeroRecord", () => {
 
 /**
  * #4324 (owner decision 25 Oct 2026, Q1 "split on the evidence";
- * `INV-PAY-143`): a kept CHANGE capture on a cancelled booking whose primary
+ * `INV-PAY-144`): a kept CHANGE capture on a cancelled booking whose primary
  * invoice exists. The books each route produces are
  * `xero-kept-late-capture-ledger.test.ts`'s (e3, e4).
  */

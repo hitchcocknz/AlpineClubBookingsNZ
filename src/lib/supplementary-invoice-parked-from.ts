@@ -46,7 +46,7 @@ export function supplementaryInvoiceWaitedFirstOn(requestPayload: unknown): stri
  * #3403 review (M1): a change's invoice moved off this intent onto the request
  * carrying its balance and still `WAITING_PAYMENT` there - the invoice a
  * capture of this intent the club keeps takes back before its release reads
- * (`returnMovedInvoicesToCapturedIntent`). #4324 (`INV-PAY-143`): the keep's
+ * (`returnMovedInvoicesToCapturedIntent`). #4324 (`INV-PAY-144`): the keep's
  * evidence reads the same rows as a change invoice answering that capture.
  */
 export function supplementaryInvoicesMovedOffIntentWhere(paymentIntentId: string): Prisma.XeroSyncOperationWhereInput {

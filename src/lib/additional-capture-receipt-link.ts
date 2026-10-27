@@ -199,7 +199,7 @@ export async function bookingHasPaidUnnamedSupplementary(
  * running receipt, on that read, records against it - one recorder either
  * way, and the window between its claim and its store is covered.
  *
- * #4324 (`INV-PAY-143`): a kept late capture's own invoice
+ * #4324 (`INV-PAY-144`): a kept late capture's own invoice
  * (`KEPT_LATE_CAPTURE_INVOICE`, any status but CANCELLED, its payload naming
  * the capture) counts in both modes: the keep queued it as the capture's
  * recorder, under this same anchor lock.
@@ -283,7 +283,7 @@ async function keptInvoiceNamesCapture(
 }
 
 /**
- * #4324 (`INV-PAY-143`): WHETHER A KEPT-CAPTURE INVOICE BILLS THIS CHANGE - a
+ * #4324 (`INV-PAY-144`): WHETHER A KEPT-CAPTURE INVOICE BILLS THIS CHANGE - a
  * live one naming a capture of the change, which a treasurer's keep queued
  * under the change's anchor lock where nothing else billed it. It records the
  * change's money as income and its receipt both, so the supplementary enqueue

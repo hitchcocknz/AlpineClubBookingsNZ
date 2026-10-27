@@ -173,7 +173,7 @@ describe("anchorCaptureHasReceipt", () => {
     await expect(anchorCaptureHasReceipt(store({ captures, link: { id: "link_1" } }) as never, input, decidedOnly)).resolves.toBe(true);
   });
 
-  it("MUTATION #4324 (INV-PAY-143): counts a kept late capture's own invoice naming one of the captures, in both modes", async () => {
+  it("MUTATION #4324 (INV-PAY-144): counts a kept late capture's own invoice naming one of the captures, in both modes", async () => {
     const input = { bookingId: "booking_1", bookingModificationId: "mod_1", paymentIntentId: "pi_kept" };
     const captures = [{ id: "tx_1", stripePaymentIntentId: "pi_kept" }];
     const kept = [{ queueType: "KEPT_LATE_CAPTURE_INVOICE" }];

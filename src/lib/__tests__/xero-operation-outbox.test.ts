@@ -833,7 +833,7 @@ describe("enqueueXeroSupplementaryInvoiceOperation", () => {
     mocks.startXeroSyncOperation.mockResolvedValue({ id: "op_supplementary_1" });
   });
 
-  it("MUTATION #4324 item 11 (INV-PAY-143): raises no invoice, paid or unpaid, for a change a kept-capture invoice bills", async () => {
+  it("MUTATION #4324 item 11 (INV-PAY-144): raises no invoice, paid or unpaid, for a change a kept-capture invoice bills", async () => {
     mocks.keptInvoiceBillsChangeCapture.mockResolvedValueOnce(true);
     await expect(
       enqueueXeroSupplementaryInvoiceOperation({ bookingId: "booking_1", priceDiffCents: 8000, changeFeeCents: 0, bookingModificationId: "mod_1" }),

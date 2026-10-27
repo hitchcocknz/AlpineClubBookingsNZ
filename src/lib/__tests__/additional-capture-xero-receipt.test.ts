@@ -522,7 +522,7 @@ describe("recordAdditionalCaptureReceipt", () => {
   });
 
   /**
-   * #4324 (owner decision 25 Oct 2026; `INV-PAY-143`): a late capture a
+   * #4324 (owner decision 25 Oct 2026; `INV-PAY-144`): a late capture a
    * treasurer KEPT on a cancelled booking whose primary invoice bills its
    * change is recorded as a payment on that invoice, capped at what Xero
    * shows due.
