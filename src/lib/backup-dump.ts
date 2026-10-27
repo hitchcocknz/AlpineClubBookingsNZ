@@ -36,10 +36,14 @@ export async function streamPgDump(input: {
     controller.abort();
     dump.kill("SIGKILL");
   }, input.timeoutMs);
+  // A timestamp collision must not truncate or remove another run's backup.
+  let ownsFile = false;
+  const output = createWriteStream(input.filepath, { flags: "wx" });
+  output.on("open", () => { ownsFile = true; });
   const streamed = pipeline(
     dump.stdout,
     createGzip(),
-    createWriteStream(input.filepath),
+    output,
     { signal: controller.signal },
   );
   try {
@@ -50,7 +54,7 @@ export async function streamPgDump(input: {
     dump.kill("SIGKILL");
     // Close the file before removing it, and reap the child before returning.
     await Promise.allSettled([exited, streamed]);
-    await rm(input.filepath, { force: true });
+    if (ownsFile) await rm(input.filepath, { force: true });
     if (timedOut) throw new Error(`pg_dump timed out after ${input.timeoutMs} ms`);
     throw error;
   } finally {

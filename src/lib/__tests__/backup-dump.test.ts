@@ -67,6 +67,13 @@ describe("streamPgDump", () => {
     expect(existsSync(filepath)).toBe(false);
   }, 15_000);
 
+  it("refuses an existing destination without changing or removing it", async () => {
+    command('process.stdout.write("new SQL");');
+    writeFileSync(input.filepath, "another run's backup");
+    await expect(streamPgDump(input)).rejects.toMatchObject({ code: "EEXIST" });
+    expect(readFileSync(input.filepath, "utf8")).toBe("another run's backup");
+  }, 15_000);
+
   it("keeps peak memory flat when a synthetic dump grows from 16 to 512 MiB", async () => {
     // Real processes and streams, isolated from Vitest's heap. The producer reuses
     // one chunk and honours backpressure; resourceUsage catches even synchronous
@@ -87,7 +94,7 @@ describe("streamPgDump", () => {
       input.timeoutMs = 30000;
       await streamPgDump({ ...input, env: { ...input.env, DUMP_BYTES: String(16 * 1024 * 1024) } });
       const small = process.resourceUsage().maxRSS;
-      await streamPgDump({ ...input, env: { ...input.env, DUMP_BYTES: String(512 * 1024 * 1024) } });
+      await streamPgDump({ ...input, filepath: input.filepath + ".large", env: { ...input.env, DUMP_BYTES: String(512 * 1024 * 1024) } });
       console.log(JSON.stringify({ small, large: process.resourceUsage().maxRSS }));
     `;
     const { stdout } = await exec(process.execPath, ["--input-type=module", "-e", script], { timeout: 60_000 });
