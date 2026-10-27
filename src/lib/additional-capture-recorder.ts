@@ -123,6 +123,20 @@ function changeInvoiceRecordsCapture(requestPayload: Prisma.JsonValue | null, pa
 }
 
 /**
+ * #4324 review (money F3, `INV-SSOT`): whether a change's own supplementary
+ * invoice is THIS capture's document by the reading below - raised unpaid, so
+ * the capture's receipt records against it, or recording this capture
+ * ({@link changeInvoiceRecordsCapture}). One recording another capture (moved
+ * onto a carrier and released there, or waiting on a different intent) is not:
+ * the recorder falls through to the primary, which never billed the change.
+ * The keep's evidence reads the change's invoices by this
+ * (`readKeptChangeCaptureEvidence`).
+ */
+export function changeInvoiceBillsCapture(requestPayload: Prisma.JsonValue | null, paymentIntentId: string): boolean {
+  return !recordsPayment(requestPayload) || changeInvoiceRecordsCapture(requestPayload, paymentIntentId);
+}
+
+/**
  * The recorder of a capture, with the credit-release sweep's share taken out
  * (#4253, `INV-ADDPAY-046`): the money of a credit-release request inside the
  * capture is recorded by the sweep against the booking's own invoice, so the

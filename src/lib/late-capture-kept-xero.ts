@@ -24,7 +24,7 @@ import { supplementaryInvoicesMovedOffIntentWhere } from "@/lib/supplementary-in
 import { readCreditReleaseCaptureShare } from "@/lib/credit-release-capture-share";
 import { recordedPrimaryInvoiceSettlement } from "@/lib/booking-primary-invoice-claim";
 import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
-import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
+import { changeInvoiceBillsCapture, readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
 import {
   primaryInvoiceGapBillsChange,
   primaryInvoiceMissedChange,
@@ -98,18 +98,24 @@ export async function readKeptChangeCaptureEvidence(
     select: { status: true, lastErrorCode: true, requestPayload: true },
   });
   const answers: readonly string[] = RETIRED_CODES_ANSWERING_CAPTURE;
+  const unpaid = (row: { requestPayload: Prisma.JsonValue }) => asRecord(row.requestPayload)?.recordPayment === false;
   const answeredByChangeInvoice = naming.some(
     (row) => {
       // An unpaid invoice bills the change but leaves its capture to a receipt.
       // Waiting/retired rows must first go through release (including #3403's return).
-      if (row.status !== "WAITING_PAYMENT" && row.status !== "CANCELLED" && asRecord(row.requestPayload)?.recordPayment === false) return false;
+      if (row.status !== "WAITING_PAYMENT" && row.status !== "CANCELLED" && unpaid(row)) return false;
       return row.status !== "CANCELLED" || (row.lastErrorCode !== null && answers.includes(row.lastErrorCode));
     },
+  );
+  // Review F4: the recorder's `CHANGE_INVOICE` target for a capture with no change stamp.
+  const unpaidInvoiceNamesCapture = naming.some(
+    (row) => row.status !== "CANCELLED" && asRecord(row.requestPayload)?.paymentIntentId === input.paymentIntentId && unpaid(row),
   );
   const { changeId } = input;
   if (changeId === null) {
     return {
       answeredByChangeInvoice,
+      unpaidInvoiceNamesCapture,
       changeId,
       settledAgainstPrimary: false,
       changeInvoices: "none",
@@ -127,6 +133,7 @@ export async function readKeptChangeCaptureEvidence(
           { requestPayload: { path: ["bookingModificationId"], equals: changeId } },
         ],
       },
+      orderBy: { createdAt: "desc" },
       select: { status: true, requestPayload: true },
     }),
     store.xeroObjectLink.findFirst({
@@ -142,11 +149,15 @@ export async function readKeptChangeCaptureEvidence(
   ]);
   // The change's own invoices: never the #3980 gap invoice a marked edit anchors, which is read on its own.
   const own = rows.filter((row) => asRecord(row.requestPayload)?.primaryInvoiceGap !== true);
-  const changeInvoices: KeptChangeCaptureEvidence["changeInvoices"] =
-    link !== null || own.some((row) => row.status !== "CANCELLED") ? "live" : own.length > 0 ? "withdrawn" : "none";
+  // Review F3: live for THIS capture only where the latest live one bills it, as the recorder reads it;
+  // one moved onto a carrier, or waiting on another intent, records other money. A link is that row's.
+  const latestLive = own.find((row) => row.status !== "CANCELLED");
+  const live = latestLive ? changeInvoiceBillsCapture(latestLive.requestPayload, input.paymentIntentId) : link !== null;
+  const changeInvoices: KeptChangeCaptureEvidence["changeInvoices"] = live ? "live" : own.length > 0 ? "withdrawn" : "none";
   const gap = await readChangeGapBilling(store, { ...input, changeId });
   return {
     answeredByChangeInvoice,
+    unpaidInvoiceNamesCapture,
     changeId,
     // Codex re-review: the marker is the primary's billing only where the primary did not miss the change.
     settledAgainstPrimary: recordedPrimaryInvoiceSettlement(change?.newData) !== null && !gap.primaryMissedChange,

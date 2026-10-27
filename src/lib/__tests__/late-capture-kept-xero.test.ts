@@ -336,6 +336,7 @@ describe("planKeptLateCaptureXeroRecord", () => {
 describe("#4324: a kept change capture on an invoiced booking", () => {
   const evidence = (overrides: Partial<KeptChangeCaptureEvidence> = {}): KeptChangeCaptureEvidence => ({
     answeredByChangeInvoice: false,
+    unpaidInvoiceNamesCapture: false,
     changeId: "mod_change",
     settledAgainstPrimary: false,
     changeInvoices: "none",
@@ -348,6 +349,8 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
     expect(keptChangeCaptureRoute(evidence({ answeredByChangeInvoice: true, changeInvoices: "withdrawn" }))).toBe("change-invoice");
     expect(keptChangeCaptureRoute(evidence({ answeredByChangeInvoice: true, changeId: null }))).toBe("change-invoice");
     expect(keptChangeCaptureRoute(evidence({ changeId: null }))).toBe("change-unknown");
+    // Review F4: no change stamp, but an unpaid invoice names the capture - the recorder's CHANGE_INVOICE target.
+    expect(keptChangeCaptureRoute(evidence({ changeId: null, unpaidInvoiceNamesCapture: true }))).toBe("receipt");
     expect(keptChangeCaptureRoute(evidence({ settledAgainstPrimary: true, changeInvoices: "withdrawn" }))).toBe("receipt");
     expect(keptChangeCaptureRoute(evidence({ changeInvoices: "none" }))).toBe("receipt");
     expect(keptChangeCaptureRoute(evidence({ changeInvoices: "live" }))).toBe("receipt");
@@ -615,6 +618,66 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       });
     });
 
+    describe("MUTATION review F3 (money): the change's own invoice is live only where it bills THIS capture, as the recorder reads it", () => {
+      const readOwn = (own: Array<{ status: string; requestPayload: Record<string, unknown> }>) => {
+        mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce(own);
+        return readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: null });
+      };
+      it("moved onto a carrier and released there (paid with the carrier's money): withdrawn for this capture, so the kept invoice", async () => {
+        const evidence = await readOwn([{ status: "SUCCEEDED", requestPayload: { paymentIntentId: "pi_carrier", parkedFromPaymentIntentId: "pi_late" } }]);
+        expect(evidence).toMatchObject({ answeredByChangeInvoice: false, changeInvoices: "withdrawn" });
+        expect(keptChangeCaptureRoute(evidence)).toBe("kept-invoice");
+      });
+      it("released by the carrier, linked in Xero: the link is that invoice's, still withdrawn for this capture", async () => {
+        mocks.linkFindFirst.mockResolvedValueOnce({ id: "link_change" });
+        await expect(readOwn([{ status: "SUCCEEDED", requestPayload: { paymentIntentId: "pi_carrier" } }])).resolves.toMatchObject({ changeInvoices: "withdrawn" });
+      });
+      it("still WAITING on a different intent: withdrawn for this capture, so the kept invoice", async () => {
+        const evidence = await readOwn([{ status: "WAITING_PAYMENT", requestPayload: { paymentIntentId: "pi_other" } }]);
+        expect(evidence).toMatchObject({ answeredByChangeInvoice: false, changeInvoices: "withdrawn" });
+        expect(keptChangeCaptureRoute(evidence)).toBe("kept-invoice");
+      });
+      it("live where it names this capture, names none, or was raised unpaid (the receipt's target)", async () => {
+        for (const requestPayload of [{ paymentIntentId: "pi_late" }, {}, { paymentIntentId: "pi_carrier", recordPayment: false }]) {
+          await expect(readOwn([{ status: "SUCCEEDED", requestPayload }])).resolves.toMatchObject({ changeInvoices: "live" });
+        }
+      });
+      it("reads the latest live one, as the recorder does", async () => {
+        await readOwn([]);
+        expect(mocks.operationFindMany.mock.calls[1]![0]).toMatchObject({ orderBy: { createdAt: "desc" } });
+        await expect(
+          readOwn([
+            { status: "SUCCEEDED", requestPayload: { paymentIntentId: "pi_carrier" } },
+            { status: "SUCCEEDED", requestPayload: { paymentIntentId: "pi_late" } },
+          ]),
+        ).resolves.toMatchObject({ changeInvoices: "withdrawn" });
+      });
+    });
+
+    describe("MUTATION review F4 (money): a capture with no change stamp", () => {
+      const readNaming = (rows: Array<{ status: string; lastErrorCode: string | null; requestPayload: Record<string, unknown> }>) => {
+        mocks.operationFindMany.mockResolvedValueOnce(rows);
+        return readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: null, bookingId: "booking-1", primaryInvoiceId: null });
+      };
+      for (const status of ["PENDING", "SUCCEEDED"]) {
+        it(`an unpaid ${status} invoice naming its intent bills it: its receipt, never manual review`, async () => {
+          const evidence = await readNaming([{ status, lastErrorCode: null, requestPayload: { paymentIntentId: "pi_late", recordPayment: false } }]);
+          expect(evidence).toMatchObject({ answeredByChangeInvoice: false, unpaidInvoiceNamesCapture: true });
+          expect(keptChangeCaptureRoute(evidence)).toBe("receipt");
+        });
+      }
+      it("a withdrawn unpaid one, or one only moved off the intent, names nothing: still change-unknown", async () => {
+        for (const row of [
+          { status: "CANCELLED", lastErrorCode: null, requestPayload: { paymentIntentId: "pi_late", recordPayment: false } },
+          { status: "SUCCEEDED", lastErrorCode: null, requestPayload: { paymentIntentId: "pi_carrier", parkedFromPaymentIntentId: "pi_late", recordPayment: false } },
+        ]) {
+          const evidence = await readNaming([row]);
+          expect(evidence).toMatchObject({ unpaidInvoiceNamesCapture: false });
+          expect(keptChangeCaptureRoute(evidence)).toBe("change-unknown");
+        }
+      });
+    });
+
     it("reads the change's invoices as withdrawn only when every one is CANCELLED, and live where Xero has one linked", async () => {
       mocks.operationFindMany.mockResolvedValueOnce([]).mockResolvedValueOnce([{ status: "CANCELLED", requestPayload: {} }]);
       await expect(
@@ -757,6 +820,34 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(store, "booking-1");
       expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
       expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION review F4: no change stamp, an unpaid invoice naming the capture - its receipt under the booking's anchor, the one the receipt's enqueue and worker take", async () => {
+      mocks.transactionFindUnique.mockResolvedValue({
+        kind: "ADDITIONAL",
+        status: "SUCCEEDED",
+        amountCents: 8000,
+        paymentId: "payment-1",
+        bookingModificationId: null,
+        reason: null,
+      });
+      mocks.operationFindMany.mockResolvedValueOnce([
+        { status: "SUCCEEDED", lastErrorCode: null, requestPayload: { paymentIntentId: "pi_late", recordPayment: false } },
+      ]);
+      await expect(plan()).resolves.toEqual({ kind: "receipt-queued", queueOperationId: "op_receipt" });
+      expect(mocks.lockSupplementaryInvoiceAnchor).toHaveBeenCalledWith(store, "booking-1");
+      expect(mocks.enqueueAdditionalCaptureReceiptOperation).toHaveBeenCalledWith("pi_late", expect.objectContaining({ store, keptLateCapture: true }));
+      expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+    });
+
+    it("MUTATION review F3: the change's invoice moved onto a carrier and released there - the kept invoice, never a receipt on the primary", async () => {
+      mocks.operationFindMany
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([{ status: "SUCCEEDED", requestPayload: { paymentIntentId: "pi_carrier", parkedFromPaymentIntentId: "pi_late" } }])
+        .mockResolvedValue([]);
+      await expect(plan()).resolves.toEqual({ kind: "kept-invoice-queued", queueOperationId: "op_kept" });
+      expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).toHaveBeenCalledWith(expect.objectContaining({ capturedCents: 8000, paymentIntentId: "pi_late" }));
+      expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
     });
 
     it("MUTATION (INV-PAY-139): returns the capture's receipt already queued, whatever the evidence says now", async () => {
