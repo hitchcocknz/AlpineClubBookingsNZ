@@ -2042,12 +2042,81 @@ require_domain_matches_url() {
 }
 
 require_safe_database_password() {
+  local key
   local value
 
-  value="$(trim_whitespace "$(get_env_file_value DB_PASSWORD)")"
-  if printf '%s' "$value" | grep -Eq '[@/:?#[:space:]]'; then
-    echo "DB_PASSWORD contains URL-unsafe characters for the DATABASE_URL values in docker-compose.yml" >&2
-    echo "Use a password without @ / : ? # or whitespace, or update the compose URLs to URL-encode it." >&2
+  # APP_DB_PASSWORD and MIGRATION_DB_PASSWORD are the optional least-privilege
+  # role passwords (#4453); docker-compose.yml interpolates them into the same
+  # DATABASE_URL values, unencoded, when they are set. `%` is refused too: an
+  # unencoded `%` is percent-decoded into a different password. The character
+  # set is the one `CONNECTION_STRING_UNSAFE_PASSWORD` in
+  # src/lib/database-roles.ts refuses; database-roles-password-charset.test.ts
+  # pins the two equal.
+  for key in DB_PASSWORD APP_DB_PASSWORD MIGRATION_DB_PASSWORD; do
+    value="$(trim_whitespace "$(get_env_file_value "$key")")"
+    if printf '%s' "$value" | grep -Eq '[@/:?#%[:space:]]'; then
+      echo "$key contains URL-unsafe characters for the DATABASE_URL values in docker-compose.yml" >&2
+      echo "Use a password without @ / : ? # % or whitespace (a hex secret: openssl rand -hex 24)." >&2
+      return 1
+    fi
+  done
+}
+
+# The same shell-versus-.env check for a value that carries a password, such as a
+# connection string (#4453 review N1). It says only THAT the two differ: the
+# generic helper above prints both values, which here would put the password in
+# the deploy log.
+require_exported_secret_matches_env_file() {
+  local key="$1"
+  local exported
+  local in_env_file
+
+  if [ -z "${!key+x}" ]; then
+    return 0
+  fi
+  exported="${!key}"
+  in_env_file="$(compose_env_file_value "$key")" || return 1
+
+  if [ "$exported" != "$in_env_file" ]; then
+    echo "$key disagrees between this shell and .env, and Docker Compose would" >&2
+    echo "hand the containers the SHELL value. Refusing rather than deploying the" >&2
+    echo "one you did not write in .env. (Neither value is shown: it holds a password.)" >&2
+    echo "Run 'unset $key' in this shell (and remove it from whatever exported" >&2
+    echo "it), set the value you want in .env, then re-run." >&2
+    return 1
+  fi
+
+  unset "$key"
+}
+
+# The least-privilege database roles (#4453) are switched on together or not at
+# all. With APP_DB_USER alone, the next migration would create its tables as the
+# superuser, invisible to the application role (and to the nightly pg_dump it
+# runs), and the audit retention job would fail every night with "permission
+# denied". MIGRATION_DB_USER alone is harmless and allowed.
+require_least_privilege_roles_complete() {
+  local key
+  local app_user
+  local migration_user
+  local retention_url
+
+  for key in APP_DB_USER MIGRATION_DB_USER; do
+    require_exported_value_matches_env_file "$key"
+  done
+  # Step 2 of the DEPLOYMENT.md roles procedure has the operator export the two
+  # role passwords; one left exported and since changed in .env would reach the
+  # containers instead of the .env value (#4453 review). Checked only when set.
+  for key in APP_DB_PASSWORD MIGRATION_DB_PASSWORD AUDIT_RETENTION_DATABASE_URL; do
+    require_exported_secret_matches_env_file "$key"
+  done
+
+  app_user="$(trim_whitespace "$(get_env_file_value APP_DB_USER)")"
+  [ -n "$app_user" ] || return 0
+  migration_user="$(trim_whitespace "$(get_env_file_value MIGRATION_DB_USER)")"
+  retention_url="$(trim_whitespace "$(get_env_file_value AUDIT_RETENTION_DATABASE_URL)")"
+  if [ -z "$migration_user" ] || [ -z "$retention_url" ]; then
+    echo "APP_DB_USER is set, so MIGRATION_DB_USER and AUDIT_RETENTION_DATABASE_URL must be set too (#4453)." >&2
+    echo "Set all three (DEPLOYMENT.md \"Least-privilege database roles\"), or unset APP_DB_USER to keep the single superuser." >&2
     return 1
   fi
 }
@@ -2226,6 +2295,7 @@ validate_env_contract() {
 
   require_non_placeholder_env_key DB_PASSWORD
   require_safe_database_password
+  require_least_privilege_roles_complete
   require_non_placeholder_env_key DOMAIN
   require_http_url_env_key NEXTAUTH_URL
   require_one_of_env_keys "AUTH_SECRET or NEXTAUTH_SECRET" AUTH_SECRET NEXTAUTH_SECRET
@@ -2809,6 +2879,62 @@ validate_prisma_schema_matches_migrations() {
   fi
 
   drop_shadow_database
+}
+
+# After the migrate, with the least-privilege roles on (#4453): every relation in
+# schema public must be owned by the migration role and readable by the
+# application role. Anything else (a table a superuser created by hand, a
+# rollback.sql run as the operator, a migration that ran before the switch) is
+# invisible to the app and to its nightly pg_dump, so refuse before the new
+# colour starts. An extension's own relations (pg_buffercache, PostGIS) are left
+# out, as provisioning leaves them with their owner. The SQL is ONE definition:
+# `DEPLOY_GRANTS_CHECK_SQL` in src/lib/database-roles.ts, which
+# deploy-database-roles-script-contract.test.ts pins this copy equal to. A view the app could write through is refused too: a new view
+# gets the default table grants, and DML through a view runs with its owner's
+# rights, so it must be narrowed to SELECT first. The fix is a re-run of `db:provision-roles --apply`. The SQL
+# between the markers is run as shipped by database-roles.realdb.test.ts.
+verify_least_privilege_role_grants() {
+  local app_user
+  local migration_user
+  local check_sql
+  local offending
+
+  app_user="$(trim_whitespace "$(get_env_file_value APP_DB_USER)")"
+  [ -n "$app_user" ] || return 0
+  migration_user="$(trim_whitespace "$(get_env_file_value MIGRATION_DB_USER)")"
+
+  # BEGIN least-privilege-grants-check
+  check_sql="$(cat <<'SQL'
+SELECT coalesce(string_agg(c.relname, ', ' ORDER BY c.relname), '')
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relkind IN ('r', 'p', 'v', 'm')
+  AND NOT EXISTS (
+    SELECT 1 FROM pg_catalog.pg_depend d
+    WHERE d.classid = 'pg_catalog.pg_class'::regclass AND d.objid = c.oid AND d.deptype = 'e'
+  )
+  AND (pg_catalog.pg_get_userbyid(c.relowner) <> :'migration_role'
+       OR NOT pg_catalog.has_table_privilege(:'app_role', c.oid, 'SELECT')
+       OR (c.relkind IN ('v', 'm')
+           AND pg_catalog.has_table_privilege(:'app_role', c.oid, 'INSERT, UPDATE, DELETE')));
+SQL
+)"
+  # END least-privilege-grants-check
+
+  if ! offending="$(
+    printf '%s\n' "$check_sql" |
+      docker compose exec -T "$POSTGRES_SERVICE" psql -U tac -d tacbookings \
+        -v ON_ERROR_STOP=1 -v migration_role="$migration_user" -v app_role="$app_user" -Atq -f -
+  )"; then
+    echo "Could not check the least-privilege role grants after the migrate (does each role exist?)." >&2
+    return 1
+  fi
+  if [ -n "$offending" ]; then
+    echo "After the migrate, these relations are not owned by $migration_user or not readable by $app_user: $offending" >&2
+    echo "Re-run 'pnpm run db:provision-roles --apply' as the operator (DEPLOYMENT.md \"Least-privilege database roles\"), then deploy again." >&2
+    return 1
+  fi
 }
 
 verify_prisma_migration_status() {
@@ -4205,6 +4331,7 @@ info "Lock timeout in force for this migrate: ${MIGRATION_LOCK_TIMEOUT_MS_EFFECT
 docker compose --profile "$MIGRATE_SERVICE" run --rm "$MIGRATE_SERVICE"
 verify_prisma_migration_status
 info "Prisma migration status reports the database is up to date."
+verify_least_privilege_role_grants
 
 step "14/20" "Starting target web service"
 docker compose up -d --force-recreate "$TARGET_SERVICE"

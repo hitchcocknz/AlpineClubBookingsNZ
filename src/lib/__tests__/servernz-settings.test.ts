@@ -14,6 +14,7 @@ vi.mock("@/lib/prisma", () => ({
 }));
 
 import { Prisma } from "@prisma/client";
+import { prisma } from "@/lib/prisma";
 import {
   SERVERNZ_SETTINGS_ID,
   clearOtherLodgesOwnedNames,
@@ -24,6 +25,7 @@ import {
   recordOtherLodgesDownload,
   recordServerVersionCheck,
   validateCentralServerBaseUrl,
+  type ServerNzConnectionTx,
 } from "@/lib/servernz-settings";
 
 beforeEach(() => {
@@ -55,6 +57,11 @@ describe("loadServerNzSettings", () => {
     expect(settings.otherLodgesEnabled).toBe(false);
     expect(settings.baseUrl).toBeNull();
   });
+});
+
+it("propagates a fenced settings read failure instead of reporting defaults (#4436)", async () => {
+  const db = { serverNzSettings: { findUnique: vi.fn().mockRejectedValue(new Error("database unavailable")) } };
+  await expect(loadServerNzSettings(db as never)).rejects.toThrow("database unavailable");
 });
 
 describe("normalizeBaseUrl", () => {
@@ -178,7 +185,10 @@ describe("the server's reported API version (#49)", () => {
   });
 
   it("forgets the owned list AND the version in ONE write when the connection ends", async () => {
-    await forgetServerConnectionAnswers();
+    // The writer's own write, on the mocked client. Only the connection fence
+    // mints this type in production (#4436); `servernz-config.test.ts` covers it.
+    const unfencedClientForUnitTest = prisma as unknown as ServerNzConnectionTx;
+    await forgetServerConnectionAnswers(unfencedClientForUnitTest);
     expect(mocks.upsert).toHaveBeenCalledTimes(1);
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.where).toEqual({ id: SERVERNZ_SETTINGS_ID });
