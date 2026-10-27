@@ -4,6 +4,7 @@ import {
   type OwnedCentralLodge,
 } from "@/lib/other-lodges";
 import logger from "@/lib/logger";
+import { usableCentralId } from "@/lib/other-lodge-central-id";
 import {
   MAX_SERVER_VERSION_CHARS,
   deletedLodgeSchema,
@@ -628,7 +629,7 @@ export async function pullOtherLodges(
   // re-fetched and re-fail on every subsequent run.
   const lodges: OtherLodgesPullResult["lodges"] = [];
   let dropped = 0;
-  const droppedNames: string[] = [];
+  const droppedRows: Array<{ name: string; id: string | null }> = [];
   for (const raw of envelope.lodges) {
     const row = distributedLodgeSchema.safeParse(raw);
     if (row.success) {
@@ -637,7 +638,7 @@ export async function pullOtherLodges(
     }
     dropped++;
     const named = pulledRowNameSchema.safeParse(raw);
-    if (named.success) droppedNames.push(named.data.name);
+    if (named.success) droppedRows.push({ name: named.data.name, id: usableCentralId(named.data.id) });
   }
 
   // The owned list, validated apart from the rows and the cursor: refused
@@ -658,6 +659,9 @@ export async function pullOtherLodges(
     const entry = deletedLodgeSchema.safeParse(raw);
     return entry.success ? [entry.data.id] : [];
   });
+  // A dropped row this answer also reports deleted names no live lodge.
+  const deleted = new Set(deletedLodgeIds ?? []);
+  const droppedNames = droppedRows.filter((row) => row.id === null || !deleted.has(row.id)).map((row) => row.name);
 
   return {
     lodges,

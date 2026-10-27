@@ -44,8 +44,9 @@ import { requireAdmin } from "@/lib/session-guards";
  * one and writes `LODGE_CENTRAL_LINK_UPDATED` on the same transaction client.
  * Settings then Lodge is the download's own order, so neither can wait on the
  * other in reverse. Two administrators saving at once queue on the locks, so
- * the second reads the first's link as its "before"; a refused write (400 or
- * 409) leaves no audit row. See docs/CONCURRENCY_AND_LOCKING.md -> "Central
+ * the second reads the first's link as its "before". A save refused for
+ * ownership (400) writes nothing; one refused by the unique index (409) rolls
+ * back; neither leaves an audit row. See docs/CONCURRENCY_AND_LOCKING.md -> "Central
  * lodge link writer".
  */
 

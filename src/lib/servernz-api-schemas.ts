@@ -157,8 +157,10 @@ const MAX_DELETED_LODGES_PER_PULL = MAX_LODGES_PER_PULL;
  * Just the NAME of a pulled row, read the way `distributedLodgeSchema` reads
  * it (#4262 review): a row dropped for breaking some other bound still says a
  * lodge of that name exists, which the download's by-name keying must count.
+ * Its `id` is read too, unvalidated here (`usableCentralId` decides), so a
+ * dropped row the same answer reports DELETED is not counted.
  */
-export const pulledRowNameSchema = z.object({ name: otherLodgeNameSchema });
+export const pulledRowNameSchema = z.object({ name: otherLodgeNameSchema, id: z.unknown().optional() });
 
 export const pullEnvelopeSchema = z.object({
   lodges: z.array(z.unknown()).max(MAX_LODGES_PER_PULL),
@@ -187,7 +189,8 @@ export interface OtherLodgesPullResult {
   /**
    * The names of the dropped rows whose name alone still reads
    * (`pulledRowNameSchema`), so a lodge dropped by its bounds still counts as
-   * a lodge of that name (#4262 review).
+   * a lodge of that name (#4262 review); a row whose id this answer reports
+   * deleted is left out, as the download leaves deleted lodges out of the merge.
    */
   droppedNames: string[];
   /**

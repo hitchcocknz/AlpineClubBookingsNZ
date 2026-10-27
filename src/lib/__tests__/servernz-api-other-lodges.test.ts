@@ -617,4 +617,24 @@ describe("pullOtherLodges — the names of dropped rows", () => {
     expect(pull.dropped).toBe(2);
     expect(pull.droppedNames).toEqual(["Aorangi Ski Club"]);
   });
+
+  it("leaves out a dropped row the same answer reports deleted: it names no live lodge", async () => {
+    respondWith({
+      lodges: [
+        remoteRow({ id: "srv_live", name: "Kea Lodge" }),
+        remoteRow({ id: "srv_gone", name: "Kea Lodge", bedCapacity: -5 }),
+        remoteRow({ id: "srv_other", name: "Kea Lodge", bedCapacity: -5 }),
+      ],
+      cursor: "c-1",
+      count: 3,
+      deletedLodges: [{ id: "srv_gone", deletedAt: "2026-10-01T00:00:00.000Z" }],
+    });
+
+    const pull = await pullOtherLodges(null);
+
+    expect(pull.dropped).toBe(2);
+    // srv_gone is deleted; srv_other is not, so its name still counts.
+    expect(pull.droppedNames).toEqual(["Kea Lodge"]);
+    expect(pull.deletedLodgeIds).toEqual(["srv_gone"]);
+  });
 });

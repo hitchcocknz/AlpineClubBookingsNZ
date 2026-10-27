@@ -26,6 +26,7 @@ import {
   type MergeOutcome,
   type NameConflict,
 } from "@/lib/servernz-other-lodges-merge";
+import type { DownloadStopReason } from "@/lib/servernz-api-version";
 import { ratesToServer } from "@/lib/servernz-rate";
 import {
   advancedDownloadCursor,
@@ -278,8 +279,6 @@ export interface DownloadSummary {
   stopped: DownloadStopReason | null;
 }
 
-export type DownloadStopReason = "connection-changed" | "superseded";
-
 /**
  * Pull the distributed Other Clubs set and merge it into the local registry.
  * Incremental in two ways: the stored cursor means only entries the server
@@ -422,9 +421,11 @@ export async function downloadOtherClubsFromServer(): Promise<DownloadSummary> {
 
   let stopped: DownloadStopReason | null = null;
   try {
-    // The hides and their one audit record, in ONE fenced transaction, written
-    // HERE so the nightly pass and the Download button leave the same trail
-    // (an administrator's own Central lodge change is audited too).
+    // The hides and their audit row, in ONE fenced transaction (one row per
+    // step: the record step's second unlink writes its own when it unlinks
+    // any), written HERE so the nightly pass and the Download button leave
+    // the same trail (an administrator's own Central lodge change is audited
+    // too).
     if (heldDeleted.length > 0) {
       hiddenLodges.push(...(await write((tx) => hideDeletedLodges(tx, heldDeleted))));
     }

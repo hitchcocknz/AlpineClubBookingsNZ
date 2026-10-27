@@ -2342,8 +2342,12 @@ describe("download keyed by the central server's lodge id (#64)", () => {
     await downloadOtherClubsFromServer();
 
     expect(mockAuditCreate).toHaveBeenCalledTimes(1);
+    // Same action and category as the hides' row; the summary says it only
+    // unlinked, never that lodges "were hidden" (#4262 review).
     expect(mockAuditCreate.mock.calls[0][0]).toMatchObject({
       action: "alpine_server.other_lodges.hidden",
+      category: "lodge",
+      summary: "Club lodges linked to central lodges deleted on the Alpine Central Server were unlinked",
       details: "hidden 0; club lodges unlinked from them 1",
     });
     expect(mockAuditCreate.mock.calls[0][1]).toBeDefined();

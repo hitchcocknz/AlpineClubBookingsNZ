@@ -312,9 +312,9 @@ async function hideDeletedLodge(
 }
 
 /**
- * Hide every deleted lodge in `centralIds` (`hideDeletedLodge`) and write the
- * download's ONE audit record of what it hid and unlinked, all on `db`: the
- * download's fenced transaction (#4262 review), so the hides and their record
+ * Hide every deleted lodge in `centralIds` (`hideDeletedLodge`) and write this
+ * step's one audit row of what it hid and unlinked, all on `db`: the
+ * download's fenced transaction (#4262 review), so the hides and their row
  * commit together, and only for the connection the pull was sent on. Returns
  * the names of the lodges this call hid.
  */
@@ -336,9 +336,9 @@ export async function hideDeletedLodges(
 /**
  * The record step's second unlink (#58): a club lodge linked to a deleted
  * central lodge in the moments since the hides (an administrator's Central
- * lodge save) is unlinked again, on the record step's fenced transaction, and
- * audited by the same record as the hides (#4262 review). Returns how many
- * club lodges it unlinked.
+ * lodge save) is unlinked again, on the record step's fenced transaction, with
+ * its own audit row when it unlinked any (one row per step, #4262 review).
+ * Returns how many club lodges it unlinked.
  */
 export async function unlinkDeletedCentralLodges(
   db: Prisma.TransactionClient,
@@ -365,7 +365,11 @@ async function unlinkFromCentralLodges(
   );
 }
 
-/** The download's ONE audit record of what it hid and unlinked; none when it did neither. */
+/**
+ * One audit row per download step of what that step hid and unlinked; none
+ * when it did neither. The same action and category whichever step wrote it;
+ * the summary says what happened (a step that only unlinked hid nothing).
+ */
 async function auditHiddenAndUnlinked(
   db: Prisma.TransactionClient,
   hidden: readonly string[],
@@ -378,7 +382,10 @@ async function auditHiddenAndUnlinked(
       category: "lodge",
       severity: "info",
       outcome: "success",
-      summary: "Lodges deleted on the Alpine Central Server were hidden",
+      summary:
+        hidden.length > 0
+          ? "Lodges deleted on the Alpine Central Server were hidden"
+          : "Club lodges linked to central lodges deleted on the Alpine Central Server were unlinked",
       details: `hidden ${hidden.length}${hidden.length ? ` (${hidden.join(", ")})` : ""}; club lodges unlinked from them ${unlinked}`,
     },
     db,

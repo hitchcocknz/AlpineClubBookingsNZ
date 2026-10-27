@@ -2151,8 +2151,9 @@ mispricing a booking.
   settings row, then `Lodge` row — the Other lodges download's own order (its
   hides and record-step unlink), so neither can wait on the other in reverse.
   Two saves serialise, the second reads the first's link as its "before", and
-  no audit row describes a transition that never happened; a save refused for
-  ownership (400) or by the unique index (409) rolls back with no audit row.
+  no audit row describes a transition that never happened. A save refused for
+  ownership (400) writes nothing; one refused by the unique index (409) rolls
+  back; neither leaves an audit row.
   The transaction uses the settings fence's bounded wait
   (`SERVERNZ_TRANSACTION_OPTIONS`). No advisory lock; disjoint from the
   booking/capacity/credit and money clusters.

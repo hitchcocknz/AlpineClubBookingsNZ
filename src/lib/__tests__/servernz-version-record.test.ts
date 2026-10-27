@@ -133,7 +133,7 @@ describe("recordServerVersionIfCurrent (the same fence)", () => {
  * answer goes through the fenced writer's transaction client, so a future
  * unfenced write on `prisma.` fails here.
  */
-describe("the download and merge write only through the fence", () => {
+describe("the download and merge write only through the fence (reads on the global client; every audit row on a passed client)", () => {
   const READS = new Set(["findUnique", "findMany", "findFirst", "count", "$queryRaw"]);
 
   it.each(["src/lib/servernz-other-lodges-sync.ts", "src/lib/servernz-other-lodges-merge.ts"])(
@@ -145,6 +145,48 @@ describe("the download and merge write only through the fence", () => {
       );
       expect(calls.length).toBeGreaterThan(0);
       expect(calls.filter((call) => !READS.has(call))).toEqual([]);
+    },
+  );
+
+  // A helper whose client DEFAULTS to the global one is a write the census
+  // above cannot see. `recordOtherLodgesDownload` has no default (a missing
+  // client does not compile); `createAuditLog` does, so every call here must
+  // pass one: the fenced transaction's.
+  it.each(["src/lib/servernz-other-lodges-sync.ts", "src/lib/servernz-other-lodges-merge.ts"])(
+    "%s passes a client to every createAuditLog call",
+    (file) => {
+      const source = stripComments(readFileSync(path.join(process.cwd(), file), "utf8"));
+      const unfenced: string[] = [];
+      let calls = 0;
+      let index = source.indexOf("createAuditLog(");
+      while (index !== -1) {
+        calls++;
+        // The call's own arguments, split at its top-level commas.
+        const args: string[] = [];
+        let depth = 0;
+        let current = "";
+        let end = index + "createAuditLog".length;
+        for (; end < source.length; end++) {
+          const character = source[end];
+          if (character === "(" || character === "{" || character === "[") {
+            depth++;
+            if (depth === 1) continue;
+          } else if (character === ")" || character === "}" || character === "]") {
+            depth--;
+            if (depth === 0) break;
+          } else if (character === "," && depth === 1) {
+            args.push(current.trim());
+            current = "";
+            continue;
+          }
+          current += character;
+        }
+        args.push(current.trim());
+        if (args.filter((arg) => arg !== "").length < 2) unfenced.push(source.slice(index, index + 60));
+        index = source.indexOf("createAuditLog(", end);
+      }
+      expect(unfenced).toEqual([]);
+      if (file.endsWith("merge.ts")) expect(calls).toBeGreaterThan(0);
     },
   );
 });

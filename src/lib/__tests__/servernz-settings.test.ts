@@ -144,14 +144,14 @@ describe("recordOtherLodgesDownload", () => {
   it("never overwrites a stored cursor with a null one", async () => {
     // A server that omits the cursor must not silently reset the club to a full
     // re-fetch of the entire registry.
-    await recordOtherLodgesDownload(null);
+    await recordOtherLodgesDownload(null, undefined, { db: prisma });
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.where).toEqual({ id: SERVERNZ_SETTINGS_ID });
     expect(args.update).not.toHaveProperty("otherLodgesCursor");
   });
 
   it("persists a cursor the server did return", async () => {
-    await recordOtherLodgesDownload("c-900");
+    await recordOtherLodgesDownload("c-900", undefined, { db: prisma });
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.update.otherLodgesCursor).toBe("c-900");
   });
@@ -289,7 +289,7 @@ describe("the owned lodge list, by central id (#52, #62, #69)", () => {
   });
 
   it("stores the list the download carried with its timestamp, and leaves the old name-only list alone", async () => {
-    await recordOtherLodgesDownload("c-900", AORANGI);
+    await recordOtherLodgesDownload("c-900", AORANGI, { db: prisma });
     const [args] = mocks.upsert.mock.calls[0];
     expect(args.update.otherLodgesOwnedLodges).toEqual(AORANGI);
     expect(args.update.otherLodgesOwnedNamesAt).toBeInstanceOf(Date);
@@ -299,13 +299,13 @@ describe("the owned lodge list, by central id (#52, #62, #69)", () => {
   });
 
   it("stores an empty list, the server's answer that the club owns nothing", async () => {
-    await recordOtherLodgesDownload("c-900", []);
+    await recordOtherLodgesDownload("c-900", [], { db: prisma });
     expect(mocks.upsert.mock.calls[0][0].update.otherLodgesOwnedLodges).toEqual([]);
   });
 
   it("leaves the stored list and its timestamp untouched when the download carried none", async () => {
     // A list refused for its bounds, or not sent, must not clear what is stored.
-    await recordOtherLodgesDownload("c-900");
+    await recordOtherLodgesDownload("c-900", undefined, { db: prisma });
     const [args] = mocks.upsert.mock.calls[0];
     for (const key of ["otherLodgesOwnedLodges", "otherLodgesOwnedNames", "otherLodgesOwnedNamesAt"]) {
       expect(args.update).not.toHaveProperty(key);
@@ -329,9 +329,9 @@ describe("the version column has one writer (#4366)", () => {
 });
 describe("recordOtherLodgesDownload: the keyed marker (#64)", () => {
   it("sets otherLodgesKeyedAt only when told the whole registry merged", async () => {
-    await recordOtherLodgesDownload("c-1", undefined, { keyed: true });
+    await recordOtherLodgesDownload("c-1", undefined, { keyed: true, db: prisma });
     expect(mocks.upsert.mock.calls[0][0].update.otherLodgesKeyedAt).toBeInstanceOf(Date);
-    await recordOtherLodgesDownload("c-2");
+    await recordOtherLodgesDownload("c-2", undefined, { db: prisma });
     expect(mocks.upsert.mock.calls[1][0].update).not.toHaveProperty("otherLodgesKeyedAt");
   });
 

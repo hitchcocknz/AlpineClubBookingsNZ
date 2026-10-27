@@ -299,14 +299,19 @@ export async function recordOtherLodgesUpload(at: Date = new Date()): Promise<vo
  */
 export async function recordOtherLodgesDownload(
   cursor: string | null,
-  ownLodges?: OwnedCentralLodge[],
+  ownLodges: OwnedCentralLodge[] | undefined,
   options: {
     /** This download asked for the whole registry and merged all of it (#64). */
     keyed?: boolean;
-    db?: Pick<Prisma.TransactionClient, "serverNzSettings">;
-  } = {},
+    /**
+     * REQUIRED (#4262 review): the download's fenced transaction client
+     * (`serverNzAnswerWriter`). There is no default client, so an unfenced
+     * record does not compile.
+     */
+    db: Pick<Prisma.TransactionClient, "serverNzSettings">;
+  },
 ): Promise<void> {
-  const db = options.db ?? prisma;
+  const { db } = options;
   const now = new Date();
   // Written only when the server sent a valid list: absent leaves the stored
   // one alone. `otherLodgesOwnedNamesAt` (named for the list it first timed)
