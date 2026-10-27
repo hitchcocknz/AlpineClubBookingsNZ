@@ -13,7 +13,6 @@ import { supersededCaptureRefusedAction, supersededCaptureRefusedParagraph } fro
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
-  bookingPaymentDueNote,
   checkoutDayChoreNote,
   duplicateCaptureRefundOutcomeParagraph,
   internetBankingHoldKeptParagraph,
@@ -29,6 +28,7 @@ import {
   splitGuestPortionOwnBookingLine,
   wholeLodgeGuestNamesUrgencyNote,
 } from "@/lib/email-message-notes";
+import { bookingPaymentDueNote } from "@/lib/email-payment-due-note";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
 import {

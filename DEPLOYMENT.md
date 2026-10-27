@@ -285,6 +285,32 @@ on the next run.
   whitespace. The provisioning SQL refuses one rather than rely on
   `standard_conforming_strings`.
 
+**The ceiling is a setting, and the pool arithmetic above is not what a live host
+measured.** `POSTGRES_MAX_CONNECTIONS` in `.env` sets `max_connections`
+(default `40`, unchanged); it is applied when the `postgres` container is next
+created, which a blue/green deploy does at step 11 when the compose model has
+changed. The deploy refuses it at step 3, before that, unless the value the
+`postgres` command would carry is a whole number above the pools the resolved
+Compose model can open together (27 with the shipped pools) and at most `1000`:
+Compose passes any string through, and PostgreSQL would reject `abc` only once
+the container is being recreated. It became a setting because a routine
+handover on a live host, before the
+[#4269](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4269) fix
+above, was sampled two seconds apart at **39 client connections** (the serving
+web slot at 11, the cron leader at 18 and the freshly warmed target slot at 8
+to 11) against the 27-connection budget — about 1.44 times it — and the
+warm-up gate's page renders failed with `P2037: too many database connections
+opened` while three app containers were live. With #4269's one pool per
+container the default should hold again; a host that still sees that error
+raises the ceiling rather than lowering a pool (a smaller pool moves the
+failure to `P2024` pool timeouts under real traffic), and raises
+`POSTGRES_MEM_LIMIT` with it: each
+backend costs its `work_mem` and connection overhead, so going from 40 to 80
+wants the limit taken from the default `768m` towards `1g`. The pairing
+`POSTGRES_MAX_CONNECTIONS=80` with the default `768m` has run on one fork host
+since mid-October 2026 without memory pressure, which is one host's evidence,
+not a measurement of the headroom.
+
 ## App CPU sizing
 
 The app containers ship with **no CPU control at all** in `docker-compose.yml`
@@ -647,8 +673,19 @@ Minimum production categories:
   Any legacy `XERO_*` credential env vars still present are ignored and flagged
   in setup readiness — see the **Upgrade: DB-only provider credentials** runbook
   below.
-- Email: `SMTP_HOST`, `SMTP_PORT`, `AWS_SES_ACCESS_KEY_ID`,
-  `AWS_SES_SECRET_ACCESS_KEY`, `EMAIL_FROM`, `SES_SNS_TOPIC_ARN`. `EMAIL_FROM` is
+- Email: `EMAIL_FROM`, plus the transport the provider flags declare — exactly
+  one of `USE_AWS_SES`, `USE_SMTP_RELAY` or `USE_LOCAL_CAPTURE` may be true,
+  and the step-3 preflight requires only that provider's keys: `SMTP_HOST`,
+  `SMTP_PORT`, `AWS_SES_ACCESS_KEY_ID`, `AWS_SES_SECRET_ACCESS_KEY` and
+  `SES_SNS_TOPIC_ARN` for AWS SES, or `EMAIL_SERVER_HOST`, `EMAIL_SERVER_PORT`,
+  `EMAIL_SERVER_USER` and `EMAIL_SERVER_PASSWORD` for an SMTP relay or a
+  capture mailbox. It checks what each app service would **receive** — the
+  `docker compose config` values, after Compose's defaults and any shell
+  export — not the `.env` lines. `docker-compose.yml` defaults `USE_AWS_SES`
+  to `true`, so a relay sets **both** `USE_SMTP_RELAY=true` and
+  `USE_AWS_SES=false`; naming no flag at all leaves AWS SES selected. Every flag
+  false is refused, as the app refuses it, and `USE_LOCAL_CAPTURE=true` is
+  refused because this deploy only runs a production-role site. `EMAIL_FROM` is
   the only email-identity env var (besides these transport secrets): it is the
   envelope / Return-Path sender and must be a provider-verified (SES) address.
   Email identity — from display name, support address, and contact-form
@@ -756,7 +793,14 @@ preserves Caddy upstream state, then re-enters itself with
 fast-forwards the clean checkout after success.
 
 For a fork, set `GHCR_APP_IMAGE_REPOSITORY` and
-`GHCR_MIGRATE_IMAGE_REPOSITORY` if your image names differ from the defaults.
+`GHCR_MIGRATE_IMAGE_REPOSITORY` if your image names differ from the defaults —
+either in the shell environment or, more durably, in the source repository's
+`.env`. The shell wins over the file, the file wins over the upstream default,
+and the file is read with Compose's own `.env` rules (quotes removed, `export`
+allowed, the last duplicate wins). Step 3/8 prints which source each name came
+from, because a default that silently points at the upstream registry is how
+a fork's deploy fails at step 9 with "not found". Note that `sudo` strips the
+shell environment; the `.env` route survives it.
 
 ### The deploy refuses a commit that exists on no remote (#3539)
 
@@ -914,6 +958,105 @@ Caddy appended closest to the app container, then falls back to `X-Real-IP`.
 Do not expose app containers directly to the Internet or through another proxy
 that preserves attacker-supplied `X-Forwarded-For` values without appending its
 own trusted peer address.
+Caddy sets that header to its resolved client IP (`header_up X-Forwarded-For
+{client_ip}` in `deploy/caddy/tacbookings-active.caddy`), which is the connecting
+peer when Caddy is the edge and, in `CADDY_TLS_MODE=local`, the address the
+trusted proxy forwarded — see "Client IPs behind the proxy" below.
+
+### Behind a TLS-terminating proxy: `CADDY_TLS_MODE=local`
+
+The shipped `Caddyfile` assumes Caddy is the public edge: `{$DOMAIN}` is an
+HTTPS site, Caddy obtains its certificates from Let's Encrypt over ports 80 and
+443, and plain HTTP is answered with a `308` to HTTPS. An installation that
+puts another proxy in front — Nginx Proxy Manager, Traefik, a cloud load
+balancer — breaks both halves at once: Let's Encrypt can no longer reach Caddy
+to validate, so a freshly created Caddy container has **no certificate at all**
+and the proxy answers `502`; and if the proxy forwards to port 80 instead, it
+relays Caddy's `308` back to the browser forever. The deploy's outside check
+(`https://<DOMAIN>/api/health/ready`) fails the same way the browser does, so
+step 17 reports an empty health payload and rolls the upstream back.
+
+Set `CADDY_TLS_MODE=local` in `.env` for that shape, with
+`CADDY_TRUSTED_PROXIES` set to the proxy's address (see "Client IPs behind the
+proxy" below; the deploy refuses local mode without it). The Caddyfile's global
+options import `deploy/caddy/tls-local.caddy`, which turns on `local_certs`:
+Caddy issues every site's certificate from its own internal CA and never
+contacts Let's Encrypt. Then point the proxy at the VM's **443** with scheme
+**https** and tell it to accept a certificate that is not publicly trusted
+(Nginx Proxy Manager: "Ignore Invalid SSL"). The browser only ever sees the
+proxy's certificate.
+
+A `.env` change reaches Caddy when its container is next created, and every
+deploy recreates it at step 17 from that deploy's workspace. **Apply it by
+running the deploy wrapper**, as for a release: it validates the Caddyfile with
+the resolved `CADDY_TLS_MODE` and `CADDY_TRUSTED_PROXIES` at step 4, before the
+migration, and carries the live upstream into its workspace at step 5/8. If
+`main` has moved on and no release is due, set `DEPLOY_REF` to the commit that
+is live — but only once the live commit already carries the `CADDY_TLS_MODE`
+wiring (the Caddyfile import, the `deploy/caddy/tls-*.caddy` snippets and the
+compose settings). Turning local mode on for the first time takes a deploy of a
+commit that has them, because the deploy builds its workspace from the commit,
+not from the checkout.
+
+Do **not** run `docker compose up -d caddy` from the source checkout. The
+running Caddy bind-mounts the live deploy workspace, whose
+`deploy/caddy/tacbookings-active.caddy` names the serving colour. Compose run
+from the checkout recreates Caddy with the checkout's mounts instead, and the
+tracked copy of that file names `app_blue` and the cron leader `app`: on a host
+serving green, whose blue container the last deploy removed, every request
+then reaches the cron leader.
+
+If a deploy is not possible, the manual route is equivalent to the deploy's
+step 17 (`docker compose up -d caddy` in its workspace), run by hand in the live
+workspace with the edited `.env` copied into it; the deploy's own call needs
+neither flag below, because it already runs in that project and workspace:
+
+```bash
+cid=$(docker compose --project-name <project> -f <checkout>/docker-compose.yml ps -q caddy)
+live=$(docker inspect "$cid" --format '{{range .Mounts}}{{if eq .Destination "/etc/caddy/deploy"}}{{.Source}}{{end}}{{end}}')
+workspace=$(dirname "$(dirname "$live")")
+cp <checkout>/.env "$workspace/.env"
+cd "$workspace" && docker compose --project-name <project> up -d --no-deps caddy
+```
+
+`<project>` is the deploy's Compose project (by default the checkout's
+directory name, lower-cased); without `--project-name` Compose names a new
+project after the workspace directory and starts a second Caddy. This route
+skips the step-3 and step-4 checks, so a mistyped or missing value stops Caddy
+instead of the deploy: an unset `CADDY_TRUSTED_PROXIES` reaches Caddy as a
+placeholder it rejects.
+
+Do **not** edit `Caddyfile` on the host for this: the deploy refuses a dirty
+checkout, and the workspace it builds is a clean `git archive` that would drop
+the edit on the next release.
+
+#### Client IPs behind the proxy
+
+Behind another proxy, the only peer Caddy sees is that proxy, so without more
+the app would take the proxy's address as every visitor's: the per-IP rate
+limits on login, registration, forgotten-password and magic-link requests would
+share one bucket for the whole site (ten failed logins from anyone would lock
+every member out for the window), and the audit log would record the proxy's
+IP on every row. `tls-local.caddy` therefore declares the proxy as a trusted
+proxy (`servers { trusted_proxies static … }`, from `CADDY_TRUSTED_PROXIES`)
+with `trusted_proxies_strict`, and reads the visitor's address from the
+proxy's `X-Forwarded-For`; the app's `reverse_proxy` then sends that resolved
+address as the one `X-Forwarded-For` value the app reads.
+
+`CADDY_TRUSTED_PROXIES` is **required** in local mode and has no usable
+default: left unset, Compose hands Caddy a placeholder that Caddy rejects. Set
+it to the proxy's own IP address or CIDR, for example `10.0.0.2/32`. Caddy
+believes the forwarded address from any peer on the list, so the list should
+be the proxy and nothing else. The step-3 preflight refuses local mode without
+it, and refuses `private_ranges` (it trusts every private address on the
+network, and the setting exists to make the trust explicit), any `/0` range,
+and any entry that is not an IP address or CIDR. With
+`trusted_proxies_strict`, Caddy reads `X-Forwarded-For` from the right and
+takes the first address not on the list. The proxy must therefore append the
+connecting address to `X-Forwarded-For` (Nginx Proxy Manager's default) or
+overwrite the header; a proxy that passes the client's header through
+unchanged is not suitable for local mode.
+
 
 ### Keep-alive windows must stay ordered (#3293)
 
