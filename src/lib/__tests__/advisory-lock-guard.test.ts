@@ -1434,16 +1434,34 @@ const ROW_LOCK_SITE_INVENTORY: Record<string, number> = {
   // advisory lock; disjoint from booking/money writers. See
   // docs/CONCURRENCY_AND_LOCKING.md → "Member photo writer".
   "src/app/api/members/[id]/photo/route.ts": 2,
+  // Central lodge link writer (#62, #4262 review): the PUT takes the settings
+  // row (`lockServerNzSettings`, counted under servernz-settings.ts) and
+  // re-checks the owned list under it, then locks its own `Lodge` row
+  // (`SELECT 1 … FOR UPDATE`, the one statement counted here), re-reads the
+  // link it replaces, writes the new one and its `LODGE_CENTRAL_LINK_UPDATED`
+  // audit row on the same client. Settings -> Lodge is the Other lodges
+  // download's own order, so no inversion. No advisory key; disjoint from
+  // booking/money writers. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // "Central lodge link writer".
+  "src/app/api/admin/lodges/[id]/central-lodge/route.ts": 1,
   // Alpine Central Server connection/recorder (#4366, #4436): `lockServerNzSettings`
   // locks the singleton settings row (`SELECT 1 … FOR UPDATE`) so
   // `recordServerVersionIfCurrent` re-reads the connection (address and API-key
   // credential version) under it before it records the server's answer; a
   // connection change and request capture now take the same fence before
-  // touching credentials (settings -> credential -> audit). Open PR #4277
-  // would add a second caller of the same one statement (the download record
-  // step). No advisory key; disjoint from booking/money writers. See
-  // docs/CONCURRENCY_AND_LOCKING.md -> "Alpine Central Server connection and
-  // version recorder".
+  // touching credentials (settings -> credential -> audit). No advisory key;
+  // disjoint from booking/money writers. See docs/CONCURRENCY_AND_LOCKING.md ->
+  // "Alpine Central Server connection and version recorder".
+  // Other lodges download writes (triyder/AlpineClubBookingsNZ#64, #69; #4262
+  // review): the same one statement, reached through the same fence
+  // (`withCurrentServerNzConnection` / `serverNzAnswerWriter`), takes the
+  // settings row before EVERY write the download makes from an answer (hides
+  // and unlinks, each merge write, the record step) and re-reads the address
+  // and credential version under it, so an answer from a connection replaced
+  // in flight writes nothing. Order: settings -> credential read -> OtherLodge/
+  // Amenity/Lodge rows -> audit. No advisory key; disjoint from booking/money
+  // writers. See docs/CONCURRENCY_AND_LOCKING.md -> "Owned-lodge list writer,
+  // and every Other lodges download write".
   "src/lib/servernz-settings.ts": 1,
   // Adult-member-hosting queue participants (#2597): the shared helper mints
   // one reviewed `FOR UPDATE` protocol for member merge over master, loser and
