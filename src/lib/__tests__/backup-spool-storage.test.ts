@@ -3,8 +3,8 @@ import { readRepoFile } from "./helpers/compose";
 
 describe("backup spool storage", () => {
   it("mounts the dump directory on disk instead of the parent tmpfs", () => {
-    const backupSource = readRepoFile("src/lib/backup.ts");
-    const directory = /^const BACKUP_DIR = "([^"]+)";/m.exec(backupSource)?.[1];
+    const backupSource = readRepoFile("src/lib/backup-spool.ts");
+    const directory = /^export const BACKUP_DIR = "([^"]+)";/m.exec(backupSource)?.[1];
     expect(directory).toBeTruthy();
 
     const compose = readRepoFile("docker-compose.yml");
