@@ -130,8 +130,9 @@ reports failure before anything is copied or uploaded.
 **What you do.** Nothing beyond the normal deploy. The new volume is created and
 mounted when the app and cron containers are recreated, which the normal deploy
 does. The image seeds the directory's ownership, so the app can write to it. Leave
-room on the host disk for the compressed dumps kept for the retention window, plus
-one S3 readback copy; the retention window prunes the spool.
+room on the host disk for two compressed dumps plus one S3 readback copy. The spool
+keeps at most the latest dump, and only while no destination received it; each run
+removes everything older, including any `.partial` file a killed dump left.
 
 **Not a destination.** The spool is working space on the same host as the database.
 It does not count as a backup destination, so a club with no S3 bucket and no

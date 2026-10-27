@@ -1521,12 +1521,17 @@ Do not treat local backup files as durable. The production Docker service runs
 with `read_only: true` and mounts `/tmp` as tmpfs, but `/tmp/tacbookings-backups`
 is the disk-backed `backup_spool` named volume (#4487): dumps are compressed into
 it as they stream, so a large database never has to fit in RAM. It is only a
-working area on the same host as the database, pruned by the retention window,
-so it is not a backup destination. If backups are enabled but no S3 bucket is
-configured, the job no longer reports healthy: the dump is marked
+working area on the same host as the database, so it is not a backup destination.
+Each run, failed or not, empties it except for the latest dump, and keeps that
+one only while no destination received it. A dump in progress is written as
+`<name>.partial` and given its final name only once complete. A healthy scheduled backup
+needs at least one destination to hold the dump: a verified S3 upload (upload,
+then readback with a size check) or a copy in the configured local backup
+directory. If neither does, the job does not report healthy: the dump is marked
 `backup-not-durable`, the cron run records `FAILURE`, and the Sentry monitor
-check-in is sent as an error. A healthy scheduled backup requires S3 upload and
-readback verification.
+check-in is sent as an error. A local directory sits on the same host as the
+database, so only S3 is off-site; see
+[docs/guides/backups.md](docs/guides/backups.md).
 
 **Run-now and concurrency:** the Backups page has a "Run backup now" button that
 executes off the request path as a background job. Both it and the nightly cron
