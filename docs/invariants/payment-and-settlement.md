@@ -526,6 +526,39 @@ the rule: it names sibling IDs so a change to one prompts checking the others.
   `payment-transactions-refunds.test.ts` and
   `refunded-total-shortfall-audit.test.ts`.
 
+## INV-PAY-142
+
+**Related: `INV-PAY-128`** (a refund Stripe fails later) and **`INV-PAY-122`**
+(closing a dead card refund).
+
+- **A card refund Stripe fails later is never re-sent automatically once a
+  row that may have made it was closed "Paid another way"** (#4210; owner,
+  #4361 decision 4): the close's bank transfer may already have paid it.
+- **Which close.** A completed close record
+  (`cardRefundPaidAnotherWayClosesWhere`) on any row whose runner metadata the
+  refund carries, or whose slice it fills before the failure. A close on
+  another row of the payment holds nothing.
+- **Held, not decided.** The failure's own row is raised as `INV-PAY-128`
+  raises it, attempts spent: never claimed, listed under "Card refunds Stripe
+  gave up on", counted in "Refunds owed" as every dead row is. Officers are
+  alerted once: settle anything owed with "Paid another way", never a new
+  Stripe dashboard refund (decision 7). Whether the close covered it, and
+  Xero, are stage 3 of #4361.
+- **Read on the writer's client, under its Payment row lock**; a close takes
+  that row after `lock(1)`, before its record. No new lock (`INV-LOCK-001`). A
+  duplicate delivery writes and alerts nothing.
+- **Unchanged**: the open row that counted the refund is re-planned (no close
+  can be on it); with no close, the row is live. Open gap (#4492): a dead,
+  unclosed row that sent the refund but does not count it gets a live row if
+  the refund fails first, and its close still goes through.
+- **Limits.** After a part close the figure can include what that close
+  recorded as no longer owed: check its record before paying. After a full
+  close the held row owes nothing the payment holds, so no close is offered;
+  it keeps the health check's payment recovery red until stage 3.
+- Pinned by `card-refund-failed-later.test.ts`,
+  `card-refund-failed-later-after-paid-another-way.realdb.test.ts` and
+  `card-refund-reversal-bank-cash-floor.realdb.test.ts`.
+
 ## INV-PAY-002
 
 - Account credit is consumed only by a booking that is actually reaching
@@ -1336,7 +1369,7 @@ one, check the other.
 
 - **A card refund Stripe answers `failed` or `canceled` on an edit, a
   cancellation or a refund request, or accepts (`pending`) and fails later, is
-  still owed** (#4083, #4096, #4102, #4104), never counted as made.
+  still owed** (#4083, #4096, #4102, #4104).
   - **Whoever reads a refusal moves that slice to a fresh key**
     (`refundSliceStripeIdempotencyKey`): Stripe replays a key's refusal for 24
     hours. A slice never read refused keeps its key.
@@ -1346,19 +1379,20 @@ one, check the other.
   - **The runner never closes a row on a refusal**: it re-plans on the attempt
     it holds and fails it.
   - **A slice made beside a refusal or a failure stays, marked**
-    (`madeRefundId`): never re-sent; the amount stays.
+    (`madeRefundId`), never re-sent.
   - **Failed later**: the refund-row writer sees it once, under the Payment row
     lock. The open row that counted it moves that slice (`failedRefundIds`) - a
     marked slice, or one it fills carrying exactly that row's runner metadata;
-    else one row per Stripe refund owes it. A retry failing too, or a refund no
-    open row owes that Stripe created before the cutoff migration, is raised
-    dead; one naming no booking only alerts and is audited.
+    else one row per Stripe refund owes it. A retry failing too, a refund no
+    open row owes that Stripe created before the cutoff migration, or one whose
+    row closed "Paid another way" (`INV-PAY-142`) is raised dead; one naming no
+    booking only alerts and is audited.
   - **Paid another way** notes only what a card note still in Xero does not
     cover, kept on its record (`failedLaterCardNoteCoverCents`).
   - **Officers hear once per refused slice or failed-later decision**, and
     again if retries run out.
   - **Deploy window**: an older release closes a refused row as paid and drops
-    `refund.failed`; the read-back finds a dropped one still pending.
+    `refund.failed`; the read-back finds a dropped one pending.
   - **Every other door**: `INV-PAY-130` (#4103).
   - Proven by `refused-card-refund-retry.test.ts`, `payment-recovery.test.ts`,
     `own-card-refund-outcome`, `booking-cancel.test.ts`,

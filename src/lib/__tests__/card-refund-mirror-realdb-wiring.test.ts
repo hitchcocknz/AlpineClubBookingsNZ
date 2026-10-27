@@ -188,4 +188,22 @@ describe("the card-refund writer's race proof stays wired into CI (#3640)", () =
     expect(suite).toContain("refund first: the close reads it and refuses, so no bank cash is recorded");
     expect(suite).toContain("two deliveries of the failure at once take it out once, write one row, and keep the close's cash");
   });
+
+  // #4210: the proof that a refund failing after a Paid another way close is held, never re-sent, rides the same harness.
+  it("wires the held failed-later refund's real-database proof the same way (#4210)", () => {
+    const harness = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/concurrency-lock-races.realdb.test.ts"),
+      "utf8",
+    );
+    expect(harness).toContain('import "./card-refund-failed-later-after-paid-another-way.realdb.test";');
+    const suite = readFileSync(
+      resolve(REPO_ROOT, "src/lib/__tests__/card-refund-failed-later-after-paid-another-way.realdb.test.ts"),
+      "utf8",
+    );
+    expect(suite).toContain('process.env.RUN_CONCURRENCY_RACE_TESTS === "1"');
+    expect(suite).toContain("full close, late %s then %s: held for an officer, alerted once, never re-sent; Refunds owed reads nothing");
+    expect(suite).toContain("with no close, unchanged: the row the runner made it for owes it again, live, and the runner sends it");
+    expect(suite).toContain("close first: the failure finds the row closed Paid another way, and its row is held, alerted, never re-sent");
+    expect(suite).toContain("two deliveries of the failure at once: one held row, one alert");
+  });
 });
