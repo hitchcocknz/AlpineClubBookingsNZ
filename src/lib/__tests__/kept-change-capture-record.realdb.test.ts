@@ -571,6 +571,31 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     ).resolves.toEqual({ kind: "supplementary-invoice", operationId: parked.queueOperationId });
   });
 
+  it("a re-kept capture whose named invoice was issued unpaid gets a receipt, not a second invoice", async () => {
+    await seed("OPEN", { marked: false });
+    const invoice = await outbox.enqueueXeroSupplementaryInvoiceOperation(
+      { bookingId: BOOKING_ID, bookingModificationId: MODIFICATION_ID, priceDiffCents: 8_000, changeFeeCents: 0 },
+      { paymentIntentId: CHANGE_INTENT, recordPayment: false },
+    );
+    await prisma.xeroSyncOperation.updateMany({
+      where: { id: invoice.queueOperationId!, status: "PENDING" },
+      data: { status: "SUCCEEDED", completedAt: new Date() },
+    });
+    await expect(dismiss()).resolves.toMatchObject({ kind: "receipt-queued" });
+    const rows = await receiptRows();
+    expect(rows).toHaveLength(1);
+    const replay = await keep.planKeptLateCaptureXeroRecord({
+      manualRefundTaskId: TASK_ID, bookingId: BOOKING_ID, paymentIntentId: CHANGE_INTENT,
+      clubZone: ZONE, store: prisma,
+    });
+    expect(replay).toEqual({ kind: "receipt-queued", queueOperationId: rows[0]!.id });
+    await expect(recorder.readCaptureRecorder({
+      bookingId: BOOKING_ID, primaryInvoiceId: INVOICE_ID,
+      paymentIntentId: CHANGE_INTENT, bookingModificationId: MODIFICATION_ID,
+    })).resolves.toMatchObject({ kind: "receipt", target: { kind: "CHANGE_INVOICE", operation: { id: invoice.queueOperationId } } });
+    expect(await prisma.xeroSyncOperation.count({ where: { localId: TASK_ID, queueType: "KEPT_LATE_CAPTURE_INVOICE" } })).toBe(0);
+  });
+
   it("an approval committed between the receipt worker's claim and its locked decision: the worker stands down, nothing reaches Xero", async () => {
     await seed("OPEN");
     await dismiss();

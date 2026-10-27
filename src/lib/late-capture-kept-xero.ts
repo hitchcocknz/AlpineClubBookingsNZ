@@ -97,11 +97,16 @@ export async function readKeptChangeCaptureEvidence(
         supplementaryInvoicesMovedOffIntentWhere(input.paymentIntentId),
       ],
     },
-    select: { status: true, lastErrorCode: true },
+    select: { status: true, lastErrorCode: true, requestPayload: true },
   });
   const answers: readonly string[] = RETIRED_CODES_ANSWERING_CAPTURE;
   const answeredByChangeInvoice = naming.some(
-    (row) => row.status !== "CANCELLED" || (row.lastErrorCode !== null && answers.includes(row.lastErrorCode)),
+    (row) => {
+      // An unpaid invoice bills the change but leaves its capture to a receipt.
+      // Waiting/retired rows must first go through release (including #3403's return).
+      if (row.status !== "WAITING_PAYMENT" && row.status !== "CANCELLED" && asRecord(row.requestPayload)?.recordPayment === false) return false;
+      return row.status !== "CANCELLED" || (row.lastErrorCode !== null && answers.includes(row.lastErrorCode));
+    },
   );
   const { changeId } = input;
   if (changeId === null) {
@@ -360,9 +365,12 @@ export async function finishKeptLateCaptureXeroRecord(
       const result = await releaseXeroSupplementaryInvoiceForCapturedPaymentIntent(
         plan.paymentIntentId,
       );
+      // Release can leave the invoice unpaid: its capture still needs a receipt.
+      // The canonical recorder refuses this enqueue if the invoice records it.
+      const receipt = await enqueueAdditionalCaptureReceiptOperation(plan.paymentIntentId, { keptLateCapture: true });
       // A dashboard refund taken before the keep found no receipt then.
       await creditBackLateCaptureRefunds(plan.paymentIntentId);
-      if (result.queueOperationIds.length > 0) {
+      if (result.queueOperationIds.length > 0 || receipt.outcome === "queued") {
         await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
       }
       return;

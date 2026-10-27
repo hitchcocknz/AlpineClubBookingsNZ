@@ -91,6 +91,7 @@ import {
 } from "@/lib/late-capture-kept-xero-rules";
 import type { ClubTimeZone } from "@/lib/club-time";
 import logger from "@/lib/logger";
+import { matchesWhere } from "@/lib/__tests__/support/prisma-where";
 import { supplementaryInvoicesMovedOffIntentWhere } from "@/lib/supplementary-invoice-parked-from";
 
 /**
@@ -363,7 +364,7 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
   });
 
   describe("readKeptChangeCaptureEvidence: a change invoice answers the capture exactly where the release does not answer none-queued", () => {
-    const read = (rows: Array<{ status: string; lastErrorCode: string | null }>) => {
+    const read = (rows: Array<{ status: string; lastErrorCode: string | null; requestPayload?: Record<string, unknown> }>) => {
       mocks.operationFindMany.mockResolvedValueOnce(rows).mockResolvedValueOnce([]);
       return readKeptChangeCaptureEvidence(store as never, { paymentIntentId: "pi_late", changeId: "mod_change", bookingId: "booking-1", primaryInvoiceId: null });
     };
@@ -401,6 +402,26 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
         requestPayload: { path: ["parkedFromPaymentIntentId"], equals: "pi_late" },
       });
     });
+
+    it("a moved waiting invoice answers the superseded capture, while another carrier's invoice does not", async () => {
+      const moved = {
+        queueType: "SUPPLEMENTARY_INVOICE", direction: "OUTBOUND", entityType: "INVOICE", operationType: "CREATE",
+        localModel: "BookingModification", status: "WAITING_PAYMENT", lastErrorCode: null,
+        requestPayload: { paymentIntentId: "pi_carrier", parkedFromPaymentIntentId: "pi_late" },
+      };
+      mocks.operationFindMany.mockImplementation(async ({ where }) => [moved].filter((row) => matchesWhere(row, where)));
+      const input = { paymentIntentId: "pi_late", changeId: null, bookingId: "booking-1", primaryInvoiceId: null };
+      await expect(readKeptChangeCaptureEvidence(store as never, input)).resolves.toMatchObject({ answeredByChangeInvoice: true });
+      moved.requestPayload.parkedFromPaymentIntentId = "pi_other";
+      await expect(readKeptChangeCaptureEvidence(store as never, input)).resolves.toMatchObject({ answeredByChangeInvoice: false });
+    });
+
+    for (const status of ["PENDING", "RUNNING", "SUCCEEDED", "PARTIAL", "FAILED"]) {
+      it(`an unpaid ${status} invoice needs a receipt even when it names the capture`, async () => {
+        await expect(read([{ status, lastErrorCode: null, requestPayload: { paymentIntentId: "pi_late", recordPayment: false } }]))
+          .resolves.toMatchObject({ answeredByChangeInvoice: false });
+      });
+    }
 
     it("reads the #3980 marker and the change's own invoices, never the gap invoice a marked edit anchors", async () => {
       mocks.modificationFindUnique.mockResolvedValue({
@@ -749,6 +770,15 @@ describe("#4324: a kept change capture on an invoiced booking", () => {
       expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
     });
 
+    it("a re-kept capture gets a new receipt for its issued unpaid invoice", async () => {
+      mocks.operationFindMany.mockResolvedValue([
+        { status: "SUCCEEDED", lastErrorCode: null, requestPayload: { paymentIntentId: "pi_late", recordPayment: false } },
+      ]);
+      await expect(plan()).resolves.toEqual({ kind: "receipt-queued", queueOperationId: "op_receipt" });
+      expect(mocks.enqueueAdditionalCaptureReceiptOperation).toHaveBeenCalledWith("pi_late", expect.objectContaining({ store, keptLateCapture: true }));
+      expect(mocks.enqueueXeroKeptLateCaptureInvoiceOperation).not.toHaveBeenCalled();
+    });
+
     it("MUTATION (INV-PAY-139): returns the capture's kept invoice already queued, never a receipt beside it", async () => {
       mocks.findLiveKeptReceiptRow.mockResolvedValue({ id: "op_kept" });
       mocks.modificationFindUnique.mockResolvedValue({
@@ -921,5 +951,16 @@ describe("finishKeptLateCaptureXeroRecord", () => {
     await expect(
       finishKeptLateCaptureXeroRecord({ kind: "change-payment", paymentIntentId: "pi_late" }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("a waiting unpaid change invoice's kept capture", () => {
+  it("releases the invoice, queues its receipt through the recorder, then credits earlier refunds", async () => {
+    await finishKeptLateCaptureXeroRecord({ kind: "change-payment", paymentIntentId: "pi_late" });
+    expect(mocks.enqueueAdditionalCaptureReceiptOperation).toHaveBeenCalledWith("pi_late", { keptLateCapture: true });
+    expect(mocks.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.enqueueAdditionalCaptureReceiptOperation.mock.invocationCallOrder[0]!);
+    expect(mocks.enqueueAdditionalCaptureReceiptOperation.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.creditBackLateCaptureRefunds.mock.invocationCallOrder[0]!);
   });
 });

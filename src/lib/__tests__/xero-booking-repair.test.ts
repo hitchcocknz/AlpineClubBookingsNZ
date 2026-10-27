@@ -1,3 +1,4 @@
+import { matchesWhere } from "@/lib/__tests__/support/prisma-where";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   formatBookingXeroRepairHumanSummary,
@@ -4528,6 +4529,11 @@ describe("runBookingXeroRepair", () => {
             { id: "task_kept", bookingId: booking.id, lateCaptureApprovalIntentId: "pi_kept", status: "DISMISSED", createdAt: RAISED_AT },
           ],
         });
+        // Exercise the loader's separate invoice and receipt reads against one store.
+        const operations = options.operations ?? [];
+        vi.mocked(deps.prisma.xeroSyncOperation.findMany).mockImplementation(async ({ where }: any) =>
+          operations.filter((row) => matchesWhere(row as object, where)) as never,
+        );
         if (options.sweep) {
           const transactions = deps.prisma.paymentTransaction as unknown as Record<string, ReturnType<typeof vi.fn>>;
           const ledger = [
@@ -4593,6 +4599,19 @@ describe("runBookingXeroRepair", () => {
         expect(applied.bookingReport.actions.find((a) => a.type === "QUEUE_KEPT_LATE_CAPTURE_RECORD")).toMatchObject({
           status: "queued",
         });
+      });
+
+      it("an issued unpaid invoice naming a kept capture still lists and applies its missing receipt", async () => {
+        const operation = changeOperation("SUCCEEDED", null, "pi_kept");
+        const unpaid = { ...operation, requestPayload: { ...operation.requestPayload, recordPayment: false } };
+        const dry = await runChange(changeBooking(), { operations: [unpaid] });
+        expect(changeFinding(dry.bookingReport)).toMatchObject({
+          safeToAutoApply: true, details: expect.objectContaining({ recordedBy: "ADDITIONAL_CAPTURE_RECEIPT" }),
+        });
+        const applied = await runChange(changeBooking(), { operations: [unpaid], apply: true });
+        expect(applied.deps.planKeptLateCaptureXeroRecord).toHaveBeenCalledWith(
+          expect.objectContaining({ manualRefundTaskId: "task_kept", paymentIntentId: "pi_kept" }),
+        );
       });
 
       describe("MUTATION Codex re-review: a MARKED edit that raced the primary, its gap invoice voided in Xero", () => {

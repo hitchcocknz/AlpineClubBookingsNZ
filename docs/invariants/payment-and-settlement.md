@@ -1757,7 +1757,7 @@ change capture's receipt).
 - **One decision** (`keptChangeCaptureRoute`), taken once by the keep, and
   by the repair tool, under the approval task's row then the change's anchor
   lock, after finding the capture's receipt or kept invoice first:
-  - a change invoice naming the capture, live or reaper-retired: the
+  - a change invoice naming the capture, paid or awaiting release: the
     late-success release (`INV-PAY-104`);
   - a #3980 gap invoice billing it (`primaryInvoiceGapBillsChange`), the
     primary billing it (settled against it, or no supplementary invoice,

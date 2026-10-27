@@ -57,13 +57,8 @@ const CAPTURED_NOT_ISSUED_ERROR_CODE = "STALE_WAITING_PAYMENT_CAPTURED";
  */
 const COVERED_ERROR_CODE = "STALE_WAITING_PAYMENT_COVERED";
 
-/**
- * #4324: the codes of a retired supplementary invoice that still answers the
- * capture its payload names - the release revives it, has alerted on it, or
- * found it covered - so a kept change capture is left to the release
- * (`keptChangeCaptureRoute`'s `change-invoice`). Any other CANCELLED row was
- * withdrawn, and bills nothing.
- */
+/** #4324: retired rows the release revives, has alerted on, or found covered.
+ * Other CANCELLED rows were withdrawn and bill nothing. */
 export const RETIRED_CODES_ANSWERING_CAPTURE = [
   STALE_WAITING_PAYMENT_ERROR_CODE,
   CAPTURED_NOT_ISSUED_ERROR_CODE,

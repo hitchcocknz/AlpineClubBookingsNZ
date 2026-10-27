@@ -22,3 +22,8 @@
   raised because a kept-payment invoice already bills its change, a Xero
   Operations task (`PRIMARY_INVOICE_UNDERBILLED`) now asks the treasurer to bill
   what is still due, rather than the shortfall going only to the server log.
+
+Integration preserves main's carry and receipt claim fencing. An issued unpaid
+change invoice naming the kept capture now gets its missing receipt; releasing
+a waiting invoice also checks the canonical recorder for a receipt. The rule
+is `INV-PAY-143` after reconciling main.
