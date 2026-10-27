@@ -1,4 +1,4 @@
-import type { PaymentStatus } from "@prisma/client";
+import type { PaymentStatus, Prisma } from "@prisma/client";
 import { isCapturedTransactionStatus } from "@/lib/payment-transaction-status";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
 import { XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
@@ -179,15 +179,21 @@ export function keptChangeCaptureRoute(evidence: KeptChangeCaptureEvidence): Kep
  * HAS THIS KEPT CAPTURE'S INVOICE ALREADY BEEN ASKED FOR? A kept-capture
  * invoice row anchored on its approval task, in any state but CANCELLED. A
  * FAILED or PARTIAL one counts: it is retried, never replaced. The enqueue and
- * the repair tool both ask this, and nothing else spells it.
+ * the repair tool both ask this. Database readers spread this filter; the
+ * in-memory decision below reads the same queue and excluded status.
  */
+export const LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE = {
+  queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
+  status: { not: "CANCELLED" },
+} as const satisfies Pick<Prisma.XeroSyncOperationWhereInput, "queueType" | "status">;
+
 export function keptLateCaptureInvoiceAsked(
   taskOperations: ReadonlyArray<{ queueType: string | null; status: string }>,
 ): boolean {
   return taskOperations.some(
     (operation) =>
-      operation.queueType === XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE &&
-      operation.status !== "CANCELLED",
+      operation.queueType === LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE.queueType &&
+      operation.status !== LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE.status.not,
   );
 }
 

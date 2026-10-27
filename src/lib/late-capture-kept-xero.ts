@@ -23,10 +23,7 @@ import { captureChangeId } from "@/lib/additional-capture-receipt-link";
 import { supplementaryInvoicesMovedOffIntentWhere } from "@/lib/supplementary-invoice-parked-from";
 import { readCreditReleaseCaptureShare } from "@/lib/credit-release-capture-share";
 import { recordedPrimaryInvoiceSettlement } from "@/lib/booking-primary-invoice-claim";
-import {
-  XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
-  XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-} from "@/lib/xero-operation-outbox-payload";
+import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { readCaptureRecorder, type RecorderStore } from "@/lib/additional-capture-recorder";
 import {
   primaryInvoiceGapBillsChange,
@@ -36,6 +33,7 @@ import {
   type GapAnchorStore,
 } from "@/lib/xero-primary-invoice-gap-anchors";
 import {
+  LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE,
   decideLateCapture,
   bookingHasPrimaryXeroInvoice,
   keptChangeCaptureRoute,
@@ -199,8 +197,7 @@ export async function readKeptCaptureRecordedElsewhere(
   const [kept, share, capture] = await Promise.all([
     store.xeroSyncOperation.findFirst({
       where: {
-        queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
-        status: { not: "CANCELLED" },
+        ...LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE,
         requestPayload: { path: ["paymentIntentId"], equals: paymentIntentId },
       },
       select: { id: true },

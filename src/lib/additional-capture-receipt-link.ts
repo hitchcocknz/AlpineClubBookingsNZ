@@ -6,11 +6,11 @@
  * import graph (`INV-SSOT`: the one spelling of the role and the read).
  */
 import type { Prisma } from "@prisma/client";
+import { LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE } from "@/lib/late-capture-kept-xero-rules";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
 import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-capture-receipt-payload";
-import { XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import { buildEditFinancialReviewChargeReason } from "@/lib/payment-recovery-keys";
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
 import { SUPPLEMENTARY_INVOICE_PAYMENT_ROLE } from "@/lib/xero-inbound/object-links";
@@ -274,13 +274,12 @@ async function keptInvoiceNamesCapture(
   if (intents.length === 0) return false;
   const kept = await store.xeroSyncOperation.findMany({
     where: {
-      queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
-      status: { not: "CANCELLED" },
+      ...LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE,
       OR: intents.map((intent) => ({ requestPayload: { path: ["paymentIntentId"], equals: intent } })),
     },
     select: { queueType: true },
   });
-  return kept.some((row) => row.queueType === XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE);
+  return kept.some((row) => row.queueType === LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE.queueType);
 }
 
 /**

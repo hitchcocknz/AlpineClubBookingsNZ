@@ -28,14 +28,12 @@
  */
 import type { Prisma } from "@prisma/client";
 import { readCreditReleaseCaptureShare } from "@/lib/credit-release-capture-share";
+import { LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE } from "@/lib/late-capture-kept-xero-rules";
 import { prisma } from "@/lib/prisma";
 import { asRecord } from "@/lib/xero-json";
 import { CAPTURED_TRANSACTION_STATUS_LIST } from "@/lib/payment-transaction-status";
 import { LEDGER_ROWS_OLDEST_FIRST } from "@/lib/payment-ledger-order";
-import {
-  XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
-  XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-} from "@/lib/xero-operation-outbox-payload";
+import { XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE } from "@/lib/xero-operation-outbox-payload";
 import {
   GAP_COVERED_CENTS_KEY,
   GAP_COVERED_INTENTS_KEY,
@@ -179,8 +177,7 @@ async function readBaseCaptureRecorder(
   // #4324: the kept-capture invoice queued for it - its payload names the intent.
   const kept = await store.xeroSyncOperation.findFirst({
     where: {
-      queueType: XERO_OUTBOX_KEPT_LATE_CAPTURE_INVOICE_TYPE,
-      status: { not: "CANCELLED" },
+      ...LIVE_KEPT_LATE_CAPTURE_INVOICE_WHERE,
       requestPayload: { path: ["paymentIntentId"], equals: input.paymentIntentId },
     },
     select: { id: true },
