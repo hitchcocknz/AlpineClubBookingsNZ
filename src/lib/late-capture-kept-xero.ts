@@ -99,24 +99,18 @@ export async function readKeptChangeCaptureEvidence(
     select: { status: true, lastErrorCode: true, requestPayload: true },
   });
   const answers: readonly string[] = RETIRED_CODES_ANSWERING_CAPTURE;
-  const unpaid = (row: { requestPayload: Prisma.JsonValue }) => asRecord(row.requestPayload)?.recordPayment === false;
   const answeredByChangeInvoice = naming.some(
     (row) => {
       // An unpaid invoice bills the change but leaves its capture to a receipt.
       // Waiting/retired rows must first go through release (including #3403's return).
-      if (row.status !== "WAITING_PAYMENT" && row.status !== "CANCELLED" && unpaid(row)) return false;
+      if (row.status !== "WAITING_PAYMENT" && row.status !== "CANCELLED" && asRecord(row.requestPayload)?.recordPayment === false) return false;
       return row.status !== "CANCELLED" || (row.lastErrorCode !== null && answers.includes(row.lastErrorCode));
     },
-  );
-  // Review F4: the recorder's `CHANGE_INVOICE` target for a capture with no change stamp.
-  const unpaidInvoiceNamesCapture = naming.some(
-    (row) => row.status !== "CANCELLED" && asRecord(row.requestPayload)?.paymentIntentId === input.paymentIntentId && unpaid(row),
   );
   const { changeId } = input;
   if (changeId === null) {
     return {
       answeredByChangeInvoice,
-      unpaidInvoiceNamesCapture,
       changeId,
       settledAgainstPrimary: false,
       changeInvoices: "none",
@@ -158,7 +152,6 @@ export async function readKeptChangeCaptureEvidence(
   const gap = await readChangeGapBilling(store, { ...input, changeId });
   return {
     answeredByChangeInvoice,
-    unpaidInvoiceNamesCapture,
     changeId,
     // Codex re-review: the marker is the primary's billing only where the primary did not miss the change.
     settledAgainstPrimary: recordedPrimaryInvoiceSettlement(change?.newData) !== null && !gap.primaryMissedChange,
