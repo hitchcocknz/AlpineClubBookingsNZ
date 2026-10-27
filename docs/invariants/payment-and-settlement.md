@@ -1789,33 +1789,34 @@ release).
 
 ## INV-PAY-144
 
-**Related: `INV-PAY-110`** (kept late captures) **and `INV-PAY-139`** (the
-change capture's receipt).
+**Related: `INV-PAY-110`** (kept late captures) **and `INV-PAY-139`**.
 
 - **A kept change capture on a cancelled, invoiced booking is recorded by the
   document the evidence names** (#4324; owner, 25 Oct 2026, amending one case
   of `INV-PAY-110`): a second invoice for a change the primary bills would
   count the income twice.
-- **One decision** (`keptChangeCaptureRoute`), taken once by the keep, and
-  by the repair tool, under the approval task's row then the change's anchor
-  lock, after finding the capture's receipt or kept invoice first:
+- **One decision** (`keptChangeCaptureRoute`), taken once by the keep or
+  the repair tool, under the task row then the change's anchor lock, after
+  finding the capture's receipt or kept invoice:
   - a change invoice naming the capture, paid or awaiting release: the
     late-success release (`INV-PAY-104`);
   - a #3980 gap invoice billing it (`primaryInvoiceGapBillsChange`), the
     primary billing it (settled against it, or no supplementary invoice,
     and not raced past it: `primaryInvoiceMissedChange`), or a live
-    supplementary invoice: its receipt, capped at the AmountDue;
-  - otherwise (every supplementary invoice withdrawn, or raced with no gap
+    supplementary invoice billing this capture: its receipt, capped at the
+    AmountDue;
+  - otherwise (withdrawn, recording another capture, or raced with no gap
     billing it): the kept-capture invoice, less what another writer
     records (`readCaptureRecorder`);
-  - no change readable: nothing, and the repair tool names it.
+  - no change readable: its receipt where an unpaid invoice names it, else
+    nothing; the repair tool names it.
 - **One recorder.** `readCaptureRecorder` and `anchorCaptureHasReceipt` count
   a kept-capture invoice; a replayed release finds the receipt; the receipt
   verdict counts it, so refunds get notes. No gap invoice on a cancelled
   booking, and no supplementary invoice for a change a kept-capture invoice
   bills; a gap invoice so refused raises the treasurer's UNDERBILLED task.
 - **Reopen.** Its worker re-reads the task under the anchor and, no longer
-  kept, closes its row in that transaction; an approval takes the anchor
+  kept, closes its row there; an approval takes the anchor
   first and withdraws an undecided receipt. A paid-another-way close plans
   under the task row then the anchor.
 - **Repair.** `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`, dry run listing the
