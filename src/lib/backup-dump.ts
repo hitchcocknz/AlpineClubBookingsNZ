@@ -1,10 +1,14 @@
 import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { rm } from "node:fs/promises";
+import { link, rm, unlink } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 
-/** Stream a plain SQL dump to disk; neither stdout nor stderr grows with the DB. */
+/**
+ * Stream a plain SQL dump to disk; neither stdout nor stderr grows with the DB.
+ * It is written to `<filepath>.partial` and appears at `filepath` only once
+ * complete, so a killed process never leaves a truncated dump under the final name.
+ */
 export async function streamPgDump(input: {
   filepath: string;
   argvUrl: string;
@@ -37,8 +41,9 @@ export async function streamPgDump(input: {
     dump.kill("SIGKILL");
   }, input.timeoutMs);
   // A timestamp collision must not truncate or remove another run's backup.
+  const partialPath = `${input.filepath}.partial`;
   let ownsFile = false;
-  const output = createWriteStream(input.filepath, { flags: "wx" });
+  const output = createWriteStream(partialPath, { flags: "wx" });
   output.on("open", () => { ownsFile = true; });
   const streamed = pipeline(
     dump.stdout,
@@ -49,12 +54,15 @@ export async function streamPgDump(input: {
   try {
     // EOF alone is insufficient: pg_dump can write valid SQL and then fail.
     await Promise.all([exited, streamed]);
+    // link() refuses an existing final name where rename() would overwrite it.
+    await link(partialPath, input.filepath);
+    await unlink(partialPath);
   } catch (error) {
     controller.abort();
     dump.kill("SIGKILL");
     // Close the file before removing it, and reap the child before returning.
     await Promise.allSettled([exited, streamed]);
-    if (ownsFile) await rm(input.filepath, { force: true });
+    if (ownsFile) await rm(partialPath, { force: true });
     if (timedOut) throw new Error(`pg_dump timed out after ${input.timeoutMs} ms`);
     throw error;
   } finally {

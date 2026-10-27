@@ -1,12 +1,13 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { gunzipSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { streamPgDump } from "@/lib/backup-dump";
+import { realElapsedMs } from "@/lib/__tests__/helpers/clock";
 
 const exec = promisify(execFile);
 
@@ -28,17 +29,20 @@ describe("streamPgDump", () => {
     };
   });
   afterEach(() => rmSync(dir, { recursive: true, force: true }));
+  const leftovers = () => readdirSync(dir).filter((file) => file !== "pg_dump");
 
   it("writes a complete gzip containing the exact dump bytes", async () => {
     command('process.stdout.write("COPY example FROM stdin;\\nrow\\n\\\\.\\n");');
     await streamPgDump(input);
     expect(gunzipSync(readFileSync(input.filepath)).toString()).toBe("COPY example FROM stdin;\nrow\n\\.\n");
+    // Completed atomically: only the final name remains, no .partial.
+    expect(leftovers()).toEqual(["dump.sql.gz"]);
   }, 15_000);
 
   it("rejects a nonzero exit even after a complete stdout and removes the partial backup", async () => {
     command('process.stdout.end("valid SQL\\n", () => { process.stderr.write("dump failed"); process.exitCode = 7; });');
     await expect(streamPgDump(input)).rejects.toThrow("pg_dump exited 7: dump failed");
-    expect(existsSync(input.filepath)).toBe(false);
+    expect(leftovers()).toEqual([]);
   }, 15_000);
 
   it("drains noisy stderr with bounded diagnostics", async () => {
@@ -54,10 +58,33 @@ describe("streamPgDump", () => {
     expect(existsSync(input.filepath)).toBe(false);
   }, 15_000);
 
+  it("never shows a dump under its final name while it is still being written", async () => {
+    // The producer waits until the final name is checked, so a crash at that
+    // point would leave only the .partial, which the spool prune removes.
+    const probe = path.join(dir, "probe");
+    command(`
+      process.stdout.write("first half\\n");
+      const fs = require("node:fs");
+      const wait = setInterval(() => {
+        if (fs.existsSync(${JSON.stringify(probe)})) { clearInterval(wait); process.stdout.write("second half\\n"); }
+      }, 10);
+    `);
+    const done = streamPgDump(input);
+    const started = process.hrtime.bigint();
+    while (!existsSync(`${input.filepath}.partial`) && realElapsedMs(started) < 5_000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    expect(existsSync(`${input.filepath}.partial`)).toBe(true);
+    expect(existsSync(input.filepath)).toBe(false);
+    writeFileSync(probe, "");
+    await done;
+    expect(leftovers().filter((file) => file !== "probe")).toEqual(["dump.sql.gz"]);
+  }, 15_000);
+
   it("kills a hung dump and removes its partial backup on timeout", async () => {
     command('process.stdout.write("partial SQL"); setInterval(() => {}, 1000);');
     await expect(streamPgDump({ ...input, timeoutMs: 200 })).rejects.toThrow("timed out");
-    expect(existsSync(input.filepath)).toBe(false);
+    expect(leftovers()).toEqual([]);
   }, 15_000);
 
   it("rejects a destination failure and stops the producer", async () => {
@@ -72,6 +99,7 @@ describe("streamPgDump", () => {
     writeFileSync(input.filepath, "another run's backup");
     await expect(streamPgDump(input)).rejects.toMatchObject({ code: "EEXIST" });
     expect(readFileSync(input.filepath, "utf8")).toBe("another run's backup");
+    expect(leftovers()).toEqual(["dump.sql.gz"]);
   }, 15_000);
 
   it("keeps peak memory flat when a synthetic dump grows from 16 to 512 MiB", async () => {
