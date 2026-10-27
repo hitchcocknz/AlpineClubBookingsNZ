@@ -1525,9 +1525,9 @@ entered by hand in Xero would then be recorded twice. So:
    invoice in Xero before it records anything, and refuses, telling the
    treasurer, where nothing is left due.
 
-A payment whose ledger row names no booking change (and that no unpaid
-invoice names), or one on a booking paid by internet banking, is reported
-`manual_review` and never applied: record it
+A payment whose ledger row names no booking change (even where an unpaid
+invoice names the payment), or one on a booking paid by internet banking, is
+reported `manual_review` and never applied: record it
 by hand in Xero. The tool cannot acknowledge a finding, so these come back on
 every run after you have recorded them; that is expected, not a sign the hand
 entry failed. A payment another writer already records (the credit-release

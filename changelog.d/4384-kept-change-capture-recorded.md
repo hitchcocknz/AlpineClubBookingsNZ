@@ -11,9 +11,9 @@
   invoice, as it does for a kept booking payment; that includes a change whose
   invoice was moved to, and paid by, a later payment, or waits on one. Where a change invoice already
   answers the payment, that invoice records it, as before. Where the payment
-  names no booking change, an unpaid invoice naming the payment records it;
-  without one, nothing is recorded automatically and the booking-vs-Xero
-  repair tool lists it for the treasurer. Each payment is
+  names no booking change, nothing is recorded automatically, even where an
+  unpaid invoice names the payment, and the booking-vs-Xero repair tool lists
+  it for the treasurer. Each payment is
   recorded once: a repeated Stripe notification, a re-keep after a reopen, or
   the repair tool running beside a keep never records it twice, and refunding a
   reopened payment withdraws a recording that has not been sent. The repair

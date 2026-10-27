@@ -1808,8 +1808,8 @@ release).
   - otherwise (withdrawn, recording another capture, or raced with no gap
     billing it): the kept-capture invoice, less what another writer
     records (`readCaptureRecorder`);
-  - no change readable: its receipt where an unpaid invoice names it, else
-    nothing; the repair tool names it.
+  - no change readable: nothing, whatever names its intent; the repair tool
+    names it (owner, Q1).
 - **One recorder.** `readCaptureRecorder` and `anchorCaptureHasReceipt` count
   a kept-capture invoice; a replayed release finds the receipt; the receipt
   verdict counts it, so refunds get notes. No gap invoice on a cancelled
