@@ -4531,8 +4531,9 @@ describe("runBookingXeroRepair", () => {
         });
         // Exercise the loader's separate invoice and receipt reads against one store.
         const operations = options.operations ?? [];
-        vi.mocked(deps.prisma.xeroSyncOperation.findMany).mockImplementation(async ({ where }: any) =>
-          operations.filter((row) => matchesWhere(row as object, where)) as never,
+        const operationQueries = deps.prisma.xeroSyncOperation as unknown as { findMany: ReturnType<typeof vi.fn> };
+        operationQueries.findMany.mockImplementation(async ({ where }: any = {}) =>
+          operations.filter((row) => matchesWhere(row as object, where)),
         );
         if (options.sweep) {
           const transactions = deps.prisma.paymentTransaction as unknown as Record<string, ReturnType<typeof vi.fn>>;
