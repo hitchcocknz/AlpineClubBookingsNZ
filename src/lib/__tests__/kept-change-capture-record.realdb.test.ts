@@ -584,10 +584,7 @@ async function holdLock(lock: (tx: Prisma.TransactionClient) => Promise<unknown>
     await expect(dismiss()).resolves.toMatchObject({ kind: "receipt-queued" });
     const rows = await receiptRows();
     expect(rows).toHaveLength(1);
-    const replay = await keep.planKeptLateCaptureXeroRecord({
-      manualRefundTaskId: TASK_ID, bookingId: BOOKING_ID, paymentIntentId: CHANGE_INTENT,
-      clubZone: ZONE, store: prisma,
-    });
+    const replay = await repairRecord();
     expect(replay).toEqual({ kind: "receipt-queued", queueOperationId: rows[0]!.id });
     await expect(recorder.readCaptureRecorder({
       bookingId: BOOKING_ID, primaryInvoiceId: INVOICE_ID,

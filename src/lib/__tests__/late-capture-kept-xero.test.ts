@@ -955,6 +955,15 @@ describe("finishKeptLateCaptureXeroRecord", () => {
 });
 
 describe("a waiting unpaid change invoice's kept capture", () => {
+  for (const outcome of ["alerted", "already-alerted", "left-retired", "awaiting-decision", "none-queued"]) {
+    it(`a release answering ${outcome} preserves manual attention without a receipt on the primary`, async () => {
+      mocks.releaseXeroSupplementaryInvoiceForCapturedPaymentIntent.mockResolvedValue({ outcome, released: 0, queueOperationIds: [] });
+      await finishKeptLateCaptureXeroRecord({ kind: "change-payment", paymentIntentId: "pi_late" });
+      expect(mocks.enqueueAdditionalCaptureReceiptOperation).not.toHaveBeenCalled();
+      expect(mocks.kickQueuedXeroOutboxOperationsIfConnected).not.toHaveBeenCalled();
+    });
+  }
+
   it("releases the invoice, queues its receipt through the recorder, then credits earlier refunds", async () => {
     await finishKeptLateCaptureXeroRecord({ kind: "change-payment", paymentIntentId: "pi_late" });
     expect(mocks.enqueueAdditionalCaptureReceiptOperation).toHaveBeenCalledWith("pi_late", { keptLateCapture: true });
