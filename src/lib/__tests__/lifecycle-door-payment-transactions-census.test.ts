@@ -1,7 +1,7 @@
 /**
  * EVERY EDIT DOOR THAT ASKS "IS THIS WHOLE-LODGE BOOKING STILL UNPAID?" LOADS
  * THE ROWS THE ANSWER NEEDS, AND POSTS WHAT A $0 SETTLE CONFIRMS (#4019 review,
- * `INV-PAY-142`).
+ * `INV-PAY-143`).
  *
  * `isUnpaidConfirmedWholeLodge` (`booking-payment-flow.ts`) tells an abandoned
  * card attempt from a capture by the payment's `PaymentTransaction` rows, and
@@ -179,27 +179,27 @@ function scanTree(): Map<string, DoorScan> {
   return doors;
 }
 
-describe("INV-PAY-142: whole-lodge unpaid readers load transactions and post confirmation lines", () => {
+describe("INV-PAY-143: whole-lodge unpaid readers load transactions and post confirmation lines", () => {
   const doors = scanTree();
 
   it("pins the exact set of edit doors that call the unpaid readers", () => {
     expect(
       [...doors.keys()].sort(),
-      "INV-PAY-142: a new caller of applyLifecycleTransitions / isUnpaidConfirmedWholeLodge must load the payment's transactions and post confirmation lines; add it here once it does",
+      "INV-PAY-143: a new caller of applyLifecycleTransitions / isUnpaidConfirmedWholeLodge must load the payment's transactions and post confirmation lines; add it here once it does",
     ).toEqual(EXPECTED_DOORS);
   });
 
   it.each(EXPECTED_DOORS)("%s loads the payment with its ordered transactions", (door) => {
     expect(
       doors.get(door)?.loadsTransactions,
-      `INV-PAY-142: ${door} must load \`payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } }\` - without the rows isUnpaidConfirmedWholeLodge reads an abandoned card attempt as paid`,
+      `INV-PAY-143: ${door} must load \`payment: { include: { transactions: { orderBy: [...LEDGER_ROWS_OLDEST_FIRST] } } }\` - without the rows isUnpaidConfirmedWholeLodge reads an abandoned card attempt as paid`,
     ).toBe(true);
   });
 
   it.each(EXPECTED_DOORS)("%s posts confirmation lines after a whole-lodge settle at zero dollars", (door) => {
     expect(
       doors.get(door)?.postsConfirmation,
-      `INV-PAY-142: ${door} must call ${CONFIRMATION_POSTER} when a whole-lodge edit settles at $0, guarded ${GUARD_SHAPES}`,
+      `INV-PAY-143: ${door} must call ${CONFIRMATION_POSTER} when a whole-lodge edit settles at $0, guarded ${GUARD_SHAPES}`,
     ).toBe(true);
   });
 

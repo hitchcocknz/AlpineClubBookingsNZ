@@ -29,15 +29,14 @@
  * Each asserts the net position, both mirrors (the payment's refunded total and
  * each charge's), the debt "Refunds owed" reads (`openCardRefundOwedCents`)
  * and the card refund rows. After a full close the payment holds nothing more
- * to refund, so "Refunds owed" reads nothing. THE ROW, ON THIS RELEASE: a
- * closed row's refund failing later still raises one card refund row of its
- * own (`INV-PAY-128`) - exactly one per refund, never a second on a replay or
- * a concurrent delivery - and the floor writes none. After a PART close that
- * row owes again what the close gave up, up to what the payment still holds,
- * and "Refunds owed" reads it. That such a row is raised at all once a close
- * paid the member is #4210, which #4225 fixes on top of this repair; when it
- * lands it changes the `raisedRows` and part-close owed figures and nothing
- * else here.
+ * to refund, so "Refunds owed" reads nothing. THE ROW: a closed row's refund
+ * failing later raises one card refund row of its own (`INV-PAY-128`) -
+ * exactly one per refund, never a second on a replay or a concurrent delivery
+ * - and the floor writes none. Since #4210 (`INV-PAY-142`) that row is HELD:
+ * raised with its attempts spent, never re-sent automatically, for an officer
+ * to check against the close (`card-refund-failed-later-after-paid-another-way.realdb.test.ts`
+ * proves the hold and its alert). After a PART close it counts in "Refunds
+ * owed" as every dead row does, up to what the payment still holds.
  *
  * Ordinary Vitest runs skip the whole file. It reuses the guarded, disposable
  * loopback PostgreSQL `concurrency-lock-races.realdb.test.ts` provisions
@@ -352,8 +351,9 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
         select: { idempotencyKey: true, amountCents: true, status: true, attempts: true },
         orderBy: { idempotencyKey: "asc" },
       });
+    /** #4210 (`INV-PAY-142`): the failure's row of its own, held - PENDING with its attempts spent, never re-sent automatically. */
     const rowOfItsOwn = (refundId: string, cents: number) =>
-      expect.objectContaining({ idempotencyKey: `card_refund_failed_later_${refundId}`, amountCents: cents });
+      expect.objectContaining({ idempotencyKey: `card_refund_failed_later_${refundId}`, amountCents: cents, status: "PENDING", attempts: 5 });
 
     const refundStatus = async (stripeRefundId: string) =>
       (await prisma.paymentRefund.findUniqueOrThrow({ where: { stripeRefundId }, select: { status: true } })).status;
@@ -388,7 +388,7 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
         // The bank refund stands: nothing of the $200 is refundable again.
         expect(await mirrors()).toEqual({ payment: CHARGE_A_CENTS, charges: { [TXN_A]: CHARGE_A_CENTS }, retained: 0 });
         expect(await refundStatus("re_race_4280_late")).toBe(refusal);
-        // The failure's row (`INV-PAY-128`; #4210/#4225, see the header): one. Refunds owed reads nothing.
+        // The failure's row (`INV-PAY-128`), held (#4210, see the header): one. Refunds owed reads nothing.
         expect(await raisedRows()).toEqual([rowOfItsOwn("re_race_4280_late", CHARGE_A_CENTS)]);
         expect(await owedNow()).toBe(0);
         // The audit, which reads the same floor, finds nothing short.
@@ -418,8 +418,8 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
 
         expect(await mirrors()).toEqual({ payment: 12_000, charges: { [TXN_A]: 12_000 }, retained: 8_000 });
         expect(await raisedRows()).toEqual([rowOfItsOwn("re_race_4280_part", CHARGE_A_CENTS)]);
-        // What "Refunds owed" reads on this release: the $80 the part close gave up, owed again by the
-        // failure's own row (up to what the payment still holds). That is #4210's ground, for #4225.
+        // What "Refunds owed" reads: the failure's held row, counted as every dead row is, up to what the
+        // payment still holds - the $80 the part close left. Never re-sent: an officer checks it (#4210).
         expect(await owedNow()).toBe(8_000);
         expect(await auditFinding()).toBeNull();
       });
@@ -529,7 +529,7 @@ const B: Charge = { id: TXN_B, intent: INTENT_B, charge: CHARGE_B, cents: CHARGE
         // The charges hold the close's $150 between them, exactly as it placed them.
         expect(await mirrors()).toEqual(closed);
         expect(await raisedRows()).toEqual([rowOfItsOwn(lateA.id, CHARGE_A_CENTS)]);
-        // As above: the $150 the part close gave up is owed again by the failure's row (#4210, #4225).
+        // As above: the held row counts up to the $150 the payment still holds; never re-sent (#4210).
         expect(await owedNow()).toBe(15_000);
         expect(await auditFinding()).toBeNull();
       });

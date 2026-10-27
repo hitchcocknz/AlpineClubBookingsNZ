@@ -12,7 +12,7 @@ import {
 /**
  * What the switch to Internet Banking (`/api/payments/switch-to-internet-banking`)
  * does after its commit, and what it answers when the booking is already on
- * Internet Banking (#4019 review, `INV-PAY-142`). Split from the route so the
+ * Internet Banking (#4019 review, `INV-PAY-143`). Split from the route so the
  * route's first switch and both of its replays (the early unlocked read and the
  * post-lock re-read) share one queueing step and one answer.
  */
