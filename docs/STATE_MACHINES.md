@@ -3970,8 +3970,10 @@ late change capture KEPT on a cancelled, invoiced booking (the #3639 task
   DISMISSED; #4324, INV-PAY-143) -> the keep's one decision, under the task row
   then the change's anchor lock (the repair tool's QUEUE_KEPT_LATE_CAPTURE_RECORD
   runs the same), after finding the capture's receipt or kept invoice:
-    a change invoice naming the capture, live or reaper-retired -> the
-      late-success release, after commit
+    a change invoice naming the capture, paid or awaiting release -> the
+      late-success release, after commit; if an unpaid change invoice remains,
+      enqueue its receipt under the same anchor (never fall back to the primary
+      after a refused release)
     a #3980 gap invoice billing it (one of its anchors, in Xero or on its
       way, never voided), or the primary billing it (settled against it, or
       no supplementary invoice, and the change did not race the primary's

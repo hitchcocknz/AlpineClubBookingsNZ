@@ -27,3 +27,7 @@ Integration preserves main's carry and receipt claim fencing. An issued unpaid
 change invoice naming the kept capture now gets its missing receipt; releasing
 a waiting invoice also checks the canonical recorder for a receipt. The rule
 is `INV-PAY-143` after reconciling main.
+
+Programme decision: on 27 Oct 2026 the owner explicitly directed completion of
+this PR, overriding #4451's group-2 parking of #4324 for the ledger-first
+programme. The owner retains review and merge. #4328 and #4382 remain separate.
