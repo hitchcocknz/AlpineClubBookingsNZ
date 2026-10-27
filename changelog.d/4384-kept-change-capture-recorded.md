@@ -31,3 +31,7 @@ is `INV-PAY-143` after reconciling main.
 Programme decision: on 27 Oct 2026 the owner explicitly directed completion of
 this PR, overriding #4451's group-2 parking of #4324 for the ledger-first
 programme. The owner retains review and merge. #4328 and #4382 remain separate.
+
+The disposable PostgreSQL check also supports root check runners by starting
+and stopping PostgreSQL as its unprivileged package account, without changing
+checkout ownership or weakening the test/report gates.

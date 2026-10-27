@@ -264,8 +264,11 @@ package and runs `bash scripts/ci/kept-change-realdb.sh` against a fresh,
 loopback-only disposable database. It runs the kept-change, superseded-invoice
 carry, change-receipt and primary-invoice race suites serially, then checks the
 Vitest JSON report with `unexercisedRealdbFiles`: every named suite must pass
-and none may skip. The script stops its database on exit. A missing PostgreSQL
-binary fails explicitly; unit-shard success is not database evidence. The
+and none may skip. The script stops its database on exit. When the check runs
+as root, only PostgreSQL commands run as the package's unprivileged `postgres`
+account, which owns the fresh cluster directory; migrations and tests retain
+the caller's checkout permissions. Non-root checks use their own account.
+A missing PostgreSQL binary fails explicitly; unit-shard success is not database evidence. The
 broader `realdb-all` job's discovery and no-skip check on GitHub remain advisory,
 so cite that job's actual result separately before making the PR ready.
 

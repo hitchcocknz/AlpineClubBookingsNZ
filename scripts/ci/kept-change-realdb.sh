@@ -6,8 +6,16 @@ export PATH="/usr/lib/postgresql/17/bin:$PATH"
 command -v initdb >/dev/null || { echo 'PostgreSQL 17 must be installed by .sekreton/config.toml' >&2; exit 1; }
 mkdir -p /tmp/scratch
 race_dir=$(mktemp -d /tmp/scratch/kept-change-realdb.XXXXXX)
+# PostgreSQL refuses root even when the check runner itself is privileged.
+# Only the new disposable cluster belongs to the package's postgres account;
+# migrations and tests keep the caller's checkout and dependency permissions.
+postgres_runner=()
+if [ "$(id -u)" -eq 0 ]; then
+  chown postgres:postgres "$race_dir"
+  postgres_runner=(runuser -u postgres --)
+fi
 cleanup() {
-  pg_ctl -D "$race_dir/data" -m immediate -w stop >/dev/null 2>&1 || true
+  "${postgres_runner[@]}" pg_ctl -D "$race_dir/data" -m immediate -w stop >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 # The suite safety guard requires loopback, port 55442+, and this DB marker.
@@ -26,9 +34,9 @@ for (let attempt = 0; attempt < 20; attempt++) {
 }
 process.exit(1);
 ')
-initdb -D "$race_dir/data" -U postgres --auth-local=trust --auth-host=trust > "$race_dir/init.log"
-pg_ctl -D "$race_dir/data" -l "$race_dir/postgres.log" -o "-h 127.0.0.1 -p $race_port -k $race_dir" -w start
-createdb -h 127.0.0.1 -p "$race_port" -U postgres concurrency_race_1881
+"${postgres_runner[@]}" initdb -D "$race_dir/data" -U postgres --auth-local=trust --auth-host=trust > "$race_dir/init.log"
+"${postgres_runner[@]}" pg_ctl -D "$race_dir/data" -l "$race_dir/postgres.log" -o "-h 127.0.0.1 -p $race_port -k $race_dir" -w start
+"${postgres_runner[@]}" createdb -h 127.0.0.1 -p "$race_port" -U postgres concurrency_race_1881
 export DATABASE_URL="postgresql://postgres@127.0.0.1:$race_port/concurrency_race_1881"
 export CONCURRENCY_RACE_DATABASE_URL="$DATABASE_URL"
 export RUN_CONCURRENCY_RACE_TESTS=1
