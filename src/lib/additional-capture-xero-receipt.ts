@@ -88,6 +88,7 @@ import {
   answerKeptLateCaptureRefunds,
   closeKeptReceiptNotKept,
   hasLateCaptureApprovalTask,
+  keptCaptureAnchorId,
   keptReceiptStillKeptElseClosed,
   lateCaptureStillKept,
 } from "@/lib/kept-late-capture-change-receipt";
@@ -383,7 +384,7 @@ export async function recordAdditionalCaptureReceipt(
     const refundState = await lateCaptureRefundState({ paymentIntentId, bookingStatus: payment.booking.status });
     if (refundState !== "kept" && !cancelled) return standDown("CANCELLED", "capture-not-kept", { refundState });
     // #4324 (review C1): on a cancelled booking its approval task decides, read again and closed under the anchor.
-    const anchorId = captureChangeId(transaction) ?? bookingId;
+    const anchorId = keptCaptureAnchorId(transaction, bookingId);
     if (refundState !== "kept" && !(await keptReceiptStillKeptElseClosed({ claim: params.syncOperation, anchorId, paymentIntentId }, { refundState }))) return null;
 
     // Review round 1: one recorder per capture.
@@ -497,7 +498,7 @@ export async function recordAdditionalCaptureReceipt(
     const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
     const stored = await prisma.$transaction(async (tx) => {
       const changeId = captureChangeId(transaction);
-      await lockSupplementaryInvoiceAnchor(tx, changeId ?? bookingId);
+      await lockSupplementaryInvoiceAnchor(tx, keptCaptureAnchorId(transaction, bookingId));
       // #4324: a kept capture is still kept, read under the lock the approval
       // withdraws an undecided receipt under, and closed there if not (C1).
       if (cancelled && !(await lateCaptureStillKept(tx, paymentIntentId))) {

@@ -40,7 +40,7 @@ import { XERO_OUTBOX_ADDITIONAL_CAPTURE_RECEIPT_TYPE } from "@/lib/additional-ca
 import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-receipt";
 import { readCaptureRecorder } from "@/lib/additional-capture-recorder";
 import { captureChangeId } from "@/lib/additional-capture-receipt-link";
-import { lateCaptureStillKept } from "@/lib/kept-late-capture-change-receipt";
+import { keptCaptureAnchorId, lateCaptureStillKept } from "@/lib/kept-late-capture-change-receipt";
 import type { PrimaryInvoiceFeeAtLink } from "@/lib/xero-primary-invoice-fee-at-link";
 
 export type AdditionalCaptureReceiptEnqueueResult =
@@ -129,7 +129,7 @@ export async function enqueueAdditionalCaptureReceiptOperation(
   // Round 7: the change its stamp or its review charge's reason names.
   const changeId = captureChangeId(transaction);
   const decide = async (tx: Prisma.TransactionClient): Promise<AdditionalCaptureReceiptEnqueueResult> => {
-    await lockSupplementaryInvoiceAnchor(tx, changeId ?? payment.bookingId);
+    await lockSupplementaryInvoiceAnchor(tx, keptCaptureAnchorId(transaction, payment.bookingId));
     const existing = await tx.xeroSyncOperation.findFirst({
       where: { correlationKey: key, status: { not: "CANCELLED" } },
       orderBy: { createdAt: "desc" },

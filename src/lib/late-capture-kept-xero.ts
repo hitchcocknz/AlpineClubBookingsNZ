@@ -16,6 +16,7 @@ import {
   lockKeptLateCaptureTask,
 } from "@/lib/xero-kept-late-capture-invoice";
 import { findLiveKeptReceiptRow } from "@/lib/kept-late-capture-receipt-rows";
+import { keptCaptureAnchorId } from "@/lib/kept-late-capture-change-receipt";
 import { creditBackLateCaptureRefunds } from "@/lib/late-capture-refund-credit-note";
 import { enqueueAdditionalCaptureReceiptOperation } from "@/lib/additional-capture-receipt-enqueue";
 import { additionalCaptureReceiptKey } from "@/lib/additional-capture-xero-receipt";
@@ -306,7 +307,7 @@ export async function planKeptLateCaptureXeroRecord(params: {
 
   // #4324: a change payment on an invoiced booking, decided under its anchor.
   const changeId = captureChangeId(transaction);
-  await lockSupplementaryInvoiceAnchor(store, changeId ?? params.bookingId);
+  await lockSupplementaryInvoiceAnchor(store, keptCaptureAnchorId(transaction, params.bookingId));
   if (await findLiveKeptReceiptRow(store, params.manualRefundTaskId)) return queueKeptInvoice();
   const receiptRow = await store.xeroSyncOperation.findFirst({
     where: { correlationKey: additionalCaptureReceiptKey(params.paymentIntentId), status: { not: "CANCELLED" } },

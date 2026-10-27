@@ -126,9 +126,22 @@ export async function answerKeptLateCaptureRefunds(paymentIntentId: string): Pro
 }
 
 /**
+ * #4324 review F4 (`INV-SSOT`): THE ANCHOR A CHANGE CAPTURE'S RECORDS ARE
+ * DECIDED UNDER - its change (`captureChangeId`), else its booking. The one
+ * spelling of the per-anchor supplementary-invoice key the keep's decision,
+ * the receipt's enqueue and its worker, and {@link lockKeptCaptureAnchor} lock.
+ */
+export function keptCaptureAnchorId(
+  capture: { bookingModificationId: string | null; reason: string | null },
+  bookingId: string,
+): string {
+  return captureChangeId(capture) ?? bookingId;
+}
+
+/**
  * #4324: THE ANCHOR A KEPT CAPTURE'S RECORDS ARE DECIDED UNDER - the per-anchor
  * supplementary-invoice lock on its change (`captureChangeId`), else its
- * booking - taken by a caller already holding the approval task's row, so the
+ * booking ({@link keptCaptureAnchorId}) - taken by a caller already holding the approval task's row, so the
  * order is task row -> anchor. The approval's settlement takes it before its
  * first outbox write (review C2), and a paid-another-way close before it
  * queues the kept-capture invoice of a change capture (review C4,
@@ -150,7 +163,7 @@ export async function lockKeptCaptureAnchor(
   if (!capture || !task || (options?.additionalOnly && capture.kind !== "ADDITIONAL")) return false;
   // Imported here: the outbox dispatches to the workers that import this.
   const { lockSupplementaryInvoiceAnchor } = await import("@/lib/xero-operation-outbox");
-  await lockSupplementaryInvoiceAnchor(db, captureChangeId(capture) ?? task.bookingId);
+  await lockSupplementaryInvoiceAnchor(db, keptCaptureAnchorId(capture, task.bookingId));
   return true;
 }
 
