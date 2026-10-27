@@ -2706,6 +2706,14 @@ In `--from-dump` mode the source-fidelity comparisons are reported as `SKIP`
 assertions still run against the restored database. Delete the downloaded dump
 when you are done.
 
+The drill leaves the supplied dump unchanged and omits ownership and privilege
+statements during restore, so deployment roles need not exist in the throwaway
+cluster. Plain and gzipped SQL use the backup validator's streaming filter;
+custom archives use `pg_restore --no-owner --no-acl --exit-on-error`. This proves
+schema and data restoration, not deployment role permissions. A disaster-recovery
+restore must provision the deployment roles and retain the original owners and
+grants.
+
 ### What the assertions prove
 
 - **Restore fidelity** (local mode only): row counts for `Member`, `Booking`,
