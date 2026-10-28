@@ -443,6 +443,7 @@ import {
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
 import {
   bookingModificationIdForAdditionalIntentRecoveryKey,
+  buildCardRefundFailedLaterRecoveryKey,
   buildAdditionalIntentRecoveryIdempotencyKey,
   buildEditFinancialReviewAdditionalIntentRecoveryIdempotencyKey,
   buildEditFinancialReviewAdditionalIntentStripeKey,
@@ -1365,6 +1366,19 @@ describe("payment recovery worker", () => {
       expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCEEDED" }) }));
       expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(expect.objectContaining({ errorMessage: expect.stringContaining("Paid another way") }), CLUB_FORMAT_TEST);
       expect(mockCreateAuditLog).toHaveBeenCalledWith(expect.objectContaining({ category: "payment", action: "booking-payment.card-refund.resend-held" }));
+    });
+
+    it("holds the failed-later debt itself before the runner can re-send it", async () => {
+      const op = queueRefund();
+      const failedLaterKey = buildCardRefundFailedLaterRecoveryKey("re_failed_original");
+      mockPaymentRecoveryFindUnique.mockResolvedValue({ ...op, idempotencyKey: failedLaterKey, stripeKeyPrefix: failedLaterKey });
+      mockListRefundsForPaymentIntent.mockResolvedValue([dashboardRefund]);
+      expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, nextRetryAt: null }),
+      }));
     });
 
     it("checks Stripe before closing a fully refunded charge as already done", async () => {
