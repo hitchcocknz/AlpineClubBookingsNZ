@@ -14,6 +14,64 @@ an unreachable dummy is correct and a live seeded database is not — so
 `prisma.config.ts` resolves. See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for
 the full local gate.
 
+## Stateful Xero and Stripe fakes
+
+Tests can keep provider state across a whole money journey instead of returning
+unrelated responses from each mock. Import
+[`XeroFake`](../src/test/providers/xero-fake.ts) or
+[`StripeFake`](../src/test/providers/stripe-fake.ts), and create a fresh instance
+per test. These helpers have no credentials, network calls, database or Vitest
+dependency. Unit and realdb tests can use them directly; Playwright's Node-side
+fixtures can use them behind a test transport adapter. They do not install HTTP
+routes or replace either provider SDK automatically.
+
+```ts
+const xero = new XeroFake();
+const contact = xero.createContact("contact", "member-a");
+const invoice = xero.createInvoice("charge", contact.contactID, 8000);
+xero.payInvoice("receipt", invoice.invoiceID, 5000);
+expect(xero.snapshot().invoices[0].amountDueCents).toBe(3000);
+```
+
+All amounts are integer cents. Write methods take an operation key first:
+retrying the same request returns its original response, while changed parameters
+reject. Keys live for the instance's lifetime; expiry is not modeled. Snapshots
+are detached copies, so retaining a reading before a later void models delayed
+delivery. `invoiceWire` in the
+[`round-trip harness`](../src/test/providers/round-trip-harness.ts) converts
+invoice reads to the native Xero JSON boundary used by the production observer.
+
+Xero models contacts, authorised invoices, receipts, credit notes, allocations,
+allocation removal, payment deletion and voids. A paid invoice refuses a new
+allocation; remove existing allocations/payments before voiding a document.
+`payCreditNote` records a hand-back separately from an allocation. Stripe models
+manual authorisation, one full or partial capture, cancellation, pending and
+successful refunds, later failure, and dashboard refunds. Pending refunds reserve
+capture capacity; failed refunds release it. `snapshot().events` retains immutable
+Stripe event payloads for delivery/replay tests. Taxes, fees, FX, API pagination,
+authentication, rate limits and transport failures are outside these models.
+
+The fixture contract suite pins selected behavior to
+[`provider-contracts.json`](../src/test/providers/fixtures/provider-contracts.json).
+**These fixtures are synthetic examples, not sandbox recordings.** Their public
+API references and repository error-example source are recorded in the JSON;
+sandbox conformance remains unverified. Do not regenerate expectations from the
+fake. Future sandbox captures need sanitized, independently reviewed fixtures.
+
+Run the four new suites with:
+
+```sh
+pnpm exec vitest run src/test/providers/provider-fakes.test.ts src/test/providers/provider-contracts.test.ts src/test/providers/ledger-scenarios.test.ts src/test/providers/round-trip.test.ts --maxWorkers=1
+```
+
+The fast-check properties use fixed seeds (4460 and 4461) and the shared frozen
+clock. They compare independently imported state with outbound journal totals
+after every prefix, require no new postings on round trips, and check external
+refund corrections and redelivery. The journal and adapters are test models for
+#4461, not production ledger implementations. Scenario witnesses cover #3911,
+#4336, #4434 and #4380; passing them does not close those application bugs or
+prove production sync correctness.
+
 ## CI shards and the required check
 
 Pull-request and `main` CI run the complete unit suite in four independent
