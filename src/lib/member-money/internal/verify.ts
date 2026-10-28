@@ -1,5 +1,6 @@
 import type { Client } from "pg";
 import { z } from "zod";
+import { APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES } from "../../database-roles";
 import { MEMBER_MONEY_RELATIONS } from "../../member-money-tables";
 
 const Finding = z.object({ identity: z.string(), problem: z.string() });
@@ -19,7 +20,7 @@ export async function verifyMemberMoneyJournal(client: Client, appRole: string) 
       SELECT $1::text AS identity, 'unsafe_application_grants' AS problem
       WHERE NOT has_table_privilege($2, to_regclass(format('public.%I', $1)), 'SELECT')
          OR NOT has_table_privilege($2, to_regclass(format('public.%I', $1)), 'INSERT')
-         OR has_table_privilege($2, to_regclass(format('public.%I', $1)), 'UPDATE,DELETE,TRUNCATE,TRIGGER,REFERENCES')
+         OR has_table_privilege($2, to_regclass(format('public.%I', $1)), '${APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES}')
          OR has_any_column_privilege($2, to_regclass(format('public.%I', $1)), 'UPDATE')
       UNION ALL
       SELECT $1, 'missing_or_disabled_trigger'

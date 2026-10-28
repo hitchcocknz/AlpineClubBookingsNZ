@@ -95,6 +95,9 @@ export const AUDIT_RETENTION_RELATION = "AuditLog";
 /** Table rights the application role holds on an ordinary relation. */
 export const APPLICATION_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE";
 
+/** Table privileges incompatible with INSERT/SELECT-only financial evidence. */
+export const APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES = "UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES";
+
 /**
  * SECURITY DEFINER routines the re-check tolerates in the application schema, as
  * `regprocedure` text. EMPTY: such a routine runs as its owner — the migration
@@ -177,7 +180,7 @@ WHERE n.nspname = 'public'
        OR (c.relkind IN ('v', 'm')
            AND pg_catalog.has_table_privilege(:'app_role', c.oid, 'INSERT, UPDATE, DELETE'))
        OR (c.relname IN (${APPEND_ONLY_RELATIONS.map(quoteLiteral).join(", ")})
-           AND (pg_catalog.has_table_privilege(:'app_role', c.oid, 'UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES')
+           AND (pg_catalog.has_table_privilege(:'app_role', c.oid, '${APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES}')
                 OR pg_catalog.has_any_column_privilege(:'app_role', c.oid, 'UPDATE'))));`;
 
 /** A relation name in the application schema, quoted for SQL text. */
@@ -340,7 +343,7 @@ function buildVerificationSql(input: {
   const auditRelation = regclassLiteral(AUDIT_RETENTION_RELATION);
   const appendOnlyChecks = APPEND_ONLY_RELATIONS.map(
     (name) => `  IF to_regclass(${regclassLiteral(name)}) IS NOT NULL AND (
-       pg_catalog.has_table_privilege(${app}, ${regclassLiteral(name)}, 'UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES')
+       pg_catalog.has_table_privilege(${app}, ${regclassLiteral(name)}, '${APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES}')
        OR pg_catalog.has_any_column_privilege(${app}, ${regclassLiteral(name)}, 'UPDATE')) THEN
     RAISE EXCEPTION 'Refusing to commit: the application role can still change rows of %.', ${quoteLiteral(name)};
   END IF;`,
