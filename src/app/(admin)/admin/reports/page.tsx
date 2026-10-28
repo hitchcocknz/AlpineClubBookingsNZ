@@ -479,8 +479,7 @@ export default function ReportsPage() {
           {lodges.length > 1 ? (
             <div className="space-y-1">
               <label htmlFor="report-lodge" className="text-xs font-medium text-muted-foreground">Lodge</label>
-              <select
-                id="report-lodge"
+              <select id="report-lodge"
                 value={lodgeId}
                 onChange={(event) => setLodgeId(event.target.value)}
                 className="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
@@ -496,8 +495,7 @@ export default function ReportsPage() {
           ) : null}
           <div className="space-y-1">
             <label htmlFor="report-deleted" className="text-xs font-medium text-muted-foreground">Deleted</label>
-            <select
-              id="report-deleted"
+            <select id="report-deleted"
               value={deleted}
               onChange={(event) => setDeleted(event.target.value)}
               className="flex h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm transition-colors"
