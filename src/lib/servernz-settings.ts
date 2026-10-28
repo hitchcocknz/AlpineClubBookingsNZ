@@ -437,6 +437,11 @@ export async function forgetServerConnectionAnswers(
       otherLodgesLastUploadAt: null,
       otherLodgesLastDownloadAt: null,
       otherLodgesCursor: null,
+      commsCursorSince: null,
+      commsCursorSinceId: null,
+      commsLastSyncAt: null,
+      commsPoisonChangeId: null,
+      commsPoisonCount: 0,
       // A new connection keys the registry again with a whole download (#64).
       otherLodgesKeyedAt: null,
       serverVersion: null,

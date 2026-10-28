@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const state = vi.hoisted(() => ({
   row: {} as Record<string, unknown>,
   credentialVersion: "old-key",
+  beforeCapture: async () => {},
   duringUpload: async () => {},
   queries: [] as Array<Record<string, unknown>>,
 }));
@@ -42,14 +43,19 @@ vi.mock("@/lib/integration-credentials", () => ({ invalidateProviderCredentialCa
 vi.mock("@/lib/other-lodge-fees-sync", () => ({ syncOwnOtherLodgesFromFees: vi.fn() }));
 vi.mock("@/lib/logger", () => ({ default: { info: vi.fn(), warn: vi.fn() } }));
 vi.mock("@/lib/servernz-api", () => ({
-  uploadOtherLodges: async (items: Array<{ id: string; name: string }>) => {
-    // Like the real API wrapper, capture identity BEFORE awaiting the provider.
+  prepareOtherLodgesUpload: async () => {
+    await state.beforeCapture();
+    // Capture settings and identity together, like the real API wrapper.
+    const { loadServerNzSettings } = await import("@/lib/servernz-settings");
+    const settings = await loadServerNzSettings();
     const sentOn = { baseUrl: state.row.baseUrl, credentialVersion: state.credentialVersion };
-    await state.duringUpload();
-    return {
-      sentOn, created: 0, updated: items.length, unchanged: 0, skipped: 0,
-      results: items.map((item) => ({ ...item, status: "updated" })),
-    };
+    return { settings, upload: async (items: Array<{ id: string; name: string }>) => {
+      await state.duringUpload();
+      return {
+        sentOn, created: 0, updated: items.length, unchanged: 0, skipped: 0,
+        results: items.map((item) => ({ ...item, status: "updated" })),
+      };
+    } };
   },
 }));
 
@@ -68,9 +74,13 @@ beforeEach(() => {
     otherLodgesLastUploadAt: null,
     otherLodgesLastDownloadAt: previousWatermark,
     otherLodgesCursor: "old-server-cursor",
+    commsCursorSince: "old-feed-position", commsCursorSinceId: "old-feed-id",
+    commsLastSyncAt: previousWatermark,
+    commsPoisonChangeId: "old-feed-change", commsPoisonCount: 2,
     otherLodgesKeyedAt: previousWatermark,
   };
   state.credentialVersion = "old-key";
+  state.beforeCapture = async () => {};
   state.duringUpload = async () => {};
   state.queries = [];
 });
@@ -92,6 +102,8 @@ describe("Other lodges upload watermark belongs to its connection (#4485)", () =
     expect(state.row).toMatchObject({
       otherLodgesLastUploadAt: null, otherLodgesLastDownloadAt: null,
       otherLodgesCursor: null, otherLodgesKeyedAt: null,
+      commsCursorSince: null, commsCursorSinceId: null, commsLastSyncAt: null,
+      commsPoisonChangeId: null, commsPoisonCount: 0,
     });
     // A download must first record this connection's owned list again.
     state.row.otherLodgesOwnedLodges = owned;
@@ -104,6 +116,16 @@ describe("Other lodges upload watermark belongs to its connection (#4485)", () =
     state.duringUpload = () => replaceConnection(change);
     await expect(uploadOtherClubsToServer()).rejects.toBeInstanceOf(ServerNzConnectionChangedError);
     expect(state.row.otherLodgesLastUploadAt).toBeNull();
+  });
+
+  it.each(["address", "key"] as const)("uses the new connection's whole selection when the %s changes before request capture", async (change) => {
+    state.row.otherLodgesLastUploadAt = previousWatermark;
+    state.beforeCapture = async () => {
+      await replaceConnection(change);
+      state.row.otherLodgesOwnedLodges = owned;
+    };
+    expect((await uploadOtherClubsToServer()).sent).toBe(1);
+    expect(state.queries.at(-1)).toEqual({ hiddenAt: null });
   });
 
   it("advances the watermark when the connection stands", async () => {

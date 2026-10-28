@@ -288,7 +288,8 @@ Alpine Central Server**, for you to check its bookings and **Hide** it.
   editable until a later download links it again, and another club's is
   marked **Not found**. A download that was running while
   the address or key changed records nothing. The upload watermark and download
-  cursor are cleared too, so the first upload after relinking sends all your
+  cursor are cleared too, along with the shared-feed sync position and failed
+  change tracking, so the first upload after relinking sends all your
   owned lodges. An upload already in flight cannot advance the new connection's
   watermark.
 - **Your lodge's name is yours.** If the central server's administrator renames

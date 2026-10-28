@@ -59,17 +59,20 @@ const mockPullSnapshot = vi.fn();
 vi.mock("@/lib/servernz-api", () => ({
   // A 2.5 server answers every item with its lodge's id; a fixture that leaves
   // the id out gets the item's own, so only a test about a WRONG id sets one.
-  uploadOtherLodges: async (items: Array<{ id?: string }>) => {
-    const answer = await mockUploadOtherLodges(items);
-    if (!answer?.results) return answer;
-    return {
-      ...answer,
-      sentOn: SENT_ON,
-      results: answer.results.map((r: { id?: unknown }, i: number) =>
-        "id" in r ? r : { ...r, ...(items[i]?.id ? { id: items[i].id } : {}) },
-      ),
-    };
-  },
+  prepareOtherLodgesUpload: async () => ({
+    settings: await mockLoadSettings(),
+    upload: async (items: Array<{ id?: string }>) => {
+      const answer = await mockUploadOtherLodges(items);
+      if (!answer?.results) return answer;
+      return {
+        ...answer,
+        sentOn: SENT_ON,
+        results: answer.results.map((r: { id?: unknown }, i: number) =>
+          "id" in r ? r : { ...r, ...(items[i]?.id ? { id: items[i].id } : {}) },
+        ),
+      };
+    },
+  }),
   // The pull reads the stored settings in the same fenced read as its
   // connection (#4262 review): `since` may be a function of them, and the
   // answer carries them as `snapshot`. Here the stored settings are whatever
