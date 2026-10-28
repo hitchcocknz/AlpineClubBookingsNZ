@@ -135,7 +135,13 @@ export async function POST(request: NextRequest) {
   // Already on Internet Banking → idempotent success, re-queueing the invoice
   // a live booking may still lack (`queueSwitchInvoiceAfterCommit`).
   if (booking.payment?.source === PaymentSource.INTERNET_BANKING) {
-    if (isLiveSwitchState(booking)) await queueSwitchInvoiceAfterCommit(booking.id, session.user.id);
+    if (!isLiveSwitchState(booking)) {
+      return NextResponse.json(
+        { error: "This booking can no longer switch to Internet Banking." },
+        { status: 409 },
+      );
+    }
+    await queueSwitchInvoiceAfterCommit(booking.id, session.user.id);
     return NextResponse.json(alreadySwitchedBody(booking.payment, reference));
   }
 
