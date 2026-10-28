@@ -431,7 +431,7 @@ describe("unmatched /api URLs answer JSON, not the website's HTML", () => {
       },
     );
 
-    it("leaves gated PAGE paths alone", () => {
+    it("leaves gated PAGE paths alone", async () => {
       // The 400 mirrors the ROUTE-HANDLER contract. A page is served by a
       // different Next module with different verb handling, so the gate keeps
       // its bodyless 404 there rather than asserting a parity nobody measured.
@@ -442,6 +442,27 @@ describe("unmatched /api URLs answer JSON, not the website's HTML", () => {
       );
 
       expect(gated!.status).toBe(404);
+      expect(gated!.headers.get("content-type")).toBeNull();
+      await expect(gated!.text()).resolves.toBe("");
     });
+
+    it.each(["GET", "HEAD"])(
+      "answers a page-shaped %s with a titled, language-tagged document (#4466)",
+      async (method) => {
+        // An empty 404 renders as a blank page with no title and no language,
+        // which is what a browser following a link to a switched-off feature
+        // showed. Same status; now a document a person can read.
+        const gated = getFeatureFlagBlockResponse("/admin/chores", choresOff, method);
+
+        expect(gated!.status).toBe(404);
+        expect(gated!.headers.get("content-type")).toBe("text/html; charset=utf-8");
+        const body = await gated!.text();
+        expect(body).toMatch(/^<!doctype html>\n<html lang="en">/);
+        expect(body).toContain("<title>Page not found</title>");
+        // Fixed words: nothing names the module that is switched off.
+        expect(body.toLowerCase()).not.toContain("chore");
+        expect(body).not.toMatch(/<script|<style|style=/);
+      },
+    );
   });
 });
