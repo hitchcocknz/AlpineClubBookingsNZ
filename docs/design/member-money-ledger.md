@@ -301,3 +301,135 @@ quarantine the apparent second receipt for Finance; do not deduplicate using
 amount/date/reference, and do not apply both to the member automatically. The
 same unique payment reference can identify the debt, but cannot prove that two
 actual transfers are one payment.
+
+## 6. One inbound door
+
+A webhook, cursor sync, manual refresh, allocation refusal or repair tool must
+all submit the same evidence to proposed `ingestXeroMemberMoneyChange`. None may
+recount or update a running total. Transport receipt deduplication is separate
+from economic fact idempotency.
+
+1. Verify the webhook and durably record receipt through the existing inbound
+   infrastructure. Fetch the current provider object outside all database locks;
+   webhook payloads alone do not carry enough accounting evidence. Cursor sync
+   and manual replay use the same normaliser and command.
+2. Normalise the full object into cents, stable component identities, provider
+   status and `UpdatedDateUTC`. The economic inbox unique key is **connection /
+   tenant + object type + Xero object id + provider update timestamp**. Preserve
+   timestamp precision; arrival time is never substituted. Missing timestamp,
+   currency mismatch, ambiguous member/lot or same-version contradictory body
+   means defer/refetch or task, no money. Reconnecting the same tenant preserves
+   its source namespace; another tenant cannot adopt its facts.
+3. Use section 5's registry to classify facts. Resolve existing export/source
+   links first: a known app-origin echo records acknowledgement, not a posting.
+   For nested payments/allocations without an independent update stamp, use the
+   containing object's version, stable component ids and its accepted full set;
+   never manufacture ids from array order. Invoice and credit-note deliveries
+   observing the same allocation converge on one canonical component identity.
+4. Enter the appropriate transaction/locks from section 3. Re-read the mutable
+   business rows and object head, then win a guarded inbox claim. A second
+   worker's lost claim runs no posting or side effect. Claims whose workers die
+   are retryable under their attempt token; an applied event is never replayed
+   as unprocessed because response bookkeeping failed.
+5. Compare with the latest accepted object version **under these locks**.
+   Older live snapshots are acknowledged as stale with no posting. Equal
+   timestamp plus equal fingerprint is a replay; unequal fingerprint is a
+   conflict. VOIDED/DELETED is terminal even if a stale live reading arrives
+   later. A missing intermediate version is safe: compute the difference between
+   the last accepted full fact set and this full set, not between arrivals.
+   A partial/unreadable child list cannot be interpreted as removal.
+6. Post the newly evidenced facts and exact reversals of removed/replaced
+   provider-owned facts (R07, R14, R22, R23). Batch/source/application uniqueness
+   also deduplicates one payment observed through several objects. For a changed
+   amount reverse the old batch and post the new one. An invoice-line edit to
+   an app charge records a conflict instead. Unexplained outside-spend deltas,
+   inflight allocation/deallocation or unavailable evidence defer; #4219's
+   allocation-refusal fallback still requires its confirming read.
+7. Commit the journal, source/application links, object-head version, inbox
+   outcome, audit, one conflict task if needed, derived lifecycle transition
+   and any permitted outbox intent together. A guarded lost outcome cannot
+   publish an active link to a voided object. A task is unique to the source
+   fact/conflict, so repeated events do not ask the treasurer repeatedly.
+
+For example, receiving an unpaid invoice with a voided edit note can reverse
+that note's provider application, but R07 has no bank payment to post. It cannot
+become paid by subtraction. Receiving an allocation removal reverses that
+allocation's contribution; it cannot erase a separately evidenced card refund.
+The views show cash returned and credit allocated as separate fields. A legacy
+“refunded total” compatibility view may combine them during migration, but it
+must sum their exact surviving components, including earlier edit notes; no
+single latest-note overwrite is allowed.
+
+Outside-spend convergence preserves #4219's automatic pay-link email through
+the existing `INV-ADDPAY` flow, including COMPLETED-booking support and its stop
+condition. It settles the existing invoice and creates no new charge. Free-lot
+write-downs under #4270 retain their no-member-email rule. Delivery uses an
+outbox after commit; no email or provider call is inside the posting transaction.
+
+## 7. Outbound rendering and optional Xero
+
+Sending to Xero describes posted facts; it cannot create an economic fact.
+A pure planner takes an immutable ledger slice, its identity/descriptive
+snapshots, the ownership registry, frozen account/tax settings and accepted
+provider coverage. It returns a document/payment/allocation plan, or an explicit
+conflict. It reads no mutable `Payment` total, current rate table or current
+member name to decide historical money. Existing stored edit descriptions and
+per-code promotion evidence stay render inputs; missing historical detail never
+gets fabricated by repricing.
+
+Each export manifest links exact posting components and applications to document
+roles, source invoice and provider objects, with signed covered cents. It has
+an immutable render revision, payload hash, frozen mapping and legacy key where
+one already exists. A separate mutable delivery record owns attempts and enum
+statuses. Active coverage uniqueness prevents a charge/fee component being billed
+twice in the same role, while allowing a charge invoice and its distinct payment
+record. A replacement after a genuine void is a new explicit render revision;
+retrying a lost response always uses the original manifest and key. Never derive
+a retry key from the current refund watermark or current set of voids.
+
+| Rendered object | Ledger slice and coverage rule |
+| --- | --- |
+| Primary, supplementary or combined group invoice | Exact issued charge components, including fee coverage assigned once. Combined invoices consume child charge coverage; individual child invoices cannot consume it again. Pending bank-transfer obligations already have R01 postings. |
+| Reduction, cancellation or clearing credit note | Exact negative charge components; clearing an unpaid invoice carries no payment. A clearing note is a rendering of R04, not a refund event. |
+| Account-credit note and allocation | Original R09/R11 grant/restore lot and R10 applications, subject to the existing restore/noteless policy. Approval of a manual grant creates one note; later spend uses that note. An already-exported grant cannot become a second expense at spend. |
+| Refund note and its payment | Charge reversal/entitlement plus R12/R14 cash slice, linked separately so a composite note cannot double-count the price reduction. Never one invoice-applied edit credit plus another full credit for that same reduction. A note can remain outstanding before hand-back; only the cash slice creates its payment. |
+| Capture receipt, including late/change capture | R06 applications across the invoices actually billing those obligations. A capture of 8000 with only 5000 room on one invoice is fully recorded through valid remaining targets; unexplained room is a task/unapplied receipt, never silently clipped. No invented second revenue charge to fit the cash. |
+| Failed-later refund reversal | R13, rendered using #4361: full reversal invoice coded like its credit note, paid into Stripe, never emailed/allocated. Date is the failure day or first open day after Xero's lock; reference retains the actual failure day. Its void raises one task and never automatically recreates it. |
+| Stripe fee/payout | R16/R17 provider balance facts; no second fee where Xero's connected feed already covers the exact transaction. Missing external identity is a conflict to resolve, not amount-based adoption. |
+
+A component may be covered partly by more than one provider document, but the
+sum of live coverage cannot exceed it. Refund notes are capped by the recorded
+cash/charge slice they actually answer, per capture and target, not a booking's
+unrelated invoice. Thus a partially exported 8000-cent capture with only 5000
+recorded gets at most 5000 of refund documentation against that recorded slice;
+its remaining receipt/refund pair must be rendered or adopted together. A
+5000-cent late capture and refund can be exported as that matched pair, net
+zero, without disturbing the cancelled booking invoice. If neither reached Xero,
+no credit is raised against that unrelated invoice. Preserve existing legacy
+no-receipt/record-by-hand handling until exact coverage has been established;
+new paired rendering requires the approved child and round-trip proof.
+
+The dispatcher commits a guarded attempt claim, calls Xero outside the
+transaction, then records object identity/coverage under section 3's order.
+An ambiguous create response is reconciled by that same manifest's identity,
+not blindly retried with another key after provider key expiry. A rejected or
+lost claim may retain the returned object as evidence, but cannot mark its
+coverage live against a newer void. A crash after create, payment or link commit
+resumes the remaining manifest steps, not a fresh document. Existing amount-based
+and joining-fee keys are retained for adopted/in-flight legacy operations; new
+manifest keys begin only after their old producers drain.
+
+With Xero off, all local posting, receipts, balances and refund obligations
+still work. The app does not call a provider or depend on an invoice id to
+record bank money. Unique opaque payment references identify obligations;
+finance:edit receipt recording is audited and idempotent, permits partial
+receipts, and never asks an officer to edit a running total. Existing manual
+mark-paid refuses invoiced bookings as before; the new receipt workflow is a
+separate proposed child with its own permission/UI contract.
+
+Connecting Xero later starts with exact adoption and a Finance-reviewed baseline
+of journal slices already represented there. Export only uncovered slices;
+opening history cannot be both an opening balance and replayed revenue. A
+currency or control-account bridge discrepancy holds activation/export until
+resolved. Disconnection stops delivery, not journalling. Reconnection resumes
+manifests under the same source namespace.
