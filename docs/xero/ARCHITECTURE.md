@@ -2274,6 +2274,13 @@ serves the outbox row and Xero (`cardRefundNoteKey`: the refund, its own notes'
 cover, and after a void the voided notes of its own, `INV-ADDPAY-041`), so two
 writers asking for one refund at once collide on one row.
 
+The charge-backed recovery preflight (#4359, `INV-PAY-145`) can now record a
+refund before `charge.refunded` arrives. Both use
+`queueRecordedCardRefundNotes` for the same late-capture, receipt and ordinary
+refund-note routing. The first recorder queues the existing correction; the
+later delivery deduplicates it. A dashboard hold does not adopt that refund as a
+debt's answer or change its note's sizing.
+
 **Who asks, and when** - each writer, where it first knows the refund
 (`card-refund-own-note.ts`):
 

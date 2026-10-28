@@ -7,6 +7,7 @@ vi.mock("@/lib/xero-error-alert", () => ({ notifyXeroSyncError: vi.fn().mockReso
 vi.mock("@/lib/recorded-card-refund-notes", () => ({ queueRecordedCardRefundNotes: vi.fn().mockResolvedValue({ queueOperationId: null }) }));
 vi.mock("@/lib/stripe", () => ({ listRefundsForPaymentIntent: list }));
 vi.mock("@/lib/payment-transactions", () => ({ recordStripeRefundsAgainstTransaction: record }));
+import { queueRecordedCardRefundNotes } from "@/lib/recorded-card-refund-notes";
 import { checkCardRefundResend, UnattributedCardRefundBeforeResendError } from "@/lib/card-refund-resend-preflight";
 
 const arose = new Date("2026-06-30T12:00:00.750Z");
@@ -20,7 +21,8 @@ function refund(overrides: Record<string, unknown> = {}): Stripe.Refund {
 }
 beforeEach(() => {
   list.mockReset().mockResolvedValue([]);
-  record.mockReset().mockResolvedValue({ readAsRefused: [] });
+  record.mockReset().mockResolvedValue({ readAsRefused: [], appliedCents: 4000, newlyCountedRefundIds: ["re_test"], payment: { id: "payment-test", source: "STRIPE" } });
+  vi.mocked(queueRecordedCardRefundNotes).mockReset().mockResolvedValue({ queueOperationId: null });
 });
 
 describe("card refund preflight", () => {
@@ -92,6 +94,26 @@ describe("card refund preflight", () => {
     list.mockResolvedValue([refund()]);
     record.mockRejectedValue(new Error("writer unavailable"));
     await expect(checkCardRefundResend(args)).rejects.toThrow("writer unavailable");
+  });
+
+  it("queues the existing accounting correction before holding the refund debt", async () => {
+    list.mockResolvedValue([refund()]);
+    await expect(checkCardRefundResend(args)).rejects.toBeInstanceOf(UnattributedCardRefundBeforeResendError);
+    expect(queueRecordedCardRefundNotes).toHaveBeenCalledExactlyOnceWith({
+      payment: { id: "payment-test", source: "STRIPE" }, paymentIntentId: "pi_test",
+      deltaCents: 4000, newlyCountedRefundIds: ["re_test"], refunds: [refund()],
+    });
+  });
+
+  it("still holds the debt if its accounting note cannot be queued", async () => {
+    list.mockResolvedValue([refund()]);
+    vi.mocked(queueRecordedCardRefundNotes).mockRejectedValueOnce(new Error("note queue unavailable"));
+    await expect(checkCardRefundResend(args)).rejects.toBeInstanceOf(UnattributedCardRefundBeforeResendError);
+  });
+
+  it("fails closed when a charge has no intent", async () => {
+    await expect(checkCardRefundResend({ ...args, transactions: [{ ...args.transactions[0]!, stripePaymentIntentId: null }] })).rejects.toThrow("INV-PAY-145");
+    expect(list).not.toHaveBeenCalled();
   });
 
   it("fails closed if a planned charge is missing", async () => {

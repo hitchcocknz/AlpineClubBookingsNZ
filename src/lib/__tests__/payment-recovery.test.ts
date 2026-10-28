@@ -1367,6 +1367,15 @@ describe("payment recovery worker", () => {
       expect(mockCreateAuditLog).toHaveBeenCalledWith(expect.objectContaining({ category: "payment", action: "booking-payment.card-refund.resend-held" }));
     });
 
+    it("checks Stripe before closing a fully refunded charge as already done", async () => {
+      const op = queueRefund(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
+      mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", stripePaymentIntentId: "pi_original", stripeChargeId: "ch_original", status: "REFUNDED", amountCents: 4000, refundedAmountCents: 4000 });
+      mockListRefundsForPaymentIntent.mockResolvedValue([dashboardRefund]);
+      expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCEEDED" }) }));
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+    });
+
     it("records an app refund and replays the original request instead of holding it", async () => {
       const op = queueRefund();
       mockListRefundsForPaymentIntent.mockResolvedValue([{ ...dashboardRefund, metadata: { bookingId: "booking-1", reason: "booking_modification_refund_recovery" } }]);

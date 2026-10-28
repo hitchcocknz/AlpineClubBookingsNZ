@@ -4197,6 +4197,9 @@ PENDING -> PROCESSING (worker claim, attempts < MAX) -> SUCCEEDED (Stripe refund
 PROCESSING -> FAILED  (attempts left: retried at nextRetryAt)
 PROCESSING -> FAILED  (Stripe answered a slice failed/canceled: re-planned on the attempt
                        held, each refused slice on its next key, then retried; INV-PAY-128)
+PROCESSING -> FAILED  (charge-backed preflight finds a counted outside-app refund
+                       on a planned charge since this debt arose: DEAD immediately,
+                       no retry, audited and alerted; no slice sent; INV-PAY-145)
 PROCESSING -> FAILED  (attempts spent: DEAD, alerted once; still owed)
 (none) -> PENDING     (a refund Stripe accepted, then failed: a new row per
                        Stripe refund, card_refund_failed_later_<refund>, under
@@ -4222,6 +4225,16 @@ DEAD -> SUCCEEDED     ("Paid another way": finance:edit, lock(1), then the
                        COMPLETED hand-back task and its BANK_REFUND line record
                        it; audited under `payment`)
 ```
+
+Before an ordinary charge-backed recovery sends any unmarked slice, its
+preflight reads Stripe once per involved intent, outside every transaction
+(`INV-PAY-145`). It records the returned charge refunds through the canonical
+writer and queues their existing accounting corrections. A counted outside-app
+refund since the debt's creation second stops the whole row for an officer;
+there is no amount matching, automatic adoption or debt close. An incomplete
+page or unavailable evidence fails the attempt without sending, using normal
+backoff. Marked slices are not sent or checked. The specialised combined-group
+executors retain their own replay protocols.
 
 A refund Stripe answers `failed` or `canceled` on a booking edit, a cancellation
 or an approved refund request never closes its row (#4083, #4096, #4102,
