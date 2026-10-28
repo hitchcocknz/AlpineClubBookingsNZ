@@ -179,7 +179,6 @@ function MappingSelect({
   onChange,
 }: {
   fieldKey: MemberImportFieldKey;
-  /** The field's visible name, which the trigger carries as its accessible name. */
   label: string;
   mapping: MemberImportColumnMapping;
   headers: string[];
@@ -218,7 +217,6 @@ function DateFormatSelect({
   onChange,
 }: {
   fieldKey: MemberImportDateFieldKey;
-  /** The field's visible name, which the trigger carries as its accessible name. */
   label: string;
   dateFormats: MemberImportDateFormatMapping;
   onChange: (

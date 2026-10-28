@@ -441,9 +441,6 @@ export default function MembersPage() {
                   {refreshingXeroGroups ? "Refreshing Xero Groups..." : "Refresh Xero Groups"}
                 </ViewOnlyActionButton>
               )}
-              {/* One control, not a button nested in a link (#4466): the
-                  wrapped button covered all but a 4px strip of the link, so the
-                  link failed WCAG 2.5.8 target size. */}
               <Button asChild variant="outline" size="sm">
                 <a href={exportUrl}>
                   <Download className="h-4 w-4 mr-1" />

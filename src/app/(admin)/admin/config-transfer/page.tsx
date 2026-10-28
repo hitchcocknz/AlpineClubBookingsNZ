@@ -573,9 +573,6 @@ export default function ConfigTransferPage() {
                       <li
                         key={`${item.entity}:${item.key}`}
                         className={`flex flex-wrap items-center gap-x-2 gap-y-1 ${
-                          // Unchanged rows recede by the muted ink alone: an
-                          // opacity on top of it took the row below WCAG AA
-                          // (#4466), and the "Unchanged" badge already says it.
                           changed ? "text-foreground" : "text-muted-foreground"
                         }`}
                       >
