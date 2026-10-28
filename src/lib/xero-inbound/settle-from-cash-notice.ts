@@ -249,7 +249,7 @@ export async function raiseCashSettlementAlert(input: {
   const owed =
     snapshot.owedCents === null ? null : snapshot.cashCents > snapshot.owedCents ? "overpaid" : "underpaid";
   try {
-    await sendAdminBankTransferSettlementFigureAlert(
+    const outcome = await sendAdminBankTransferSettlementFigureAlert(
       {
         memberName: input.memberName,
         checkIn: payment.booking.checkIn,
@@ -267,13 +267,15 @@ export async function raiseCashSettlementAlert(input: {
       },
       input.format,
     );
+    if (outcome === "undelivered") throw new Error("Settlement figure alert reached no recipient");
   } catch (err) {
     logger.error(
       { err, bookingId: payment.bookingId, paymentId: payment.id, invoiceId: input.invoiceId },
       "Failed to alert admins about a bank-transfer settlement figure; the inbound cron retries until the cap (#4446)",
     );
-    await prisma.bookingEvent.update({
-      where: { id: marker.id },
+    await prisma.bookingEvent.updateMany({
+      // A sender that outlived its cooldown cannot erase a newer sent stamp.
+      where: { id: marker.id, snapshot: { equals: snapshot as unknown as Prisma.InputJsonValue } },
       data: {
         snapshot: {
           ...snapshot,

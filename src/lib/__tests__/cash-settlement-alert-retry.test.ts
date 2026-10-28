@@ -5,11 +5,11 @@ import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { IB_SETTLEMENT_FIGURE_CHECK_EVENT_KIND, type IbSettlementFigureCheckEventSnapshot } from "@/lib/manual-settlement-reversal-event";
 
 const mocks = vi.hoisted(() => ({
-  findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), count: vi.fn(),
+  findMany: vi.fn(), findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn(), count: vi.fn(),
   cooldownUpdate: vi.fn(), cooldownCreate: vi.fn(), send: vi.fn(),
 }));
 vi.mock("@/lib/prisma", () => ({ prisma: {
-  bookingEvent: { findMany: mocks.findMany, findUnique: mocks.findUnique, update: mocks.update, count: mocks.count },
+  bookingEvent: { findMany: mocks.findMany, findUnique: mocks.findUnique, update: mocks.update, updateMany: mocks.updateMany, count: mocks.count },
   alertCooldown: { updateMany: mocks.cooldownUpdate, create: mocks.cooldownCreate },
 } }));
 vi.mock("@/lib/email", () => ({ sendAdminBankTransferSettlementFigureAlert: mocks.send }));
@@ -62,7 +62,12 @@ beforeEach(() => {
     cooldown = { ...data };
     return cooldown;
   });
-  mocks.send.mockResolvedValue(undefined);
+  mocks.updateMany.mockImplementation(async ({ where, data }) => {
+    if (JSON.stringify(where.snapshot.equals) !== JSON.stringify(snapshot)) return { count: 0 };
+    snapshot = data.snapshot;
+    return { count: 1 };
+  });
+  mocks.send.mockResolvedValue("sent");
 });
 
 it("the existing inbound cron retries a failed delivery without another invoice delivery", async () => {
@@ -136,4 +141,31 @@ it("retries committed alerts while Xero is disconnected and records that work as
   expect(recordCronRun).toHaveBeenCalledWith(expect.objectContaining({
     jobName: "xero-inbound-reconcile", status: "SUCCESS",
   }));
+});
+
+it("retries a resolved but undelivered send instead of marking it sent", async () => {
+  mocks.send.mockResolvedValueOnce("undelivered");
+  await delivery();
+  expect(snapshot).toMatchObject({ alertSentAt: null, alertUndeliveredCount: 1 });
+  vi.setSystemTime(new Date("2026-07-01T00:11:00Z"));
+  await cron();
+  expect(snapshot.alertSentAt).not.toBeNull();
+});
+
+it("a failed sender that outlives its cooldown cannot erase a newer sent stamp", async () => {
+  let failFirst!: (error: Error) => void;
+  let started!: () => void;
+  const sending = new Promise<void>((resolve) => { started = resolve; });
+  mocks.send.mockImplementationOnce(() => {
+    started();
+    return new Promise((_, reject) => { failFirst = reject; });
+  });
+  const first = delivery();
+  await sending;
+  vi.setSystemTime(new Date("2026-07-01T00:11:00Z"));
+  await cron();
+  failFirst(new Error("late failure"));
+  await first;
+  expect(snapshot.alertSentAt).toBe("2026-07-01T00:11:00.000Z");
+  expect(snapshot.alertUndeliveredCount).toBeUndefined();
 });
