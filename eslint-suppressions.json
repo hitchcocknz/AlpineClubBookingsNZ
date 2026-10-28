@@ -68,11 +68,6 @@
       "count": 1
     }
   },
-  "src/app/(admin)/admin/reports/page.tsx": {
-    "jsx-a11y/label-has-associated-control": {
-      "count": 2
-    }
-  },
   "src/app/(admin)/admin/subscriptions/_components/subscription-billing-panel.tsx": {
     "jsx-a11y/no-autofocus": {
       "count": 1
