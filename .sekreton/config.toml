@@ -1,6 +1,8 @@
 schema = 1
 
 [environment]
+# Use the distribution's supported major; server tools are discovered by the
+# realdb script. A version-specific postgresql-17 package broke sandbox setup.
 packages = ["postgresql"]
 
 [setup]
