@@ -335,13 +335,13 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
       const refund = { id: "re_race_4510", amount: REFUSED_CENTS, currency: "nzd", status: "succeeded",
         charge: "ch_race_4510", payment_intent: "pi_race_4083_primary", created: 1782604800,
         metadata: { bookingId: BOOKING_ID, reason: "date_change_price_decrease", refundSliceKey: refundSliceStripeIdempotencyKey(row.stripeKeyPrefix!, REFUSED_SLICE) },
-      } as Stripe.Refund;
+      } as unknown as Stripe.Refund;
       resetStripeRaceHooks();
       stripeRaceHooks.listRefunds = async () => [refund];
       const send = vi.fn(async () => { throw new Error("a marked or lost-claim slice must never be sent"); });
       stripeRaceHooks.refund = send;
       const updateMany = prisma.paymentRecoveryOperation.updateMany.bind(prisma.paymentRecoveryOperation);
-      const guardedWrite = vi.spyOn(prisma.paymentRecoveryOperation, "updateMany").mockImplementation(async (args) => {
+      const guardedWrite = vi.spyOn(prisma.paymentRecoveryOperation, "updateMany").mockImplementation((async (args: Parameters<typeof updateMany>[0]) => {
         if (args.data.allocationPlan && change !== "unchanged") {
           await prisma.paymentRecoveryOperation.update({ where: { id: row.id }, data:
             change === "plan" ? { allocationPlan: [{ ...REFUSED_SLICE, stripeKeySuffix: "refused1" }] } :
@@ -350,7 +350,7 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
           });
         }
         return updateMany(args);
-      });
+      }) as unknown as typeof updateMany);
       try {
         expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe(change === "unchanged" ? "succeeded" : "failed");
         expect(send).not.toHaveBeenCalled();
