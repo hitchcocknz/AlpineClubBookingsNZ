@@ -365,7 +365,7 @@ describe("the move (`followSupersededAskInvoicesToCarrier`)", () => {
   it.each([
     ["ledger stamp before its reason", "mod_b", "mod_other"],
     ["review charge reason without a stamp", null, "mod_b"],
-  ])("the carrier locks its own change from its %s", async (_label, bookingModificationId, reasonChangeId) => {
+  ] as const)("the carrier locks its own change from its %s", async (_label, bookingModificationId, reasonChangeId) => {
     aSupersededByB({ b: { bookingModificationId, reason: buildEditFinancialReviewChargeReason(reasonChangeId) } });
 
     const result = await followSupersededAskInvoicesToCarrier({ paymentId: "pay_1" });
