@@ -273,3 +273,31 @@ reduction posts Dr original revenue/tax 8000, Cr AR 8000, then Dr AR 8000, Cr RP
 8000. Paying it posts Dr RP 8000, Cr Stripe clearing 8000. If Stripe fails that
 refund later, reverse only the last entry: RP is owed again. A 300-cent Stripe
 fee is separately Dr fees 300, Cr clearing 300; it changes no member balance.
+
+## 5. One ownership table
+
+Two-way sync works because each fact has one authority. Implement this table as
+one typed, exhaustive registry consumed by inbound classification and outbound
+planning (`INV-SSOT-001`); do not create competing direction-specific lists.
+“Xero owns” means an accepted, evidenced Xero fact becomes an immutable app
+posting. It does not grant Xero a general write to member money.
+
+| Fact | Authority | Inbound action | Outbound action |
+| --- | --- | --- | --- |
+| Booking prices, fees, promotions, policy retention, subscription/joining charges and approved concessions | App pricing/policy/approval snapshots | Invoice-line/amount/tax edits create one treasurer conflict task; never reprice, waive debt or change entitlement | Render charge/correction slice once |
+| Stripe captures, counted refunds, failures, processing fees and payouts | Stripe source identity and lifecycle | Xero payment/note echo acknowledges its manifest; a mismatch tasks, never changes card cash | Render exact receipt/refund/fee/failure slice |
+| Officer-recorded cash or off-Xero bank receipt/hand-back | App audited receipt/close | Adopt an explicitly matched Xero counterpart as coverage, no new cash; amount/reference coincidence alone cannot match | Preserve existing manual-settle no-mint policy; explicit export/adoption only when that workflow permits |
+| Bank receipts, manual bank payments/refunds recorded in Xero, their correction/void | Xero payment objects | R07/R14 or exact reversal, against identified obligations; unresolved member/source goes to task | Do not send the same fact back as a second payment |
+| Member credit grant, application election, policy restore and approved adjustment | App, with source lots and approvals | Echo acknowledges the exact note/application; an unexplained provider difference tasks | Render/adopt the grant once, and allocate the same lot when spent |
+| Credit-note outside spend/un-spend, provider allocation/removal and document lifecycle | Xero, within the named fact's scope | R22/R23; terminal void remains terminal; never invent cash or a new grant | Never undo a treasurer's outside spend; no automatic reissue of their void |
+| Refund entitlement, which obligation an answer settles, keep/paid-another-way decision | App policy/officer, with #4361's narrow exact dashboard rule | Match exact source/application or ask once; no time/amount inference | Render money facts independently of inferred debt pairing |
+| Contact/provider identity and document ids/status/coverage | Provider identity plus exact app manifest association | Record identity/lifecycle and guard stale results | Reuse or adopt exact object; do not create by display amount/reference alone |
+| Membership eligibility, family coverage, paid-up interpretation | Existing membership rules; journal supplies settlement evidence | Payment posts can update a derived subscription state through its existing lifecycle; invoice editing cannot change membership type | Frozen subscription snapshot and covered-member list |
+| Bank reconciliation, accounting-only invoices/expenses, returns and P&L | Xero | Import only scoped member settlement/outside-spend facts; other accounting stays outside this ledger | No general-accounting engine |
+
+When an officer receipt later appears in Xero, a durable explicit source-link
+association records that these are one receipt. If there is no such identity,
+quarantine the apparent second receipt for Finance; do not deduplicate using
+amount/date/reference, and do not apply both to the member automatically. The
+same unique payment reference can identify the debt, but cannot prove that two
+actual transfers are one payment.
