@@ -36,6 +36,14 @@ describe("action commit pins", () => {
       .toEqual([expect.stringContaining("jobs.check.uses")]);
   });
 
+  it("checks jobs named __proto__ rather than losing them to the object prototype", () => {
+    const source = workflow("actions/checkout@v7").replace("check:", "__proto__:");
+    expect(actionPinProblems(source)).toEqual([
+      expect.stringContaining("jobs.__proto__.steps[0]"),
+    ]);
+    expect(actionPinProblems(source.replace("@v7", `@${SHA}`))).toEqual([]);
+  });
+
   it("does not mistake shell text for an action reference", () => {
     expect(actionPinProblems(`jobs:
   check:
