@@ -29,7 +29,7 @@ invariant's file by its permanent id with
 | About to change… | Invariants | Also read |
 | --- | --- | --- |
 | Anything holding cents — fees, prices, promo caps, subscription charges | `INV-MONEY` → [money.md](docs/invariants/money.md) | [AUTHORITATIVE_FEES.md](docs/AUTHORITATIVE_FEES.md) |
-| Taking, clearing, crediting or refunding money | `INV-PAY` → [payment-and-settlement.md](docs/invariants/payment-and-settlement.md) | [xero/ARCHITECTURE.md](docs/xero/ARCHITECTURE.md), [booking-ledger.md](docs/design/booking-ledger.md) |
+| Taking, clearing, crediting or refunding money | `INV-PAY` → [payment-and-settlement.md](docs/invariants/payment-and-settlement.md) | [xero/ARCHITECTURE.md](docs/xero/ARCHITECTURE.md), [booking-ledger.md](docs/design/booking-ledger.md), [member-money-ledger.md](docs/design/member-money-ledger.md) (proposed successor design) |
 | What day it is — lodge nights, the midday-NZ boundary, date columns | `INV-DATE` → [booking-dates-and-capacity.md](docs/invariants/booking-dates-and-capacity.md) | [CAPACITY_MODEL.md](docs/CAPACITY_MODEL.md#two-distinct-quantities) |
 | The club's timezone, a civil date or time from an instant, `TZ`/`APP_TIME_ZONE` | `INV-CONFIG-002` → [product-configuration.md](docs/invariants/product-configuration.md), plus `INV-DATE` | [club-time.md](docs/guides/club-time.md); derive via [club-time](docs/CLUB_TIME_KERNEL.md), never by hand |
 | Beds — capacity, allocation, waitlist, whole-lodge and custodian holds | `INV-CAP` (plus `INV-LIFE-062`) → [booking-dates-and-capacity.md](docs/invariants/booking-dates-and-capacity.md) | [CAPACITY_MODEL.md](docs/CAPACITY_MODEL.md#which-bookings-consume-capacity-the-holding-population), [bed-allocation.md](docs/guides/bed-allocation.md) |

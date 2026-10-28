@@ -1,0 +1,1 @@
+- Document the proposed double-entry member-money ledger, optional Xero with safe two-way sync, posting and ownership rules, structural enforcement, cut-over gates, all 33 parked-bug scenarios and ordered implementation children for owner review (#4461). No runtime changes.
