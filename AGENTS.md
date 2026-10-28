@@ -173,7 +173,7 @@ Sekreton's exception).
   the orchestrator) owns its claim, worktree, branch, GitHub writes, PR, CI
   and merge gate.
 - **Reservations hold until released** by the holder or reassigned by the
-  owner; silence, age, an empty remote or a stopped session never frees one.
+  owner, or 72 idle hours pass (#4452); silence never frees one sooner.
   Never take over, push to, reset or rebase another lane's branch or worktree
   — post a `LANE-SYNC` or ask the owner. Unknown occupancy is not a free slot.
 - **Implementors** (subagents): one issue in its worktree; commit locally;
