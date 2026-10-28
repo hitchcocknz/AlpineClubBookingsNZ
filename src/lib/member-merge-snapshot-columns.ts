@@ -294,11 +294,15 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "XeroGroupingSettings.updatedByMemberId",
   "XeroMemberGroupingDryRun.createdByMemberId",
   "XeroSyncOperation.createdByMemberId",
-  // #4513 (M1): the debtor/member on a posted journal leg and on an obligation's
-  // immutable face terms. Economic evidence, not a live link: the database
-  // refuses UPDATE and DELETE on these tables, and posted evidence keeps the
-  // loser's id exactly as BookingLedgerLine evidence does
-  // (docs/multi-lodge/lodge-scoping-contract.md, "Member money journal").
+  // #4513 (M1): the DEBTOR on a posted journal leg and on an obligation. Listed
+  // here because merge must leave it alone, NOT because it is an actor snapshot:
+  // it says whose balance the row moves. The database refuses UPDATE and DELETE
+  // on these tables, so merge leaves posted rows untouched; the survivor takes
+  // over the merged-away member's open balances through an explicit journal
+  // transfer with an audit trail (owner decision D4, 28 Oct 2026,
+  // docs/design/member-money-ledger.md section 10; posted from M3/M5 on, while
+  // M1 posts nothing). See docs/multi-lodge/lodge-scoping-contract.md, "Member
+  // money journal".
   "MemberMoneyLine.memberId",
   "MemberMoneyObligation.memberId",
 ];
