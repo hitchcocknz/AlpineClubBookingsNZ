@@ -262,7 +262,10 @@ net applications cannot exceed a source receipt, credit lot, refund obligation
 or source capture's refundable cash, and every application refers to the
 correct member/currency/instrument. Refund attempts reserve that capacity
 before provider calls; duplicate provider responses collapse on source identity.
-A balanced but wrongly attributed batch fails these checks. #4361's dashboard
+A balanced but wrongly attributed batch fails these checks. An unmatched
+dashboard refund posts Dr unapplied member AR, Cr Stripe clearing until its
+answer is known; an exact answer reclassifies that Dr to RP without moving cash
+again. It cannot consume an arbitrary open refund obligation. #4361's dashboard
 rule holds re-sends, adopts only the single exact matching debt automatically,
 and otherwise asks once with Undo. Equal refunds at identical timestamps remain
 distinct facts and answers; timestamp ordering never decides whose debt is paid.
@@ -463,8 +466,8 @@ the six columns. `MemberCredit` becomes a journal-backed compatibility view
 before any further removal; it cannot remain a second independently writable
 balance after the switch (`INV-PAY-019`).
 
-`ib-hold-clearing*-audit.ts`, cancelled-payment flattening and orphaned-applied-
-credit backfills stop repairing monetary copies only after their historic
+`ib-hold-clearing*-audit.ts`, cancelled-payment flattening and orphaned
+applied-credit backfills stop repairing monetary copies only after their historic
 population is discharged and replacement charge/application coverage checks
 exist. Sold-night provenance/reconciliation, tax checks, capacity, provider
 recovery and security checks survive. No “about 70 modules” deletion by filename:
