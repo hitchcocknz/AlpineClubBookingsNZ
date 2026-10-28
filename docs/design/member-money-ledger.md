@@ -625,3 +625,66 @@ scope excludes new GST reporting and does not assume every adopting club is
 GST-registered. Already-open #3584 private history choices and parity questions
 remain with their original issue; this design does not approve a write-off,
 reprice, acknowledgement or changed finance-report policy on the owner's behalf.
+
+## 11. Proposed children, in shipping order
+
+The owner approves this design before these issues are filed or built. Labels
+M1–M18 below are local proposal ids, not issue numbers. Each row can remain on
+`main` indefinitely with a complete outcome; inactive posting/verification is
+useful evidence without requiring its consumers to ship simultaneously. A row
+that names existing work updates that work's contract after approval rather
+than opening a competing implementation lane.
+
+| Order / proposed title | Scope and independently shippable outcome | Dependencies | Risk |
+| --- | --- | --- | --- |
+| M1 — Protect and verify balanced member journals | Add inert journal/events/applications/source bridge, balance/seal/mandatory-link constraints, account registry, grants and verifier; prove direct SQL refusal and no late batch extension. Extend #4453 provisioning. | Design approval; D1 for deletion contract; #4453 available | High: schema/security |
+| M2 — Retain ledger history across booking deletion | Deliver chosen #4482 solution for old booking lines and new financial parents; update archive/erase flows, retained identity and adopter notes. Prove every parent DELETE/UPDATE route. | M1, D1, approved retention compatibility | High: lifecycle/schema |
+| M3 — Post payable booking charges and edits once | R01–R04/R21 with existing line/source bridge, draft/quote boundary, bank-transfer-before-settle charges, fees and promotion evidence; comparison report, no reader change. | M1 | High: prices/lifecycle |
+| M4 — Post captures, refund obligations and exact cash answers | R05–R08/R12–R14/R24, provider-status reversals, durable attempts and application caps; preserve #4361 holds/answers/keys and markers. Keep old decision projections. | M1, M3; reconcile current #4361 children | Critical: payout/double-pay |
+| M5 — Post member credit through one liability | R09–R11/R22 planning, funding lots, approvals, restore provenance and compatibility `MemberCredit` linkage; conservation report, no new provider authority. | M1, M3; M4 for refund-to-credit obligations | High: credit/money |
+| M6 — Post organiser receipts and child obligations | R15 with combined invoice/source coverage, one cash receipt and frozen child applications/refunds; prove group sums and avoid child double counting. | M3–M5 | High: group settlement |
+| M7 — Post subscriptions and joining/member fees | R18–R20 from immutable snapshots, family recipient/coverage, manual-paid/cancellation behaviour; local charge evidence works without Xero delivery. | M1; M4 for settlement adapters; D3 before tax activation | High: membership/money |
+| M8 — Record provider fees and clearing transfers | R16/R17, source-identity fee/payout evidence and reversal, settings/account coding; clearing report without bank-reconciliation UI. | M1, M4; #4460 contract fixtures before provider activation | High: provider/accounting |
+| M9 — Prove and back-post the complete journal | R26 dry-run/apply tool, exact adopted provider coverage, missing-source report and structural/legacy parity census, owner-run command card and tested rollback reconstruction. No read switch. | M2–M8; D3; discharge original #3584 history blockers | High: historical money |
+| M10 — Route every Xero member-money change through one door | Versioned inbox/object heads, ownership registry, echo/stale/void handling, outside-spend/reversal and tasks; cohort activation plus old-worker drain and journal-derived compatibility. Remove replaced recount mutations. | M4–M9, D2/D3, #4460 proofs for each pair | Critical: inbound authority/concurrency |
+| M11 — Establish #3584 reader projections and parity | Shared pure statement/balance/store and golden corpus, extend existing parity census to journal accounts without moving a surface. | M9; existing whole-history `GATE_OPEN` | High: reader correctness |
+| M12 — Move #3584 surfaces in their approved order | Separate reader PRs: officer panel, member panel, history, confirmation, finance, modification email and data export. Preserve blueprint pins, instrument reads and approval rules; each surface reverts alone. | M11; each surface's parity/decision gates; M10 before exposing newly accepted inbound facts | High: member-visible money |
+| M13 — Render all Xero member-money documents from manifests | Fold #3585 into pure rendering/coverage/adoption for bookings, groups, credit, subscriptions, fees and Stripe events. Ship separate document cohorts with legacy-key continuity and complete round-trip proof. | M9–M11, M10, #4460, D3; relevant #4361 stage approvals | Critical: external accounting |
+| M14 — Receive internet-banking payments without Xero | Configured bank details, stable unique references, finance permission/audit receipt workflow, partial receipt and duplicate/source association; journal-derived status and member instructions. No statement/invoice sending engine. | M4, M7, M11 and applicable M12 views; independent of M13 | High: money/auth/UI |
+| M15 — Move the remaining financial decision inputs | #3586 blueprint's C5b/C6b/C5c scopes: extra screens/SQL, Xero non-line amounts, refund/cancel/ask decisions, diagnostics, backup sentinels, operator tools; one cohort per PR, preserved collection policy and exact legacy-case resolution. | M10–M13, all relevant reader proof; reconcile #4361 exact-answer migration | Critical: decisions from money |
+| M16 — Stop writing mirrors and retire reconstruction | #3586 stop-writing release: compatible nullable/ignored columns, remove writes and mirror-only guards, contract census, remove drained repair arms, executable reconstruction/downgrade rehearsal and operator rollback records. | M15 deployed/drained, M14 behaviour covered or no old IB dependency, all source/repair inventories closed | Critical: blue/green money |
+| M17 — Drop six obsolete money columns | #3586 contract release, migration ledger/rollback, old-client rehearsal; no unrelated transaction-field or build-up deletion. | M16 deployed, old colours drained, owner timing | Critical: destructive schema |
+| M18 — Retire drained compatibility and legacy backfills | Remove old writable credit/booking compatibility plumbing and obsolete repair/backfill exports after proving zero callers, unresolved legacy operations or rollback dependency; retain posted history and coverage monitor. Further schema contracts are separate later releases. | M17, closed rollback window and per-module evidence | High: cleanup/data retention |
+
+M12 is the existing explicitly multi-PR reader programme; M13 and M15 likewise
+split by complete document/decision cohorts when filed. Each PR must have one
+bounded owner-approved issue scope, independently useful output and its own
+rollback. The ordering does not authorise parallel writers on a shared financial
+invariant. #4451 group-1 harm fixes continue under their own authority; parked
+bugs close only when their section 9 scenarios actually pass through the real
+new writers, PostgreSQL and #4460 fakes.
+
+## 12. Related references
+
+The current implementation remains governed by its existing invariants until
+an approved child updates them in lockstep. Start with the
+[documentation hub](../README.md), [booking-ledger design](booking-ledger.md),
+[Xero architecture](../xero/ARCHITECTURE.md),
+[payment and settlement invariants](../invariants/payment-and-settlement.md),
+[money invariants](../invariants/money.md),
+[locking guide](../CONCURRENCY_AND_LOCKING.md) and
+[fee authorities](../AUTHORITATIVE_FEES.md).
+
+Read the complete threads before implementing: [#3527](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3527),
+[#3532](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3532),
+[#3584](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3584),
+[#3585](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3585),
+[#3586](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3586),
+[#4219](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4219),
+[#4361](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4361),
+[#4450](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4450),
+[#4451](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4451),
+[#4453](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4453),
+[#4460](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4460),
+[#4461](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4461) and
+[#4482](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4482).
