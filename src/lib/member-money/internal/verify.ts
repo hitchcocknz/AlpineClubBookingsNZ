@@ -8,9 +8,11 @@ const Finding = z.object({ identity: z.string(), problem: z.string() });
 export type MemberMoneyFinding = z.infer<typeof Finding>;
 
 /**
- * `checked`: the role's effective table rights were compared with INSERT/SELECT.
- * `not_applicable`: the role is a superuser or owns every journal relation, as
- * on a single-role install, where no grant can narrow it (`INV-OPS-016`).
+ * The per-role part of the grant check. `checked`: the role's effective table
+ * rights were compared with INSERT/SELECT. `not_applicable`: the role is a
+ * superuser or owns every journal relation, as on a single-role install, where
+ * no grant can narrow it (`INV-OPS-016`). The role-agnostic part, that no
+ * grantee but the owner holds a right that changes a row, runs either way.
  */
 export type MemberMoneyGrantCheck = "checked" | "not_applicable";
 
@@ -131,5 +133,25 @@ export async function verifyMemberMoneyJournal(
     `, [appRole, [...MEMBER_MONEY_RELATIONS]]);
     findings.push(...z.array(Finding).parse(grants.rows));
   }
+  // Role-agnostic, as the migration's narrowing block is: no grantee but the
+  // owner, PUBLIC included, may hold a right that changes a row, on the table or
+  // on any of its columns.
+  const changeRights = await client.query(`
+    SELECT DISTINCT c.relname || ':' || CASE WHEN acl.grantee = 0 THEN 'PUBLIC'
+        ELSE pg_catalog.pg_get_userbyid(acl.grantee) END AS identity,
+      'change_granted_beyond_owner' AS problem
+    FROM pg_catalog.pg_class c
+    CROSS JOIN LATERAL (
+      SELECT e.grantee, e.privilege_type FROM pg_catalog.aclexplode(c.relacl) AS e
+      UNION ALL
+      SELECT e.grantee, e.privilege_type FROM pg_catalog.pg_attribute a
+      CROSS JOIN LATERAL pg_catalog.aclexplode(a.attacl) AS e
+      WHERE a.attrelid = c.oid AND NOT a.attisdropped
+    ) AS acl
+    WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY($1::text[])
+      AND acl.grantee <> c.relowner AND acl.privilege_type = ANY($2::text[])
+    ORDER BY identity
+  `, [[...MEMBER_MONEY_RELATIONS], APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES.split(", ")]);
+  findings.push(...z.array(Finding).parse(changeRights.rows));
   return { findings, grantCheck };
 }

@@ -345,8 +345,11 @@ enforcement function; a missing, unvalidated or changed constraint; a missing,
 invalid or changed unique index; orphan events or invalid batches. A changed
 definition is compared with the one the migration installs on PostgreSQL 16.
 When the role it checks is a superuser or owns the journal, as on a
-single-role install, it prints `"grantCheck": "not_applicable"` instead of
-failing: no grant can narrow such a role. A successful empty journal is valid M1 evidence, not proof of backfill,
+single-role install, it prints `"grantCheck": "not_applicable"` for that role:
+no grant can narrow it. Whichever role it checks, it still fails if any role
+but the owner, PUBLIC included, holds UPDATE, DELETE, TRUNCATE, TRIGGER or
+REFERENCES on a journal table, or one of those rights on a column.
+A successful empty journal is valid M1 evidence, not proof of backfill,
 legacy posting coverage, historical parity or readiness to switch readers.
 No provider credentials are needed. Source links can later attach legacy
 confirmation evidence without extending sealed legs. M2 owns the existing

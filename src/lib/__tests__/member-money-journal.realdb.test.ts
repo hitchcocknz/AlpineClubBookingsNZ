@@ -138,6 +138,21 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
     expect(await verifyMemberMoneyJournal(db, roles.migrator)).toEqual({ findings: [], grantCheck: "not_applicable" });
   });
 
+  it.each([
+    ["the application, verified as the owner", `GRANT UPDATE, DELETE ON "MemberMoneyLine" TO "${roles.app}"`, `MemberMoneyLine:${roles.app}`],
+    ["PUBLIC, on one column", `GRANT UPDATE (evidence) ON "MemberMoneyLine" TO PUBLIC`, "MemberMoneyLine:PUBLIC"],
+    ["the audit-retention role", `GRANT TRUNCATE ON "MemberMoneyEvent" TO "${roles.retention}"`, `MemberMoneyEvent:${roles.retention}`],
+  ])("reports a right that changes rows granted to %s, whichever role is checked", async (_grantee, grant, identity) => {
+    await db.query("BEGIN");
+    try {
+      await db.query(grant);
+      const result = await verifyMemberMoneyJournal(db, roles.migrator);
+      expect(result.grantCheck).toBe("not_applicable");
+      expect(result.findings).toContainEqual({ identity, problem: "change_granted_beyond_owner" });
+    } finally { await db.query("ROLLBACK"); }
+    expect(await verifyMemberMoneyJournal(db, roles.migrator)).toEqual({ findings: [], grantCheck: "not_applicable" });
+  });
+
   it.each(MEMBER_MONEY_RELATIONS)("refuses direct UPDATE, DELETE and TRUNCATE of %s", async (table) => {
     // No predicate or matching row is needed: PostgreSQL refuses the privilege itself.
     for (const sql of [`UPDATE "${table}" SET id = id`, `DELETE FROM "${table}"`, `TRUNCATE "${table}"`]) {

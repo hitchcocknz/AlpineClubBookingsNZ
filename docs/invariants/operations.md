@@ -736,6 +736,7 @@ the blue/green deploy check refuses an append-only table the application could
 change beyond INSERT. `member-money:verify` checks batch integrity, mandatory
 event links, the exact definitions of the enforcement functions, constraints,
 triggers and unique indexes (each validated, enabled or valid), and effective
-application table privileges in a read-only snapshot; for a superuser or owner
-role the grant check is not applicable. It does not prove historical parity, writer-cohort coverage or
-accounting policy; those activate in later milestones.
+application table privileges in a read-only snapshot. For a superuser or owner
+role the per-role grant check is not applicable; the check that no grantee but
+the owner, PUBLIC included, holds a right that changes a row always runs. It
+does not prove historical parity, writer-cohort coverage or accounting policy; those activate in later milestones.
