@@ -316,7 +316,7 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
           refundedAmountCents: 8000, refunds: [...refunds.values()] });
         expect((await prisma.paymentTransaction.findUniqueOrThrow({ where: { id: PRIMARY_TXN } })).refundedAmountCents).toBe(8000);
         expect(await runPaymentRecoveryOperationNow(row.id, CLUB_FORMAT_TEST)).toBe("succeeded");
-        expect(keys).toEqual([`mod_dates_refund_${BOOKING_ID}_${PRIMARY_TXN}_8000`]);
+        expect(keys).toEqual([`mod_dates_refund_${BOOKING_ID}_${MODIFICATION_ID}_${PRIMARY_TXN}_8000`]);
         expect((await queuedRow()).allocationPlan).toEqual([{ paymentTransactionId: PRIMARY_TXN, amountCents: 8000, madeRefundId: "re_race_3984_0" }]);
         expect([...refunds.values()].reduce((sum, refund) => sum + refund.amount, 0)).toBe(8000);
         expect(await prisma.paymentRefund.count({ where: { paymentId: PAYMENT_ID } })).toBe(1);
@@ -640,7 +640,7 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
         await settledRecords(0);
         expect(await lostCloseAlerts()).toEqual([]);
 
-        // The runner replays the same keys; Stripe answers with the same refund.
+        // Preflight adopts Stripe's slice evidence; no refund is sent again.
         const asked: Array<string | undefined> = [];
         stripeRaceHooks.refund = async (args) => {
           asked.push(args.idempotencyKey);
@@ -648,8 +648,8 @@ const CANCEL_ADDITIONAL_INTENT = "pi_race_4083_cancel_additional";
         };
         const { processPaymentRecoveryOperations } = await import("@/lib/payment-recovery");
         await processPaymentRecoveryOperations({ limit: 50 });
-        expect(asked).toHaveLength(1);
-        expect(await rowNow()).toMatchObject({ status: "SUCCEEDED" });
+        expect(asked).toEqual([]);
+        expect(await rowNow()).toMatchObject({ status: "SUCCEEDED", allocationPlan: [{ ...REFUSED_SLICE, madeRefundId: MADE_REFUND }] });
         await settledRecords(1);
         const [record] = await prisma.auditLog.findMany({ where: { targetId: BOOKING_ID, action: RECORD_ACTION } });
         expect(JSON.parse(record!.details ?? "{}")).toMatchObject({ refundId: MADE_REFUND, amountCents: REFUSED_CENTS });
