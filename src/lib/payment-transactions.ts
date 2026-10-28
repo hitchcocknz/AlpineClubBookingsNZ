@@ -135,6 +135,13 @@ export async function loadPaymentWithTransactions(store: PaymentStore, paymentId
   });
 }
 
+/** Captured Stripe rows: what the executor refunds and the #4359 preflight checks. */
+export function capturedStripeTransactions<
+  T extends { source: PaymentSource; stripePaymentIntentId: string | null; status: Parameters<typeof isCapturedTransactionStatus>[0] },
+>(transactions: readonly T[]) {
+  return transactions.filter(isStripeTransaction).filter((transaction) => isCapturedTransactionStatus(transaction.status));
+}
+
 export function isStripeTransaction<
   T extends {
     source: PaymentSource;
@@ -1477,9 +1484,7 @@ export async function refundPaymentTransactions({
     throw new Error("Payment not found");
   }
 
-  const stripeTransactions = payment.transactions
-    .filter(isStripeTransaction)
-    .filter((transaction) => isCapturedTransactionStatus(transaction.status));
+  const stripeTransactions = capturedStripeTransactions(payment.transactions);
 
   let slices: Array<{
     transaction: (typeof stripeTransactions)[number];

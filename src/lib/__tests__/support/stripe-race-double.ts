@@ -11,6 +11,23 @@
 import type * as StripeModule from "@/lib/stripe";
 
 type Stripe = typeof StripeModule;
+type StripeRefund = Awaited<ReturnType<Stripe["processRefund"]>>;
+
+/**
+ * #4359 (INV-PAY-145): every refund a case's `refund` hook answered with, by
+ * intent, as Stripe itself keeps them. A charge-backed recovery reads Stripe's
+ * refunds for the intent before it sends again; a case that doubles the refunds
+ * Stripe makes but not that list is answered with these, which is what the real
+ * list would return. Only a hooked `refund` writes here.
+ */
+const refundsMadeByIntent = new Map<string, Map<string, StripeRefund>>();
+
+function recordRefundMade(paymentIntentId: string, refund: unknown): void {
+  if (!refund || typeof refund !== "object" || typeof (refund as { id?: unknown }).id !== "string") return;
+  const made = refundsMadeByIntent.get(paymentIntentId) ?? new Map<string, StripeRefund>();
+  made.set((refund as StripeRefund).id, refund as StripeRefund);
+  refundsMadeByIntent.set(paymentIntentId, made);
+}
 
 export const stripeRaceHooks: {
   update: null | ((id: string, amountCents: number) => Promise<unknown>);
@@ -44,6 +61,7 @@ export function resetStripeRaceHooks(): void {
   stripeRaceHooks.listChargeRefunds = null;
   stripeRaceHooks.customer = null;
   stripeRaceHooks.charge = null;
+  refundsMadeByIntent.clear();
 }
 
 export function stripeRaceDouble(actual: Stripe): Stripe {
@@ -69,12 +87,18 @@ export function stripeRaceDouble(actual: Stripe): Stripe {
       stripeRaceHooks.cancel
         ? stripeRaceHooks.cancel(args[0])
         : actual.cancelPaymentIntentIfCancellableWithResult(...args)) as Stripe["cancelPaymentIntentIfCancellableWithResult"],
-    processRefund: ((args: Parameters<Stripe["processRefund"]>[0]) =>
-      stripeRaceHooks.refund ? stripeRaceHooks.refund(args) : actual.processRefund(args)) as Stripe["processRefund"],
-    listRefundsForPaymentIntent: ((...args: Parameters<Stripe["listRefundsForPaymentIntent"]>) =>
-      stripeRaceHooks.listRefunds
-        ? stripeRaceHooks.listRefunds(args[0])
-        : actual.listRefundsForPaymentIntent(...args)) as Stripe["listRefundsForPaymentIntent"],
+    processRefund: (async (args: Parameters<Stripe["processRefund"]>[0]) => {
+      if (!stripeRaceHooks.refund) return actual.processRefund(args);
+      const refund = await stripeRaceHooks.refund(args);
+      recordRefundMade(args.paymentIntentId, refund);
+      return refund;
+    }) as Stripe["processRefund"],
+    listRefundsForPaymentIntent: (async (...args: Parameters<Stripe["listRefundsForPaymentIntent"]>) => {
+      if (stripeRaceHooks.listRefunds) return stripeRaceHooks.listRefunds(args[0]);
+      // A case doubling Stripe's refunds is answered with the ones it made.
+      if (stripeRaceHooks.refund) return [...(refundsMadeByIntent.get(args[0])?.values() ?? [])];
+      return actual.listRefundsForPaymentIntent(...args);
+    }) as Stripe["listRefundsForPaymentIntent"],
     listRefundsForCharge: ((...args: Parameters<Stripe["listRefundsForCharge"]>) =>
       stripeRaceHooks.listChargeRefunds
         ? stripeRaceHooks.listChargeRefunds(args[0])
