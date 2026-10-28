@@ -26,10 +26,31 @@ async function scan(page: Page) {
   }
 }
 
+// Let FINITE CSS transitions and animations finish before measuring: a toast
+// fading in or a dialog overlay fading out is caught at partial opacity, and
+// axe then reports the half-faded colours as a contrast failure the settled
+// page does not have. Infinite animations (spinners) are left alone, and the
+// wait is capped so it can never hold a journey up. Not a sleep: it resolves
+// the moment the last transition ends.
+const ANIMATION_SETTLE_CAP_MS = 2_000;
+async function settleAnimations(page: Page) {
+  await page.evaluate(async (capMs) => {
+    const finite = document.getAnimations().filter((animation) =>
+      animation.playState === "running" &&
+      Number.isFinite(Number(animation.effect?.getComputedTiming().endTime ?? Infinity)));
+    if (finite.length === 0) return;
+    await Promise.race([
+      Promise.all(finite.map((animation) => animation.finished.catch(() => undefined))),
+      new Promise((resolve) => setTimeout(resolve, capMs)),
+    ]);
+  }, ANIMATION_SETTLE_CAP_MS);
+}
+
 async function scanPage(page: Page) {
   const url = page.url();
   try {
     await page.waitForLoadState("domcontentloaded");
+    await settleAnimations(page);
     const result = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag22aa"])
       .analyze();
