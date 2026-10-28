@@ -169,26 +169,25 @@ vi.mock("@/lib/stripe", () => ({
   createPaymentIntent: (...args: unknown[]) => mockCreatePaymentIntent(...args),
   findOrCreateCustomer: (...args: unknown[]) => mockFindOrCreateCustomer(...args),
 }));
+const frozenEditPlan = vi.hoisted(() => ({
+  plan: async (...args: unknown[]) => {
+    const { amountCents } = args[0] as { amountCents: number };
+    return { slices: [{ paymentTransactionId: "txn_refund", amountCents }], plannedAmountCents: amountCents, totalRefundableCents: amountCents };
+  },
+  // The door reads each answer against the slice it sent.
+  refund: async (...args: unknown[]): Promise<unknown> => {
+    const result = (await mockRefundPaymentTransactions(...args)) as { refunds?: Array<Record<string, unknown>> } | undefined;
+    const allocation = (args[0] as { allocation?: unknown[] }).allocation;
+    return { ...result, refunds: result?.refunds?.map((refund, index) => ({ status: "succeeded", slice: allocation?.[index], ...refund })) };
+  },
+}));
 vi.mock("@/lib/payment-transactions", () => ({
   PartialRefundError: class PartialRefundError extends Error {
     completedRefundCents = 0;
   },
   // #3984: edit doors freeze a plan first and read each answer against its slice.
-  planStripeRefundAllocation: async ({ amountCents }: { amountCents: number }) => ({
-    slices: [{ paymentTransactionId: "txn_refund", amountCents }],
-    plannedAmountCents: amountCents,
-    totalRefundableCents: amountCents,
-  }),
-  refundPaymentTransactions: async (...args: unknown[]) => {
-    const result = await mockRefundPaymentTransactions(...args);
-    const allocation = (args[0] as { allocation?: Array<{ paymentTransactionId: string; amountCents: number }> }).allocation;
-    return {
-      ...result,
-      refunds: result?.refunds?.map((refund: Record<string, unknown>, index: number) => ({
-        status: "succeeded", slice: allocation?.[index], ...refund,
-      })),
-    };
-  },
+  planStripeRefundAllocation: (...args: unknown[]) => frozenEditPlan.plan(...args),
+  refundPaymentTransactions: (...args: unknown[]) => frozenEditPlan.refund(...args),
   // #4442: the mint's queue takes the Payment row; nothing to wait on here.
   lockPaymentForRefundedTotal: vi.fn(),
   upsertPaymentIntentTransaction: (...args: unknown[]) =>
