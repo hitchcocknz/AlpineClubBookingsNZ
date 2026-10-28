@@ -75,14 +75,28 @@ export function ownCardRefundPlan({ amountCents }: { amountCents: number }) {
   };
 }
 
+/** Scale the fixture's charge split to the actual edit, keeping integer cents. */
+function plannedSlices(answer: Answer, amountCents: number): RefundAllocationSlice[] {
+  if (answer instanceof Error || answer.refunds.length === 0) return ownCardRefundPlan({ amountCents }).slices;
+  const total = answer.refunds.reduce((sum, refund) => sum + refund.amountCents, 0);
+  let remaining = amountCents;
+  return answer.refunds.map((refund, index) => {
+    const cents = index === answer.refunds.length - 1 ? remaining : Math.floor(amountCents * refund.amountCents / total);
+    remaining -= cents;
+    return { ...refund.slice, amountCents: cents };
+  });
+}
+
 export function primeOwnCardRefund(refundPaymentTransactions: Mock, answer: Answer, planner?: Mock): void {
-  // Edit doors send the frozen plan; cancellations already carry their own.
+  // Edit doors send a complete plan even when Stripe returns no answers.
   planner?.mockImplementation(async ({ amountCents }: { amountCents: number }) => ({
-    slices: answer instanceof Error ? [{ paymentTransactionId: "txn_refund", amountCents }] : answer.refunds.map((refund) => refund.slice),
-    plannedAmountCents: amountCents,
-    totalRefundableCents: amountCents,
+    ...ownCardRefundPlan({ amountCents }), slices: plannedSlices(answer, amountCents),
   }));
   if (answer instanceof Error) refundPaymentTransactions.mockRejectedValue(answer);
+  else if (planner) refundPaymentTransactions.mockImplementation(async ({ amountCents }: { amountCents: number }) => {
+    const slices = plannedSlices(answer, amountCents);
+    return { refunds: answer.refunds.map((refund, index) => ({ ...refund, slice: slices[index], amountCents: slices[index]!.amountCents })) };
+  });
   else refundPaymentTransactions.mockResolvedValue(answer);
 }
 
@@ -91,6 +105,8 @@ export function primeOwnCardRefund(refundPaymentTransactions: Mock, answer: Answ
  * of `pendingCents`, or the whole answered plan with made slices marked.
  */
 export function expectQueuedOnce(enqueue: Mock, queued: Queued, pendingCents: number, answer: Answer): void {
+  // An unanswered edit retains its whole plan; cancellation already holds its debt.
+  if (!(answer instanceof Error) && answer.refunds.length === 0) queued = "remainder";
   if (queued === null) {
     expect(enqueue).not.toHaveBeenCalled();
     return;
@@ -104,12 +120,13 @@ export function expectQueuedOnce(enqueue: Mock, queued: Queued, pendingCents: nu
   // #4083 review: each was read refused at the door, so it is queued already on
   // its next key (`refused1`) - the runner's first attempt asks Stripe afresh.
   if (answer instanceof Error) throw new Error("A refused answer must contain refunds");
-  const plan = answer.refunds.map((refund) => queued.refused.includes(refund.slice)
-    ? { ...refund.slice, stripeKeySuffix: "refused1" }
-    : { ...refund.slice, madeRefundId: refund.refundId });
+  const slices = plannedSlices(answer, pendingCents);
+  const plan = answer.refunds.map((refund, index) => queued.refused.includes(refund.slice)
+    ? { ...slices[index], stripeKeySuffix: "refused1" }
+    : { ...slices[index], madeRefundId: refund.refundId });
   expect(enqueue).toHaveBeenCalledWith(
     expect.objectContaining({
-      amountCents: answer.refunds.reduce((sum, refund) => sum + refund.amountCents, 0),
+      amountCents: pendingCents,
       allocationPlan: plan,
     }),
   );
