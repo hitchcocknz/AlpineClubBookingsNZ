@@ -34,6 +34,7 @@ import {
   findPaymentTransactionByIntentId,
   lockPaymentForRefundedTotal,
   reconcilePaymentAggregates,
+  capturedStripeTransactions,
   recordStripeRefundsAgainstTransaction,
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
@@ -41,6 +42,7 @@ import {
 } from "@/lib/payment-transactions";
 // #3372: the one plan parser, shared with the "Refunds owed" net-out.
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { checkCardRefundResend, UnattributedCardRefundBeforeResendError } from "@/lib/card-refund-resend-preflight";
 import { cardRefundStillOwedCents } from "@/lib/card-refund-still-owed";
 import { onPlanWhere, refundPlanOrRetryRefusals } from "@/lib/refused-card-refund-retry";
 import { closePrePersistedRefundRow, type DoorCloseArgs } from "@/lib/pre-persisted-refund-close";
@@ -1574,7 +1576,9 @@ async function failPaymentRecoveryOperation(
   error: unknown,
   format: ClubFormat,
 ) {
-  const cause = await unretryableRecoveryCause(operation, error);
+  const cause = error instanceof UnattributedCardRefundBeforeResendError
+    ? error.message
+    : await unretryableRecoveryCause(operation, error);
   const terminal = cause !== null || operation.attempts >= MAX_PAYMENT_RECOVERY_ATTEMPTS;
   const outcome = await markPaymentRecoveryOperationFailed({
     operation,
@@ -1590,6 +1594,24 @@ async function failPaymentRecoveryOperation(
     // #4083: only the attempt this worker holds.
     fromAttempts: operation.attempts,
   });
+
+  if (outcome === "failed" && error instanceof UnattributedCardRefundBeforeResendError) {
+    // The hold has committed and the officer alert has gone. A failed audit
+    // write must not abandon the rest of the recovery batch.
+    await createAuditLog({
+      category: "payment",
+      action: "booking-payment.card-refund.resend-held",
+      targetId: operation.bookingId,
+      entityType: "PaymentRecoveryOperation",
+      entityId: operation.id,
+      severity: "important",
+      outcome: "failure",
+      summary: error.message,
+      metadata: { stripeRefundIds: error.stripeRefundIds, paymentId: operation.paymentId },
+    }).catch((auditError: unknown) => {
+      logger.error({ err: auditError, operationId: operation.id }, "Failed to write the card refund re-send hold audit");
+    });
+  }
 
   /**
    * A row that matched nothing was deleted by a manual mark-paid reversal or
@@ -1929,6 +1951,12 @@ async function processRefundSupersededPaymentOperation(
     throw new Error("Payment transaction not found for refund recovery");
   }
 
+  await checkCardRefundResend({
+    operation,
+    plan: parseRefundAllocationPlan(operation.allocationPlan) ?? [{ paymentTransactionId: refreshedTransaction.id, amountCents: operation.amountCents }],
+    transactions: [refreshedTransaction],
+  });
+
   const outstandingCents = Math.max(
     Math.min(
       operation.amountCents,
@@ -2089,6 +2117,15 @@ async function processBookingModificationRefundOperation(
   // below (single-transaction payments, the dominant case, already share slice
   // keys — see #1510).
   let plan = parseRefundAllocationPlan(operation.allocationPlan);
+  await checkCardRefundResend({
+    operation,
+    plan:
+      plan ??
+      capturedStripeTransactions(payment.transactions)
+        .filter((row) => row.amountCents - row.refundedAmountCents > 0)
+        .map((row) => ({ paymentTransactionId: row.id, amountCents: row.amountCents })),
+    transactions: payment.transactions,
+  });
 
   if (!plan) {
     const refundableTransactions = payment.transactions

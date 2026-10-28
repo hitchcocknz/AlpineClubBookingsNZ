@@ -1473,7 +1473,9 @@ describe("audit writer census (#2581)", { timeout: 180_000 }, () => {
     // 128/390 -> 130/392: the central-server lane (#4262) merged, its two
     // pinned and two unpinned sites. RE-MEASURED with `pnpm run audit:census`
     // on the merged tree (main b7466a631, 27 Oct 2026), never added.
-    ).toEqual({ pinned: 130, unpinned: 392 });
+    // 392 -> 393 unpinned (#4359): the card-refund re-send hold, unpinned `payment`.
+    // RE-MEASURED with `pnpm run audit:census`.
+    ).toEqual({ pinned: 130, unpinned: 393 });
   });
 
   it("pins which classified writers a MEMBER can now see about themselves", () => {

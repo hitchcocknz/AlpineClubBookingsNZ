@@ -5663,6 +5663,38 @@ refunded twice within Stripe's 24-hour key window; a row it closed is found by
 a recorded `failed` or `canceled` refund with no later one, and checked against
 the Stripe dashboard.
 
+## Charge-backed refund recovery preflight (#4359)
+
+`checkCardRefundResend` (`INV-PAY-145`) adds no advisory key or enclosing
+transaction. Every provider read finishes before its refund recording begins.
+Recording reuses `recordStripeRefundsAgainstTransaction`: Payment row, refund
+rows, transaction rows, then any failed-later recovery writes. This is the
+existing narrow Payment-row contention domain (`INV-LOCK-001`); no tier is
+composed or reordered (`INV-LOCK-002`) and no Tier-2 site is added
+(`INV-LOCK-003`). The subsequent Xero outbox enqueues run after that commit.
+
+A dashboard hold uses the runner's existing terminal failure writer,
+`markPaymentRecoveryOperationFailed`, fenced by live status, the claimed attempt
+and a non-null processing start. A lost hold claim sends no refund, alert or
+audit. The row's amount and plan are retained. All involved unsent charges are
+checked before any slice is sent. No new status or refunded-total writer is
+introduced; specialised combined-group executors are unchanged.
+
+Once recorded evidence requires a hold, the check stops immediately. A read or
+recording failure on a later charge cannot replace that hold with normal retry
+backoff; the conclusive charge's refund ids remain in the hold audit.
+
+The read cannot exclude a Stripe dashboard action made after it returns. Stripe
+has no lock shared with the database, so holding a database transaction during
+the call would not close that race. Mixed old/new workers retain the old
+worker's behaviour; this protection applies only to attempts on the new code.
+
+Counterparts reconciled for this change: open #4472 and the ten latest merged
+refund PRs #4495, #4490, #4437, #4424, #4419, #4327, #4341, #4307, #4228 and
+#4235. Their Payment-row, global-before-Payment, refund-note and guarded-close
+contracts remain intact. The preflight shares the existing webhook note router
+rather than creating a competing note rule.
+
 ## A card refund that failed later: the Payment row lock, no advisory key (#4104)
 
 A refund Stripe accepted (`pending`) and failed later (`INV-PAY-128`) is kept
