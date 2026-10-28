@@ -19,7 +19,8 @@ the full local gate.
 The full `eslint-plugin-jsx-a11y` recommended configuration applies to JSX/TSX.
 The local `accessibility/minimum-text-size` rule rejects static sizes below 12px
 in Tailwind classes, inline `fontSize` properties, CSS declarations and CSS
-`@apply` classes. `rem`/`em` literals assume 16px; runtime sizes and computed
+`@apply` classes. Absolute CSS units (including `pt`) are converted to pixels;
+`rem`/`em` literals assume 16px. Runtime sizes and computed
 expressions still need browser/design review. CSS uses the tolerant parser for
 Tailwind syntax; it is not a general CSS validity gate.
 
