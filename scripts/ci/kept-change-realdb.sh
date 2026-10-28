@@ -53,6 +53,7 @@ files=(
   src/lib/__tests__/superseded-ask-invoice-carry.realdb.test.ts
   src/lib/__tests__/additional-capture-receipt.realdb.test.ts
   src/lib/__tests__/primary-invoice-edit-race.realdb.test.ts
+  src/lib/__tests__/refused-card-refund-retry.realdb.test.ts
 )
 # An explicit report plus the existing validator rejects green describe.skip.
 pnpm exec vitest run --maxWorkers=1 --reporter=json --outputFile="$race_dir/report.json" "${files[@]}"
