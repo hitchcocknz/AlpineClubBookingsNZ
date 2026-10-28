@@ -63,15 +63,20 @@ function instrumentPage(page: Page) {
   if (pages.has(page)) return;
   pages.add(page);
   page.on("close", () => pages.delete(page));
-  const goto = page.goto.bind(page);
-  page.goto = async (...args) => {
-    await scan(page, true);
-    const result = await goto(...args);
-    // The next action or teardown checks the destination once the journey's
-    // assertions have settled it, rather than auditing a Suspense placeholder.
-    scanned.delete(page);
-    return result;
-  };
+  for (const key of ["goto", "reload", "goBack", "goForward"] as const) {
+    const navigate = page[key].bind(page);
+    Object.defineProperty(page, key, {
+      configurable: true,
+      value: async (...args: unknown[]) => {
+        await scan(page, true);
+        const result = await Reflect.apply(navigate, page, args);
+        // The next action or teardown checks the destination once the journey's
+        // assertions have settled it, rather than auditing a Suspense placeholder.
+        scanned.delete(page);
+        return result;
+      },
+    });
+  }
   const close = page.close.bind(page);
   page.close = async (...args) => {
     await scan(page, true);
