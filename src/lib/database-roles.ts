@@ -156,8 +156,9 @@ export interface DatabaseRolesProvisionInput {
 /**
  * The deploy script's post-migrate check (#4453 review O-F2, N3), as psql runs
  * it with `-v migration_role=… -v app_role=…`: the `public` relations that are
- * not owned by the migration role, not readable by the application role, or a
- * view the application could write through. Empty means the deploy may go on.
+ * not owned by the migration role, not readable by the application role, a
+ * view the application could write through, or an `APPEND_ONLY_RELATIONS`
+ * table it could change beyond INSERT (#4513). Empty means the deploy may go on.
  * Extension members are left out, as the ownership transfer leaves them.
  *
  * ONE definition. Bash cannot import it, so
