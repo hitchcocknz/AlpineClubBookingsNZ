@@ -1,5 +1,7 @@
 // Static sizes only: rem/em assume the normal 16px root. Dynamic sizes remain
 // the responsibility of browser checks and design review.
+const MINIMUM_TEXT_SIZE_PX = 12;
+
 function pixels(value, unit = "px") {
   return Number(value) * (unit === "px" ? 1 : 16);
 }
@@ -8,7 +10,7 @@ const minimumTextSize = {
   meta: {
     type: "problem",
     schema: [],
-    messages: { small: "Text must be at least 12px. Use text-xs or a larger font size (#4466)." },
+    messages: { small: `Text must be at least ${MINIMUM_TEXT_SIZE_PX}px. Use text-xs or a larger font size (#4466).` },
   },
   create(context) {
     function checkText(node, text) {
@@ -18,7 +20,7 @@ const minimumTextSize = {
       ];
       for (const pattern of patterns) {
         for (const match of text.matchAll(pattern)) {
-          if (pixels(match[1], match[2]) < 12) context.report({ node, messageId: "small" });
+          if (pixels(match[1], match[2]) < MINIMUM_TEXT_SIZE_PX) context.report({ node, messageId: "small" });
         }
       }
     }
@@ -39,7 +41,7 @@ const minimumTextSize = {
         if ((node.key.name ?? node.key.value) !== "fontSize") return;
         const value = node.value.value;
         const match = typeof value === "string" && /^(\d*\.?\d+)(px|rem|em)$/.exec(value);
-        if ((typeof value === "number" && value < 12) || (match && pixels(match[1], match[2]) < 12)) {
+        if ((typeof value === "number" && value < MINIMUM_TEXT_SIZE_PX) || (match && pixels(match[1], match[2]) < MINIMUM_TEXT_SIZE_PX)) {
           context.report({ node: node.value, messageId: "small" });
         }
       },
