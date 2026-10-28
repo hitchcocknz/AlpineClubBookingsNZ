@@ -920,6 +920,9 @@ async function repairRefundCreditNoteFollowUpActions(
   },
   claim: XeroOperationClaim, // #4256: the row is this retry's claim; it completes onto it only
 ) {
+  const result = (claimLost: boolean) => ({
+    message: claimLost ? PARTIAL_REPAIR_CLAIM_LOST_MESSAGE : "Repaired Xero refund credit note follow-up actions.",
+  });
   // #3827 (D-3813-8): a refund request's own note is an allowed extra, never
   // the payment's one refund note, so it never takes the payment's pointer.
   // #3880 F1: a per-refund note is repaired, never made the payment's canonical one.
@@ -966,10 +969,10 @@ async function repairRefundCreditNoteFollowUpActions(
       retryClaim: true,
     });
     if (outcome.refundPaymentErr) throw outcome.refundPaymentErr;
-    return;
+    return result(outcome.completionClaimLost);
   }
 
-  await completeXeroSyncOperation(
+  const completed = await completeXeroSyncOperation(
     claim,
     refundCreditNoteCompletion({
       paymentId: operation.localId!,
@@ -983,6 +986,7 @@ async function repairRefundCreditNoteFollowUpActions(
     }),
     { retryClaim: true },
   );
+  return result(completed === null);
 }
 
 function parseModificationCreditNoteRepairInput(
@@ -1556,12 +1560,9 @@ export async function retryXeroSyncOperation(
       refundCreditNoteRepair
     ) {
       // #4256: claimed like the invoice repair; the shared leg completes the row.
-      await runWithClaimedOriginal(
-        operation.id,
-        (claim) => repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claim),
-        { from: "PARTIAL" },
-      );
-      return { message: "Repaired Xero refund credit note follow-up actions." };
+      return runWithClaimedOriginal(operation.id, (claim) =>
+        repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claim),
+      { from: "PARTIAL" });
     }
 
     let modificationCreditNoteRepair: ReturnType<typeof parseModificationCreditNoteRepairInput>;
@@ -1832,10 +1833,9 @@ export async function retryXeroSyncOperation(
       const refundCreditNoteRepair = parseRefundCreditNoteRepairInput(operation);
       if (refundCreditNoteRepair) {
         // #4256: claimed like the PARTIAL repair; a throw abandons it to FAILED. #4356: marked (`INV-INT-029`).
-        await runWithClaimedOriginal(operation.id, (claim) =>
+        return runWithClaimedOriginal(operation.id, (claim) =>
           repairRefundCreditNoteFollowUpActions(operation, xero, refundCreditNoteRepair, claim),
         { marker: XERO_REFUND_NOTE_REPAIR_RUNNING_CODE });
-        return { message: "Repaired Xero refund credit note follow-up actions." };
       }
 
       const retryInput = parsePaymentCreditNoteRetryInput(operation);
