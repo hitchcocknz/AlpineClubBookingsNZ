@@ -101,8 +101,17 @@ export async function verifyMemberMoneyJournal(
   `, [JSON.stringify(MEMBER_MONEY_DATABASE_SHAPE.functions)]);
   findings.push(...z.array(Finding).parse(functions.rows));
 
-  const definitions = new Map((await readMemberMoneyDefinitions(client))
-    .map((found) => [`${found.kind}:${found.relation}.${found.name}`, found]));
+  const read = await readMemberMoneyDefinitions(client);
+  const definitions = new Map(read.map((found) => [`${found.kind}:${found.relation}.${found.name}`, found]));
+  // A trigger the shape does not name can rewrite or swallow a row before any
+  // pinned check sees it, so every extra one is a finding, enabled or not. An
+  // extra constraint or unique index can only refuse rows, so none is reported.
+  const pinnedTriggers: Record<string, Record<string, string>> = MEMBER_MONEY_DATABASE_SHAPE.triggers;
+  for (const found of read) {
+    if (found.kind === "triggers" && !Object.hasOwn(pinnedTriggers[found.relation] ?? {}, found.name)) {
+      findings.push({ identity: `${found.relation}.${found.name}`, problem: "unexpected_trigger" });
+    }
+  }
   for (const [kind, problems] of Object.entries(DEFINITION_PROBLEMS)) {
     const pinned: Record<string, Record<string, string>> = MEMBER_MONEY_DATABASE_SHAPE[kind as keyof typeof DEFINITION_PROBLEMS];
     for (const [relation, digests] of Object.entries(pinned)) {

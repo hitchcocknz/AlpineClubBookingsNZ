@@ -431,6 +431,10 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
        DROP TRIGGER member_money_immutable ON "MemberMoneyLine";
        CREATE TRIGGER member_money_immutable BEFORE UPDATE OR DELETE ON "MemberMoneyLine"
          FOR EACH ROW EXECUTE FUNCTION mm4513_tamper_noop()`],
+    ["an extra BEFORE INSERT trigger the shape does not name", { identity: "MemberMoneyLine.mm4513_extra", problem: "unexpected_trigger" },
+      `CREATE FUNCTION mm4513_tamper_passthrough() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+       CREATE TRIGGER mm4513_extra BEFORE INSERT ON "MemberMoneyLine"
+         FOR EACH ROW EXECUTE FUNCTION mm4513_tamper_passthrough()`],
   ])("reports %s", async (_tampering, finding, sql) => {
     // DDL is transactional: the verifier reads the tampered catalog inside the
     // transaction, and the rollback puts the migration's definitions back.
