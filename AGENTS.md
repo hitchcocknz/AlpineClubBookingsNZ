@@ -172,9 +172,8 @@ Sekreton's exception).
 - **Lane** (the session that posted an issue's `CLAIM:`; its main session is
   the orchestrator) owns its claim, worktree, branch, GitHub writes, PR, CI
   and merge gate.
-- **Reservations hold until released** by the holder, reassigned by the
-  owner, or auto-released after 72 hours with no `LANE-SYNC` or push (#4452,
-  `COORDINATION.md`); before that, silence or a stopped session never frees one.
+- **Reservations hold until released** by the holder or reassigned by the
+  owner, or 72 idle hours pass (#4452); silence never frees one sooner.
   Never take over, push to, reset or rebase another lane's branch or worktree
   — post a `LANE-SYNC` or ask the owner. Unknown occupancy is not a free slot.
 - **Implementors** (subagents): one issue in its worktree; commit locally;
