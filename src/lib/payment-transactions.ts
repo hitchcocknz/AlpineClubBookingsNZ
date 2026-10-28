@@ -41,8 +41,7 @@ import {
   isRefusedRefundStatus,
   LEGACY_ADDITIONAL_BACKFILL_REASON,
   LEGACY_PRIMARY_BACKFILL_REASON,
-  latestTransactionOfKind,
-  STRIPE_REFUND_EXCEEDS_CAPTURED_MESSAGE,
+  latestTransactionOfKind, STRIPE_REFUND_EXCEEDS_CAPTURED_MESSAGE,
 } from "@/lib/payment-transaction-status";
 
 export { isCapturedTransactionStatus };
