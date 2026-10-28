@@ -1853,8 +1853,8 @@ and **`INV-PAY-147`** (slice evidence).
 
 - Every slice sent by `refundPaymentTransactions` with `idempotencyKeyPrefix`
   carries Stripe metadata `refundSliceKey`, exactly the key produced by
-  `refundSliceStripeIdempotencyKey`. The exported metadata-name constant lives
-  beside that builder. Existing metadata entries and idempotency keys are
+  `refundSliceStripeIdempotencyKey`. The metadata-name constant and its stamp
+  live beside that builder. Existing metadata entries and idempotency keys are
   preserved; the evidence depends only on that key. The name fits Stripe's
   40-character limit; a value exceeding 500 characters is refused, never cut.
   An unkeyed send adds no slice evidence.
@@ -1864,20 +1864,23 @@ and **`INV-PAY-147`** (slice evidence).
   `isRecordedRefundStatus`; the ledger's stored refusal overrides a stale
   counted listing. Amount, charge, time and edit metadata are never matching
   evidence. A failed or canceled refund never marks a slice.
-- The mark reuses `onPlanWhere`: re-read with the stored-plan guard, then
-  compare-and-set on that plan, `PROCESSING` and the runner's
+- The mark is one `onPlanWhere` compare-and-set on the stored plan as read
+  (later charges: the plan just written), `PROCESSING` and the runner's
   `processingStartedAt`. A changed plan or lost claim refuses the attempt;
   no slice is sent and no existing mark is overwritten. Both runners use the
   returned plan and send only unmarked slices; a wholly marked row completes.
 - No new advisory lock (`INV-LOCK-001` through `INV-LOCK-003`). Provider reads
-  remain outside transactions; canonical ledger recording retains its Payment
-  row lock. Refusal generations and prefix selection remain unchanged.
-- Limit: legacy refunds without slice evidence cannot be matched. Adding
-  evidence changes their replay parameters; Stripe may reject a cached legacy
-  key until expiry. Unmatched evidence retains existing handling,
-  including the outside-app hold.
+  remain outside transactions; canonical ledger recording keeps its Payment
+  row lock. Refusal generations and prefix selection are unchanged.
+- A keyed send Stripe refuses with `idempotency_error` is resent once under
+  that key with the caller's metadata alone, the pre-evidence body, answered
+  with any refund made then. A second refusal moves no money.
+- Limit: legacy refunds without slice evidence cannot be matched; past
+  Stripe's 24-hour key expiry, one never recorded can be refunded again.
+  Unmatched evidence retains existing handling, including the outside-app hold.
 - Proven by `card-refund-resend-preflight.test.ts`,
-  `payment-transactions-refunds.test.ts` and `payment-recovery.test.ts`.
+  `payment-transactions-refunds.test.ts`, `payment-recovery.test.ts` and
+  `stripe.test.ts`.
 
 ## INV-PAY-144
 
