@@ -30,11 +30,12 @@ const DIALOG = '[role="dialog"], [role="alertdialog"]';
  * always detach the ref when a Select closes. Only nodes this hook made inert
  * are ever released.
  *
- * A node that is, or holds, an open dialog is left alone: a Select opened inside
- * a Dialog hides the dialog too, and making it inert would leave a scrollable
- * dialog with nothing focusable in it (axe scrollable-region-focusable). Behind
- * an open dialog the page is already modal, which is how assistive tech and axe
- * both read it.
+ * A node that is, holds, or sits inside an open dialog is left alone: a Select
+ * opened in a Dialog hides the dialog (or, when its listbox renders inside the
+ * dialog, the dialog's other children), and making those inert would leave a
+ * scrollable dialog with nothing focusable in it (axe
+ * scrollable-region-focusable). Behind an open dialog the page is already
+ * modal, which is how assistive tech and axe both read it.
  */
 export function useInertOutsidePopup<T extends HTMLElement>(
   forwardedRef: React.ForwardedRef<T>,
@@ -65,7 +66,7 @@ export function useInertOutsidePopup<T extends HTMLElement>(
       });
       for (const element of document.querySelectorAll(HIDDEN_BY_OPEN_POPUP)) {
         if (element.hasAttribute("inert") || element.contains(content)) continue;
-        if (element.matches(DIALOG) || element.querySelector(DIALOG)) continue;
+        if (element.closest(DIALOG) || element.querySelector(DIALOG)) continue;
         element.setAttribute("inert", "");
         madeInert.current.push(element);
       }

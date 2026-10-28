@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { useInertOutsidePopup } from "@/hooks/use-inert-outside-popup";
 
 // #4466: what an open Select hides from assistive tech (Radix hideOthers,
 // `data-aria-hidden`) is made inert while it is open, and released when it
@@ -93,5 +94,24 @@ describe("SelectContent inert outside (#4466)", () => {
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog).not.toBeNull();
     expect(dialog!.closest("[inert]")).toBeNull();
+  });
+
+  it("leaves the children of a dialog alone when the popup renders inside it", async () => {
+    // A listbox rendered INSIDE a dialog makes hideOthers mark the dialog's own
+    // children; inerting them would empty the dialog of focusable content.
+    function InDialogPopup() {
+      const ref = useInertOutsidePopup<HTMLDivElement>(null);
+      return (
+        <div role="dialog" aria-label="Remove">
+          <div data-aria-hidden="true" aria-hidden="true" data-testid="sibling">
+            <button type="button">Cancel</button>
+          </div>
+          <div ref={ref} role="listbox" />
+        </div>
+      );
+    }
+    render(<InDialogPopup />);
+    await flushFrames();
+    expect(screen.getByTestId("sibling").hasAttribute("inert")).toBe(false);
   });
 });
