@@ -237,11 +237,12 @@ A "repair" re-run with a freshly generated password is a rotation too.
 
 **Re-run `--apply`** in these cases:
 - after the first migration of a brand-new database. If you provisioned the
-  database while it was empty (step 2 on a new install, or before a restore),
-  the first deploy's migrate creates `BookingLedgerLine` and `AuditLog` with the
-  application's default UPDATE and DELETE, and the post-migrate check stops the
-  deploy at step 13 naming both. The migrations have applied and the old colour
-  is still serving: run the step 2 `--apply` command, then run the deploy again.
+  database while it was empty (step 2 on a new install), the first deploy's
+  migrate creates `BookingLedgerLine` and `AuditLog` with the application's
+  default UPDATE and DELETE, and the post-migrate check stops the deploy at
+  step 13 naming both. The migrations have applied and, if an old colour
+  exists, it is still serving: run the step 2 `--apply` command, then run the
+  deploy again.
   Its migrate has nothing left to do, and the check passes;
 - after a release whose upgrade note changes `APPEND_ONLY_RELATIONS` or
   `AUDIT_ANONYMISED_REQUEST_COLUMNS` (`src/lib/database-roles.ts`,
