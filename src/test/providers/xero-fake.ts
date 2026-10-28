@@ -1,3 +1,5 @@
+import { createReplayWriter } from "./replay-write";
+
 /** Stateful, cent-based subset of Xero Accounting. No transport or credentials. */
 type Contact = { contactID: string; memberId: string };
 type Invoice = {
@@ -27,20 +29,7 @@ export class XeroFake {
   private payments = new Map<string, Payment>();
   private creditNotes = new Map<string, CreditNote>();
   private allocations = new Map<string, Allocation>();
-  private keys = new Map<string, { input: string; result: unknown }>();
-
-  /** Writes replay by operation key; a changed payload cannot silently reuse it. */
-  private write<T>(key: string, input: unknown, operation: () => T): T {
-    const fingerprint = JSON.stringify(input);
-    const previous = this.keys.get(key);
-    if (previous) {
-      if (previous.input !== fingerprint) throw new XeroValidationError("Idempotency key reused with different parameters");
-      return structuredClone(previous.result) as T;
-    }
-    const result = operation();
-    this.keys.set(key, { input: fingerprint, result: structuredClone(result) });
-    return structuredClone(result);
-  }
+  private readonly write = createReplayWriter(() => new XeroValidationError("Idempotency key reused with different parameters"));
 
   private cents(value: number) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new XeroValidationError("Amount must be positive integer cents");

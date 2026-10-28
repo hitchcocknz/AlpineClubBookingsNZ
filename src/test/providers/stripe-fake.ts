@@ -1,3 +1,5 @@
+import { createReplayWriter } from "./replay-write";
+
 /** Narrow Stripe test double. Amounts use Stripe's integer minor units. */
 type Intent = { id: string; memberId: string; amount: number; amount_received: number; status: "requires_capture" | "succeeded" | "canceled" };
 type Refund = { id: string; payment_intent: string; amount: number; status: "pending" | "succeeded" | "failed"; origin: "api" | "dashboard" };
@@ -12,19 +14,7 @@ export class StripeFake {
   private intents = new Map<string, Intent>();
   private refunds = new Map<string, Refund>();
   private events: Event[] = [];
-  private keys = new Map<string, { input: string; result: unknown }>();
-
-  private write<T>(key: string, input: unknown, operation: () => T): T {
-    const fingerprint = JSON.stringify(input);
-    const previous = this.keys.get(key);
-    if (previous) {
-      if (previous.input !== fingerprint) throw new StripeFakeError("idempotency_error", "Parameters differ from the original request");
-      return structuredClone(previous.result) as T;
-    }
-    const result = operation();
-    this.keys.set(key, { input: fingerprint, result: structuredClone(result) });
-    return structuredClone(result);
-  }
+  private readonly write = createReplayWriter(() => new StripeFakeError("idempotency_error", "Parameters differ from the original request"));
 
   private cents(amount: number) {
     if (!Number.isSafeInteger(amount) || amount <= 0) throw new StripeFakeError("parameter_invalid_integer", "Amount must be positive integer cents");
