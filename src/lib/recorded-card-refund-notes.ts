@@ -6,6 +6,13 @@ import { queueLateCaptureRefundCreditNote } from "@/lib/late-capture-refund-cred
 import { readUnrecordedLateCaptureRefund } from "@/lib/late-capture-unrecorded-refunds";
 import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 
+/** Keeps the webhook's existing boundary between routing and enqueue failures. */
+export class RecordedCardRefundNoteEnqueueError extends Error {
+  constructor(readonly cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+  }
+}
+
 export async function queueRecordedCardRefundNotes(params: {
   payment: Payment;
   paymentIntentId: string;
@@ -24,12 +31,16 @@ export async function queueRecordedCardRefundNotes(params: {
     refundedCents: params.deltaCents,
     refunds: params.refunds,
   })) !== "none") return { queueOperationId: null };
-  const creditsInvoiceId = await findAdditionalCaptureReceiptInvoiceId(params.paymentIntentId);
-  return queueWebhookCardRefundNotes({
-    payment: params.payment,
-    deltaCents: params.deltaCents,
-    refunds: params.refunds,
-    newlyCountedRefundIds: params.newlyCountedRefundIds,
-    ...(creditsInvoiceId ? { creditsInvoiceId } : {}),
-  });
+  try {
+    const creditsInvoiceId = await findAdditionalCaptureReceiptInvoiceId(params.paymentIntentId);
+    return await queueWebhookCardRefundNotes({
+      payment: params.payment,
+      deltaCents: params.deltaCents,
+      refunds: params.refunds,
+      newlyCountedRefundIds: params.newlyCountedRefundIds,
+      ...(creditsInvoiceId ? { creditsInvoiceId } : {}),
+    });
+  } catch (error) {
+    throw new RecordedCardRefundNoteEnqueueError(error);
+  }
 }

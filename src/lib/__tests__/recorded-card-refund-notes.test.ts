@@ -9,7 +9,7 @@ vi.mock("@/lib/late-capture-unrecorded-refunds", () => ({ readUnrecordedLateCapt
 vi.mock("@/lib/additional-capture-receipt-link", () => ({ findAdditionalCaptureReceiptInvoiceId: receipt }));
 vi.mock("@/lib/card-refund-own-note", () => ({ queueWebhookCardRefundNotes: ordinaryNote }));
 vi.mock("@/lib/late-capture-refund-credit-note", () => ({ queueLateCaptureRefundCreditNote: lateNote }));
-import { queueRecordedCardRefundNotes } from "@/lib/recorded-card-refund-notes";
+import { queueRecordedCardRefundNotes, RecordedCardRefundNoteEnqueueError } from "@/lib/recorded-card-refund-notes";
 
 const input = { payment: { id: "payment-test", source: "INTERNET_BANKING" } as Payment, paymentIntentId: "pi_test", deltaCents: 4000, newlyCountedRefundIds: ["re_test"], refunds: [{ id: "re_test", amount: 4000, metadata: {} }] };
 beforeEach(() => {
@@ -39,6 +39,16 @@ describe("recorded card refund accounting", () => {
     unrecorded.mockResolvedValue("unrecorded");
     await queueRecordedCardRefundNotes(input);
     expect(ordinaryNote).not.toHaveBeenCalled();
+  });
+  it("preserves the webhook's retry boundary for a failed routing read", async () => {
+    late.mockRejectedValue(new Error("routing unavailable"));
+    await expect(queueRecordedCardRefundNotes(input)).rejects.toThrow("routing unavailable");
+    await expect(queueRecordedCardRefundNotes(input)).rejects.not.toBeInstanceOf(RecordedCardRefundNoteEnqueueError);
+    expect(ordinaryNote).not.toHaveBeenCalled();
+  });
+  it("identifies an ordinary note enqueue failure for the existing alert path", async () => {
+    ordinaryNote.mockRejectedValue(new Error("outbox unavailable"));
+    await expect(queueRecordedCardRefundNotes(input)).rejects.toBeInstanceOf(RecordedCardRefundNoteEnqueueError);
   });
   it("queues nothing for an already counted delivery", async () => {
     await queueRecordedCardRefundNotes({ ...input, deltaCents: 0, newlyCountedRefundIds: [] });

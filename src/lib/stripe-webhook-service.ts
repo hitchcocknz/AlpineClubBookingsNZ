@@ -9,7 +9,7 @@ import { classifySucceededSetupIntentCard } from "@/lib/setup-intent-card";
 import { isXeroConnected } from "@/lib/xero";
 import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
 import { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } from "@/lib/xero-supplementary-invoice-late-capture";
-import { queueRecordedCardRefundNotes } from "@/lib/recorded-card-refund-notes";
+import { queueRecordedCardRefundNotes, RecordedCardRefundNoteEnqueueError } from "@/lib/recorded-card-refund-notes";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
 import { reportWebhookError } from "@/lib/observability-bridge";
 import {
@@ -1182,6 +1182,7 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
   // #4312 review: a refund this sync recorded first counts even when the total did not move.
   const recordedNew = refundSync.refundDeltaCents > 0 || refundSync.newlyCountedRefundIds.length > 0;
   if (recordedNew) {
+    let routed = false;
     try {
       const queuedCreditNote = await queueRecordedCardRefundNotes({
         payment: refundSync.payment,
@@ -1191,6 +1192,7 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
         newlyCountedRefundIds: refundSync.newlyCountedRefundIds,
       });
 
+      routed = true;
       if (queuedCreditNote.queueOperationId && (await isXeroConnected())) {
         await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
         logger.info(
@@ -1201,7 +1203,11 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
           "Xero refund credit note queued for payment"
         );
       }
-    } catch (xeroErr) {
+    } catch (error) {
+      // Routing reads used to precede this catch: retry the webhook if they
+      // fail, while keeping ordinary enqueue/kick errors visible as before.
+      if (!routed && !(error instanceof RecordedCardRefundNoteEnqueueError)) throw error;
+      const xeroErr = error instanceof RecordedCardRefundNoteEnqueueError ? error.cause : error;
       logger.error({ err: xeroErr, paymentId: refundSync.paymentId }, "Failed to queue Xero credit note for payment");
       notifyXeroSyncError({
         errorType: "CREDIT_NOTE_CREATION",
