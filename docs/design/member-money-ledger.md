@@ -512,3 +512,49 @@ crossed. Before G save durable per-row legacy values and ship a dry-run-first
 reconstruction tool, prove it with post-switch events and parity. After H a
 schema rollback alone does not restore money. Never restore a production backup
 as an automatic downgrade and lose intervening events.
+
+## 9. Parked-bug acceptance matrix
+
+Every original triage scenario remains an executable acceptance requirement,
+even if a narrow fix has since shipped. This table is the complete 33-row list
+from [#4461's test-list comment](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4461#issuecomment-6415525566),
+which [#4451](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4451)
+identifies as “removed by the ledger switch”. A rule makes the erroneous
+representation impossible only when its writer, constraints, source links and
+rendering are active and its test passes; this design closes no bug by itself.
+
+| Bug | Scenario required | Posting rule and structural reason |
+| --- | --- | --- |
+| #3879 | Cancelled-booking credit restore stays a restore whatever its date | R10: original-application link and `RESTORE` event kind, never a date-based cancellation-credit classifier |
+| #3911 | Voiding an edit credit on an unpaid bank booking leaves it unpaid with no cash | R07/R23: reverse only the identified application; no Bank receipt exists to count |
+| #3992 | One change fee appears on one document after primary void/reissue | R03: unique fee component and section 7's signed live coverage; replacement transfers coverage, never creates another fee |
+| #3993 | A card-refunded reduction creates one credit and no nightly missing-credit finding | R02/R05/R12: one reduction/refund identity; composite document coverage prevents two credits and the coverage monitor sees the same manifest |
+| #4051 | Retried late-capture note counts once; voided note stops counting | R24/R23: exact source/manifest identity, terminal tombstone and signed coverage, not succeeded-operation sums |
+| #4069 | Unpaid bank amount stays owing regardless of booking status | R01/R07: derive obligation outstanding from charge minus applications; operational booking status cannot zero AR |
+| #4200 | Inbound void and new refund-note recording finish without deadlock or loss | R23 and section 3's common business-row-before-object order; journal and coverage outcome commit under one guarded claim |
+| #4219 | Outside spend writes credit down and releases booking credit as owed | R22: exact release plus lot write-down in one transaction, unchanged free balance, no duplicate Xero grant |
+| #4279 | A repair losing its claim after a void cannot leave a live link | R23: object-head terminal check and guarded export completion; returned id is evidence, not active coverage |
+| #4284 | Two equal simultaneous refunds settle their own debts consistently | R12/R14: exact obligation/application ids, no amount/time matching or unstable ordering |
+| #4286 | Hand-made Xero refund-request note is recorded once and clears finding | R23: exact task/manifest adoption through the inbound door; coverage rather than another refund posting clears the monitor |
+| #4292 | Bank group child refund credits the combined invoice once | R15/R14: child obligation traces to organiser receipt and combined charge coverage, not a child invoice |
+| #4315 | Bank edit hand-back counts as refunded only after payment | R05/R14: payable at entitlement, Bank leg only at evidenced completion; note arrival cannot pay it |
+| #4322 | Hand-refunding card money never received by Xero creates no booking-invoice credit | R24/R12: no coverage of that receipt means no credit against that invoice; preserve legacy record-by-hand handling |
+| #4324 | Kept 8000-cent change capture appears once on its change invoice | R03/R24/R06: exact change obligation and receipt application; no second kept-charge invoice where already billed (`INV-PAY-144`) |
+| #4328 | Several bank refund notes summing to refunds show no mismatch | R14/R23: sum distinct signed coverage/application components, never compare each note to a whole-payment total |
+| #4336 | Old live reading cannot revive a voided refund note | R23 and section 6: terminal tombstone before timestamp comparison |
+| #4347 | Old reading cannot revive/count a voided account-credit note | R09/R23: same object-head terminal rule; grant liability and document coverage stay distinct |
+| #4362 | Fully-credit-paid or zero-priced booking posts charges and balances zero | R01/R10: charges are independent of cash settle; credit applies equal liability, explicit zero event needs no fake receipt |
+| #4369 | Failed card refund then bank hand-back shows Stripe return and separate bank payment | R13 reverses the card refund; R14 pays the same RP by bank; section 7 renders #4361's reversal plus bank note |
+| #4370 | Later Xero note cannot make failed card refund count again | R13/R23 and ownership: Stripe owns card cash; Xero changes coverage/applications only |
+| #4380 | Late 5000-cent capture/refund on cancelled booking leaves matching Xero pair, net zero | R24/R06/R12: matched source pair and per-capture manifest; no unrelated cancellation invoice credit |
+| #4381 | Paid-another-way close records kept 8000-cent change once on invoice already billing it | R24/R14: distinct retained receipt and bank hand-back with exact obligation/coverage; no repeated change revenue |
+| #4382 | Kept capture survives a failure after the keep step | R24: keep decision, posting and export intent are atomic; durable manifest resumes missing provider step |
+| #4383 | Refund note for 8000-cent capture with 5000 recorded never exceeds recorded slice | R12 and section 7: source-specific 5000 coverage cap; remaining receipt/refund pair requires its own proved export |
+| #4391 | Voided request note reverses once and asks the treasurer once | R23: unique reversal of provider-owned application/legacy fact and unique conflict task; independent cash is not silently reversed (section 10) |
+| #4413 | Repaired invoice for unpaid supplementary request reaches Xero unpaid | R02/R25/R07: charge exists, receipt does not; rendering cannot infer payment from booking status |
+| #4431 | Manual credit has one note at approval and spend uses it | R11 then R10: grant event and funding-note identity, no delayed second grant at consumption |
+| #4434 | 8000-cent capture with only 5000 room is recorded fully across correct invoices | R06 plus section 7: applications/coverage sum to 8000; 3000 cannot disappear into an AmountDue clamp |
+| #4435 | Crash retry records its own receipt despite sweep using same reference | R06/R07: capture/payment source id and manifest identity, not shared invoice reference/amount |
+| #4444 | Card refunded display retains earlier edit credit after any later Xero event | R12/R23: compatibility display sums distinct cash and application components; later snapshot cannot overwrite another source's posting |
+| #4447 | Removing an allocation lowers its contribution to refunded display | R23: exact application reversal; independent cash-return component remains unchanged |
+| #4449 | Cancel racing bank settle sees invoice-correction contribution | R04/R07/R23: common locking/claim transaction commits source application, projection and settlement together; cancel re-reads after locking |
