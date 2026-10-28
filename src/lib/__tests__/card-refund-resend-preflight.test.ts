@@ -90,6 +90,25 @@ describe("card refund preflight", () => {
     expect(record).not.toHaveBeenCalled();
   });
 
+  it("holds on conclusive evidence before a later charge can replace the hold with a retryable error", async () => {
+    const multi = {
+      ...args,
+      plan: [...args.plan, { paymentTransactionId: "transaction-second", amountCents: 2000 }],
+      transactions: [...args.transactions, { id: "transaction-second", stripePaymentIntentId: "pi_second", stripeChargeId: "ch_second" }],
+    };
+    list.mockImplementation(async (intent) => {
+      if (intent === "pi_second") throw new Error("later charge timed out");
+      return [refund()];
+    });
+    await expect(checkCardRefundResend(multi)).rejects.toMatchObject({
+      constructor: UnattributedCardRefundBeforeResendError,
+      stripeRefundIds: ["re_test"],
+    });
+    expect(list).toHaveBeenCalledTimes(1);
+    expect(record).toHaveBeenCalledTimes(1);
+    expect(queueRecordedCardRefundNotes).toHaveBeenCalledTimes(1);
+  });
+
   it("propagates a recording failure before a refund can be sent", async () => {
     list.mockResolvedValue([refund()]);
     record.mockRejectedValue(new Error("writer unavailable"));

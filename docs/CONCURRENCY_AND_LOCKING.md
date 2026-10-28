@@ -5680,6 +5680,10 @@ audit. The row's amount and plan are retained. All involved unsent charges are
 checked before any slice is sent. No new status or refunded-total writer is
 introduced; specialised combined-group executors are unchanged.
 
+Once recorded evidence requires a hold, the check stops immediately. A read or
+recording failure on a later charge cannot replace that hold with normal retry
+backoff; the conclusive charge's refund ids remain in the hold audit.
+
 The read cannot exclude a Stripe dashboard action made after it returns. Stripe
 has no lock shared with the database, so holding a database transaction during
 the call would not close that race. Mixed old/new workers retain the old

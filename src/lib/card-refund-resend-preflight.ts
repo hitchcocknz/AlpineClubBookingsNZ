@@ -38,7 +38,6 @@ export async function checkCardRefundResend({
   const unmadeIds = new Set(plan.filter((slice) => !slice.madeRefundId).map((slice) => slice.paymentTransactionId));
   const charges = transactions.filter((row) => unmadeIds.has(row.id));
   if (charges.length !== unmadeIds.size) throw new Error("Refund preflight could not find every planned charge (INV-PAY-145)");
-  const unexpected: string[] = [];
   for (const charge of charges) {
     if (!charge.stripePaymentIntentId) throw new Error("Refund preflight charge has no Stripe intent (INV-PAY-145)");
     const refunds = await listRefundsForPaymentIntent(charge.stripePaymentIntentId, { timeoutMs: 10_000, singlePage: true });
@@ -74,6 +73,7 @@ export async function checkCardRefundResend({
         errorMessage: error instanceof Error ? error.message : String(error),
       }).catch(() => {});
     });
+    const unexpected: string[] = [];
     for (const refund of onCharge) {
       if (isRecordedRefundStatus(refund.status ?? "unknown") &&
         !recorded.readAsRefused.includes(refund.id) &&
@@ -82,6 +82,8 @@ export async function checkCardRefundResend({
         unexpected.push(refund.id);
       }
     }
+    // Conclusive evidence must hold the row even if another charge's read
+    // would fail. No further provider reads are needed to refuse every slice.
+    if (unexpected.length > 0) throw new UnattributedCardRefundBeforeResendError(unexpected);
   }
-  if (unexpected.length > 0) throw new UnattributedCardRefundBeforeResendError(unexpected);
 }
