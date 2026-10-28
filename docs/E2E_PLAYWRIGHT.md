@@ -95,7 +95,8 @@ the journey's assertions settle streaming content first; no fixed sleeps or
 `networkidle` waits are added. Before each audit the fixture lets running
 finite CSS transitions and animations finish (capped at two seconds; infinite
 ones such as spinners are ignored), so a toast fading in or an overlay fading
-out is measured at its settled colours. Results are collected until teardown so a failure
+out is measured at its settled colours, and waits (with the same cap) for the
+`<title>` Next streams in after an in-app navigation. Results are collected until teardown so a failure
 does not interrupt the journey's cleanup. Serious and critical violations tagged
 `wcag2a`, `wcag2aa` or `wcag22aa` fail the test. The `axe-report` JSON attachment
 contains the full axe result for each failing page, or an audit execution error.

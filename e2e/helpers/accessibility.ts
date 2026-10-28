@@ -46,10 +46,21 @@ async function settleAnimations(page: Page) {
   }, ANIMATION_SETTLE_CAP_MS);
 }
 
+// Next streams a route's metadata: after an in-app navigation the old <title>
+// is removed and the new one arrives a few hundred milliseconds later, so an
+// audit in that window reports document-title on a page that has one. Wait,
+// capped, for a title; a page that really has none is still audited and fails.
+async function settleTitle(page: Page) {
+  await page
+    .waitForFunction(() => document.title.trim() !== "", undefined, { timeout: ANIMATION_SETTLE_CAP_MS })
+    .catch(() => undefined);
+}
+
 async function scanPage(page: Page) {
   const url = page.url();
   try {
     await page.waitForLoadState("domcontentloaded");
+    await settleTitle(page);
     await settleAnimations(page);
     const result = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag22aa"])
