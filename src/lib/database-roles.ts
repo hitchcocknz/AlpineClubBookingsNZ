@@ -52,6 +52,7 @@
  * anything from PUBLIC, or print a password.
  */
 
+import { MEMBER_MONEY_RELATIONS } from "./member-money-tables";
 import { AUDIT_ANONYMISED_REQUEST_COLUMNS } from "./audit-retention-classes";
 import {
   buildCreateLoginRoleIfAbsentSql,
@@ -72,17 +73,16 @@ export const APPLICATION_SCHEMA = "public";
  * `AUDIT_ANONYMISED_REQUEST_COLUMNS` — is a release that asks every deployment to
  * re-run `pnpm run db:provision-roles --apply`, and its upgrade note says so.
  */
-export const APPEND_ONLY_RELATIONS = ["BookingLedgerLine", "AuditLog"] as const;
+export const APPEND_ONLY_RELATIONS = ["BookingLedgerLine", "AuditLog", ...MEMBER_MONEY_RELATIONS] as const;
 
 /** Prisma's migration history: the application reads it, only migrations write it. */
 export const MIGRATION_HISTORY_RELATION = "_prisma_migrations";
 
 /**
- * The migration that creates `BookingLedgerLine`, the newer of the two
- * append-only relations. A database whose history lacks it runs an older
+ * The migration that creates the newest append-only relations. A database whose history lacks it runs an older
  * release, and provisioning asks for this release's migrations first.
  */
-export const APPEND_ONLY_SCHEMA_MIGRATION = "20261006010000_add_booking_ledger_line";
+export const APPEND_ONLY_SCHEMA_MIGRATION = "20261127010000_member_money_journal";
 
 /**
  * The audit relation the retention role maintains. It may UPDATE only
