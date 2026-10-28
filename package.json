@@ -52,6 +52,7 @@
     "test:e2e": "bash scripts/e2e-stack.sh test",
     "test:e2e:prepare": "bash scripts/e2e-stack.sh prepare",
     "test:e2e:run": "bash scripts/e2e-stack.sh run",
+    "test:e2e:a11y-fixture": "playwright test --config=scripts/e2e-contracts/playwright.config.ts",
     "test:e2e:down": "bash scripts/e2e-stack.sh down",
     "load:public": "k6 run load/scenarios/public-browse.js",
     "load:login": "k6 run load/scenarios/login.js",
