@@ -1461,7 +1461,7 @@ describe("payment recovery worker", () => {
     const slice = { paymentTransactionId: "txn-1", amountCents: 8000 };
     mockPlanStripeRefundAllocation.mockResolvedValue({ slices: [slice], plannedAmountCents: 8000, totalRefundableCents: 10000 });
     const transaction = { id: "txn-1", source: "STRIPE", stripePaymentIntentId: "pi_original", amountCents: 10000,
-      refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED, createdAt: new Date("2026-05-01T00:00:00Z") };
+      refundedAmountCents: 0, status: PaymentStatus.SUCCEEDED as PaymentStatus, createdAt: new Date("2026-05-01T00:00:00Z") };
     mockPaymentFindUnique.mockResolvedValue({ id: "payment-1", transactions: [transaction] });
     const stripe = new Map<string, { id: string; amount: number; status: string; payment_intent: string; metadata: Record<string, string>; created: number }>();
     const requests: string[] = [];
