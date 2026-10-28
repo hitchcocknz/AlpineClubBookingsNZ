@@ -8,7 +8,9 @@
       "https://developer.xero.com/documentation/api/accounting/payments",
       "https://docs.stripe.com/api/payment_intents/capture",
       "https://docs.stripe.com/api/refunds/object",
-      "https://docs.stripe.com/refunds"
+      "https://docs.stripe.com/refunds",
+      "https://docs.stripe.com/api/events/types",
+      "https://docs.stripe.com/error-codes"
     ],
     "allocationErrorSource": "src/lib/__tests__/xero-failure-explanation.test.ts (paid-invoice validation example)"
   },
@@ -30,6 +32,7 @@
     "failedLater": { "id": "refund-1", "payment_intent": "intent-1", "amount": 2000, "status": "failed" },
     "dashboard": { "id": "refund-2", "payment_intent": "intent-1", "amount": 5000, "status": "succeeded" },
     "overRefundError": { "type": "StripeInvalidRequestError", "code": "charge_already_refunded" },
-    "eventTypes": ["payment_intent.succeeded", "refund.created", "refund.updated", "refund.updated", "refund.created"]
+    "refundedCharge": { "id": "charge-intent-1", "payment_intent": "intent-1", "amount": 5000, "amount_refunded": 5000, "refunded": true },
+    "eventTypes": ["payment_intent.succeeded", "refund.created", "charge.refunded", "refund.updated", "refund.updated", "refund.failed", "refund.created", "charge.refunded"]
   }
 }

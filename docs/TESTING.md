@@ -33,7 +33,7 @@ xero.payInvoice("receipt", invoice.invoiceID, 5000);
 expect(xero.snapshot().invoices[0].amountDueCents).toBe(3000);
 ```
 
-All amounts are integer cents. Write methods take an operation key first:
+All amounts are integer cents. Methods accepting an operation key take it first:
 retrying the same request returns its original response, while changed parameters
 reject. Keys live for the instance's lifetime; expiry is not modeled. Snapshots
 are detached copies, so retaining a reading before a later void models delayed
@@ -48,7 +48,10 @@ allocation; remove existing allocations/payments before voiding a document.
 manual authorisation, one full or partial capture, cancellation, pending and
 successful refunds, later failure, and dashboard refunds. Pending refunds reserve
 capture capacity; failed refunds release it. `snapshot().events` retains immutable
-Stripe event payloads for delivery/replay tests. Taxes, fees, FX, API pagination,
+Stripe event payloads for delivery/replay tests, including the subscribed
+`charge.refunded` (with a charge/refund-list projection) and `refund.failed` events.
+Tests still need transport/SDK adapters to drive production webhook handlers.
+Taxes, fees, FX, API pagination,
 authentication, rate limits and transport failures are outside these models.
 
 The fixture contract suite pins selected behavior to

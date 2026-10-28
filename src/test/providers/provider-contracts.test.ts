@@ -40,6 +40,7 @@ describe("provider fixture contracts (synthetic; sandbox conformance unverified)
     expect(stripe.dashboardRefund(i.id, 5000)).toMatchObject(fixtures.stripe.dashboard);
     expect(() => stripe.refund("over-refund", i.id, 1)).toThrow(expect.objectContaining(fixtures.stripe.overRefundError));
     expect(stripe.snapshot().events.map(e => e.type)).toEqual(fixtures.stripe.eventTypes);
+    expect(stripe.snapshot().events.at(-1)?.data.object).toMatchObject(fixtures.stripe.refundedCharge);
     // Webhook payloads are point-in-time copies, not references to mutable state.
     expect(stripe.snapshot().events[1].data.object).toMatchObject(fixtures.stripe.pending);
   });

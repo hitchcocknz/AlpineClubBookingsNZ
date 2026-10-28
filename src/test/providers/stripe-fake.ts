@@ -2,8 +2,9 @@ import { createReplayWriter } from "./replay-write";
 
 /** Narrow Stripe test double. Amounts use Stripe's integer minor units. */
 type Intent = { id: string; memberId: string; amount: number; amount_received: number; status: "requires_capture" | "succeeded" | "canceled" };
-type Refund = { id: string; payment_intent: string; amount: number; status: "pending" | "succeeded" | "failed"; origin: "api" | "dashboard" };
-type Event = { id: string; type: "payment_intent.succeeded" | "refund.updated" | "refund.created"; data: { object: Intent | Refund } };
+type Refund = { id: string; charge: string; payment_intent: string; amount: number; status: "pending" | "succeeded" | "failed"; origin: "api" | "dashboard" };
+type Charge = { id: string; payment_intent: string; amount: number; amount_refunded: number; refunded: boolean; refunds: { data: Refund[]; has_more: false } };
+type Event = { id: string; type: "payment_intent.succeeded" | "refund.updated" | "refund.created" | "refund.failed" | "charge.refunded"; data: { object: Intent | Refund | Charge } };
 
 export class StripeFakeError extends Error {
   readonly type = "StripeInvalidRequestError";
@@ -35,7 +36,7 @@ export class StripeFake {
     });
   }
 
-  private emit(type: Event["type"], object: Intent | Refund) {
+  private emit(type: Event["type"], object: Intent | Refund | Charge) {
     this.events.push({ id: `event-${this.events.length + 1}`, type, data: { object: structuredClone(object) } });
   }
 
@@ -58,15 +59,25 @@ export class StripeFake {
     intent.status = "canceled";
   }
 
+  /** Charge payload subset consumed by the application's refund webhook. */
+  private refundedCharge(intent: Intent): Charge {
+    const refunds = [...this.refunds.values()].filter(r => r.payment_intent === intent.id);
+    const amount = refunds.filter(r => r.status !== "failed").reduce((n, r) => n + r.amount, 0);
+    return { id: `charge-${intent.id}`, payment_intent: intent.id, amount: intent.amount_received,
+      amount_refunded: amount, refunded: amount === intent.amount_received,
+      refunds: { data: refunds, has_more: false } };
+  }
+
   private createRefund(id: string, amount: number, status: Refund["status"], origin: Refund["origin"]) {
     this.cents(amount);
     const intent = this.intent(id);
     if (intent.status !== "succeeded") throw new StripeFakeError("payment_intent_unexpected_state", "PaymentIntent has not been captured");
     const reserved = [...this.refunds.values()].filter(r => r.payment_intent === id && r.status !== "failed").reduce((n, r) => n + r.amount, 0);
-    if (amount > intent.amount_received - reserved) throw new StripeFakeError("charge_already_refunded", "Refund exceeds unrefunded capture");
-    const refund: Refund = { id: `refund-${this.refunds.size + 1}`, payment_intent: id, amount, status, origin };
+    if (amount > intent.amount_received - reserved) throw new StripeFakeError(reserved === intent.amount_received ? "charge_already_refunded" : "amount_too_large", "Refund exceeds unrefunded capture");
+    const refund: Refund = { id: `refund-${this.refunds.size + 1}`, charge: `charge-${id}`, payment_intent: id, amount, status, origin };
     this.refunds.set(refund.id, refund);
     this.emit("refund.created", refund);
+    this.emit("charge.refunded", this.refundedCharge(intent));
     return refund;
   }
 
@@ -85,6 +96,7 @@ export class StripeFake {
     if (refund.status === "failed") return;
     refund.status = "failed";
     this.emit("refund.updated", refund);
+    this.emit("refund.failed", refund);
   }
 
   succeedRefund(id: string) {

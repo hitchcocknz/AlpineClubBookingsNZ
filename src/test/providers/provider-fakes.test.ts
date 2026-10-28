@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { STRIPE_WEBHOOK_EVENT_TYPES } from "@/lib/stripe-webhook-events";
 import { XeroFake, XeroValidationError } from "./xero-fake";
 import { StripeFake, StripeFakeError } from "./stripe-fake";
 
@@ -125,7 +126,27 @@ describe("Stripe capture and refund state", () => {
     expect(() => stripe.succeedRefund(refund.id)).toThrow("not pending");
     expect(stripe.refund("refund", intent.id, 8000, "pending").status).toBe("pending");
     expect(stripe.snapshot().refunds[0].status).toBe("failed");
-    expect(stripe.snapshot().events.map(e => e.type)).toEqual(["payment_intent.succeeded", "refund.created", "refund.updated", "refund.created"]);
+    expect(stripe.snapshot().events.map(e => e.type)).toEqual(["payment_intent.succeeded", "refund.created", "charge.refunded", "refund.updated", "refund.failed", "refund.created", "charge.refunded"]);
+  });
+
+  it("emits subscribed refund events with detached charge and failed-refund payloads", () => {
+    const { stripe, intent } = stripeSetup(); stripe.capture("capture", intent.id, 8000);
+    const first = stripe.dashboardRefund(intent.id, 2000);
+    expect(() => stripe.refund("too-large", intent.id, 6001)).toThrow(expect.objectContaining({ code: "amount_too_large" }));
+    stripe.failRefund(first.id);
+    stripe.dashboardRefund(intent.id, 8000);
+    const subscribed = new Set<string>(STRIPE_WEBHOOK_EVENT_TYPES);
+    const events = stripe.snapshot().events.filter(e => subscribed.has(e.type));
+    expect(events.map(e => e.type)).toEqual(["payment_intent.succeeded", "charge.refunded", "refund.failed", "charge.refunded"]);
+    expect(events[1].data.object).toMatchObject({
+      payment_intent: intent.id, amount: 8000, amount_refunded: 2000, refunded: false,
+      refunds: { data: [{ id: first.id, status: "succeeded" }], has_more: false },
+    });
+    expect(events[2].data.object).toMatchObject({ id: first.id, payment_intent: intent.id, charge: `charge-${intent.id}`, status: "failed" });
+    expect(events[3].data.object).toMatchObject({ amount_refunded: 8000, refunded: true });
+    const count = stripe.snapshot().events.length;
+    stripe.failRefund(first.id);
+    expect(stripe.snapshot().events).toHaveLength(count);
   });
 
   it("cancelled authorisations capture nothing; missing objects reject", () => {
