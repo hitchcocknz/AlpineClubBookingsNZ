@@ -85,7 +85,11 @@ or export conflicts visibly. No guessed account code is sent.
 
 Extend the existing registry in `src/lib/xero-account-mapping-keys.ts`; its
 settings, resolver, API, defaults and warnings stay one source (`INV-SSOT-001`,
-`INV-INT-021`). New keys above are proposals, not implemented settings. With
+`INV-INT-021`). New keys above are proposals, not implemented settings: M1
+names them once in `PROPOSED_MEMBER_MONEY_MAPPING_KEYS`, outside every list the
+registry derives, and each key is registered as a setting, with its account
+class, while-unset behaviour and setup-screen copy, by the step that first
+reads it, in the same change that removes it from that list. With
 Xero disabled no code mapping is required. Connecting it later validates the
 mappings and creates an export baseline; existing invoices and notes are adopted
 by exact identity and coverage before any missing document is rendered. History

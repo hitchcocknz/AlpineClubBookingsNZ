@@ -43,7 +43,6 @@ export type XeroAccountMappingDefinition = {
    * reduction of what it billed (owner, 10 Aug 2026).
    */
   readonly accountClass: XeroAccountClass;
-  readonly additionalAccountClasses?: readonly XeroAccountClass[];
   /**
    * OPTIONAL narrowing WITHIN that class, for a key that wants less than the
    * whole of it — `stripeBankAccount` wants a bank account, which is one type
@@ -172,94 +171,35 @@ export const XERO_ACCOUNT_MAPPING_DEFINITIONS = [
     defaultCode: "203",
     carriesItemCode: true,
   },
-  {
-    key: "memberReceivable",
-    label: "Member Receivables",
-    description: "System receivables control, reached through invoices and allocations; never a direct journal.",
-    accountClass: "ASSET",
-    defaultCode: null,
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "memberReceiptsBankAccount",
-    label: "Member Receipts Bank",
-    description: "Bank account for evidenced member receipts.",
-    accountClass: "ASSET",
-    defaultCode: null,
-    accountTypes: ["BANK"],
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "memberCashAccount",
-    label: "Member Cash",
-    description: "Cash or clearing account for officer-evidenced cash receipts.",
-    accountClass: "ASSET",
-    defaultCode: null,
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "memberCreditLiability",
-    label: "Member Credit Liability",
-    description: "Spendable member credit liability; export uses credit notes and a control bridge.",
-    accountClass: "LIABILITY",
-    defaultCode: null,
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "memberRefundPayable",
-    label: "Member Refund Payable",
-    description: "Refund obligations still owed to members.",
-    accountClass: "LIABILITY",
-    defaultCode: null,
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "joiningFeeIncome",
-    label: "Joining Fee Income",
-    description: "Joining fee revenue; frozen item account resolution must still agree.",
-    accountClass: "REVENUE",
-    defaultCode: null,
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "memberFeesIncome",
-    label: "Member Fees Income",
-    description: "Change, cancellation and other configured member fees.",
-    accountClass: "REVENUE",
-    defaultCode: null,
-    fallbackKey: "hutFeesIncome",
-    unsetEntriesLabel: "member fee entries",
-  },
-  {
-    key: "memberGstPayable",
-    label: "Member GST Payable",
-    description: "System tax control, reached through tax-coded documents; never a direct journal.",
-    accountClass: "LIABILITY",
-    defaultCode: null,
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "memberExternalControl",
-    label: "Member External Control",
-    description: "Configured clearing account for explained credit use outside the app.",
-    accountClass: "ASSET",
-    defaultCode: null,
-    additionalAccountClasses: ["LIABILITY", "EQUITY"],
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
-  {
-    key: "memberOpeningControl",
-    label: "Member Opening Control",
-    description: "Finance-chosen clearing or equity account for evidenced opening amounts.",
-    accountClass: "ASSET",
-    defaultCode: null,
-    additionalAccountClasses: ["EQUITY"],
-    whileUnset: "affected member journal exports remain pending until this mapping is configured",
-  },
 ] as const satisfies readonly XeroAccountMappingDefinition[];
 
 export type AccountMappingKey =
   (typeof XERO_ACCOUNT_MAPPING_DEFINITIONS)[number]["key"];
+
+/**
+ * Account-mapping keys the member-money ledger design PROPOSES (#4513, M1),
+ * named once so the inert journal's account chart can point at them. They are
+ * NOT settings: none is in `XERO_ACCOUNT_MAPPING_DEFINITIONS`, so none reaches
+ * the picker, the API allowlist, the seed, the setup checklist or any other
+ * list derived from it. Each is registered as a full definition by the ledger
+ * step that first reads it (docs/design/member-money-ledger.md, section 2),
+ * and leaves this list in that same change.
+ */
+export const PROPOSED_MEMBER_MONEY_MAPPING_KEYS = [
+  "memberReceivable",
+  "memberReceiptsBankAccount",
+  "memberCashAccount",
+  "memberCreditLiability",
+  "memberRefundPayable",
+  "joiningFeeIncome",
+  "memberFeesIncome",
+  "memberGstPayable",
+  "memberExternalControl",
+  "memberOpeningControl",
+] as const;
+
+export type ProposedMemberMoneyMappingKey =
+  (typeof PROPOSED_MEMBER_MONEY_MAPPING_KEYS)[number];
 
 /**
  * Keys on the same table that carry ONLY an item code — they select a Xero
@@ -323,7 +263,6 @@ export const MAPPING_DESCRIPTIONS: Record<string, string> = {
 /** The accounts one key's picker may offer (`INV-INT-021`). */
 export type MappingAccountFilter = {
   readonly accountClass: XeroAccountClass;
-  readonly additionalAccountClasses?: readonly XeroAccountClass[];
   readonly accountTypes?: readonly string[];
 };
 
@@ -333,7 +272,6 @@ export const MAPPING_ACCOUNT_FILTERS: Record<
   MappingAccountFilter
 > = byKey(XERO_ACCOUNT_MAPPING_DEFINITIONS, (d) => ({
   accountClass: d.accountClass,
-  ...("additionalAccountClasses" in d ? { additionalAccountClasses: d.additionalAccountClasses } : {}),
   ...("accountTypes" in d ? { accountTypes: d.accountTypes } : {}),
 })) as Record<AccountMappingKey, MappingAccountFilter>;
 
@@ -378,7 +316,7 @@ export function describeMappingAccountFilter(key: AccountMappingKey): string {
   const filter = MAPPING_ACCOUNT_FILTERS[key];
   const narrowed =
     filter.accountTypes?.length === 1 ? filter.accountTypes[0] : null;
-  return (narrowed ?? [filter.accountClass, ...(filter.additionalAccountClasses ?? [])].join(" or ")).toLowerCase();
+  return (narrowed ?? filter.accountClass).toLowerCase();
 }
 
 const MAPPING_UNSET_ENTRY_LABELS: Record<string, string | undefined> = byKey(
@@ -424,7 +362,7 @@ export function accountsForMappingKey<
     filter.accountTypes == null || filter.accountTypes.includes(account.type);
   return accounts.filter((account) => {
     const accountClass = normalizeXeroAccountClass(account.class);
-    if (accountClass) return [filter.accountClass, ...(filter.additionalAccountClasses ?? [])].includes(accountClass) && typeMatches(account);
+    if (accountClass) return accountClass === filter.accountClass && typeMatches(account);
     return filter.accountTypes != null && typeMatches(account);
   });
 }

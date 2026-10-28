@@ -12,7 +12,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ACCOUNT_MAPPING_FALLBACK_KEYS,
   ACCOUNT_MAPPING_KEYS_ASKING_WHILE_UNSET,
-  describeMappingOwnWhileUnset,
   MAPPING_LABELS,
 } from "@/lib/xero-account-mapping-keys";
 
@@ -91,29 +90,15 @@ describe("the two kinds of undecided mapping in the setup snapshot", () => {
     expect(ACCOUNT_MAPPING_KEYS_ASKING_WHILE_UNSET).toContain("bankTransferRefundAccount");
     expect(fallbackKeys).not.toContain("bankTransferRefundAccount");
     expect(snapshot.xeroUnsetFallbackMappingLabels).not.toContain(bankTransferLabel);
-    expect(snapshot.xeroUnsetMappingConsequences).toContainEqual(
+    expect(snapshot.xeroUnsetMappingConsequences).toEqual([
       expect.stringMatching(new RegExp(`^${bankTransferLabel}: .*without a settling payment`)),
-    );
-    // Every no-fallback asking key, and only those, is named by its own sentence
-    // (#4513 added the member journal's keys to this kind).
-    const noFallbackKeys = ACCOUNT_MAPPING_KEYS_ASKING_WHILE_UNSET.filter(
-      (key) => !fallbackKeys.includes(key),
-    );
-    expect(snapshot.xeroUnsetMappingConsequences).toEqual(
-      noFallbackKeys.map((key) => `${MAPPING_LABELS[key] ?? key}: ${describeMappingOwnWhileUnset(key)}`),
-    );
-    for (const key of fallbackKeys) {
-      expect((snapshot.xeroUnsetMappingConsequences ?? []).join("\n")).not.toContain(`${MAPPING_LABELS[key] ?? key}:`);
-    }
+    ]);
   });
 
   it("drops a key from both lists once a code is chosen", async () => {
     db.state.mappingRows = [
       { key: "bankTransferRefundAccount", code: "090" },
       ...Object.keys(ACCOUNT_MAPPING_FALLBACK_KEYS).map((key) => ({ key, code: "400" })),
-      ...ACCOUNT_MAPPING_KEYS_ASKING_WHILE_UNSET.filter(
-        (key) => key !== "bankTransferRefundAccount" && !(key in ACCOUNT_MAPPING_FALLBACK_KEYS),
-      ).map((key) => ({ key, code: "800" })),
     ];
     const snapshot = await getSetupDatabaseSnapshot();
     expect(snapshot.xeroUnsetFallbackMappingLabels).toEqual([]);

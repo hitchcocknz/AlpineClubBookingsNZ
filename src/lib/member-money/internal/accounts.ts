@@ -1,7 +1,15 @@
 import type { MemberMoneyAccount } from "@prisma/client";
-import type { AccountMappingKey } from "../../xero-account-mapping-keys";
+import type {
+  AccountMappingKey,
+  ProposedMemberMoneyMappingKey,
+} from "../../xero-account-mapping-keys";
 
-/** Stable economic identities; the settings registry owns provider codes/fallbacks. */
+/**
+ * Stable economic identities. A mapping key is either a registered settings key
+ * (the registry owns its provider code and fallback) or one of the
+ * `PROPOSED_MEMBER_MONEY_MAPPING_KEYS`, which is not a setting until the ledger
+ * step that first reads it registers it. M1 reads neither.
+ */
 export const MEMBER_MONEY_ACCOUNTS = {
   MEMBER_RECEIVABLE: { normalSide: "DEBIT", mappingKey: "memberReceivable", route: "DOCUMENT_CONTROL" },
   STRIPE_CLEARING: { normalSide: "DEBIT", mappingKey: "stripeBankAccount", route: "ACCOUNT" },
@@ -20,7 +28,7 @@ export const MEMBER_MONEY_ACCOUNTS = {
   OPENING_CONTROL: { normalSide: "EITHER", mappingKey: "memberOpeningControl", route: "ACCOUNT" },
 } as const satisfies Record<MemberMoneyAccount, {
   normalSide: "DEBIT" | "CREDIT" | "EITHER";
-  mappingKey: AccountMappingKey;
+  mappingKey: AccountMappingKey | ProposedMemberMoneyMappingKey;
   refundMappingKey?: AccountMappingKey;
   route: "ACCOUNT" | "DOCUMENT_CONTROL";
 }>;

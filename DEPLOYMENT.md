@@ -334,13 +334,11 @@ No provider credentials are needed. Source links can later attach legacy
 confirmation evidence without extending sealed legs. M2 owns the existing
 booking-ledger deletion cascade; this migration does not change old writers.
 
-Xero account codes stay in the existing account-mapping settings. New journal
-keys have no guessed provider codes; member fees retain the registered booking
-income fallback. Clearing controls allow Finance's configured account class;
-opening controls allow clearing or equity. System controls require future
-provider document validation, not a direct manual journal. Nothing exports in
-M1. Missing mappings leave future affected exports pending and never obstruct
-local money evidence. The internal chart is in `src/lib/member-money/`.
+M1 adds no Xero account-mapping setting and changes nothing on the Xero
+setup screen. The internal chart in `src/lib/member-money/` names the mapping
+keys the design proposes in one list, `PROPOSED_MEMBER_MONEY_MAPPING_KEYS`; the
+ledger step that first reads a key registers it as a setting. Nothing exports
+in M1.
 
 ## App CPU sizing
 

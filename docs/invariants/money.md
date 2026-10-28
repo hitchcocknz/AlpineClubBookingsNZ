@@ -1010,7 +1010,9 @@ Posted financial parents use RESTRICT with no
 update cascade. No existing legacy cascade is changed by M1; M2 owns that work.
 
 The account chart uses stable internal enums; Xero account codes remain settings
-in the existing mapping registry. System receivables, member-credit and tax
-controls are reached through document/control bridges, never direct journals.
-An unset mapping cannot prevent local posting. No provider adapter is activated
-by registering an account.
+in the existing mapping registry. Keys the chart only proposes live in
+`PROPOSED_MEMBER_MONEY_MAPPING_KEYS`, outside every settings list, until the
+step that first reads one registers it. System receivables, member-credit and
+tax controls are reached through document/control bridges, never direct
+journals. An unset mapping cannot prevent local posting. No provider adapter is
+activated by registering an account.
