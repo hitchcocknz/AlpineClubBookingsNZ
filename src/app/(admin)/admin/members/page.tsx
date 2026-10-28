@@ -441,12 +441,15 @@ export default function MembersPage() {
                   {refreshingXeroGroups ? "Refreshing Xero Groups..." : "Refresh Xero Groups"}
                 </ViewOnlyActionButton>
               )}
-              <a href={exportUrl}>
-                <Button variant="outline" size="sm">
+              {/* One control, not a button nested in a link (#4466): the
+                  wrapped button covered all but a 4px strip of the link, so the
+                  link failed WCAG 2.5.8 target size. */}
+              <Button asChild variant="outline" size="sm">
+                <a href={exportUrl}>
                   <Download className="h-4 w-4 mr-1" />
                   Export CSV
-                </Button>
-              </a>
+                </a>
+              </Button>
               <ViewOnlyActionButton
                 canEdit={canEditMembership}
                 describeReason={false}
