@@ -904,9 +904,9 @@ export default function PaymentsPage() {
         primary={
           <>
             <div>
-              <Label className="text-xs">Status</Label>
+              <Label htmlFor="payments-filter-status" className="text-xs">Status</Label>
               <Select value={status} onValueChange={(v) => { setStatus(v); resetPage(); }}>
-                <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="payments-filter-status" className="w-48"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="PENDING">Pending</SelectItem>
@@ -919,9 +919,9 @@ export default function PaymentsPage() {
               </Select>
             </div>
             <div>
-              <Label className="text-xs">Source</Label>
+              <Label htmlFor="payments-filter-source" className="text-xs">Source</Label>
               <Select value={source} onValueChange={(v) => { setSource(getSourceFilter(v)); resetPage(); }}>
-                <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="payments-filter-source" className="w-48"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All sources</SelectItem>
                   <SelectItem value="STRIPE">Stripe</SelectItem>
@@ -930,9 +930,9 @@ export default function PaymentsPage() {
               </Select>
             </div>
             <div>
-              <Label className="text-xs">Xero</Label>
+              <Label htmlFor="payments-filter-xero" className="text-xs">Xero</Label>
               <Select value={xeroState} onValueChange={(v) => { setXeroState(v); resetPage(); }}>
-                <SelectTrigger className="w-52"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="payments-filter-xero" className="w-52"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Xero states</SelectItem>
                   <SelectItem value="invoiceLinked">Invoice linked</SelectItem>
@@ -944,9 +944,9 @@ export default function PaymentsPage() {
               </Select>
             </div>
             <div>
-              <Label className="text-xs">Settlement</Label>
+              <Label htmlFor="payments-filter-settlement" className="text-xs">Settlement</Label>
               <Select value={settlement} onValueChange={(v) => { setSettlement(v); resetPage(); }}>
-                <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+                <SelectTrigger id="payments-filter-settlement" className="w-48"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All settlements</SelectItem>
                   <SelectItem value="none">None</SelectItem>

@@ -63,11 +63,6 @@
       "count": 2
     }
   },
-  "src/app/(admin)/admin/promo-codes/promo-redemptions-panel.tsx": {
-    "jsx-a11y/label-has-associated-control": {
-      "count": 1
-    }
-  },
   "src/app/(admin)/admin/subscriptions/_components/subscription-billing-panel.tsx": {
     "jsx-a11y/no-autofocus": {
       "count": 1
@@ -190,11 +185,6 @@
       "count": 2
     }
   },
-  "src/components/admin/booking-filters.tsx": {
-    "jsx-a11y/label-has-associated-control": {
-      "count": 10
-    }
-  },
   "src/components/admin/booking-policies/booking-periods-section.tsx": {
     "jsx-a11y/label-has-associated-control": {
       "count": 1
@@ -246,7 +236,7 @@
   },
   "src/components/admin/induction-register-table.tsx": {
     "jsx-a11y/label-has-associated-control": {
-      "count": 4
+      "count": 3
     }
   },
   "src/components/admin/induction-settings-panel.tsx": {

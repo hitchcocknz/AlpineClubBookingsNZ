@@ -173,11 +173,14 @@ function WizardStepList({ step }: { step: WizardStep }) {
 
 function MappingSelect({
   fieldKey,
+  label,
   mapping,
   headers,
   onChange,
 }: {
   fieldKey: MemberImportFieldKey;
+  /** The field's visible name, which the trigger carries as its accessible name. */
+  label: string;
   mapping: MemberImportColumnMapping;
   headers: string[];
   onChange: (
@@ -193,7 +196,7 @@ function MappingSelect({
         onChange(fieldKey, value === UNMAPPED_VALUE ? null : Number(value))
       }
     >
-      <SelectTrigger>
+      <SelectTrigger aria-label={`CSV column for ${label}`}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -210,10 +213,13 @@ function MappingSelect({
 
 function DateFormatSelect({
   fieldKey,
+  label,
   dateFormats,
   onChange,
 }: {
   fieldKey: MemberImportDateFieldKey;
+  /** The field's visible name, which the trigger carries as its accessible name. */
+  label: string;
   dateFormats: MemberImportDateFormatMapping;
   onChange: (
     fieldKey: MemberImportDateFieldKey,
@@ -227,7 +233,7 @@ function DateFormatSelect({
         onChange(fieldKey, value as MemberImportDateFormat)
       }
     >
-      <SelectTrigger>
+      <SelectTrigger aria-label={`Date format for ${label}`}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -617,6 +623,7 @@ export function MemberImportDialog({
                     </div>
                     <MappingSelect
                       fieldKey={definition.key}
+                      label={definition.label}
                       mapping={columnMapping}
                       headers={csvData.headers}
                       onChange={handleMappingChange}
@@ -628,6 +635,7 @@ export function MemberImportDialog({
                         </Label>
                         <DateFormatSelect
                           fieldKey={definition.key}
+                          label={definition.label}
                           dateFormats={dateFormats}
                           onChange={handleDateFormatChange}
                         />
