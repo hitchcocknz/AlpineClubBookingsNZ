@@ -486,7 +486,7 @@ function makeOperation(overrides: Record<string, unknown> = {}) {
 function setPlannedChargeFixtures(plan: { paymentTransactionId: string; amountCents: number }[], intent = "pi_original") {
   mockPaymentFindUnique.mockResolvedValue({ id: "payment-1", stripePaymentIntentId: "pi_primary",
     transactions: plan.map((slice) => ({ id: slice.paymentTransactionId, stripePaymentIntentId: intent,
-      stripeChargeId: null, amountCents: slice.amountCents, refundedAmountCents: 0,
+      amountCents: slice.amountCents, refundedAmountCents: 0,
       status: PaymentStatus.SUCCEEDED, createdAt: new Date("2026-05-01T00:00:00.000Z") })),
   });
 }
@@ -1348,7 +1348,7 @@ describe("payment recovery worker", () => {
       });
       setPlannedChargeFixtures([{ paymentTransactionId: "txn-1", amountCents: 4000 }]);
       mockPaymentRecoveryFindUnique.mockResolvedValue(op);
-      mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", stripePaymentIntentId: "pi_original", stripeChargeId: "ch_original", status: "SUCCEEDED", amountCents: 20000, refundedAmountCents: 0 });
+      mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", stripePaymentIntentId: "pi_original", status: "SUCCEEDED", amountCents: 20000, refundedAmountCents: 0 });
       return op;
     }
 
@@ -1383,7 +1383,7 @@ describe("payment recovery worker", () => {
 
     it("checks Stripe before closing a fully refunded charge as already done", async () => {
       const op = queueRefund(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT);
-      mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", stripePaymentIntentId: "pi_original", stripeChargeId: "ch_original", status: "REFUNDED", amountCents: 4000, refundedAmountCents: 4000 });
+      mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", stripePaymentIntentId: "pi_original", status: "REFUNDED", amountCents: 4000, refundedAmountCents: 4000 });
       mockListRefundsForPaymentIntent.mockResolvedValue([dashboardRefund]);
       expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");
       expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCEEDED" }) }));

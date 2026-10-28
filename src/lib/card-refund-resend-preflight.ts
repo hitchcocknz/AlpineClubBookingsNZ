@@ -1,5 +1,5 @@
 /** Stripe evidence before a charge-backed recovery sends again (INV-PAY-145). */
-import type { PaymentRecoveryOperation } from "@prisma/client";
+import type { PaymentRecoveryOperation, PaymentTransaction } from "@prisma/client";
 import { listRefundsForPaymentIntent } from "@/lib/stripe";
 import { recordStripeRefundsAgainstTransaction, type RefundAllocationSlice } from "@/lib/payment-transactions";
 import { isRecordedRefundStatus } from "@/lib/payment-transaction-status";
@@ -15,11 +15,12 @@ export class UnattributedCardRefundBeforeResendError extends Error {
   }
 }
 
-type Charge = {
-  id: string;
-  stripePaymentIntentId: string | null;
-  stripeChargeId: string | null;
-};
+/**
+ * The slice's captured charge, read straight from its ledger row. The row
+ * stores no Stripe charge id: an intent has at most one succeeded charge, and
+ * only a succeeded charge can be refunded, so the intent names the charge.
+ */
+type Charge = Pick<PaymentTransaction, "id" | "stripePaymentIntentId">;
 
 /**
  * No caller transaction: the provider read finishes before the canonical writer
@@ -41,10 +42,9 @@ export async function checkCardRefundResend({
   for (const charge of charges) {
     if (!charge.stripePaymentIntentId) throw new Error("Refund preflight charge has no Stripe intent (INV-PAY-145)");
     const refunds = await listRefundsForPaymentIntent(charge.stripePaymentIntentId, { timeoutMs: 10_000, singlePage: true });
-    // An intent can have more than one charge; only this captured charge counts.
+    // The list is by intent already; a refund naming another intent is not this charge's.
     const onCharge = refunds.filter((refund) =>
-      (!charge.stripeChargeId || stripeReferenceId(refund.charge) === charge.stripeChargeId) &&
-      (!refund.payment_intent || stripeReferenceId(refund.payment_intent) === charge.stripePaymentIntentId),
+      !refund.payment_intent || stripeReferenceId(refund.payment_intent) === charge.stripePaymentIntentId,
     );
     if (onCharge.length === 0) continue;
     // The writer deduplicates unseen refunds and refreshes known statuses. Its
@@ -54,7 +54,6 @@ export async function checkCardRefundResend({
       paymentTransactionId: charge.id,
       refunds: onCharge,
       fallbackPaymentIntentId: charge.stripePaymentIntentId,
-      fallbackChargeId: charge.stripeChargeId,
     });
     if (!recorded.payment) throw new Error("Refund preflight could not reconcile the payment (INV-PAY-145)");
     await queueRecordedCardRefundNotes({

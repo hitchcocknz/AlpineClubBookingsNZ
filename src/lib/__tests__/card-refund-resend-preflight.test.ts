@@ -14,7 +14,7 @@ const arose = new Date("2026-06-30T12:00:00.750Z");
 const args = {
   operation: { paymentId: "payment-test", bookingId: "booking-test", createdAt: arose },
   plan: [{ paymentTransactionId: "transaction-test", amountCents: 4000 }],
-  transactions: [{ id: "transaction-test", stripePaymentIntentId: "pi_test", stripeChargeId: "ch_test" }],
+  transactions: [{ id: "transaction-test", stripePaymentIntentId: "pi_test" }],
 };
 function refund(overrides: Record<string, unknown> = {}): Stripe.Refund {
   return { id: "re_test", amount: 4000, currency: "nzd", status: "succeeded", charge: "ch_test", payment_intent: "pi_test", created: Math.floor(arose.getTime() / 1000), metadata: {}, ...overrides } as Stripe.Refund;
@@ -33,7 +33,7 @@ describe("card refund preflight", () => {
     expect(list).toHaveBeenCalledExactlyOnceWith("pi_test", { timeoutMs: 10_000, singlePage: true });
     expect(record).toHaveBeenCalledExactlyOnceWith({
       paymentId: "payment-test", paymentTransactionId: "transaction-test", refunds: [dashboard],
-      fallbackPaymentIntentId: "pi_test", fallbackChargeId: "ch_test",
+      fallbackPaymentIntentId: "pi_test",
     });
   });
 
@@ -59,10 +59,8 @@ describe("card refund preflight", () => {
     await expect(checkCardRefundResend(args)).resolves.toBeUndefined();
   });
 
-  it.each([
-    { charge: "ch_other" }, { payment_intent: "pi_other" },
-  ])("ignores a refund on a different charge or intent: %j", async (overrides) => {
-    list.mockResolvedValue([refund(overrides)]);
+  it("ignores a refund naming a different intent", async () => {
+    list.mockResolvedValue([refund({ payment_intent: "pi_other" })]);
     await expect(checkCardRefundResend(args)).resolves.toBeUndefined();
     expect(record).not.toHaveBeenCalled();
   });
@@ -76,7 +74,7 @@ describe("card refund preflight", () => {
     const multi = {
       ...args,
       plan: [...args.plan, { paymentTransactionId: "transaction-second", amountCents: 2000 }, { paymentTransactionId: "transaction-made", amountCents: 1000, madeRefundId: "re_made" }],
-      transactions: [...args.transactions, { id: "transaction-second", stripePaymentIntentId: "pi_second", stripeChargeId: "ch_second" }],
+      transactions: [...args.transactions, { id: "transaction-second", stripePaymentIntentId: "pi_second" }],
     };
     list.mockImplementation(async (intent) => intent === "pi_second" ? [refund({ charge: "ch_second", payment_intent: "pi_second" })] : []);
     await expect(checkCardRefundResend(multi)).rejects.toBeInstanceOf(UnattributedCardRefundBeforeResendError);
@@ -94,7 +92,7 @@ describe("card refund preflight", () => {
     const multi = {
       ...args,
       plan: [...args.plan, { paymentTransactionId: "transaction-second", amountCents: 2000 }],
-      transactions: [...args.transactions, { id: "transaction-second", stripePaymentIntentId: "pi_second", stripeChargeId: "ch_second" }],
+      transactions: [...args.transactions, { id: "transaction-second", stripePaymentIntentId: "pi_second" }],
     };
     list.mockImplementation(async (intent) => {
       if (intent === "pi_second") throw new Error("later charge timed out");
