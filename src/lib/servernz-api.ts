@@ -584,10 +584,10 @@ export async function registerPushTarget(
   return pushTargetResultSchema.parse(await res.json());
 }
 
-/** Upload the club's Other Clubs entries to the central server. */
+/** Upload the club's entries, returning the request identity for fenced recording. */
 export async function uploadOtherLodges(
   lodges: OtherLodgeUploadItem[],
-): Promise<OtherLodgesUploadResult> {
+): Promise<OtherLodgesUploadResult & { sentOn: ServerNzConnectionIdentity }> {
   const { baseUrl, apiKey, identity } = await resolveConnection();
   const res = await fetch(`${baseUrl}/api/v1/other-lodges`, {
     method: "POST",
@@ -597,7 +597,7 @@ export async function uploadOtherLodges(
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) await refuse(res, identity);
-  return uploadResultSchema.parse(await res.json());
+  return { ...uploadResultSchema.parse(await res.json()), sentOn: identity };
 }
 
 /**

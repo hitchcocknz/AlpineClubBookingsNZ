@@ -385,7 +385,11 @@ describe("uploadOtherLodges — payload shape (#50)", () => {
       amenities: [{ name: "Sauna", description: null }],
     };
 
-    await uploadOtherLodges([item]);
+    const answer = await uploadOtherLodges([item]);
+    expect(answer.sentOn).toEqual({
+      baseUrl: "https://central.test",
+      credentialVersion: "test-credential-version",
+    });
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe("https://central.test/api/v1/other-lodges");

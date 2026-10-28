@@ -146,7 +146,7 @@ export async function uploadOtherClubsToServer(): Promise<UploadSummary> {
   // the rest of the lodge, and every other lodge, still goes up. A refused
   // item would fail the whole upload. One warning names the lodges.
   const oddSiteUrls: string[] = [];
-  const result = await uploadOtherLodges(
+  const { sentOn, ...result } = await uploadOtherLodges(
     lodges.map((l) => {
       const data = serializeOtherLodgeData(l);
       const { siteUrl, ...rest } = omitRateFields(data);
@@ -218,7 +218,7 @@ export async function uploadOtherClubsToServer(): Promise<UploadSummary> {
       watermark = new Date(oldestSkipped.getTime() - 1);
     }
     if (!since || watermark > since) {
-      await recordOtherLodgesUpload(watermark);
+      await serverNzAnswerWriter(sentOn)((tx) => recordOtherLodgesUpload(watermark, tx));
     }
   }
 
