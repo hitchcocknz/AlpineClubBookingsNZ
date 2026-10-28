@@ -1365,7 +1365,6 @@ describe("payment recovery worker", () => {
       const op = { ...queueRefund(type), stripeKeyPrefix: "slice_test" };
       const prefix = type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT ? op.idempotencyKey : op.stripeKeyPrefix;
       mockPaymentRecoveryFindUnique.mockResolvedValue(op);
-      mockPaymentRecoveryFindFirst.mockResolvedValueOnce(op);
       mockListRefundsForPaymentIntent.mockResolvedValue([{ ...dashboardRefund, metadata: { refundSliceKey: `${prefix}_txn-1_4000` } }]);
       mockRefundPaymentTransactions.mockResolvedValueOnce({ refunds: [], totalRefundedAmountCents: 4000 });
       expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("succeeded");
@@ -1379,7 +1378,6 @@ describe("payment recovery worker", () => {
       const op = { ...queueRefund(type), allocationPlan: plan, amountCents: 6000, stripeKeyPrefix: "slice_test" };
       const prefix = type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT ? op.idempotencyKey : op.stripeKeyPrefix;
       mockPaymentRecoveryFindUnique.mockResolvedValue(op);
-      mockPaymentRecoveryFindFirst.mockResolvedValueOnce(op);
       mockListRefundsForPaymentIntent.mockResolvedValue([{ ...dashboardRefund, metadata: { refundSliceKey: `${prefix}_txn-1_4000` } }]);
       expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("succeeded");
       expect(mockRefundPaymentTransactions).toHaveBeenCalledWith(expect.objectContaining({ allocation: [plan[1]], amountCents: 2000, idempotencyKeyPrefix: prefix }));
@@ -1394,7 +1392,6 @@ describe("payment recovery worker", () => {
       const op = { ...queueRefund(type), stripeKeyPrefix: "slice_test" };
       const prefix = type === PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT ? op.idempotencyKey : op.stripeKeyPrefix;
       mockPaymentRecoveryFindUnique.mockResolvedValue(op);
-      mockPaymentRecoveryFindFirst.mockResolvedValueOnce(op);
       mockListRefundsForPaymentIntent.mockResolvedValue([{ ...dashboardRefund, metadata: { refundSliceKey: `${prefix}_txn-1_4000` } }]);
       mockPaymentRecoveryUpdateMany.mockImplementation(({ data, where }) => Promise.resolve({ count: data.allocationPlan ? 0 : where?.id ? 1 : 0 }));
       expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");

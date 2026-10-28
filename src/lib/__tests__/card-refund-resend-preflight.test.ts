@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Stripe from "stripe";
 
-const { list, record, findFirst, updateMany } = vi.hoisted(() => ({ list: vi.fn(), record: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn() }));
-vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { findFirst, updateMany } } }));
+const { list, record, updateMany } = vi.hoisted(() => ({ list: vi.fn(), record: vi.fn(), updateMany: vi.fn() }));
+vi.mock("@/lib/prisma", () => ({ prisma: { paymentRecoveryOperation: { updateMany } } }));
 vi.mock("@/lib/xero-error-alert", () => ({ notifyXeroSyncError: vi.fn().mockResolvedValue(undefined) }));
 vi.mock("@/lib/recorded-card-refund-notes", () => ({ queueRecordedCardRefundNotes: vi.fn().mockResolvedValue({ queueOperationId: null }) }));
 vi.mock("@/lib/stripe", () => ({ listRefundsForPaymentIntent: list }));
@@ -22,7 +22,6 @@ function refund(overrides: Record<string, unknown> = {}): Stripe.Refund {
   return { id: "re_test", amount: 4000, currency: "nzd", status: "succeeded", charge: "ch_test", payment_intent: "pi_test", created: Math.floor(arose.getTime() / 1000), metadata: {}, ...overrides } as Stripe.Refund;
 }
 beforeEach(() => {
-  findFirst.mockReset().mockResolvedValue({ id: "operation-test" });
   updateMany.mockReset().mockResolvedValue({ count: 1 });
   list.mockReset().mockResolvedValue([]);
   record.mockReset().mockResolvedValue({ readAsRefused: [], appliedCents: 4000, newlyCountedRefundIds: ["re_test"], payment: { id: "payment-test", source: "STRIPE" } });
@@ -153,11 +152,45 @@ describe("card refund preflight", () => {
     list.mockResolvedValue([refund({ status, metadata: { [REFUND_SLICE_KEY_METADATA]: refundSliceStripeIdempotencyKey(args.stripeKeyPrefix, args.plan[0]!) } })]);
     const marked = [{ ...args.plan[0], madeRefundId: "re_test" }];
     await expect(checkCardRefundResend(args)).resolves.toEqual(marked);
-    expect(findFirst).toHaveBeenCalledWith({ where: {
+    expect(updateMany).toHaveBeenCalledExactlyOnceWith({ where: {
       id: "operation-test", status: "PROCESSING", processingStartedAt: args.operation.processingStartedAt,
-      allocationPlan: { equals: args.plan },
-    }, select: { id: true } });
-    expect(updateMany).toHaveBeenCalledWith({ where: findFirst.mock.calls[0]![0].where, data: { allocationPlan: marked } });
+      allocationPlan: { equals: args.operation.allocationPlan },
+    }, data: { allocationPlan: marked } });
+  });
+
+  it("guards its first mark on the stored plan as read, not on the plan parsed from it (#4510 review F3)", async () => {
+    // A stored slice can hold a key the parser does not keep; the row still holds it.
+    const stored = [{ ...args.plan[0]!, laterField: "kept by the row" }];
+    list.mockResolvedValue([refund({ metadata: { [REFUND_SLICE_KEY_METADATA]: refundSliceStripeIdempotencyKey(args.stripeKeyPrefix, args.plan[0]!) } })]);
+    await expect(checkCardRefundResend({ ...args, operation: { ...args.operation, allocationPlan: stored } })).resolves.toEqual([{ ...args.plan[0], madeRefundId: "re_test" }]);
+    expect(updateMany).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ where: expect.objectContaining({ allocationPlan: { equals: stored } }) }));
+  });
+
+  it("marks slices on two charges, the second compare-and-set on the plan the first wrote (#4510 review F5a)", async () => {
+    const second = { paymentTransactionId: "transaction-second", amountCents: 2000 };
+    const plan = [args.plan[0]!, second];
+    const two = { ...args, plan, operation: { ...args.operation, allocationPlan: plan }, transactions: [...args.transactions, { id: "transaction-second", stripePaymentIntentId: "pi_second" }] };
+    list.mockImplementation(async (intent) => intent === "pi_second"
+      ? [refund({ id: "re_second", amount: 2000, charge: "ch_second", payment_intent: "pi_second", metadata: { [REFUND_SLICE_KEY_METADATA]: refundSliceStripeIdempotencyKey(args.stripeKeyPrefix, second) } })]
+      : [refund({ metadata: { [REFUND_SLICE_KEY_METADATA]: refundSliceStripeIdempotencyKey(args.stripeKeyPrefix, args.plan[0]!) } })]);
+    const first = [{ ...args.plan[0], madeRefundId: "re_test" }, second];
+    const both = [first[0], { ...second, madeRefundId: "re_second" }];
+    await expect(checkCardRefundResend(two)).resolves.toEqual(both);
+    const where = { id: "operation-test", status: "PROCESSING", processingStartedAt: args.operation.processingStartedAt };
+    expect(updateMany.mock.calls).toEqual([
+      [{ where: { ...where, allocationPlan: { equals: plan } }, data: { allocationPlan: first } }],
+      [{ where: { ...where, allocationPlan: { equals: first } }, data: { allocationPlan: both } }],
+    ]);
+  });
+
+  it("never marks a refused1 slice with a counted refund under its un-suffixed key (#4510 review F5b)", async () => {
+    const regenerated = { ...args.plan[0]!, stripeKeySuffix: "refused1" };
+    const plan = [regenerated];
+    const original = refundSliceStripeIdempotencyKey(args.stripeKeyPrefix, args.plan[0]!);
+    expect(refundSliceStripeIdempotencyKey(args.stripeKeyPrefix, regenerated)).toBe(`${original}_refused1`);
+    list.mockResolvedValue([refund({ metadata: { bookingId: "booking-test", reason: "date_change_price_decrease", [REFUND_SLICE_KEY_METADATA]: original } })]);
+    await expect(checkCardRefundResend({ ...args, plan, operation: { ...args.operation, allocationPlan: plan } })).resolves.toEqual(plan);
+    expect(updateMany).not.toHaveBeenCalled();
   });
 
   it.each(["failed", "canceled"])("does not mark a matching %s refund", async (status) => {
@@ -196,11 +229,11 @@ describe("card refund preflight", () => {
     expect(updateMany).not.toHaveBeenCalled();
   });
 
-  it.each(["before read", "before write"])("refuses a concurrent plan or claim change %s", async (when) => {
+  it("refuses a concurrent plan or claim change: its compare-and-set loses", async () => {
     list.mockResolvedValue([refund({ metadata: { [REFUND_SLICE_KEY_METADATA]: refundSliceStripeIdempotencyKey(args.stripeKeyPrefix, args.plan[0]!) } })]);
-    if (when === "before read") findFirst.mockResolvedValue(null);
-    else updateMany.mockResolvedValue({ count: 0 });
+    updateMany.mockResolvedValue({ count: 0 });
     await expect(checkCardRefundResend(args)).rejects.toThrow("plan or claim changed");
+    expect(updateMany).toHaveBeenCalledTimes(1);
     expect(queueRecordedCardRefundNotes).toHaveBeenCalledTimes(1);
   });
 

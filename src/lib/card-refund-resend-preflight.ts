@@ -43,6 +43,8 @@ export async function checkCardRefundResend({
   stripeKeyPrefix: string;
 }): Promise<RefundAllocationSlice[]> {
   let updatedPlan = [...plan];
+  // What the row holds now: the stored plan as read, then each plan written here.
+  let storedPlan: Parameters<typeof onPlanWhere>[0] = operation.allocationPlan;
   const unmadeIds = new Set(plan.filter((slice) => !slice.madeRefundId).map((slice) => slice.paymentTransactionId));
   const charges = transactions.filter((row) => unmadeIds.has(row.id));
   if (charges.length !== unmadeIds.size) throw new Error("Refund preflight could not find every planned charge (INV-PAY-145)");
@@ -79,22 +81,22 @@ export async function checkCardRefundResend({
     let markError: Error | undefined;
     try {
       if (matched.size > 0 && parseRefundAllocationPlan(operation.allocationPlan)) {
-        // Same plan guard as card-refund-resend-answer; also fence this runner's
-        // claim. Provider reads and the Payment-row-locked ledger write finished.
-        const where = {
-          id: operation.id,
-          status: "PROCESSING" as const,
-          processingStartedAt: operation.processingStartedAt,
-          ...onPlanWhere(updatedPlan),
-        };
-        const held = await prisma.paymentRecoveryOperation.findFirst({ where, select: { id: true } });
-        if (!held) throw new Error("Refund preflight plan or claim changed (INV-PAY-147)");
+        // Same plan guard as card-refund-resend-answer, on the stored plan as
+        // read (a later charge's, on the plan written for the one before), and
+        // this runner's claim. Provider reads and the Payment-row-locked ledger
+        // write finished; one compare-and-set, and a lost one sends nothing.
         const written = await prisma.paymentRecoveryOperation.updateMany({
-          where,
+          where: {
+            id: operation.id,
+            status: "PROCESSING",
+            processingStartedAt: operation.processingStartedAt,
+            ...onPlanWhere(storedPlan),
+          },
           data: { allocationPlan: marked as unknown as Prisma.InputJsonValue },
         });
         if (written.count !== 1) throw new Error("Refund preflight plan or claim changed (INV-PAY-147)");
         updatedPlan = marked;
+        storedPlan = marked;
       } else {
         // A legacy row without a stored plan has no slice evidence to adopt.
         matched.clear();
