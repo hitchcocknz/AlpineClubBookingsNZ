@@ -7,6 +7,8 @@ import { addCalendarDays, clubCalendarDateOf, requireClubTimeZone, requireInstan
 import { buildDatabaseRolesSql } from "@/lib/database-roles";
 import { MEMBER_MONEY_RELATIONS } from "@/lib/member-money-tables";
 import { verifyMemberMoneyJournal } from "@/lib/member-money";
+import { MEMBER_MONEY_DATABASE_SHAPE } from "@/lib/member-money/internal/database-shape";
+import { readMemberMoneyDefinitions } from "@/lib/member-money/internal/verify";
 import { FROZEN_TEST_CLOCK_BASE_ISO } from "./helpers/clock";
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
 
@@ -364,13 +366,53 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
   it("reports disabled enforcement rather than a false green on valid balances", async () => {
     await db.query(`ALTER TABLE "MemberMoneyLine" DISABLE TRIGGER member_money_seal`);
     try {
-      expect(await findings(app)).toContainEqual({ identity: "MemberMoneyLine", problem: "missing_or_disabled_seal" });
+      expect(await findings(app)).toContainEqual({ identity: "MemberMoneyLine.member_money_seal", problem: "missing_or_disabled_trigger" });
     } finally { await db.query(`ALTER TABLE "MemberMoneyLine" ENABLE TRIGGER member_money_seal`); }
     // A trigger enabled ALWAYS still enforces, including under replication.
     await db.query(`ALTER TABLE "MemberMoneyLine" ENABLE ALWAYS TRIGGER member_money_seal`);
     try {
       expect(await findings(app)).toEqual([]);
     } finally { await db.query(`ALTER TABLE "MemberMoneyLine" ENABLE TRIGGER member_money_seal`); }
+  });
+
+  it("reads back exactly the pinned constraint, trigger and unique-index definitions", async () => {
+    // The digests are of the catalog's normalised text, so they are derived here,
+    // from the migration as PostgreSQL applied it, never from migration.sql.
+    const definitions = await readMemberMoneyDefinitions(db);
+    expect(definitions.filter((found) => !found.usable)).toEqual([]);
+    const read = { constraints: {}, triggers: {}, uniqueIndexes: {} } as Record<string, Record<string, Record<string, string>>>;
+    for (const { kind, relation, name, digest } of definitions) (read[kind]![relation] ??= {})[name] = digest;
+    const { constraints, triggers, uniqueIndexes } = MEMBER_MONEY_DATABASE_SHAPE;
+    expect(read).toEqual({ constraints, triggers, uniqueIndexes });
+    // The settings the text depends on are fixed while it is read, then put back.
+    await db.query(`SET search_path = pg_catalog`);
+    try {
+      expect(await readMemberMoneyDefinitions(db)).toEqual(definitions);
+      expect((await db.query(`SELECT current_setting('search_path') AS path`)).rows).toEqual([{ path: "pg_catalog" }]);
+    } finally { await db.query(`RESET search_path`); }
+  });
+
+  it.each([
+    ["a constraint weakened to CHECK (true)", { identity: "MemberMoneyLine.member_money_tax_split", problem: "changed_constraint" },
+      `ALTER TABLE "MemberMoneyLine" DROP CONSTRAINT member_money_tax_split, ADD CONSTRAINT member_money_tax_split CHECK (true)`],
+    ["a dropped unique index", { identity: "MemberMoneyJournal.MemberMoneyJournal_reversesJournalId_key", problem: "missing_or_invalid_unique_index" },
+      `DROP INDEX "MemberMoneyJournal_reversesJournalId_key"`],
+    ["a unique index left invalid", { identity: "MemberMoneyJournal.MemberMoneyJournal_eventId_key", problem: "missing_or_invalid_unique_index" },
+      `UPDATE pg_index SET indisvalid = false WHERE indexrelid = '"MemberMoneyJournal_eventId_key"'::regclass`],
+    ["an immutability trigger re-pointed to a no-op function", { identity: "MemberMoneyLine.member_money_immutable", problem: "changed_trigger" },
+      `CREATE FUNCTION mm4513_tamper_noop() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
+       DROP TRIGGER member_money_immutable ON "MemberMoneyLine";
+       CREATE TRIGGER member_money_immutable BEFORE UPDATE OR DELETE ON "MemberMoneyLine"
+         FOR EACH ROW EXECUTE FUNCTION mm4513_tamper_noop()`],
+  ])("reports %s", async (_tampering, finding, sql) => {
+    // DDL is transactional: the verifier reads the tampered catalog inside the
+    // transaction, and the rollback puts the migration's definitions back.
+    await db.query("BEGIN");
+    try {
+      await db.query(sql);
+      expect(await findings(db)).toContainEqual(finding);
+    } finally { await db.query("ROLLBACK"); }
+    expect(await findings(app)).toEqual([]);
   });
 
   it("reports a replaced enforcement function and an unvalidated constraint", async () => {

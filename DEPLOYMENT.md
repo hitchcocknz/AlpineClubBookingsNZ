@@ -340,9 +340,11 @@ Run `pnpm run member-money:verify` with the application `DATABASE_URL`. If runni
 through a separate read-only/operator connection, set `APP_DB_USER` to the actual
 application role to check its effective grants. The command opens a read-only
 repeatable-read transaction and reports structural findings and exits nonzero
-on unsafe grants, missing/disabled journal triggers, a changed enforcement
-function, a missing or unvalidated constraint, orphan events or invalid
-batches. When the role it checks is a superuser or owns the journal, as on a
+on unsafe grants; a missing, disabled or changed journal trigger; a changed
+enforcement function; a missing, unvalidated or changed constraint; a missing,
+invalid or changed unique index; orphan events or invalid batches. A changed
+definition is compared with the one the migration installs on PostgreSQL 16.
+When the role it checks is a superuser or owns the journal, as on a
 single-role install, it prints `"grantCheck": "not_applicable"` instead of
 failing: no grant can narrow such a role. A successful empty journal is valid M1 evidence, not proof of backfill,
 legacy posting coverage, historical parity or readiness to switch readers.

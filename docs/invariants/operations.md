@@ -734,8 +734,8 @@ no role; re-running `db:provision-roles --apply` is the repair if anything
 widens them. Merging a migration is not evidence of restricted effective grants:
 the blue/green deploy check refuses an append-only table the application could
 change beyond INSERT. `member-money:verify` checks batch integrity, mandatory
-event links, enabled enforcement triggers, the enforcement functions' source,
-expected validated constraints and effective application table privileges in a
-read-only snapshot; for a superuser or owner role the grant check is not
-applicable. It does not prove historical parity, writer-cohort coverage or
+event links, the exact definitions of the enforcement functions, constraints,
+triggers and unique indexes (each validated, enabled or valid), and effective
+application table privileges in a read-only snapshot; for a superuser or owner
+role the grant check is not applicable. It does not prove historical parity, writer-cohort coverage or
 accounting policy; those activate in later milestones.
