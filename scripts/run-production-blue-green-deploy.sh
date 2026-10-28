@@ -2935,7 +2935,7 @@ SQL
   fi
   if [ -n "$offending" ]; then
     echo "After the migrate, these relations are not owned by $migration_user or not readable by $app_user: $offending" >&2
-    echo "An append-only relation (BookingLedgerLine, AuditLog, the member-money journal) is also listed while $app_user can UPDATE, DELETE, TRUNCATE, TRIGGER or REFERENCE it." >&2
+    echo "An append-only relation (BookingLedgerLine, AuditLog, the member-money journal) is also listed if $app_user can UPDATE, DELETE, TRUNCATE, TRIGGER or REFERENCE it." >&2
     echo "Re-run 'pnpm run db:provision-roles --apply' as the operator (DEPLOYMENT.md \"Least-privilege database roles\"), then deploy again." >&2
     return 1
   fi
