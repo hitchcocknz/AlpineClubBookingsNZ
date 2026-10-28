@@ -45,7 +45,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { FROZEN_TEST_CLOCK_BASE_ISO } from "./helpers/clock";
 import { assertSafeRaceDbUrl } from "./support/race-db-url";
 import { restoreDumpWithoutOwnershipOrPrivileges } from "@/lib/backup-restore-validation";
-import { buildDatabaseRolesSql } from "@/lib/database-roles";
+import { APPEND_ONLY_SCHEMA_MIGRATION, buildDatabaseRolesSql } from "@/lib/database-roles";
 import { buildAiDiagnosticsRoleSql } from "@/lib/diagnostics/tools/provision-role";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
@@ -833,8 +833,8 @@ async function privilegeSnapshot(database: string, { includeDatabaseAcl = true }
             `CREATE FUNCTION tac4453_definer() RETURNS int LANGUAGE sql SECURITY DEFINER AS 'SELECT 1'`,
             // O-F8: a migrated schema missing an append-only relation.
             `ALTER TABLE "AuditLog" RENAME TO "Tac4453AuditLogMoved"`,
-            // N10: a database still on a release before the ledger existed.
-            `DROP TABLE "BookingLedgerLine" CASCADE; DELETE FROM "_prisma_migrations" WHERE migration_name = '20261006010000_add_booking_ledger_line'`,
+            // N10: a database still on a release before the current append-only schema.
+            `DROP TABLE "BookingLedgerLine" CASCADE; DELETE FROM "_prisma_migrations" WHERE migration_name = '${APPEND_ONLY_SCHEMA_MIGRATION}'`,
           ]) {
             await client.query("BEGIN");
             await client.query(breach);
