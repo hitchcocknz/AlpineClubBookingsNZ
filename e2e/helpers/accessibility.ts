@@ -3,7 +3,9 @@ import { test as base, expect, type Browser, type BrowserContext, type Locator, 
 import { accessibilityAllowlist } from "./accessibility-allowlist";
 
 export { expect };
-export type * from "@playwright/test";
+// Named, not `export type *`: Semgrep's TypeScript parser skips that form, and
+// the coverage gate refuses a partially parsed file. Add a type here when a spec needs it.
+export type { APIRequestContext, APIResponse, Browser, BrowserContext, Locator, Page, Response } from "@playwright/test";
 
 // Instrument browser.newContext as well as the default page: many journeys
 // create their own contexts in beforeAll (and keep them between tests).

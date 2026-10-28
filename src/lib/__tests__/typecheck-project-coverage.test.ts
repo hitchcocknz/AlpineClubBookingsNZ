@@ -463,9 +463,11 @@ describe("typecheck project coverage", () => {
   });
 
   it("gives the Playwright suite tsconfig.e2e.json and nothing else", () => {
-    const playwright = trackedTypeScript.filter(
-      (file) => file.startsWith("e2e/") || file === "playwright.config.ts",
-    );
+    // #4466: the axe fixture's contract suite (scripts/e2e-contracts) is
+    // Playwright too, and the Docker build context leaves it out with e2e/.
+    const isPlaywrightRoot = (file: string) =>
+      file.startsWith("e2e/") || file.startsWith("scripts/e2e-contracts/") || file === "playwright.config.ts";
+    const playwright = trackedTypeScript.filter(isPlaywrightRoot);
     expect(playwright.length).toBeGreaterThan(50);
     expect(playwright).toContain("playwright.config.ts");
     for (const file of playwright) {
@@ -477,9 +479,7 @@ describe("typecheck project coverage", () => {
     }
     // And only that: the e2e project reaches application code through imports,
     // never by listing it.
-    const strays = [...e2e.files].filter(
-      (file) => !file.startsWith("e2e/") && file !== "playwright.config.ts",
-    );
+    const strays = [...e2e.files].filter((file) => !isPlaywrightRoot(file));
     expect(strays, "tsconfig.e2e.json lists non-Playwright roots").toEqual([]);
     expect(e2e.options.types).toEqual(["node"]);
   });
