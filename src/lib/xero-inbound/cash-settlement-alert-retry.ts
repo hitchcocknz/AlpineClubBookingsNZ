@@ -1,5 +1,5 @@
 import { BookingEventType, Prisma } from "@prisma/client";
-import { bookingOwner } from "@/lib/booking-owner";
+import { BOOKING_OWNER_NAME_SELECT, bookingOwnerName } from "@/lib/booking-owner-name";
 import type { ClubFormat } from "@/lib/club-format";
 import {
   asIbSettlementFigureCheckSnapshot,
@@ -52,8 +52,7 @@ export async function retryCashSettlementAlerts(format: ClubFormat): Promise<num
         select: {
           checkIn: true,
           checkOut: true,
-          member: { select: { firstName: true, lastName: true } },
-          organisation: { select: { name: true, email: true } },
+          ...BOOKING_OWNER_NAME_SELECT,
         },
       },
     },
@@ -63,11 +62,10 @@ export async function retryCashSettlementAlerts(format: ClubFormat): Promise<num
     const snapshot = asIbSettlementFigureCheckSnapshot(row.snapshot);
     if (!snapshot?.invoiceId || snapshot.alertSentAt || (snapshot.alertUndeliveredCount ?? 0) >= CASH_SETTLEMENT_ALERT_MAX_UNDELIVERED) continue;
     candidates += 1;
-    const owner = bookingOwner(row.booking).member;
     await raiseCashSettlementAlert({
       marker: { id: row.id, snapshot },
       invoiceId: snapshot.invoiceId,
-      memberName: `${owner.firstName} ${owner.lastName}`.trim(),
+      memberName: bookingOwnerName(row.booking),
       payment: { bookingId: row.bookingId, booking: row.booking },
       format,
     });
