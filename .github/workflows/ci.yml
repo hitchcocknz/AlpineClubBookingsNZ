@@ -1739,7 +1739,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=alpineclubbookingsnz-app
 
       - name: Attest app image provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.APP_IMAGE_NAME }}
           subject-digest: ${{ steps.build-app.outputs.digest }}
@@ -1787,7 +1787,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=alpineclubbookingsnz-migrate
 
       - name: Attest migrate image provenance
-        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ env.MIGRATE_IMAGE_NAME }}
           subject-digest: ${{ steps.build-migrate.outputs.digest }}
