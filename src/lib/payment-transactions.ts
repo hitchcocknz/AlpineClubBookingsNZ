@@ -5,7 +5,7 @@ import {
   Prisma,
 } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
-import { refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { REFUND_SLICE_KEY_METADATA, refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
 import { processRefund } from "@/lib/stripe";
 import { stripeReferenceId, type StripeReference } from "@/lib/stripe-references";
 import Stripe from "stripe";
@@ -1528,17 +1528,22 @@ export async function refundPaymentTransactions({
 
   for (const { transaction, amountCents: refundAmountForTransaction, stripeKeySuffix } of slices) {
     const slice: RefundAllocationSlice = { paymentTransactionId: transaction.id, amountCents: refundAmountForTransaction, ...(stripeKeySuffix ? { stripeKeySuffix } : {}) };
+    const idempotencyKey = idempotencyKeyPrefix
+      ? refundSliceStripeIdempotencyKey(idempotencyKeyPrefix, slice)
+      : undefined;
     let refund;
     try {
+      // Stripe metadata values allow 500 characters. Never truncate the evidence.
+      if (idempotencyKey && idempotencyKey.length > 500) {
+        throw new Error("Refund slice key exceeds Stripe metadata value limit");
+      }
       refund = await processRefund({
         paymentIntentId: transaction.stripePaymentIntentId,
         amountCents: refundAmountForTransaction,
         reason:
           typeof reason === "string" ? reason : "requested_by_customer",
-        metadata,
-        idempotencyKey: idempotencyKeyPrefix
-          ? refundSliceStripeIdempotencyKey(idempotencyKeyPrefix, slice)
-          : undefined,
+        metadata: idempotencyKey ? { ...metadata, [REFUND_SLICE_KEY_METADATA]: idempotencyKey } : metadata,
+        idempotencyKey,
       });
     } catch (err) {
       throw new PartialRefundError({
