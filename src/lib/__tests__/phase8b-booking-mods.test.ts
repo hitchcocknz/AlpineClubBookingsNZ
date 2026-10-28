@@ -173,8 +173,22 @@ vi.mock("@/lib/payment-transactions", () => ({
   PartialRefundError: class PartialRefundError extends Error {
     completedRefundCents = 0;
   },
-  refundPaymentTransactions: (...args: unknown[]) =>
-    mockRefundPaymentTransactions(...args),
+  // #3984: edit doors freeze a plan first and read each answer against its slice.
+  planStripeRefundAllocation: async ({ amountCents }: { amountCents: number }) => ({
+    slices: [{ paymentTransactionId: "txn_refund", amountCents }],
+    plannedAmountCents: amountCents,
+    totalRefundableCents: amountCents,
+  }),
+  refundPaymentTransactions: async (...args: unknown[]) => {
+    const result = await mockRefundPaymentTransactions(...args);
+    const allocation = (args[0] as { allocation?: Array<{ paymentTransactionId: string; amountCents: number }> }).allocation;
+    return {
+      ...result,
+      refunds: result?.refunds?.map((refund: Record<string, unknown>, index: number) => ({
+        status: "succeeded", slice: allocation?.[index], ...refund,
+      })),
+    };
+  },
   // #4442: the mint's queue takes the Payment row; nothing to wait on here.
   lockPaymentForRefundedTotal: vi.fn(),
   upsertPaymentIntentTransaction: (...args: unknown[]) =>

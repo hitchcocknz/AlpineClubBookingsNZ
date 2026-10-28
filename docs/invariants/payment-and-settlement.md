@@ -1829,10 +1829,14 @@ release).
 - On success or throw, `inlineRefundAfterAttempt` reads that same plan. If any
   cents remain unmade, recovery keeps the whole read plan and its total:
   completed slices marked `madeRefundId`, refused slices moved to their next
-  key, unanswered slices on their original key. A recording failure after
-  Stripe succeeds therefore replays the same refund even if `charge.refunded`
-  records it before the worker runs. Ledger progress must not change the
-  request's amount or Stripe key.
+  key, unanswered slices on their original key. Within Stripe's 24-hour
+  idempotency window, a recording failure after Stripe succeeds therefore
+  replays the same refund even if `charge.refunded` records it first (a later
+  replay is #4510). Ledger progress must not change the request's amount or
+  Stripe key.
+- Limit: on a multi-charge payment, a concurrent refund on the same charge can
+  leave a frozen slice larger than its headroom; the row then dies owed and
+  alerts, and never over-refunds.
 - Planning failures occur before Stripe; they retain the existing whole-debt
   recovery. Refused slices still alert when the row is newly written or cannot
   be written, and an incomplete refund reports `own_card_pending`.

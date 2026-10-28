@@ -58,10 +58,11 @@ import {
 } from "@/lib/stripe";
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
-import { ownCardRefundMade } from "@/lib/payment-transaction-status";
+import { ownCardRefundMade, STRIPE_REFUND_EXCEEDS_CAPTURED_MESSAGE } from "@/lib/payment-transaction-status";
 import {
   alertRefusedCardRefund,
   inlineRefundAfterAttempt,
+  refundSliceCents,
   type InlineRefundRead,
 } from "@/lib/refused-card-refund-retry";
 
@@ -230,7 +231,7 @@ export async function executeBookingModificationRefund({
 
   const keepUnmade = async (read: InlineRefundRead) => {
     if (read.unmadeCents <= 0) return;
-    const queued = await keepOwed(read.plan.reduce((sum, slice) => sum + slice.amountCents, 0), read.plan);
+    const queued = await keepOwed(refundSliceCents(read.plan), read.plan);
     // #4117: when no row could be written, the alert is the only record.
     if (read.refusedCents > 0 && (queued === null || queued?.created)) {
       await alertRefusedCardRefund({
@@ -247,7 +248,7 @@ export async function executeBookingModificationRefund({
     // before recovery runs, but must never shift its slice amount and key.
     const planned = await planStripeRefundAllocation({ paymentId, amountCents: result.pendingRefundAmountCents });
     if (planned.plannedAmountCents < result.pendingRefundAmountCents) {
-      throw new Error("Refund amount exceeds captured Stripe payments");
+      throw new Error(STRIPE_REFUND_EXCEEDS_CAPTURED_MESSAGE);
     }
     plan = planned.slices;
     const refundResult = await refundPaymentTransactions({
