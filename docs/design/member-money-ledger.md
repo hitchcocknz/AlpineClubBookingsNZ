@@ -128,9 +128,18 @@ names one debtor and several covered members, not several copies of revenue.
 `BookingLedgerLine` remains the booking event evidence and compatibility view.
 Existing line ids, reversal chains, posting keys, night prices, names and
 `BookingModification.priceLines` survive. A bridge maps every existing line to
-its journal event and legs; new booking commands create both representations in
-one transaction until booking readers move. Do not independently reprice either
-side or double-post cash because both a booking line and a refund row name it.
+its journal event and legs. When an event is eligible for both representations,
+the command writes them in one transaction until booking readers move. R01's
+pre-payment payable obligation initially exists only in the new journal:
+`INV-MONEY-032`/`033` still fence legacy charge lines at confirmation. At that
+later confirmation, the compatibility lines link to the already-posted charge
+components; they create no second journal charge. Edits before confirmation
+update the journal through R02 while the eventual legacy confirmation represents
+the surviving charge. The bridge compares the same eligible population at each
+stage, explicitly separating pending journal obligations from legacy confirmed
+charges; it does not move legacy reader timing or waive unexplained differences.
+Do not independently reprice either side or double-post cash because both a
+booking line and a refund row name it.
 The existing booking balance helper becomes a projection of these same economic
 facts; the bridge proves its charge/settlement/adjustment signs agree. Once
 there are no old readers or writers, compatibility posting can retire; posted
