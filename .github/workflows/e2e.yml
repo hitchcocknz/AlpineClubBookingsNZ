@@ -56,7 +56,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Two commits: a pull request's merge commit and its base parent,
           # which `e2e-scope.mjs` diffs to decide whether the suite can move.
@@ -136,7 +136,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Two commits: a pull request's merge commit and its base parent,
           # which `e2e-scope.mjs` diffs to decide whether the suite can move.
@@ -215,7 +215,7 @@ jobs:
       E2E_SHARD: "1/3"
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Two commits: a pull request's merge commit and its base parent,
           # which `e2e-scope.mjs` diffs to decide whether the suite can move.
@@ -283,7 +283,7 @@ jobs:
       E2E_SHARD: ${{ matrix.shard }}/3
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Two commits: a pull request's merge commit and its base parent,
           # which `e2e-scope.mjs` diffs to decide whether the suite can move.
@@ -341,7 +341,7 @@ jobs:
       E2E_MULTI_LODGE: "1"
     steps:
       - name: Check out repository
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Two commits: a pull request's merge commit and its base parent,
           # which `e2e-scope.mjs` diffs to decide whether the suite can move.
