@@ -1,7 +1,6 @@
 schema = 1
 
 [environment]
-# Use the distribution metapackage; a pinned major is unavailable on some runners.
 packages = ["postgresql"]
 
 [setup]

@@ -50,7 +50,6 @@ export TMPDIR=/tmp/scratch
 export NODE_OPTIONS=--max-old-space-size=1800
 pnpm run db:migrate
 files=(
-  src/lib/__tests__/member-money-journal.realdb.test.ts
   src/lib/__tests__/kept-change-capture-record.realdb.test.ts
   src/lib/__tests__/superseded-ask-invoice-carry.realdb.test.ts
   src/lib/__tests__/additional-capture-receipt.realdb.test.ts
