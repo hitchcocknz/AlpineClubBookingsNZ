@@ -114,7 +114,8 @@ records and constraints, not a Prisma schema to apply in this documentation PR.
 | `MemberMoneyObligation` | Exact charge/refund identity and source, immutable face terms; settlements and reductions refer to it explicitly; remaining amount is derived |
 | `MemberMoneyApplication` | Immutable attribution of a receipt/refund/credit to an obligation, amount, and optional unique reversal target; no timing/amount heuristic |
 | `MemberMoneySourceLink` | Durable link from existing booking line, credit row, subscription component, capture, refund or Xero fact to the event; unique per source fact, not per coincident amount |
-| Inbox, object head and export manifest | Mutable delivery/workflow records with enum statuses and guarded claims; contain no authoritative money balance |
+| Export manifest | Immutable render revision, payload hash, frozen mapping and exact posting/application coverage identities; retries preserve this evidence |
+| Inbox, object head and export delivery | Mutable delivery/workflow records with enum statuses and guarded claims; contain no authoritative money balance; delivery attempts refer to an immutable manifest |
 
 One batch can have several obligations and members, as for a group receipt, but
 its debits equal its credits **per currency**. Currency is the club's configured
