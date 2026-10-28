@@ -1787,6 +1787,38 @@ release).
   `additional-capture-recorder.test.ts` and
   `xero-operation-outbox.test.ts`.
 
+## INV-PAY-145
+
+**Related: `INV-PAY-103`** (the one refund writer), **`INV-PAY-128`**
+(refused and failed-later debts).
+
+- Before an ordinary charge-backed recovery re-sends an unmarked slice, it
+  reads Stripe's refunds for that slice's intent outside every transaction:
+  one request per intent, 100 results, a ten-second timeout and no network
+  retries. More results, a read failure or a recording failure permits no send;
+  normal recovery backoff applies.
+- Refunds on the captured charge are recorded through
+  `recordStripeRefundsAgainstTransaction`, including ones the app has not seen.
+  The existing note router is shared with `charge.refunded`, so recording first
+  does not suppress the refund's accounting correction.
+- A counted refund made outside the app (`cardRefundDoorOf`), on that charge
+  at or after the recovery debt's creation second, holds the entire row before
+  any slice is sent, regardless of the refund's amount. Counted status comes
+  from `isRecordedRefundStatus`; a stored refusal overrides a stale counted
+  listing. Stripe timestamps are compared in whole seconds.
+- A hold uses the existing guarded terminal failure: `FAILED`, attempts at the
+  ceiling, no retry. Only a winning claim alerts officers and writes a payment
+  audit entry. It neither closes the debt nor adopts the dashboard refund.
+  Officers check the booking and Stripe; any outstanding payment is recorded
+  with **Paid another way**, never a new dashboard refund.
+- Existing request bodies, Stripe keys and owed attribution stay unchanged.
+  Specialised organiser-child and legacy group-settlement executors are outside
+  this charge-backed rule. A dashboard refund made after the provider read can
+  still race the send; this read is not a Stripe-side lock.
+- Proven by `card-refund-resend-preflight.test.ts`, `payment-recovery.test.ts`,
+  `stripe.test.ts`, `recorded-card-refund-notes.test.ts` and the existing webhook
+  contracts.
+
 ## INV-PAY-144
 
 **Related: `INV-PAY-110`** (kept late captures) **and `INV-PAY-139`**.

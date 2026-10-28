@@ -2297,6 +2297,23 @@ statement to the same numbers. Nothing an operator relies on depends on that:
 the run above reads typed through Prisma, and `--sql` is a convenience for
 somebody who would rather query a replica by hand.
 
+### A card refund held after a Stripe check (#4359)
+
+An ordinary charge-backed recovery stops automatic retries when Stripe already
+holds a counted dashboard refund on its charge made since the debt arose
+(`INV-PAY-145`). The officer alert and the payment audit entry explain that the
+member may already have been paid. The row is exhausted in the existing recovery
+queue, with no new refund sent; it is not automatically closed or matched to the
+dashboard refund. Its owed figure keeps the existing attribution rule.
+
+Check the booking, the recorded refunds and Stripe before moving more money.
+If money remains owed, settle it with **Paid another way** in
+[Stuck States](guides/stuck-states.md), rather than another Stripe dashboard
+refund. If nothing remains owed, ask a developer to reconcile the held row.
+A preflight read or recording failure uses normal backoff and sends nothing;
+an intent with more than 100 refunds requires investigation because the single
+page cannot establish complete evidence. No production repair runs automatically.
+
 ### Audit refunded totals left short by the old refund arithmetic (#3640)
 
 Before #3640 a card refund made after an account-credit settlement was lost from

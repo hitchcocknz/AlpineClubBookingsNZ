@@ -263,13 +263,19 @@ export const STRIPE_IDEMPOTENCY_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000;
 export async function listRefundsForPaymentIntent(
   paymentIntentId: string,
   /** #4149: a bounded read with no retries (a webhook's or a nightly sweep's), as `retrieveRefund`'s is. Omitted, the request is unchanged. */
-  options?: { timeoutMs: number },
+  options?: { timeoutMs: number; singlePage?: boolean },
 ): Promise<Stripe.Refund[]> {
   const stripe = await getStripe();
   const refunds: Stripe.Refund[] = [];
   const list = options
     ? stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 }, { timeout: options.timeoutMs, maxNetworkRetries: 0 })
     : stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 });
+  if (options?.singlePage) {
+    // INV-PAY-145: exactly one bounded request; an incomplete view cannot authorise a re-send.
+    const page = await list;
+    if (page.has_more) throw new Error("Stripe refund preflight is incomplete (INV-PAY-145); no refund was sent.");
+    return page.data;
+  }
   for await (const refund of list) {
     refunds.push(refund);
   }

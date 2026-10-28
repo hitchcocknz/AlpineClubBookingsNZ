@@ -708,7 +708,11 @@ export const AUDIT_CENSUS_TOTALS = {
   // note that a released-credit request was left to the officers (waiting on an edit, or its
   // reminder withheld), an awaited `createAuditLog` under `payment`. RE-MEASURED with `pnpm run audit:census`.
   // 518 -> 522: the central-server lane (#4262) merged. RE-MEASURED with `pnpm run audit:census` on the merged tree (central-server lane + main b7466a631, 27 Oct 2026): the lane's four sites and upstream's are disjoint, composed, never added.
-  writeSites: 522,
+  // 522 -> 523 (#4359): `booking-payment.card-refund.resend-held`, the one row written when a
+  // charge-backed recovery is held because Stripe shows a refund made outside the app since the
+  // debt arose (INV-PAY-145), an awaited `createAuditLog` under `payment`. RE-MEASURED with
+  // `pnpm run audit:census`.
+  writeSites: 523,
   /**
    * Of those, sites whose event object carries no `category` key.
    *
@@ -923,7 +927,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // 154 -> 156 (#4270): the credit-note mirror's two rows, in its transaction.
     // 157 -> 158 (#4253 release 2 fix round): the left-to-officers note, above.
     // 158 -> 161: the central-server lane (#4262) merged. RE-MEASURED with `pnpm run audit:census` on the merged tree (central-server lane + main b7466a631, 27 Oct 2026): the lane's four sites and upstream's are disjoint, composed, never added.
-    createAuditLog: { total: 161, uncategorised: 0 },
+    // 161 -> 162 (#4359): the re-send hold's row, above.
+    createAuditLog: { total: 162, uncategorised: 0 },
     // 8 -> 9 (#2581 child 2 review): `recordAgeUpParentEmailHandoffAudit`
     // moved off its hand-built `prisma.auditLog.create`, the last one in `src/`.
     // Same row, same dedupe keys (`action` + `subjectMemberId` + `outcome`) —
@@ -1133,7 +1138,8 @@ export const AUDIT_CENSUS_TOTALS = {
     // the invoice paid (at ask time and by the sweep) - the payment's figures, read by the same people.
     // 64 -> 65 (#4253 release 2): the backlog run's batch row, read by the same people.
     // 65 -> 66 (#4253 release 2 fix round): the left-to-officers note, read by the same people.
-    payment: 66,
+    // 66 -> 67 (#4359): the re-send hold's row - the payment's figures, read by the same people.
+    payment: 67,
     // 27 -> 34 (#2581 child 2): the five family-group writers and the two
     // dependants writers. Both dependants writers also moved off a hand-built
     // Prisma literal and onto the audit boundary in the same change.
