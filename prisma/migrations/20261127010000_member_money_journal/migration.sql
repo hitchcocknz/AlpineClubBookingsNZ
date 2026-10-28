@@ -16,18 +16,30 @@ CREATE TYPE "MemberMoneySourceKind" AS ENUM ('BOOKING_LEDGER', 'BOOKING', 'PAYME
 -- CreateEnum
 CREATE TYPE "MemberMoneyObligationKind" AS ENUM ('CHARGE', 'REFUND');
 
+-- CreateEnum
+CREATE TYPE "MemberMoneyDebtorKind" AS ENUM ('MEMBER', 'ORGANISATION');
+
+-- The cluster a header was created on, beside its transaction id: a restore into
+-- a new cluster restarts transaction ids, so an id alone could match again.
+CREATE FUNCTION member_money_system_identifier() RETURNS bigint
+LANGUAGE sql STABLE SET search_path = pg_catalog AS $$
+SELECT system_identifier FROM pg_catalog.pg_control_system()
+$$;
+
 -- CreateTable
 CREATE TABLE "MemberMoneyEvent" (
     "id" TEXT NOT NULL,
     "eventKey" TEXT NOT NULL,
     "kind" "MemberMoneyEventKind" NOT NULL,
     "origin" "MemberMoneyOrigin" NOT NULL,
+    "sourceKind" "MemberMoneySourceKind" NOT NULL,
     "sourceIdentity" TEXT NOT NULL,
     "sourceVersion" TEXT NOT NULL,
     "payloadHash" TEXT NOT NULL,
     "actorMemberId" TEXT,
     "reason" TEXT NOT NULL,
     "effectiveAt" TIMESTAMP(3) NOT NULL,
+    "effectiveDate" DATE NOT NULL,
     "recordedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     CONSTRAINT "MemberMoneyEvent_pkey" PRIMARY KEY ("id")
@@ -41,7 +53,10 @@ CREATE TABLE "MemberMoneyJournal" (
     "policyVersion" TEXT NOT NULL,
     "codingVersion" TEXT NOT NULL,
     "expectedLineCount" INTEGER NOT NULL,
+    "expectedObligationCount" INTEGER NOT NULL,
+    "expectedApplicationCount" INTEGER NOT NULL,
     "creatingTransaction" BIGINT NOT NULL DEFAULT txid_current(),
+    "creatingSystemIdentifier" BIGINT NOT NULL DEFAULT member_money_system_identifier(),
     "reversesJournalId" TEXT,
 
     CONSTRAINT "MemberMoneyJournal_pkey" PRIMARY KEY ("id")
@@ -67,7 +82,9 @@ CREATE TABLE "MemberMoneyLine" (
     "account" "MemberMoneyAccount" NOT NULL,
     "side" "MemberMoneySide" NOT NULL,
     "amountCents" INTEGER NOT NULL,
+    "debtorKind" "MemberMoneyDebtorKind",
     "memberId" TEXT,
+    "organisationId" TEXT,
     "obligationId" TEXT,
     "bookingId" TEXT,
     "lodgeId" TEXT,
@@ -90,7 +107,9 @@ CREATE TABLE "MemberMoneyObligation" (
     "journalId" TEXT NOT NULL,
     "obligationKey" TEXT NOT NULL,
     "kind" "MemberMoneyObligationKind" NOT NULL,
-    "memberId" TEXT NOT NULL,
+    "debtorKind" "MemberMoneyDebtorKind" NOT NULL,
+    "memberId" TEXT,
+    "organisationId" TEXT,
     "faceCents" INTEGER NOT NULL,
     "evidence" JSONB NOT NULL,
 
@@ -139,6 +158,9 @@ CREATE INDEX "MemberMoneyLine_journalId_idx" ON "MemberMoneyLine"("journalId");
 
 -- CreateIndex
 CREATE INDEX "MemberMoneyLine_memberId_account_idx" ON "MemberMoneyLine"("memberId", "account");
+
+-- CreateIndex
+CREATE INDEX "MemberMoneyLine_organisationId_account_idx" ON "MemberMoneyLine"("organisationId", "account");
 
 -- CreateIndex
 CREATE INDEX "MemberMoneyLine_bookingId_idx" ON "MemberMoneyLine"("bookingId");
@@ -240,16 +262,27 @@ ALTER TABLE "MemberMoneyEvent" ADD CONSTRAINT "member_money_event_evidence" CHEC
 );
 ALTER TABLE "MemberMoneyJournal" ADD CONSTRAINT "member_money_header_shape" CHECK (
   currency ~ '^[A-Z]{3}$' AND "expectedLineCount" >= 0
+  AND "expectedObligationCount" >= 0 AND "expectedApplicationCount" >= 0
   AND length(btrim("policyVersion")) > 0 AND length(btrim("codingVersion")) > 0
   AND id IS DISTINCT FROM "reversesJournalId"
 );
 ALTER TABLE "MemberMoneyLine" ADD CONSTRAINT "member_money_line_shape" CHECK (
   "amountCents" > 0
-  AND (account NOT IN ('MEMBER_RECEIVABLE', 'MEMBER_CREDIT', 'REFUND_PAYABLE') OR "memberId" IS NOT NULL)
+  AND (account NOT IN ('MEMBER_RECEIVABLE', 'MEMBER_CREDIT', 'REFUND_PAYABLE') OR "debtorKind" IS NOT NULL)
   AND (account <> 'MEMBER_CREDIT' OR "creditLotId" IS NOT NULL)
   AND (account <> 'REFUND_PAYABLE' OR "obligationId" IS NOT NULL)
   AND ("bookingId" IS NULL OR "lodgeId" IS NOT NULL)
   AND id IS DISTINCT FROM "originalLineId"
+);
+-- A debtor is a member or an organisation (Booking_owner_exactly_one), never both.
+-- Both ids are retained identity strings, not foreign keys: a member merge leaves
+-- posted rows untouched and moves balances by an explicit transfer.
+ALTER TABLE "MemberMoneyLine" ADD CONSTRAINT "member_money_line_debtor" CHECK (
+  CASE "debtorKind"
+    WHEN 'MEMBER' THEN "memberId" IS NOT NULL AND length(btrim("memberId")) > 0 AND "organisationId" IS NULL
+    WHEN 'ORGANISATION' THEN "organisationId" IS NOT NULL AND length(btrim("organisationId")) > 0 AND "memberId" IS NULL
+    ELSE "memberId" IS NULL AND "organisationId" IS NULL
+  END
 );
 ALTER TABLE "MemberMoneyLine" ADD CONSTRAINT "member_money_tax_split" CHECK (
   ("grossCents" IS NULL AND "netCents" IS NULL AND "taxCents" IS NULL AND "taxCode" IS NULL)
@@ -259,7 +292,14 @@ ALTER TABLE "MemberMoneyLine" ADD CONSTRAINT "member_money_tax_split" CHECK (
       AND "grossCents"::bigint = "netCents"::bigint + "taxCents"::bigint)
 );
 ALTER TABLE "MemberMoneyObligation" ADD CONSTRAINT "member_money_obligation_shape" CHECK (
-  "faceCents" > 0 AND length(btrim("memberId")) > 0 AND length(btrim("obligationKey")) > 0
+  "faceCents" > 0 AND length(btrim("obligationKey")) > 0
+);
+ALTER TABLE "MemberMoneyObligation" ADD CONSTRAINT "member_money_obligation_debtor" CHECK (
+  CASE "debtorKind"
+    WHEN 'MEMBER' THEN "memberId" IS NOT NULL AND length(btrim("memberId")) > 0 AND "organisationId" IS NULL
+    WHEN 'ORGANISATION' THEN "organisationId" IS NOT NULL AND length(btrim("organisationId")) > 0 AND "memberId" IS NULL
+    ELSE false
+  END
 );
 ALTER TABLE "MemberMoneyApplication" ADD CONSTRAINT "member_money_application_shape" CHECK (
   "amountCents" > 0 AND length(btrim("applicationKey")) > 0
@@ -283,13 +323,17 @@ CREATE FUNCTION member_money_check_seal() RETURNS trigger
 LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
 DECLARE
   creating_tx bigint;
+  creating_system bigint;
 BEGIN
   IF TG_TABLE_NAME = 'MemberMoneyJournal' THEN
     NEW."creatingTransaction" := txid_current();
+    NEW."creatingSystemIdentifier" := public.member_money_system_identifier();
   ELSE
-    SELECT "creatingTransaction" INTO creating_tx FROM public."MemberMoneyJournal" WHERE id = NEW."journalId";
-    IF creating_tx IS DISTINCT FROM txid_current() THEN
-      RAISE EXCEPTION 'member_money_sealed: batch belongs to another transaction' USING ERRCODE = '23514';
+    SELECT "creatingTransaction", "creatingSystemIdentifier" INTO creating_tx, creating_system
+      FROM public."MemberMoneyJournal" WHERE id = NEW."journalId";
+    IF creating_tx IS DISTINCT FROM txid_current()
+      OR creating_system IS DISTINCT FROM public.member_money_system_identifier() THEN
+      RAISE EXCEPTION 'member_money_sealed: batch belongs to another transaction or cluster' USING ERRCODE = '23514';
     END IF;
   END IF;
   IF TG_TABLE_NAME = 'MemberMoneyLine' THEN
@@ -321,13 +365,38 @@ BEGIN
   SELECT count(*), coalesce(sum(CASE WHEN side = 'DEBIT' THEN "amountCents"::bigint ELSE -"amountCents"::bigint END), 0)
     INTO line_count, signed_total FROM public."MemberMoneyLine" WHERE "journalId" = h.id;
   IF line_count <> h."expectedLineCount" THEN errors := array_append(errors, 'incomplete_batch'); END IF;
+  IF (SELECT count(*) FROM public."MemberMoneyObligation" WHERE "journalId" = h.id) <> h."expectedObligationCount" THEN
+    errors := array_append(errors, 'incomplete_obligations');
+  END IF;
+  IF (SELECT count(*) FROM public."MemberMoneyApplication" WHERE "journalId" = h.id) <> h."expectedApplicationCount" THEN
+    errors := array_append(errors, 'incomplete_applications');
+  END IF;
   IF signed_total <> 0 THEN errors := array_append(errors, 'unbalanced_batch'); END IF;
+  -- Tax tie: a taxed revenue leg carries its net cents, and on each side the
+  -- batch's GST_PAYABLE legs carry exactly the tax its taxed revenue legs record.
+  IF EXISTS (SELECT 1 FROM public."MemberMoneyLine" WHERE "journalId" = h.id
+      AND account IN ('BOOKING_REVENUE', 'SUBSCRIPTION_REVENUE', 'JOINING_FEE_REVENUE', 'FEE_REVENUE')
+      AND "taxCents" IS NOT NULL AND "amountCents" <> "netCents")
+    OR EXISTS (SELECT 1 FROM (VALUES ('DEBIT'::public."MemberMoneySide"), ('CREDIT')) AS sides(side)
+      WHERE (SELECT coalesce(sum("amountCents"::bigint), 0) FROM public."MemberMoneyLine" l
+          WHERE l."journalId" = h.id AND l.side = sides.side AND l.account = 'GST_PAYABLE')
+        <> (SELECT coalesce(sum("taxCents"::bigint), 0) FROM public."MemberMoneyLine" l
+          WHERE l."journalId" = h.id AND l.side = sides.side
+            AND l.account IN ('BOOKING_REVENUE', 'SUBSCRIPTION_REVENUE', 'JOINING_FEE_REVENUE', 'FEE_REVENUE'))) THEN
+    errors := array_append(errors, 'tax_tie_mismatch');
+  END IF;
+  -- The writer derives the club civil date through the club-time kernel. No zone
+  -- is more than a day from UTC, so a date outside that bound is never right.
+  IF e."effectiveDate" NOT BETWEEN e."effectiveAt"::date - 1 AND e."effectiveAt"::date + 1 THEN
+    errors := array_append(errors, 'effective_date_out_of_range');
+  END IF;
   IF (e.kind = 'ZERO' AND line_count <> 0)
     OR (e.kind <> 'ZERO' AND line_count < 2 AND NOT (e.kind = 'REVERSAL' AND line_count = 0
       AND EXISTS (SELECT 1 FROM public."MemberMoneyJournal" WHERE id = h."reversesJournalId" AND "expectedLineCount" = 0))) THEN
     errors := array_append(errors, 'invalid_zero_event');
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM public."MemberMoneySourceLink" WHERE "journalId" = h.id AND "sourceId" = e."sourceIdentity" AND "sourceVersion" = e."sourceVersion") THEN
+  IF NOT EXISTS (SELECT 1 FROM public."MemberMoneySourceLink" WHERE "journalId" = h.id
+      AND "sourceKind" = e."sourceKind" AND "sourceId" = e."sourceIdentity" AND "sourceVersion" = e."sourceVersion") THEN
     errors := array_append(errors, 'missing_source_link');
   END IF;
   IF EXISTS (SELECT 1 FROM public."MemberMoneySourceLink" source
@@ -358,7 +427,8 @@ BEGIN
   IF EXISTS (SELECT 1 FROM public."MemberMoneyLine" l
     JOIN public."MemberMoneyObligation" o ON o.id = l."obligationId"
     JOIN public."MemberMoneyJournal" oh ON oh.id = o."journalId"
-    WHERE l."journalId" = h.id AND (l."memberId" IS DISTINCT FROM o."memberId" OR h.currency <> oh.currency)) THEN
+    WHERE l."journalId" = h.id AND (h.currency <> oh.currency
+      OR (l."debtorKind", l."memberId", l."organisationId") IS DISTINCT FROM (o."debtorKind", o."memberId", o."organisationId"))) THEN
     errors := array_append(errors, 'line_obligation_mismatch');
   END IF;
   IF EXISTS (SELECT 1 FROM public."MemberMoneyApplication" a
@@ -368,7 +438,7 @@ BEGIN
     JOIN public."MemberMoneyJournal" oh ON oh.id = o."journalId"
     LEFT JOIN public."MemberMoneyApplication" original ON original.id = a."reversesApplicationId"
     WHERE a."journalId" = h.id AND (h.currency <> lh.currency OR h.currency <> oh.currency
-      OR l."memberId" IS DISTINCT FROM o."memberId"
+      OR (l."debtorKind", l."memberId", l."organisationId") IS DISTINCT FROM (o."debtorKind", o."memberId", o."organisationId")
       OR (a."reversesApplicationId" IS NOT NULL AND (original.id IS NULL
         OR original."sourceLineId" <> a."sourceLineId" OR original."obligationId" <> a."obligationId"
         OR original."amountCents" <> a."amountCents")))) THEN

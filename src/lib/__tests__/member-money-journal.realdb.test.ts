@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { addCalendarDays, clubCalendarDateOf, requireClubTimeZone, requireInstant } from "@/lib/club-time";
 import { buildDatabaseRolesSql } from "@/lib/database-roles";
 import { MEMBER_MONEY_RELATIONS } from "@/lib/member-money-tables";
 import { verifyMemberMoneyJournal } from "@/lib/member-money";
@@ -11,6 +12,7 @@ import { assertSafeRaceDbUrl } from "./support/race-db-url";
 
 const RUN = process.env.RUN_CONCURRENCY_RACE_TESTS === "1";
 const url = process.env.CONCURRENCY_RACE_DATABASE_URL ?? "";
+const MIGRATION = "prisma/migrations/20261127010000_member_money_journal/migration.sql";
 const prefix = `mm4513_${randomBytes(5).toString("hex")}`;
 const roles = { migrator: `${prefix}_migration`, app: `${prefix}_app`, retention: `${prefix}_retention` };
 let admin: Client;
@@ -19,17 +21,22 @@ let app: Client;
 let sequence = 0;
 const next = () => `${prefix}_${++sequence}`;
 
-// All economic instants come from the shared frozen clock, including SQL fixtures.
-async function event(c: Client, id: string, kind = "RECEIPT") {
+// All economic instants come from the shared frozen clock, including SQL fixtures,
+// and the event's civil date is derived from that instant by the club-time kernel.
+const EFFECTIVE_AT = requireInstant(FROZEN_TEST_CLOCK_BASE_ISO);
+const EFFECTIVE_DATE = clubCalendarDateOf(EFFECTIVE_AT, requireClubTimeZone("Pacific/Auckland"));
+const REVENUE = "BOOKING_REVENUE";
+
+async function event(c: Client, id: string, kind = "RECEIPT", { sourceKind = "OFFICER_FACT", date = EFFECTIVE_DATE as string } = {}) {
   await c.query(`INSERT INTO "MemberMoneyEvent"
-    (id,"eventKey",kind,origin,"sourceIdentity","sourceVersion","payloadHash",reason,"effectiveAt","recordedAt")
-    VALUES ($1,$1,$2,'OFFICER',$1,'v1',$3,'test evidence',$4,$4)`,
-  [id, kind, "a".repeat(64), FROZEN_TEST_CLOCK_BASE_ISO]);
+    (id,"eventKey",kind,origin,"sourceKind","sourceIdentity","sourceVersion","payloadHash",reason,"effectiveAt","effectiveDate","recordedAt")
+    VALUES ($1,$1,$2,'OFFICER',$3,$1,'v1',$4,'test evidence',$5,$6,$5)`,
+  [id, kind, sourceKind, "a".repeat(64), EFFECTIVE_AT, date]);
 }
-async function header(c: Client, id: string, count = 2, reversal: string | null = null, currency = "NZD") {
+async function header(c: Client, id: string, count = 2, reversal: string | null = null, currency = "NZD", obligations = 0, applications = 0) {
   await c.query(`INSERT INTO "MemberMoneyJournal"
-    (id,"eventId",currency,"policyVersion","codingVersion","expectedLineCount","reversesJournalId")
-    VALUES ($1,$1,$2,'policy-1','coding-1',$3,$4)`, [id, currency, count, reversal]);
+    (id,"eventId",currency,"policyVersion","codingVersion","expectedLineCount","expectedObligationCount","expectedApplicationCount","reversesJournalId")
+    VALUES ($1,$1,$2,'policy-1','coding-1',$3,$4,$5,$6)`, [id, currency, count, obligations, applications, reversal]);
 }
 async function source(c: Client, id: string) {
   await c.query(`INSERT INTO "MemberMoneySourceLink" (id,"journalId","sourceKind","sourceId","sourceVersion")
@@ -38,8 +45,15 @@ async function source(c: Client, id: string) {
 async function line(c: Client, batch: string, side: string, amount = 100, original: string | null = null) {
   const id = next();
   await c.query(`INSERT INTO "MemberMoneyLine"
-    (id,"journalId","sourceLinkId",account,side,"amountCents","memberId",evidence,"originalLineId")
-    VALUES ($1,$2,$2,'BANK',$3,$4,'member-evidence','{}',$5)`, [id, batch, side, amount, original]);
+    (id,"journalId","sourceLinkId",account,side,"amountCents","debtorKind","memberId",evidence,"originalLineId")
+    VALUES ($1,$2,$2,'BANK',$3,$4,'MEMBER','member-evidence','{}',$5)`, [id, batch, side, amount, original]);
+  return id;
+}
+async function obligation(c: Client, batch: string, debtor: { member?: string; organisation?: string } = { member: "member-evidence" }) {
+  const id = next();
+  await c.query(`INSERT INTO "MemberMoneyObligation" (id,"journalId","obligationKey",kind,"debtorKind","memberId","organisationId","faceCents",evidence)
+    VALUES ($1,$2,$1,'CHARGE',$3,$4,$5,100,'{}')`,
+  [id, batch, debtor.organisation ? "ORGANISATION" : "MEMBER", debtor.member ?? null, debtor.organisation ?? null]);
   return id;
 }
 async function batch(c: Client, id = next()) {
@@ -62,6 +76,22 @@ async function transaction(c: Client, run: () => Promise<unknown>) {
   try { await run(); await c.query("COMMIT"); }
   catch (error) { await c.query("ROLLBACK"); throw error; }
 }
+async function findings(c: Client, role = roles.app) {
+  return (await verifyMemberMoneyJournal(c, role)).findings;
+}
+/** A charge of 115 cents: 100 net revenue and 15 GST, both credited, owed by one debtor. */
+async function taxedCharge(c: Client, broken: { gst?: number; revenueAmount?: number } = {}) {
+  const net = 100, tax = 15;
+  const { gst = tax, revenueAmount = net } = broken;
+  const id = next();
+  await event(c, id, "CHARGE"); await header(c, id, gst ? 3 : 2); await source(c, id);
+  await c.query(`INSERT INTO "MemberMoneyLine" (id,"journalId","sourceLinkId",account,side,"amountCents","debtorKind","memberId",evidence)
+    VALUES ($1,$2,$2,'MEMBER_RECEIVABLE','DEBIT',$3,'MEMBER','member-evidence','{}')`, [next(), id, revenueAmount + gst]);
+  await c.query(`INSERT INTO "MemberMoneyLine" (id,"journalId","sourceLinkId",account,side,"amountCents",evidence,"grossCents","netCents","taxCents","taxCode")
+    VALUES ($1,$2,$2,$3,'CREDIT',$4,'{}',$5,$6,$7,'GST15')`, [next(), id, REVENUE, revenueAmount, net + tax, net, tax]);
+  if (gst) await c.query(`INSERT INTO "MemberMoneyLine" (id,"journalId","sourceLinkId",account,side,"amountCents",evidence)
+    VALUES ($1,$2,$2,'GST_PAYABLE','CREDIT',$3,'{}')`, [next(), id, gst]);
+}
 
 describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
   beforeAll(async () => {
@@ -77,7 +107,7 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
       CREATE TABLE "Booking" (id text PRIMARY KEY, "lodgeId" text REFERENCES "Lodge"(id));
       CREATE TABLE "BookingLedgerLine" (id text PRIMARY KEY);
       CREATE TABLE "AuditLog" (id text PRIMARY KEY, "ipAddress" text, "userAgent" text)`);
-    await db.query(readFileSync("prisma/migrations/20261127010000_member_money_journal/migration.sql", "utf8"));
+    await db.query(readFileSync(MIGRATION, "utf8"));
     const statements = buildDatabaseRolesSql({ databaseName: prefix,
       migrator: { roleName: roles.migrator, password: "m".repeat(28) },
       app: { roleName: roles.app, password: "a".repeat(28) },
@@ -97,7 +127,13 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
 
   it("commits a balanced complete batch as the INSERT/SELECT-only role and verifies it", async () => {
     await transaction(app, () => batch(app));
-    expect(await verifyMemberMoneyJournal(app, roles.app)).toEqual([]);
+    expect(await verifyMemberMoneyJournal(app, roles.app)).toEqual({ findings: [], grantCheck: "checked" });
+  });
+
+  it("reports the grant check as not applicable for a superuser or owner connection", async () => {
+    const operator = (await db.query(`SELECT current_user AS name`)).rows[0].name as string;
+    expect(await verifyMemberMoneyJournal(db, operator)).toEqual({ findings: [], grantCheck: "not_applicable" });
+    expect(await verifyMemberMoneyJournal(db, roles.migrator)).toEqual({ findings: [], grantCheck: "not_applicable" });
   });
 
   it.each(MEMBER_MONEY_RELATIONS)("refuses direct UPDATE, DELETE and TRUNCATE of %s", async (table) => {
@@ -115,14 +151,16 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
     await expect(db.query(`TRUNCATE "MemberMoneySourcePosting"`)).rejects.toMatchObject({ code: "23514" });
   });
 
-  it("stamps the real creating transaction even if SQL supplies a forged one", async () => {
+  it("stamps the real creating transaction and cluster even if SQL supplies forged ones", async () => {
     await transaction(app, async () => {
       const id = next(); await event(app,id,"ZERO");
-      await app.query(`INSERT INTO "MemberMoneyJournal" (id,"eventId",currency,"policyVersion","codingVersion","expectedLineCount","creatingTransaction")
-        VALUES ($1,$1,'NZD','policy-1','coding-1',0,0)`, [id]);
+      await app.query(`INSERT INTO "MemberMoneyJournal" (id,"eventId",currency,"policyVersion","codingVersion","expectedLineCount",
+          "expectedObligationCount","expectedApplicationCount","creatingTransaction","creatingSystemIdentifier")
+        VALUES ($1,$1,'NZD','policy-1','coding-1',0,0,0,0,0)`, [id]);
       await source(app,id);
-      expect((await app.query(`SELECT "creatingTransaction" = txid_current() AS stamped FROM "MemberMoneyJournal" WHERE id=$1`, [id])).rows)
-        .toEqual([{ stamped: true }]);
+      expect((await app.query(`SELECT "creatingTransaction" = txid_current() AS tx,
+          "creatingSystemIdentifier" = (SELECT system_identifier FROM pg_control_system()) AS cluster
+        FROM "MemberMoneyJournal" WHERE id=$1`, [id])).rows).toEqual([{ tx: true, cluster: true }]);
     });
   });
 
@@ -140,6 +178,23 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
     });
     await expect(app.query(`UPDATE "MemberMoneyJournal" SET "creatingTransaction" = txid_current() WHERE id=$1`, [id]))
       .rejects.toMatchObject({ code: "42501" });
+  });
+
+  it("refuses a leg for a header stamped by another cluster, even in the same transaction id", async () => {
+    // A restore into a new cluster can reach an old header's transaction id again;
+    // its cluster identity cannot match. Forge such a header past the stamp, in
+    // this very transaction, so only the cluster comparison can refuse the leg.
+    await expect(transaction(db, async () => {
+      const id = next();
+      await db.query(`SET LOCAL session_replication_role = replica`);
+      await event(db, id);
+      await db.query(`INSERT INTO "MemberMoneyJournal"
+        (id,"eventId",currency,"policyVersion","codingVersion","expectedLineCount","expectedObligationCount","expectedApplicationCount","creatingSystemIdentifier")
+        VALUES ($1,$1,'NZD','policy-1','coding-1',2,0,0,1)`, [id]);
+      await db.query(`SET LOCAL session_replication_role = origin`);
+      await source(db, id);
+      await line(db, id, "DEBIT");
+    })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("sealed") });
   });
 
   it.each(["unbalanced", "incomplete", "missing source", "one leg", "zero with legs", "nonzero without legs"])("rejects %s at commit and rolls back the event", async (problem) => {
@@ -167,6 +222,21 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
     });
   });
 
+  it("requires the mandatory source link to match the event's source kind too", async () => {
+    await expect(transaction(app, async () => {
+      const id = next(); await event(app, id, "ZERO", { sourceKind: "PAYMENT" }); await header(app, id, 0); await source(app, id);
+    })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("missing_source_link") });
+  });
+
+  it("refuses an effective date no club zone could give its instant", async () => {
+    // Every zone is within a day of UTC, so two days away is never a civil date of this instant.
+    await expect(transaction(app, async () => {
+      const id = next(); await event(app, id, "ZERO", { date: addCalendarDays(EFFECTIVE_DATE, 2) }); await header(app, id, 0); await source(app, id);
+    })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("effective_date_out_of_range") });
+    expect((await app.query(`SELECT to_char("effectiveDate", 'YYYY-MM-DD') AS d FROM "MemberMoneyEvent" ORDER BY "recordedAt" LIMIT 1`)).rows)
+      .toEqual([{ d: EFFECTIVE_DATE }]);
+  });
+
   it("refuses nonpositive cents and invalid tax evidence", async () => {
     for (const amount of [0, -1]) await expect(transaction(app, async () => {
       const id = next(); await event(app, id); await header(app, id); await source(app, id);
@@ -177,6 +247,78 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
       await app.query(`INSERT INTO "MemberMoneyLine" (id,"journalId","sourceLinkId",account,side,"amountCents",evidence,"grossCents","netCents","taxCents","taxCode")
         VALUES ($1,$2,$2,'BANK','DEBIT',100,'{}',100,90,11,'tax')`, [next(), b.id]);
     })).rejects.toMatchObject({ code: "23514" });
+  });
+
+  it("ties a taxed revenue leg's net cents and the batch's GST legs to its recorded tax", async () => {
+    await transaction(app, () => taxedCharge(app));
+    for (const broken of [{ gst: 14 }, { revenueAmount: 115, gst: 0 }]) {
+      await expect(transaction(app, () => taxedCharge(app, broken)))
+        .rejects.toMatchObject({ code: "23514", message: expect.stringContaining("tax_tie_mismatch") });
+    }
+    expect(await findings(app)).toEqual([]);
+  });
+
+  it("refuses a debtor naming both or neither of a member and an organisation", async () => {
+    for (const [kind, member, organisation] of [["MEMBER", null, "org"], ["MEMBER", "m", "org"], ["ORGANISATION", null, null], [null, "m", null]]) {
+      await expect(transaction(app, async () => {
+        const id = next(); await event(app, id); await header(app, id); await source(app, id);
+        await app.query(`INSERT INTO "MemberMoneyLine" (id,"journalId","sourceLinkId",account,side,"amountCents","debtorKind","memberId","organisationId",evidence)
+          VALUES ($1,$2,$2,'BANK','DEBIT',100,$3,$4,$5,'{}')`, [next(), id, kind, member, organisation]);
+      })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("member_money_line_debtor") });
+    }
+    await expect(transaction(app, async () => {
+      const id = next(); await event(app, id); await header(app, id); await source(app, id);
+      await app.query(`INSERT INTO "MemberMoneyLine" (id,"journalId","sourceLinkId",account,side,"amountCents",evidence)
+        VALUES ($1,$2,$2,'MEMBER_RECEIVABLE','DEBIT',100,'{}')`, [next(), id]);
+    })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("member_money_line_shape") });
+  });
+
+  it("requires exact debtor/currency applications and exact, unique application reversals", async () => {
+    let receipt!: Awaited<ReturnType<typeof batch>>;
+    let owed = "", otherMember = "", organisationOwed = "";
+    await transaction(app, async () => {
+      receipt = { id: next(), debit: "", credit: "" };
+      await event(app, receipt.id); await header(app, receipt.id, 2, null, "NZD", 3); await source(app, receipt.id);
+      receipt.debit = await line(app, receipt.id, "DEBIT"); receipt.credit = await line(app, receipt.id, "CREDIT");
+      owed = await obligation(app, receipt.id);
+      otherMember = await obligation(app, receipt.id, { member: "another-member" });
+      // An organisation debtor whose id equals a member's must still not match it.
+      organisationOwed = await obligation(app, receipt.id, { organisation: "member-evidence" });
+    });
+    const apply = async (amount: number, reversal: string | null = null, currency = "NZD", target = owed) => {
+      const application = next();
+      await transaction(app, async () => {
+        const id = next(); await event(app,id); await header(app,id,2,null,currency,0,1); await source(app,id);
+        await line(app,id,"DEBIT"); await line(app,id,"CREDIT");
+        await app.query(`INSERT INTO "MemberMoneyApplication" (id,"applicationKey","journalId","sourceLineId","obligationId","amountCents","reversesApplicationId")
+          VALUES ($1,$1,$2,$3,$4,$5,$6)`, [application,id,receipt.debit,target,amount,reversal]);
+      });
+      return application;
+    };
+    await expect(apply(100,null,"USD")).rejects.toMatchObject({ code: "23514" });
+    await expect(apply(100,null,"NZD",otherMember)).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("application_mismatch") });
+    await expect(apply(100,null,"NZD",organisationOwed)).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("application_mismatch") });
+    const first = await apply(100);
+    await expect(apply(99,first)).rejects.toMatchObject({ code: "23514" });
+    await apply(100,first);
+    await expect(apply(100,first)).rejects.toMatchObject({ code: "23505" });
+    await expect(app.query(`INSERT INTO "MemberMoneyObligation" (id,"journalId","obligationKey",kind,"debtorKind","memberId","faceCents",evidence)
+      VALUES ($1,$2,$1,'CHARGE','MEMBER','member-evidence',100,'{}')`, [next(),receipt.id]))
+      .rejects.toMatchObject({ code: "23514", message: expect.stringContaining("sealed") });
+  });
+
+  it("counts a header's obligations and applications as part of a complete batch", async () => {
+    for (const [declared, posted, problem] of [[1, 0, "incomplete_obligations"], [0, 1, "incomplete_obligations"]] as const) {
+      await expect(transaction(app, async () => {
+        const id = next(); await event(app, id); await header(app, id, 2, null, "NZD", declared); await source(app, id);
+        await line(app, id, "DEBIT"); await line(app, id, "CREDIT");
+        if (posted) await obligation(app, id);
+      })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining(problem) });
+    }
+    await expect(transaction(app, async () => {
+      const id = next(); await event(app, id); await header(app, id, 2, null, "NZD", 0, 1); await source(app, id);
+      await line(app, id, "DEBIT"); await line(app, id, "CREDIT");
+    })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("incomplete_applications") });
   });
 
   it("refuses cross-batch source links, duplicate event/source keys and invalid bridge identity", async () => {
@@ -211,37 +353,6 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
     await expect(reverse()).rejects.toMatchObject({ code: "23505" });
   });
 
-  it("requires exact member/currency applications and exact, unique application reversals", async () => {
-    let receipt!: Awaited<ReturnType<typeof batch>>;
-    const obligation = next(), otherObligation = next();
-    await transaction(app, async () => {
-      receipt = await batch(app);
-      await app.query(`INSERT INTO "MemberMoneyObligation" (id,"journalId","obligationKey",kind,"memberId","faceCents",evidence)
-        VALUES ($1,$2,$1,'CHARGE','member-evidence',100,'{}')`, [obligation,receipt.id]);
-      await app.query(`INSERT INTO "MemberMoneyObligation" (id,"journalId","obligationKey",kind,"memberId","faceCents",evidence)
-        VALUES ($1,$2,$1,'CHARGE','another-member',100,'{}')`, [otherObligation,receipt.id]);
-    });
-    const apply = async (amount: number, reversal: string | null = null, currency = "NZD", target = obligation) => {
-      const application = next();
-      await transaction(app, async () => {
-        const id = next(); await event(app,id); await header(app,id,2,null,currency); await source(app,id);
-        await line(app,id,"DEBIT"); await line(app,id,"CREDIT");
-        await app.query(`INSERT INTO "MemberMoneyApplication" (id,"applicationKey","journalId","sourceLineId","obligationId","amountCents","reversesApplicationId")
-          VALUES ($1,$1,$2,$3,$4,$5,$6)`, [application,id,receipt.debit,target,amount,reversal]);
-      });
-      return application;
-    };
-    await expect(apply(100,null,"USD")).rejects.toMatchObject({ code: "23514" });
-    await expect(apply(100,null,"NZD",otherObligation)).rejects.toMatchObject({ code: "23514" });
-    const first = await apply(100);
-    await expect(apply(99,first)).rejects.toMatchObject({ code: "23514" });
-    await apply(100,first);
-    await expect(apply(100,first)).rejects.toMatchObject({ code: "23505" });
-    await expect(app.query(`INSERT INTO "MemberMoneyObligation" (id,"journalId","obligationKey",kind,"memberId","faceCents",evidence)
-      VALUES ($1,$2,$1,'CHARGE','member-evidence',100,'{}')`, [next(),receipt.id]))
-      .rejects.toMatchObject({ code: "23514", message: expect.stringContaining("sealed") });
-  });
-
   it("lets a late compatibility link attach without allowing another leg", async () => {
     let original!: Awaited<ReturnType<typeof batch>>;
     await transaction(app, async () => { original = await batch(app); });
@@ -253,9 +364,34 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
   it("reports disabled enforcement rather than a false green on valid balances", async () => {
     await db.query(`ALTER TABLE "MemberMoneyLine" DISABLE TRIGGER member_money_seal`);
     try {
-      expect(await verifyMemberMoneyJournal(app, roles.app)).toContainEqual({ identity: "MemberMoneyLine", problem: "missing_or_disabled_seal" });
+      expect(await findings(app)).toContainEqual({ identity: "MemberMoneyLine", problem: "missing_or_disabled_seal" });
     } finally { await db.query(`ALTER TABLE "MemberMoneyLine" ENABLE TRIGGER member_money_seal`); }
-    expect(await verifyMemberMoneyJournal(app, roles.app)).toEqual([]);
+    // A trigger enabled ALWAYS still enforces, including under replication.
+    await db.query(`ALTER TABLE "MemberMoneyLine" ENABLE ALWAYS TRIGGER member_money_seal`);
+    try {
+      expect(await findings(app)).toEqual([]);
+    } finally { await db.query(`ALTER TABLE "MemberMoneyLine" ENABLE TRIGGER member_money_seal`); }
+  });
+
+  it("reports a replaced enforcement function and an unvalidated constraint", async () => {
+    const migration = readFileSync(MIGRATION, "utf8");
+    const original = /CREATE FUNCTION member_money_refuse_mutation\(\)[\s\S]*?\$\$;/.exec(migration)?.[0];
+    expect(original).toBeTruthy();
+    await db.query(`CREATE OR REPLACE FUNCTION member_money_refuse_mutation() RETURNS trigger
+      LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$ BEGIN RETURN NULL; END $$`);
+    try {
+      expect(await findings(app)).toContainEqual({ identity: "member_money_refuse_mutation", problem: "changed_function" });
+    } finally { await db.query(original!.replace("CREATE FUNCTION", "CREATE OR REPLACE FUNCTION")); }
+    const check = `CHECK ("grossCents" IS NULL OR "grossCents" >= 0)`;
+    await db.query(`ALTER TABLE "MemberMoneyLine" DROP CONSTRAINT member_money_tax_split,
+      ADD CONSTRAINT member_money_tax_split ${check} NOT VALID`);
+    try {
+      expect(await findings(app)).toContainEqual({ identity: "MemberMoneyLine.member_money_tax_split", problem: "missing_or_unvalidated_constraint" });
+    } finally {
+      const restored = /ADD CONSTRAINT "member_money_tax_split" (CHECK \([\s\S]*?\n\));/.exec(migration)?.[1];
+      await db.query(`ALTER TABLE "MemberMoneyLine" DROP CONSTRAINT member_money_tax_split, ADD CONSTRAINT member_money_tax_split ${restored}`);
+    }
+    expect(await findings(app)).toEqual([]);
   });
 
   it("retains bridged legacy evidence and booking/lodge parents with RESTRICT", async () => {

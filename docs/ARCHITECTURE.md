@@ -1901,8 +1901,8 @@ The source of truth is `prisma/schema.prisma`. Key domains are:
 The new journal preserves economic evidence without changing any current money
 reader or writer. `MemberMoneyEvent` has one `MemberMoneyJournal`; its positive
 integer-cent `MemberMoneyLine` legs balance in one currency at commit. Headers
-record the transaction that may insert their complete legs, obligations and
-applications. Exact reversals append evidence; no row is rewritten.
+record the transaction and cluster that may insert their complete, counted legs,
+obligations and applications. A debtor is a member or an organisation, never both. Exact reversals append evidence; no row is rewritten.
 `MemberMoneyObligation` retains face terms, `MemberMoneyApplication` attributes
 identified money to an obligation, and `MemberMoneySourceLink` bridges source
 facts, including retained `BookingLedgerLine` ids. `MemberMoneySourcePosting`

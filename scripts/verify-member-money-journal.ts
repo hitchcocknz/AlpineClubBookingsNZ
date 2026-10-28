@@ -11,9 +11,11 @@ async function main() {
   try {
     await client.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     const role = z.object({ current_user: z.string() }).parse((await client.query("SELECT current_user")).rows[0]);
-    const findings = await verifyMemberMoneyJournal(client, process.env.APP_DB_USER ?? role.current_user);
+    // A blank APP_DB_USER (as Compose renders an unset one) means the connected role.
+    const appRole = process.env.APP_DB_USER?.trim() || role.current_user;
+    const { findings, grantCheck } = await verifyMemberMoneyJournal(client, appRole);
     await client.query("COMMIT");
-    console.log(JSON.stringify({ accounts: Object.keys(MEMBER_MONEY_ACCOUNTS).length, findings }, null, 2));
+    console.log(JSON.stringify({ accounts: Object.keys(MEMBER_MONEY_ACCOUNTS).length, appRole, grantCheck, findings }, null, 2));
     if (findings.length) process.exitCode = 1;
   } finally {
     await client.query("ROLLBACK").catch(() => {});

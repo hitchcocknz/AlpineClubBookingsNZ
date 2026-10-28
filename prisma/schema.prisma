@@ -8872,18 +8872,28 @@ enum MemberMoneyObligationKind {
   REFUND
 }
 
+/// Who owes: a member or an organisation, as a booking's owner is exactly one.
+enum MemberMoneyDebtorKind {
+  MEMBER
+  ORGANISATION
+}
+
 /// Inert M1 foundation. No production writer or reader is enabled.
 model MemberMoneyEvent {
   id String @id @default(cuid())
   eventKey String @unique
   kind MemberMoneyEventKind
   origin MemberMoneyOrigin
+  /// The mandatory source link matches kind, identity and version together.
+  sourceKind MemberMoneySourceKind
   sourceIdentity String
   sourceVersion String
   payloadHash String
   actorMemberId String?
   reason String
   effectiveAt DateTime
+  /// Club civil date of effectiveAt, derived through the club-time kernel (INV-DATE).
+  effectiveDate DateTime @db.Date
   recordedAt DateTime @default(now())
   journal MemberMoneyJournal?
 }
@@ -8895,8 +8905,12 @@ model MemberMoneyJournal {
   policyVersion String
   codingVersion String
   expectedLineCount Int
+  expectedObligationCount Int
+  expectedApplicationCount Int
   /// Database trigger stamps/checks this; descendants may only post in this tx.
   creatingTransaction BigInt @default(dbgenerated("txid_current()"))
+  /// Stamped with the transaction id: the cluster, so a restore cannot reopen a batch.
+  creatingSystemIdentifier BigInt @default(dbgenerated("member_money_system_identifier()"))
   reversesJournalId String? @unique
   event MemberMoneyEvent @relation(fields: [eventId], references: [id], onDelete: Restrict, onUpdate: Restrict)
   reverses MemberMoneyJournal? @relation("MemberMoneyReversal", fields: [reversesJournalId], references: [id], onDelete: Restrict, onUpdate: Restrict)
@@ -8930,7 +8944,10 @@ model MemberMoneyLine {
   account MemberMoneyAccount
   side MemberMoneySide
   amountCents Int
+  /// Debtor identity: exactly the id its kind names, or none. Not foreign keys.
+  debtorKind MemberMoneyDebtorKind?
   memberId String?
+  organisationId String?
   obligationId String?
   bookingId String?
   lodgeId String?
@@ -8954,6 +8971,7 @@ model MemberMoneyLine {
   applications MemberMoneyApplication[]
   @@index([journalId])
   @@index([memberId, account])
+  @@index([organisationId, account])
   @@index([bookingId])
   @@index([lodgeId])
   @@index([obligationId])
@@ -8966,7 +8984,9 @@ model MemberMoneyObligation {
   journalId String
   obligationKey String @unique
   kind MemberMoneyObligationKind
-  memberId String
+  debtorKind MemberMoneyDebtorKind
+  memberId String?
+  organisationId String?
   faceCents Int
   evidence Json
   journal MemberMoneyJournal @relation(fields: [journalId], references: [id], onDelete: Restrict, onUpdate: Restrict)

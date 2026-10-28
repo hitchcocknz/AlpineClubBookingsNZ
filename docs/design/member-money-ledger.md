@@ -99,7 +99,9 @@ unsettled note, never a payment from Stripe. A mapping change affects future
 render plans; replay uses its frozen mapping version.
 
 Tax is recorded in integer cents with the charge: gross = net + tax, and
-reversal uses those exact cents, tax code and coding version. Use the existing
+reversal uses those exact cents, tax code and coding version. In the journal a
+taxed revenue leg posts its net cents, and the batch's `GST_PAYABLE` legs carry
+the tax on the same side (`INV-MONEY-041`). Use the existing
 money boundary helpers (`INV-MONEY-001`, `INV-MONEY-003`); do not calculate tax
 with new floating-point arithmetic. Preserve current inclusive tax treatment
 and subscription component rounding. Section 10 asks how the journal's tax and
@@ -112,10 +114,10 @@ records and constraints, not a Prisma schema to apply in this documentation PR.
 
 | Record | Contract |
 | --- | --- |
-| `MemberMoneyEvent` | Immutable kind enum, origin enum, source identity/version, deterministic event key, payload hash, actor, reason, effective instant/date and recording time; links a journal batch, including explicit zero-money events |
-| `MemberMoneyJournal` | One immutable header per event/batch, currency, policy/coding version, expected line count and optional unique reversal target; no editable draft or balance column |
-| `MemberMoneyLine` | Header, account enum, Dr/Cr enum, positive integer cents, member/debtor, obligation, booking/lodge where applicable, credit lot, charge/refund identity, original posting reference, tax and frozen descriptive evidence |
-| `MemberMoneyObligation` | Exact charge/refund identity and source, immutable face terms; settlements and reductions refer to it explicitly; remaining amount is derived |
+| `MemberMoneyEvent` | Immutable kind enum, origin enum, source kind/identity/version, deterministic event key, payload hash, actor, reason, effective instant and club civil date and recording time; links a journal batch, including explicit zero-money events |
+| `MemberMoneyJournal` | One immutable header per event/batch, currency, policy/coding version, expected line, obligation and application counts, creating transaction and cluster, and optional unique reversal target; no editable draft or balance column |
+| `MemberMoneyLine` | Header, account enum, Dr/Cr enum, positive integer cents, debtor (a member or an organisation, never both), obligation, booking/lodge where applicable, credit lot, charge/refund identity, original posting reference, tax and frozen descriptive evidence |
+| `MemberMoneyObligation` | Exact charge/refund identity and source, its debtor, immutable face terms; settlements and reductions refer to it explicitly; remaining amount is derived |
 | `MemberMoneyApplication` | Immutable attribution of a receipt/refund/credit to an obligation, amount, and optional unique reversal target; no timing/amount heuristic |
 | `MemberMoneySourceLink` | Durable link from existing booking line, credit row, subscription component, capture, refund or Xero fact to the event; unique per source fact, not per coincident amount |
 | Export manifest | Immutable render revision, payload hash, frozen mapping and exact posting/application coverage identities; retries preserve this evidence |
