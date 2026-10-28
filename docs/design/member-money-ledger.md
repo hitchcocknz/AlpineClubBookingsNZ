@@ -558,3 +558,70 @@ rendering are active and its test passes; this design closes no bug by itself.
 | #4444 | Card refunded display retains earlier edit credit after any later Xero event | R12/R23: compatibility display sums distinct cash and application components; later snapshot cannot overwrite another source's posting |
 | #4447 | Removing an allocation lowers its contribution to refunded display | R23: exact application reversal; independent cash-return component remains unchanged |
 | #4449 | Cancel racing bank settle sees invoice-correction contribution | R04/R07/R23: common locking/claim transaction commits source application, projection and settlement together; cancel re-reads after locking |
+
+## 10. Decision needed
+
+The scope, two-way direction, ledger-first priority and bank-transfer method
+are settled. These narrower choices need owner approval of the design; they
+are not reasons to restart that decision round. Unaffected foundational work
+can ship while a choice is open; the dependent cut-over cannot.
+
+### D1. Financial history when a booking is deleted (#4482)
+
+Deleting a parent currently bypasses INSERT/SELECT-only protection through the
+booking-line cascade. Options:
+
+- **Recommended default:** financial records outlive the booking's operational
+  use. Use RESTRICT for the legacy and new financial relationships, archive or
+  soft-delete financial parents, and retain immutable economic identities.
+  Personal-data minimisation/erasure follows the separately approved retention
+  schedule, including the existing decision about copied charge descriptions.
+- Refuse parent deletion with a database trigger instead, retaining today's
+  relationships. This also needs changes to hard-delete flows and is harder to
+  audit across all parent tables.
+- Explicitly permit financial-history deletion. This leaves #4482 unresolved as
+  append-only storage and cannot meet this design's refusal guarantee.
+
+D1 gates A's deletion protection and any activation asserting durable history.
+No new retention period or right to retain personal data is decided here.
+
+### D2. Legacy bank hand-backs inferred from a Xero note
+
+A void is evidence the note was voided, not proof a bank transfer returned.
+Today's legacy follow-up can undo a hand-back inferred from that note; R14's
+new officer-evidenced transfer has a separate cash fact. Options:
+
+- **Recommended default:** preserve actual Stripe/officer cash evidence; reverse
+  only the voided provider-owned application or legacy note-derived fact, and
+  ask once whether any inferred hand-back really occurred. Until answered,
+  hold automatic further payout for that disputed obligation. A confirmed
+  transfer becomes a separately sourced fact, not revival of the voided note.
+- Apply the legacy “void undoes hand-back” rule even to independently evidenced
+  bank payments. This can reopen a paid debt and needs explicit money-policy
+  approval; the ledger must still retain the original cash evidence.
+
+D2 gates migration of legacy void scenarios #4391/#4315 and the relevant inbound
+cohort. No implementation may mark them passed by silently choosing a meaning
+for “refunded”. New views distinguish cash returned, credit applied and payable;
+#3584's existing output/parity approvals still govern member-facing changes.
+
+### D3. Tax and recognition for the expanded journal
+
+The journal needs consistent tax cents without becoming a GST-return engine.
+Current Xero documents carry inclusive tax coding; a club's registration and
+recognition basis cannot be inferred merely from connecting Xero. Options:
+
+- **Recommended default:** preserve each existing charge's actual tax treatment
+  and date; expose deployment settings for future tax treatment/recognition,
+  defaulted from the existing configured document policy where evidenced. If
+  history/configuration cannot establish the split, block that cohort's import
+  or export for Finance to resolve; never guess a tax amount. Receipts and
+  refunds still post their full known gross cents.
+- Introduce a new universal recognition or tax basis. This changes accounting
+  policy and needs a separately approved policy design before activation.
+
+D3 gates tax-sensitive adoption/activation, not local gross-money evidence. The
+scope excludes new GST reporting and does not assume every adopting club is
+GST-registered. Already-open #3584 private history choices and parity questions
+remain with their original issue; this design does not approve a write-off,
+reprice, acknowledgement or changed finance-report policy on the owner's behalf.
