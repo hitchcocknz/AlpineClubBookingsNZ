@@ -25,6 +25,7 @@ const {
   mockBookingFindUnique,
   mockCancelPaymentIntentIfCancellableWithResult,
   mockProcessRefund,
+  mockListRefundsForPaymentIntent,
   mockReconcilePaymentAggregates,
   mockRecordStripeRefundsAgainstTransaction,
   mockRefundPaymentTransactions,
@@ -73,6 +74,7 @@ const {
   mockFindEditReviewChargeRequest: vi.fn(),
   mockCreateAuditLog: vi.fn().mockResolvedValue(undefined),
   mockProcessRefund: vi.fn(),
+  mockListRefundsForPaymentIntent: vi.fn().mockResolvedValue([]),
   mockReconcilePaymentAggregates: vi.fn().mockResolvedValue(undefined),
   mockRecordStripeRefundsAgainstTransaction: vi.fn().mockResolvedValue({
     createdRefundsCount: 1,
@@ -188,7 +190,9 @@ vi.mock("@/lib/prisma", () => {
   return { prisma: { ...prisma, $transaction: (fn: (tx: typeof prisma) => unknown) => fn(prisma) } };
 });
 
+vi.mock("@/lib/recorded-card-refund-notes", () => ({ queueRecordedCardRefundNotes: vi.fn().mockResolvedValue({ queueOperationId: null }) }));
 vi.mock("@/lib/stripe", () => ({
+  listRefundsForPaymentIntent: (...args: unknown[]) => mockListRefundsForPaymentIntent(...args),
   cancelPaymentIntentIfCancellableWithResult: (...args: unknown[]) =>
     mockCancelPaymentIntentIfCancellableWithResult(...args),
   processRefund: (...args: unknown[]) => mockProcessRefund(...args),
@@ -433,6 +437,7 @@ import {
   enqueueRefundRequestRefundRecovery,
   isEditFinancialReviewChargeRecoveryDead,
   processPaymentRecoveryOperations,
+  runPaymentRecoveryOperationNow,
   queueSupersededPaymentIntentRefundRecovery,
 } from "@/lib/payment-recovery";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
@@ -475,6 +480,16 @@ function makeOperation(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Charge-backed replay tests supply the actual charge identities from their
+// frozen plans; the preflight must read those, not the payment's primary intent.
+function setPlannedChargeFixtures(plan: { paymentTransactionId: string; amountCents: number }[], intent = "pi_original") {
+  mockPaymentFindUnique.mockResolvedValue({ id: "payment-1", stripePaymentIntentId: "pi_primary",
+    transactions: plan.map((slice) => ({ id: slice.paymentTransactionId, stripePaymentIntentId: intent,
+      stripeChargeId: null, amountCents: slice.amountCents, refundedAmountCents: 0,
+      status: PaymentStatus.SUCCEEDED, createdAt: new Date("2026-05-01T00:00:00.000Z") })),
+  });
+}
+
 /**
  * `resetStaleProcessingOperations`'s own read, told apart from the worker's
  * queue read (#3220).
@@ -500,6 +515,8 @@ describe("payment recovery worker", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     settlementModuleLoadFailure.current = null;
+    mockListRefundsForPaymentIntent.mockReset().mockResolvedValue([]);
+    mockRecordStripeRefundsAgainstTransaction.mockResolvedValue({ readAsRefused: [] });
     mockPaymentRecoveryFindMany.mockImplementation(
       (args?: { where?: { status?: unknown; attempts?: { gte?: number } } }) => {
         // resetStaleProcessingOperations queries for exhausted PROCESSING rows.
@@ -1316,6 +1333,69 @@ describe("payment recovery worker", () => {
     expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
   });
 
+  describe("#4359: Stripe evidence before any charge-backed re-send", () => {
+    const dashboardRefund = {
+      id: "re_dashboard", amount: 4000, currency: "nzd", status: "succeeded",
+      charge: "ch_original", payment_intent: "pi_original",
+      created: new Date("2026-06-30T12:00:00.000Z").getTime() / 1000, metadata: {},
+    };
+
+    function queueRefund(type = PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION) {
+      const op = makeOperation({ type, paymentIntentId: "pi_original", createdAt: new Date("2026-06-30T12:00:00.000Z"),
+        allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
+        idempotencyKey: "payment_recovery_modification_refund_mod-1",
+      });
+      setPlannedChargeFixtures([{ paymentTransactionId: "txn-1", amountCents: 4000 }]);
+      mockPaymentRecoveryFindUnique.mockResolvedValue(op);
+      mockPaymentTransactionFindUnique.mockResolvedValue({ id: "txn-1", paymentId: "payment-1", stripePaymentIntentId: "pi_original", stripeChargeId: "ch_original", status: "SUCCEEDED", amountCents: 20000, refundedAmountCents: 0 });
+      return op;
+    }
+
+    it.each([PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION, PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT])("holds %s on the first runner attempt, without sending or closing it", async (type) => {
+      const op = queueRefund(type);
+      mockListRefundsForPaymentIntent.mockResolvedValue([dashboardRefund]);
+      expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+      expect(mockRecordStripeRefundsAgainstTransaction).toHaveBeenCalledWith(expect.objectContaining({ refunds: [dashboardRefund] }));
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ id: op.id, attempts: 1, processingStartedAt: { not: null } }),
+        data: expect.objectContaining({ status: "FAILED", attempts: MAX_PAYMENT_RECOVERY_ATTEMPTS, nextRetryAt: null, lastError: expect.stringContaining("INV-PAY-145") }),
+      }));
+      expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "SUCCEEDED" }) }));
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalledWith(expect.objectContaining({ errorMessage: expect.stringContaining("Paid another way") }), CLUB_FORMAT_TEST);
+      expect(mockCreateAuditLog).toHaveBeenCalledWith(expect.objectContaining({ category: "payment", action: "booking-payment.card-refund.resend-held" }));
+    });
+
+    it("records an app refund and replays the original request instead of holding it", async () => {
+      const op = queueRefund();
+      mockListRefundsForPaymentIntent.mockResolvedValue([{ ...dashboardRefund, metadata: { bookingId: "booking-1", reason: "booking_modification_refund_recovery" } }]);
+      expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("succeeded");
+      expect(mockRefundPaymentTransactions).toHaveBeenCalledOnce();
+      expect(mockRecordStripeRefundsAgainstTransaction.mock.invocationCallOrder[0]).toBeLessThan(mockRefundPaymentTransactions.mock.invocationCallOrder[0]!);
+    });
+
+    it("sends nothing when the provider preflight fails, keeping a normal retry", async () => {
+      const op = queueRefund();
+      mockListRefundsForPaymentIntent.mockRejectedValue(new Error("preflight timeout"));
+      expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+      expect(mockPaymentRecoveryUpdateMany).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ status: "FAILED", nextRetryAt: expect.any(Date), lastError: "preflight timeout" }) }));
+    });
+
+    it("a lost hold claim sends no alert or audit and no refund", async () => {
+      const op = queueRefund();
+      mockListRefundsForPaymentIntent.mockResolvedValue([dashboardRefund]);
+      mockPaymentRecoveryUpdateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValue({ count: 0 });
+      expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(mockSendAdminPaymentFailureAlert).not.toHaveBeenCalled();
+      expect(mockCreateAuditLog).not.toHaveBeenCalled();
+      expect(mockRefundPaymentTransactions).not.toHaveBeenCalled();
+      expect(mockProcessRefund).not.toHaveBeenCalled();
+    });
+  });
+
   it("processes a booking modification refund recovery by replaying refundPaymentTransactions", async () => {
     mockPaymentRecoveryFindUnique.mockResolvedValue(
       makeOperation({
@@ -1580,6 +1660,7 @@ describe("payment recovery worker", () => {
       paymentIntentId: "pi_primary",
       paymentTransactionId: null,
     });
+    setPlannedChargeFixtures([{ paymentTransactionId: "txn-late", amountCents: 2500 }], "pi_late");
     mockPaymentRecoveryFindUnique.mockResolvedValue(crashed);
     mockPaymentRecoveryFindMany.mockImplementation(
       (args?: { where?: { attempts?: { gte?: number } } }) => {
@@ -1621,6 +1702,7 @@ describe("payment recovery worker", () => {
       stripeKeyPrefix: "late_cancel_refund_booking-1_pi_late",
       paymentTransactionId: null,
     });
+    setPlannedChargeFixtures([{ paymentTransactionId: "txn-late", amountCents: 2500 }], "pi_late");
     mockPaymentRecoveryFindUnique.mockResolvedValue(crashed);
     mockPaymentRecoveryFindMany.mockImplementation(
       (args?: { where?: { attempts?: { gte?: number } } }) =>
@@ -2536,6 +2618,7 @@ describe("payment recovery worker", () => {
         paymentTransactionId: null,
         ...overrides,
       });
+      setPlannedChargeFixtures(operation.allocationPlan as { paymentTransactionId: string; amountCents: number }[]);
       mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
       mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
         Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
@@ -4387,6 +4470,7 @@ describe("payment recovery worker", () => {
 
     it("records the admin-only history event EXACTLY ONCE on a successful cron replay, keyed off the terminal SUCCEEDED transition", async () => {
       const dupOp = makeDuplicateCaptureOp();
+      setPlannedChargeFixtures([{ paymentTransactionId: "txn-dup", amountCents: 5000 }], "pi_dup");
       mockPaymentRecoveryFindMany.mockImplementation(
         (args?: { where?: { attempts?: { gte?: number } } }) => {
           if (isStaleWorkerSweep(args)) {
@@ -4422,6 +4506,7 @@ describe("payment recovery worker", () => {
 
     it("does NOT record the event when the terminal transition finds the operation already SUCCEEDED (count 0)", async () => {
       const dupOp = makeDuplicateCaptureOp();
+      setPlannedChargeFixtures([{ paymentTransactionId: "txn-dup", amountCents: 5000 }], "pi_dup");
       mockPaymentRecoveryFindMany.mockImplementation(
         (args?: { where?: { attempts?: { gte?: number } } }) => {
           if (isStaleWorkerSweep(args)) {
@@ -4478,6 +4563,7 @@ describe("payment recovery worker", () => {
       });
     }
     function queue(op: ReturnType<typeof makeCapacityOp>) {
+      setPlannedChargeFixtures(op.allocationPlan as { paymentTransactionId: string; amountCents: number }[]);
       mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
         Promise.resolve(isStaleWorkerSweep(args) ? [] : [op]),
       );
@@ -4553,6 +4639,7 @@ describe("payment recovery worker", () => {
       });
     }
     function queue(op: ReturnType<typeof makeCancelOp>) {
+      setPlannedChargeFixtures(op.allocationPlan as { paymentTransactionId: string; amountCents: number }[]);
       mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
         Promise.resolve(isStaleWorkerSweep(args) ? [] : [op]),
       );
