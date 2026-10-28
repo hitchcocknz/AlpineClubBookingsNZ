@@ -1872,8 +1872,9 @@ and **`INV-PAY-147`** (slice evidence).
 - No new advisory lock (`INV-LOCK-001` through `INV-LOCK-003`). Provider reads
   remain outside transactions; canonical ledger recording retains its Payment
   row lock. Refusal generations and prefix selection remain unchanged.
-- Limit: legacy refunds without slice evidence cannot be matched and retain
-  the existing replay behaviour. Unmatched evidence retains existing handling,
+- Limit: legacy refunds without slice evidence cannot be matched. Adding
+  evidence changes their replay parameters; Stripe may reject a cached legacy
+  key until expiry. Unmatched evidence retains existing handling,
   including the outside-app hold.
 - Proven by `card-refund-resend-preflight.test.ts`,
   `payment-transactions-refunds.test.ts` and `payment-recovery.test.ts`.
