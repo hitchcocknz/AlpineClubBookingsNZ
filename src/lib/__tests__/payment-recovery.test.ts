@@ -340,7 +340,9 @@ vi.mock("@/lib/audit", () => ({
   createAuditLog: (...args: unknown[]) => mockCreateAuditLog(...args),
 }));
 
-vi.mock("@/lib/payment-transactions", () => ({
+vi.mock("@/lib/payment-transactions", async (importOriginal) => ({
+  // #4359: the preflight's no-plan fallback and the executor share this pure filter.
+  capturedStripeTransactions: ((await importOriginal()) as typeof import("@/lib/payment-transactions")).capturedStripeTransactions,
   // #4217: the runner's claim hold locks the Payment row before the recovery row.
   lockPaymentForRefundedTotal: (...args: unknown[]) => mockLockPaymentForRefundedTotal(...args),
   markPaymentIntentTransactionFailed: (...args: unknown[]) => mock4316.markFailed(...args),
@@ -583,6 +585,7 @@ describe("payment recovery worker", () => {
       transactions: [
         {
           id: "txn-1",
+          source: "STRIPE",
           stripePaymentIntentId: "pi_original",
           amountCents: 10000,
           refundedAmountCents: 0,
@@ -1399,6 +1402,31 @@ describe("payment recovery worker", () => {
       expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("succeeded");
       expect(mockRefundPaymentTransactions).toHaveBeenCalledOnce();
       expect(mockRecordStripeRefundsAgainstTransaction.mock.invocationCallOrder[0]).toBeLessThan(mockRefundPaymentTransactions.mock.invocationCallOrder[0]!);
+    });
+
+    it("checks only the card rows the executor can refund when there is no frozen plan", async () => {
+      const op = queueRefund();
+      mockPaymentRecoveryFindUnique.mockResolvedValue({ ...op, allocationPlan: null, paymentTransactionId: null });
+      mockPaymentFindUnique.mockResolvedValue({ id: "payment-1", stripePaymentIntentId: "pi_primary", transactions: [
+        { id: "txn-bank", source: "INTERNET_BANKING", stripePaymentIntentId: null, amountCents: 10000, refundedAmountCents: 0,
+          status: PaymentStatus.SUCCEEDED, createdAt: new Date("2026-04-01T00:00:00.000Z") },
+        { id: "txn-1", source: "STRIPE", stripePaymentIntentId: "pi_original", amountCents: 20000, refundedAmountCents: 0,
+          status: PaymentStatus.SUCCEEDED, createdAt: new Date("2026-05-01T00:00:00.000Z") },
+      ] });
+      await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST);
+      expect(mockListRefundsForPaymentIntent).toHaveBeenCalledOnce();
+      expect(mockListRefundsForPaymentIntent).toHaveBeenCalledWith("pi_original", expect.anything());
+      expect(mockPaymentRecoveryUpdateMany).not.toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ lastError: expect.stringContaining("no Stripe intent") }),
+      }));
+    });
+
+    it("keeps the batch going when the hold's audit write fails", async () => {
+      const op = queueRefund();
+      mockListRefundsForPaymentIntent.mockResolvedValue([dashboardRefund]);
+      mockCreateAuditLog.mockRejectedValueOnce(new Error("audit sink down"));
+      expect(await runPaymentRecoveryOperationNow(op.id, CLUB_FORMAT_TEST)).toBe("failed");
+      expect(mockSendAdminPaymentFailureAlert).toHaveBeenCalled();
     });
 
     it("sends nothing when the provider preflight fails, keeping a normal retry", async () => {

@@ -34,6 +34,7 @@ import {
   findPaymentTransactionByIntentId,
   lockPaymentForRefundedTotal,
   reconcilePaymentAggregates,
+  capturedStripeTransactions,
   recordStripeRefundsAgainstTransaction,
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
@@ -1595,6 +1596,8 @@ async function failPaymentRecoveryOperation(
   });
 
   if (outcome === "failed" && error instanceof UnattributedCardRefundBeforeResendError) {
+    // The hold has committed and the officer alert has gone. A failed audit
+    // write must not abandon the rest of the recovery batch.
     await createAuditLog({
       category: "payment",
       action: "booking-payment.card-refund.resend-held",
@@ -1605,6 +1608,8 @@ async function failPaymentRecoveryOperation(
       outcome: "failure",
       summary: error.message,
       metadata: { stripeRefundIds: error.stripeRefundIds, paymentId: operation.paymentId },
+    }).catch((auditError: unknown) => {
+      logger.error({ err: auditError, operationId: operation.id }, "Failed to write the card refund re-send hold audit");
     });
   }
 
@@ -2114,7 +2119,11 @@ async function processBookingModificationRefundOperation(
   let plan = parseRefundAllocationPlan(operation.allocationPlan);
   await checkCardRefundResend({
     operation,
-    plan: plan ?? payment.transactions.filter((row) => isCapturedTransactionStatus(row.status)).map((row) => ({ paymentTransactionId: row.id, amountCents: row.amountCents })),
+    plan:
+      plan ??
+      capturedStripeTransactions(payment.transactions)
+        .filter((row) => row.amountCents - row.refundedAmountCents > 0)
+        .map((row) => ({ paymentTransactionId: row.id, amountCents: row.amountCents })),
     transactions: payment.transactions,
   });
 
