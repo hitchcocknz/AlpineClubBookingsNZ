@@ -729,10 +729,14 @@ migration role owns the objects; audit retention gains no money-table rights.
 Row mutation and statement-level TRUNCATE triggers additionally refuse accidental
 operator changes. Deliberate operator repairs remain a separate controlled task.
 
-After migrating, re-run `db:provision-roles --apply`. Default privileges on newly
-created tables are broader until provisioning narrows them: merging a migration
-is not evidence of restricted effective grants. The blue/green deploy check
-refuses writable immutable tables. `member-money:verify` checks batch integrity,
-mandatory event links, enabled enforcement triggers and effective application
-table privileges in a read-only snapshot. It does not prove historical parity,
-writer-cohort coverage or accounting policy; those activate in later milestones.
+Default privileges give a new table broader rights, so the migration that
+creates the journal narrows its own tables for every non-owner grantee, naming
+no role; re-running `db:provision-roles --apply` is the repair if anything
+widens them. Merging a migration is not evidence of restricted effective grants:
+the blue/green deploy check refuses an append-only table the application could
+change beyond INSERT. `member-money:verify` checks batch integrity, mandatory
+event links, enabled enforcement triggers, the enforcement functions' source,
+expected validated constraints and effective application table privileges in a
+read-only snapshot; for a superuser or owner role the grant check is not
+applicable. It does not prove historical parity, writer-cohort coverage or
+accounting policy; those activate in later milestones.

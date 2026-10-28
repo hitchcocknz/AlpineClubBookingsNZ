@@ -208,10 +208,12 @@ stack in [Staging](#staging)), then repeat on production.
    `migrate` service now runs as the migration role, and the new colour and the cron
    leader start as the application role. The old colour keeps its superuser
    connection until it is stopped, and no grant it relies on is removed. After the
-   migrate, the deploy script checks two things: every relation in `public` is
-   owned by the migration role and readable by the application role, and no view
-   is writable by the application role. If either fails, it stops before the new
-   colour starts and tells you to re-run `--apply`.
+   migrate, the deploy script checks the grants: every relation in `public` is
+   owned by the migration role and readable by the application role, no view is
+   writable by the application role, and the application role can only INSERT
+   and SELECT each append-only relation (`BookingLedgerLine`, `AuditLog` and the
+   member-money journal). If any of that fails, it stops before the new colour
+   starts and tells you to re-run `--apply`.
 5. **Check**: the next `data-pruning` cron run succeeds, and
    `psql -U tac -d tacbookings -c "\du"` lists the three roles without
    `Superuser`.
@@ -234,7 +236,13 @@ needs the new password. So rotate in this order:
 A "repair" re-run with a freshly generated password is a rotation too.
 
 **Re-run `--apply`** in these cases:
-- after the first migration of a brand-new database;
+- after the first migration of a brand-new database. If you provisioned the
+  database while it was empty (step 2 on a new install, or before a restore),
+  the first deploy's migrate creates `BookingLedgerLine` and `AuditLog` with the
+  application's default UPDATE and DELETE, and the post-migrate check stops the
+  deploy at step 13 naming both. The migrations have applied and the old colour
+  is still serving: run the step 2 `--apply` command, then run the deploy again.
+  Its migrate has nothing left to do, and the check passes;
 - after a release whose upgrade note changes `APPEND_ONLY_RELATIONS` or
   `AUDIT_ANONYMISED_REQUEST_COLUMNS` (`src/lib/database-roles.ts`,
   `src/lib/audit-retention-classes.ts`);
@@ -314,21 +322,29 @@ not a measurement of the headroom.
 ### Member money journal grants (M1)
 
 The journal is inert: this release changes no production money reader or writer.
-After migration `20261127010000_member_money_journal`, an operator re-runs
-`pnpm run db:provision-roles --apply` using the existing provisioning credential
-procedure above. This extends #4453 to `MemberMoneyEvent`, `MemberMoneyJournal`,
-`MemberMoneyLine`, `MemberMoneyObligation`, `MemberMoneyApplication` and
-`MemberMoneySourceLink` and `MemberMoneySourcePosting`. The migration role owns them; the app gets INSERT/SELECT
-only; audit retention gets no rights. Do this before the post-migrate blue/green
-check: it now refuses broad default grants on immutable tables too. A deployment
-still using the operator as its app connection has not established least privilege.
+#4453's append-only treatment now covers `MemberMoneyEvent`, `MemberMoneyJournal`,
+`MemberMoneyLine`, `MemberMoneyObligation`, `MemberMoneyApplication`,
+`MemberMoneySourceLink` and `MemberMoneySourcePosting`: the migration role owns
+them, the app gets INSERT and SELECT only, and audit retention gets no rights.
+
+No provisioning step is needed. Migration `20261127010000_member_money_journal`
+narrows its own seven tables itself: it revokes UPDATE, DELETE, TRUNCATE, TRIGGER
+and REFERENCES from every role but their owner, so the post-migrate check passes
+as it stands. On a single-role install, or one whose app connects as the owner,
+it revokes nothing, and nothing changes. If the check ever names a journal
+table, re-running `pnpm run db:provision-roles --apply` (step 2 above) is the
+repair. A deployment still using the operator as its app connection has not
+established least privilege.
 
 Run `pnpm run member-money:verify` with the application `DATABASE_URL`. If running
 through a separate read-only/operator connection, set `APP_DB_USER` to the actual
 application role to check its effective grants. The command opens a read-only
 repeatable-read transaction and reports structural findings and exits nonzero
-on unsafe grants, missing/disabled journal triggers, orphan events or invalid
-batches. A successful empty journal is valid M1 evidence, not proof of backfill,
+on unsafe grants, missing/disabled journal triggers, a changed enforcement
+function, a missing or unvalidated constraint, orphan events or invalid
+batches. When the role it checks is a superuser or owns the journal, as on a
+single-role install, it prints `"grantCheck": "not_applicable"` instead of
+failing: no grant can narrow such a role. A successful empty journal is valid M1 evidence, not proof of backfill,
 legacy posting coverage, historical parity or readiness to switch readers.
 No provider credentials are needed. Source links can later attach legacy
 confirmation evidence without extending sealed legs. M2 owns the existing

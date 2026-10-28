@@ -526,3 +526,29 @@ CREATE TRIGGER member_money_no_truncate BEFORE TRUNCATE ON "MemberMoneySourcePos
 FOR EACH STATEMENT EXECUTE FUNCTION member_money_refuse_mutation();
 CREATE CONSTRAINT TRIGGER member_money_complete AFTER INSERT ON "MemberMoneySourcePosting"
 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION member_money_require_complete();
+
+-- Least-privilege installs (#4453): the migration role's default privileges give
+-- the application UPDATE and DELETE on every new table. Narrow the tables THIS
+-- file created to INSERT/SELECT-style rights for every grantee but the owner,
+-- naming no role (docs/BLUE_GREEN_MIGRATION_POLICY.md, "Which role a migration
+-- runs as"). Nothing depends on those rights: the tables are new. On a
+-- single-role install, or an app that connects as the owner, it revokes nothing.
+DO $$
+DECLARE
+  target record;
+BEGIN
+  FOR target IN
+    SELECT DISTINCT c.oid::regclass AS rel,
+      CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE quote_ident(pg_catalog.pg_get_userbyid(acl.grantee)) END AS grantee
+    FROM pg_catalog.pg_class c
+    CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) AS acl
+    WHERE c.relnamespace = 'public'::regnamespace
+      AND c.relname IN ('MemberMoneyEvent', 'MemberMoneyJournal', 'MemberMoneyLine', 'MemberMoneyObligation',
+        'MemberMoneyApplication', 'MemberMoneySourceLink', 'MemberMoneySourcePosting')
+      AND acl.grantee <> c.relowner
+      AND acl.privilege_type IN ('UPDATE', 'DELETE', 'TRUNCATE', 'TRIGGER', 'REFERENCES')
+  LOOP
+    EXECUTE format('REVOKE UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES ON TABLE %s FROM %s', target.rel, target.grantee);
+  END LOOP;
+END
+$$;

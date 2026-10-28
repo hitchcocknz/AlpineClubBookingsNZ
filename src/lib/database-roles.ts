@@ -68,10 +68,13 @@ export const APPLICATION_SCHEMA = "public";
 /**
  * Relations the application role may only INSERT into and SELECT from. A row in
  * one of these is a fact that is corrected by appending another row, never by
- * rewriting it: the booking ledger (`docs/design/booking-ledger.md` §4) and the
- * audit log. Adding a relation here — or a column to
+ * rewriting it: the booking ledger (`docs/design/booking-ledger.md` §4), the
+ * audit log and the member-money journal. Adding a relation here — or a column to
  * `AUDIT_ANONYMISED_REQUEST_COLUMNS` — is a release that asks every deployment to
- * re-run `pnpm run db:provision-roles --apply`, and its upgrade note says so.
+ * re-run `pnpm run db:provision-roles --apply`, and its upgrade note says so,
+ * unless the migration that creates the relation narrows it itself, as the
+ * journal's does (docs/BLUE_GREEN_MIGRATION_POLICY.md, the carve-out for tables
+ * a migration creates).
  */
 export const APPEND_ONLY_RELATIONS = [
   "BookingLedgerLine", "AuditLog", ...MEMBER_MONEY_RELATIONS,
