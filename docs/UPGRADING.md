@@ -13,6 +13,16 @@ It complements the two documents next to it and does not repeat them:
   synced and roll it onto a running database and deployment without losing data
   or breaking the live app color mid-deploy.
 
+## Member money journal foundation (#4513)
+
+After migrating the inert journal tables, re-run `pnpm run db:provision-roles
+--apply` before cutover, then `pnpm run member-money:verify` with the application
+connection. New tables initially inherit broad defaults; the deploy check now
+refuses those rights on immutable relations. Audit retention gains no journal
+rights. Follow [the role-grant procedure](../DEPLOYMENT.md#member-money-journal-grants-m1).
+Old code remains compatible and can be restored without dropping journal
+history. No legacy writer or reader switches in this release.
+
 ## Principles
 
 1. **Upgrade tag-to-tag, one release at a time.** Deploy released tags

@@ -8920,6 +8920,7 @@ model MemberMoneySourceLink {
   @@unique([sourceKind, sourceId, sourceVersion])
   @@unique([id, journalId])
   @@index([journalId])
+  postings MemberMoneySourcePosting[]
 }
 
 model MemberMoneyLine {
@@ -8956,6 +8957,8 @@ model MemberMoneyLine {
   @@index([bookingId])
   @@index([lodgeId])
   @@index([obligationId])
+  sourcePostings MemberMoneySourcePosting[]
+  @@unique([id, journalId])
 }
 
 model MemberMoneyObligation {
@@ -8988,4 +8991,16 @@ model MemberMoneyApplication {
   @@index([journalId])
   @@index([sourceLineId])
   @@index([obligationId])
+}
+
+/// Immutable exact leg coverage, including compatibility links created later.
+model MemberMoneySourcePosting {
+  id String @id @default(cuid())
+  sourceLinkId String
+  lineId String
+  journalId String
+  source MemberMoneySourceLink @relation(fields: [sourceLinkId, journalId], references: [id, journalId], onDelete: Restrict, onUpdate: Restrict)
+  line MemberMoneyLine @relation(fields: [lineId, journalId], references: [id, journalId], onDelete: Restrict, onUpdate: Restrict)
+  @@unique([sourceLinkId, lineId])
+  @@index([lineId, journalId])
 }

@@ -216,6 +216,21 @@ ALTER TABLE "MemberMoneyApplication" ADD CONSTRAINT "MemberMoneyApplication_obli
 ALTER TABLE "MemberMoneyApplication" ADD CONSTRAINT "MemberMoneyApplication_reversesApplicationId_fkey" FOREIGN KEY ("reversesApplicationId") REFERENCES "MemberMoneyApplication"("id") ON DELETE RESTRICT ON UPDATE RESTRICT;
 
 
+-- Exact bridge coverage can be attached later without rewriting any journal leg.
+CREATE UNIQUE INDEX "MemberMoneyLine_id_journalId_key" ON "MemberMoneyLine"(id, "journalId");
+CREATE TABLE "MemberMoneySourcePosting" (
+  id TEXT NOT NULL PRIMARY KEY,
+  "sourceLinkId" TEXT NOT NULL,
+  "lineId" TEXT NOT NULL,
+  "journalId" TEXT NOT NULL
+);
+CREATE UNIQUE INDEX "MemberMoneySourcePosting_sourceLinkId_lineId_key" ON "MemberMoneySourcePosting"("sourceLinkId", "lineId");
+CREATE INDEX "MemberMoneySourcePosting_lineId_journalId_idx" ON "MemberMoneySourcePosting"("lineId", "journalId");
+ALTER TABLE "MemberMoneySourcePosting" ADD CONSTRAINT "MemberMoneySourcePosting_sourceLinkId_journalId_fkey"
+  FOREIGN KEY ("sourceLinkId", "journalId") REFERENCES "MemberMoneySourceLink"(id, "journalId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+ALTER TABLE "MemberMoneySourcePosting" ADD CONSTRAINT "MemberMoneySourcePosting_lineId_journalId_fkey"
+  FOREIGN KEY ("lineId", "journalId") REFERENCES "MemberMoneyLine"(id, "journalId") ON DELETE RESTRICT ON UPDATE RESTRICT;
+
 -- Expand only: no legacy writer is made mandatory in M1. No existing rows change.
 -- No SECURITY DEFINER, advisory lock, provider call or mutable journal balance.
 ALTER TABLE "MemberMoneyEvent" ADD CONSTRAINT "member_money_event_evidence" CHECK (
@@ -278,12 +293,12 @@ BEGIN
     END IF;
   END IF;
   IF TG_TABLE_NAME = 'MemberMoneyLine' THEN
-   IF NEW."bookingId" IS NOT NULL THEN
-    IF NOT EXISTS (SELECT 1 FROM public."Booking" b WHERE b.id = NEW."bookingId" AND b."lodgeId" = NEW."lodgeId") THEN
-      RAISE EXCEPTION 'member_money_booking_lodge: incorrect booking dimension' USING ERRCODE = '23514';
+    IF NEW."bookingId" IS NOT NULL THEN
+      IF NOT EXISTS (SELECT 1 FROM public."Booking" b WHERE b.id = NEW."bookingId" AND b."lodgeId" = NEW."lodgeId") THEN
+        RAISE EXCEPTION 'member_money_booking_lodge: incorrect booking dimension' USING ERRCODE = '23514';
+      END IF;
     END IF;
   END IF;
-   END IF;
   RETURN NEW;
 END
 $$;
@@ -314,6 +329,12 @@ BEGIN
   END IF;
   IF NOT EXISTS (SELECT 1 FROM public."MemberMoneySourceLink" WHERE "journalId" = h.id AND "sourceId" = e."sourceIdentity" AND "sourceVersion" = e."sourceVersion") THEN
     errors := array_append(errors, 'missing_source_link');
+  END IF;
+  IF EXISTS (SELECT 1 FROM public."MemberMoneySourceLink" source
+    WHERE source."journalId" = h.id AND source."sourceKind" = 'BOOKING_LEDGER'
+      AND h."expectedLineCount" > 0 AND NOT EXISTS (
+        SELECT 1 FROM public."MemberMoneySourcePosting" posting WHERE posting."sourceLinkId" = source.id)) THEN
+    errors := array_append(errors, 'missing_bridge_postings');
   END IF;
   IF (e.kind = 'REVERSAL') <> (h."reversesJournalId" IS NOT NULL) THEN
     errors := array_append(errors, 'reversal_kind_mismatch');
@@ -427,4 +448,11 @@ FOR EACH ROW EXECUTE FUNCTION member_money_refuse_mutation();
 CREATE TRIGGER member_money_no_truncate BEFORE TRUNCATE ON "MemberMoneySourceLink"
 FOR EACH STATEMENT EXECUTE FUNCTION member_money_refuse_mutation();
 CREATE CONSTRAINT TRIGGER member_money_complete AFTER INSERT ON "MemberMoneySourceLink"
+DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION member_money_require_complete();
+
+CREATE TRIGGER member_money_immutable BEFORE UPDATE OR DELETE ON "MemberMoneySourcePosting"
+FOR EACH ROW EXECUTE FUNCTION member_money_refuse_mutation();
+CREATE TRIGGER member_money_no_truncate BEFORE TRUNCATE ON "MemberMoneySourcePosting"
+FOR EACH STATEMENT EXECUTE FUNCTION member_money_refuse_mutation();
+CREATE CONSTRAINT TRIGGER member_money_complete AFTER INSERT ON "MemberMoneySourcePosting"
 DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION member_money_require_complete();

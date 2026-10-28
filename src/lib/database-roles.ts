@@ -52,8 +52,8 @@
  * anything from PUBLIC, or print a password.
  */
 
-import { MEMBER_MONEY_RELATIONS } from "./member-money-tables";
 import { AUDIT_ANONYMISED_REQUEST_COLUMNS } from "./audit-retention-classes";
+import { MEMBER_MONEY_RELATIONS } from "./member-money-tables";
 import {
   buildCreateLoginRoleIfAbsentSql,
   buildStripAllRoleMembershipsSql,
@@ -73,14 +73,16 @@ export const APPLICATION_SCHEMA = "public";
  * `AUDIT_ANONYMISED_REQUEST_COLUMNS` — is a release that asks every deployment to
  * re-run `pnpm run db:provision-roles --apply`, and its upgrade note says so.
  */
-export const APPEND_ONLY_RELATIONS = ["BookingLedgerLine", "AuditLog", ...MEMBER_MONEY_RELATIONS] as const;
+export const APPEND_ONLY_RELATIONS = [
+  "BookingLedgerLine", "AuditLog", ...MEMBER_MONEY_RELATIONS,
+] as const;
 
 /** Prisma's migration history: the application reads it, only migrations write it. */
 export const MIGRATION_HISTORY_RELATION = "_prisma_migrations";
 
 /**
- * The migration that creates the newest append-only relations. A database whose history lacks it runs an older
- * release, and provisioning asks for this release's migrations first.
+ * The migration that creates the newest append-only relations. A database whose
+ * history lacks it runs an older release, and provisioning asks for this release's migrations first.
  */
 export const APPEND_ONLY_SCHEMA_MIGRATION = "20261127010000_member_money_journal";
 
@@ -173,7 +175,10 @@ WHERE n.nspname = 'public'
   AND (pg_catalog.pg_get_userbyid(c.relowner) <> :'migration_role'
        OR NOT pg_catalog.has_table_privilege(:'app_role', c.oid, 'SELECT')
        OR (c.relkind IN ('v', 'm')
-           AND pg_catalog.has_table_privilege(:'app_role', c.oid, 'INSERT, UPDATE, DELETE')));`;
+           AND pg_catalog.has_table_privilege(:'app_role', c.oid, 'INSERT, UPDATE, DELETE'))
+       OR (c.relname IN (${APPEND_ONLY_RELATIONS.map(quoteLiteral).join(", ")})
+           AND (pg_catalog.has_table_privilege(:'app_role', c.oid, 'UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES')
+                OR pg_catalog.has_any_column_privilege(:'app_role', c.oid, 'UPDATE'))));`;
 
 /** A relation name in the application schema, quoted for SQL text. */
 function relation(name: string): string {

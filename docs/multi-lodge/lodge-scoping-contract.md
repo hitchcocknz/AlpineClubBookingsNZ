@@ -55,7 +55,7 @@ sequencing):
 ## Member money journal (#4513)
 
 `MemberMoneyEvent`, `MemberMoneyJournal`, `MemberMoneyObligation`,
-`MemberMoneyApplication` and `MemberMoneySourceLink` are club-wide economic
+`MemberMoneyApplication`, `MemberMoneySourceLink` and `MemberMoneySourcePosting` are club-wide economic
 records: one receipt may cover several lodges. `MemberMoneyLine` carries optional
 `bookingId` and `lodgeId` dimensions with RESTRICT foreign keys and no update
 cascade. A booking dimension requires its actual lodge (checked on insert).

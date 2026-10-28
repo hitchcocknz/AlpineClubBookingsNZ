@@ -264,7 +264,8 @@ package and runs `bash scripts/ci/kept-change-realdb.sh` against a fresh,
 loopback-only disposable database. It runs the kept-change, superseded-invoice
 carry, change-receipt and primary-invoice race suites serially, then checks the
 Vitest JSON report with `unexercisedRealdbFiles`: every named suite must pass
-and none may skip. The script stops its database on exit. When the check runs
+and none may skip. It also runs the inert member-money journal refusal suite (#4513), including
+its INSERT/SELECT-only application connection. The script stops its database on exit. When the check runs
 as root, only PostgreSQL commands run as the package's unprivileged `postgres`
 account, which owns the fresh cluster directory; migrations and tests retain
 the caller's checkout permissions. Non-root checks use their own account.

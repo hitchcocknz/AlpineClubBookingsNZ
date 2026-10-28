@@ -122,7 +122,7 @@ purpose: **deleting a booking still deletes its ledger lines** (below).
 | --- | --- | --- | --- |
 | Operator | `tac` (`POSTGRES_USER`) | people: provisioning, restores, repairs | everything (superuser) |
 | Migration | `tac_migrator` | the `migrate` service | own every object in schema `public`; run `prisma migrate deploy`; create temporary tables |
-| Application | `tac_app` | both web slots and the cron leader | SELECT, INSERT, UPDATE, DELETE on ordinary tables; only SELECT on views; only **INSERT and SELECT** on `BookingLedgerLine` and `AuditLog`; only SELECT on `_prisma_migrations`; temporary tables |
+| Application | `tac_app` | both web slots and the cron leader | SELECT, INSERT, UPDATE, DELETE on ordinary tables; only SELECT on views; only **INSERT and SELECT** on `BookingLedgerLine`, `AuditLog` and the member-money journal tables; only SELECT on `_prisma_migrations`; temporary tables |
 | Audit retention | `tac_audit_retention` | the nightly audit retention job, on the cron leader only | SELECT and DELETE on `AuditLog`; UPDATE of `ipAddress` and `userAgent`, which a trigger lets it set only to empty |
 
 None of the three new roles is a superuser, may create roles or databases, or is a
@@ -310,6 +310,37 @@ wants the limit taken from the default `768m` towards `1g`. The pairing
 `POSTGRES_MAX_CONNECTIONS=80` with the default `768m` has run on one fork host
 since mid-October 2026 without memory pressure, which is one host's evidence,
 not a measurement of the headroom.
+
+### Member money journal grants (M1)
+
+The journal is inert: this release changes no production money reader or writer.
+After migration `20261127010000_member_money_journal`, an operator re-runs
+`pnpm run db:provision-roles --apply` using the existing provisioning credential
+procedure above. This extends #4453 to `MemberMoneyEvent`, `MemberMoneyJournal`,
+`MemberMoneyLine`, `MemberMoneyObligation`, `MemberMoneyApplication` and
+`MemberMoneySourceLink` and `MemberMoneySourcePosting`. The migration role owns them; the app gets INSERT/SELECT
+only; audit retention gets no rights. Do this before the post-migrate blue/green
+check: it now refuses broad default grants on immutable tables too. A deployment
+still using the operator as its app connection has not established least privilege.
+
+Run `pnpm run member-money:verify` with the application `DATABASE_URL`. If running
+through a separate read-only/operator connection, set `APP_DB_USER` to the actual
+application role to check its effective grants. The command opens a read-only
+repeatable-read transaction and reports structural findings and exits nonzero
+on unsafe grants, missing/disabled journal triggers, orphan events or invalid
+batches. A successful empty journal is valid M1 evidence, not proof of backfill,
+legacy posting coverage, historical parity or readiness to switch readers.
+No provider credentials are needed. Source links can later attach legacy
+confirmation evidence without extending sealed legs. M2 owns the existing
+booking-ledger deletion cascade; this migration does not change old writers.
+
+Xero account codes stay in the existing account-mapping settings. New journal
+keys have no guessed provider codes; member fees retain the registered booking
+income fallback. Clearing controls allow Finance's configured account class;
+opening controls allow clearing or equity. System controls require future
+provider document validation, not a direct manual journal. Nothing exports in
+M1. Missing mappings leave future affected exports pending and never obstruct
+local money evidence. The internal chart is in `src/lib/member-money/`.
 
 ## App CPU sizing
 

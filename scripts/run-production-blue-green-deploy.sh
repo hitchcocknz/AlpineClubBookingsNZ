@@ -2917,7 +2917,10 @@ WHERE n.nspname = 'public'
   AND (pg_catalog.pg_get_userbyid(c.relowner) <> :'migration_role'
        OR NOT pg_catalog.has_table_privilege(:'app_role', c.oid, 'SELECT')
        OR (c.relkind IN ('v', 'm')
-           AND pg_catalog.has_table_privilege(:'app_role', c.oid, 'INSERT, UPDATE, DELETE')));
+           AND pg_catalog.has_table_privilege(:'app_role', c.oid, 'INSERT, UPDATE, DELETE'))
+       OR (c.relname IN ('BookingLedgerLine', 'AuditLog', 'MemberMoneyEvent', 'MemberMoneyJournal', 'MemberMoneyLine', 'MemberMoneyObligation', 'MemberMoneyApplication', 'MemberMoneySourceLink', 'MemberMoneySourcePosting')
+           AND (pg_catalog.has_table_privilege(:'app_role', c.oid, 'UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES')
+                OR pg_catalog.has_any_column_privilege(:'app_role', c.oid, 'UPDATE'))));
 SQL
 )"
   # END least-privilege-grants-check

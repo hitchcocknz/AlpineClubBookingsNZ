@@ -1,0 +1,1 @@
+- Add the inert member-money journal foundation: balanced sealed batches, exact reversals, immutable obligations/applications and a retained booking-ledger source bridge. Extend least-privilege role provisioning and add a read-only verifier; no production money writer or reader switches. Operators re-run `db:provision-roles --apply` after migrating.
