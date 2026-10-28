@@ -4086,6 +4086,21 @@ failure -> run/failure visible and retryable where business-critical
 To verify: which cron jobs record `CronJobRun`, exact statuses, stale queue
 health thresholds, and skipped-module reporting.
 
+### Settlement figure alert recovery (#4446)
+
+```text
+committed settlement marker, alertSentAt null -> after-commit send
+send throws -> alertUndeliveredCount + 1, marker stays pending
+existing Xero inbound cron -> pending marker older than ten minutes -> same sender
+cooldown claim lost -> no send; claim won -> re-read sent/count before sending
+send succeeds -> alertSentAt set; send fails three times -> Stuck States, no more sends
+```
+
+The counter is optional in the existing JSON snapshot (old markers read as zero).
+No schema migration, money transition or additional lock is involved. As before,
+a crash after a send but before its sent stamp can repeat that alert when the
+ten-minute cooldown expires; the retry is at least once.
+
 ### Xero cron run status: SKIPPED means no work (#4375)
 
 ```text
