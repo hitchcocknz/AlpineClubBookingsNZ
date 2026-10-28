@@ -3,7 +3,8 @@
 import * as React from "react";
 
 /** The marker the `aria-hidden` package (Radix's `hideOthers`) stamps on what it hides. */
-const HIDDEN_BY_OPEN_POPUP = '[data-aria-hidden="true"]';
+const MARKER = "data-aria-hidden";
+const HIDDEN_BY_OPEN_POPUP = `[${MARKER}="true"]`;
 
 /**
  * Make what an open Radix popup hides `inert` as well as `aria-hidden` (#4466).
@@ -19,12 +20,14 @@ const HIDDEN_BY_OPEN_POPUP = '[data-aria-hidden="true"]';
  * other means while the popup is open, so mirroring its marks as `inert` changes
  * nothing a user could do and makes the hidden page consistent.
  *
- * Returns a callback ref for the popup's CONTENT element, which Radix mounts only
- * while the popup is open. Marks are applied in an effect (Radix applies its own
- * in an effect of the content, which runs first) and re-checked on the next
- * frame; they are released synchronously the moment the content detaches, so the
- * trigger is focusable again before Radix returns focus to it. Only nodes this
- * hook made inert are released.
+ * Returns a callback ref for the popup's CONTENT element. While that element is
+ * in the document, a MutationObserver keeps `inert` in step with Radix's marks:
+ * a node Radix marks becomes inert, and a node Radix unmarks (as it does on
+ * close) is released at once, before Radix returns focus to the trigger. The
+ * moment the content leaves the document everything is released. This mirrors
+ * the marks themselves rather than trusting ref or effect timing: Radix does not
+ * always detach the ref when a Select closes. Only nodes this hook made inert
+ * are ever released.
  */
 export function useInertOutsidePopup<T extends HTMLElement>(
   forwardedRef: React.ForwardedRef<T>,
@@ -43,17 +46,33 @@ export function useInertOutsidePopup<T extends HTMLElement>(
 
   React.useEffect(() => {
     if (!content) return;
-    const apply = () => {
+    const sync = () => {
+      if (!content.isConnected) {
+        release();
+        return;
+      }
+      madeInert.current = madeInert.current.filter((element) => {
+        if (element.getAttribute(MARKER) === "true") return true;
+        element.removeAttribute("inert");
+        return false;
+      });
       for (const element of document.querySelectorAll(HIDDEN_BY_OPEN_POPUP)) {
         if (element.hasAttribute("inert") || element.contains(content)) continue;
         element.setAttribute("inert", "");
         madeInert.current.push(element);
       }
     };
-    apply();
-    const frame = requestAnimationFrame(apply);
+    const observer = new MutationObserver(sync);
+    // `inert` itself is not observed, so writing it cannot re-trigger the sync.
+    observer.observe(document.body, {
+      subtree: true,
+      childList: true,
+      attributes: true,
+      attributeFilter: [MARKER],
+    });
+    sync();
     return () => {
-      cancelAnimationFrame(frame);
+      observer.disconnect();
       release();
     };
   }, [content, release]);
