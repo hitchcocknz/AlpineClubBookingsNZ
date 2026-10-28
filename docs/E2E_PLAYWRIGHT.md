@@ -87,8 +87,10 @@ imports of the base Playwright `test` in specs and setup files. The shared
 fixture instruments the default page, manually created browser contexts and
 popups, including contexts kept by `beforeAll` hooks.
 
-Axe audits each visited HTTP(S) page before the next locator action or explicit
-navigation, and again before close and at test teardown. These checkpoints let
+Axe audits each visited HTTP(S) page before every locator action or explicit
+navigation, and again before close and at test teardown. Audits are tracked per
+page so concurrent actions cannot skip another page, and same-URL wizard steps
+are audited again after their content changes. These checkpoints let
 the journey's assertions settle streaming content first; no fixed sleeps or
 `networkidle` waits are added. Results are collected until teardown so a failure
 does not interrupt the journey's cleanup. Serious and critical violations tagged

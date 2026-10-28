@@ -55,3 +55,33 @@ test("axe audits a client-side destination before the next action", async ({ pag
   await page.getByRole("link").click();
   await expect(page).toHaveURL("https://fixture.test/next");
 });
+
+test("axe audits both pages when actions run concurrently", async ({ context }) => {
+  test.fail(true, "Concurrent navigation must attach the image-alt violation");
+  await context.route("https://fixture.test/**", (route) => route.fulfill({
+    contentType: "text/html", body: route.request().url().endsWith("/bad") ? bad : good,
+  }));
+  const clean = await context.newPage();
+  const broken = await context.newPage();
+  await clean.goto("https://fixture.test/good");
+  await broken.goto("https://fixture.test/bad");
+  await Promise.all([clean.getByRole("link").click(), broken.getByRole("link").click()]);
+  await expect(broken).toHaveURL("https://fixture.test/next");
+});
+
+test("axe audits a changed wizard step at the same URL", async ({ page }) => {
+  test.fail(true, "A later wizard step must attach the image-alt violation");
+  await page.route("https://fixture.test/**", (route) => route.fulfill({ contentType: "text/html", body: good }));
+  await page.goto("https://fixture.test/flow");
+  await page.evaluate((html) => {
+    const link = document.querySelector("a")!;
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      document.documentElement.innerHTML = html;
+    }, { once: true });
+  }, bad);
+  await page.getByRole("link").click();
+  await expect(page).toHaveURL("https://fixture.test/flow");
+  await page.getByRole("link").click();
+  await expect(page).toHaveURL("https://fixture.test/next");
+});

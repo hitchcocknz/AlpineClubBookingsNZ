@@ -9,20 +9,28 @@ export type * from "@playwright/test";
 // create their own contexts in beforeAll (and keep them between tests).
 const pages = new Set<Page>();
 const reports: Array<{ url: string; result?: Awaited<ReturnType<AxeBuilder["analyze"]>>; error?: string }> = [];
-const scanned = new WeakMap<Page, string>();
-let scanning = false;
+const pendingScans = new WeakMap<Page, Promise<void>>();
 
-async function scan(page: Page, force = false) {
-  if (scanning || page.isClosed() || !/^https?:/.test(page.url())) return;
-  if (!force && scanned.get(page) === page.url()) return;
-  scanning = true;
+async function scan(page: Page) {
+  if (page.isClosed() || !/^https?:/.test(page.url())) return;
+  const pending = pendingScans.get(page);
+  if (pending) return pending;
+  const audit = scanPage(page);
+  pendingScans.set(page, audit);
+  try {
+    await audit;
+  } finally {
+    pendingScans.delete(page);
+  }
+}
+
+async function scanPage(page: Page) {
   const url = page.url();
   try {
     await page.waitForLoadState("domcontentloaded");
     const result = await new AxeBuilder({ page })
       .withTags(["wcag2a", "wcag2aa", "wcag22aa"])
       .analyze();
-    scanned.set(page, url);
     const pathname = new URL(url).pathname;
     const violations = result.violations.filter((violation) =>
       (violation.impact === "serious" || violation.impact === "critical") &&
@@ -30,12 +38,10 @@ async function scan(page: Page, force = false) {
     );
     if (violations.length) reports.push({ url, result });
   } catch (error) {
-    // A concurrent navigation invalidates axe's execution context. Leave the
-    // URL unmarked so the next settled interaction/teardown scans it again.
+    // A concurrent navigation invalidates axe's execution context. The next
+    // settled interaction/teardown audits the destination again.
     if (page.isClosed() || page.url() !== url) return;
     reports.push({ url, error: String(error) });
-  } finally {
-    scanning = false;
   }
 }
 
@@ -68,18 +74,17 @@ function instrumentPage(page: Page) {
     Object.defineProperty(page, key, {
       configurable: true,
       value: async (...args: unknown[]) => {
-        await scan(page, true);
+        await scan(page);
         const result = await Reflect.apply(navigate, page, args);
         // The next action or teardown checks the destination once the journey's
         // assertions have settled it, rather than auditing a Suspense placeholder.
-        scanned.delete(page);
         return result;
       },
     });
   }
   const close = page.close.bind(page);
   page.close = async (...args) => {
-    await scan(page, true);
+    await scan(page);
     await close(...args);
     pages.delete(page);
   };
@@ -98,7 +103,7 @@ function instrumentContext(context: BrowserContext) {
   context.on("page", instrumentPage); // Includes popups and manually created pages.
   const close = context.close.bind(context);
   context.close = async (...args) => {
-    for (const page of context.pages()) await scan(page, true);
+    for (const page of context.pages()) await scan(page);
     await close(...args);
   };
 }
@@ -116,7 +121,7 @@ export const test = base.extend<{ accessibilityAudit: void }, { browser: Browser
   }, { scope: "worker" }],
   accessibilityAudit: [async ({}, use, testInfo) => {
     await use();
-    for (const page of pages) await scan(page, true);
+    for (const page of pages) await scan(page);
     const failures = reports.splice(0);
     if (failures.length) {
       await testInfo.attach("axe-report", {
