@@ -441,6 +441,7 @@ import {
   queueSupersededPaymentIntentRefundRecovery,
 } from "@/lib/payment-recovery";
 import { MAX_PAYMENT_RECOVERY_ATTEMPTS } from "@/lib/payment-recovery-constants";
+import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import {
   bookingModificationIdForAdditionalIntentRecoveryKey,
   buildCardRefundFailedLaterRecoveryKey,
@@ -483,7 +484,9 @@ function makeOperation(overrides: Record<string, unknown> = {}) {
 
 // Charge-backed replay tests supply the actual charge identities from their
 // frozen plans; the preflight must read those, not the payment's primary intent.
-function setPlannedChargeFixtures(plan: { paymentTransactionId: string; amountCents: number }[], intent = "pi_original") {
+// The stored plan is read with the production parser, as the worker reads it.
+function setPlannedChargeFixtures(storedPlan: unknown, intent = "pi_original") {
+  const plan = parseRefundAllocationPlan(storedPlan) ?? [];
   mockPaymentFindUnique.mockResolvedValue({ id: "payment-1", stripePaymentIntentId: "pi_primary",
     transactions: plan.map((slice) => ({ id: slice.paymentTransactionId, stripePaymentIntentId: intent,
       amountCents: slice.amountCents, refundedAmountCents: 0,
@@ -2641,7 +2644,7 @@ describe("payment recovery worker", () => {
         paymentTransactionId: null,
         ...overrides,
       });
-      setPlannedChargeFixtures(operation.allocationPlan as { paymentTransactionId: string; amountCents: number }[]);
+      setPlannedChargeFixtures(operation.allocationPlan);
       mockPaymentRecoveryFindUnique.mockResolvedValue(operation);
       mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
         Promise.resolve(isStaleWorkerSweep(args) ? [] : [{ ...operation, status: "PENDING" }]),
@@ -4586,7 +4589,7 @@ describe("payment recovery worker", () => {
       });
     }
     function queue(op: ReturnType<typeof makeCapacityOp>) {
-      setPlannedChargeFixtures(op.allocationPlan as { paymentTransactionId: string; amountCents: number }[]);
+      setPlannedChargeFixtures(op.allocationPlan);
       mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
         Promise.resolve(isStaleWorkerSweep(args) ? [] : [op]),
       );
@@ -4662,7 +4665,7 @@ describe("payment recovery worker", () => {
       });
     }
     function queue(op: ReturnType<typeof makeCancelOp>) {
-      setPlannedChargeFixtures(op.allocationPlan as { paymentTransactionId: string; amountCents: number }[]);
+      setPlannedChargeFixtures(op.allocationPlan);
       mockPaymentRecoveryFindMany.mockImplementation((args?: { where?: { attempts?: { gte?: number } } }) =>
         Promise.resolve(isStaleWorkerSweep(args) ? [] : [op]),
       );
