@@ -539,11 +539,11 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
 
   **The balance is derived, never stored.** `booking-ledger-balance.ts` is the
   one place charged, settled, adjusted and owed are summed. No running total
-  and no status: a stored copy of a derived figure is the mirror this table
+  or status: a stored copy of a derived figure is the mirror this table
   retires.
 
-  **`booking-ledger-write.ts` is the only door**, it exposes creation alone,
-  and every posting goes inside the transaction of the writer whose act it
+  **`booking-ledger-write.ts` is the only door**, exposing creation alone;
+  every posting goes inside the transaction of the writer whose act it
   records — a settle that rolls back leaves no line saying it did not.
   Building rows is pure and may be refused safely; writing them is a statement
   and is never wrapped, because a refused statement has already aborted the
@@ -559,6 +559,8 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   nothing reads them: `INV-PAY-047`'s mirror is still the answer until the
   reads move (#3584). A strand with an unpriced night posts nothing, because
   `INV-MOD-028` says a blank is not evidence of an amount.
+
+  Member journal: `INV-MONEY-041`, `INV-MONEY-042`.
 
 ## INV-MONEY-033
 
@@ -585,6 +587,8 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
 
   `booking-ledger-posting-key.realdb.test.ts` proves the skip, the surviving
   transaction and the fence against PostgreSQL itself.
+
+  Whole-batch keys in the member journal: `INV-MONEY-041`, `INV-MONEY-042`.
 
 ## INV-MONEY-034
 
