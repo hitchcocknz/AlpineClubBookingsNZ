@@ -1,8 +1,9 @@
 /**
  * M1 (#4513) ships the member-money journal inert: no production path reads it
  * or posts to it. This census reads every non-test source file under `src/` and
- * `scripts/` and fails on a journal reference outside the files that only name,
- * provision or verify it. A later child that adds a writer or reader edits this
+ * `scripts/`, and the seeds and other top-level files in `prisma/`, and fails on
+ * a journal reference outside the module boundary and the files that only name,
+ * provision or verify it. The migration is SQL, outside the scan. A later child that adds a writer or reader edits this
  * list in the same PR, so the switch is a reviewed decision, not a side effect.
  */
 import { readdirSync, readFileSync } from "node:fs";
@@ -22,10 +23,15 @@ const ALLOWED: Record<string, string> = {
 };
 const BOUNDARY = "src/lib/member-money/";
 
-/** A journal table or Prisma delegate, a journal enum, or an import of the boundary. */
+/**
+ * A journal table, enum or Prisma delegate; a relation field reaching it from
+ * another model (`include: { memberMoneyLines: true }`); one of its SQL
+ * functions; or an import of the boundary.
+ */
 const REFERENCE = [
   /\bMemberMoney[A-Z]\w*/,
-  /\.memberMoney[A-Z]\w*/,
+  /\bmemberMoney[A-Z]\w*/,
+  /\bmember_money_\w+/,
   /["'`](?:@\/lib\/|(?:\.\.?\/)+(?:src\/lib\/|lib\/)?)member-money(?:-tables)?(?:\/[\w/]*)?["'`]/,
 ];
 
@@ -37,8 +43,15 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
+/** The top-level files of `prisma/` (seeds, config); not its migration fixtures. */
+function prismaFiles(): string[] {
+  return readdirSync(join(ROOT, "prisma"), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && SOURCE.test(entry.name))
+    .map((entry) => join(ROOT, "prisma", entry.name));
+}
+
 function referencing(): string[] {
-  return ["src", "scripts"].flatMap((dir) => sourceFiles(join(ROOT, dir)))
+  return [...["src", "scripts"].flatMap((dir) => sourceFiles(join(ROOT, dir))), ...prismaFiles()]
     .filter((file) => REFERENCE.some((pattern) => pattern.test(readFileSync(file, "utf8"))))
     .map((file) => relative(ROOT, file).split(sep).join("/"));
 }
