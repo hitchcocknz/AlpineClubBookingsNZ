@@ -6,9 +6,8 @@
  * "Booking Cancelled" email says `card` for `own` and `card_pending` for
  * `own_card_pending`. `queued` is what still owed goes to the recovery runner
  * (`enqueueBookingModificationRefundRecovery`): a call that throws queues the
- * unpaid remainder, and (#4083, `INV-PAY-128`) a refund Stripe answered
- * `failed` or `canceled` queues exactly the slices it refused, as their plan,
- * already moved to their next key. The cancel queues
+ * unpaid remainder; #3984 keeps the whole read plan, marking made slices
+ * and moving refused ones to their next key (`INV-PAY-128`). The cancel queues
  * nothing new for either: its pre-persisted debt is left open.
  *
  * `primeOwnCardRefund` answers a `refundPaymentTransactions` double with the
@@ -29,7 +28,7 @@ type Refund = {
 };
 type Answer = { refunds: Refund[] } | Error;
 
-/** Nothing queued, the whole unpaid remainder, or exactly the refused slices. */
+/** Nothing queued, the whole unpaid remainder, or answers containing refused slices. */
 type Queued = null | "remainder" | { refused: RefundAllocationSlice[] };
 
 const NEWER_SLICE: RefundAllocationSlice = { paymentTransactionId: "txn_additional", amountCents: 600 };
@@ -67,16 +66,31 @@ export const OWN_CARD_REFUND_STATES: ReadonlyArray<{
   { label: "no refund came back", answer: { refunds: [] }, queued: null, destination: "own_card_pending" },
 ];
 
-export function primeOwnCardRefund(refundPaymentTransactions: Mock, answer: Answer): void {
+/** A single captured charge carrying this edit's refund, before any attempt. */
+export function ownCardRefundPlan({ amountCents }: { amountCents: number }) {
+  return {
+    slices: [{ paymentTransactionId: "txn_refund", amountCents }],
+    plannedAmountCents: amountCents,
+    totalRefundableCents: amountCents,
+  };
+}
+
+export function primeOwnCardRefund(refundPaymentTransactions: Mock, answer: Answer, planner?: Mock): void {
+  // Edit doors send the frozen plan; cancellations already carry their own.
+  planner?.mockImplementation(async ({ amountCents }: { amountCents: number }) => ({
+    slices: answer instanceof Error ? [{ paymentTransactionId: "txn_refund", amountCents }] : answer.refunds.map((refund) => refund.slice),
+    plannedAmountCents: amountCents,
+    totalRefundableCents: amountCents,
+  }));
   if (answer instanceof Error) refundPaymentTransactions.mockRejectedValue(answer);
   else refundPaymentTransactions.mockResolvedValue(answer);
 }
 
 /**
  * The door queued what the state owes, once, in integer cents: the remainder
- * of `pendingCents`, or exactly the refused slices as the row's plan.
+ * of `pendingCents`, or the whole answered plan with made slices marked.
  */
-export function expectQueuedOnce(enqueue: Mock, queued: Queued, pendingCents: number): void {
+export function expectQueuedOnce(enqueue: Mock, queued: Queued, pendingCents: number, answer: Answer): void {
   if (queued === null) {
     expect(enqueue).not.toHaveBeenCalled();
     return;
@@ -84,16 +98,19 @@ export function expectQueuedOnce(enqueue: Mock, queued: Queued, pendingCents: nu
   expect(enqueue).toHaveBeenCalledTimes(1);
   if (queued === "remainder") {
     expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ amountCents: pendingCents }));
-    expect(enqueue.mock.calls[0]?.[0]).not.toHaveProperty("allocationPlan", expect.anything());
+    expect(enqueue.mock.calls[0]?.[0]).toHaveProperty("allocationPlan", [{ paymentTransactionId: "txn_refund", amountCents: pendingCents }]);
     return;
   }
   // #4083 review: each was read refused at the door, so it is queued already on
   // its next key (`refused1`) - the runner's first attempt asks Stripe afresh.
-  const refusedCents = queued.refused.reduce((sum, slice) => sum + slice.amountCents, 0);
+  if (answer instanceof Error) throw new Error("A refused answer must contain refunds");
+  const plan = answer.refunds.map((refund) => queued.refused.includes(refund.slice)
+    ? { ...refund.slice, stripeKeySuffix: "refused1" }
+    : { ...refund.slice, madeRefundId: refund.refundId });
   expect(enqueue).toHaveBeenCalledWith(
     expect.objectContaining({
-      amountCents: refusedCents,
-      allocationPlan: queued.refused.map((slice) => ({ ...slice, stripeKeySuffix: "refused1" })),
+      amountCents: answer.refunds.reduce((sum, refund) => sum + refund.amountCents, 0),
+      allocationPlan: plan,
     }),
   );
 }
