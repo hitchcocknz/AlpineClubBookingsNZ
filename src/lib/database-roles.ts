@@ -340,9 +340,16 @@ function buildVerificationSql(input: {
   const auditRelation = regclassLiteral(AUDIT_RETENTION_RELATION);
   const appendOnlyChecks = APPEND_ONLY_RELATIONS.map(
     (name) => `  IF to_regclass(${regclassLiteral(name)}) IS NOT NULL AND (
-       pg_catalog.has_table_privilege(${app}, ${regclassLiteral(name)}, 'UPDATE, DELETE, TRUNCATE')
+       pg_catalog.has_table_privilege(${app}, ${regclassLiteral(name)}, 'UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES')
        OR pg_catalog.has_any_column_privilege(${app}, ${regclassLiteral(name)}, 'UPDATE')) THEN
     RAISE EXCEPTION 'Refusing to commit: the application role can still change rows of %.', ${quoteLiteral(name)};
+  END IF;`,
+  ).join("\n");
+  const moneyRetentionChecks = MEMBER_MONEY_RELATIONS.map(
+    (name) => `  IF to_regclass(${regclassLiteral(name)}) IS NOT NULL AND (
+       pg_catalog.has_table_privilege(${retention}, ${regclassLiteral(name)}, 'SELECT, INSERT, UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES')
+       OR pg_catalog.has_any_column_privilege(${retention}, ${regclassLiteral(name)}, 'SELECT, INSERT, UPDATE, REFERENCES')) THEN
+    RAISE EXCEPTION 'Refusing to commit: the audit-retention role has money-table rights on %.', ${quoteLiteral(name)};
   END IF;`,
   ).join("\n");
   const anonymised = AUDIT_ANONYMISED_REQUEST_COLUMNS.map(quoteLiteral).join(", ");
@@ -392,6 +399,7 @@ BEGIN
   END IF;
 
 ${appendOnlyChecks}
+${moneyRetentionChecks}
 
   -- A view or rule that reads an append-only relation and that the application
   -- may write through: its DML would run with the owner's rights (S-F3).
