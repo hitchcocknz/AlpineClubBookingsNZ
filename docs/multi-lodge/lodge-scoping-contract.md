@@ -52,6 +52,17 @@ sequencing):
 | `ServerNzSettings`                                                 | club-wide singleton (`id = "default"`)                             | NOT converted to a per-lodge row, deliberately: one club holds ONE connection to the central server (one base URL, one API key, one sync cursor), and the registry it exchanges is a list of other CLUBS rather than of this club's buildings. A per-lodge row would imply a lodge could sync independently, which the central server has no concept of; the one per-lodge fact it does hold, which of ITS lodges a club lodge is (`Lodge.centralLodgeId`, triyder/AlpineClubBookingsNZ#62), lives on `Lodge` |
 | Lodge identity fields (`lodgeName`, `doorCode`, `lodgeTravelNote`) | resolve from `Lodge` (default lodge when no `lodgeId` is in scope) | dropped from the `EmailMessageSetting` singleton (migration `20260709130000`)                                                                                                                                                                                                                                                                           |
 
+## Member money journal (#4513)
+
+`MemberMoneyEvent`, `MemberMoneyJournal`, `MemberMoneyObligation`,
+`MemberMoneyApplication` and `MemberMoneySourceLink` are club-wide economic
+records: one receipt may cover several lodges. `MemberMoneyLine` carries optional
+`bookingId` and `lodgeId` dimensions with RESTRICT foreign keys and no update
+cascade. A booking dimension requires its actual lodge (checked on insert).
+Non-booking money can have a lodge dimension or be club-wide. Member and actor
+identities are immutable evidence strings, as on the booking ledger; merging a
+member cannot rewrite posted evidence. No default lodge is silently assigned.
+
 ## Club-Wide Defaults With Per-Lodge Overrides
 
 `CancellationPolicy`, `MinimumStayPolicy`, and `BookingPeriod` gain a
