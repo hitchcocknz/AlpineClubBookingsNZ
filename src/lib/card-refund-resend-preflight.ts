@@ -57,6 +57,7 @@ export async function checkCardRefundResend({
       fallbackPaymentIntentId: charge.stripePaymentIntentId,
       fallbackChargeId: charge.stripeChargeId,
     });
+    if (!recorded.payment) throw new Error("Refund preflight could not reconcile the payment (INV-PAY-145)");
     await queueRecordedCardRefundNotes({
       payment: recorded.payment,
       paymentIntentId: charge.stripePaymentIntentId,

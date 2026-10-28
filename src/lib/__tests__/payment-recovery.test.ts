@@ -516,7 +516,7 @@ describe("payment recovery worker", () => {
     vi.clearAllMocks();
     settlementModuleLoadFailure.current = null;
     mockListRefundsForPaymentIntent.mockReset().mockResolvedValue([]);
-    mockRecordStripeRefundsAgainstTransaction.mockResolvedValue({ readAsRefused: [] });
+    mockRecordStripeRefundsAgainstTransaction.mockResolvedValue({ readAsRefused: [], payment: { id: "payment-1", source: "STRIPE" }, appliedCents: 4000, newlyCountedRefundIds: ["re_dashboard"] });
     mockPaymentRecoveryFindMany.mockImplementation(
       (args?: { where?: { status?: unknown; attempts?: { gte?: number } } }) => {
         // resetStaleProcessingOperations queries for exhausted PROCESSING rows.
@@ -1340,7 +1340,7 @@ describe("payment recovery worker", () => {
       created: new Date("2026-06-30T12:00:00.000Z").getTime() / 1000, metadata: {},
     };
 
-    function queueRefund(type = PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION) {
+    function queueRefund(type: PaymentRecoveryOperationType = PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION) {
       const op = makeOperation({ type, paymentIntentId: "pi_original", createdAt: new Date("2026-06-30T12:00:00.000Z"),
         allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 4000 }],
         idempotencyKey: "payment_recovery_modification_refund_mod-1",

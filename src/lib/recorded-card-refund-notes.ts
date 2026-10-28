@@ -8,7 +8,7 @@ import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 
 /** Keeps the webhook's existing boundary between routing and enqueue failures. */
 export class RecordedCardRefundNoteEnqueueError extends Error {
-  constructor(readonly cause: unknown) {
+  constructor(cause: unknown) {
     super(cause instanceof Error ? cause.message : String(cause), { cause });
   }
 }

@@ -55,7 +55,7 @@ describe("card refund preflight", () => {
 
   it("does not revive a failure from a stale counted provider response", async () => {
     list.mockResolvedValue([refund()]);
-    record.mockResolvedValue({ readAsRefused: ["re_test"] });
+    record.mockResolvedValue({ readAsRefused: ["re_test"], payment: { id: "payment-test", source: "STRIPE" }, appliedCents: 0, newlyCountedRefundIds: [] });
     await expect(checkCardRefundResend(args)).resolves.toBeUndefined();
   });
 
@@ -114,6 +114,13 @@ describe("card refund preflight", () => {
   it("fails closed when a charge has no intent", async () => {
     await expect(checkCardRefundResend({ ...args, transactions: [{ ...args.transactions[0]!, stripePaymentIntentId: null }] })).rejects.toThrow("INV-PAY-145");
     expect(list).not.toHaveBeenCalled();
+  });
+
+  it("sends nothing if recording cannot reconcile the payment", async () => {
+    list.mockResolvedValue([refund()]);
+    record.mockResolvedValue({ readAsRefused: [], payment: null });
+    await expect(checkCardRefundResend(args)).rejects.toThrow("could not reconcile the payment");
+    expect(queueRecordedCardRefundNotes).not.toHaveBeenCalled();
   });
 
   it("fails closed if a planned charge is missing", async () => {
