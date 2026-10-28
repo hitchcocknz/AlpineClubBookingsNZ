@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { bookingStatusLabel } from "@/lib/status-colors";
+import { CHIP_TONE_CLASSES, type ChipTone } from "@/lib/chip-tones";
 import { buildHrefWithReturnTo, buildPathWithSearch } from "@/lib/internal-return-path";
 import { getAdminCalendarBookingDayRange } from "@/lib/admin-booking-calendar-ranges";
 import { useClubTime } from "@/components/club-time-provider";
@@ -54,6 +55,26 @@ export const STATUS_COLORS: Record<string, string> = {
   BUMPED: "bg-warning-9",
   WAITLISTED: "bg-cat1-9",
   WAITLIST_OFFERED: "bg-cat6-9",
+};
+
+// The status filter pills carry TEXT, so they cannot sit on the step-9 fills
+// above: white on the warning-9 amber measured 2.16:1, on the success-9 green
+// 3.49:1, on DRAFT's `bg-muted` 1.19:1 (#4466; step-9 is for text-free fills,
+// see brand-color-source-contract.test.ts). A pressed pill instead takes the
+// SAME scale's chip pair (step-3 tint, step-11 text), which the theme guarantee
+// sweep holds at AA for every scale in both modes (G2b), so each pill still
+// reads as its bar's colour family.
+const STATUS_CHIP_TONES: Record<keyof typeof STATUS_COLORS, ChipTone> = {
+  DRAFT: "neutral",
+  PENDING: "warning",
+  PAYMENT_PENDING: "warning",
+  CONFIRMED: "success",
+  PAID: "info",
+  COMPLETED: "cat1",
+  CANCELLED: "danger",
+  BUMPED: "warning",
+  WAITLISTED: "cat1",
+  WAITLIST_OFFERED: "cat6",
 };
 
 const ALL_STATUSES = Object.keys(STATUS_COLORS);
@@ -440,7 +461,7 @@ export function AdminBookingCalendar() {
               onClick={() => toggleStatus(status)}
               className={`rounded-full px-2.5 py-0.5 text-xs font-medium transition-colors border ${
                 isOn
-                  ? `${STATUS_COLORS[status]} text-white border-transparent`
+                  ? `${CHIP_TONE_CLASSES[STATUS_CHIP_TONES[status] ?? "neutral"]} border-transparent`
                   : "bg-card text-muted-foreground border-border"
               }`}
             >
@@ -646,9 +667,14 @@ export function AdminBookingCalendar() {
       {/* Legend (click toggles above to filter) */}
       <div className="flex flex-wrap gap-4 px-3 py-2.5 border-t text-xs">
         {Object.entries(STATUS_COLORS).map(([status, color]) => (
-          <div key={status} className={`flex items-center gap-1.5 ${enabledStatuses.has(status) ? "" : "opacity-30"}`}>
-            <div className={`w-3.5 h-2.5 rounded-sm ${color}`} />
-            <span className="text-muted-foreground">{bookingStatusLabel(status)}</span>
+          // A hidden status dims its SWATCH and strikes its label through. The
+          // whole item used to be `opacity-30`, which took the label to 1.53:1
+          // (#4466); the label stays at full muted ink so it can still be read.
+          <div key={status} className="flex items-center gap-1.5">
+            <div className={`w-3.5 h-2.5 rounded-sm ${color} ${enabledStatuses.has(status) ? "" : "opacity-30"}`} />
+            <span className={`text-muted-foreground ${enabledStatuses.has(status) ? "" : "line-through"}`}>
+              {bookingStatusLabel(status)}
+            </span>
           </div>
         ))}
       </div>
