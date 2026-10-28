@@ -46,10 +46,9 @@ export interface ServerNzSettingsValues {
   /**
    * True when the column HOLDS a value that does not parse as the owned list.
    * `otherLodgesOwnedLodges` is then `null` — read-only everywhere, like
-   * never-told. The upload sends nothing on `null` either way; the committee
-   * sync, which on never-told falls back to its pre-#52 building-name rule,
-   * reads this flag and writes NOTHING instead (fail closed): a column that
-   * was written and is now unreadable is a defect, not a fresh install.
+   * never-told. The upload sends nothing and the committee sync writes nothing
+   * on `null` either way (fail closed). A column that was written and is now
+   * unreadable is a defect, not a fresh install.
    */
   otherLodgesOwnedLodgesUnreadable: boolean;
   /**
