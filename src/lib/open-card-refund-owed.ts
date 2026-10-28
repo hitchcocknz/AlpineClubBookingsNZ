@@ -8,6 +8,7 @@ import {
   type BookingPaymentState,
 } from "@/lib/booking-payment-state";
 import {
+  REFUND_SLICE_KEY_METADATA,
   cardRefundFailedLaterRefundId,
   cardRefundOperationRefundMetadata,
   isGroupSettlementRefundRecoveryKey,
@@ -113,7 +114,8 @@ export function cardRefundSliceFailedRefundIds(
 /**
  * #4104 review (CM), #4312 round 8 (`INV-SSOT`): whether a Stripe refund
  * carries exactly the metadata this row's runner sends
- * (`cardRefundOperationRefundMetadata`) - no key missing, none extra. The one
+ * (`cardRefundOperationRefundMetadata`), with optional per-slice evidence
+ * (`INV-PAY-147`) - no door key missing, no unrelated key extra. The one
  * test of "this row's runner could have sent it": a refund another door or the
  * Stripe dashboard made never passes it.
  */
@@ -123,7 +125,8 @@ export function carriesCardRefundOperationMetadata(
 ): boolean {
   const expected = Object.entries(cardRefundOperationRefundMetadata(operation));
   const actual = metadata ?? {};
-  return Object.keys(actual).length === expected.length && expected.every(([key, value]) => actual[key] === value);
+  return Object.keys(actual).filter((key) => key !== REFUND_SLICE_KEY_METADATA).length === expected.length &&
+    expected.every(([key, value]) => actual[key] === value);
 }
 
 /**
