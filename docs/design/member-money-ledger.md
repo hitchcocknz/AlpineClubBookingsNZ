@@ -433,3 +433,82 @@ opening history cannot be both an opening balance and replayed revenue. A
 currency or control-account bridge discrepancy holds activation/export until
 resolved. Disconnection stops delivery, not journalling. Reconnection resumes
 manifests under the same source namespace.
+
+## 8. Cut-over, proof and retirement
+
+Change authority only after the evidence is complete. This is a programme of
+independently useful releases, not an atomic epic and not a timed shadow period.
+No schema change is made here. Implementation follows the
+[blue/green sequence](../BLUE_GREEN_MIGRATION_POLICY.md#required-sequence), with
+old-code rehearsals, rollback evidence and owner-only production operations.
+
+| Step | Shippable outcome and gate | Modules and invariants that change or retire |
+| --- | --- | --- |
+| A. Expand and protect | Add inert journal, accounts, source bridge, constraints, restricted grants, ownership registry and read-only verifier. Resolve section 10's retention decision; close #4482 before claiming durable append-only storage. No reader/provider change. | Keep all existing repair and census modules. Extend `INV-MONEY-032`/`033` to journal immutability and whole-batch keys; preserve the booking confirmation fence. No invariant retires. |
+| B. Post every event and reconstruct history | Cohort-by-cohort adapters post alongside existing source writes in their transactions, including pre-settlement payable bank charges and subscriptions. Backfill deterministically through the same planners. Require full population coverage, conservation, source uniqueness and exact historical provider coverage. The existing seven-identity census must be `GATE_OPEN`; the journal adds its own per-account/obligation/lot proof. | `booking-ledger-*-sync.ts`, `member-credit.ts`, `payment-transactions.ts`, subscription/fee writers remain compatibility participants. Preserve `INV-MONEY-008`/`009` snapshots; restate `INV-MONEY-034`–`036` as source-to-journal contracts. `rate-derived-night-price-backfill`, `stored-night-price-repair*` and orphaned-credit backfills stay available for evidenced history resolution, not auto-run. No general deletion of repairs. |
+| C. Switch inbound authority | After #4460 proofs and old-worker drain, all Xero sources use section 6, and compatibility projections are written only by the journal adapter. Deploy restricted writer capability/import rules with an explicit shrinking legacy allowlist. No mixed old recount/new posting workers. | Retire money-mutation arms of `xero-inbound/credit-note-repairs.ts`, `recount-left-unsettled.ts`, `kept-settle-correction-recount.ts` and the old inbound paths into `reconcilePaymentAggregates`; retain transport, identity lookup and audit responsibilities. Fold `xero-credit-note-spent-outside-app.ts` and `xero-credit-note-mirror*.ts` economic planning into R22, preserving refusal/sweep triggers. Replace `INV-ADDPAY-021`'s Xero-to-card-total raise/floor logic with fact ownership. Preserve `INV-MONEY-007` approvals/outside-spend exceptions. |
+| D. Move readers, one reversible surface per PR | #3584 foundation and officer panel → member panel → history → confirmation → finance → modification email, plus its separately scoped data export. Columns still written and compared. Corpus pins and whole-history surface parity gate each move; classified differences need existing approval or the owner. | Readers use one projection/store, extending #3584 rather than maintaining another balance helper. `INV-PAY-020` reads journal settlement evidence; `INV-MONEY-030`/`031` preserve provenance and officer-only verdicts. No writer policy or repair retires merely because a screen moved. |
+| E. Switch outbound and provider coverage | Fold #3585 into section 7's rendering child: cover booking, group, subscription, fee, credit, refund and Stripe documents, including in-flight/adopted operations. Enable only proved document cohorts. Xero-off bank receipt workflow may ship after B/D independently. | Retire fee-gap reconstruction in `xero-primary-invoice-fee-gap.ts`/`xero-primary-invoice-fee-at-link.ts` once explicit fee coverage replaces it. Replace refund watermark/gap inference with manifest coverage; retain old-key reconciliation for unresolved operations. `INV-PAY-050`, `070`, `101`, `119`, `144` become exact coverage/method contracts; provider idempotency remains. #4361 stage-2 markers and no-historical-document stop conditions remain until their own approved transition. |
+| F. Move remaining decision inputs and drain legacy operations | Separately move #3586 blueprint groups B–E: non-line Xero amounts, lists/queues/SQL filters/previews, refund sizing, ask/recovery sizing, cancellation/settle inputs, diagnostics and operator scripts. Prove no active reader depends on a mirror; exact #4361 answers replace inference only after legacy cases are resolved. | `payment-reconciliation.ts` remains the settlement lifecycle, not a repair to delete. `reconcilePaymentAggregates` loses economic decision authority; any instrument/status projection stays explicitly named. Replace only recount/reconstruction arms of `xero-booking-repair-*`, `xero-refund-note-link-repair.ts`, `xero-applied-credit-allocation-repair.ts` and `cron-credit-reconciliation.ts` with coverage/task checks. Retain provider failure recovery, missing-document delivery and fraud/double-instrument controls. Restate `INV-PAY-046`/`047` race guards on obligation/instrument revisions. |
+| G. Stop writing obsolete totals | After F deploys and drains, an expand relaxes required legacy columns; code ignores them and removes writes. Census stops comparing abandoned totals, keeps coverage/integrity and adds trial balance/application conservation. Rehearse both colours. | Retire the Payment-mirror half of `INV-PAY-103`, construction/mirror arithmetic of `INV-PAY-047`, mirror-only `INV-PAY-037` clauses, `refunded-total-shortfall-audit.ts` and `payments:audit-refunded-total`, `bookingLedgerCensusSql` and mirror-residual audit scripts. `INV-MONEY-037` becomes a structural coverage monitor. Retire column-only `REFUND_MIRROR_*` classes after every instance is resolved/acknowledged; preserve retired acknowledgement compatibility. |
+| H. Contract on the owner's timing | In a later release after all older colours drain, #3586 drops its six columns. Rollback restores schema only; returning to pre-G readers requires a proved reconstruction and parity, not merely re-adding columns. Subsequent compatibility removal has a separate gate. | Drop `Payment.amountCents`, `creditAppliedCents`, `refundedAmountCents`, `additionalAmountCents`, `changeFeeCents`, `Booking.finalPriceCents`. Retire only mirror clauses of `INV-PAY-018`, `046`, `047`, `INV-MOD-002`/`038`, `INV-ADDPAY-015`; retain captured-truth, traceability and refund-cap equivalents. Legacy backfill/repair entry points retire only after their population is empty, evidence retained and rollback window closed. |
+
+The [#3586 blueprint](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/3586#issuecomment-6005385405)
+corrects the old “two migrations and done” assumption: readers and writers'
+decision inputs move first, then stop-writing with a compatible expand, then
+contract in another release. It also inventories raw SQL, backup sentinels and
+diagnostics grants that must move. Nothing here authorises deleting transaction
+refund fields or booking build-up evidence simply because their names resemble
+the six columns. `MemberCredit` becomes a journal-backed compatibility view
+before any further removal; it cannot remain a second independently writable
+balance after the switch (`INV-PAY-019`).
+
+`ib-hold-clearing*-audit.ts`, cancelled-payment flattening and orphaned-applied-
+credit backfills stop repairing monetary copies only after their historic
+population is discharged and replacement charge/application coverage checks
+exist. Sold-night provenance/reconciliation, tax checks, capacity, provider
+recovery and security checks survive. No “about 70 modules” deletion by filename:
+the implementing child records each exported function as retired, retained or
+replaced, and removes its callers/tests/docs together. A mixed-responsibility
+module can shrink without being deleted. Permanent invariant ids become
+retirement stubs pointing here, never disappear or get reused.
+
+### Evidence required before a switch
+
+Proof must cover the whole population and both directions, not just balanced
+sums. Extend #3583's read-only RepeatableRead census and #3584's corpus rather
+than creating a competing definition. Require zero unexplained differences,
+zero missing sources, unique applications, exact tax/coding sums, per-member
+credit conservation, group/family conservation and agreement between legacy
+booking lines and journal projections. An acknowledgement is specific to its
+booking/field/cents; it cannot waive an unbalanced journal or fabricate missing
+cash. The owner resolves the already-open private history decisions and runs
+production proof privately; agents use only synthetic fixtures here.
+
+[#4460](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4460)'s stateful
+Xero/Stripe fakes are prerequisites for activating each provider pair. Test
+render → ingest → no new economic posting, and inbound fact → render → echo →
+no duplicate, for **every** row of sections 4/7 and section 9. Contract fixtures
+must exercise actual provider object shape/status restrictions; no live provider
+is used. Generated sequences include duplicate delivery, reversed order, equal
+stamps/amounts, partial payments, failed-later refunds, outside spend/undo,
+allocations removed, locked periods, disconnect/reconnect and crashes before or
+after every external/local commit. Compare economic projections and exact
+source/coverage identities, not local ids generated on each run.
+
+PostgreSQL tests must refuse unbalanced/incomplete/extended batches, duplicate
+source/reversal attempts, forbidden direct/import/SQL writes and all parent
+cascade paths. Race proofs include inbound void against outbound completion,
+receipt against cancel, two credit spenders, two refund answers and old/new
+worker drain. Mutation probes remove a balancing leg, source key, claim, version
+check, terminal-void rule or import restriction and must fail meaningfully.
+These are requirements for implementation children, not tests run by this
+documentation task.
+
+During B–F rollback can revert readers while journal-backed compatibility remains
+complete; inbound authority must not be rolled back to stale legacy recounts.
+Rebuild their projections under a controlled drain before that boundary is
+crossed. Before G save durable per-row legacy values and ship a dry-run-first
+reconstruction tool, prove it with post-switch events and parity. After H a
+schema rollback alone does not restore money. Never restore a production backup
+as an automatic downgrade and lose intervening events.
