@@ -8,14 +8,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
 // #4466: what an open Select hides from assistive tech (Radix hideOthers,
 // `data-aria-hidden`) is made inert while it is open, and released when it
 // closes, so nothing outside a closed select is left unfocusable.
-function Harness() {
+function LetterSelect() {
   return (
-    <div>
-      <button type="button">Outside</button>
       <Select defaultValue="a">
         <SelectTrigger aria-label="Letter">
           <SelectValue />
@@ -25,6 +24,14 @@ function Harness() {
           <SelectItem value="b">Bravo</SelectItem>
         </SelectContent>
       </Select>
+  );
+}
+
+function Harness() {
+  return (
+    <div>
+      <button type="button">Outside</button>
+      <LetterSelect />
     </div>
   );
 }
@@ -65,5 +72,26 @@ describe("SelectContent inert outside (#4466)", () => {
 
     expect(screen.queryByRole("option", { name: "Bravo" })).toBeNull();
     expect(document.querySelectorAll("[inert]")).toHaveLength(0);
+  });
+
+  it("leaves an open dialog that holds the select focusable", async () => {
+    render(
+      <Dialog open>
+        <DialogContent>
+          <DialogTitle>Pick</DialogTitle>
+          <LetterSelect />
+        </DialogContent>
+      </Dialog>,
+    );
+    const trigger = screen.getByRole("combobox", { name: "Letter" });
+    await act(async () => {
+      fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    });
+    await flushFrames();
+    await screen.findByRole("option", { name: "Bravo" });
+
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(dialog!.closest("[inert]")).toBeNull();
   });
 });
