@@ -8,7 +8,8 @@ type CreditNote = {
   creditNoteID: string; contactID: string; totalCents: number;
   status: "AUTHORISED" | "PAID" | "VOIDED";
 };
-type Payment = { paymentID: string; invoiceID: string; amountCents: number; status: "AUTHORISED" | "DELETED" };
+type Payment = { paymentID: string; amountCents: number; status: "AUTHORISED" | "DELETED" } &
+  ({ invoiceID: string; creditNoteID?: never } | { creditNoteID: string; invoiceID?: never });
 type Allocation = { allocationID: string; creditNoteID: string; invoiceID: string; amountCents: number };
 
 export class XeroValidationError extends Error {
@@ -89,7 +90,9 @@ export class XeroFake {
   }
 
   private remaining(note: CreditNote) {
-    return note.totalCents - [...this.allocations.values()].filter(a => a.creditNoteID === note.creditNoteID).reduce((n, a) => n + a.amountCents, 0);
+    const allocated = [...this.allocations.values()].filter(a => a.creditNoteID === note.creditNoteID).reduce((n, a) => n + a.amountCents, 0);
+    const refunded = [...this.payments.values()].filter(p => p.creditNoteID === note.creditNoteID && p.status === "AUTHORISED").reduce((n, p) => n + p.amountCents, 0);
+    return note.totalCents - allocated - refunded;
   }
 
   private refresh(invoice: Invoice) {
@@ -127,6 +130,20 @@ export class XeroFake {
   }
   private nextAllocation = 1;
 
+  /** A payment on an ACCRECCREDIT records money handed back, not an allocation. */
+  payCreditNote(key: string, creditNoteID: string, amountCents: number) {
+    return this.write(key, ["credit-payment", creditNoteID, amountCents], () => {
+      this.cents(amountCents);
+      const note = this.get(this.creditNotes, creditNoteID);
+      if (note.status !== "AUTHORISED") throw new XeroValidationError("Credit note not of valid status for payment");
+      if (amountCents > this.remaining(note)) throw new XeroValidationError("Payment amount exceeds the amount outstanding on this document");
+      const payment: Payment = { paymentID: `payment-${this.payments.size + 1}`, creditNoteID, amountCents, status: "AUTHORISED" };
+      this.payments.set(payment.paymentID, payment);
+      if (this.remaining(note) === 0) note.status = "PAID";
+      return payment;
+    });
+  }
+
   removeAllocation(allocationID: string) {
     const allocation = this.get(this.allocations, allocationID);
     this.allocations.delete(allocationID);
@@ -136,8 +153,10 @@ export class XeroFake {
 
   deletePayment(paymentID: string) {
     const payment = this.get(this.payments, paymentID);
+    if (payment.status === "DELETED") return;
     payment.status = "DELETED";
-    this.refresh(this.get(this.invoices, payment.invoiceID));
+    if (payment.invoiceID !== undefined) this.refresh(this.get(this.invoices, payment.invoiceID));
+    else this.get(this.creditNotes, payment.creditNoteID).status = "AUTHORISED";
   }
 
   voidInvoice(invoiceID: string) {
@@ -148,7 +167,7 @@ export class XeroFake {
 
   voidCreditNote(creditNoteID: string) {
     const note = this.get(this.creditNotes, creditNoteID);
-    if (this.remaining(note) !== note.totalCents) throw new XeroValidationError("Credit note has allocations");
+    if (this.remaining(note) !== note.totalCents) throw new XeroValidationError("Credit note has allocations or payments");
     note.status = "VOIDED";
   }
 
