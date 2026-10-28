@@ -100,3 +100,122 @@ money boundary helpers (`INV-MONEY-001`, `INV-MONEY-003`); do not calculate tax
 with new floating-point arithmetic. Preserve current inclusive tax treatment
 and subscription component rounding. Section 10 asks how the journal's tax and
 recognition settings should cover clubs with different accounting policies.
+
+## 3. Journal model and enforcement
+
+A posted event is an indivisible, balanced batch. The following are proposed
+records and constraints, not a Prisma schema to apply in this documentation PR.
+
+| Record | Contract |
+| --- | --- |
+| `MemberMoneyEvent` | Immutable kind enum, origin enum, source identity/version, deterministic event key, payload hash, actor, reason, effective instant/date and recording time; links a journal batch, including explicit zero-money events |
+| `MemberMoneyJournal` | One immutable header per event/batch, currency, policy/coding version, expected line count and optional unique reversal target; no editable draft or balance column |
+| `MemberMoneyLine` | Header, account enum, Dr/Cr enum, positive integer cents, member/debtor, obligation, booking/lodge where applicable, credit lot, charge/refund identity, original posting reference, tax and frozen descriptive evidence |
+| `MemberMoneyObligation` | Exact charge/refund identity and source, immutable face terms; settlements and reductions refer to it explicitly; remaining amount is derived |
+| `MemberMoneyApplication` | Immutable attribution of a receipt/refund/credit to an obligation, amount, and optional unique reversal target; no timing/amount heuristic |
+| `MemberMoneySourceLink` | Durable link from existing booking line, credit row, subscription component, capture, refund or Xero fact to the event; unique per source fact, not per coincident amount |
+| Inbox, object head and export manifest | Mutable delivery/workflow records with enum statuses and guarded claims; contain no authoritative money balance |
+
+One batch can have several obligations and members, as for a group receipt, but
+its debits equal its credits **per currency**. Currency is the club's configured
+currency, not an FX feature. Cross-currency provider facts conflict; no silent
+conversion. Member-credit transfers cannot change the debtor implicitly. A group
+records one cash receipt and exact applications to child obligations; it never
+records that full receipt on each child. Family subscription coverage similarly
+names one debtor and several covered members, not several copies of revenue.
+
+`BookingLedgerLine` remains the booking event evidence and compatibility view.
+Existing line ids, reversal chains, posting keys, night prices, names and
+`BookingModification.priceLines` survive. A bridge maps every existing line to
+its journal event and legs; new booking commands create both representations in
+one transaction until booking readers move. Do not independently reprice either
+side or double-post cash because both a booking line and a refund row name it.
+The existing booking balance helper becomes a projection of these same economic
+facts; the bridge proves its charge/settlement/adjustment signs agree. Once
+there are no old readers or writers, compatibility posting can retire; posted
+legacy lines remain retained evidence.
+
+### Database refusal and mandatory posting
+
+A failed posting rolls back the business event as well. Extend #4453's
+least-privilege provisioning to every new immutable money table: the application
+has INSERT/SELECT only, no UPDATE, DELETE, TRUNCATE, ownership, role escalation,
+mutable view or privileged routine escape. Migration and operator roles remain
+separate; the audit-retention connection gains no money-table rights. Verify
+the effective grants at rollout: #4453 is opt-in, so merely merging its code is
+not proof a deployment uses the restricted role.
+
+Use CHECKs for positive integer cents and valid line shape, enum domains,
+unique event/source/reversal keys, and deferred constraint triggers for
+cross-row balance. A journal header records its creating transaction identity;
+line inserts must belong to that same transaction. A later INSERT into an old
+batch is refused, closing the hole that INSERT-only grants alone leave open.
+At commit, every header must have its declared complete line set, balanced
+accounts, valid tax split and consistent currency. A non-zero event has at least
+two legs; an explicit zero event has no legs. Partial batches cannot commit.
+An exact reversal copies all original legs with Dr/Cr swapped, references that
+batch uniquely, and cannot be reversed twice; a new correction event follows.
+
+During expansion legacy source records may lack links. For each migrated
+writer cohort, durable source events require a non-null journal reference and
+a deferred database check verifies the event kind and amount against its
+complete batch. Mandatory links become universal after backfill and old-worker
+drain; do not claim a nullable FK enforces universal posting. A durable refund
+request before a provider call is an obligation/reservation, not a cash refund.
+The later accepted cash fact, application, reversal if failed, compatibility
+projection and outbox insert commit together. No caller may catch a refused
+posting and commit its business mutation anyway.
+
+On a replay, reserve the deterministic event key with conflict-do-nothing, read
+the winner and require identical canonical payload/hash and source links. An
+identical replay returns that complete batch. A reused key with different cents
+or coding is a conflict, not a successful skip. No per-line skipping can leave
+half a journal. Event keys include source event/attempt identity and revision;
+they never use wall-clock arrival time, equal amounts or array position.
+
+Foreign keys from posted records use RESTRICT for financial parents and stable
+identities, without update cascades or set-null rewrites. #4453 protects booking
+and lodge ids but [#4482](https://github.com/thatskiff33/AlpineClubBookingsNZ/issues/4482)
+shows parent DELETE can still erase legacy booking lines. Section 10 proposes
+archiving financial parents and RESTRICT for that existing cascade too. Until
+that decision is approved and delivered, append-only enforcement is incomplete
+and the ledger cut-over remains blocked. Personal-data erasure must use the
+retention design; it cannot erase economic postings by deleting their parent.
+
+### Module boundary and transactions
+
+Callers express a business event through a small public API. Proposed
+`src/lib/member-money/index.ts` exposes typed commands, read projections and
+transaction participants; `internal/` owns posting, key construction, account
+rules, source linkage and stores. Provider adapters call commands with evidence,
+never Prisma money delegates. Pure planning/ownership modules import no database
+or provider client. Routes, cron and admin code cannot import internal stores.
+
+An error-level import rule allows money-writer Prisma access only inside this
+boundary and refuses deep imports, re-export bypasses, dynamic imports and raw
+SQL escapes elsewhere. Existing writers are named, temporary migration
+exceptions removed cohort by cohort. Shared Prisma transaction access is not
+itself a capability boundary: restricted delegates/typed participants keep money
+tables out of caller clients, and an AST census covers delegate and SQL writes.
+Tests exercise the real import rule with prohibited examples and mutation probes;
+the database balance/refusal tests cover what lint cannot prove (`INV-SSOT-004`).
+
+Use the existing lock classification, never a new generic journal advisory key.
+Settlement/lifecycle commands take global `lock(1)` under `INV-LOCK-001`; capacity
+composition adds sorted lodge keys from `acquireLodgeCapacityLock`, then member
+keys. Credit-only adjustments keep the member-credit tier; #4219 applied-credit
+release takes global then member, while free-lot #4270 mirroring takes member
+only. `INV-LOCK-002` fixes order and key minting; `INV-LOCK-003` requires registry
+updates. Re-read mutable inputs after locks and win a status/version-guarded
+claim before side effects. Provider calls stay outside the transaction.
+
+For new inbound settlement and export-result recording, use one order: applicable
+advisory tiers, mutable business/payment rows, object-head rows in sorted order,
+then export/link rows. Do not lock immutable lines (`SELECT FOR UPDATE` requires
+UPDATE privilege). Credit-only object processing never later escalates to a
+global-key command: defer it and restart with the required tiers. The inbound
+void and outbound completion both use this order, replacing the legacy
+link-first/Payment-first inversion. Old writers must drain before the new order
+is enabled. Each writer child reconciles open PRs and the last ten merged PRs
+for its subsystem, registers participants, and proves its races on PostgreSQL;
+this documentation PR introduces no transaction or lock site.
