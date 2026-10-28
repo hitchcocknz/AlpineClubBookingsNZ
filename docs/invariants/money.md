@@ -992,8 +992,9 @@ explicit zero event has none. `effectiveDate` is the club civil date of
 `effectiveAt`, derived through the club-time kernel (`INV-DATE`,
 `INV-CONFIG-002`); a date more than a day from the instant's UTC date is refused.
 A debtor is exactly one member or one organisation, as a booking's owner is.
-Receivable, credit and refund-payable legs name one, and a leg or application
-tied to an obligation names the obligation's debtor. Tax evidence is either
+Receivable, credit and refund-payable legs name one, a member-credit leg names a
+member, never an organisation, and a leg or application tied to an obligation
+names the obligation's debtor. Tax evidence is either
 absent or a complete, nonnegative gross/net/tax split with gross = net + tax and
 a tax code. A taxed revenue leg carries its net cents, and on each side a
 batch's `GST_PAYABLE` legs sum to the tax its taxed revenue legs record.

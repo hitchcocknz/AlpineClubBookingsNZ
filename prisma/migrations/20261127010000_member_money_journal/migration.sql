@@ -270,6 +270,7 @@ ALTER TABLE "MemberMoneyLine" ADD CONSTRAINT "member_money_line_shape" CHECK (
   "amountCents" > 0
   AND (account NOT IN ('MEMBER_RECEIVABLE', 'MEMBER_CREDIT', 'REFUND_PAYABLE') OR "debtorKind" IS NOT NULL)
   AND (account <> 'MEMBER_CREDIT' OR "creditLotId" IS NOT NULL)
+  AND (account <> 'MEMBER_CREDIT' OR "debtorKind" = 'MEMBER')
   AND (account <> 'REFUND_PAYABLE' OR "obligationId" IS NOT NULL)
   AND ("bookingId" IS NULL OR "lodgeId" IS NOT NULL)
   AND id IS DISTINCT FROM "originalLineId"

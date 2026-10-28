@@ -50,7 +50,7 @@ export const MEMBER_MONEY_DATABASE_SHAPE = {
       MemberMoneyLine_pkey: "4c6419b3704337bbfe50f018842a9ad3",
       MemberMoneyLine_sourceLinkId_journalId_fkey: "0b0fe5d4caf0d28c69e98c6578cac37e",
       member_money_line_debtor: "36ace8e3d4b5d735fec30475c069d69d",
-      member_money_line_shape: "f647ce1fa0bae67450081172166cd1ea",
+      member_money_line_shape: "f2108b32c6613ea042f5b365d1012de5",
       member_money_tax_split: "8a4f9143eb6e8182e5d2290b38ad9952",
     },
     MemberMoneyObligation: {

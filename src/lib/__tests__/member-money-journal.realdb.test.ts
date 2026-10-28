@@ -290,6 +290,18 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
     })).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("member_money_line_shape") });
   });
 
+  it("holds member credit only for a member, never an organisation", async () => {
+    const credit = (debtor: "MEMBER" | "ORGANISATION") => transaction(app, async () => {
+      const id = next(); await event(app, id, "CREDIT_GRANT"); await header(app, id); await source(app, id);
+      await app.query(`INSERT INTO "MemberMoneyLine" (id,"journalId","sourceLinkId",account,side,"amountCents","debtorKind","memberId","organisationId","creditLotId",evidence)
+        VALUES ($1,$2,$2,'MEMBER_CREDIT','CREDIT',100,$3,$4,$5,'lot-1','{}')`,
+      [next(), id, debtor, debtor === "MEMBER" ? "member-evidence" : null, debtor === "ORGANISATION" ? "org-evidence" : null]);
+      await line(app, id, "DEBIT");
+    });
+    await expect(credit("ORGANISATION")).rejects.toMatchObject({ code: "23514", message: expect.stringContaining("member_money_line_shape") });
+    await credit("MEMBER");
+  });
+
   it("requires exact debtor/currency applications and exact, unique application reversals", async () => {
     let receipt!: Awaited<ReturnType<typeof batch>>;
     let owed = "", otherMember = "", organisationOwed = "";
