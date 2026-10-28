@@ -103,7 +103,7 @@ describe("the two kinds of undecided mapping in the setup snapshot", () => {
       noFallbackKeys.map((key) => `${MAPPING_LABELS[key] ?? key}: ${describeMappingOwnWhileUnset(key)}`),
     );
     for (const key of fallbackKeys) {
-      expect(snapshot.xeroUnsetMappingConsequences.join("\n")).not.toContain(`${MAPPING_LABELS[key] ?? key}:`);
+      expect((snapshot.xeroUnsetMappingConsequences ?? []).join("\n")).not.toContain(`${MAPPING_LABELS[key] ?? key}:`);
     }
   });
 
