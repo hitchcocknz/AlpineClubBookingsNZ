@@ -189,6 +189,10 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "MaintenanceReport.resolvedById",
   "MaintenanceReport.photoDeletedById",
   "LodgeMaintenanceReportToken.rotatedById",
+  // #4513 (M1): the actor recorded on an immutable member-money event. A bare
+  // String the detector cannot see; the database refuses any UPDATE of a posted
+  // event, so a merge could not rewrite it even if it tried.
+  "MemberMoneyEvent.actorMemberId",
   //
   // A NINTH column found by the same sweep is deliberately NOT here, because it
   // is not a snapshot at all: `BookingRequest.convertedMemberId` is the identity
@@ -290,6 +294,13 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   "XeroGroupingSettings.updatedByMemberId",
   "XeroMemberGroupingDryRun.createdByMemberId",
   "XeroSyncOperation.createdByMemberId",
+  // #4513 (M1): the debtor/member on a posted journal leg and on an obligation's
+  // immutable face terms. Economic evidence, not a live link: the database
+  // refuses UPDATE and DELETE on these tables, and posted evidence keeps the
+  // loser's id exactly as BookingLedgerLine evidence does
+  // (docs/multi-lodge/lodge-scoping-contract.md, "Member money journal").
+  "MemberMoneyLine.memberId",
+  "MemberMoneyObligation.memberId",
 ];
 
 // ---------------------------------------------------------------------------
