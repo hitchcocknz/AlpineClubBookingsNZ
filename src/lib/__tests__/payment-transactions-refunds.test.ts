@@ -68,7 +68,7 @@ import {
 } from "@/lib/booking-payment-state";
 import { calculateRefundAmount } from "@/lib/policies/cancellation";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
-import { refundRequestStripeMetadata } from "@/lib/payment-recovery-keys";
+import { refundRequestStripeMetadata } from "@/lib/refund-slice-evidence";
 import { createReplayWriter } from "@/test/providers/replay-write";
 
 function createRefundStore() {

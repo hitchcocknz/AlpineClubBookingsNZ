@@ -10,7 +10,8 @@ import { cardRefundDoorOf } from "@/lib/card-refund-own-note-share";
 import { prisma } from "@/lib/prisma";
 import { onPlanWhere } from "@/lib/refused-card-refund-retry";
 import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
-import { REFUND_SLICE_KEY_METADATA, refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { REFUND_SLICE_KEY_METADATA } from "@/lib/refund-slice-evidence";
 import { stripeReferenceId } from "@/lib/stripe-references";
 
 export class UnattributedCardRefundBeforeResendError extends Error {

@@ -1212,9 +1212,7 @@ describe("AID-6C finance pack: the recovery scenario catalogue (#4076)", () => {
     lateCaptureRefundPaymentIntentId: "parser of a Stripe key prefix",
     nextRefusedRefundKeySuffix: "Stripe idempotency key suffix",
     organiserChildRefundReasonForKey: "Stripe metadata reason",
-    refundRequestStripeMetadata: "Stripe metadata",
     refundSliceStripeIdempotencyKey: "Stripe idempotency key",
-    REFUND_SLICE_KEY_METADATA: "Stripe refund metadata key",
     stripeIdempotencyKeyForAskAmount: "Stripe idempotency key",
   };
 

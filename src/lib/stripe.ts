@@ -15,7 +15,7 @@ import {
   refuseBelowStripeMinimum,
   stripeChargeCurrency,
 } from "@/lib/stripe-charge-currency";
-import { refundRequestStripeMetadata } from "@/lib/payment-recovery-keys";
+import { refundRequestStripeMetadata } from "@/lib/refund-slice-evidence";
 
 // DB-only credential resolution (#2082): the secret key lives in the encrypted
 // IntegrationCredential store, so client construction is now ASYNC. We memoize

@@ -25,7 +25,8 @@ vi.mock("@/lib/xero-resolved-in-xero-fences", () => ({
     coverByRefund.get(where.OR[0]!.requestPayload!.equals) ?? 0,
 }));
 
-import { REFUND_SLICE_KEY_METADATA, refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { REFUND_SLICE_KEY_METADATA } from "@/lib/refund-slice-evidence";
 import { pairResendRecordedFirst, readFailedRefundsAnsweredBy, unmarkedResendSlicesFor, type ResendRow } from "@/lib/card-refund-resend-answer";
 
 const PAYMENT = "payment-1";

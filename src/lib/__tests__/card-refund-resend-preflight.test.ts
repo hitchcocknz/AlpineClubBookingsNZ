@@ -7,7 +7,8 @@ vi.mock("@/lib/xero-error-alert", () => ({ notifyXeroSyncError: vi.fn().mockReso
 vi.mock("@/lib/recorded-card-refund-notes", () => ({ queueRecordedCardRefundNotes: vi.fn().mockResolvedValue({ queueOperationId: null }) }));
 vi.mock("@/lib/stripe", () => ({ listRefundsForPaymentIntent: list }));
 vi.mock("@/lib/payment-transactions", () => ({ recordStripeRefundsAgainstTransaction: record }));
-import { REFUND_SLICE_KEY_METADATA, refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { refundSliceStripeIdempotencyKey } from "@/lib/payment-recovery-keys";
+import { REFUND_SLICE_KEY_METADATA } from "@/lib/refund-slice-evidence";
 import { queueRecordedCardRefundNotes } from "@/lib/recorded-card-refund-notes";
 import { checkCardRefundResend, UnattributedCardRefundBeforeResendError } from "@/lib/card-refund-resend-preflight";
 
