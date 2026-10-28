@@ -300,9 +300,10 @@ export const MEMBER_MERGE_SNAPSHOT_SCALAR_COLUMNS: readonly string[] = [
   // on these tables, so merge leaves posted rows untouched; the survivor takes
   // over the merged-away member's open balances through an explicit journal
   // transfer with an audit trail (owner decision D4, 28 Oct 2026,
-  // docs/design/member-money-ledger.md section 10; posted from M3/M5 on, while
-  // M1 posts nothing). See docs/multi-lodge/lodge-scoping-contract.md, "Member
-  // money journal".
+  // docs/design/member-money-ledger.md section 10; posted from M3 on, for
+  // charges (M3), refunds owed (M4) and member credit (M5), while M1 posts
+  // nothing). See docs/multi-lodge/lodge-scoping-contract.md, "Member money
+  // journal".
   "MemberMoneyLine.memberId",
   "MemberMoneyObligation.memberId",
 ];

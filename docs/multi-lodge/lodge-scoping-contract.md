@@ -66,7 +66,8 @@ organisation) is not: it says whose balance the row moves. A member merge
 leaves posted journal rows untouched and moves the merged-away member's open
 balances to the survivor by an explicit journal transfer with an audit trail
 ([decision D4](../design/member-money-ledger.md#d4-member-merge-transfer-open-balances-explicitly);
-posted from M3/M5 on, M1 posts nothing).
+posted from M3 on, for charges (M3), refunds owed (M4) and member credit (M5);
+M1 posts nothing).
 
 ## Club-Wide Defaults With Per-Lodge Overrides
 
