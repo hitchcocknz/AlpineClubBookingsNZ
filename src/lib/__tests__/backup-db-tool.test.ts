@@ -24,7 +24,7 @@ describe("streamDatabaseTool", () => {
     return {
       command: "fixture-db-tool",
       args: ["synthetic-db"],
-      env: { NODE_ENV: "test" },
+      env: { NODE_ENV: "test" } as NodeJS.ProcessEnv,
       timeoutMs: 1_000,
       exitError,
       direction: "stdout" as const,
@@ -50,7 +50,7 @@ describe("streamDatabaseTool", () => {
     const chunks: Buffer[] = [];
     const done = streamDatabaseTool({
       ...options(),
-      stream: (source, signal) => pipeline(source, new Writable({
+      stream: (source: Readable, signal: AbortSignal) => pipeline(source, new Writable({
         write(chunk: Buffer, _encoding, callback) { chunks.push(chunk); callback(); },
       }), { signal }),
     });
