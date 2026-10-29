@@ -35,6 +35,14 @@ const REFERENCE = [
   /["'`](?:@\/lib\/|(?:\.\.?\/)+(?:src\/lib\/|lib\/)?)member-money(?:-tables)?(?:\/[\w/]*)?["'`]/,
 ];
 
+/**
+ * A statement that writes rows, in the forms the verifier could execute. The
+ * pinned trigger definitions in `database-shape.ts` name TRUNCATE as a trigger
+ * EVENT (`BEFORE TRUNCATE ON …`, `INSERT OR TRUNCATE ON …`); a TRUNCATE
+ * statement is never followed by `ON` or `OR`, so only that grammar is excluded.
+ */
+const WRITE_STATEMENT = /\b(INSERT\s+INTO|UPDATE\s+(public\.)?"MemberMoney|DELETE\s+FROM|TRUNCATE\b(?!\s+(?:ON|OR)\b))/i;
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
@@ -72,9 +80,18 @@ describe("member money journal stays inert in M1 (#4513)", () => {
   it("posts nothing from inside the boundary or the verifier", () => {
     for (const file of [...found.filter((f) => f.startsWith(BOUNDARY)), "scripts/verify-member-money-journal.ts"]) {
       const text = readFileSync(join(ROOT, file), "utf8");
-      expect(text, file).not.toMatch(/\b(INSERT\s+INTO|UPDATE\s+(public\.)?"MemberMoney|DELETE\s+FROM|TRUNCATE)\b/i);
+      expect(text, file).not.toMatch(WRITE_STATEMENT);
       expect(text, file).not.toMatch(/\.memberMoney\w*\s*\.\s*(create|update|upsert|delete)/);
     }
     expect(readFileSync(join(ROOT, "scripts/verify-member-money-journal.ts"), "utf8")).toMatch(/READ ONLY/);
+  });
+
+  it("still recognises every TRUNCATE statement form, and only trigger events escape it", () => {
+    for (const statement of ['TRUNCATE "MemberMoneyLine"', "truncate table public.x", "TRUNCATE ONLY x", "TRUNCATE ${table}"]) {
+      expect(statement).toMatch(WRITE_STATEMENT);
+    }
+    for (const event of ['BEFORE TRUNCATE ON public."MemberMoneyEvent"', "AFTER INSERT OR TRUNCATE ON x"]) {
+      expect(event).not.toMatch(WRITE_STATEMENT);
+    }
   });
 });

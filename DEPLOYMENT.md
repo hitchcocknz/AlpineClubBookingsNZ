@@ -342,9 +342,13 @@ through a separate read-only/operator connection, set `APP_DB_USER` to the actua
 application role to check its effective grants. The command opens a read-only
 repeatable-read transaction and reports structural findings and exits nonzero
 on unsafe grants; a missing, disabled, changed or unexpected journal trigger;
-a changed enforcement function; a missing, unvalidated or changed constraint; a
-missing, invalid or changed unique index; orphan events or invalid batches. A changed
-definition is compared with the one the migration installs on PostgreSQL 16.
+a disabled foreign-key trigger, on a journal table or its parent; an
+enforcement function whose body, volatility, security mode or `SET search_path`
+changed; a missing, unvalidated or changed constraint; a missing, invalid,
+unready or changed unique index; orphan events or invalid batches.
+Constraint, trigger and index definitions are compared, as text, with the ones
+the migration installs on PostgreSQL 16; a changed or unexpected one is printed
+as found.
 When the role it checks is a superuser or owns the journal, as on a
 single-role install, it prints `"grantCheck": "not_applicable"` for that role:
 no grant can narrow it. Whichever role it checks, it still fails if any role

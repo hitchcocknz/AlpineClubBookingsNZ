@@ -78,9 +78,20 @@ async function transaction(c: Client, run: () => Promise<unknown>) {
   try { await run(); await c.query("COMMIT"); }
   catch (error) { await c.query("ROLLBACK"); throw error; }
 }
-async function findings(c: Client, role = roles.app) {
-  return (await verifyMemberMoneyJournal(c, role)).findings;
+/** The verifier as the operator command runs it: in its own read-only snapshot. */
+async function verified(c: Client, role = roles.app) {
+  await c.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
+  try { return await verifyMemberMoneyJournal(c, role); } finally { await c.query("ROLLBACK"); }
 }
+async function findings(c: Client, role = roles.app) {
+  return (await verified(c, role)).findings;
+}
+/** A DO block disabling one internal trigger of a foreign key, on the given table. */
+const disableForeignKeyTrigger = (constraint: string, table: string) => `DO $$ BEGIN
+  EXECUTE format('ALTER TABLE %I DISABLE TRIGGER %I', '${table}', (SELECT tgname FROM pg_trigger
+    WHERE tgconstraint = (SELECT oid FROM pg_constraint WHERE conname = '${constraint}')
+      AND tgrelid = '"${table}"'::regclass LIMIT 1));
+END $$`;
 /** A charge of 115 cents: 100 net revenue and 15 GST, both credited, owed by one debtor. */
 async function taxedCharge(c: Client, broken: { gst?: number; revenueAmount?: number } = {}) {
   const net = 100, tax = 15;
@@ -129,13 +140,13 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
 
   it("commits a balanced complete batch as the INSERT/SELECT-only role and verifies it", async () => {
     await transaction(app, () => batch(app));
-    expect(await verifyMemberMoneyJournal(app, roles.app)).toEqual({ findings: [], grantCheck: "checked" });
+    expect(await verified(app, roles.app)).toEqual({ findings: [], grantCheck: "checked" });
   });
 
   it("reports the grant check as not applicable for a superuser or owner connection", async () => {
     const operator = (await db.query(`SELECT current_user AS name`)).rows[0].name as string;
-    expect(await verifyMemberMoneyJournal(db, operator)).toEqual({ findings: [], grantCheck: "not_applicable" });
-    expect(await verifyMemberMoneyJournal(db, roles.migrator)).toEqual({ findings: [], grantCheck: "not_applicable" });
+    expect(await verified(db, operator)).toEqual({ findings: [], grantCheck: "not_applicable" });
+    expect(await verified(db, roles.migrator)).toEqual({ findings: [], grantCheck: "not_applicable" });
   });
 
   it.each([
@@ -150,7 +161,7 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
       expect(result.grantCheck).toBe("not_applicable");
       expect(result.findings).toContainEqual({ identity, problem: "change_granted_beyond_owner" });
     } finally { await db.query("ROLLBACK"); }
-    expect(await verifyMemberMoneyJournal(db, roles.migrator)).toEqual({ findings: [], grantCheck: "not_applicable" });
+    expect(await verified(db, roles.migrator)).toEqual({ findings: [], grantCheck: "not_applicable" });
   });
 
   it.each(MEMBER_MONEY_RELATIONS)("refuses direct UPDATE, DELETE and TRUNCATE of %s", async (table) => {
@@ -403,45 +414,71 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
   });
 
   it("reads back exactly the pinned constraint, trigger and unique-index definitions", async () => {
-    // The digests are of the catalog's normalised text, so they are derived here,
+    // The definitions are the catalog's normalised text, so they are derived here,
     // from the migration as PostgreSQL applied it, never from migration.sql.
-    const definitions = await readMemberMoneyDefinitions(db);
-    expect(definitions.filter((found) => !found.usable)).toEqual([]);
-    const read = { constraints: {}, triggers: {}, uniqueIndexes: {} } as Record<string, Record<string, Record<string, string>>>;
-    for (const { kind, relation, name, digest } of definitions) (read[kind]![relation] ??= {})[name] = digest;
-    const { constraints, triggers, uniqueIndexes } = MEMBER_MONEY_DATABASE_SHAPE;
-    expect(read).toEqual({ constraints, triggers, uniqueIndexes });
-    // The settings the text depends on are fixed while it is read, then put back.
-    await db.query(`SET search_path = pg_catalog`);
+    await db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
     try {
+      const definitions = await readMemberMoneyDefinitions(db);
+      expect(definitions.filter((found) => !found.usable)).toEqual([]);
+      const read = { constraints: {}, triggers: {}, uniqueIndexes: {} } as Record<string, Record<string, Record<string, string>>>;
+      for (const { kind, relation, name, definition } of definitions) (read[kind]![relation] ??= {})[name] = definition;
+      const { constraints, triggers, uniqueIndexes } = MEMBER_MONEY_DATABASE_SHAPE;
+      expect(read).toEqual({ constraints, triggers, uniqueIndexes });
+      // The settings the text depends on are fixed while it is read; the
+      // caller's own, SET LOCAL included, come back exactly and stay local.
+      await db.query(`SET LOCAL search_path = pg_catalog`);
+      await db.query(`SET LOCAL quote_all_identifiers = on`);
       expect(await readMemberMoneyDefinitions(db)).toEqual(definitions);
-      expect((await db.query(`SELECT current_setting('search_path') AS path`)).rows).toEqual([{ path: "pg_catalog" }]);
-    } finally { await db.query(`RESET search_path`); }
+      expect((await db.query(`SELECT current_setting('search_path') AS path, current_setting('quote_all_identifiers') AS quote`)).rows)
+        .toEqual([{ path: "pg_catalog", quote: "on" }]);
+    } finally { await db.query("ROLLBACK"); }
+    expect((await db.query(`SELECT current_setting('quote_all_identifiers') AS quote`)).rows).toEqual([{ quote: "off" }]);
+  });
+
+  it("refuses to read the definitions outside a transaction", async () => {
+    await expect(readMemberMoneyDefinitions(db)).rejects.toThrow(/inside a transaction/);
   });
 
   it.each([
-    ["a constraint weakened to CHECK (true)", { identity: "MemberMoneyLine.member_money_tax_split", problem: "changed_constraint" },
+    ["a constraint weakened to CHECK (true)", { identity: "MemberMoneyLine.member_money_tax_split", problem: "changed_constraint", found: "CHECK (true)" },
       `ALTER TABLE "MemberMoneyLine" DROP CONSTRAINT member_money_tax_split, ADD CONSTRAINT member_money_tax_split CHECK (true)`],
     ["a dropped unique index", { identity: "MemberMoneyJournal.MemberMoneyJournal_reversesJournalId_key", problem: "missing_or_invalid_unique_index" },
       `DROP INDEX "MemberMoneyJournal_reversesJournalId_key"`],
     ["a unique index left invalid", { identity: "MemberMoneyJournal.MemberMoneyJournal_eventId_key", problem: "missing_or_invalid_unique_index" },
       `UPDATE pg_index SET indisvalid = false WHERE indexrelid = '"MemberMoneyJournal_eventId_key"'::regclass`],
-    ["an immutability trigger re-pointed to a no-op function", { identity: "MemberMoneyLine.member_money_immutable", problem: "changed_trigger" },
+    ["a unique index not ready for inserts", { identity: "MemberMoneyEvent.MemberMoneyEvent_eventKey_key", problem: "missing_or_invalid_unique_index" },
+      `UPDATE pg_index SET indisready = false WHERE indexrelid = '"MemberMoneyEvent_eventKey_key"'::regclass`],
+    ["a foreign key's check trigger disabled on the journal table",
+      { identity: "MemberMoneyLine.MemberMoneyLine_journalId_fkey", problem: "disabled_foreign_key_trigger" },
+      disableForeignKeyTrigger("MemberMoneyLine_journalId_fkey", "MemberMoneyLine")],
+    ["a foreign key's action trigger disabled on its parent, outside the journal",
+      { identity: "MemberMoneyLine.MemberMoneyLine_bookingId_fkey", problem: "disabled_foreign_key_trigger" },
+      disableForeignKeyTrigger("MemberMoneyLine_bookingId_fkey", "Booking")],
+    ["an enforcement function's search_path reset",
+      { identity: "member_money_check_seal", problem: "changed_function_settings", found: "config=[]" },
+      `ALTER FUNCTION member_money_check_seal() RESET search_path`],
+    ["an enforcement function made SECURITY DEFINER",
+      { identity: "member_money_refuse_mutation", problem: "changed_function_settings", found: "securityDefiner=true" },
+      `ALTER FUNCTION member_money_refuse_mutation() SECURITY DEFINER`],
+    ["an immutability trigger re-pointed to a no-op function", { identity: "MemberMoneyLine.member_money_immutable", problem: "changed_trigger",
+      found: `CREATE TRIGGER member_money_immutable BEFORE DELETE OR UPDATE ON public."MemberMoneyLine" FOR EACH ROW EXECUTE FUNCTION mm4513_tamper_noop()` },
       `CREATE FUNCTION mm4513_tamper_noop() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
        DROP TRIGGER member_money_immutable ON "MemberMoneyLine";
        CREATE TRIGGER member_money_immutable BEFORE UPDATE OR DELETE ON "MemberMoneyLine"
          FOR EACH ROW EXECUTE FUNCTION mm4513_tamper_noop()`],
-    ["an extra BEFORE INSERT trigger the shape does not name", { identity: "MemberMoneyLine.mm4513_extra", problem: "unexpected_trigger" },
+    ["an extra BEFORE INSERT trigger the shape does not name", { identity: "MemberMoneyLine.mm4513_extra", problem: "unexpected_trigger",
+      found: `CREATE TRIGGER mm4513_extra BEFORE INSERT ON public."MemberMoneyLine" FOR EACH ROW EXECUTE FUNCTION mm4513_tamper_passthrough()` },
       `CREATE FUNCTION mm4513_tamper_passthrough() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$;
        CREATE TRIGGER mm4513_extra BEFORE INSERT ON "MemberMoneyLine"
          FOR EACH ROW EXECUTE FUNCTION mm4513_tamper_passthrough()`],
   ])("reports %s", async (_tampering, finding, sql) => {
     // DDL is transactional: the verifier reads the tampered catalog inside the
-    // transaction, and the rollback puts the migration's definitions back.
+    // transaction, and the rollback puts the migration's definitions back. A
+    // changed or unexpected definition is reported with the text it found.
     await db.query("BEGIN");
     try {
       await db.query(sql);
-      expect(await findings(db)).toContainEqual(finding);
+      expect((await verifyMemberMoneyJournal(db, roles.app)).findings).toContainEqual(finding);
     } finally { await db.query("ROLLBACK"); }
     expect(await findings(app)).toEqual([]);
   });

@@ -3,8 +3,8 @@
  * migration's, derived here from the file itself (#4513). A changed function
  * body fails this until the constant moves with it, as does a constraint,
  * trigger or unique index added, dropped or moved to another relation. The
- * catalog normalises those definitions' text, so the realdb suite checks their
- * digests against a freshly migrated database.
+ * catalog normalises those definitions' text, so the realdb suite checks the
+ * text against a freshly migrated database.
  */
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
@@ -26,10 +26,19 @@ const pinnedNames = (pins: Record<string, Record<string, string>>) =>
 const primaryKeys = MEMBER_MONEY_RELATIONS.map((relation) => [relation, `${relation}_pkey`] as const);
 
 describe("member money database shape (#4513)", () => {
-  it("holds the md5 of every member_money_* function body exactly as the migration writes it", () => {
+  it("holds every member_money_* function's body md5 and settings exactly as the migration writes them", () => {
     const functions = Object.fromEntries(
-      [...MIGRATION.matchAll(/CREATE FUNCTION (member_money_\w+)\([\s\S]*?AS \$\$([\s\S]*?)\$\$;/g)]
-        .map(([, name, body]) => [name, createHash("md5").update(body!).digest("hex")]),
+      [...MIGRATION.matchAll(/CREATE FUNCTION (member_money_\w+)\(([\s\S]*?)AS \$\$([\s\S]*?)\$\$;/g)]
+        .map(([, name, header, body]) => {
+          const volatility = /\b(IMMUTABLE|STABLE|VOLATILE)\b/.exec(header!)?.[1]?.toLowerCase() ?? "volatile";
+          const config = [...header!.matchAll(/\bSET (\w+) = (.+?) $/gm)].map(([, setting, value]) => `${setting}=${value}`);
+          return [name, {
+            source: createHash("md5").update(body!).digest("hex"),
+            volatility,
+            securityDefiner: /\bSECURITY DEFINER\b/.test(header!),
+            config,
+          }];
+        }),
     );
     expect(MEMBER_MONEY_DATABASE_SHAPE.functions).toEqual(functions);
   });
@@ -59,10 +68,18 @@ describe("member money database shape (#4513)", () => {
     expect(pinnedNames(MEMBER_MONEY_DATABASE_SHAPE.uniqueIndexes)).toEqual(namesByRelation([...indexes, ...primaryKeys]));
   });
 
-  it("holds an md5 digest for every pinned definition", () => {
-    const definitions = (["constraints", "triggers", "uniqueIndexes"] as const).flatMap((kind) =>
-      Object.values<Record<string, string>>(MEMBER_MONEY_DATABASE_SHAPE[kind]).flatMap((pins) => Object.values(pins)));
-    const digests = [...Object.values(MEMBER_MONEY_DATABASE_SHAPE.functions), ...definitions];
-    expect(digests.filter((digest) => !/^[0-9a-f]{32}$/.test(digest))).toEqual([]);
+  it("holds an md5 for every function and the catalog's text for every other definition", () => {
+    expect(Object.values(MEMBER_MONEY_DATABASE_SHAPE.functions).filter(({ source }) => !/^[0-9a-f]{32}$/.test(source))).toEqual([]);
+    const shapes = {
+      constraints: () => /^(PRIMARY KEY|FOREIGN KEY|CHECK) \(/,
+      triggers: (relation: string, name: string) =>
+        new RegExp(`^CREATE (CONSTRAINT )?TRIGGER ${name} .+ ON public\\."${relation}" .*EXECUTE FUNCTION member_money_\\w+\\(\\)$`),
+      uniqueIndexes: (relation: string, name: string) =>
+        new RegExp(`^CREATE UNIQUE INDEX "${name}" ON public\\."${relation}" USING btree \\(.+\\)$`),
+    };
+    const unlike = (Object.keys(shapes) as (keyof typeof shapes)[]).flatMap((kind) =>
+      Object.entries<Record<string, string>>(MEMBER_MONEY_DATABASE_SHAPE[kind]).flatMap(([relation, pins]) =>
+        Object.entries(pins).filter(([name, text]) => !shapes[kind](relation, name).test(text)).map(([name]) => `${relation}.${name}`)));
+    expect(unlike).toEqual([]);
   });
 });
