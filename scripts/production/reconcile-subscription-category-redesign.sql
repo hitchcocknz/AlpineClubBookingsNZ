@@ -21,6 +21,12 @@
 -- assigned one to a member. If that assumption is false, this script refuses
 -- outright rather than silently discarding real data.
 --
+-- EXCEPTION: the built-in "Individual" sentinel row (isBuiltIn = true) that
+-- the ORIGINAL migration's own DML inserted is expected on every production
+-- that ran it — it is scaffolding, never looked up by id at billing time, not
+-- admin-entered data, and the whole table is dropped in step 2 regardless.
+-- The guard ignores isBuiltIn rows and only refuses on a real one.
+--
 -- NO rollback.sql is provided for THIS script, unlike an ordinary migration.
 -- The only way back is the backup taken immediately before running it (see
 -- the runbook) — this script is deliberately destructive against an
@@ -33,9 +39,9 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 DO $guard$
 BEGIN
-  IF EXISTS (SELECT 1 FROM "SubscriptionCategory") THEN
+  IF EXISTS (SELECT 1 FROM "SubscriptionCategory" WHERE NOT "isBuiltIn") THEN
     RAISE EXCEPTION 'subscription_category_data_exists'
-      USING HINT = 'At least one SubscriptionCategory row exists. This script assumes the feature was never used in production — stop and handle the real data by hand rather than running this.';
+      USING HINT = 'At least one non-built-in SubscriptionCategory row exists. This script assumes the feature was never used in production — stop and handle the real data by hand rather than running this.';
   END IF;
   IF EXISTS (
     SELECT 1 FROM "MembershipSubscriptionCharge" WHERE "subscriptionCategoryId" IS NOT NULL

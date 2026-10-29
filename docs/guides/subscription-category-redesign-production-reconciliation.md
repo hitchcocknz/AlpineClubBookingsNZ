@@ -36,11 +36,15 @@ columns) in place.
 ## Confirmed before you start
 
 No club using this fork's production deployment has ever actually used the
-subscription-category feature — no `SubscriptionCategory` row, no category
-assignment, no category-routed charge. The reconciliation script's own guard
-(step 0 of the SQL) refuses outright if any of that turns out not to be true,
-rather than trusting this assumption blindly — read its refusal message if it
-fires; it names exactly what still needs handling by hand.
+subscription-category feature — no real category assignment, no
+category-routed charge, and no `SubscriptionCategory` row beyond the
+built-in "Individual" sentinel the original migration's own DML inserted
+(`isBuiltIn = true`; expected on every production that ran it, since the
+whole table is dropped in step 2 regardless — the guard ignores this one
+row). The reconciliation script's own guard (step 0 of the SQL) refuses
+outright if any of that turns out not to be true, rather than trusting this
+assumption blindly — read its refusal message if it fires; it names exactly
+what still needs handling by hand.
 
 ## This deployment is single-instance — no blue/green slots
 
