@@ -584,10 +584,10 @@ land.
 manifest moving with it. The numbers this page was written against:
 
 ```
-row-producing sites:  510
+row-producing sites:  523
 uncategorised:        0
-category values: admin 111, booking 108, xero 39, family 35, payment 60,
-                 lodge 66, account 19, security 25, privacy 21,
+category values: admin 110, booking 108, xero 44, family 35, payment 67,
+                 lodge 68, account 19, security 25, privacy 21,
                  communication 21, system 4
 ```
 
@@ -793,6 +793,29 @@ list. `OTHER_LODGE_UPDATED` stays, still `admin` under INV-PRIV-013's rule, so
 the lodge-gated keep shrinks from nineteen pinned sites to seventeen without
 anyone's readership changing.
 
+#62 then added one (`admin` 107 -> 108, 497 -> 498, MEASURED with
+`pnpm run audit:census`): `LODGE_CENTRAL_LINK_UPDATED`, the record that an
+administrator linked a local lodge to its lodge on the Alpine Central Server.
+`admin` under INV-PRIV-013's rule, like every writer in the lodge-records
+subsystem, so the lodge-gated keep grows from seventeen pinned sites to
+eighteen; the row names two central lodge ids and the administrator, no member.
+
+#58 then added one more (`admin` 108 -> 109, 498 -> 499, MEASURED with
+`pnpm run audit:census`): `OTHER_LODGE_HIDDEN`, the record that an
+administrator hid an Other lodges row the Alpine Central Server does not list.
+`admin` under INV-PRIV-013's rule, beside the registry's update, so the
+lodge-gated keep grows from eighteen pinned sites to nineteen; the row names
+the lodge by id and name only, no member.
+
+#58 also added the download's own record of the lodges it hid because the
+central server deleted them (`alpine_server.other_lodges.hidden`, `lodge`
+66 -> 67, 499 -> 500, MEASURED): lodge names and a count of unlinked club
+lodges, no member. A library writer, so it joins no keep.
+
+#77 added the record that this club's own Other lodge was refilled from its
+Fees page (`OTHER_LODGE_RATES_FROM_FEES`, `lodge` 67 -> 68, 500 -> 501,
+MEASURED): the lodge, the trigger and the fields that changed, no member. A
+library writer, so it joins no keep.
 `main` then added #3750's executed approval of a change request on a finished
 stay (`booking` 107 -> 108, `booking-change-request.approve` with
 `executed: true`). The sync of `main` into epic #3789 composed #3819's addition
@@ -836,6 +859,31 @@ lost-record recovery adds `booking.payment.auto_refund_record_recovered`, also
 late-capture handler marked as its own but refunded some other way, named for
 the same people instead of being noted in Xero.
 
+#4219 then added one more (`xero` 39 -> 40, 507 -> 508, MEASURED with
+`pnpm run audit:census`): `xero.credit_note.spent_outside_app_converged`, the credit-ledger
+convergence's own row, filed `xero` beside the other Xero rows.
+
+#4338 then added one more (`xero` 40 -> 41, 508 -> 509, MEASURED with
+`pnpm run audit:census`): `xero.credit_note.spent_outside_app_attempt_closed`,
+the same convergence closing a concurrent attempt's failed allocation, filed
+`xero` beside it.
+#4253 then added five (`payment` 60 -> 64, `xero` 41 -> 42, 509 -> 514, MEASURED with
+`pnpm run audit:census`): a released-credit card request raised, one closed without
+asking and two closed because Xero shows its invoice paid (one at ask time, one by the
+sweep), filed `payment`, and the recording of its card payment in Xero, filed `xero`.
+
+#4253 release 2 then added one (`payment` 64 -> 65, 516 -> 517, MEASURED with
+`pnpm run audit:census`): `payment.credit_release_ask.backlog_batch_taken`, the row each
+batch of the switchable backlog run writes, filed `payment` beside the request's own rows.
+Its fix round added one more (`payment` 65 -> 66, 517 -> 518, MEASURED with
+`pnpm run audit:census`): `payment.credit_release_ask.left_to_officers`, the note that a
+request was left to the officers, filed `payment` with the rest.
+
+#4270 then added two (`xero` 42 -> 44, 514 -> 516, MEASURED with
+`pnpm run audit:census`): `xero.credit_note.outside_spend_mirrored` and
+`xero.credit_note.outside_spend_restored`, the inbound credit-note mirror's rows, filed
+`xero` beside the converge's.
+
 #4154 then added one more (`payment` 57 -> 58, 504 -> 505, MEASURED with
 `pnpm run audit:census`): `booking-payment.capacity-race.refunded-total-corrected`,
 a capacity race's card charge corrected to its refund rows before its hand-back
@@ -846,15 +894,6 @@ a capacity race's card charge corrected to its refund rows before its hand-back
 undo of a voided bank-transfer refund note, and `.void-answered`, a person's
 answer to one the undo could not match - both the payment's figures, filed
 `payment` for the people who reconcile it.
-
-The subscription-category decoupling work then added three (`admin` 108 -> 111,
-507 -> 510, RE-MEASURED with `pnpm run audit:census`): the new Subscription
-Categories admin CRUD route's create/update/delete writers
-(`SUBSCRIPTION_CATEGORY_CREATED`/`_UPDATED`/`_ARCHIVED`/`_REACTIVATED`/`_DELETED`),
-each via `buildStructuredAuditLogCreateArgs` + `tx.auditLog.create`. `admin` for
-the same reason Membership Types' equivalent writers are — ordinary
-admin-configuration changes to a billing-category schedule, no member data —
-and the route mirrors the Membership Types route one-for-one.
 
 #2942 then added one more (`admin` 106 -> 107, 482 -> 483 on the MERGED tree —
 the MAD epic's own children carried the total from 472 to 482 without a

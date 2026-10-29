@@ -157,7 +157,7 @@ half-way on pnpm's junctions and FOLLOWS a junction, deleting its target (#3673)
 ```powershell
 pnpm run worktree:remove C:\path\to\exact-worktree                     # merged into origin/main
 pnpm run worktree:remove C:\path\to\exact-worktree --base origin/epic/1  # an epic child
-pnpm run worktree:remove C:\path\to\exact-worktree --allow-unmerged      # an abandoned lane
+pnpm run worktree:remove C:\path\to\exact-worktree --allow-unmerged      # your own abandoned lane
 pnpm run worktree:remove C:\path\to\exact-worktree --forget-missing      # its folder is really gone
 ```
 
@@ -234,6 +234,12 @@ migration-drift, E2E, static/secret/dependency, and container gates. Run a full
 suite locally only to diagnose a CI failure or when CI is unavailable, and
 record the reason and result in the PR.
 
+Known false greens: a stale Prisma client type-checks clean, so generate first;
+`pnpm test` does not typecheck; a guard must fail under mutation, and the
+mutation must then be restored; a test that agrees with odd behaviour may be
+the wrong one. Failures caused by the environment are listed in
+[`TESTING.md`](../TESTING.md#suites-that-time-out-under-load-and-pass-alone).
+
 For concurrency-sensitive work, the orchestrator also reviews the open PRs and
 last 10 merged PRs affecting the subsystem, reconciles their lock/state/provider
 contracts, and records the relevant PR numbers in the PR lock-impact section.
@@ -249,7 +255,23 @@ the fallback archive targets Linux x86-64.
 
 These quick checks fit the task sandbox. The orchestrator remains responsible
 for the local validation in `AGENTS.md`; PR CI owns the full unit suite, build,
-migration and E2E gates before merge.
+migration and E2E gates before merge. What a Sekreton lane owns on GitHub, from
+its claim to the merge, is in
+[`COORDINATION.md`](COORDINATION.md#lanes-and-assignments) (#4392).
+
+The `kept-change-realdb` sandbox check installs the distribution’s declared `postgresql`
+package and runs `bash scripts/ci/kept-change-realdb.sh` against a fresh,
+loopback-only disposable database. It runs the kept-change, superseded-invoice
+carry, change-receipt and primary-invoice race suites serially, then checks the
+Vitest JSON report with `unexercisedRealdbFiles`: every named suite must pass
+and none may skip. The script stops its database on exit. When the check runs
+as root, only PostgreSQL commands run as the package's unprivileged `postgres`
+account, which owns the fresh cluster directory; migrations and tests retain
+the caller's checkout permissions. Non-root checks use their own account.
+The script discovers the installed server tools under `/usr/lib/postgresql/*/bin`.
+A missing PostgreSQL binary fails explicitly; unit-shard success is not database evidence. The
+broader `realdb-all` job's discovery and no-skip check on GitHub remain advisory,
+so cite that job's actual result separately before making the PR ready.
 
 ## Checking `main` after a merge
 

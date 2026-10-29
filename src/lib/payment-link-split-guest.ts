@@ -27,6 +27,7 @@ import { readBookingAmountOwed } from "@/lib/booking-amount-owed";
 import { revokePaymentLinkById } from "@/lib/payment-link";
 import { prisma } from "@/lib/prisma";
 import { savedPaymentMethodForBooking } from "@/lib/saved-payment-method";
+import { savedCardChargeCents } from "@/lib/booking-payment-state";
 import type { ClubFormat } from "@/lib/club-format";
 
 /** A freshly minted split-guest link: the raw token (emailable exactly once)
@@ -191,7 +192,9 @@ export async function issueSplitGuestPaymentLink(
     // via the split-guest flow.
     booking.groupBookingJoin ||
     !booking.hasNonMembers ||
-    booking.finalPriceCents <= 0
+    // #4357 (`INV-PAY-119`): worth, not the bare price - a change fee recorded
+    // on a $0 child's payment is still owed, and the cron sends it this link.
+    savedCardChargeCents(booking) <= 0
   ) {
     return { outcome: "not_payable" };
   }

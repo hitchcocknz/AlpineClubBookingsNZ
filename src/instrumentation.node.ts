@@ -758,12 +758,11 @@ export async function register() {
         );
 
         try {
-          const { runXeroCronTasks } = await import(
-            "./lib/xero-cron-runner"
-          );
-          const result = await runXeroCronTasks("inbound");
+          // #4270: the credit-note mirror's backstop runs right after the inbound cycle.
+          const { runXeroCronTaskList } = await import("./lib/xero-cron-runner");
+          const result = await runXeroCronTaskList(["inbound", "credit-note-mirror"], { taskLabel: "inbound" });
           logger.info(
-            { job: "xero-inbound-reconcile", result: result.inboundReconciliation },
+            { job: "xero-inbound-reconcile", result: result.inboundReconciliation, creditNoteMirror: result.creditNoteMirror },
             "Xero inbound reconciliation cycle complete"
           );
           Sentry.captureCheckIn({ checkInId, monitorSlug: "xero-inbound-reconcile", status: "ok" });
@@ -1057,7 +1056,7 @@ export async function register() {
       );
 
       try {
-        const { syncOtherClubsWithServer } = await import(
+        const { alpineServerSyncRunStatus, syncOtherClubsWithServer } = await import(
           "./lib/cron-alpine-server-sync"
         );
         const result = await syncOtherClubsWithServer();
@@ -1068,7 +1067,7 @@ export async function register() {
         await recordCronRun(
           "alpine-server-other-lodges-sync",
           startedAt,
-          result.status === "skipped" ? "SKIPPED" : "SUCCESS",
+          alpineServerSyncRunStatus(result),
           { ...result },
         );
         Sentry.captureCheckIn({

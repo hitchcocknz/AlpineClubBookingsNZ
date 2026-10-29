@@ -120,6 +120,8 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/backups/restore": "support",
   "/api/admin/backups/run": "support",
   "/api/admin/backups/status": "support",
+  // #4409: the Backups setup wizard's resume cursor, under its own area.
+  "/api/admin/backups/wizard-progress": "support",
   "/api/admin/bed-allocation": "bookings",
   "/api/admin/bed-allocation/allocations": "bookings",
   "/api/admin/bed-allocation/allocations/bulk": "bookings",
@@ -349,6 +351,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   // (`lodge:view` / `lodge:edit`) is the one this map already infers and no new
   // prefix is invented for one setting.
   "/api/admin/lodges/[id]/roster-settings": "lodge",
+  "/api/admin/lodges/[id]/central-lodge": "lodge",
   "/api/admin/maintenance-reports": "lodge",
   "/api/admin/maintenance-reports/[id]": "lodge",
   "/api/admin/maintenance-reports/questions": "lodge",
@@ -356,6 +359,7 @@ const EXPECTED_ROUTE_AREAS: Record<string, AdminPermissionArea> = {
   "/api/admin/maintenance-reports/tokens": "lodge",
   "/api/admin/other-lodges": "lodge",
   "/api/admin/other-lodges/[id]": "lodge",
+  "/api/admin/other-lodges/[id]/hide": "lodge",
   "/api/admin/member-applications": "membership",
   "/api/admin/member-applications/[id]": "membership",
   "/api/admin/member-applications/[id]/approval-preview": "membership",

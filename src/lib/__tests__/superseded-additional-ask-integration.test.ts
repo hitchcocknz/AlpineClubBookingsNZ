@@ -12,13 +12,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
   The witness `INV-OPS-015` requires (`money-seam-mock-census.test.ts` pins this
   file by name). #3340 lost $135 because no suite ever ran the ask SIZING and the
   supersede MACHINERY together: every suite that touched
-  `queueSupersededAdditionalIntentCancellations` mocked it. Here every link runs
+  `queueSupersededAdditionalIntentCancellationRows` mocked it. Here every link runs
   for real, over one in-memory ledger that actually holds the row being retired:
 
     sizeAdditionalAsk                          (the one home of the arithmetic)
       -> createModificationAdditionalPaymentIntent   (the minter)
         -> upsertPaymentIntentTransaction -> reconcilePaymentAggregates
-        -> queueSupersededAdditionalIntentCancellations
+        -> queueSupersededAdditionalIntentCancellationRows
           -> enqueuePaymentIntentCancellationRecovery
           -> runPaymentRecoveryOperationNow -> cancel -> reconcile
 
@@ -72,6 +72,14 @@ vi.mock("@/lib/prisma", () => {
       // #4036 review: the ask write's guard (`writePaymentIntentTransaction`) reads OR.
       if (field === "OR") return (condition as Row[]).some((branch) => matches(row, branch));
       if (field === "AND" || field === "NOT") refuse(`combinator "${field}"`);
+      // #4422: the supersede skips a declined ask a cancel already finished.
+      if (field === "recoveryOperations") {
+        const relation = condition as Row;
+        onlyArgs(relation, ["none"]);
+        return !ledger.operations.some(
+          (operation) => operation.paymentTransactionId === row.id && matches(operation, relation.none as Row),
+        );
+      }
       const value = row[field];
       if (condition !== null && typeof condition === "object" && !(condition instanceof Date)) {
         const c = condition as Record<string, unknown>;
@@ -131,14 +139,13 @@ vi.mock("@/lib/prisma", () => {
     insertionSeq: ++ledger.seq,
   });
 
-  return {
-    prisma: {
+  const prisma = {
       // #4217: the ledger writers lock the Payment row first; a single-writer
       // fake has nothing to wait on.
       $executeRaw: async () => 0,
       payment: {
-        findUnique: async (args: { where: Row; include?: Row }) => {
-          onlyArgs(args, ["where", "include"]);
+        findUnique: async (args: { where: Row; include?: Row; select?: Row }) => {
+          onlyArgs(args, ["where", "include", "select"]);
           const { where, include } = args;
           if (include) {
             onlyArgs(include, ["transactions"]);
@@ -224,8 +231,8 @@ vi.mock("@/lib/prisma", () => {
           return row ? { ...row } : null;
         },
       },
-    },
   };
+  return { prisma: { ...prisma, $transaction: (write: (tx: typeof prisma) => unknown) => write(prisma) } };
 });
 
 vi.mock("@/lib/stripe", () => ({
@@ -419,6 +426,29 @@ describe("mint -> supersede -> resulting ask, every seam real (#3341, INV-OPS-01
     // A captured intent is not a supersede candidate: nothing was cancelled.
     expect(stripe.cancelPaymentIntentIfCancellableWithResult).not.toHaveBeenCalled();
     expect(payment().additionalAmountCents).toBe(7000);
+  });
+
+  it("#4422: the next edit cancels a DECLINED ask at Stripe too, keeps its declined record, and a later edit leaves it be", async () => {
+    await editUp("mod_1", 7000);
+    // The card was declined: the row fails, the intent stays confirmable.
+    const declined = additionalRows()[0];
+    declined.status = PaymentStatus.FAILED;
+    const declinedReason = declined.reason;
+    await reconcilePaymentAggregates({ paymentId: PAYMENT_ID });
+
+    await editUp("mod_2", 7000);
+
+    expect(stripe.cancelPaymentIntentIfCancellableWithResult).toHaveBeenCalledWith("pi_add_1");
+    // The supersede's FAILED write is fenced on an open status, so it is not restamped.
+    expect(declined).toMatchObject({ status: PaymentStatus.FAILED, reason: declinedReason });
+    expect(ledger.operations).toEqual([
+      expect.objectContaining({ paymentIntentId: "pi_add_1", status: PaymentRecoveryOperationStatus.SUCCEEDED }),
+    ]);
+
+    // Its cancel finished, so the third edit sends Stripe only the second ask.
+    stripe.cancelPaymentIntentIfCancellableWithResult.mockClear();
+    await editUp("mod_3", 1000);
+    expect(stripe.cancelPaymentIntentIfCancellableWithResult.mock.calls).toEqual([["pi_add_2"]]);
   });
 
   it("still mirrors the NEW ask when the immediate cancel fails and only the queued row stands", async () => {

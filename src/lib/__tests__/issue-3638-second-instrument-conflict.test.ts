@@ -51,6 +51,7 @@ const mocks = vi.hoisted(() => ({
   bookingUpdateMany: vi.fn(),
   memberCreditCreate: vi.fn(),
   bookingEventFindFirst: vi.fn(),
+  bookingEventFindUnique: vi.fn(),
   recordBookingEvent: vi.fn(),
   claimAlertCooldown: vi.fn(),
   sendAdminSecondInstrumentSettlementConflictAlert: vi.fn(),
@@ -71,8 +72,12 @@ vi.mock("@/lib/prisma", () => ({
     },
     bookingEvent: {
       findFirst: (...a: unknown[]) => mocks.bookingEventFindFirst(...a),
+      // #4446: the sender re-reads the marker after its cooldown claim.
+      findUnique: (...a: unknown[]) => mocks.bookingEventFindUnique(...a),
       // #3638: the alert is recorded on the marker once it is sent.
       update: (...a: unknown[]) => mocks.bookingEventUpdate(...a),
+      // #4446: a failed alert send counts the attempt on the marker.
+      updateMany: async () => ({ count: 1 }),
     },
   },
 }));
@@ -155,6 +160,7 @@ import {
   isManualSettlementMarkerEvent,
   settlementMarkerTimelineEntries,
 } from "@/lib/manual-settlement-reversal-event";
+import { duplicateCaptureRefundOperationWhere } from "@/lib/duplicate-capture-ownership";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
 import { IB_RECEIPT_FROM_CASH_REASON } from "@/lib/xero-inbound/settle-from-cash";
 import {
@@ -374,6 +380,10 @@ beforeEach(() => {
   mocks.paymentUpdate.mockResolvedValue({});
   mocks.bookingUpdateMany.mockResolvedValue({ count: 1 });
   mocks.bookingEventFindFirst.mockResolvedValue(null);
+  mocks.bookingEventFindUnique.mockImplementation(
+    async ({ where }: { where: { id: string } }) =>
+      markerRows.find((candidate) => candidate.id === where.id) ?? null,
+  );
   mocks.recordBookingEvent.mockResolvedValue(undefined);
   mocks.claimAlertCooldown.mockResolvedValue(true);
   mocks.sendAdminSecondInstrumentSettlementConflictAlert.mockResolvedValue(undefined);
@@ -586,6 +596,20 @@ describe("not a second instrument (#3638)", () => {
     expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();
   });
 
+  it("#4211: the bank receipt that settles the booking is recorded as its settler", async () => {
+    primePayment(switchedPayment(BookingStatus.CONFIRMED));
+    mocks.paymentTransactionFindMany.mockImplementation(async (args: { where?: { source?: unknown } }) =>
+      args.where?.source === PaymentSource.INTERNET_BANKING ? [{ id: "bank-row" }] : [],
+    );
+
+    await sync();
+
+    expect(mocks.paymentUpdate).toHaveBeenCalledWith({
+      where: { id: "payment-1" },
+      data: { settledByTransactionId: "bank-row" },
+    });
+  });
+
   it("a booking still awaiting payment never runs the test", async () => {
     primePayment(switchedPayment(BookingStatus.CONFIRMED));
     mocks.paymentFindUnique.mockResolvedValue(
@@ -594,7 +618,13 @@ describe("not a second instrument (#3638)", () => {
 
     await sync();
 
-    expect(mocks.paymentTransactionFindMany).not.toHaveBeenCalled();
+    // #4211: the settle reads its own bank receipt's row to record it as the
+    // settler; the second-instrument read (any non-bank row) never runs.
+    expect(
+      mocks.paymentTransactionFindMany.mock.calls.filter(
+        ([args]) => (args as { where?: { source?: unknown } }).where?.source !== PaymentSource.INTERNET_BANKING,
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -827,6 +857,28 @@ describe("card first, then cancelled, then bank (#3638)", () => {
       mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
     ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: "pi_card_3638" });
   });
+
+  it("#4211: a recorded settler with #1765 history still ranks after a real card settlement on a cancelled booking", async () => {
+    const switchedAt = new Date("2026-07-10T00:00:00.000Z");
+    primePayment(
+      switchedPayment(BookingStatus.CANCELLED, { status: PaymentStatus.REFUNDED, settledByTransactionId: "old-row" })
+    );
+    mocks.paymentTransactionFindFirst.mockImplementation(
+      async ({ orderBy }: { orderBy?: unknown }) =>
+        orderBy ? { createdAt: switchedAt } : null
+    );
+    mocks.paymentTransactionFindMany.mockResolvedValue([
+      { ...CARD_PRIMARY, id: "old-row", stripePaymentIntentId: "pi_old", refundedAmountCents: 27000 },
+      { ...CARD_PRIMARY, id: "card-row", refundedAmountCents: 27000 },
+    ]);
+    mocks.paymentRefundFindMany.mockResolvedValue([{ paymentTransactionId: "old-row" }]);
+
+    await sync();
+
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: "pi_card_3638" });
+  });
 });
 
 /**
@@ -905,10 +957,9 @@ describe("the opposite order belongs to #1992 (#3638)", () => {
 
     expect(result.secondInstrumentSettlementConflicts).toBe(0);
     expect(result.skippedAlreadyPaidBookings).toBe(1);
+    // #4211: the one reading guard (c) of the duplicate-capture refund uses.
     expect(mocks.paymentRecoveryOperationFindMany).toHaveBeenCalledWith({
-      where: {
-        idempotencyKey: { in: ["duplicate_capture_booking-1_pi_card_3638"] },
-      },
+      where: duplicateCaptureRefundOperationWhere("booking-1"),
       select: { idempotencyKey: true },
     });
     expect(mocks.sendAdminSecondInstrumentSettlementConflictAlert).not.toHaveBeenCalled();
@@ -982,6 +1033,20 @@ describe("the settling capture follows the shared ledger order (#4163)", () => {
     ).toMatchObject({
       cardPaymentIntentId: "pi_first_4163",
       cardHeldCents: 27000,
+    });
+  });
+
+  it("#4211: names the settler the card's PAID claim recorded, over an older capture", async () => {
+    primePayment(switchedPayment(BookingStatus.PAID, { settledByTransactionId: "second-capture" }));
+    answerLikeTheDatabase([SECOND_CAPTURE, FIRST_CAPTURE]);
+
+    await sync();
+
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({
+      cardPaymentIntentId: "pi_second_4163",
+      cardHeldCents: 31000,
     });
   });
 
@@ -1099,6 +1164,8 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       paymentIntentId: true,
       paymentTransactionId: true,
       idempotencyKey: true,
+      attempts: true,
+      nextRetryAt: true,
     },
   };
 
@@ -1156,16 +1223,107 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
               (operation.type === PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT &&
                 isPaymentRecoveryOperationInFlight(operation))),
         )
-        .map(({ id, type, status, paymentIntentId, paymentTransactionId, idempotencyKey }) => ({
+        .map(({ id, type, status, paymentIntentId, paymentTransactionId, idempotencyKey, attempts, nextRetryAt }) => ({
           id,
           type,
           status,
           paymentIntentId,
           paymentTransactionId,
           idempotencyKey,
+          attempts,
+          nextRetryAt,
         }));
     });
   }
+
+  /**
+   * #4300 (`INV-PAY-138`): the saved-card charge's reading from the same rows -
+   * is X's money on its way back (a refund the runner will still run), or has its
+   * refund stopped (a person must act)? Read straight from the holds reader.
+   */
+  describe("#4300: refundInFlight and refundStopped", () => {
+    async function holdsOf(operations: Operation[]) {
+      ownedBy(operations);
+      const { readSupersededCaptureHolds } = await import("@/lib/superseded-intent-ownership");
+      const reader = {
+        paymentRecoveryOperation: { findMany: mocks.supersededOperationFindMany },
+        payment: { findUnique: mocks.ownershipPaymentFindUnique },
+      } as never;
+      return readSupersededCaptureHolds(reader, "payment-1", [X]);
+    }
+    const intent = X.stripePaymentIntentId!;
+
+    it.each([
+      ["waiting to run", {}],
+      ["being run", { status: PaymentRecoveryOperationStatus.PROCESSING }],
+      ["failed and will retry", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 2 }],
+    ])("a superseded refund %s is in flight", async (_label, overrides) => {
+      const holds = await holdsOf([op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, overrides)]);
+      expect(holds.refundInFlight.has(intent)).toBe(true);
+      expect(holds.refundStopped.has(intent)).toBe(false);
+    });
+
+    it.each([
+      ["failed with its retries spent", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null }],
+      ["raised dead (PENDING, retries spent)", { attempts: 5 }],
+    ])("a superseded refund %s has stopped - never in flight, though the Xero reading still counts it", async (_label, overrides) => {
+      const holds = await holdsOf([op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, overrides)]);
+      expect(holds.holdsForMember.has(intent)).toBe(true);
+      expect(holds.refundInFlight.has(intent)).toBe(false);
+      expect(holds.refundStopped.has(intent)).toBe(true);
+    });
+
+    // The owed-again branch (#4221's failed-later rows): X's superseded refund
+    // SUCCEEDED, Stripe failed it later, and failed-later rows owe it back again.
+    describe("owed back again after a refund Stripe failed later", () => {
+      const succeededRefund = () =>
+        op(PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, { status: PaymentRecoveryOperationStatus.SUCCEEDED, attempts: 1, nextRetryAt: null });
+      const failedLater = (refundId: string, amountCents: number, overrides: Partial<Operation> = {}) =>
+        op(PaymentRecoveryOperationType.REFUND_BOOKING_MODIFICATION, {
+          idempotencyKey: `${CARD_REFUND_FAILED_LATER_RECOVERY_PREFIX}${refundId}`,
+          paymentTransactionId: null,
+          amountCents,
+          allocationPlan: [{ paymentTransactionId: X.id, amountCents }],
+          ...overrides,
+        });
+      const half = Math.floor(X.amountCents / 2);
+
+      it("a failed-later row running and owing it back in full: in flight", async () => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_full", X.amountCents)]);
+        expect(holds.refundInFlight.has(intent)).toBe(true);
+        expect(holds.refundStopped.has(intent)).toBe(false);
+      });
+
+      it.each([
+        ["raised dead (PENDING, retries spent)", { attempts: 5 }],
+        ["failed with its retries spent", { status: PaymentRecoveryOperationStatus.FAILED, attempts: 5, nextRetryAt: null }],
+      ])("the same row %s: stopped, never in flight", async (_label, overrides) => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_dead", X.amountCents, overrides)]);
+        expect(holds.holdsForMember.has(intent)).toBe(true);
+        expect(holds.refundInFlight.has(intent)).toBe(false);
+        expect(holds.refundStopped.has(intent)).toBe(true);
+      });
+
+      it("half owed by a running row, half by a dead one: stopped - the running half is not all of it", async () => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_half_a", half), failedLater("re_half_b", X.amountCents - half, { attempts: 5 })]);
+        expect(holds.refundInFlight.has(intent)).toBe(false);
+        expect(holds.refundStopped.has(intent)).toBe(true);
+      });
+
+      it("half owed by a running row and nothing more: neither - it still holds money (the Xero reading agrees)", async () => {
+        const holds = await holdsOf([succeededRefund(), failedLater("re_half_only", half)]);
+        expect(holds.holdsForMember.has(intent)).toBe(false);
+        expect(holds.refundInFlight.has(intent)).toBe(false);
+        expect(holds.refundStopped.has(intent)).toBe(false);
+      });
+    });
+
+    it("a capture only a cancel row names has no refund in flight or stopped", async () => {
+      const holds = await holdsOf([op(PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT)]);
+      expect(holds.refundInFlight.has(intent)).toBe(false);
+      expect(holds.refundStopped.has(intent)).toBe(false);
+    });
+  });
 
   function alertedIntent() {
     return mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0].cardPaymentIntentId;
@@ -1591,6 +1749,25 @@ describe("the settling capture skips one the superseded-intent machinery holds, 
       ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: X.stripePaymentIntentId });
     },
   );
+
+  // #4211: the duplicate-capture refund's ownership counts on a cancelled
+  // booking too, unlike the superseded machinery's: that capture is going back
+  // to the member under its own refund, so it is never the card side.
+  it("cancelled: skips an older capture a duplicate-capture refund owns and names the next oldest", async () => {
+    primePayment(switchedPayment(BookingStatus.CANCELLED));
+    mocks.paymentTransactionFindMany.mockResolvedValue([X, S]);
+    mocks.paymentRecoveryOperationFindMany.mockResolvedValue([
+      { idempotencyKey: `duplicate_capture_booking-1_${X.stripePaymentIntentId}` },
+    ]);
+
+    const result = await sync();
+
+    expect(result.secondInstrumentSettlementConflicts).toBe(1);
+    expect(mocks.supersededOperationFindMany).not.toHaveBeenCalled();
+    expect(
+      mocks.sendAdminSecondInstrumentSettlementConflictAlert.mock.calls[0][0],
+    ).toMatchObject({ conflictKind: "cancelledAfterCard", cardPaymentIntentId: S.stripePaymentIntentId });
+  });
 });
 
 describe("a replay on a completed booking (#3638)", () => {

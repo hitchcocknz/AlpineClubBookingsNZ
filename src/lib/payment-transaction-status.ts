@@ -39,6 +39,21 @@ const CAPTURED_TRANSACTION_STATUSES = new Set<PaymentStatus>(
   CAPTURED_TRANSACTION_STATUS_LIST
 );
 
+/**
+ * The `PaymentTransaction.status` values of an intent that is still OPEN - not
+ * captured, not failed: it can still be confirmed, so it is what a supersede or
+ * a retirement cancels (#4316 review round 3, one list).
+ */
+export const OPEN_INTENT_TRANSACTION_STATUS_LIST = [
+  PaymentStatus.PENDING,
+  PaymentStatus.PROCESSING,
+] as const satisfies readonly PaymentStatus[];
+
+/** Is this transaction's intent still open (`OPEN_INTENT_TRANSACTION_STATUS_LIST`)? */
+export function isOpenIntentTransactionStatus(status: string): boolean {
+  return (OPEN_INTENT_TRANSACTION_STATUS_LIST as readonly string[]).includes(status);
+}
+
 /** Captured rows that still hold cash after refunds. */
 export const CAPTURED_NOT_FULLY_REFUNDED_TRANSACTION_STATUS_LIST = [
   PaymentStatus.SUCCEEDED,
@@ -191,10 +206,20 @@ export function ownCardRefundMade(refunds: ReadonlyArray<{ status: string | null
 }
 
 /**
- * #3639: HOW MUCH OF ONE CAPTURE HAS GONE BACK, and how much Stripe still holds
- * - one home for every late-capture reader that must not refund, approve or
- * record a hand-back twice (the webhook's verdict, the treasurer's approval,
- * the #2700 hand-back and its raise).
+ * #3639: HOW MUCH OF ONE CAPTURE HAS GONE BACK TO THE MEMBER, in any form, and
+ * how much the club may still hand back from it - one home for every
+ * late-capture reader that must not refund, approve or record a hand-back twice
+ * (the webhook's verdict, the treasurer's approval, the #2700 hand-back and its
+ * raise).
+ *
+ * It measures LEDGER headroom, not what Stripe still holds: `refundedAmountCents`
+ * also counts a refund made as account credit or by hand
+ * (`applyLocalRefundAllocation`), which leaves the money on the card. Every
+ * reader uses it as a cap or a refusal on handing more back, where money
+ * already returned another way must count, or the member is paid twice; so a
+ * credit-filled row makes them hand back less, never more. A reader that must
+ * say what the CARD still holds subtracts the card refunds recorded against it
+ * instead (`sumRecordedRefundsForCapture`, #4285 review).
  *
  * `refundedAmountCents` is load-bearing, not `status`:
  * `markPaymentIntentTransactionSucceeded` rewrites a refunded row's status to
@@ -223,16 +248,18 @@ export function captureRefundState(row: {
 /**
  * The least a payment's refunded total can truthfully be (#3640): what it
  * captured, or - if less - its card refunds still counted plus the account
- * credit its booking issued. One home for two readers that must agree: the
- * card-refund writer's floor on a failed refund's subtraction, and the
- * refunded-total audit's expected figure.
+ * credit its booking issued plus (#4280) the bank cash its "Paid another way"
+ * closes recorded (`readPaidAnotherWayCloseBankCashByPayment`). One home for
+ * two readers that must agree: the card-refund writer's floor on a failed
+ * refund's subtraction, and the refunded-total audit's expected figure.
  */
 export function expectedRefundedFloorCents(input: {
   amountCents: number;
   cardRefundCents: number;
   accountCreditCents: number;
+  paidAnotherWayCents: number;
 }): number {
-  return Math.min(input.amountCents, input.cardRefundCents + input.accountCreditCents);
+  return Math.min(input.amountCents, input.cardRefundCents + input.accountCreditCents + input.paidAnotherWayCents);
 }
 
 /**
@@ -250,3 +277,6 @@ export function predatesRefundLedger(
   if (typeof createdSeconds !== "number") return undated === "pre-ledger";
   return ledgerStartSeconds !== null && createdSeconds < ledgerStartSeconds;
 }
+
+/** The card-refund shortfall refusal, shared by the inline planner and the edit door (#3984). */
+export const STRIPE_REFUND_EXCEEDS_CAPTURED_MESSAGE = "Refund amount exceeds captured Stripe payments";

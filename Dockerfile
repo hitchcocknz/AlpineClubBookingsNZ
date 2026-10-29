@@ -1,4 +1,4 @@
-FROM node:24.17-alpine AS base
+FROM node:24.17-alpine@sha256:156b55f92e98ccd5ef49578a8cea0df4679826564bad1c9d4ef04462b9f0ded6 AS base
 # pnpm, at exactly the version package.json pins in `packageManager` (#3673).
 # Read from package.json rather than written here a second time, so the image
 # cannot drift from CI and the lockfile; only that one field is copied in, so
@@ -129,7 +129,7 @@ RUN pnpm exec prisma generate
 RUN pnpm run build
 
 # Production image
-FROM node:24.17-alpine AS runner
+FROM node:24.17-alpine@sha256:156b55f92e98ccd5ef49578a8cea0df4679826564bad1c9d4ef04462b9f0ded6 AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -222,6 +222,10 @@ RUN mkdir -p public/images && chown -R nextjs:nodejs public/images
 # mechanism /app/public/images relies on. Without this the default volume would
 # be root-owned and the app could not write its own backups.
 RUN mkdir -p /backups && chown -R nextjs:nodejs /backups
+
+# The dump spool is a disk-backed volume nested under /tmp's tmpfs. Seed its
+# ownership so streaming large compressed backups does not consume container RAM.
+RUN mkdir -p /tmp/tacbookings-backups && chown nextjs:nodejs /tmp/tacbookings-backups
 
 USER nextjs
 

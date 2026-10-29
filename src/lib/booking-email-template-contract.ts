@@ -19,6 +19,7 @@ export const BOOKING_URL_TEMPLATE_NAMES: ReadonlySet<string> = new Set([
   "checkin-reminder",
   "pre-arrival-reminder",
   "additional-payment-reminder",
+  "credit-released-payment-request",
   "booking-modified",
   "setup-intent-failed",
   // #3268: the auto-charge cron's "your saved card was unusable" notice.

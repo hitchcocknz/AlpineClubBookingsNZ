@@ -224,6 +224,23 @@ const { ledger, mocks } = vi.hoisted(() => {
 });
 
 vi.mock("../prisma", () => ({ prisma: ledger }));
+// #4300 (`INV-PAY-138`): which captures the superseded machinery owns (the
+// Xero reading; `partlyOwed` ones only under `anyOwedBack`, as the real reading
+// answers), and where each one's refund stands; none unless a case says so.
+const superseded = vi.hoisted(() => ({
+  owned: new Set<string>(),
+  partlyOwed: new Set<string>(),
+  inFlight: new Set<string>(),
+  stopped: new Set<string>(),
+}));
+vi.mock("@/lib/superseded-capture-ownership", () => ({
+  readSupersededOwnership: async () => ({
+    holdsForMember: new Set<string>(),
+    owns: async (intent: string, options?: { anyOwedBack?: boolean }) =>
+      superseded.owned.has(intent) || (options?.anyOwedBack === true && superseded.partlyOwed.has(intent)),
+    refundState: (intent: string) => (superseded.inFlight.has(intent) ? "in_flight" : superseded.stopped.has(intent) ? "stopped" : "not_started"),
+  }),
+}));
 vi.mock("../stripe", () => ({
   chargePaymentMethod: (...args: unknown[]) => mocks.chargePaymentMethod(...args),
   getPaymentIntent: (...args: unknown[]) => mocks.getPaymentIntent(...args),
@@ -523,6 +540,69 @@ describe("beginSavedCardChargeAttempt", () => {
       since: capturedAt,
     });
     expect(ledger.paymentTransaction.create).not.toHaveBeenCalled();
+  });
+
+  describe("#4300 (INV-PAY-138): a capture the superseded machinery owns", () => {
+    const reset = () => {
+      superseded.owned.clear();
+      superseded.partlyOwed.clear();
+      superseded.inFlight.clear();
+      superseded.stopped.clear();
+    };
+    beforeEach(() => {
+      reset();
+      ledger.seed({ paymentId: PAYMENT, status: PaymentStatus.SUCCEEDED, stripePaymentIntentId: "pi_superseded", reference: null });
+    });
+
+    it("its refund in flight: not 'money already taken' - a fresh attempt charges the booking", async () => {
+      superseded.owned.add("pi_superseded");
+      superseded.inFlight.add("pi_superseded");
+      await expect(begin()).resolves.toMatchObject({ kind: "fresh" });
+    });
+
+    it("named only by its cancel row (no refund started): refused, wait for the refund", async () => {
+      superseded.owned.add("pi_superseded");
+      await expect(begin()).rejects.toMatchObject({ name: "SavedCardChargeRefusedError", why: "superseded_capture_returning", paymentIntentId: "pi_superseded" });
+      expect(ledger.paymentTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it("its refund DEAD (retries spent): refused, a person must act - never charged beside it", async () => {
+      superseded.owned.add("pi_superseded");
+      superseded.stopped.add("pi_superseded");
+      const refused = begin();
+      await expect(refused).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: "pi_superseded", supersededIntentsToHandOff: [] });
+      await expect(refused).rejects.toThrow(/Refunds owed on the Payments page or from Stuck States/);
+      expect(ledger.paymentTransaction.create).not.toHaveBeenCalled();
+    });
+
+    it("owed back only in PART: it still holds money - captured_primary_exists", async () => {
+      superseded.partlyOwed.add("pi_superseded");
+      superseded.inFlight.add("pi_superseded");
+      await expect(begin()).rejects.toMatchObject({ why: "captured_primary_exists" });
+    });
+
+    it.each([
+      ["the superseded one first", ["pi_superseded", "pi_real"]],
+      ["the real one first", ["pi_real", "pi_superseded"]],
+    ])("money really taken outranks a refund to wait for, whatever the row order (%s)", async (_label, order) => {
+      ledger.reset();
+      for (const intent of order) ledger.seed({ paymentId: PAYMENT, status: PaymentStatus.SUCCEEDED, stripePaymentIntentId: intent, reference: null });
+      superseded.owned.add("pi_superseded");
+      // The superseded one with no refund started still goes out to be handed off.
+      await expect(begin()).rejects.toMatchObject({ why: "captured_primary_exists", paymentIntentId: "pi_real", supersededIntentsToHandOff: ["pi_superseded"] });
+    });
+
+    it("a stopped refund outranks one not yet started", async () => {
+      ledger.seed({ paymentId: PAYMENT, status: PaymentStatus.SUCCEEDED, stripePaymentIntentId: "pi_dead", reference: null });
+      superseded.owned.add("pi_superseded");
+      superseded.owned.add("pi_dead");
+      superseded.stopped.add("pi_dead");
+      await expect(begin()).rejects.toMatchObject({ why: "superseded_refund_stopped", paymentIntentId: "pi_dead", supersededIntentsToHandOff: ["pi_superseded"] });
+    });
+
+    it("CONTROL: not the machinery's - still captured_primary_exists", async () => {
+      await expect(begin()).rejects.toMatchObject({ why: "captured_primary_exists" });
+    });
   });
 
   it("refuse: PARTIALLY_REFUNDED still holds cash and refuses; a fully REFUNDED row is #1765 history and a fresh attempt proceeds", async () => {
@@ -830,7 +910,7 @@ describe("chargeSavedCardAttempt", () => {
 
     const settled = await settle(attempt.attemptRowId, capturedOld);
 
-    expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: true });
+    expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: true, newlyCaptured: true });
     expect(row(old.id)).toMatchObject({ status: PaymentStatus.SUCCEEDED, stripePaymentIntentId: "pi_old" });
     expect(ledger.rows.find((r) => r.id === attempt.attemptRowId)).toBeUndefined();
     expect(mocks.reconcilePaymentAggregates).toHaveBeenCalledWith({ paymentId: PAYMENT, store: ledger });
@@ -881,7 +961,7 @@ describe("chargeSavedCardAttempt", () => {
 
       const settled = await settle(attempt.attemptRowId, intent);
 
-      expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.PROCESSING, keptExistingRow: true, moved: true });
+      expect(settled).toEqual({ transactionId: old.id, ledgerStatus: PaymentStatus.PROCESSING, keptExistingRow: true, moved: true, newlyCaptured: false });
       expect(ledger.rows.map((r) => r.id)).toEqual([old.id]);
       expect(row(old.id).status).toBe(PaymentStatus.PROCESSING);
 
@@ -1167,7 +1247,7 @@ describe("settleSavedCardChargeAttempt", () => {
       payment_method: { id: "pm_expanded" } as unknown as Stripe.PaymentMethod,
     });
 
-    expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true });
+    expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true, newlyCaptured: true });
     expect(row(attempt.attemptRowId)).toMatchObject({
       stripePaymentIntentId: "pi_x",
       status: PaymentStatus.SUCCEEDED,
@@ -1215,7 +1295,7 @@ describe("settleSavedCardChargeAttempt", () => {
 
       const settled = await settle(attempt.attemptRowId, { id: "pi_x", status: "processing", amount: 10000, payment_method: "pm_1" });
 
-      expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: false });
+      expect(settled).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: false, newlyCaptured: false });
       expect(row(attempt.attemptRowId).status).toBe(PaymentStatus.SUCCEEDED);
       expect(mocks.reconcilePaymentAggregates).not.toHaveBeenCalled();
     });
@@ -1252,7 +1332,7 @@ describe("settleSavedCardChargeAttempt", () => {
 
     const settled = await settle(attempt.attemptRowId, { id: "pi_hook", status: "processing", amount: 10000, payment_method: null });
 
-    expect(settled).toEqual({ transactionId: webhookRow.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: false });
+    expect(settled).toEqual({ transactionId: webhookRow.id, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: true, moved: false, newlyCaptured: false });
     expect(row(webhookRow.id).status).toBe(PaymentStatus.SUCCEEDED);
     expect(ledger.rows.find((r) => r.id === attempt.attemptRowId)).toBeUndefined();
     expect(mocks.reconcilePaymentAggregates).toHaveBeenCalledWith({ paymentId: PAYMENT, store: ledger });
@@ -1287,6 +1367,8 @@ describe("settleSavedCardChargeAttempt", () => {
     const winner = { id: "txn_hook", paymentId: PAYMENT } as unknown as LedgerRow;
     ledger.paymentTransaction.findUnique
       .mockResolvedValueOnce(null)
+      // #4285 review: the attempt row's status before the write (`newlyCaptured`).
+      .mockResolvedValueOnce({ status: PaymentStatus.PENDING } as unknown as LedgerRow)
       .mockResolvedValueOnce(winner);
     ledger.paymentTransaction.updateMany.mockRejectedValueOnce(uniqueViolation());
 
@@ -1351,7 +1433,7 @@ describe("adoptSavedCardChargeAttemptForIntent (a webhook for an intent the ledg
       idempotencyKey: attempt.idempotencyKey,
     });
 
-    expect(adopted).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true });
+    expect(adopted).toEqual({ transactionId: attempt.attemptRowId, ledgerStatus: PaymentStatus.SUCCEEDED, keptExistingRow: false, moved: true, newlyCaptured: true });
     expect(row(attempt.attemptRowId)).toMatchObject({ stripePaymentIntentId: "pi_lost", status: PaymentStatus.SUCCEEDED });
     expect(mocks.reconcilePaymentAggregates).toHaveBeenCalledWith({ paymentId: PAYMENT, store: ledger });
     // And the next attempt refuses: the money is on the ledger now.

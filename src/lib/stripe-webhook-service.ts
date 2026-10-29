@@ -1,16 +1,15 @@
 import { bookingAmountOwedCents, bookingWorthCents } from "@/lib/booking-payment-state";
 import { bookingOwner, bookingOwnerEmail } from "@/lib/booking-owner";
+import { isPaidLikeBookingStatus } from "@/lib/booking-status";
 import { bookingPromoEmailFields } from "@/lib/booking-promo-email-options";
 import { prisma } from "@/lib/prisma";
 import { listRefundsForCharge, listRefundsForPaymentIntent, processRefund } from "@/lib/stripe";
 import { markBookingPaymentSucceeded, markBookingSetupIntentSucceeded } from "@/lib/payment-reconciliation";
 import { classifySucceededSetupIntentCard } from "@/lib/setup-intent-card";
 import { isXeroConnected } from "@/lib/xero";
-import {
-  enqueueXeroRefundCreditNoteOperation,
-  kickQueuedXeroOutboxOperationsIfConnected,
-} from "@/lib/xero-operation-outbox";
+import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-outbox";
 import { releaseXeroSupplementaryInvoiceForCapturedPaymentIntent } from "@/lib/xero-supplementary-invoice-late-capture";
+import { queueRecordedCardRefundNotes, RecordedCardRefundNoteEnqueueError } from "@/lib/recorded-card-refund-notes";
 import { isLateCaptureRefundedBookingStatus } from "@/lib/additional-payment-chase";
 import { reportWebhookError } from "@/lib/observability-bridge";
 import {
@@ -38,9 +37,7 @@ import {
   recoverLostLateCaptureRecord,
   type LateCaptureIdentity,
 } from "@/lib/late-capture-record-recovery";
-import { readUnrecordedLateCaptureRefund } from "@/lib/late-capture-unrecorded-refunds";
 import { lateCaptureOwnChargeSlice, refundLateCaptureFromOwnCharge } from "@/lib/late-capture-own-charge-refund";
-import { findLateCapturePaymentIntents } from "@/lib/late-capture-xero-receipt";
 import {
   buildLateCaptureRefundMetadata,
   buildLateCaptureRefundStripeKeyPrefix,
@@ -425,7 +422,8 @@ export async function processStripeWebhookEvent(
 async function adoptUnknownIntentsAttemptRow(
   paymentIntent: Stripe.PaymentIntent,
   event: Stripe.Event,
-  bookingId: string
+  bookingId: string,
+  onAdopted?: (newlyCaptured: boolean) => void, // #4285 review: the adoption wrote the capture just now
 ) {
   const adopted = await adoptSavedCardChargeAttemptForIntent({
     paymentIntent,
@@ -433,6 +431,7 @@ async function adoptUnknownIntentsAttemptRow(
     idempotencyKey: event.request?.idempotency_key,
   });
   if (!adopted) return null;
+  onAdopted?.(adopted.newlyCaptured);
   return findPaymentTransactionByIntentId({ paymentIntentId: paymentIntent.id });
 }
 
@@ -469,11 +468,7 @@ async function handlePaymentIntentSucceeded(
   }
 
   if (
-    await queueSupersededPaymentIntentRefundRecovery({
-      paymentIntentId: paymentIntent.id,
-      amountCents: paymentIntent.amount,
-      paymentMethodId: getStripePaymentMethodId(paymentIntent),
-    })
+    await queueSupersededPaymentIntentRefundRecovery(paymentIntent)
   ) {
     logger.warn(
       { bookingId, paymentIntentId: paymentIntent.id },
@@ -488,10 +483,11 @@ async function handlePaymentIntentSucceeded(
     return;
   }
 
+  let recordedByCaller = false; // #4285 review: an adoption that just wrote the capture tells the settle it is new money
   const paymentTransaction =
     (await findPaymentTransactionByIntentId({
       paymentIntentId: paymentIntent.id,
-    })) ?? (await adoptUnknownIntentsAttemptRow(paymentIntent, event, bookingId));
+    })) ?? (await adoptUnknownIntentsAttemptRow(paymentIntent, event, bookingId, (adopted) => (recordedByCaller = adopted)));
 
   if (!paymentTransaction || paymentTransaction.kind !== PaymentTransactionKind.PRIMARY) {
     logger.warn(
@@ -554,18 +550,14 @@ async function handlePaymentIntentSucceeded(
   // still rejected. The ledger read is skipped for a full-price capture.
   // #3750: worth (price plus a recorded change fee), or that less applied credit.
   //
-  // #3955 review F5: a redelivery of the capture this booking ALREADY settled
-  // with is not a stale intent, whatever the booking has come to owe since (a
-  // later fee, a later edit): comparing it again would refuse a payment that
-  // was taken and recorded, and Stripe would retry it for ever. Its own
-  // transaction row SUCCEEDED (a refunded one reads REFUNDED, and the settle
-  // refuses it) and the payment pointing at it is the evidence; the settle
-  // below answers it `already_paid` without re-checking the amount.
-  const alreadySettledWithThisIntent =
-    paymentTransaction.status === PaymentStatus.SUCCEEDED &&
-    bookingRecord?.payment?.stripePaymentIntentId === paymentIntent.id;
+  // #3955 review F5 / #4211 / #4285: a capture of a PAID or COMPLETED booking is not compared with what it owes NOW (a later
+  // fee or edit would refuse money taken, retried by Stripe for days): the settle only keeps or refunds it (#1992,
+  // `INV-PAY-043`). Every other booking keeps the #1161 check (the recorded-settler and intent-pointer arms only silenced it
+  // where the settle's #1641 check throws anyway). A reversal before the settle's lock costs one retry with no alert.
+  const payment = bookingRecord?.payment;
+  const capturedOnSettledBooking = !!bookingRecord && isPaidLikeBookingStatus(bookingRecord.status) && !!payment && paymentTransaction.paymentId === payment.id;
   const expectedOwedCents =
-    bookingRecord && !alreadySettledWithThisIntent
+    bookingRecord && !capturedOnSettledBooking
       ? bookingAmountOwedCents({
           finalPriceCents: bookingRecord.finalPriceCents,
           changeFeeCents: bookingRecord.payment?.changeFeeCents ?? null,
@@ -608,7 +600,7 @@ async function handlePaymentIntentSucceeded(
 
   const reconciliation = await markBookingPaymentSucceeded({
     format,
-    bookingId,
+    bookingId, recordedByCaller,
     paymentIntentId: paymentIntent.id,
     amountCents: paymentIntent.amount,
     paymentMethodId:
@@ -631,8 +623,11 @@ async function handlePaymentIntentSucceeded(
     );
     return;
   }
+  // #4300 (`INV-PAY-138`): the settle's own check refused a superseded capture
+  // (an edit overtook the check above); it is the machinery's, already alerted.
+  if (reconciliation.outcome === "superseded_capture") return;
 
-  logger.info({ bookingId, paymentIntentId: paymentIntent.id }, "Booking paid via PaymentIntent");
+  logger.info({ bookingId, paymentIntentId: paymentIntent.id, outcome: reconciliation.outcome }, `PaymentIntent reconciled: ${reconciliation.outcome}`);
 
   // Send confirmation email only on a fresh transition to PAID. An
   // "already_paid" outcome means the synchronous confirm-payment route (or a
@@ -1140,12 +1135,6 @@ async function handleSetupIntentCanceled(
   );
 }
 
-/** A refund of a late capture on a cancelled booking (#3635 round-3 R1). */
-async function isLateCaptureRefund(paymentIntentId: string | null | undefined): Promise<boolean> {
-  if (!paymentIntentId) return false;
-  return (await findLateCapturePaymentIntents([paymentIntentId])).has(paymentIntentId);
-}
-
 /**
  * Handle charge refund events (from Stripe dashboard or API refunds).
  */
@@ -1190,30 +1179,20 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
   // #3635: a refund of a LATE capture is noted per capture, and only once the
   // app has recorded that capture's receipt in Xero; one taken earlier is
   // credited back when the receipt is recorded (`creditBackLateCaptureRefunds`).
-  if (refundSync.refundDeltaCents > 0 && (await isLateCaptureRefund(paymentIntentId))) {
-    await queueLateCaptureRefundCreditNote({
-      paymentId: refundSync.paymentId,
-      paymentIntentId: paymentIntentId!,
-    });
-  } else if (
-    refundSync.refundDeltaCents > 0 &&
-    // #4170: a late capture whose record is not written yet never gets the generic note.
-    (await readUnrecordedLateCaptureRefund({
-      paymentId: refundSync.paymentId,
-      paymentIntentId,
-      refundedCents: refundSync.refundDeltaCents,
-      refunds,
-    })) !== "none"
-  ) {
-    return;
-  } else if (refundSync.refundDeltaCents > 0) {
-    // Queue only what this sync newly added to the refunded total (#3640); charge.amount_refunded is cumulative.
+  // #4312 review: a refund this sync recorded first counts even when the total did not move.
+  const recordedNew = refundSync.refundDeltaCents > 0 || refundSync.newlyCountedRefundIds.length > 0;
+  if (recordedNew) {
+    let routed = false;
     try {
-      const queuedCreditNote = await enqueueXeroRefundCreditNoteOperation(
-        refundSync.paymentId,
-        refundSync.refundDeltaCents
-      );
+      const queuedCreditNote = await queueRecordedCardRefundNotes({
+        payment: refundSync.payment,
+        paymentIntentId,
+        deltaCents: refundSync.refundDeltaCents,
+        refunds,
+        newlyCountedRefundIds: refundSync.newlyCountedRefundIds,
+      });
 
+      routed = true;
       if (queuedCreditNote.queueOperationId && (await isXeroConnected())) {
         await kickQueuedXeroOutboxOperationsIfConnected({ limit: 1 });
         logger.info(
@@ -1224,7 +1203,11 @@ async function handleChargeRefunded(charge: Stripe.Charge) {
           "Xero refund credit note queued for payment"
         );
       }
-    } catch (xeroErr) {
+    } catch (error) {
+      // Routing reads used to precede this catch: retry the webhook if they
+      // fail, while keeping ordinary enqueue/kick errors visible as before.
+      if (!routed && !(error instanceof RecordedCardRefundNoteEnqueueError)) throw error;
+      const xeroErr = error instanceof RecordedCardRefundNoteEnqueueError ? error.cause : error;
       logger.error({ err: xeroErr, paymentId: refundSync.paymentId }, "Failed to queue Xero credit note for payment");
       notifyXeroSyncError({
         errorType: "CREDIT_NOTE_CREATION",

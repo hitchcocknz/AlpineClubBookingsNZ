@@ -2,7 +2,8 @@
 
 import { fireEvent, render, screen } from "@/lib/__tests__/support/club-time-render";
 import { describe, expect, it, vi } from "vitest";
-import { OperationItem, resolveDialogDescription } from "@/app/(admin)/admin/xero/_components/operations-panel";
+import { OperationItem } from "@/app/(admin)/admin/xero/_components/operations-panel";
+import { resolveDialogDescription } from "@/app/(admin)/admin/xero/_components/resolve-dialog-copy";
 import type { XeroOperation } from "@/app/(admin)/admin/xero/_components/types";
 
 function makeOperation(overrides: Partial<XeroOperation> = {}): XeroOperation {
@@ -41,6 +42,9 @@ function makeOperation(overrides: Partial<XeroOperation> = {}): XeroOperation {
     failureStateReason: null,
     failureRootKey: null,
     staleRunning: false,
+    resolveAsksCreditNoteNumber: false,
+    resolveCreditNoteAmountCents: null,
+    resolveRefusal: null,
     ...overrides,
   };
 }
@@ -100,6 +104,33 @@ describe("OperationItem summary + raw toggle", () => {
     expect(screen.getByText("View request / response payloads")).toBeDefined();
     expect(screen.queryByText("Show raw JSON")).toBeNull();
     expect(screen.queryByText("Queued: create booking invoice")).toBeNull();
+  });
+});
+
+describe("OperationItem failure explanation (#4278)", () => {
+  const overAllocation =
+    "Credit Note cannot be allocated as the allocation amount is greater than the amount remaining on the Credit Note";
+
+  it("explains a failed row in plain English, with the stored text behind a disclosure", () => {
+    const { container } = renderItem(
+      makeOperation({ status: "FAILED", entityType: "ALLOCATION", lastErrorCode: "400", lastErrorMessage: overAllocation }),
+    );
+
+    expect(screen.getByText(/less credit left than the app expected/)).toBeDefined();
+    expect(screen.getByText("What to do:")).toBeDefined();
+    expect(container.querySelector("[data-xero-failure-kind='CREDIT_TOO_LOW']")).not.toBeNull();
+
+    const details = container.querySelector("details");
+    expect(details?.open).toBe(false);
+    expect(details?.textContent).toContain("Show technical details");
+    expect(details?.textContent).toContain("allocation amount is greater than the amount remaining");
+  });
+
+  it("still shows something useful when the stored detail is hidden", () => {
+    const { container } = renderItem(
+      makeOperation({ status: "FAILED", lastErrorCode: "400", lastErrorMessage: "[REDACTED]" }),
+    );
+    expect(container.querySelector("[data-xero-failure-kind='DETAIL_HIDDEN']")).not.toBeNull();
   });
 });
 

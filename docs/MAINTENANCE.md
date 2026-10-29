@@ -54,9 +54,9 @@ CI also runs independent static and container checks:
   `Dependency audit` job, on pull requests and on pushes to `main`. It runs
   `pnpm audit --audit-level=high --json` and reports which of three things
   happened — see "When the advisory service is down" below — plus a fourth
-  passing verdict, MITIGATED (never CLEAN), for one reviewed unfixed advisory
-  under an expiring owner-approved record (#3843; see "Mitigated advisories"
-  below). It runs from a bare
+  passing verdict, MITIGATED (never CLEAN), for a reviewed unfixed advisory
+  under an expiring owner-approved record (introduced in #3843; none is live
+  since #3851 — see "Mitigated advisories" below). It runs from a bare
   checkout with no install: measured on npm 11.16.0 / Node 24 the audit built
   its tree from `package-lock.json` and returned the same verdict with or without
   `node_modules`, and `pnpm audit` likewise reads `pnpm-lock.yaml` alone (#3673).
@@ -100,6 +100,12 @@ CI also runs independent static and container checks:
 - Keep `pnpm-lock.yaml` committed. It is the only lockfile; CI refuses a
   `package-lock.json` (#3673).
 - Prefer small dependency update PRs with explicit validation results.
+- A package that runs an install script is approved in `pnpm-workspace.yaml`
+  `allowBuilds` at one exact version, and Dependabot bumps it in its own
+  `install-scripts` group. `verify` checks both before the install
+  (`scripts/ci/check-allow-builds.mjs`, #4364); a failure there is re-approved
+  as [`CONTRIBUTING.md` → "Package manager: pnpm"](../CONTRIBUTING.md#package-manager-pnpm)
+  describes.
 - Keep the `overrides` block in `pnpm-workspace.yaml` to the minimum that is still
   load-bearing, and retire an entry as soon as the upstream dependency graph no
   longer needs it. The register below — not the workspace file, whose comments
@@ -112,7 +118,7 @@ CI also runs independent static and container checks:
   version-coupling pins (`next` with `eslint-config-next`, `react` with
   `react-dom`, `@prisma/client` with `@prisma/adapter-pg`) and every other exact
   pin Dependabot steps forward each release. Thirteen direct dependencies are
-  exact-pinned today and only one of them is a hold; the difference is whether
+  exact-pinned today and none of them is a hold; the difference is whether
   anything is being held back, not whether the range has a caret.
 - Use test or demo credentials for Stripe, Xero, SES, and Sentry in local and
   CI environments.
@@ -214,9 +220,10 @@ altogether.
 ### The override register
 
 Every row below was verified by removing that entry and re-resolving (#2863),
-and re-checked for #3673 against the ranges the installed parents declare. Three
-bind today: `postcss` (`next` pins 8.5.23 exactly), the `nodemailer` pair
-(`next-auth`'s optional peer stops at `^8`) and `mysql2` (`prisma` pins 3.15.3).
+and re-checked for #3673 against the ranges the installed parents declare. Two
+bind today: `postcss` (`next` pins 8.5.23 exactly) and the `nodemailer` pair
+(`next-auth`'s optional peer stops at `^8`). The `mysql2` override retired in
+#4363, once `prisma` 7.10.1 pinned mysql2 3.24.4.
 `eslint-plugin-react-hooks` is a deliberate hold that is currently non-binding.
 `browserslist` is a security floor its parents' ranges do not guarantee
 (webpack accepts `^4.28.1`); it is non-binding under highest-version resolution
@@ -245,7 +252,7 @@ than the last install. Scope an override to its parent (`parent>name`) instead.
 | `next-auth>nodemailer` and `@auth/core>nodemailer` (`catalog:`) | **Resolution.** `next-auth@5.0.0-beta.32` declares `peerOptional nodemailer@"^7.0.7 \|\| ^8.0.5"`, which conflicts with this repository's own `nodemailer` range (the workspace `catalog:`); under npm the override was what stopped `npm install` failing with `ERESOLVE`, and under pnpm it keeps both packages' optional peer on that one copy instead of a peer-mismatch resolution. Added in `8f366a08c` (#1182). | `next-auth` widens its peer range to admit the catalog's nodemailer range (currently `^10.0.10`), on both `next-auth` and `@auth/core`. |
 | `eslint-plugin-react-hooks` | **Compatibility hold**, not security — `b1989558f` introduced it as "hold eslint-plugin-react-hooks at 7.0.1", and it has since been stepped forward to 7.1.1. Currently non-binding: natural resolution lands on 7.1.1 with or without it. | The hold is reviewed and lifted on purpose. |
 | `browserslist` (`^4.28.7`) | **Security.** Two high advisories against `browserslist <= 4.28.6` — unbounded memory growth with no cache eviction (GHSA-c83g-rgw3-j3cx), and an uncaught crash / prototype write via untrusted `browserslist-stats.json` (GHSA-73wf-gq98-2v4g). Transitive only; nothing declares it directly. A **range**, not a pin, so it keeps floating with future patches. | every package that depends on browserslist (today `webpack` `^4.28.1`, `@babel/helper-compilation-targets` `^4.24.0`, and `update-browserslist-db`'s peer `>= 4.21.0`) *requires* 4.28.7 or later, meaning the lowest version its range accepts is 4.28.7 or higher (e.g. `^4.28.7`). A range that only *includes* 4.28.7 does not count, and `pnpm audit` cannot show this because highest-version resolution clears the advisory with or without the override. |
-| `mysql2` (`^3.22.0`) | **Security, on a driver this application never loads.** `mysql2 < 3.22.0` carries an auth-plugin downgrade to `mysql_clear_password` that leaks plaintext credentials (GHSA-3f6p-5ww8-9rcr). It arrives transitively through `prisma`, and this product's datasource is `provider = "postgresql"` — nothing in `src/` imports it, so the advisory is not reachable here. It is overridden rather than accepted because `pnpm audit --audit-level=high` is a required check and cannot express "unreachable", and because the only remedy npm offered was `--force`, which **downgrades Prisma** and is a far larger change than the one it avoids. A **range**, not a pin. | `prisma` requires mysql2 3.22.0 or later. |
+| `ajv>fast-uri` (`^3.1.9`) | **Security, in build tooling only.** `fast-uri < 3.1.9` carries four advisories (GHSA-w74x-v6f9-j3xg, GHSA-xhq7-xmqj-769h, GHSA-wjr9-j795-jxcr, GHSA-333x-w4r6-6crp). It arrives only through `ajv@8` under Prisma's dev tooling (`prisma > @prisma/dev > @prisma/streams-local`), which the running application never loads. `ajv@8.20.0` accepts any `fast-uri@^3.0.1`, so the pin does not conflict with its range; remove it when the resolved version is at least 3.1.9 without it (#4326). |
 
 ### The direct-dependency hold register
 
@@ -277,7 +284,7 @@ Two rules, both learned the expensive way:
 
 | hold | why it exists | retires when |
 | --- | --- | --- |
-| `@sentry/nextjs` (`10.70.0`, exact) | **Compatibility**, not security. `@sentry/server-utils@10.72.0` removed `@apm-js-collab/code-transformer-bundler-plugins`, `@apm-js-collab/tracing-hooks` and `meriyah` from its dependencies, but the code it ships still loads the first of those. Importing it throws `TypeError: The URL must be of scheme file` from `orchestrion/bundler/webpack.js`, which kills six test files at import time and fails a seventh. Nothing in this repository is at fault and there is no local workaround worth carrying, so the version is held instead (#3313, #3304). | Sentry ships a release whose `@sentry/server-utils` loads only what it declares. Verify by pinning that version in a scratch copy and running the suites named in #3313, not by reading the changelog. |
+| _none_ | No package is held today. The `@sentry/nextjs` hold (`10.70.0`, #3313) retired in #3419, which moved to 10.74.0 after Sentry shipped a `@sentry/server-utils` that loads only what it declares. | — |
 
 ### Checking whether an override still earns its place
 
@@ -343,7 +350,12 @@ safe (`browserslist` above is the standing example).
   protected-branch check (`Image security gate (Trivy CRITICAL)`), so it blocks
   the merge rather than only turning a job red; the HIGH step keeps
   `continue-on-error: true` and the two steps are named "REQUIRED" and
-  "ADVISORY" so the distinction is readable from the checks list.
+  "ADVISORY" so the distinction is readable from the checks list. Since #4425
+  (owner decision, 26 Oct 2026) a pull request builds and scans the image only
+  when it changes dependencies, `patches/`, the Dockerfile, a compose file,
+  `.dockerignore`, `.trivyignore` or the CI workflow; the check still reports,
+  and every push to `main` scans in full, so a newly published CVE surfaces
+  there rather than on an unrelated pull request.
 - Keep a scanner's configuration file honest about what it actually enables. A
   `.gitleaks.toml` without `[extend] useDefault = true` REPLACES the built-in
   rule set instead of adding to it, and this repository shipped exactly that for
@@ -640,8 +652,9 @@ Two consequences worth holding on to.
 
 Trivy scans the built image against a vulnerability database that moves on its
 own. A newly published CRITICAL against the `node:24.15-alpine` base therefore
-turns `Image security gate (Trivy CRITICAL)` red on **every** open pull request,
-including the one that would fix it, with nobody having changed a line. Branch
+turns `Image security gate (Trivy CRITICAL)` red on the next push to `main` and
+on **every** open pull request that rebuilds the image (#4425), including the one
+that would fix it, with nobody having changed a line. Branch
 protection has `enforce_admins` off, so the owner can force a merge through; an
 agent cannot, and must not try. Do this instead, in order:
 
@@ -1326,9 +1339,10 @@ the review tasks and is never a line on a main invoice (see below), so the
 timing question does not arise for it and those findings keep their one-click
 repair.
 
-**Booking edits priced by a financial review (#3187).** When an edit's money
-cannot be worked out from the booking's own history, the change is saved and the
-amount is parked for an officer to confirm. The booking's stored totals do not
+**Booking edits priced by a financial review (#3187).** Before #4317, when an
+edit's money could not be worked out from the booking's own history, the change
+was saved and the amount was parked for an officer to confirm; since #4317 every
+edit is priced, and only those older edits remain. The booking's stored totals do not
 move, so the change record itself says "nothing owed" and the tool used to skip
 those bookings entirely. It now reads the settled amount off the completed
 review tasks instead. Two things follow for an operator:
@@ -1419,7 +1433,8 @@ books are correct.
 
 A late capture a treasurer-approval task owns is never offered for refund
 (#3639). One the treasurer **kept** (the task was closed without refunding) is
-recorded in Xero by the app (#3635, `INV-PAY-110`): for the booking's own
+recorded in Xero by the app (#3635, `INV-PAY-110`; a change payment on a
+booking Xero invoiced is the next paragraph's): for the booking's own
 payment, and for a change payment on a booking Xero never invoiced,
 `KEPT_LATE_CAPTURE_WITHOUT_XERO_INVOICE` fires when no
 `KEPT_LATE_CAPTURE_INVOICE` row is queued or sent for its approval task. Its
@@ -1441,6 +1456,94 @@ it (#3924 round 11): the close's findings below answer that capture. Like
 every record-by-hand finding, it keeps appearing after the refund is recorded
 by hand, and that is expected: the app cannot see what is recorded by hand in
 Xero, and the tool has no way to acknowledge a finding (#3924 round 12).
+
+**Card payment not recorded in Xero** (#3953, `INV-PAY-139`). A booking change
+whose extra the member paid by card after the booking's Xero invoice was raised,
+when no supplementary invoice waited on that payment, is recorded by its own
+receipt (`ADDITIONAL_CAPTURE_RECEIPT` in Xero Operations). A capture missed
+before that existed, or whose receipt never queued, raises
+`ADDITIONAL_CAPTURE_NOT_RECORDED_IN_XERO`. It never fires on a cancelled
+booking, on a booking with no Xero invoice, or where another document records
+the payment: the invoice's own payment, the change's own supplementary invoice
+where it records a payment, or one naming or paying it. Its `QUEUE_ADDITIONAL_CAPTURE_RECEIPT` action
+queues the receipt, which reads the invoice in Xero first and records the
+payment only against money still due, or refuses and emails the treasurer; it
+is auto-applied only where the invoice's stored figures say its own payment did
+not cover the capture. Where the invoice predates those figures the finding is
+`manual_review`: check Xero for the payment first, then apply the action by key
+if it is missing. A receipt that failed is offered for retry
+(`BLOCKED_BY_XERO_OPERATION`); one the worker refused (code
+`ADDITIONAL_CAPTURE_RECEIPT_REFUSED`) is reported for an officer - its
+operation says why; record the payment by hand and mark it resolved, or fix the
+cause and **Retry**. The tool's own missing-supplementary-invoice action raises
+that invoice unpaid where the change's capture is recorded, or may be being
+recorded, by its receipt (its Xero payment linked, the operation running, or its
+payment already decided); a receipt that has decided nothing yet then records the
+payment against that unpaid invoice. A **Retry** of a change's supplementary
+invoice whose card payment its own receipt records raises it unpaid, and says
+so. That holds for an officer's review charge
+too (its change is read from the charge), and for an older capture whose change
+the app never recorded, any of whose receipts makes an invoice on the booking
+that names no card payment go unpaid (one naming its own payment is left as
+it is). A receipt for such an older capture refuses, telling the treasurer,
+where a paid invoice on the booking names no card payment, or a change's
+invoice from before that record existed has a Stripe payment recorded in
+Xero: check in Xero whether that
+invoice already records it, then record by hand or resolve.
+
+**Kept card payment for a booking change not recorded in Xero** (#4324,
+`INV-PAY-144`). Before #4324, a late card payment for a booking change that a
+treasurer kept on a cancelled booking whose Xero invoice exists was recorded
+only where a supplementary invoice waited on it; otherwise Stripe held the money
+and Xero showed nothing. Since #4324 the keep records it, and the repair tool
+finds the ones kept before: `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO`. Its
+details say which document will record it (`recordedBy`): a payment on the
+booking's Xero invoice that bills the change, for no more than Xero shows still
+due (`ADDITIONAL_CAPTURE_RECEIPT`), or a kept-payment invoice where nothing in
+Xero bills the change (`KEPT_LATE_CAPTURE_INVOICE`), and how much: the
+payment (`capturedCents`), the part another Xero document already records
+(`alreadyRecordedCents`), and what the apply records (`recordsCents`, which a
+receipt caps at what Xero shows due when it is sent). The owner decided these are
+recorded automatically (25 Oct 2026), accepting that one a treasurer already
+entered by hand in Xero would then be recorded twice. So:
+
+1. **List them first.** Run the dry run, `pnpm run xero:booking-repair
+   --dry-run` (or with `--from`/`--to` for a window), and read every
+   `KEPT_LATE_CAPTURE_NOT_RECORDED_IN_XERO` finding with its booking, payment
+   intent, amounts and `recordedBy`. Ask the treasurer whether any of them
+   was already recorded by hand in Xero. Leaving such a booking out of an
+   apply only postpones it: the finding stays auto-apply, the tool cannot mark
+   it handled, and any later blanket `--apply`, run for any reason, records
+   it. The real ways out are to (a) delete the hand-entered payment in Xero
+   before applying, so the app's record is the only one, or (b) apply, then
+   check Xero and reverse whichever entry is the duplicate.
+2. **Then apply.** `pnpm run xero:booking-repair --apply` runs each finding's
+   `QUEUE_KEPT_LATE_CAPTURE_RECORD`. Each one runs the keep's own decision
+   again under the approval task's row lock and the change's lock, finds the
+   payment's receipt or kept-payment invoice first, and queues nothing a second
+   time, so applying twice records each payment once. The receipt reads the
+   invoice in Xero before it records anything, and refuses, telling the
+   treasurer, where nothing is left due.
+
+A payment whose ledger row names no booking change (even where an unpaid
+invoice names the payment), or one on a booking paid by internet banking, is
+reported `manual_review` and never applied: record it
+by hand in Xero. The tool cannot acknowledge a finding, so these come back on
+every run after you have recorded them; that is expected, not a sign the hand
+entry failed. A payment another writer already records (the credit-release
+sweep, say) raises no finding. One on a booking whose payment row lacks its
+Xero invoice id while the invoice link exists is reported `manual_review`,
+saying the tool cannot tell yet whether Xero records it, until that id is
+synced (`SYNC_PAYMENT_PRIMARY_INVOICE_FIELD`) - unless its receipt, a
+kept-payment invoice or the credit-release sweep already records it, when it
+raises nothing; a later pass then lists it as above. One whose change invoice already answers it is the late
+payment release's, and raises no finding here; a receipt that failed is offered
+for retry, and one the worker refused is reported for an officer, as above.
+Where the kept-payment invoice records a change's payment (one asked for, or
+one this pass raises), the tool raises no supplementary invoice for that
+change: the kept-payment invoice already bills it. Where no kept-payment
+invoice will be raised (another writer records the payment), the change's
+missing supplementary invoice is still reported.
 
 A late capture the treasurer **approved** refunding, whose card refund Stripe
 gave up on and which was then closed as **Paid another way** before Xero had
@@ -1668,8 +1771,10 @@ DATABASE_URL=<non-prod copy> pnpm run payments:backfill-orphaned-credits --apply
 local-only rewrite of the per-night split of guest totals that two earlier
 backfills (#1098, #2739) divided evenly across the nights. Those rows reconcile
 to each guest's total but no night among them was ever sold at its own figure,
-so [`INV-MOD-028`](invariants/booking-modifications.md) refuses to read one as a
-night's price and an edit that moves such a night goes to a person.
+so an edit that moved such a night used to go to a person. Since #4317 an edit
+values every night by [`INV-MOD-028`](invariants/booking-modifications.md)
+instead, which keeps a usable row's figure whatever its provenance; the backfill
+still makes those figures the ones the rate table actually sold.
 
 It runs the pricing engine once over each booking's party **as it was sold** —
 every guest's stored rate-type snapshot, age tier and membership, over the
@@ -1732,15 +1837,25 @@ snapshot it reports:
   with every applicable reason — as counts;
 - what the stored night prices are made of (#3531 3c): night rows by
   provenance (`SOLD`, `OFFICER_PRICED`, `EVEN_SPLIT`, `UNKNOWN`, `RATE_DERIVED`)
-  and strands by class — `INV-MOD-028`'s own verdict on the strand at
+  and strands by class — the evidence classifier's verdict on the strand at
   individual-night grain, so `EXACT` or the cause an edit moving one of its
-  nights would park with (`INEXACT_STORED_NIGHT_PRICES`,
+  nights parked with before #4317 (`INEXACT_STORED_NIGHT_PRICES`,
   `STORED_TOTAL_MISMATCH`, `PARTIAL_STORED_NIGHT_PRICES`,
-  `NO_STORED_NIGHT_PRICES`) — overall and per booking-creation month;
+  `NO_STORED_NIGHT_PRICES`) — overall and per booking-creation month. Since
+  #4317 no edit parks, and the class decides nothing an edit does
+  (`INV-MOD-028` values every strand);
 - every `EDIT_FINANCIAL_REVIEW` task by status and by the cause the raise
   recorded, overall and per task-creation month. The two summaries share one
-  cause vocabulary on purpose: strands by cause is what the gate WOULD park;
-  tasks by cause is what it DID park.
+  cause vocabulary on purpose: strands by cause is what the gate would have
+  parked; tasks by cause is what it did park before #4317;
+- `ledgerNightValues` (#4317 review M3): of the bookings an edit can still
+  reach (not cancelled or deleted) that are confirmed on the ledger, how many have a live single-night guest-night line whose figure is
+  not what an edit now values that night at, or a valued night with no live
+  line at all, with up to 100 of their ids. An edit to one of them posts no
+  ledger lines and leaves an `UNPOSTED_EDIT` gap that closes the booking
+  ledger's cut-over gate until wave B's re-base re-posts the lines. **Run it
+  before the auto-pricing release ships** and keep the figure with the release
+  notes, so the gaps that follow are expected rather than found.
 
 The per-month lines are the point: run it before a deploy and again after, and
 the effect of the parking gate's grain (#3531 3a) and the rate-derived backfill
@@ -2182,6 +2297,23 @@ statement to the same numbers. Nothing an operator relies on depends on that:
 the run above reads typed through Prisma, and `--sql` is a convenience for
 somebody who would rather query a replica by hand.
 
+### A card refund held after a Stripe check (#4359)
+
+An ordinary charge-backed recovery stops automatic retries when Stripe already
+holds a counted dashboard refund on its charge made since the debt arose
+(`INV-PAY-145`). The officer alert and the payment audit entry explain that the
+member may already have been paid. The row is exhausted in the existing recovery
+queue, with no new refund sent; it is not automatically closed or matched to the
+dashboard refund. Its owed figure keeps the existing attribution rule.
+
+Check the booking, the recorded refunds and Stripe before moving more money.
+If money remains owed, settle it with **Paid another way** in
+[Stuck States](guides/stuck-states.md), rather than another Stripe dashboard
+refund. If nothing remains owed, ask a developer to reconcile the held row.
+A preflight read or recording failure uses normal backoff and sends nothing;
+an intent with more than 100 refunds requires investigation because the single
+page cannot establish complete evidence. No production repair runs automatically.
+
 ### Audit refunded totals left short by the old refund arithmetic (#3640)
 
 Before #3640 a card refund made after an account-credit settlement was lost from
@@ -2190,8 +2322,10 @@ that way offers refundable headroom that is not there, so a later cancel or
 refund could pay the same money out twice.
 `scripts/audit-refunded-total-shortfall.ts` lists each captured payment whose
 stored refunded total is below its counted card refunds plus its account-credit
-settlements, with the shortfall. It is READ-ONLY and repairs nothing: whether and
-how to repair is the owner's decision, taken on this report.
+settlements plus (#4280, `INV-PAY-141`) the bank cash its "Paid another way"
+closes recorded, with the shortfall; each line shows that cash as `paid another
+way`. It is READ-ONLY and repairs nothing: whether and how to repair is the
+owner's decision, taken on this report.
 
 ```bash
 DATABASE_URL=<non-prod copy> pnpm run payments:audit-refunded-total
@@ -2204,9 +2338,22 @@ row), and only a shortfall is reported. The report keeps two sections apart:
 the part the old arithmetic can explain (at most the smaller of a payment's card
 refunds and its credit, and only with a card refund), and a shortfall with
 another cause - typically a credit that was never folded into the total, such as
-internet-banking cash that became credit on an already-cancelled booking. Only
-the first is the #3640 repair question. The arithmetic and its caveats are in
+internet-banking cash that became credit on an already-cancelled booking, or
+(#4280) a late card refund that failed after a "Paid another way" close and took
+the close's bank cash out of the total. Attribution to #3640 is measured against
+the floor without the closes' cash, so a payment whose shortfall only that cash
+explains shows 0 attributable to #3640. Only the first section is the #3640
+repair question. The arithmetic and its caveats are in
 `src/lib/refunded-total-shortfall-audit.ts`.
+
+Rolling the application back past #4280 restores the old subtraction: a late
+card refund failing after a close could again take the total below the close's
+cash. This audit still lists any such payment.
+
+Do not run it while a migration runs. It reads every captured payment in ONE
+read-only `RepeatableRead` snapshot, held for up to 120 seconds, and on a very
+large database it may reach that timeout and fail; run it again in a quiet
+window rather than raising the bound.
 
 ### Count voided bank-transfer refund notes before the follow-up writes (#4162)
 
@@ -2252,7 +2399,9 @@ DATABASE_URL=<non-prod copy> pnpm run payments:audit-ib-settled-cash --json
 A receipt whose invoice was paid by an applied overpayment or prepayment (Xero
 records an allocation, not a payment; the inbound sync marks the primary-invoice
 link), one with no recorded payment, or one whose amount cannot be read is
-listed apart as not judged: check its invoice in Xero. Officer-settled payments
+listed apart as not judged: check its invoice in Xero. An invoice last synced
+before the sync recorded allocations carries no mark, so the report says when a
+difference, or a missing payment, may hide one (#4095). Officer-settled payments
 (`INV-PAY-001`) are left out. **Correcting a row is a database change**: the
 owner or a developer makes it under the raw-SQL rules (`INV-OPS`), and corrects
 the receipt and the payment's refunded total TOGETHER - either alone moves the
@@ -2365,6 +2514,16 @@ running operations** first. And an applied-credit allocation
 or deallocation cannot be resolved at all, because a hand fix in Xero does not
 bring the club's own credit ledger back in line; retry it instead. One marked
 resolved before this release can still be retried.
+
+A Xero call already under way can still succeed after you resolve (#4374,
+`INV-INT-029`): two attempts can share one operation, and one may answer late.
+The operation then shows as succeeded and, if the app recorded a document in
+Xero, the finance contacts get one **Xero Sync Error** email for it
+(`XERO_SUCCESS_AFTER_RESOLUTION`) naming that document. If you also made the
+document by hand, Xero may now hold it twice. The app may instead have found
+and used yours, by its reference, leaving only one: check Xero before voiding
+a duplicate. If that email cannot reach anyone, it is not sent again; the
+operation's succeeded status on the panel is then the only sign.
 
 There is no undo on the panel. If you marked one by mistake, fix the Xero side
 by hand, or use **Targeted force sync** for that one booking's invoice: it
@@ -2563,6 +2722,14 @@ In `--from-dump` mode the source-fidelity comparisons are reported as `SKIP`
 (there is no local source to compare against); the sentinel and migration
 assertions still run against the restored database. Delete the downloaded dump
 when you are done.
+
+The drill leaves the supplied dump unchanged and omits ownership and privilege
+statements during restore, so deployment roles need not exist in the throwaway
+cluster. Plain and gzipped SQL use the backup validator's streaming filter;
+custom archives use `pg_restore --no-owner --no-acl --exit-on-error`. This proves
+schema and data restoration, not deployment role permissions. A disaster-recovery
+restore must provision the deployment roles and retain the original owners and
+grants.
 
 ### What the assertions prove
 

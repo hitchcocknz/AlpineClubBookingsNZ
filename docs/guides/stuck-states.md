@@ -41,6 +41,16 @@ by watching **data** — see [`ARCHITECTURE.md`](../ARCHITECTURE.md)
    owner, and a count. Click **Open** to go straight to the screen that resolves
    it. An empty queue shows "No stuck states found."
 
+### Bank transfer amount alerts not delivered
+
+This critical Finance item means a bank-transfer settlement figure alert failed
+three times. The existing Xero inbound job retries unsent markers older than ten
+minutes, using the same cooldown claim as invoice deliveries. After three failed
+sends it stops emailing; the item remains visible in Stuck States. Open Payments,
+check the amount against Xero, and read the booking's staff timeline for the
+settlement figure marker. No payment amount or booking status is changed by the
+retry (#4446).
+
 ### Close a card refund Stripe gave up on
 
 When the club refunds a card and Stripe fails, the app retries the refund
@@ -97,14 +107,23 @@ it again: it shows under **Refunds owed**, the officers are emailed once, and it
 is asked for again as a new request. Where it was the cancellation's own card
 refund, the member's booking page stops saying that amount was refunded and says where
 the new request stands: on its way, refunded again, waiting on the club, or
-paid back another way (#4166). Two kinds are not asked for again, and are
+paid back another way (#4166). Three kinds are not asked for again, and are
 listed here under **Card refunds Stripe gave up on** straight away, for you to
 pay the member another way and close:
 
 - a retry that Stripe also accepted and then failed;
 - a refund Stripe **created** before the release that added this, unless a
   refund the app is still working on counts it - the member may already have
-  been paid back by hand, so check Stripe and your bank first.
+  been paid back by hand, so check Stripe and your bank first;
+- a refund whose card refund you had already closed as **Paid another way**
+  (#4210) - the bank transfer you recorded may already have paid it, so check
+  that transfer first. After a part close the figure can include what that
+  close recorded as no longer owed: check its record before paying. If the
+  member is still owed anything, settle it with **Paid another way**, never
+  with a new refund in the Stripe dashboard. After a close that paid back
+  everything, nothing is left to close here: the row stays in the **Exhausted
+  recovery operations** count, and the health check's payment recovery result
+  stays red, so ask a developer to reconcile it.
 
 A refund whose retries had already run out when it failed stays here too, with
 the failure noted on it.
@@ -313,7 +332,16 @@ note's amount, its number and the day the app found it voided.
 Some rows have nothing to pick. A note that recorded a **card refund the club
 paid back another way** keeps that refund recorded: raise its credit note again
 from the Xero repair tool, then press **Record the answer** and say what you did
-(this moves nothing). Any other row with nothing to pick says why in one line -
+(this moves nothing). A note that recorded a **card refund made through Stripe**
+(#4312) keeps that refund recorded too and has no bank refund to take back.
+The app never raises its credit note again, not even after a later refund of
+the same payment: if Xero should still show that refund, raise a credit note
+for it by hand in Xero, then press **Record the answer** and say what you did.
+If Stripe failed that refund later and the app sent it again, the voided note
+may also have stood for the refund sent in its place: check whether that
+refund has a credit note of its own in Xero for its full amount, and if not,
+raise one by hand for what is missing.
+Any other row with nothing to pick says why in one line -
 no bank refund left that the note could have recorded, the payment's records no
 longer holding it, or a credit note resolved by hand in Xero with no amount the
 app can read. Check the payment in Xero, then press **Record the answer** and

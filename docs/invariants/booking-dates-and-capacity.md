@@ -928,8 +928,8 @@ owner decisions on #3820):
   revokes links, the /pay intent path re-reads the link under the same lock; and
   the on-demand path refuses when a saved card exists. The residual in-flight
   window is backstopped (#1992): a link PaymentIntent minted BEFORE the claim (client secret already in the member's browser) is best-effort cancelled on Stripe by the charge claim before it charges the saved card, and if the member's confirm still wins that race,
-  `markBookingPaymentSucceeded` auto-refunds whichever DISTINCT capture arrives
-  second on the already-PAID booking — durably (enqueue-then-execute, exactly the duplicate's captured amount, pinned to the duplicate's own transaction) with a loud admin alert — while a SAME-intent replay keeps its byte-identical `already_paid` outcome and at most one side of the pair can ever be refunded (adjudication under `lock(1)`). A capture already
+  `markBookingPaymentSucceeded` auto-refunds every DISTINCT capture that arrives
+  after the settlement on the already-PAID booking (a third too, #4211) — durably (enqueue-then-execute, exactly the duplicate's captured amount, pinned to the duplicate's own transaction) with a loud admin alert — while a SAME-intent replay keeps its byte-identical `already_paid` outcome and the recorded settling capture is never refunded (adjudication under `lock(1)`); on a booking with no usable record of its settler nothing is refunded and the admins are asked to check (`INV-PAY-043`). A capture already
   owned by the superseded-intent recovery machinery (`CANCEL_PAYMENT_INTENT` /
   `REFUND_SUPERSEDED_PAYMENT`) is never mistaken for the settlement side of such
   a pair.
@@ -972,9 +972,9 @@ owner decisions on #3820):
   bookings.** Standard edits refuse a booking-request booking
   (`assertBookingNotQuotePriced`, #1032); of the three shapes
   `booking-batch-modification-service.ts` exempts, only the link-only #2337
-  placeholder→member path prices, passing
-  `link ? [] : lockedNightPricesForGuest(guest)`: the LINKED row re-rates at the
-  member rate, every UNLINKED placeholder keeps its negotiated price
+  placeholder→member path prices, passing `editedGuestPricingLocks`, which
+  re-rates the LINKED row at the member rate; every UNLINKED placeholder keeps
+  its negotiated price
   (`src/lib/__tests__/school-booking-request.test.ts`). **This is a real change to what that path charges, and it needs the owner's approval before it ships** — it is not an incidental consequence to be waved through as part of a bed-board fix. Backfill and operator facts: `INV-CAP-035`.
 
 ### INV-CAP-035

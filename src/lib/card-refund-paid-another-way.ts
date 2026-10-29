@@ -38,6 +38,7 @@ import { getNetCollectedCashParts } from "@/lib/payment-net-collected";
 import { prisma } from "@/lib/prisma";
 import { isPaymentRecoveryOperationExhausted, PAYMENT_RECOVERY_EXHAUSTED_WHERE } from "@/lib/payment-recovery-constants";
 import { isOrganiserChildRefundKey } from "@/lib/payment-recovery-keys";
+import { onPlanWhere } from "@/lib/refused-card-refund-retry";
 import {
   applyLocalRefundAllocation,
   lockPaymentForRefundedTotal,
@@ -140,8 +141,8 @@ import { kickQueuedXeroOutboxOperationsIfConnected } from "@/lib/xero-operation-
  * it reads whether Xero has the charge's receipt: the receipt's worker writes
  * that receipt and queues a waiting close's note under the same row, so a close
  * either reads the receipt recorded and queues its note itself, or commits
- * first and is found by the worker. The row's other holders take no lock while
- * holding it, so global, then the payment row, then the task row is no cycle.
+ * first and is found by the worker. #4324 (CONC-1): a change capture's anchor
+ * follows it (`lockKeptCaptureAnchor`): global -> Payment -> task row -> anchor.
  */
 
 /** What `lastError` says on an operation closed here, for a person reading the row. Nothing parses it. */
@@ -539,8 +540,11 @@ export async function closeCardRefundPaidAnotherWay(
     });
 
     const closedAt = new Date();
+    // #4312 F2 (`INV-ADDPAY-047`): on the plan the owed figure was read from,
+    // so a re-send's mark (`markResentSlices`, `pairResendRecordedFirst`)
+    // landing in between fails the claim - one plan, read and closed.
     const claimed = await tx.paymentRecoveryOperation.updateMany({
-      where: { id: operation.id, ...deadCardRefundOperationWhere },
+      where: { id: operation.id, ...deadCardRefundOperationWhere, ...onPlanWhere(operation.allocationPlan) },
       data: {
         status: PaymentRecoveryOperationStatus.SUCCEEDED,
         succeededAt: closedAt,

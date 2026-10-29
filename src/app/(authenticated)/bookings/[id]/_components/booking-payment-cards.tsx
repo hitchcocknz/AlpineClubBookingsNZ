@@ -1,3 +1,4 @@
+import { additionalAskCause } from "@/lib/additional-ask-cause";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { BoundClubFormat } from "@/lib/club-format-bound";
 import { BookingPaymentSection } from "@/components/booking-payment-section";
@@ -15,6 +16,7 @@ import type { BoundClubTime } from "@/lib/club-time";
 import type { BookingDetailViewer } from "../_lib/booking-detail-viewer";
 import type { BookingDetailEditAccess } from "../_lib/booking-detail-edit-access";
 import type { BookingDetailLinkedParty } from "../_lib/booking-detail-linked-party";
+import { savedCardChargeCents } from "@/lib/booking-payment-state";
 import type { BookingDetailPayment } from "../_lib/booking-detail-payment";
 import type { BookingDetailMessages } from "../_lib/booking-detail-messages";
 
@@ -369,7 +371,8 @@ export function BookingPaymentCards({
             </p>
             <BookingPaymentSection
               bookingId={booking.id}
-              amountCents={booking.finalPriceCents}
+              // #4357 (`INV-PAY-119`): what the saved card will be charged.
+              amountCents={savedCardChargeCents(booking)}
               paymentMode={getBookingPaymentMode(booking.status)}
               returnUrl={`${process.env.NEXTAUTH_URL || "http://localhost:3000"}/bookings/${booking.id}`}
             />
@@ -391,6 +394,7 @@ export function BookingPaymentCards({
             latestAdditionalTransactionCreatedAt:
               booking.payment.transactions[0]?.createdAt ?? null,
           })}
+          askCause={additionalAskCause(booking.payment.transactions)}
           canResend={canSeeAdminTools}
           canWithdraw={canEditFinance}
         />

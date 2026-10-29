@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from "fs";
 import path from "path";
 import { describe, expect, it } from "vitest";
 
+import { readAllowBuilds } from "../../../scripts/ci/check-allow-builds.mjs";
+
 /**
  * Every tracked file under `dir` whose extension is in `exts`, repository-
  * relative, recursively.
@@ -105,7 +107,8 @@ describe("deployment image contracts", () => {
     expect(workflow).toContain(
       "MIGRATE_IMAGE: ${{ vars.GHCR_MIGRATE_IMAGE_REPOSITORY || format('ghcr.io/{0}/alpineclubbookingsnz-migrate', github.repository_owner) }}:${{ github.sha }}",
     );
-    expect(workflow).toContain("uses: docker/build-push-action@v7");
+    // #4455: pinned to a commit SHA, with the version as its comment.
+    expect(workflow).toMatch(/uses: docker\/build-push-action@[0-9a-f]{40} # v7\n/);
     expect(workflow).toContain("target: builder");
   });
 
@@ -124,7 +127,7 @@ describe("deployment image contracts", () => {
       "GITLEAKS_IMAGE=ghcr.io/gitleaks/gitleaks:v8.28.0@sha256:" +
         "cdbb7c955abce02001a9f6c9f602fb195b7fadc1e812065883f695d1eeaba854",
     );
-    expect(workflow).toContain("uses: aquasecurity/trivy-action@v0.36.0");
+    expect(workflow).toMatch(/uses: aquasecurity\/trivy-action@[0-9a-f]{40} # v0\.36\.0\n/);
     for (const file of filesUnder(".github/workflows", [".yml", ".yaml"])) {
       expect(
         readRepoFile(file),
@@ -721,20 +724,30 @@ describe("deployment image contracts", () => {
       expect(verify.length).toBeGreaterThan(0);
       expect(verify).not.toContain("npm audit");
       expect(verify).not.toContain("pnpm audit");
-      // The gates that were skipped must all still be in `verify`, and none of
-      // them may have acquired a condition of its own on the way out. #3431
-      // moves the suite itself to independent shard jobs but keeps its
-      // fail-closed bridge as a step in this required job.
+      // The gates that were skipped must all still be reached by `verify`, and
+      // none of them may have acquired a condition of its own on the way out.
+      // #3431 moves the suite itself to independent shard jobs, and #4425 does
+      // the same for lint, typecheck and build; each keeps its fail-closed
+      // bridge as a step in this required job, which names every one of them.
       for (const step of [
-        "run: pnpm run lint",
         "run: pnpm run quality:budget",
         "run: pnpm run db:generate",
-        "run: pnpm run typecheck",
         "run: pnpm exec knip",
-        "run: node scripts/ci/require-test-shards.mjs",
-        "run: pnpm run build",
+        'run: node scripts/ci/require-test-shards.mjs --job Typecheck --job Lint --job "Production build"',
       ]) {
         expect(verify, `verify no longer runs \`${step}\``).toContain(step);
+      }
+      for (const [jobId, step] of [
+        ["typecheck", "run: pnpm run typecheck"],
+        ["lint", "run: pnpm run lint"],
+        ["build", "run: pnpm run build"],
+      ]) {
+        const start = workflow.indexOf(`\n  ${jobId}:\n`);
+        expect(start, `the ${jobId} job is missing`).toBeGreaterThan(-1);
+        const rest = workflow.slice(start + 1).search(/\n {2}[a-z][a-z0-9-]*:\n/);
+        const job = directivesOnly(workflow.slice(start, start + 1 + rest));
+        expect(job, `the ${jobId} job no longer runs \`${step}\``).toContain(step);
+        expect(verify, `verify runs \`${step}\` as well as its own job`).not.toContain(step);
       }
     });
 
@@ -807,11 +820,21 @@ describe("deployment image contracts", () => {
   it("deploys the resolved commit SHA image references from the production script", () => {
     const deployScript = readRepoFile("scripts/run-production-blue-green-deploy.sh");
 
+    // The repositories are resolved in `resolve_image_refs`
+    // from the shell, then the source repository's .env, then these upstream
+    // defaults — so the defaults are named once, as constants, and the shell
+    // value is read into an empty-when-unset variable.
     expect(deployScript).toContain(
-      'GHCR_APP_IMAGE_REPOSITORY="${GHCR_APP_IMAGE_REPOSITORY:-ghcr.io/thatskiff33/alpineclubbookingsnz-app}"',
+      'GHCR_APP_IMAGE_REPOSITORY="${GHCR_APP_IMAGE_REPOSITORY:-}"',
     );
     expect(deployScript).toContain(
-      'GHCR_MIGRATE_IMAGE_REPOSITORY="${GHCR_MIGRATE_IMAGE_REPOSITORY:-ghcr.io/thatskiff33/alpineclubbookingsnz-migrate}"',
+      'GHCR_MIGRATE_IMAGE_REPOSITORY="${GHCR_MIGRATE_IMAGE_REPOSITORY:-}"',
+    );
+    expect(deployScript).toContain(
+      'UPSTREAM_GHCR_APP_IMAGE_REPOSITORY="ghcr.io/thatskiff33/alpineclubbookingsnz-app"',
+    );
+    expect(deployScript).toContain(
+      'UPSTREAM_GHCR_MIGRATE_IMAGE_REPOSITORY="ghcr.io/thatskiff33/alpineclubbookingsnz-migrate"',
     );
     expect(deployScript).toContain(
       'APP_IMAGE="${GHCR_APP_IMAGE_REPOSITORY}:${RESOLVED_REF}"',
@@ -910,22 +933,14 @@ describe("package manager contract (#3673)", () => {
   it("pins which install scripts run, and forbids the settings that would widen that or blind the audit", () => {
     const workspace = readRepoFile("pnpm-workspace.yaml");
     const lines = workspace.split(/\r?\n/);
-    const start = lines.indexOf("allowBuilds:");
-    expect(start).toBeGreaterThan(-1);
-    const entries: string[] = [];
-    for (const line of lines.slice(start + 1)) {
-      if (!/^\s/.test(line)) break;
-      entries.push(line.trim());
-    }
+    expect(lines).toContain("allowBuilds:");
     // Which packages, and allowed or denied, is the contract. The exact version
     // lives only in pnpm-workspace.yaml, so a reviewed bump is a one-line edit
     // there (CONTRIBUTING.md, "Package manager: pnpm"). Every allowed entry must
     // carry an exact version: a bare name would approve every future version.
-    const parsed = entries.map((entry) => {
-      const m = /^"?(@?[^@"]+)(?:@([^"]+))?"?:\s*(true|false)$/.exec(entry);
-      expect(m, `unreadable allowBuilds entry: ${entry}`).not.toBeNull();
-      return { name: m![1], version: m![2], allowed: m![3] === "true" };
-    });
+    // The entries are read by the pre-install gate's own reader (#4364), which
+    // also checks each version against pnpm-lock.yaml.
+    const parsed = readAllowBuilds(workspace);
     expect(parsed.map(({ name, allowed }) => `${name}=${allowed}`)).toEqual([
       "@prisma/engines=true",
       "core-js=false",
@@ -934,9 +949,10 @@ describe("package manager contract (#3673)", () => {
       "unrs-resolver=true",
     ]);
     for (const entry of parsed.filter((e) => e.allowed)) {
-      expect(entry.version, `${entry.name} must be pinned to an exact version`).toMatch(
-        /^\d+\.\d+\.\d+(?: \|\| \d+\.\d+\.\d+)*$/,
-      );
+      expect(entry.versions, `${entry.name} must be pinned to an exact version`).not.toEqual([]);
+      for (const version of entry.versions) {
+        expect(version, `${entry.name} must be pinned to an exact version`).toMatch(/^\d+\.\d+\.\d+$/);
+      }
     }
 
     const topLevelKeys = lines
@@ -948,11 +964,21 @@ describe("package manager contract (#3673)", () => {
       "auditConfig",
       "registry",
       "registries",
-      "minimumReleaseAge",
       "onlyBuiltDependencies",
       "neverBuiltDependencies",
     ]) {
       expect(topLevelKeys, `pnpm-workspace.yaml must not set \`${forbidden}\``).not.toContain(forbidden);
+    }
+    // #4455: a release-age hold may only be STRICTER than pnpm's one-day
+    // default, and any exemption names one exact version, like allowBuilds.
+    const releaseAge = /^minimumReleaseAge: (\d+)$/m.exec(workspace);
+    if (topLevelKeys.includes("minimumReleaseAge")) {
+      expect(releaseAge, "minimumReleaseAge must be a whole number of minutes").not.toBeNull();
+      expect(Number(releaseAge?.[1])).toBeGreaterThanOrEqual(1440);
+    }
+    const excluded = /^minimumReleaseAgeExclude:\n((?: {2}- .+\n)*)/m.exec(workspace)?.[1] ?? "";
+    for (const entry of excluded.split("\n").filter(Boolean)) {
+      expect(entry, "a release-age exemption names one exact version").toMatch(/^ {2}- (@?[\w.-]+(?:\/[\w.-]+)?)@\d+\.\d+\.\d+$/);
     }
     // Nested spellings too, e.g. an ignore list under some other key.
     expect(workspace).not.toMatch(/ignoreGhsas|ignoreCves/);

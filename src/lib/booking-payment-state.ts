@@ -1,5 +1,8 @@
 import type { PaymentSource } from "@prisma/client";
 
+import { isAdditionalAskRetiredBookingStatus } from "@/lib/additional-payment-chase";
+import { paidByOrganiserInternetBanking } from "@/lib/group-organiser-paid";
+
 /**
  * The `Payment.status` values that mean MONEY WAS TAKEN — captured, and possibly
  * refunded since. `REFUNDED` belongs here: the question is whether a capture
@@ -203,6 +206,26 @@ export function canAskCardForIncrease(booking: {
 }
 
 /**
+ * #4272 (`INV-PAY-112`, owner decision 21 Oct 2026): a review charge on a
+ * CANCELLED booking is REFUSED. Its ask is one the member cannot pay — every
+ * pay surface excludes a cancelled booking (`INV-ADDPAY-023`) — and the
+ * recovery replay already skips one, so the inline path refuses it too.
+ * #4316: and on a BUMPED one, for the same reason: the statuses are the ones
+ * that retire every ask (`isAdditionalAskRetiredBookingStatus`,
+ * `INV-ADDPAY-044`), so the sync and the replay take the cancelled path alike.
+ *
+ * THE ONE HOME for that rule, asked by the route chooser before the claim
+ * (`chooseEditReviewChargeRoute`, which refuses with its own sentence before any
+ * route is chosen) and inside `canAskCardForReviewCharge`, so the sync's mint
+ * after the commit refuses too when a cancellation lands between the two.
+ */
+export function refusesReviewChargeForCancellation(booking: {
+  status: string;
+}): boolean {
+  return isAdditionalAskRetiredBookingStatus(booking.status);
+}
+
+/**
  * #3947 (`INV-PAY-047`, `INV-PAY-112`): may an officer's settled edit-review
  * CHARGE (`CHARGE_TO_MEMBER`) ask the member's card? THE ONE ANSWER for that
  * path, asked twice and never restated: by the route chooser before the claim
@@ -211,22 +234,16 @@ export function canAskCardForIncrease(booking: {
  * The two must agree, or a route chosen as "card" mints nothing, queues a
  * recovery row, and every replay reports `not-raised` until the row dies FAILED.
  *
- * It is `canAskCardForIncrease` — so a settled booking paid wholly with credit
- * (`{ amountCents: 0, SUCCEEDED, STRIPE }`) IS asked by card, the owner's
- * 15 Oct 2026 decision on #3947, matching the four edit doors (#3502) — OR the
- * captured-card test this path used before (`hasCapturedPayment` + `STRIPE`).
- *
- * The second clause is TODAY'S ROUTE, KEPT PENDING A DECISION (#4272), not the
- * intended rule. A review can be settled on a booking that has since left the
- * settled statuses (most often CANCELLED) while still holding money captured on
- * a card, and that booking took the card route before #3947. The decision on
- * #3947 covered credit-paid bookings, not those, so their route is unchanged:
- * dropping the clause would turn each into a no-instrument refusal, because
- * `hasIssuedPrimaryXeroInvoice` is gated on the same settled statuses. Whether
- * such a booking should be card-asked at all - a CANCELLED booking's ask is one
- * the member cannot pay (`INV-ADDPAY-023`), and its recovery replay skips it -
- * is #4272's question. Until then the union only ever ADDS the credit-paid
- * shape; nothing that was card-asked stops being asked.
+ * NEVER on a CANCELLED or BUMPED booking (`refusesReviewChargeForCancellation`,
+ * #4272, #4316).
+ * Otherwise it is `canAskCardForIncrease` — so a settled booking paid wholly
+ * with credit (`{ amountCents: 0, SUCCEEDED, STRIPE }`) IS asked by card, the
+ * owner's 15 Oct 2026 decision on #3947, matching the four edit doors (#3502) —
+ * OR the captured-card test this path used before (`hasCapturedPayment` +
+ * `STRIPE`), which keeps the card for a booking outside the settled statuses,
+ * other than a cancelled one, that still holds money captured on a card.
+ * Dropping that clause would turn each into a no-instrument refusal, because
+ * `hasIssuedPrimaryXeroInvoice` is gated on the same settled statuses.
  *
  * INCREASES ONLY, like `canAskCardForIncrease`: a review REFUND reads its own
  * captured-cash tests (`editReviewRefundGoesBackOnCard`).
@@ -238,6 +255,7 @@ export function canAskCardForReviewCharge(booking: {
     | null
     | undefined;
 }): boolean {
+  if (refusesReviewChargeForCancellation(booking)) return false;
   return (
     canAskCardForIncrease(booking) ||
     (hasCapturedPayment(booking.payment) &&
@@ -436,24 +454,54 @@ export function stripeRefundMirrorShowsCapture(payment: {
 /**
  * #1473/#1491: THE capture evidence for a payment whose status cannot be taken
  * at its word - a captured ledger row (each caller's own read), else the STRIPE
- * mirror. One home (`INV-SSOT-001`): `booking-cancel.ts`, the flattened-status
- * backfill and Net Collected (`netCollectedPaymentTookMoney`) all ask it.
+ * mirror - or (#3949) an Internet Banking organiser child's settle mirror. One
+ * home (`INV-SSOT-001`): `booking-cancel.ts`, the flattened-status backfill and
+ * every caller of it, and Net Collected (`netCollectedPaymentTookMoney`) all ask it.
  */
 export function paymentShowsCaptureEvidence(
   payment: { source: string; status: string; refundedAmountCents: number },
   hasCapturedLedgerRow: boolean,
+  /**
+   * #3949 review (`INV-PAY-137`): the booking the payment belongs to, so an
+   * Internet Banking organiser child's settle mirror is read as the capture it
+   * is (`organiserInternetBankingMirrorCaptured`). REQUIRED: every reader of
+   * capture evidence comes through here and must say whose payment it is.
+   */
+  booking: { organiserSettled: boolean; parentBookingId: string | null },
+  /**
+   * #3949 review round 4: false for the paid-cancel gate (`paymentEligibleForPaidCancelPath`), which never trusts
+   * the pre-ledger STRIPE mirror (#1491: its refund executors allocate against ledger rows), yet asks the rest of
+   * the evidence here rather than spelling the organiser's mirror itself.
+   */
+  { preLedgerStripeMirror = true }: { preLedgerStripeMirror?: boolean } = {},
 ): boolean {
-  return hasCapturedLedgerRow || stripeRefundMirrorShowsCapture(payment);
+  return (
+    hasCapturedLedgerRow ||
+    (preLedgerStripeMirror && stripeRefundMirrorShowsCapture(payment)) ||
+    organiserInternetBankingMirrorCaptured({ ...booking, payment })
+  );
 }
 
 /**
- * The payment shape the two accessors below need, spelled out so a caller cannot
- * hand them a payment row loaded without its id.
+ * #3949 review H1 (`INV-PAY-137`): THE SETTLE'S MIRROR IS THE CAPTURE on a
+ * joiner's booking the organiser paid for by Internet Banking. No
+ * `PaymentTransaction` backs it and its source is not STRIPE, so neither half of
+ * the cancel's capture evidence (`paymentShowsCaptureEvidence`) can see it; yet
+ * its money is real - it is the joiner's share of the organiser's group payment,
+ * and a paid-back edit or appeal hand-back (or the group cancel) leaves it
+ * PARTIALLY_REFUNDED or REFUNDED, never uncaptured. A cancel that read it as
+ * never captured would flip it FAILED and erase the organiser's share. The card
+ * twin needs none of this: its STRIPE mirror already shows capture.
  */
-export type EditReviewSettlementPayment =
-  | (BookingPaymentState & { id: string })
-  | null
-  | undefined;
+export function organiserInternetBankingMirrorCaptured(booking: {
+  organiserSettled: boolean;
+  parentBookingId: string | null;
+  payment: { source: string; status: string } | null;
+}): boolean {
+  return (
+    paidByOrganiserInternetBanking(booking) && booking.payment !== null && isCapturedPaymentStatus(booking.payment.status)
+  );
+}
 
 /**
  * #3166 / #3194 (epic #2797): the captured payment a PARKED edit's financial
@@ -473,23 +521,17 @@ export type EditReviewSettlementPayment =
  * task's `paymentId` nullable precisely because a credit owed for a surrendered
  * night need not sit against any one captured payment.
  *
- * TWO CALLERS, ONE QUESTION, and the second is why this returns the payment ROW:
- *
- *  - AT RAISE TIME, `raiseParkedEditFinancialReviewTasks` stamps the id onto the
- *    task. Four parked edit doors (the batch edit, the date change, the
- *    single-guest removal and the guest-add route) each computed it inline from
- *    the same two predicates before #3166 gathered them.
- *  - AT COMPLETION, `chooseEditReviewSettlementRoute` re-asks it of the booking
- *    as it stands NOW, but ONLY where the task carries no id — the stamped value
- *    is a snapshot of the moment the edit parked and nothing backfills it, so a
- *    member who paid afterwards would otherwise be refunded as club credit for
- *    ever. That path needs the row's `source` as well as its id to tell a card
- *    refund from a hand-settled ledger mirror, and re-reading the same row
- *    through a second accessor would reintroduce the disagreement this removes.
+ * It was asked at both ends of a review's life. AT RAISE TIME the parked edit
+ * stamped the id onto the task; #4317 retired the raise, so no task is stamped
+ * any more. AT COMPLETION, `chooseEditReviewSettlementRoute` re-asks it of the
+ * booking as it stands NOW, but ONLY where the task carries no id — a stamped
+ * value is a snapshot of the moment the edit parked and nothing backfills it, so
+ * a member who paid afterwards would otherwise be refunded as club credit for
+ * ever. That path needs the row's `source` as well as its id to tell a card
+ * refund from a hand-settled ledger mirror, which is why this returns the ROW.
  *
  * Getting it wrong does not fail: it routes real money down the wrong path weeks
- * later, in front of an admin with no way to tell. That is why both ends read
- * this and not a copy of it.
+ * later, in front of an admin with no way to tell.
  *
  * Lives here beside `hasIssuedPrimaryXeroInvoice`, which is the same shape for
  * the same reason, rather than in `edit-financial-review.ts` — that module is
@@ -506,18 +548,6 @@ export function editReviewSettlementPayment<
     hasCapturedPayment(booking.payment)
     ? (booking.payment ?? null)
     : null;
-}
-
-/**
- * The id half of `editReviewSettlementPayment` above, which is all a raise site
- * stores. Derived from it rather than repeating its two predicates, so the two
- * ends of a review's life cannot drift apart (`INV-SSOT`).
- */
-export function editReviewSettlementPaymentId(booking: {
-  status: string;
-  payment: EditReviewSettlementPayment;
-}): string | null {
-  return editReviewSettlementPayment(booking)?.id ?? null;
 }
 
 /**
@@ -587,6 +617,25 @@ export function bookingWorthCents(input: {
   changeFeeCents: number | null;
 }): number {
   return input.finalPriceCents + recordedChangeFeeCents({ changeFeeCents: input.changeFeeCents });
+}
+
+/**
+ * #3750 (#3955 review F2, `INV-PAY-119`): what a booking's saved card is
+ * charged - its worth, read from the booking and its payment row. The one
+ * figure all three saved-card doors charge (#4357): the confirm-pending cron,
+ * the charge-saved-method route (cron or admin) and the officer's
+ * confirm-pending-guests route. Like the bare price it replaced, applied credit
+ * is not netted here (the settle admits a full-worth capture and gives back
+ * any credit it leaves spent, #3864).
+ */
+export function savedCardChargeCents(booking: {
+  finalPriceCents: number;
+  payment: { changeFeeCents: number } | null;
+}): number {
+  return bookingWorthCents({
+    finalPriceCents: booking.finalPriceCents,
+    changeFeeCents: booking.payment?.changeFeeCents ?? null,
+  });
 }
 
 /**

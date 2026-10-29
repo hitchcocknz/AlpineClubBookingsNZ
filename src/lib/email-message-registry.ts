@@ -4,11 +4,15 @@ import {
   type EmailAuditTemplateName,
 } from "@/lib/email-message-audit-defaults";
 import { buildXeroInvoiceUrl } from "@/lib/xero-links";
+import { creditReleaseCadenceSummary } from "@/lib/additional-payment-chase";
+import { paymentRequestCauseSentence } from "@/lib/additional-ask-cause";
+import { bankTransferNoteText, SAMPLE_BANK_TRANSFER_OFFER } from "@/lib/credit-release-bank-transfer";
 import { ibSettlementFigureParagraph } from "@/lib/ib-settlement-figure-note";
+import { duplicateCaptureKeptAction, duplicateCaptureKeptParagraph } from "@/lib/duplicate-capture-kept-note";
+import { supersededCaptureRefusedAction, supersededCaptureRefusedParagraph } from "@/lib/superseded-capture-refused-note";
 import {
   adminSplitSettlementCancelledLeadParagraph,
   adminSplitSettlementUnpaidLeadParagraph,
-  bookingPaymentDueNote,
   checkoutDayChoreNote,
   duplicateCaptureRefundOutcomeParagraph,
   internetBankingHoldKeptParagraph,
@@ -24,6 +28,7 @@ import {
   splitGuestPortionOwnBookingLine,
   wholeLodgeGuestNamesUrgencyNote,
 } from "@/lib/email-message-notes";
+import { bookingPaymentDueNote } from "@/lib/email-payment-due-note";
 import { FALLBACK_LODGE_CAPACITY } from "@/lib/lodge-capacity";
 import { BOOKING_URL_TEMPLATE_NAMES } from "@/lib/booking-email-template-contract";
 import {
@@ -109,6 +114,11 @@ const ADMIN_SYSTEM_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // person - the stored figure kept, or the cash not what the booking owes.
   // Admin audience, unmuteable sender, delivery-locked below, for #3638's reason.
   "admin-bank-transfer-settlement-figure",
+  // #4211: a card capture the duplicate-capture guard kept on a paid booking with
+  // no usable record of which payment settled it. Same audience, sender and lock.
+  "admin-duplicate-capture-kept",
+  // #4300: a card capture the settle refused as superseded. Same audience, sender and lock.
+  "admin-superseded-capture-refused",
   // #2761: the alert for an automatically refunded late capture on a cancelled
   // booking. Ships to admins, so admin audience — but through the unmuteable
   // sender rather than sendToAdmins, because it reports an automatic MONEY
@@ -231,6 +241,12 @@ const LOCKED_DELIVERY_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
   // #3979: the same lock - a recorded bank-transfer figure that is wrong sizes
   // every later refund and credit, and this mail is what pulls a person to check it.
   "admin-bank-transfer-settlement-figure",
+  // #4211: the same lock - nothing was refunded automatically and the club may
+  // hold the price twice, so muting it would leave the money with nobody.
+  "admin-duplicate-capture-kept",
+  // #4300: the same lock - a payment the member made was not applied, and the
+  // booking may still owe; muting it would leave both with nobody.
+  "admin-superseded-capture-refused",
 ]);
 
 const CONTENT_ONLY_DEFAULT_TEMPLATE_NAMES = new Set<EmailAuditTemplateName>([
@@ -495,6 +511,19 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "checkIn",
     "checkOut",
   ],
+  // #4253: the same four are load-bearing for the same reason - this email asks for
+  // money for a stay, and an override that drops one leaves a demand that cannot be
+  // acted on or checked.
+  "credit-released-payment-request": [
+    "additionalAmount",
+    "requestedOn",
+    "checkIn",
+    "checkOut",
+    // #4253 release 2: the only words that say WHY - credit used elsewhere, or that and a change
+    // merged into one request. A fixed sentence is wrong for one of the two, so an override saved
+    // from the release-1 default is flagged stale and a re-save must put the token in.
+    "askCauseSentence",
+  ],
   // #3827 (D-3813-7): an approved appeal is refunded to the card OR promised
   // by bank transfer, and only {{refundSentence}} says which. An override
   // saved from the old default ("processed to your original payment method"
@@ -630,6 +659,12 @@ const REQUIRED_TEMPLATE_TOKENS: Partial<Record<EmailAuditTemplateName, string[]>
     "settlementFigureNote",
     "xeroObjectUrl",
   ],
+  // #4211: {{duplicateCaptureKeptNote}} says why nothing was refunded (no record,
+  // or a recorded settler that no longer holds money) and names the other payment.
+  "admin-duplicate-capture-kept": ["memberName", "reviewUrl", "duplicateCaptureKeptNote", "duplicateCaptureKeptAction"],
+  // #4300: {{supersededCaptureNote}} says the payment was not applied and, by the
+  // booking's status, whether it still owes; an override must not drop it.
+  "admin-superseded-capture-refused": ["memberName", "reviewUrl", "supersededCaptureNote", "supersededCaptureAction"],
   // #2761: memberName and reviewUrl as its siblings, plus the two tokens that
   // carry WHICH of the two populations this was. An override that drops
   // {{bookingStateLabel}} or {{refundOutcomeNote}} leaves an operator unable to
@@ -933,6 +968,18 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
     frequency:
       "Once per booking and invoice, when the payment is first recorded - the record is written with the payment, and the email is re-sent on a later Xero delivery only if it had not gone out",
   },
+  "admin-duplicate-capture-kept": {
+    triggerSummary:
+      "A card payment arrived on a booking that was already paid and the app had no usable record of which payment settled it - while another payment on it still held money, because the recorded payment no longer holds money, or (a payment the app had never recorded) with no other payment holding money - so it kept the payment and refunded nothing. The last kind is sent again if undelivered, then saying if the booking was cancelled since (with what the payment still holds) or another payment has arrived",
+    frequency:
+      "On a payment or a repeat of it reaching such a booking - rare; at most once a day per booking and payment, by a cross-instance cooldown given back when the send throws. One for a payment the app had never recorded is owed until delivered, and the 15-minute payments cron sends it an hour on if nothing else does (about a day at worst)",
+  },
+  "admin-superseded-capture-refused": {
+    triggerSummary:
+      "A card payment was taken on a payment that a later change to the booking had replaced, and it reached the booking's settlement, which refused it: the club's superseded-payment refund returns it, and the booking was not marked paid with it",
+    frequency:
+      "Rare - the payment pages and Stripe's notification divert such a payment first; at most once a day per booking and payment, by a cross-instance cooldown given back when the send throws",
+  },
   "admin-manual-refund-task": {
     triggerSummary:
       "A booking settled in cash (or by an off-Xero bank transfer) was cancelled with a refund owing, an organiser cancelled a group they paid for by Internet Banking, or a card booking was cancelled and its card refund could not carry all of the refund due, so a hand-back task (or two) was raised for an admin to pay back or check",
@@ -1081,6 +1128,12 @@ const TEMPLATE_TRIGGER_METADATA: Partial<
       "A booking change increased the total and the extra amount is still uncollected",
     frequency:
       "Twice per outstanding amount at most — a few days after the change, and once more shortly before check-in — plus any manual re-send an admin triggers from the booking page. The chase stops when the money arrives or the stay ends",
+  },
+  "credit-released-payment-request": {
+    triggerSummary:
+      "Account credit applied to a booking was used elsewhere in the club's accounts, so part of the booking is unpaid again and a card payment was requested (with the club's bank-transfer details too, once it has written them)",
+    // Built from the cadence's own constants (`INV-ADDPAY-048`), so the copy cannot drift from the rule.
+    frequency: creditReleaseCadenceSummary(),
   },
   "booking-policy-exception-approved": {
     triggerSummary:
@@ -1561,6 +1614,15 @@ export function sampleValue(token: string): string {
     return ibSettlementFigureParagraph({ keptReason: "folded-refund", owed: null, hasSupplementaryInvoice: false });
   }
   if (token === "outsideAppRefundNote") return LATE_CAPTURE_REFUNDED_OUTSIDE_APP_NOTE;
+  // #4211: previewed as the no-record arm, the case every booking paid before
+  // the record existed meets; the released-settler arm is the guard's other reason.
+  if (token === "duplicateCaptureKeptNote") {
+    return duplicateCaptureKeptParagraph({ reason: "not-recorded", otherPaymentIntentId: "pi_example" });
+  }
+  if (token === "duplicateCaptureKeptAction") return duplicateCaptureKeptAction({ otherHoldsMoney: true, reason: "not-recorded" });
+  // #4300: previewed as the still-owing arm, the case a live booking meets.
+  if (token === "supersededCaptureNote") return supersededCaptureRefusedParagraph({ bookingCancelled: false });
+  if (token === "supersededCaptureAction") return supersededCaptureRefusedAction({ bookingCancelled: false });
   if (token === "settlementActionNote") {
     return adminSplitSettlementUnpaidLeadParagraph(false);
   }
@@ -1571,6 +1633,10 @@ export function sampleValue(token: string): string {
   // send builds it, so the preview reads as a member reads it instead of
   // printing the token's own name mid-paragraph. Empty on a live send when
   // nothing is owed. The amount reconciles with the sample below.
+  if (token === "bankTransferNote") return bankTransferNoteText(SAMPLE_BANK_TRANSFER_OFFER);
+  // #4253 release 2: previewed as the pure released-credit arm, the case the email is named for;
+  // the merged arm is the sender's other branch. The amount reconciles with the sample below.
+  if (token === "askCauseSentence") return paymentRequestCauseSentence("credit-release", "$123.45");
   if (token === "outstandingAdditionalNote") {
     return "There is still $123.45 to pay on this booking after a change to your stay. Please pay it from your booking page before you arrive.";
   }
@@ -2024,6 +2090,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   // the pre-arrival reminder; empty when nothing is owed, so the body never
   // carries a dangling claim (the {{doorCodeNote}} convention).
   "outstandingAdditionalNote",
+  // #4253 release 2: the bank-transfer offer on a request for credit used elsewhere, composed
+  // whole by the sender and empty until the club writes its bank details (card-only until then).
+  "bankTransferNote",
+  // #4253 release 2: why a request for credit used elsewhere is owed, with the amount -
+  // `paymentRequestCauseSentence`, so a merged request says both causes in a customised body too.
+  "askCauseSentence",
   // #3672: the organiser's booking detail page, for the mid-stay joiner alert.
   "organiserBookingUrl",
   "organiserName",
@@ -2108,6 +2180,12 @@ const APPROVED_EMAIL_TEMPLATE_TOKENS = [
   "secondInstrumentConflictNote",
   // #3979: the bank-transfer settlement alert's what-needs-a-person sentence.
   "settlementFigureNote",
+  // #4211: the kept-capture alert's why-nothing-was-refunded sentence.
+  "duplicateCaptureKeptNote",
+  "duplicateCaptureKeptAction",
+  // #4300: the refused-superseded-capture alert's not-applied sentence and its check.
+  "supersededCaptureNote",
+  "supersededCaptureAction",
   // #4170: the outside-the-app refund alert's instruction.
   "outsideAppRefundNote",
   // #2774: the same direction as a SUBJECT-length phrase, so the withheld and

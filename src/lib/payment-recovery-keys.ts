@@ -9,14 +9,14 @@
 // declared not-a-recovery-key, so a new recovery key cannot land unlabelled.
 import { exactPrefix } from "@/lib/prisma-exact-prefix";
 export const BOOKING_CANCELLATION_REFUND_RECOVERY_PREFIX = "booking_cancel_refund_recovery_";
-export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX =
-  "capacity_claim_failed_refund_recovery_";
+export const CAPACITY_CLAIM_FAILED_REFUND_RECOVERY_PREFIX = "capacity_claim_failed_refund_recovery_";
 export const DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX = "duplicate_capture_";
 export const EDIT_FINANCIAL_REVIEW_REFUND_RECOVERY_PREFIX =
   "edit_financial_review_refund_recovery_";
 export const ADDITIONAL_INTENT_RECOVERY_PREFIX = "payment_recovery_additional_intent_";
 export const EDIT_FINANCIAL_REVIEW_ADDITIONAL_INTENT_RECOVERY_PREFIX =
   "edit_financial_review_additional_intent_recovery_";
+export { CREDIT_RELEASE_ASK_RECOVERY_PREFIX } from "@/lib/credit-release-ask-keys"; // #4253
 /** An approved refund appeal's card refund (`enqueueRefundRequestRefundRecovery`). */
 export const REFUND_REQUEST_REFUND_RECOVERY_PREFIX = "refund_request_refund_";
 /** Cancelling a card payment request that was replaced or withdrawn. */
@@ -117,12 +117,9 @@ export function buildCapacityClaimFailedRefundStripeKeyPrefix(bookingId: string,
 // residual #1967 window — an in-flight /pay link intent confirmed after the
 // auto-charge cron settled the split child, or vice versa). One row per
 // (booking, duplicate intent): a Stripe event redelivery for the same duplicate
-// upserts the same row, never a second refund debt. The key shape doubles as
-// the per-booking adjudication marker: markBookingPaymentSucceeded refuses to
-// open a second duplicate-capture refund for the SAME booking against a
-// DIFFERENT intent (that arriving intent is the settlement side of the pair the
-// first operation already adjudicated), which is what makes the refund
-// direction stable under webhook replays of both captures.
+// upserts the same row, never a second refund debt. A capture a key names is going
+// back to the member, so it is never the settlement another capture duplicates
+// (#4211): replays keep the refund direction stable, and a third capture is refunded.
 export function buildDuplicateCaptureRefundRecoveryIdempotencyKey(
   bookingId: string,
   paymentIntentId: string,
@@ -130,13 +127,19 @@ export function buildDuplicateCaptureRefundRecoveryIdempotencyKey(
   return `${buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId)}${paymentIntentId}`;
 }
 
-// The per-booking prefix of the duplicate-capture recovery key, used to ask
-// "has ANY duplicate-capture refund already been adjudicated for this booking?"
-// without knowing the other intent's id.
+// The per-booking prefix of the duplicate-capture recovery key: which of this
+// booking's captures a duplicate-capture refund owns, without knowing their intents.
 export function buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(
   bookingId: string,
 ) {
   return `${DUPLICATE_CAPTURE_REFUND_RECOVERY_PREFIX}${bookingId}_`;
+}
+
+// #4211: the duplicate intent a booking's duplicate-capture key names, or null. A booking id
+// plus `_` can begin a longer id, so a caller reads only that booking's rows.
+export function duplicateCaptureIntentIdForRecoveryKey(bookingId: string, idempotencyKey: string): string | null {
+  const prefix = buildDuplicateCaptureRefundRecoveryKeyPrefixForBooking(bookingId);
+  return idempotencyKey.startsWith(prefix) && idempotencyKey.length > prefix.length ? idempotencyKey.slice(prefix.length) : null;
 }
 
 // The Stripe idempotency-key prefix for the duplicate-capture auto-refund
@@ -185,14 +188,11 @@ export function buildLegacyModificationRefundStripeKeyPrefix(operationId: string
   return `payment_recovery_modification_refund_${operationId}`;
 }
 
-// #4083 (`INV-PAY-128`): THE STRIPE KEY OF ONE REFUND SLICE, and the generation
-// a refused slice moves to. Stripe answers a repeated key with its ORIGINAL
-// response for 24 hours, so a slice Stripe refused (`failed` or `canceled`)
-// replayed under its own key only reads the refusal back. The recovery runner
-// moves a slice it READ refused to the next generation (`refused1`,
-// `refused2`, ...), a key never sent before. A slice it did not read refused
-// keeps its key, so a refund made but not recorded is still answered with the
-// original and never made twice. One spelling for the sender and the runner.
+// #4083 (`INV-PAY-128`): one spelling of each slice's Stripe key. Stripe
+// replays the original response for 24 hours, so a refused slice moves to the
+// next generation (`refused1`, `refused2`, ...), a key never sent before.
+// An unanswered slice keeps its key; preflight adopts its refundSliceKey
+// evidence before replay even after expiry (`INV-PAY-147`).
 const REFUSED_REFUND_KEY_SUFFIX = /^refused([1-9][0-9]{0,5})$/;
 
 export function isRefusedRefundKeySuffix(value: unknown): value is string {
@@ -307,7 +307,7 @@ export const REISSUED_ASK_REASON = "modification_reissued_ask";
 // a shared key Stripe answers the second review's mint with the FIRST review's
 // intent - now the DESIRED behaviour: the owner's 30 Aug 2026 decision on #3170
 // is that both reviews contribute to ONE request for the total. Two requests lost
-// money: `queueSupersededAdditionalIntentCancellations` cancels every OTHER
+// money: `queueSupersededAdditionalIntentCancellationRows` cancels every OTHER
 // outstanding additional on the payment when one is minted, and
 // `reconcilePaymentAggregates` carries one `additionalAmountCents`, so $200 then
 // $30 collected $30 of $230, both tasks COMPLETED.
@@ -480,8 +480,8 @@ export function buildBookingCancellationRefundMetadata(
 // `reason: "refund_appeal_approved"`. The inline shape is UNCHANGED by this
 // convergence (only the recovery branch now matches), so every Stripe refund the
 // route has ever created already carries this exact body — there is no
-// pre-deploy sliver. Nothing downstream reads this off the Stripe refund; it is
-// dashboard-only.
+// pre-deploy sliver. Since #4312 the webhook reads its `reason` back (`cardRefundDoorOf`), to leave a request's refund to its approval.
+export const buildRefundRequestRefundStripeKeyPrefix = (refundRequestId: string) => `refund_request_${refundRequestId}`; // the route's and its replay's (#1039, #1507)
 export function buildRefundRequestRefundMetadata(
   bookingId: string,
   refundRequestId: string,

@@ -1,4 +1,10 @@
-import { PaymentSource, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
+import {
+  PaymentRecoveryOperationStatus,
+  PaymentRecoveryOperationType,
+  PaymentSource,
+  PaymentStatus,
+  PaymentTransactionKind,
+} from "@prisma/client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -15,8 +21,12 @@ vi.mock("@/lib/payment-recovery", () => ({
   runPaymentRecoveryOperationNow: mocks.runNow,
 }));
 
-import { queueSupersededAdditionalIntentCancellations } from "@/lib/booking-payment-cleanup";
+import {
+  cancelSupersededAdditionalIntentsNow,
+  queueSupersededAdditionalIntentCancellationRows,
+} from "@/lib/booking-payment-cleanup";
 import { CLUB_FORMAT_TEST } from "./support/club-format-fixture";
+import { matchesWhere, type WhereInput } from "./support/prisma-where";
 
 /*
   #3340 acceptance criterion 3 — A SUPERSEDED PAYMENT INTENT IS NOT LEFT
@@ -49,7 +59,20 @@ beforeEach(() => {
   mocks.runNow.mockResolvedValue("succeeded");
 });
 
-describe("queueSupersededAdditionalIntentCancellations", () => {
+/**
+ * The supersede as every minter runs it since #4442: the durable rows (inside
+ * the minter's queue transaction there; on the client here), then the
+ * immediate cancels after.
+ */
+async function supersede(options: Parameters<typeof queueSupersededAdditionalIntentCancellationRows>[0] & {
+  format: typeof CLUB_FORMAT_TEST;
+}) {
+  const queued = await queueSupersededAdditionalIntentCancellationRows(options);
+  await cancelSupersededAdditionalIntentsNow({ ...options, queued });
+  return queued.map(({ paymentTransactionId, paymentIntentId }) => ({ paymentTransactionId, paymentIntentId }));
+}
+
+describe("the supersede: queueSupersededAdditionalIntentCancellationRows, then cancelSupersededAdditionalIntentsNow", () => {
   it("enqueues the durable row and then cancels immediately, in that order", async () => {
     mocks.findMany.mockResolvedValue([STALE_TRANSACTION]);
     const order: string[] = [];
@@ -62,7 +85,7 @@ describe("queueSupersededAdditionalIntentCancellations", () => {
       return "succeeded";
     });
 
-    const queued = await queueSupersededAdditionalIntentCancellations({
+    const queued = await supersede({
       format: CLUB_FORMAT_TEST,
       bookingId: "booking_1",
       paymentId: "payment_1",
@@ -77,24 +100,76 @@ describe("queueSupersededAdditionalIntentCancellations", () => {
     expect(mocks.runNow).toHaveBeenCalledWith("operation_1", CLUB_FORMAT_TEST);
   });
 
-  it("looks only at OTHER outstanding Stripe ADDITIONAL intents", async () => {
-    mocks.findMany.mockResolvedValue([]);
-    await queueSupersededAdditionalIntentCancellations({
+  /*
+    #4422: the selector is run over a ledger, not matched against its own text,
+    so narrowing it back to open-only (the defect) fails here. A DECLINED ask is
+    still confirmable at Stripe; it is cancelled until a cancel of it has
+    SUCCEEDED. A captured ask, the new intent and a zero row never are.
+  */
+  it("selects the OTHER open and declined Stripe ADDITIONAL intents, and nothing captured or already cancelled (#4422)", async () => {
+    const cancel = (status: PaymentRecoveryOperationStatus) => ({
+      type: PaymentRecoveryOperationType.CANCEL_PAYMENT_INTENT,
+      status,
+    });
+    const row = (
+      id: string,
+      status: PaymentStatus,
+      recoveryOperations: { type: PaymentRecoveryOperationType; status: PaymentRecoveryOperationStatus }[] = [],
+      extra: Record<string, unknown> = {},
+    ) => ({
+      id,
+      paymentId: "payment_1",
+      kind: PaymentTransactionKind.ADDITIONAL,
+      source: PaymentSource.STRIPE,
+      status,
+      stripePaymentIntentId: `pi_${id}`,
+      amountCents: 6500,
+      recoveryOperations,
+      ...extra,
+    });
+    const ledger = [
+      row("open_pending", PaymentStatus.PENDING),
+      row("open_processing", PaymentStatus.PROCESSING),
+      row("declined", PaymentStatus.FAILED),
+      row("declined_cancel_retrying", PaymentStatus.FAILED, [cancel(PaymentRecoveryOperationStatus.FAILED)]),
+      row("declined_cancel_queued", PaymentStatus.FAILED, [cancel(PaymentRecoveryOperationStatus.PENDING)]),
+      row("declined_refund_op_only", PaymentStatus.FAILED, [
+        { type: PaymentRecoveryOperationType.REFUND_SUPERSEDED_PAYMENT, status: PaymentRecoveryOperationStatus.SUCCEEDED },
+      ]),
+      row("already_cancelled", PaymentStatus.FAILED, [cancel(PaymentRecoveryOperationStatus.SUCCEEDED)]),
+      row("captured", PaymentStatus.SUCCEEDED),
+      row("refunded", PaymentStatus.REFUNDED),
+      row("new", PaymentStatus.PENDING, [], { stripePaymentIntentId: "pi_new" }),
+      row("zero", PaymentStatus.FAILED, [], { amountCents: 0 }),
+      row("primary", PaymentStatus.FAILED, [], { kind: PaymentTransactionKind.PRIMARY }),
+      row("internet_banking", PaymentStatus.PENDING, [], { source: PaymentSource.INTERNET_BANKING }),
+      row("other_payment", PaymentStatus.FAILED, [], { paymentId: "payment_2" }),
+    ];
+    mocks.findMany.mockImplementation(async ({ where }: { where: WhereInput }) =>
+      ledger.filter((entry) => matchesWhere(entry, where)),
+    );
+    mocks.enqueue.mockImplementation(async ({ paymentTransactionId }: { paymentTransactionId: string }) => ({
+      id: `operation_${paymentTransactionId}`,
+    }));
+
+    const queued = await supersede({
       format: CLUB_FORMAT_TEST,
       bookingId: "booking_1",
       paymentId: "payment_1",
       newPaymentIntentId: "pi_new",
     });
-    expect(mocks.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          paymentId: "payment_1",
-          kind: PaymentTransactionKind.ADDITIONAL,
-          source: PaymentSource.STRIPE,
-          status: { in: [PaymentStatus.PENDING, PaymentStatus.PROCESSING] },
-          stripePaymentIntentId: { not: "pi_new" },
-        }),
-      }),
+
+    expect(queued.map((entry) => entry.paymentTransactionId)).toEqual([
+      "open_pending",
+      "open_processing",
+      "declined",
+      "declined_cancel_retrying",
+      "declined_cancel_queued",
+      "declined_refund_op_only",
+    ]);
+    // Each one cancelled at Stripe now, through the one durable row (#3340).
+    expect(mocks.runNow.mock.calls.map((call) => call[0])).toEqual(
+      queued.map((entry) => `operation_${entry.paymentTransactionId}`),
     );
   });
 
@@ -105,7 +180,7 @@ describe("queueSupersededAdditionalIntentCancellations", () => {
     // The mint must still return the new client secret; the member's edit is
     // already saved and the recovery cron owns the retry.
     await expect(
-      queueSupersededAdditionalIntentCancellations({
+      supersede({
         format: CLUB_FORMAT_TEST,
         bookingId: "booking_1",
         paymentId: "payment_1",
@@ -126,7 +201,7 @@ describe("queueSupersededAdditionalIntentCancellations", () => {
       .mockResolvedValueOnce({ id: "operation_1" })
       .mockResolvedValueOnce({ id: "operation_2" });
 
-    await queueSupersededAdditionalIntentCancellations({
+    await supersede({
       format: CLUB_FORMAT_TEST,
       bookingId: "booking_1",
       paymentId: "payment_1",
@@ -143,7 +218,7 @@ describe("queueSupersededAdditionalIntentCancellations", () => {
     mocks.findMany.mockResolvedValue([
       { id: "tx_no_intent", stripePaymentIntentId: null, amountCents: 6500 },
     ]);
-    const queued = await queueSupersededAdditionalIntentCancellations({
+    const queued = await supersede({
       format: CLUB_FORMAT_TEST,
       bookingId: "booking_1",
       paymentId: "payment_1",

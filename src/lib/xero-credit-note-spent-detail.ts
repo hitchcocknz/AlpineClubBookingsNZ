@@ -7,17 +7,21 @@ import { getClubFormat } from "@/lib/club-format-settings";
 import { exactProviderAmountToCents } from "@/lib/money-provider-amount";
 import { formatCents } from "@/lib/utils";
 import { failXeroSyncOperation } from "@/lib/xero-sync";
+import type { XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
 import {
   callXeroApi,
   getAuthenticatedXeroClient,
   getXeroErrorSearchText,
 } from "@/lib/xero-api-client";
+import { xeroAllocationsOf, xeroPaymentsOf } from "@/lib/xero-credit-note-outside-spend";
 import {
   CreditNoteSpentOutsideAppError,
   isCreditNoteOverAllocationText,
   isCreditNoteSpentOutsideAppError,
   noteAllocationCentsForInvoice,
   refusalMeansSpentOutsideApp,
+  type XeroNoteAllocation,
+  type XeroNotePayment,
 } from "@/lib/xero-credit-note-spent-outside-app";
 
 /**
@@ -37,9 +41,14 @@ export async function describeCreditNoteSpentOutsideApp(
   invoiceId: string,
   amountCents: number,
   cause: unknown,
+  /** The allocation operation the failure is recorded on (#4338). */
+  operationId: string | null = null,
 ): Promise<CreditNoteSpentOutsideAppError | null> {
   let remainingCents: number | null;
   let allocatedToInvoiceCents: number[];
+  let totalCents: number | null;
+  let xeroAllocations: XeroNoteAllocation[];
+  let xeroPayments: XeroNotePayment[];
   try {
     const { xero, tenantId } = await getAuthenticatedXeroClient();
     const response = await callXeroApi(
@@ -61,6 +70,9 @@ export async function describeCreditNoteSpentOutsideApp(
       invoiceId,
       exactProviderAmountToCents,
     );
+    totalCents = exactProviderAmountToCents(note?.total);
+    xeroAllocations = xeroAllocationsOf(note?.allocations);
+    xeroPayments = xeroPaymentsOf(note?.payments);
   } catch (readError) {
     logger.warn(
       { err: readError, creditNoteId },
@@ -85,7 +97,7 @@ export async function describeCreditNoteSpentOutsideApp(
     creditNoteId,
     remainingCents,
     amountCents,
-    { cause },
+    { cause, xeroAllocations, xeroPayments, totalCents, operationId },
   );
 }
 
@@ -95,7 +107,7 @@ export async function describeCreditNoteSpentOutsideApp(
  * left and the note was really spent outside the app, else the error untouched.
  */
 export async function failAllocation(
-  operationId: string,
+  operation: XeroOperationClaim,
   error: unknown,
   creditNoteId: string,
   invoiceId: string,
@@ -104,9 +116,9 @@ export async function failAllocation(
   const named =
     !isCreditNoteSpentOutsideAppError(error) &&
     isCreditNoteOverAllocationText(getXeroErrorSearchText(error))
-      ? await describeCreditNoteSpentOutsideApp(creditNoteId, invoiceId, amountCents, error)
+      ? await describeCreditNoteSpentOutsideApp(creditNoteId, invoiceId, amountCents, error, operation.id)
       : null;
   const failure = named ?? error;
-  await failXeroSyncOperation(operationId, failure);
+  await failXeroSyncOperation(operation, failure);
   return failure;
 }

@@ -75,7 +75,11 @@ are listed on the booking for you to relay.
    If those nights would discard a requested check-in or check-out change, the
    card shows the same explanation as submission instead of a price. Editing
    the proposal refreshes that check. The estimate still prices only the guests
-   added in that card; member guests are priced when the officer approves.
+   added in that card; member guests are priced when the officer approves. It
+   judges the group discount on the whole proposed party, counted on each
+   night, using the nights the request gives each guest: the booking's guests,
+   less any removed in the editor, plus the guests the editor added and the
+   card's own guests.
 
    What approving does depends on whether the stay has finished:
    - **The stay is still running** (or not yet started): approving only
@@ -436,6 +440,28 @@ choice on that one approval:
 The choice is yours per approval — it is never automatic. A total price override
 still overrides whichever method you pick. Then click **Approve & hold the whole
 lodge**.
+
+**How the member pays.** With the **Internet Banking payments** and **Xero**
+modules both on, approving does not pick the payment method for the member.
+The booking is confirmed and the lodge is held, and the member is emailed the
+amount owing and sent to their booking page, where they see the same choices
+an ordinary booking offers: pay by card, or **Pay by internet banking instead**,
+which raises the Xero invoice at that moment. If the member ticked **Put my
+account credit towards this booking** on the request, the approval applies as
+much of their credit as the total allows (the queue row tells you they asked),
+and they pay only the remainder; credit that covers the whole price settles the
+booking as paid on the spot. With either module off there is no choice to
+offer, so the approval works as it always did: a pay-on-account receivable is
+created and invoiced through Xero, or admins are emailed to invoice by hand.
+
+The queue describes credit against the **current** payment modules. If either
+was turned off after the member submitted their choice, the row says credit
+will not be applied on approval. A paid approval says nothing is owing, whether
+credit covered the price or the officer set a zero price.
+
+Opening card payment and leaving it unfinished does not pay the booking. A
+sanctioned price reduction, such as linking a placeholder to a member below,
+still returns excess applied credit and settles a fully covered booking; an unpaid finished stay still appears in the collection queue.
 
 **If you link a guest row to a real member account** (#2309). A request's guest
 list is free-text names, but you can attach a place to an actual member so it

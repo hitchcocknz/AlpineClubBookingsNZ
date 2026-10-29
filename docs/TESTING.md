@@ -14,6 +14,91 @@ an unreachable dummy is correct and a live seeded database is not — so
 `prisma.config.ts` resolves. See [`../CONTRIBUTING.md`](../CONTRIBUTING.md) for
 the full local gate.
 
+## Accessibility lint ratchets (#4466)
+
+The full `eslint-plugin-jsx-a11y` recommended configuration applies to JSX/TSX.
+The local `accessibility/minimum-text-size` rule rejects static sizes below 12px
+in Tailwind classes, inline `fontSize` properties, CSS declarations and CSS
+`@apply` classes. Absolute CSS units (including `pt`) are converted to pixels;
+`rem`/`em` literals assume 16px. Runtime sizes and computed
+expressions still need browser/design review. CSS uses the tolerant parser for
+Tailwind syntax; it is not a general CSS validity gate.
+
+[`eslint-suppressions.json`](../eslint-suppressions.json) records existing debt
+using ESLint's built-in per-file/per-rule counts. Normal `pnpm run lint` applies
+it automatically: new files and increased counts fail, and unused suppressions
+also fail. It is a count ratchet: replacing a violation in the same file with
+another of the same rule does not increase the count. Do not regenerate or grow
+the baseline to pass lint. After fixing debt, run
+`pnpm exec eslint src --prune-suppressions` and commit the reductions. Check
+commands do not modify it.
+
+Focused rule and ratchet contracts run with
+`pnpm run test:named scripts/eslint/accessibility.test.mjs scripts/eslint/ratchet.test.mjs scripts/eslint/fixture-import.test.mjs`.
+The shared axe fixture and mobile project are described in
+[`E2E_PLAYWRIGHT.md`](E2E_PLAYWRIGHT.md#accessibility-and-mobile-checks-4466).
+
+## Stateful Xero and Stripe fakes
+
+Tests can keep provider state across a whole money journey instead of returning
+unrelated responses from each mock. Import
+[`XeroFake`](../src/test/providers/xero-fake.ts) or
+[`StripeFake`](../src/test/providers/stripe-fake.ts), and create a fresh instance
+per test. These helpers have no credentials, network calls, database or Vitest
+dependency. Unit and realdb tests can use them directly; Playwright's Node-side
+fixtures can use them behind a test transport adapter. They do not install HTTP
+routes or replace either provider SDK automatically.
+
+```ts
+const xero = new XeroFake();
+const contact = xero.createContact("contact", "member-a");
+const invoice = xero.createInvoice("charge", contact.contactID, 8000);
+xero.payInvoice("receipt", invoice.invoiceID, 5000);
+expect(xero.snapshot().invoices[0].amountDueCents).toBe(3000);
+```
+
+All amounts are integer cents. Methods accepting an operation key take it first:
+retrying the same request returns its original response, while changed parameters
+reject. Keys live for the instance's lifetime; expiry is not modeled. Snapshots
+are detached copies, so retaining a reading before a later void models delayed
+delivery. `invoiceWire` in the
+[`round-trip harness`](../src/test/providers/round-trip-harness.ts) converts
+invoice reads to the native Xero JSON boundary used by the production observer.
+
+Xero models contacts, authorised invoices, receipts, credit notes, allocations,
+allocation removal, payment deletion and voids. A paid invoice refuses a new
+allocation; remove existing allocations/payments before voiding a document.
+`payCreditNote` records a hand-back separately from an allocation. Stripe models
+manual authorisation, one full or partial capture, cancellation, pending and
+successful refunds, later failure, and dashboard refunds. Pending refunds reserve
+capture capacity; failed refunds release it. `snapshot().events` retains immutable
+Stripe event payloads for delivery/replay tests, including the subscribed
+`charge.refunded` (with a charge/refund-list projection) and `refund.failed` events.
+Tests still need transport/SDK adapters to drive production webhook handlers.
+Taxes, fees, FX, API pagination,
+authentication, rate limits and transport failures are outside these models.
+
+The fixture contract suite pins selected behavior to
+[`provider-contracts.json`](../src/test/providers/fixtures/provider-contracts.json).
+**These fixtures are synthetic examples, not sandbox recordings.** Their public
+API references and repository error-example source are recorded in the JSON;
+sandbox conformance remains unverified. Do not regenerate expectations from the
+fake. Future sandbox captures need sanitized, independently reviewed fixtures.
+
+Run the four new suites with:
+
+```sh
+pnpm exec vitest run src/test/providers/provider-fakes.test.ts src/test/providers/provider-contracts.test.ts src/test/providers/ledger-scenarios.test.ts src/test/providers/round-trip.test.ts --maxWorkers=1
+```
+
+The fast-check properties use fixed seeds (4460 and 4461) and the shared frozen
+clock. They compare independently imported state with outbound journal totals
+after every prefix, require no new postings on round trips, and check external
+refund corrections and redelivery. The journal and adapters are test models for
+#4461, not production ledger implementations. Scenario witnesses cover #3911,
+#4336, #4434 and #4380; passing them does not close those application bugs or
+prove production sync correctness.
+
 ## CI shards and the required check
 
 Pull-request and `main` CI run the complete unit suite in four independent
@@ -1247,6 +1332,27 @@ So:
    raises a conflict and a human classifies both — which is exactly the review a
    bare integer skipped.
 
+Censuses reading balanced call arguments or object bodies share
+[`balancedBrackets`](../src/lib/__tests__/support/balanced-brackets.ts).
+It returns original text, the inclusive closing offset and top-level comma-separated
+parts, using the shared literal masker so comments and quoted brackets cannot
+end a region early. An invalid opener or unclosed region fails the scan. Its
+sibling `expressionAt` reads a value that has no opener, up to its first top-level
+comma or the bracket closing the object that holds it.
+
+Two rules follow from the scan throwing rather than skipping:
+
+- **Find call sites over masked text.** Run the call-site regex over
+  `blankLiterals(source)` and hand the same text in as `structure`, so a call named
+  in a comment or string is not a call site. A hit inside a comment or string has
+  no opening bracket, and the reader throws on it. Read the arguments from the
+  original `source`, which keeps its string contents.
+- **Pass already-masked code as `structure`.** When the code has been through
+  `blankLiterals`, `blankLiteralsWithSpans` or `stripCommentsAndStrings`, pass it
+  as both `source` and `structure`. Masking twice is unsafe: a blanked regex has
+  lost its closing slash. `structure` must be the same length as `source`, and the
+  scan fails if it is not.
+
 ### Running the fast censuses on a composed tree
 
 `pnpm run ci:fast-censuses` runs the tree-wide censuses that compositions have
@@ -1504,6 +1610,48 @@ A declared role is not a fix for a path a suite should never reach. #4013's H1
 case reached the remainder-note mint because its credit lots tied on the
 frozen clock; the cure was an explicit fixture chronology and a regression that
 names the path (`INV-PAY-127`), not a declaration that let the mint go further.
+
+### Realdb files take turns on the race database
+
+Running several `*.realdb.test.ts` files in one `vitest run` used to fail
+intermittently, while every file passed alone (#4367). They share one
+database. Trigger DDL takes table-level locks, the global Xero outbox
+processor and the ownership guard see other files' rows, and some cases scan
+whole tables. The first local run of the 27 Xero and refund files in parallel
+failed 6 tests in 2 files.
+
+When `RUN_CONCURRENCY_RACE_TESTS=1` and `CONCURRENCY_RACE_DATABASE_URL` is
+set, `vitest.setup.ts` makes each realdb file hold one session advisory lock,
+`(4367, 1)`, from its first hook through its teardown. The files then run one
+at a time whatever the worker count; importing and collecting them still overlap.
+The same 27 files then passed twice in a row. The lock lives in
+`src/lib/__tests__/support/realdb-file-serialisation.ts`. One `aroundAll`
+holds it, so a root `afterAll` that throws still releases it, and the wait has
+no hook timeout. A waiting file polls `pg_try_advisory_lock` instead of
+blocking, because several suites' barriers count ungranted advisory rows in
+`pg_locks`. Realdb files on another database, such as
+`data-migration-verification`, take the race lock too when the race env is
+on. Expect a batch of realdb files to
+take as long as running them one after another. Inside one file the old rules
+still apply: a suite owns its own fixtures and queued work.
+
+CI runs every one of these files in the advisory `realdb-all` job (#4458), in
+one `vitest run` on one Postgres service, with `RUN_CONCURRENCY_RACE_TESTS=1`.
+The file list is `scripts/ci/realdb-files.mjs`: every `*.realdb.test.*` file
+under `src/` minus `scripts/ci/realdb-quarantine.txt`, which names a suite that
+is red for a known reason, or cannot share the process, with its issue or PR.
+Add a realdb file and it joins the job with no edit. `realdb-ci-coverage-census.test.ts` fails when a file is
+neither run nor quarantined, when the job stops setting
+`RUN_CONCURRENCY_RACE_TESTS=1`, or when any other job names `realdb-all`. The
+job points `DATA_MIGRATION_VERIFICATION_DATABASE_URL` at the same race service
+(those three suites create scratch databases of their own), and its last step,
+`scripts/ci/check-realdb-ran.mjs`, reads Vitest's JSON report and fails when a
+listed file is missing from it, passed no test, or skipped any: a suite whose
+gate is unset skips green otherwise. The seed suite
+(`booking-ledger-history-seed`) is quarantined because
+`scripts/booking-ledger-seed-gate.sh` runs it against a database of its own. The
+per-file steps in `migration-drift` and `data-migration-verification` stay: they
+are required checks and this job is not.
 
 ## Mocking a money seam: never in a test that asserts its money
 

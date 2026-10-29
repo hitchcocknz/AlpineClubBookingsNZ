@@ -10,7 +10,7 @@ import {
 } from "@/lib/late-capture-xero-receipt";
 import type { PaidAnotherWayXeroNote } from "@/lib/manual-refund-task-settlement-rules";
 import { lateCaptureIntentOfCardRefundOperation } from "@/lib/late-capture-paid-another-way";
-import { cardRefundSliceRecordsFailedLaterRefund, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { cardRefundSliceFailedRefundIds, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { cardRefundFailedLaterRefundId } from "@/lib/payment-recovery-keys";
 import { resolveRefundNoteEligibleCash } from "@/lib/refund-note-eligible-cash";
 import { readResolvedRefundCreditNoteCoverage, sumRefundCreditNoteCoverageCents } from "@/lib/xero-resolved-in-xero-fences";
@@ -20,6 +20,7 @@ import {
   lockKeptLateCaptureTask,
 } from "@/lib/xero-kept-late-capture-invoice";
 import { keptReceiptHeldForOfficer } from "@/lib/kept-late-capture-receipt-rows";
+import { lockKeptCaptureAnchor } from "@/lib/kept-late-capture-change-receipt";
 import { paidAnotherWayReceiptRetryInstruction } from "@/lib/paid-another-way-receipt-retry-wording";
 import { enqueueXeroRefundCreditNoteOperation } from "@/lib/xero-operation-outbox";
 import { xeroDocumentDateFromInstant } from "@/lib/xero-provider-dates";
@@ -130,8 +131,9 @@ export function paidAnotherWayXeroPromise(plan: PaidAnotherWayXeroPlan): PaidAno
  * may already be in Xero (`receiptHeldForOfficer`): each reaches Xero only
  * through an officer's retry, and the note follows that retry.
  *
- * `lockApprovalTask` (the close only): the approval task's row is taken BEFORE
- * the receipt is read; see the module's LOCKS.
+ * `lockApprovalTask` (the close only): the approval task's row, then (#4324)
+ * a change capture's anchor, are taken BEFORE the receipt is read; see the
+ * module's LOCKS.
  *
  * STATED LIMIT: a payment that is not a late capture's, whose invoice is still
  * on its way to Xero, reads as having none, and its close queues no note; the
@@ -167,7 +169,12 @@ async function paidAnotherWayXeroRoute(
     where: { lateCaptureApprovalIntentId: lateCaptureIntent },
     select: { id: true, status: true, createdAt: true },
   });
-  if (task && lockApprovalTask) await lockKeptLateCaptureTask(db, task.id);
+  if (task && lockApprovalTask) {
+    await lockKeptLateCaptureTask(db, task.id);
+    // #4324 review CONC-1: a change capture's plan is read under its change's
+    // anchor, after the task row, and held to the queue below.
+    await lockKeptCaptureAnchor(db, { manualRefundTaskId: task.id, paymentIntentId: lateCaptureIntent }, { additionalOnly: true });
+  }
   const receipt = await readPaidAnotherWayLateCaptureXeroReceipt(lateCaptureIntent, db);
   // Round 7 (money M5, `INV-PAY-122`): the note credits THIS receipt, named by
   // its invoice id - never by `paymentIntentId`, which would count the bank
@@ -250,7 +257,7 @@ export async function failedLaterCardNoteCoverCents(
           // question here is which notes in Xero answer failed refunds, and a
           // re-made slice's failed refund keeps its note too. The answer is
           // bounded by the notes' excess, and by what the close paid back.
-          .filter(cardRefundSliceRecordsFailedLaterRefund)
+          .filter((slice) => cardRefundSliceFailedRefundIds(operation, slice).length > 0)
           .reduce((sum, slice) => sum + slice.amountCents, 0);
   if (failedCents <= 0) return 0;
   const payment = await db.payment.findUnique({ where: { id: paymentId }, select: { id: true, bookingId: true, refundedAmountCents: true } });
@@ -378,6 +385,12 @@ export async function queuePaidAnotherWayXero(
     if (plan.receiptHeldForOfficer) return "receipt-held-for-officer";
     return plan.receiptFailed ? "refund-note-after-failed-receipt" : "refund-note-after-receipt";
   }
+  // #4324 (review C4, CONC-1): a change capture's kept-capture invoice is
+  // queued under its change's anchor, after the task row, as the keep queues
+  // it - so the supplementary enqueue's check for it (`anchorCaptureHasReceipt`)
+  // sees it. The plan took both already (`lockApprovalTask`); re-taking them is a no-op.
+  await lockKeptLateCaptureTask(tx, plan.receipt.manualRefundTaskId);
+  await lockKeptCaptureAnchor(tx, plan.receipt, { additionalOnly: true });
   const queued = await enqueueXeroKeptLateCaptureInvoiceOperation({
     manualRefundTaskId: plan.receipt.manualRefundTaskId,
     bookingId: close.bookingId,

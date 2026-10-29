@@ -111,6 +111,7 @@
  * operator runbook lives in `docs/xero/ARCHITECTURE.md` → "Repairing Stripe
  * refund-note links (#2901)".
  */
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
 import { PaymentSource, Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import logger from "@/lib/logger";
@@ -490,11 +491,7 @@ const REFUND_NOTE_LINK_WHERE = (paymentId: string) =>
  * drain claims and runs these REGARDLESS of `replayable` (it never reads the
  * column), so they block unconditionally.
  */
-const EXECUTOR_LIFECYCLE_CREATE_STATUSES = [
-  "PENDING",
-  "RUNNING",
-  "WAITING_PAYMENT",
-];
+const EXECUTOR_LIFECYCLE_CREATE_STATUSES = [...XERO_ACTIVE_OPERATION_STATUSES];
 
 /**
  * CREATE statuses the manual-retry and requeue entry points accept — but

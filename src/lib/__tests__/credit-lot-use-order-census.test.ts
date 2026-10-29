@@ -73,6 +73,9 @@ const NOT_A_USE_ORDER: Record<string, string> = {
     "allocated or minted from it.",
   "src/lib/member-credit.ts > getAdminMemberCreditHistory":
     "the admin view of the same history, newest first, for display only.",
+  "src/lib/credit-release-ask-sweep.ts > enqueueCreditReleaseAsks":
+    "lists the released-credit rows waiting for a request, oldest first, to enqueue one durable row " +
+    "each (keyed by the release's own id); no lot is used or allocated from it.",
   "src/lib/edit-financial-review-account-credit.ts > creditSliceStillOwedAfterCancellation":
     "reads at most two cancellation-restore rows and refuses when there are " +
     "two, so which row comes first cannot change the answer.",

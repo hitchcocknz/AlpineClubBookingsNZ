@@ -294,7 +294,9 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   admits a draining-colour officer-repair audit. Provenance decides what a
   night may be read as, not whether the booking ledger posts it: every priced
   night posts one `GUEST_NIGHT` line, an inexact strand's included (#3583,
-  decision A), while an edit still refuses to price an inexact night.
+  decision A). Since #4317 an edit prices every night by the D1 valuation
+  (`INV-MOD-028`), which supersedes the evidence clause above: every usable row,
+  `EVEN_SPLIT` and `UNKNOWN` included, keeps its figure.
 
 ## INV-MONEY-029
 
@@ -308,8 +310,8 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   whose arithmetic is per night; the GUEST for a fixed-amount promotion, which
   is `min(value, guest total)` with no per-night rule. The amount is the
   engine's own figure — the very term its totals were summed from — never
-  translated to a finer grain by a rule. It is a signed delta in integer cents
-  like `priceAdjustmentCents`: negative for a discount, positive where a
+  translated to a finer grain by a rule, bar the one exception below. It is a
+  signed delta in integer cents like `priceAdjustmentCents`: negative for a discount, positive where a
   `SET_PRICE` code raised a night, and `0` where it set a night to exactly its
   rate, a real value. A row's beneficiary is decided in the same
   function and branch that decides the allocation it decomposes
@@ -318,7 +320,7 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   that member's `PromoRedemptionAllocation.priceAdjustmentCents` (an absent
   allocation row means the member received nothing, per `INV-MONEY-005`) and,
   overall, to `PromoRedemption.priceAdjustmentCents`. The one writer of an
-  AMOUNT, `recordBookingNightAdjustments` in `night-adjustment-write.ts`
+  engine AMOUNT, `recordBookingNightAdjustments` in `night-adjustment-write.ts`
   (a member merge only moves or deletes rows and never invents one), enforces
   it at write time and REFUSES BEFORE IT MUTATES — every read and check
   precedes its first write, so a refusal rolls the edit back; the waitlist
@@ -342,7 +344,20 @@ records). Three facets, not three statements of one rule (#2707, owner decision
   mechanical rewrite that moves no money (a name-only correction, an
   in-progress extension, an admin date shift) carries the recorded rows across
   by guest and stay date byte for byte, and where it cannot, leaves the
-  booking's rows absent rather than guess. A member merge that drops a
+  booking's rows absent rather than guess. **The one exception** (owner
+  decision 24 Oct 2026 on #4302; #4317): an in-progress edit capping its
+  carried promotion at the new total scales the rows left on the stay, per
+  redemption and beneficiary, in proportion to their stored amounts,
+  leftover cents on the earliest night, to the capped allocations
+  (`scaleCappedCarriedRows`, via `restoreBookingNightAdjustments`). It writes
+  no row for a code, which reads not known (build-up and Xero promotion lines
+  fall back to the aggregate), where an amount is NOT KNOWN, an allocation
+  lost every row, a beneficiary's rows mix signs, a scaled row would take more
+  than its night's price (a guest row, its guest's total) or raise a night
+  further, or across codes a guest's night or a guest would lose more than it
+  is held at (every code on it; an unpriced night is not measured); and none
+  where the redemptions could not be scaled (`capCarriedPromotionRecords`).
+  A member merge that drops a
   duplicate's colliding allocation deletes that duplicate's rows on the same
   redemption in the same step, so each surviving allocation still matches its
   rows per beneficiary — but the redemption total still carries the dropped
@@ -449,12 +464,10 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   source they used** (#3277, programme #3272; owner-approved D3 blueprint,
   12 September 2026). The caller names its operation because the required grain
   differs: whole-guest removal, and a strand an edit does not touch at all
-  (#3531 D-3531-1, `editStrandEvidenceGrain`), may use a reconciling guest
-  total even when its nights are `EVEN_SPLIT`; a strand an edit moves, one it
-  deliberately reprices with its locks cleared (a #2337 link, an other-lodge
-  tick), and the review re-base need exact individual-night provenance; credit
-  election verifies the booking headline; Xero verifies the booking promotion
-  aggregate.
+  (#3531 D-3531-1), may use a reconciling guest total even when its nights are
+  `EVEN_SPLIT`; since #4317 an edit values every strand it moves, and the
+  legacy review re-base every strand, by `INV-MOD-028`; credit election
+  verifies the booking headline; Xero verifies the booking promotion aggregate.
 
   `selectBookingMoneyBuildUp` returns `STORED`,
   `DERIVED_COMPATIBILITY_FALLBACK`, or `BASE_EVIDENCE_UNKNOWN`, with its reason,
@@ -526,11 +539,11 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
 
   **The balance is derived, never stored.** `booking-ledger-balance.ts` is the
   one place charged, settled, adjusted and owed are summed. No running total
-  and no status: a stored copy of a derived figure is the mirror this table
+  or status: a stored copy of a derived figure is the mirror this table
   retires.
 
-  **`booking-ledger-write.ts` is the only door**, it exposes creation alone,
-  and every posting goes inside the transaction of the writer whose act it
+  **`booking-ledger-write.ts` is the only door**, exposing creation alone;
+  every posting goes inside the transaction of the writer whose act it
   records — a settle that rolls back leaves no line saying it did not.
   Building rows is pure and may be refused safely; writing them is a statement
   and is never wrapped, because a refused statement has already aborted the
@@ -546,6 +559,8 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
   nothing reads them: `INV-PAY-047`'s mirror is still the answer until the
   reads move (#3584). A strand with an unpriced night posts nothing, because
   `INV-MOD-028` says a blank is not evidence of an amount.
+
+  Member journal: `INV-MONEY-041`, `INV-MONEY-042`.
 
 ## INV-MONEY-033
 
@@ -572,6 +587,8 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
 
   `booking-ledger-posting-key.realdb.test.ts` proves the skip, the surviving
   transaction and the fence against PostgreSQL itself.
+
+  Whole-batch keys in the member journal: `INV-MONEY-041`, `INV-MONEY-042`.
 
 ## INV-MONEY-034
 
@@ -644,10 +661,10 @@ verified aggregate) and **`INV-MOD-058`** (an edit's stored lines).
 
 - **An edit posts its own lines, per guest-night, or none; a review closure
   records one parked edit's money once** (#3582). Rule and reason: design
-  `booking-ledger.md` §5.1 (edits: reversal plus re-post per night, sum or
-  nothing, only on a booking confirmed on the ledger, asked under `lock(1)`;
-  a parked edit posts nothing, `INV-MOD-040`) and §5.3 (a closure's share,
-  decided at booking grain). No review share posts a settlement line
+  `booking-ledger.md` §5.1 (edits: reversal plus re-post per night at its
+  `INV-MOD-028` value, sum or nothing, only on a booking confirmed on the
+  ledger, asked under `lock(1)`; no edit parks since #4317) and §5.3 (a legacy
+  closure's share, decided at booking grain). No review share posts a settlement line
   (`INV-MONEY-034`, `INV-MONEY-035`). Pins:
   `booking-ledger-modification-posting.test.ts`,
   `booking-ledger-modification-sync.test.ts` (two-sibling fixtures per
@@ -700,6 +717,19 @@ check the others.
 ## INV-MONEY-007
 
 - Admin adjustments need audit, approval, and a visible business reason.
+- The one system-written adjustment (#4219; owner decision, 17 Oct 2026): when a
+  credit note was spent in Xero outside the app, the app writes the lot down with a
+  negative `ADMIN_ADJUSTMENT` row and releases the booking's applied credit with a
+  matching row, both marked `outsideSpendConvergedAt`. It has no requester or
+  approver by design (Xero's figure for the note is the decision), but it still has
+  an audit row and a visible business reason, and it moves no member's balance.
+- The same holds for the inbound credit-note mirror (#4270; owner decision, 24 Oct
+  2026): it writes down only the free part of a lot Xero shows spent outside the app
+  and restores it, as a positive row marked and stamped the same way, when Xero shows
+  the spend undone, never more than was written down. Its audit rows are
+  `xero.credit_note.outside_spend_mirrored` and `.outside_spend_restored`. A
+  write-down never takes the member's balance below zero, and the member is not
+  emailed.
 
 ## INV-MONEY-008
 
@@ -969,3 +999,54 @@ check the others.
   link upsert would then fail on the partial unique index — leaving an orphan
   invoice in Xero (no local double-link, so no local double-charge) that needs
   operator reconciliation.
+
+## INV-MONEY-041
+
+A member-money event has exactly one complete journal at commit. Every line has
+positive integer cents and a source link in that journal; the event's own
+source kind, identity and version have a durable link. Debits equal credits in
+the header's single currency. The header's declared line, obligation and
+application counts must match. A nonzero event has at least two legs; an
+explicit zero event has none. `effectiveDate` is the club civil date of
+`effectiveAt`, derived through the club-time kernel (`INV-DATE`,
+`INV-CONFIG-002`); a date more than a day from the instant's UTC date is refused.
+A debtor is exactly one member or one organisation, as a booking's owner is.
+Receivable, credit and refund-payable legs name one, a member-credit leg names a
+member, never an organisation, and a leg or application tied to an obligation
+names the obligation's debtor. Tax evidence is either
+absent or a complete, nonnegative gross/net/tax split with gross = net + tax and
+a tax code. A taxed revenue leg carries its net cents, and on each side a
+batch's `GST_PAYABLE` legs sum to the tax its taxed revenue legs record.
+Corrections reverse exact frozen legs, swapping debit/credit; each original
+batch and line can be reversed only once. Reversals preserve currency, coding,
+policy, dimensions and evidence.
+
+PostgreSQL CHECKs, foreign keys, unique indexes and deferred constraint triggers
+enforce this even through direct SQL. `member_money_batch_errors` is the shared
+validation rule used by the triggers and the read-only verifier.
+M1 is inert: no legacy writer cohort is activated and no old source is required
+to have a journal link. Mandatory legacy links need backfill and worker drain
+in their writer milestone; a nullable bridge is never universal posting proof.
+
+## INV-MONEY-042
+
+A journal header records its creating PostgreSQL transaction id and the
+cluster's system identifier, both stamped by a trigger rather than trusted from
+a caller. Lines, obligations and applications can only be inserted in that
+transaction on that cluster, so a restore into a new cluster, which reuses
+transaction ids, cannot reopen a batch. A later balanced pair cannot extend a
+sealed batch. Immutable source links may be appended later to associate legacy
+confirmation evidence with an existing charge, without posting another charge.
+Every bridge to `BookingLedgerLine` retains its exact source identity through a
+unique RESTRICT foreign key. Its `MemberMoneySourcePosting` rows name exact
+legs in that same journal; a bridge to a nonzero journal requires leg coverage.
+Posted financial parents use RESTRICT with no
+update cascade. No existing legacy cascade is changed by M1; M2 owns that work.
+
+The account chart uses stable internal enums; Xero account codes remain settings
+in the existing mapping registry. Keys the chart only proposes live in
+`PROPOSED_MEMBER_MONEY_MAPPING_KEYS`, outside every settings list, until the
+step that first reads one registers it. System receivables, member-credit and
+tax controls are reached through document/control bridges, never direct
+journals. An unset mapping cannot prevent local posting. No provider adapter is
+activated by registering an account.

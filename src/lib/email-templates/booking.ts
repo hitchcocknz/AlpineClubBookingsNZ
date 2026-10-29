@@ -10,6 +10,7 @@
  * every answer to that ask), and `@/lib/booking-money-lines` (the money rows, shared
  * with the admin alerts about the same booking).
  */
+import type { BankTransferRefundPayee } from "@/lib/group-organiser-paid";
 import {
   type AppliedCreditSummary, type BookingModificationAddedGuest,
   appliedCreditSummaryRows,
@@ -53,11 +54,11 @@ import {
 import { CLUB_LODGE_TRAVEL_NOTE } from "@/config/club-identity";
 import {
   bookingBumpedRebookAction,
-  bookingPaymentDueNote,
   creditRestoredSentenceTail,
   splitGuestPortionOwnBookingLine,
   type CreditRestoredBasis,
 } from "@/lib/email-message-notes";
+import { bookingPaymentDueNote, type BookingPaymentDueInstruction } from "@/lib/email-payment-due-note";
 import { emailCalendarDay, emailClubDateTime } from "@/lib/email-templates-club-time";
 import type { ClubFormat } from "@/lib/club-format";
 
@@ -134,12 +135,8 @@ export function bookingConfirmedTemplate(
     // the alert box says how to pay it. Same template (and therefore the same
     // operator override) as the paid confirmation, exactly as the split-parent
     // `provisionalGuests` variant is (#738).
-    paymentDue?: {
-      /** Internet-banking reference the member must quote (never a bearer token). */
-      reference: string;
-      /** True once the club's accounting system actually emails the invoice. */
-      invoiceEmailed: boolean;
-    };
+    // `payOnline` (no receivable yet) or the legacy reference shape; see the type.
+    paymentDue?: BookingPaymentDueInstruction;
     // #2397: the booking is settled but NOT in full — an admin recorded a cash
     // / off-Xero payment and said it did not cover an uncollected price
     // increase, so the club took less than the booking is worth and will go on
@@ -270,8 +267,12 @@ export function bookingConfirmedTemplate(
   const paymentDueNote = paymentDue
     ? bookingPaymentDueNote({
         amount: formatCents(unpaidNetting.toTransferCents, format),
-        reference: escapeHtml(paymentDue.reference),
-        invoiceEmailed: paymentDue.invoiceEmailed,
+        ...(paymentDue.payOnline === true
+          ? { payOnline: true as const }
+          : {
+              reference: escapeHtml(paymentDue.reference),
+              invoiceEmailed: paymentDue.invoiceEmailed,
+            }),
         accountCredit: unpaidCreditNoteInput(
           totalCents,
           unpaidNetting,
@@ -485,8 +486,10 @@ export function bookingModifiedTemplate(params: {
   financialReviewPending: boolean;
   refundDestination: BookingModifiedRefundDestination; // #3916, #4057: see `sendBookingModifiedEmail`
   /** #3827 (D-3813-6, `INV-PAY-117`): a bank transfer the club must still send.
-   * REQUIRED, as `financialReviewPending` is (`bookingModifiedRefundSentence`). */
-  refundByBankTransfer: boolean;
+   * REQUIRED, as `financialReviewPending` is (`bookingModifiedRefundSentence`).
+   * #3949: WHO it goes to - the member, or the group organiser who paid by
+   * internet banking (`editRefundBankTransferPayee`); null when none is sent. */
+  refundByBankTransfer: BankTransferRefundPayee | null;
 },
   format: ClubFormat,
 ): string {

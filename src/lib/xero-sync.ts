@@ -1,15 +1,15 @@
-import { PaymentSource, Prisma } from "@prisma/client";
+import { XERO_ACTIVE_OPERATION_STATUSES } from "./xero-active-operation-statuses";
+import { PaymentSource, Prisma, type XeroSyncOperation } from "@prisma/client";
 import { createHash } from "crypto";
 import { prisma } from "./prisma";
 import { asRecord, readString } from "./xero-json";
 import {
   canonicalRefundNoteFromField,
   isPerDeltaRefundNoteLink,
-  isRefundCreditNoteLinkCancelledInXero, keepStoredRefundNoteVoid,
+  isRefundCreditNoteLinkCancelledInXero, isRefundNoteLinkOf, keepStoredRefundNoteVoid, REFUND_NOTE_LINK_ROLES,
   perDeltaRefundNoteIds,
   neverCanonicalRefundNoteIds,
   readCanonicalRefundNoteField,
-  readRefundCreditNoteLinkStatus,
 } from "./xero-refund-note-status";
 import { buildXeroObjectUrl, stripXeroOrgShortCode } from "./xero-links";
 import {
@@ -22,6 +22,9 @@ import { providerAmountToCents } from "@/lib/money-provider-amount";
 import type { XeroInvoiceEmailInstruction } from "@/lib/xero-invoice-email-instruction";
 import { xeroSyncErrorFields } from "@/lib/xero-sync-error-text";
 import { REFUND_REQUEST_CREDIT_NOTE_ROLE } from "@/lib/refund-request-credit-note";
+import { isClosedByCreditSpentOutsideApp } from "@/lib/xero-operation-resolution";
+import { outcomeWriteGuard, refusedOutcomeWrite, type XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
+import { successAfterResolutionAlert } from "@/lib/xero-success-after-resolution-alert";
 
 export interface XeroSyncOperationInput {
   direction: string;
@@ -478,6 +481,9 @@ function getAttemptWhere(
   return { OR: or };
 }
 
+/** Inserts `startXeroSyncOperation` makes at most when each lost race finds the winner FAILED (#4338). */
+const START_OPERATION_INSERT_ATTEMPTS = 3;
+
 export async function startXeroSyncOperation(
   input: XeroSyncOperationInput & { store?: Prisma.TransactionClient }
 ) {
@@ -487,9 +493,6 @@ export async function startXeroSyncOperation(
   // unchanged. `store` is never part of the `create` payload.
   const db = input.store ?? prisma;
   const attemptWhere = getAttemptWhere(input);
-  const attemptCount = attemptWhere
-    ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1
-    : 1;
 
   // Denormalized copy of the outbox queue type (#1271, item 3 of #1208),
   // captured once here at enqueue and never updated afterward. Derive it from
@@ -506,48 +509,60 @@ export async function startXeroSyncOperation(
   const queueType =
     (payloadRecord ? readString(payloadRecord.queueType) : null) ?? input.queueType ?? null;
 
-  try {
-    return await db.xeroSyncOperation.create({
-      data: {
-        direction: input.direction,
-        entityType: input.entityType,
-        operationType: input.operationType,
-        localModel: input.localModel ?? null,
-        localId: input.localId ?? null,
-        status: input.status ?? "RUNNING",
-        idempotencyKey: input.idempotencyKey ?? null,
-        correlationKey: input.correlationKey ?? null,
-        attemptCount,
-        replayable: input.replayable ?? true,
-        requestPayload,
-        queueType,
-        // #2929: immutable after enqueue, exactly like `queueType` above and
-        // for the same reason — the booking-invoice handler rewrites
-        // `requestPayload` wholesale before its first provider call, so the
-        // instruction cannot live there and survive a retry.
-        invoiceEmailDelivery: input.invoiceEmailDelivery ?? null,
-        createdByMemberId: input.createdByMemberId ?? null,
-        startedAt: input.status === "PENDING" ? null : new Date(),
-      },
-    });
-  } catch (error) {
-    // #1354: the partial unique index (one ACTIVE operation per correlation
-    // key) turns a lost concurrent-enqueue race into a unique violation here.
-    // Resolve it the same way the findFirst fast-path dedup would have:
-    // return the winner's active row so the caller's enqueue is idempotent.
-    if (isPrismaUniqueConstraintError(error) && input.correlationKey) {
-      const existing = await db.xeroSyncOperation.findFirst({
-        where: {
-          correlationKey: input.correlationKey,
-          status: { in: ["PENDING", "RUNNING", "WAITING_PAYMENT"] },
+  for (let insert = 1; ; insert += 1) {
+    const attemptCount = attemptWhere ? (await db.xeroSyncOperation.count({ where: attemptWhere })) + 1 : 1;
+    try {
+      return await db.xeroSyncOperation.create({
+        data: {
+          direction: input.direction,
+          entityType: input.entityType,
+          operationType: input.operationType,
+          localModel: input.localModel ?? null,
+          localId: input.localId ?? null,
+          status: input.status ?? "RUNNING",
+          idempotencyKey: input.idempotencyKey ?? null,
+          correlationKey: input.correlationKey ?? null,
+          attemptCount,
+          replayable: input.replayable ?? true,
+          requestPayload,
+          queueType,
+          // #2929: immutable after enqueue, exactly like `queueType` above and
+          // for the same reason — the booking-invoice handler rewrites
+          // `requestPayload` wholesale before its first provider call, so the
+          // instruction cannot live there and survive a retry.
+          invoiceEmailDelivery: input.invoiceEmailDelivery ?? null,
+          createdByMemberId: input.createdByMemberId ?? null,
+          startedAt: input.status === "PENDING" ? null : new Date(),
         },
+      });
+    } catch (error) {
+      // #1354: the partial unique index (one ACTIVE operation per correlation key)
+      // turns a lost concurrent-enqueue race into a unique violation here. Resolve
+      // it as the findFirst fast-path dedup would: return the winner's active row.
+      // Not on a caller's transaction (the root client is none): the violation has
+      // aborted it, so no read can follow (#4338).
+      if (!isPrismaUniqueConstraintError(error) || !input.correlationKey || db !== prisma) throw error;
+      const { correlationKey } = input;
+      const existing = await db.xeroSyncOperation.findFirst({
+        where: { correlationKey, status: { in: [...XERO_ACTIVE_OPERATION_STATUSES] } },
         orderBy: { createdAt: "desc" },
       });
-      if (existing) {
-        return existing;
-      }
+      if (existing) return existing;
+      // #4338: the winner finished in between. Only a FAILED one leaves work to
+      // do, so only then insert again, as a retry a moment later would: while it
+      // is unresolved, or when the converge closed it itself. A PARTIAL winner's
+      // Xero object exists, and an officer's mark is done and never re-minted
+      // beside (`INV-INT-025`); those, like a SUCCEEDED or CANCELLED winner, keep
+      // the error: the caller's own pre-checks never saw it.
+      const newest = await db.xeroSyncOperation.findFirst({
+        where: { correlationKey },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { status: true, manuallyResolvedAt: true, manuallyResolvedById: true, manuallyResolvedReason: true },
+      });
+      const winnerLeftWork =
+        newest?.status === "FAILED" && (newest.manuallyResolvedAt === null || isClosedByCreditSpentOutsideApp(newest));
+      if (!winnerLeftWork || insert >= START_OPERATION_INSERT_ATTEMPTS) throw error;
     }
-    throw error;
   }
 }
 
@@ -605,7 +620,7 @@ async function normalizePaymentRefundLinkWithClient(
     return link;
   }
 
-  if ((link.role === "REFUND_CREDIT_NOTE" || link.role === REFUND_REQUEST_CREDIT_NOTE_ROLE) && link.xeroObjectType === "CREDIT_NOTE") {
+  if (REFUND_NOTE_LINK_ROLES.some((role) => isRefundNoteLinkOf(link, role))) {
     link = await keepStoredRefundNoteVoid(client, link); // #4195, #4223: own row first; keeps a void it waited on
     // A note the write (or that stored void) records VOIDED/DELETED in Xero credits nothing, so its mirror
     // is written inactive on every payment: a Stripe or per-refund note (#2901), a bank-transfer payment's
@@ -847,9 +862,7 @@ async function upsertXeroObjectLinkWithClient(
   // note, or clear it. The where-clause is the claim: a pointer that already
   // names a different note is left alone.
   if (
-    normalizedLink.localModel === "Payment" &&
-    normalizedLink.role === "REFUND_CREDIT_NOTE" &&
-    normalizedLink.xeroObjectType === "CREDIT_NOTE" &&
+    isRefundNoteLinkOf(normalizedLink) &&
     normalizedLink.active === false &&
     isRefundCreditNoteLinkCancelledInXero(normalizedLink.metadata)
   ) {
@@ -858,12 +871,13 @@ async function upsertXeroObjectLinkWithClient(
       select: { xeroRefundCreditNoteId: true },
     });
     if (payment?.xeroRefundCreditNoteId === normalizedLink.xeroObjectId) {
-      // INV-LOCK-001, INV-LOCK-002: a statusless retry can hold this link while
-      // a Payment-first enqueue waits for it. Never wait back on that Payment.
-      // SKIP LOCKED still returns a row this transaction already holds. When
-      // busy, commit the inactive mirror; the #4161 heal can release its pointer.
-      // Explicit inbound voids keep their existing protocol (#4200).
-      if (readRefundCreditNoteLinkStatus(link.metadata) === null) {
+      // INV-LOCK-001, INV-LOCK-002: a write whose void was kept (it named no
+      // status, #4223, or an older live one, #4288) can hold this link while a
+      // Payment-first enqueue waits for it: never wait back on that Payment.
+      // SKIP LOCKED still returns a row this transaction holds. When busy, the
+      // inactive mirror commits and the #4161 heal can release its pointer. A
+      // caller naming VOIDED/DELETED itself keeps its waiting order (#4200).
+      if (!isRefundCreditNoteLinkCancelledInXero(link.metadata)) {
         const available = await client.$executeRaw`
           SELECT 1 FROM "Payment" WHERE "id" = ${normalizedLink.localId}
           FOR NO KEY UPDATE SKIP LOCKED`;
@@ -911,12 +925,14 @@ export async function deactivateXeroObjectLinks(params: {
 }
 
 export async function completeXeroSyncOperation(
-  operationId: string,
+  // #4373: the claim this outcome was made under; it never lands on another claim (`INV-INT-029`).
+  claim: XeroOperationClaim,
   completion: XeroSyncOperationCompletion,
-  // #3548: `keepSucceeded` leaves a row a concurrent leg completed SUCCEEDED as it is, links and all, and answers null.
-  // #4256: `onlyIfRunningSince` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
-  options?: { store?: Prisma.TransactionClient; keepSucceeded?: boolean; onlyIfRunningSince?: Date; alert?: false },
-) {
+  // #4356 (`INV-INT-029`): no PARTIAL, FAILED or CANCELLED completion lands on a recorded success or a repair's claim; null then.
+  // #4256: `retryClaim` writes only onto that retry claim, clearing its marker code; `alert: false` raises no repeated-failure alert.
+  options?: { store?: Prisma.TransactionClient; retryClaim?: true; alert?: false },
+): Promise<(XeroSyncOperation & { deferredPostCommit?: () => Promise<void> }) | null> {
+  const operationId = claim.id;
   // #2314: organisation-agnostic in the column, organisation applied on read —
   // see the note on the object-link funnel above.
   const xeroObjectUrl = stripXeroOrgShortCode(
@@ -932,7 +948,7 @@ export async function completeXeroSyncOperation(
       status,
       // #4049: no earlier wait's or failure's error stays on a SUCCEEDED row (PARTIAL keeps it).
       ...(status === "SUCCEEDED" ? { lastErrorCode: null, lastErrorMessage: null } : {}),
-      ...(status !== "SUCCEEDED" && options?.onlyIfRunningSince ? { lastErrorCode: null } : {}),
+      ...(status !== "SUCCEEDED" && options?.retryClaim ? { lastErrorCode: null } : {}),
       ...(status !== "SUCCEEDED" && completion.lastErrorMessage ? { lastErrorMessage: completion.lastErrorMessage } : {}),
       responsePayload: sanitizeForJson(completion.responsePayload),
       xeroObjectType: completion.xeroObjectType ?? null,
@@ -941,16 +957,18 @@ export async function completeXeroSyncOperation(
       xeroObjectUrl,
       completedAt: new Date(),
     };
-    const guard = options?.onlyIfRunningSince
-      ? { status: "RUNNING" as const, startedAt: options.onlyIfRunningSince }
-      : options?.keepSucceeded ? { status: { not: "SUCCEEDED" as const } } : null;
-    if (guard) {
-      const claimed = await tx.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
-      if (claimed.count === 0) return null;
+    const guard = outcomeWriteGuard(claim, status, { retryClaim: options?.retryClaim });
+    const claimed = await tx.xeroSyncOperation.updateMany({ where: { id: operationId, ...guard }, data });
+    if (claimed.count === 0) {
+      // #4373 review F1: a success refused on a later claim still records its links.
+      return refusedOutcomeWrite(tx, claim, status, options ?? {}, {
+        xeroObjectId: completion.xeroObjectId ?? null,
+        recordLinks: async () => {
+          for (const link of completion.extraLinks ?? []) await upsertXeroObjectLinkWithClient(tx, link);
+        },
+      });
     }
-    const operation = guard
-      ? await tx.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } })
-      : await tx.xeroSyncOperation.update({ where: { id: operationId }, data });
+    const operation = await tx.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } });
 
     for (const link of completion.extraLinks ?? []) {
       await upsertXeroObjectLinkWithClient(tx, link);
@@ -961,6 +979,12 @@ export async function completeXeroSyncOperation(
   const operation = options?.store
     ? await completeWithClient(options.store)
     : await prisma.$transaction(completeWithClient);
+
+  // #4374 (`INV-INT-029`): a success landing on a row resolved in Xero warns and alerts once, after commit. On an
+  // injected store that is its owner's commit: the owner runs the `deferredPostCommit` returned here after it.
+  const resolvedRowAlert = successAfterResolutionAlert(operation);
+  if (resolvedRowAlert && operation && options?.store) return { ...operation, deferredPostCommit: resolvedRowAlert };
+  await resolvedRowAlert?.();
 
   if (operation?.status === "PARTIAL" && options?.alert !== false) {
     try {
@@ -982,7 +1006,9 @@ export async function completeXeroSyncOperation(
 
 /**
  * The optional write guard of {@link failXeroSyncOperation}: at most one, so a
- * caller can never pass two and have one silently dropped (#3462).
+ * caller can never pass two and have one silently dropped (#3462). Either way a failure
+ * never lands on a recorded success, a repair's claim (#4356) or another claim (#4373,
+ * `INV-INT-029`): null.
  */
 type FailXeroSyncOperationGuard =
   | {
@@ -992,23 +1018,24 @@ type FailXeroSyncOperationGuard =
        * approval can withdraw a kept row in between. Answers null then.
        */
       keepCancelled: true;
-      onlyIfRunningSince?: never;
+      retryClaim?: never;
     }
   | {
       /**
-       * #3462: fail the row ONLY while it is still the RUNNING claim stamped at
-       * this instant - the abandon of a claim whose handler threw before it
-       * owned completion. A row the handler already completed, failed or
-       * cancelled, or one a later claim re-stamped, is left exactly as it is.
-       * Answers null then.
+       * #3462: fail the row ONLY while it is still the claim's RUNNING claim -
+       * a retry's abandon of a claim whose handler threw before it owned
+       * completion. A row the handler already completed, failed or cancelled,
+       * or one a later claim re-stamped, is left exactly as it is. Answers null
+       * then, and the retry reports it.
        */
-      onlyIfRunningSince: Date;
+      retryClaim: true;
       keepCancelled?: never;
     }
-  | { keepCancelled?: never; onlyIfRunningSince?: never };
+  | { keepCancelled?: never; retryClaim?: never };
 
 export async function failXeroSyncOperation(
-  operationId: string,
+  // #4373: the claim this failure was made under; it never lands on another claim (`INV-INT-029`).
+  claim: XeroOperationClaim,
   error: unknown,
   responsePayload?: unknown,
   options?: FailXeroSyncOperationGuard & {
@@ -1019,6 +1046,7 @@ export async function failXeroSyncOperation(
     lastErrorMessage?: string;
   }
 ) {
+  const operationId = claim.id;
   const data = {
     status: "FAILED" as const,
     ...xeroSyncErrorFields(error, options?.lastErrorMessage),
@@ -1026,21 +1054,14 @@ export async function failXeroSyncOperation(
     completedAt: new Date(),
   };
 
-  const guard = options?.onlyIfRunningSince
-    ? { status: "RUNNING" as const, startedAt: options.onlyIfRunningSince }
-    : options?.keepCancelled
-      ? { status: { not: "CANCELLED" as const } }
-      : null;
-  if (guard) {
-    const failed = await prisma.xeroSyncOperation.updateMany({
-      where: { id: operationId, ...guard },
-      data,
-    });
-    if (failed.count === 0) return null;
-  }
-  const operation = guard
-    ? await prisma.xeroSyncOperation.findUniqueOrThrow({ where: { id: operationId } })
-    : await prisma.xeroSyncOperation.update({ where: { id: operationId }, data });
+  // #4356: always guarded - a failure never lands on a recorded success. The
+  // row returned, and offered to the alert, is the one this write wrote.
+  const guard = outcomeWriteGuard(claim, "FAILED", {
+    retryClaim: options?.retryClaim,
+    alsoKeep: options?.keepCancelled ? "CANCELLED" : undefined,
+  });
+  const [operation] = await prisma.xeroSyncOperation.updateManyAndReturn({ where: { id: operationId, ...guard }, data });
+  if (!operation) return refusedOutcomeWrite(prisma, claim, "FAILED", options ?? {});
 
   try {
     const { maybeNotifyXeroRepeatedFailure } = await import("./xero-hardening");

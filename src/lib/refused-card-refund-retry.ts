@@ -13,8 +13,10 @@
  * refusal back. Whoever READS a refusal therefore moves that slice to its next
  * key generation (`nextRefusedRefundKeySuffix`), a key never sent before:
  *
- * - The edit's door queues the refused slices already moved, as its recovery
- *   row's plan, so "Refunds owed" counts them (`openCardRefundOwedByOperation`).
+ * - The edit's door (#3984) and an approved refund request (#4102) queue their
+ *   attempt's whole plan, refused slices already moved and made ones marked
+ *   (`inlineRefundAfterAttempt`), so "Refunds owed" counts them
+ *   (`openCardRefundOwedByOperation`).
  * - A door whose row was written before its attempt - the cancellation, the edit
  *   review, the late-capture approval, the duplicate capture and the capacity
  *   race (#4103) - moves its row's plan the same way, only while no worker has
@@ -23,12 +25,10 @@
  *   refusal for a treasurer instead (`holdLateCaptureRefusedByStripe`, #4103),
  *   whose approval asks on the key its recorded refusals count to
  *   (`sliceAfterRecordedRefusals`).
- * - An approved refund request queues its attempt's plan with refused slices
- *   already moved and made ones marked (`inlineRefundAfterAttempt`, #4102).
  * - The runner, on the attempt it holds, does the same and fails the attempt,
  *   so the backoff asks again.
  *
- * The runner, the pre-persisted doors and the refund request keep every slice in the
+ * The runner, the pre-persisted doors, the edit and the refund request keep every slice in the
  * plan and the row's amount as the plan's total (`planAfterAttempt`,
  * `inlineRefundAfterAttempt`): a slice Stripe made beside a refusal is marked
  * with its refund and never sent again - so a replay past Stripe's 24-hour
@@ -45,7 +45,7 @@ import { PaymentRecoveryOperationStatus, Prisma, type PaymentRecoveryOperation }
 
 import type { ClubFormat } from "@/lib/club-format";
 import logger from "@/lib/logger";
-import { parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
+import { cardRefundSliceFailedRefundIds, parseRefundAllocationPlan } from "@/lib/open-card-refund-owed";
 import { alertPaymentRecoveryOfficers } from "@/lib/payment-recovery-alert";
 import { UNTOUCHED_PRE_PERSISTED_ROW } from "@/lib/payment-recovery-constants";
 import { buildBookingCancellationRefundIdempotencyKey, nextRefusedRefundKeySuffix } from "@/lib/payment-recovery-keys";
@@ -69,8 +69,13 @@ export function refusedRefundSlices(
   return refusedAnswers(refunds).map((refund) => refund.slice);
 }
 
-export function refusedRefundCents(slices: ReadonlyArray<RefundAllocationSlice>): number {
+/** The cents a set of refund slices asks for. */
+export function refundSliceCents(slices: ReadonlyArray<RefundAllocationSlice>): number {
   return slices.reduce((sum, slice) => sum + slice.amountCents, 0);
+}
+
+export function refusedRefundCents(slices: ReadonlyArray<RefundAllocationSlice>): number {
+  return refundSliceCents(slices);
 }
 
 /** What the officers read as the row's last error: a part of a split refund may have been made. */
@@ -195,8 +200,9 @@ export type InlineRefundRead = {
 };
 
 /**
- * #4102, #4117: an inline attempt over a frozen plan, read, for a door that
- * raises its recovery row AFTER the attempt (an approved refund request).
+ * #4102, #4117, #3984: an inline attempt over a frozen plan, read, for a door
+ * that raises its recovery row AFTER the attempt (an approved refund request,
+ * or a booking edit's own-card refund).
  * `refundPaymentTransactions` sends the plan in order and stops at the first
  * slice that throws, wrapping any throw after a Stripe call in
  * `PartialRefundError` with the slices answered before it, so the first
@@ -502,8 +508,80 @@ async function moveRefusedSlices(
 }
 
 /**
+ * #4312 rounds 7-8 (#4104, `INV-ADDPAY-047`): EACH SLICE SENT FOR A REFUND
+ * STRIPE FAILED LATER (`cardRefundSliceFailedRefundIds`) THAT STRIPE MADE ON
+ * THIS ATTEMPT IS MARKED WITH THE REFUND IT MADE (`madeRefundId`) - the one
+ * record that pairs a re-send with its failures (`cardRefundFailuresAnsweredBy`),
+ * so it never depends on which refund of the same amount happens to be recorded
+ * first. Only the mark is written: any other slice, and a refused slice's key,
+ * stay as read.
+ *
+ * WHAT THE MARK CHANGES IN THE OWED FIGURE (F4). A marked slice takes its own
+ * refund before the newest-row-first matching (`attributeRecordedRefunds`), so
+ * the re-send fills the row that sent it - never a newer row's unsent slice of
+ * the same charge and amount, which now reads as owed, as it is. That is a
+ * correction. Every other slice is matched as before, from a pool without the
+ * re-send.
+ *
+ * Compare-and-set on the plan this attempt sent from (`onPlanWhere`), never on
+ * its hold of the row (round 8). Stripe's answer under the slice's key is a
+ * fact whoever holds the row now: a reaper that moved a stalled attempt to
+ * FAILED - due again or dead - leaves the plan as it was, so the late attempt's
+ * mark still lands, and its replay's notes (`replayNotingEachRefund`) read it.
+ * A plan written in between - a failure that re-planned the slice onto its next
+ * key, or another attempt that read the same answer and marked it first - fails
+ * the write: the plan there is the record then, and a re-planned slice is
+ * marked by the replay that sends it next (or, on a dead row, paid by the
+ * treasurer). Never a status, and no lock: one guarded single-row write
+ * (`INV-LOCK-001`). Taking no `Payment` row, it is ordered against "Paid
+ * another way"'s owed read by that close's claim, which carries the plan it
+ * read (`onPlanWhere`): a mark in between fails the close, never the mark.
+ */
+async function markResentSlices(
+  operation: Pick<PaymentRecoveryOperation, "id" | "idempotencyKey">,
+  plan: ReadonlyArray<RefundAllocationSlice>,
+  answered: ReadonlyArray<AnsweredRefund>,
+): Promise<void> {
+  const resent = plan.map((slice) => !slice.madeRefundId && cardRefundSliceFailedRefundIds(operation, slice).length > 0);
+  if (!resent.includes(true)) return; // nothing re-sent: not even the answers are read
+  const made = planAfterAttempt(plan, answered);
+  const marked = plan.map((slice, index) => {
+    const madeRefundId = made[index]?.madeRefundId;
+    return resent[index] && madeRefundId ? { ...slice, madeRefundId } : slice;
+  });
+  if (marked.every((slice, index) => slice === plan[index])) return;
+  const written = await prisma.paymentRecoveryOperation.updateMany({
+    where: { id: operation.id, ...onPlanWhere(plan) },
+    data: { allocationPlan: marked as unknown as Prisma.InputJsonValue },
+  });
+  if (written.count !== 1) {
+    logger.warn(
+      { operationId: operation.id },
+      "A card refund re-send's slice was not marked made: the row's plan changed since this attempt read it - another attempt marked it, or a failure re-planned it for its next replay to mark (#4312)",
+    );
+  }
+}
+
+/**
+ * A refusal's re-plan (`moveRefusedSlices`) that lost its fence - a reaper took
+ * the row from this attempt - still marks the re-sends Stripe made beside it
+ * (`markResentSlices`, round 8): the move is the holder's to write again, the
+ * mark is a fact.
+ */
+async function moveRefusedSlicesOrMarkResent(
+  operation: Pick<PaymentRecoveryOperation, "id" | "processingStartedAt" | "idempotencyKey">,
+  plan: ReadonlyArray<RefundAllocationSlice>,
+  answered: ReadonlyArray<AnsweredRefund>,
+): Promise<boolean> {
+  const moved = await moveRefusedSlices(operation, planAfterAttempt(plan, answered));
+  if (!moved) await markResentSlices(operation, plan, answered);
+  return moved;
+}
+
+/**
  * The recovery runner's refund of a frozen plan. Returns when Stripe made every
- * slice; otherwise moves what it refused to fresh keys and throws, so the
+ * slice, each slice sent for a failed refund marked with the refund it made
+ * (`markResentSlices`); otherwise moves what it refused to fresh keys and throws, so the
  * attempt fails and is retried (or, retries spent, dies owed).
  *
  * Returns the refund of the plan's first slice - one made beside an earlier
@@ -517,7 +595,7 @@ export async function refundPlanOrRetryRefusals({
   format,
   refund,
 }: {
-  operation: Pick<PaymentRecoveryOperation, "id" | "processingStartedAt" | "bookingId" | "paymentIntentId">;
+  operation: Pick<PaymentRecoveryOperation, "id" | "processingStartedAt" | "bookingId" | "paymentIntentId" | "idempotencyKey">;
   plan: ReadonlyArray<RefundAllocationSlice>;
   format: ClubFormat;
   /** Sends the slices still to send (`refundPaymentTransactions` with them as the allocation). */
@@ -547,11 +625,14 @@ export async function refundPlanOrRetryRefusals({
     // failure Stripe reports later is owed by this row by its refund id - while
     // the slice that threw keeps its key.
     const before = answersBeforeFailure(err);
-    if (before.length > 0) await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, before)), before);
+    if (before.length > 0) await alertIfFirst(await moveRefusedSlicesOrMarkResent(operation, plan, before), before);
     throw err;
   }
   const refused = refusedRefundSlices(answered);
-  if (refused.length === 0) return plan[0]?.madeRefundId ?? answered[0]?.refundId ?? null;
-  await alertIfFirst(await moveRefusedSlices(operation, planAfterAttempt(plan, answered)), answered);
+  if (refused.length === 0) {
+    await markResentSlices(operation, plan, answered);
+    return plan[0]?.madeRefundId ?? answered[0]?.refundId ?? null;
+  }
+  await alertIfFirst(await moveRefusedSlicesOrMarkResent(operation, plan, answered), answered);
   throw new Error(refusedRefundMessage(refusedRefundCents(refused), format));
 }

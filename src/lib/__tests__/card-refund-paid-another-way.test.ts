@@ -73,6 +73,11 @@ vi.mock("@/lib/xero-operation-outbox", () => ({
     return mocks.enqueueXeroRefundCreditNoteOperation(...args);
   },
   kickQueuedXeroOutboxOperationsIfConnected: mocks.kick,
+  // #4324 (review C4): a change capture's anchor.
+  lockSupplementaryInvoiceAnchor: (_tx: unknown, anchorId: string) => {
+    calls.push(`lock-anchor:${anchorId}`);
+    return Promise.resolve();
+  },
 }));
 vi.mock("@/lib/late-capture-xero-receipt", () => ({
   // Round 11: a paid-another-way path never reads the card-refund verdict.
@@ -217,6 +222,7 @@ function payment(operation = deadOperation(), overrides: Record<string, unknown>
       creditsApplied: [],
       creditsFromCancellation: [],
       manualRefundTasks: [],
+      organiserSettled: false, parentBookingId: null,
     },
     ...overrides,
   };
@@ -288,7 +294,7 @@ describe("closing a dead card refund as paid another way", () => {
     await close();
 
     expect(mocks.claim).toHaveBeenCalledWith({
-      where: { id: "op-1", ...deadCardRefundOperationWhere },
+      where: { id: "op-1", ...deadCardRefundOperationWhere, allocationPlan: { equals: deadOperation().allocationPlan } },
       data: expect.objectContaining({
         status: "SUCCEEDED",
         nextRetryAt: null,
@@ -738,6 +744,24 @@ describe("closing a dead card refund as paid another way", () => {
       });
     }
 
+    it("MUTATION review C4, CONC-1: a change capture's plan is read under its change's anchor, taken after the task row and held to the kept-capture invoice", async () => {
+      lateCharge();
+      mocks.findTransaction.mockResolvedValue({
+        paymentId: "p-1",
+        amountCents: 15_000,
+        refundedAmountCents: 0,
+        kind: "ADDITIONAL",
+        bookingModificationId: "mod-1",
+        reason: null,
+      });
+      await close();
+      const anchor = calls.indexOf("lock-anchor:mod-1");
+      expect(anchor).toBeGreaterThan(calls.indexOf("lock-approval-task"));
+      // CONC-1: before the plan reads what records the capture, so a change invoice committed first is read.
+      expect(anchor).toBeLessThan(calls.indexOf("read-receipt"));
+      expect(anchor).toBeLessThan(calls.indexOf("xero-receipt"));
+    });
+
     it("MUTATION: no receipt in Xero: the approval task is locked BEFORE the receipt is read, the receipt is queued, and the note waits for it", async () => {
       lateCharge();
       const result = await close();
@@ -749,11 +773,16 @@ describe("closing a dead card refund as paid another way", () => {
         "read-payment",
         "read-approval-task",
         "lock-approval-task",
+        // #4324 (review CONC-1): the capture's anchor is read for (a change capture only) before the receipt.
+        "read-approval-task",
         "read-receipt",
         "claim",
         "allocate",
         "record",
         "ledger-line",
+        // #4324 (review C4): the task row again, then (a change capture only) its anchor.
+        "lock-approval-task",
+        "read-approval-task",
         "xero-receipt",
         "audit",
       ]);
@@ -1028,6 +1057,18 @@ describe("a close that must not happen writes nothing", () => {
   it("a lost claim - a second click, or the row moved since the read - records no money", async () => {
     mocks.claim.mockResolvedValue({ count: 0 });
     await expectRefusal(close(), 409);
+    expect(calls).toEqual(["lock(1)", "read-operation", "lock-payment-row", "read-payment", "claim"]);
+  });
+
+  it("MUTATION (#4312 F2): a re-send's mark landing between the owed read and the claim fails the claim", async () => {
+    // The row as it stands at the claim: a mark (`markResentSlices`, `pairResendRecordedFirst`) wrote its plan after the close read it.
+    const stored = { ...deadOperation(), allocationPlan: [{ paymentTransactionId: "txn-1", amountCents: 15_000, madeRefundId: "re_resend" }] };
+    mocks.claim.mockImplementation(async ({ where }: { where: { allocationPlan?: { equals: unknown } } }) => ({
+      count: where.allocationPlan && JSON.stringify(where.allocationPlan.equals) !== JSON.stringify(stored.allocationPlan) ? 0 : 1,
+    }));
+    const refused = close();
+    await expectRefusal(refused, 409);
+    await expect(refused).rejects.toThrow("changed while you were closing it");
     expect(calls).toEqual(["lock(1)", "read-operation", "lock-payment-row", "read-payment", "claim"]);
   });
 

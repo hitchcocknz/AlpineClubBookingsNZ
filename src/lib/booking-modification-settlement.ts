@@ -1,3 +1,4 @@
+import { assertAdditionalAskSizingCurrent, withAdditionalAskQueueTransaction } from "@/lib/additional-ask-queue-transaction";
 import type { ModificationLine } from "@/lib/booking-modification-lines";
 import { PaymentRecoveryOperationStatus, PaymentStatus, PaymentTransactionKind } from "@prisma/client";
 
@@ -28,8 +29,8 @@ import {
 import {
   cancelSupersededAdditionalIntentsNow,
   queueSupersededAdditionalIntentCancellationRows,
-  queueSupersededAdditionalIntentCancellations,
 } from "@/lib/booking-payment-cleanup";
+import { bookingEndedBeforeAskMint, retireAskOnEndedBooking } from "@/lib/ended-booking-ask-guard";
 import logger from "@/lib/logger";
 import {
   enqueueAdditionalPaymentIntentRecovery,
@@ -46,7 +47,7 @@ import {
 } from "@/lib/payment-recovery-keys";
 import { prisma } from "@/lib/prisma";
 import {
-  PartialRefundError,
+  planStripeRefundAllocation,
   type RefundAllocationSlice,
   refundPaymentTransactions,
   upsertPaymentIntentTransaction,
@@ -57,13 +58,12 @@ import {
 } from "@/lib/stripe";
 import type { ClubFormat } from "@/lib/club-format";
 import { chargeCurrencyRefusal } from "@/lib/stripe-charge-currency";
-import { ownCardRefundMade } from "@/lib/payment-transaction-status";
+import { ownCardRefundMade, STRIPE_REFUND_EXCEEDS_CAPTURED_MESSAGE } from "@/lib/payment-transaction-status";
 import {
   alertRefusedCardRefund,
-  planAfterRefusals,
-  refusedAnswers,
-  refusedRefundCents,
-  refusedRefundSlices,
+  inlineRefundAfterAttempt,
+  refundSliceCents,
+  type InlineRefundRead,
 } from "@/lib/refused-card-refund-retry";
 
 export type BookingModificationPaymentContext = {
@@ -229,37 +229,45 @@ export async function executeBookingModificationRefund({
       return null;
     });
 
+  const keepUnmade = async (read: InlineRefundRead) => {
+    if (read.unmadeCents <= 0) return;
+    const queued = await keepOwed(refundSliceCents(read.plan), read.plan);
+    // #4117: when no row could be written, the alert is the only record.
+    if (read.refusedCents > 0 && (queued === null || queued?.created)) {
+      await alertRefusedCardRefund({
+        bookingId,
+        paymentIntentId: read.refused[0]?.paymentIntentId || queued?.paymentIntentId || "",
+        refusedCents: read.refusedCents,
+      }, format);
+    }
+  };
+
+  let plan: RefundAllocationSlice[] | undefined;
   try {
+    // #3984: freeze before Stripe; a webhook may record an unrecorded refund
+    // before recovery runs, but must never shift its slice amount and key.
+    const planned = await planStripeRefundAllocation({ paymentId, amountCents: result.pendingRefundAmountCents });
+    if (planned.plannedAmountCents < result.pendingRefundAmountCents) {
+      throw new Error(STRIPE_REFUND_EXCEEDS_CAPTURED_MESSAGE);
+    }
+    plan = planned.slices;
     const refundResult = await refundPaymentTransactions({
       format,
       paymentId,
       amountCents: result.pendingRefundAmountCents,
+      allocation: plan,
       // #1507: build the Stripe metadata from the shared helper so a recovery
       // replay (which reconstructs this same reason from the stored key prefix)
       // sends a byte-identical body and Stripe replays the original refund
       // instead of rejecting the reused idempotency key.
       metadata: buildBookingModificationRefundMetadata(bookingId, bookingModificationRefundReasonForKeyPrefix(idempotencyKeyPrefix)),
-      // Scope the Stripe idempotency key to this modification. Without it two
-      // reductions on the same booking that resolve to the same refund amount
-      // (e.g. removing two identically-priced guests) produce an identical key
-      // and Stripe replays the first refund, silently under-refunding the
-      // member while the ledger records a second refund that never happened.
+      // Each edit gets its own prefix: two equal reductions must create two
+      // refunds, while this edit's recovery replays its original request.
       idempotencyKeyPrefix: stripeKeyPrefix,
     });
-    // #4083 (`INV-PAY-128`): Stripe answered a slice `failed` or `canceled`
-    // without throwing. It is still owed: queued as exactly those slices,
-    // already moved to their next key, since each was read refused here.
-    const refused = refusedRefundSlices(refundResult.refunds);
-    if (refused.length > 0) {
-      const refusedCents = refusedRefundCents(refused);
-      logger.error({ bookingId, refusedCents }, failureMessage);
-      const queued = await keepOwed(refusedCents, planAfterRefusals(refused, refused));
-      // Alerted when this wrote the row, and when no row could be written: then the alert is the only record.
-      if (queued === null || queued?.created) {
-        const paymentIntentId = refusedAnswers(refundResult.refunds)[0]?.paymentIntentId || queued?.paymentIntentId || "";
-        await alertRefusedCardRefund({ bookingId, paymentIntentId, refusedCents }, format);
-      }
-    }
+    const read = inlineRefundAfterAttempt(plan, refundResult);
+    if (read.refusedCents > 0) logger.error({ bookingId, refusedCents: read.refusedCents }, failureMessage);
+    await keepUnmade(read);
     return {
       stripeRefundId: refundResult.refunds[0]?.refundId,
       refundDestination: ownCardRefundMade(refundResult.refunds) ? "own" : "own_card_pending",
@@ -269,18 +277,14 @@ export async function executeBookingModificationRefund({
       { err: refundErr, bookingId, amount: result.pendingRefundAmountCents },
       failureMessage,
     );
-    // Enqueue only what is still owed (#1097): slices that already refunded
-    // and recorded before the failure must not be requested again, or a
-    // multi-transaction recovery would re-derive a shifted allocation over
-    // the full amount and over-refund. A slice Stripe refused is not among
-    // them (#4083): it sent nothing back, so it stays in the remainder.
-    const completedRefundCents =
-      refundErr instanceof PartialRefundError
-        ? refundErr.completedRefundCents
-        : 0;
-    const remainingRefundCents =
-      result.pendingRefundAmountCents - completedRefundCents;
-    if (remainingRefundCents > 0) await keepOwed(remainingRefundCents);
+    if (plan) {
+      // Made slices stay marked, refusals move keys, unanswered slices keep
+      // theirs: a made-but-unrecorded refund must replay the original request.
+      await keepUnmade(inlineRefundAfterAttempt(plan, { error: refundErr }));
+    } else {
+      // Planning failed before Stripe was asked: keep today's whole debt.
+      await keepOwed(result.pendingRefundAmountCents);
+    }
     // #4070: not made here, so the email says it is on its way.
     return { stripeRefundId: undefined, refundDestination: "own_card_pending" };
   }
@@ -307,6 +311,9 @@ const NOTHING_MINTED: ModificationAdditionalAskMint = {
   additionalAskRetired: false,
 };
 
+/** Retired, nothing owed or offered: a netted-off re-issue (#3954), or a booking ended since its edit (#4316). */
+const ASK_RETIRED_UNMINTED: ModificationAdditionalAskMint = { ...NOTHING_MINTED, additionalAskRetired: true };
+
 /**
  * #3954 final review: what a door that did not mint its re-issue reports. A
  * later reduction that netted the waiting re-issue off retired it - that
@@ -320,7 +327,7 @@ function reissueNotMinted(
   const nettedOff =
     recovery?.status === PaymentRecoveryOperationStatus.SUCCEEDED &&
     recovery.lastError === PENDING_ASK_NETTED_BY_REDUCTION_NOTE;
-  return nettedOff ? { ...NOTHING_MINTED, additionalAskRetired: true } : NOTHING_MINTED;
+  return nettedOff ? ASK_RETIRED_UNMINTED : NOTHING_MINTED;
 }
 
 function mintedAsk(pi: { id: string; client_secret: string | null }, live: boolean): ModificationAdditionalAskMint {
@@ -372,6 +379,10 @@ export function additionalAmountToName(
  * be cancelled. Pairing the two in one value that only
  * `@/lib/additional-payment-ask` can build is what stops a future caller doing
  * one and not the other. `INV-PAY-098` is the rule.
+ *
+ * IT ASKS NOTHING OF A BOOKING THAT HAS ENDED (#4316, `INV-ADDPAY-044`): it
+ * re-reads the booking before the provider call and after its row write, and
+ * retires what a cancel committing in between could not see.
  *
  * THE CALLER READS THE RESULT, and must. This function swallows a provider
  * failure by design - the ordinary edit path has to return the member's saved
@@ -436,6 +447,9 @@ export async function createModificationAdditionalPaymentIntent(
   ) {
     return NOTHING_MINTED;
   }
+
+  // #4316: a booking ended since the edit committed is asked nothing, and owes nothing.
+  if (await bookingEndedBeforeAskMint(bookingId, result.bookingModificationId)) return ASK_RETIRED_UNMINTED;
 
   // #3954 review round 4: a RE-ISSUED ask's recovery was written in the edit's
   // own transaction (`queueReissuedAskRecovery`). This mint runs under that
@@ -508,6 +522,7 @@ export async function createModificationAdditionalPaymentIntent(
         recoveryCreatedAt: reissueRecovery.createdAt,
       });
       const superseded = await writeReissuedAskUnderRecovery(reissueRecovery, pi.id, async (store) => {
+        await assertAdditionalAskSizingCurrent(store, paymentId, plan.ask);
         await upsertPaymentIntentTransaction({
           paymentId,
           kind: PaymentTransactionKind.ADDITIONAL,
@@ -542,7 +557,9 @@ export async function createModificationAdditionalPaymentIntent(
         });
         return reissueNotMinted(moved);
       }
-      await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: superseded });
+      await cancelSupersededAdditionalIntentsNow({ format, bookingId, paymentId, queued: superseded, newPaymentIntentId: pi.id });
+      // #4316: a cancel that committed while this minted could not see it.
+      if (await retireAskOnEndedBooking({ format, bookingId, paymentId, paymentIntentId: pi.id })) return ASK_RETIRED_UNMINTED;
       // Decision A (#3954): the smaller ask's own invoice, waiting on it - only
       // while it is still live (round 7): a reduction may have retired it during
       // the cancels above, and named this edit for it. Round 8: only the secret
@@ -618,43 +635,43 @@ export async function createModificationAdditionalPaymentIntent(
     // risen reading the superseded figure with no live instrument behind it.
     //
     // Writing the row first cannot select itself for cancellation: the
-    // `findMany` in `queueSupersededAdditionalIntentCancellations` excludes
+    // `findMany` in `queueSupersededAdditionalIntentCancellationRows` excludes
     // `newPaymentIntentId` explicitly. The cost is one database upsert of
     // latency before the old secret dies, which is far inside the window the
     // synchronous cancel exists to close.
-    await upsertPaymentIntentTransaction({
-      paymentId: result.paymentId,
-      kind: PaymentTransactionKind.ADDITIONAL,
-      paymentIntentId: pi.id,
-      amountCents: result.additionalAsk.amountCents,
-      // #3371: the row records what this ask absorbed from the intents the
-      // cancel below is about to retire. Written in the SAME upsert as the
-      // amount, from the same value, so the two cannot be sized from different
-      // inputs and the provenance cannot be forgotten. Once those rows are
-      // cancelled it is not recoverable from anything.
-      carriedAskCents: result.additionalAsk.carriedCents,
-      status: PaymentStatus.PENDING,
-      reason,
-      stripeCustomerId: customerId,
-      // #3954 round 7: the edit's own invoice answer, on the row it asks with,
-      // so a later reduction knows which invoice billed this money. Round 8:
-      // and the edit itself, so a reduction that retires the row names it.
-      // A member's price ask only: a review charge is never set against.
-      ...(result.hasIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: result.hasIssuedXeroInvoice } : {}),
-      ...(recoveryIdempotencyKey ? {} : { bookingModificationId: result.bookingModificationId }),
+    const queued = await withAdditionalAskQueueTransaction(paymentId, result.additionalAsk, async (store) => {
+      await upsertPaymentIntentTransaction({
+        paymentId,
+        kind: PaymentTransactionKind.ADDITIONAL,
+        paymentIntentId: pi.id,
+        amountCents: result.additionalAsk.amountCents,
+        // #3371: the row records what this ask absorbed from the intents the
+        // cancel below is about to retire. Written in the SAME upsert as the
+        // amount, from the same value, so the two cannot be sized from different
+        // inputs and the provenance cannot be forgotten. Once those rows are
+        // cancelled it is not recoverable from anything.
+        carriedAskCents: result.additionalAsk.carriedCents,
+        status: PaymentStatus.PENDING,
+        reason,
+        stripeCustomerId: customerId,
+        store,
+        // #3954 round 7: the edit's own invoice answer, on the row it asks with,
+        // so a later reduction knows which invoice billed this money. Round 8:
+        // and the edit itself, so a reduction that retires the row names it.
+        // A member's price ask only: a review charge is never set against.
+        ...(result.hasIssuedXeroInvoice !== null ? { hadIssuedXeroInvoice: result.hasIssuedXeroInvoice } : {}),
+        ...(recoveryIdempotencyKey ? {} : { bookingModificationId: result.bookingModificationId }),
+      });
+      return queueSupersededAdditionalIntentCancellationRows({
+        bookingId, paymentId, newPaymentIntentId: pi.id, store,
+      });
+    });
+    await cancelSupersededAdditionalIntentsNow({
+      format, bookingId, paymentId, queued, newPaymentIntentId: pi.id,
     });
 
-    await queueSupersededAdditionalIntentCancellations({
-      format,
-      bookingId,
-      paymentId: result.paymentId,
-      newPaymentIntentId: pi.id,
-    }).catch((err) =>
-      logger.error(
-        { err, bookingId, paymentIntentId: pi.id },
-        "Failed to queue superseded additional intent cancellations",
-      ),
-    );
+    // #4316: a cancel that committed while this minted could not see it.
+    if (await retireAskOnEndedBooking({ format, bookingId, paymentId, paymentIntentId: pi.id })) return ASK_RETIRED_UNMINTED;
 
     // #3954 round 6: the re-issues this increase folded in are asked for on
     // this intent now, so their own invoices wait on it. An ordinary edit's ask

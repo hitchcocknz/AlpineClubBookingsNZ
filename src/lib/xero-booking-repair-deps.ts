@@ -23,6 +23,8 @@ import {
 } from "@/lib/xero-operation-queue";
 import { prisma } from "@/lib/prisma";
 import { enqueueXeroKeptLateCaptureInvoiceOperation } from "@/lib/xero-kept-late-capture-invoice";
+import { enqueueAdditionalCaptureReceiptOperation } from "@/lib/additional-capture-receipt-enqueue";
+import { planKeptLateCaptureXeroRecord } from "@/lib/late-capture-kept-xero";
 import {
   queueWaitingPaidAnotherWayNote,
   readPaidAnotherWayReceiptState,
@@ -45,6 +47,10 @@ export type RepairDependencies = {
   enqueueXeroBookingInvoiceUpdateOperation: typeof enqueueXeroBookingInvoiceUpdateOperation;
   // #3635: a kept late capture's own invoice, anchored on its approval task.
   enqueueXeroKeptLateCaptureInvoiceOperation: typeof enqueueXeroKeptLateCaptureInvoiceOperation;
+  // #3953: a change's card capture's own receipt, keyed by its intent.
+  enqueueAdditionalCaptureReceiptOperation: typeof enqueueAdditionalCaptureReceiptOperation;
+  // #4324: the keep's one decision of which document records a kept capture.
+  planKeptLateCaptureXeroRecord: typeof planKeptLateCaptureXeroRecord;
   enqueueXeroSupplementaryInvoiceOperation: typeof enqueueXeroSupplementaryInvoiceOperation;
   enqueueXeroModificationCreditNoteOperation: typeof enqueueXeroModificationCreditNoteOperation;
   enqueueXeroAccountCreditNoteOperation: typeof enqueueXeroAccountCreditNoteOperation;
@@ -89,6 +95,8 @@ const defaultDependencies: RepairDependencies = {
   enqueueXeroBookingInvoiceOperation,
   enqueueXeroBookingInvoiceUpdateOperation,
   enqueueXeroKeptLateCaptureInvoiceOperation,
+  enqueueAdditionalCaptureReceiptOperation,
+  planKeptLateCaptureXeroRecord,
   enqueueXeroSupplementaryInvoiceOperation,
   enqueueXeroModificationCreditNoteOperation,
   enqueueXeroAccountCreditNoteOperation,

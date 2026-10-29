@@ -114,9 +114,23 @@ method, scope and finish line for each.
 - [`../reviews/2026-09-26-money-path-sweep-may-june-2026.md`](../reviews/2026-09-26-money-path-sweep-may-june-2026.md)
   — the #3341 sweep of the unreviewed May–June 2026 money-path pull requests:
   the defect class, a verdict per PR, and the defects it filed.
+- [`../reviews/2026-10-25-xero-self-heal-bank-hand-back-routes.md`](../reviews/2026-10-25-xero-self-heal-bank-hand-back-routes.md)
+  — the #4239 trace: whether a bank hand-back can reach the nightly card
+  self-heal or the repair tool's refund-note action by any route (none does),
+  and the edges that rest on reading code.
+- [`../reviews/2026-10-26-4095-triage.md`](../reviews/2026-10-26-4095-triage.md)
+  — the #4095 triage: the bank-transfer settle and refunded-total follow-ups,
+  which were fixed and where, and what is still open.
 - [`../audits/FRAGILITY_AREAS_PROPOSAL.md`](../audits/FRAGILITY_AREAS_PROPOSAL.md)
   — the owner-confirmed business areas for the "bugs that came back" review, with
   raw repeat counts per area and how far to trust each signal.
+- [`../audits/FRAGILITY_RANKING_2026-10.md`](../audits/FRAGILITY_RANKING_2026-10.md)
+  — those areas ranked by hand-confirmed repeats, each with its chains of
+  fixes and the signal that found them; Phase 1 sweeps start at the top.
+- [`../reviews/2026-10-25-issue-4055-image-name-reproduction.md`](../reviews/2026-10-25-issue-4055-image-name-reproduction.md)
+  — the #4055 reproduction attempt for the local-build image-name fallback: the
+  offline Compose-versus-engine comparison, its verdict, and the harness to
+  re-run it.
 
 ## Security
 
@@ -156,6 +170,10 @@ method, scope and finish line for each.
   guide for agent lanes, including the worktree runtime and dependency
   preflight (Windows and Linux/WSL), and lane-owned Docker teardown with the report-only
   `pnpm run stale-containers` debris check.
+- [`../agents/COORDINATION.md`](../agents/COORDINATION.md) — on-demand
+  coordination: where work state lives, when a coordinator runs, reservations
+  that never time out, handoffs, choosing review lenses, asking the owner.
+- [`../agents/SEKRETON_ORCHESTRATOR.md`](../agents/SEKRETON_ORCHESTRATOR.md) — the Sekreton lane's standing orchestrator: gaps it fills, one pass, owner queue, resuming.
 - [`../agents/ISSUE_WORKFLOW.md`](../agents/ISSUE_WORKFLOW.md) — issue
   contracts: the human-first issue-body order, reading the whole thread,
   claiming, recording a decision, the ready comment, and what never goes in a
@@ -191,6 +209,10 @@ Larger subsystems keep their own hub, and each links back here.
   `BookingLedgerLine` design from programme #3527 — the model, every money
   event's posting rule, the projection guard, the cut-over order, and the
   invariant gap analysis (#3532). A design, not yet an implementation.
+- **Member money ledger (design)** —
+  [`../design/member-money-ledger.md`](../design/member-money-ledger.md):
+  proposed double-entry accounts, two-way Xero ownership and sync, posting
+  rules, cut-over gates, parked-bug scenarios and ordered children (#4461).
 - **Finance dashboard** —
   [`../finance-dashboard/README.md`](../finance-dashboard/README.md): reporting
   contracts, architecture decisions, data contracts, and the test plan.

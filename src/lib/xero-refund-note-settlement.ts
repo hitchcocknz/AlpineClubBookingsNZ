@@ -22,6 +22,7 @@
  * Xero shows paid, part-paid or allocated.
  */
 import type { Prisma } from "@prisma/client";
+import type { XeroOperationClaim } from "@/lib/xero-operation-outcome-guard";
 import type { CreditNote as XeroCreditNote, Payment as XeroPayment } from "xero-node";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
@@ -579,10 +580,11 @@ export async function settleRefundNoteFromXero(input: {
  * tool's operator-applied action. Throws for a voided or missing note; a
  * failed payment completes PARTIAL and is returned in the outcome. The PARTIAL
  * write never lands over a row a concurrent leg already completed SUCCEEDED
- * (`keepSucceeded`): the loser of two simultaneous retries is a no-op.
+ * (`INV-INT-029`): the loser of two simultaneous retries is a no-op.
  */
 export async function finishRefundCreditNoteSettlement(input: {
-  operationId: string;
+  /** #4373: the claim the row's outcome is written under (`INV-INT-029`). */
+  operation: XeroOperationClaim;
   paymentId: string;
   creditNoteId: string;
   creationKeys: Array<string | null | undefined>;
@@ -594,12 +596,12 @@ export async function finishRefundCreditNoteSettlement(input: {
   recordOnly?: boolean;
   /** #3827 (D-3813-8): see `refundCreditNoteCompletion`. */
   refundRequestId?: string | null;
-  /** #4256: the row is a retry's claim from this instant; complete onto that claim only. */
-  onlyIfRunningSince?: Date;
-}): Promise<RefundNoteSettlementOutcome> {
+  /** #4256: the row is a retry's claim (`operation`); complete onto that claim only. */
+  retryClaim?: true;
+}): Promise<RefundNoteSettlementOutcome & { completionClaimLost: boolean }> {
   const settled = await settleRefundNoteFromXero(input);
-  await completeXeroSyncOperation(
-    input.operationId,
+  const completed = await completeXeroSyncOperation(
+    input.operation,
     refundCreditNoteCompletion({
       paymentId: input.paymentId,
       creditNoteBody: settled.creditNoteBody,
@@ -612,9 +614,7 @@ export async function finishRefundCreditNoteSettlement(input: {
       extraResponse: { interruptedAttemptCompleted: true },
       refundRequestId: input.refundRequestId,
     }),
-    input.onlyIfRunningSince
-      ? { onlyIfRunningSince: input.onlyIfRunningSince }
-      : settled.outcome.refundPaymentErr ? { keepSucceeded: true } : undefined,
+    input.retryClaim ? { retryClaim: true } : undefined,
   );
-  return settled.outcome;
+  return { ...settled.outcome, completionClaimLost: completed === null };
 }

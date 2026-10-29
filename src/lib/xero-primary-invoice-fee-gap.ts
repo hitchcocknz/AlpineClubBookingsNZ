@@ -36,16 +36,17 @@ import { raisePrimaryInvoiceReviewTask } from "@/lib/xero-primary-invoice-review
 import {
   primaryInvoiceGapAnchors,
   primaryInvoiceReplayCutoff,
+  readGapInvoiceOnAnchors,
+  readPrimaryInvoiceFeeAtLink,
   racingMarkedEdits,
   racingReductionSettlement,
   readMarkedPrimaryInvoiceEdits,
 } from "@/lib/xero-primary-invoice-gap-anchors";
 import logger from "@/lib/logger";
 import { prisma } from "@/lib/prisma";
-import { buildXeroBookingInvoiceCorrelationKey } from "@/lib/xero-booking-invoice-key";
 import { asRecord } from "@/lib/xero-json";
 import {
-  parsePrimaryInvoiceFeeAtLink,
+  intentsRecordedByPrimaryCash,
   PRIMARY_INVOICE_FEE_AT_LINK_KEY,
   type PrimaryInvoiceBilledFee,
   type PrimaryInvoiceFeeAtLink,
@@ -57,6 +58,13 @@ import {
 import { unallocatedAppliedCents } from "@/lib/xero-applied-credit-ledger-state";
 import { isCreditOnlyCardPayment } from "@/lib/credit-only-card-payment";
 import { enqueueXeroSupplementaryInvoiceOperation } from "@/lib/xero-operation-outbox";
+import {
+  attributeGapCash,
+  readCapturedStripeCash,
+  readReceiptClaimedIntents,
+  readSupplementaryRecordedIntents,
+} from "@/lib/additional-capture-recorder";
+import { queueReceiptsForUnrecordedCaptures } from "@/lib/additional-capture-receipt-enqueue";
 import {
   readQueuedOutboxPayload,
   XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
@@ -197,6 +205,15 @@ export function unrecordedPrimaryInvoiceCash(input: {
 }
 
 
+/** #3953: which captures the cash this invoice records covers, as stored with its link. */
+function capturesRecordedAtLink(
+  capturesAtBuild: ReadonlyArray<{ paymentIntentId: string; netCents: number }>,
+  primaryInvoiceCashCents: number,
+) {
+  const { recorded, partial } = intentsRecordedByPrimaryCash(capturesAtBuild, primaryInvoiceCashCents);
+  return { paymentIntentIdsRecordedAtLink: recorded, ...(partial ? { partiallyRecordedCaptureAtLink: partial } : {}) };
+}
+
 /**
  * Saves the payment's invoice link and, in the SAME transaction, records on
  * the create operation what the invoice billed, the fee the payment held at
@@ -226,7 +243,12 @@ export async function persistPrimaryInvoiceLink(input: {
   xeroInvoiceNumber: string | null;
   billed: PrimaryInvoiceBilledFee;
   /** #3980: what the create's own read said the booking was worth, and the total of the lines it sent. */
-  built: { worthCents: number; lineTotalCents: number; markedModificationIdsAtBuild?: readonly string[] };
+  built: {
+    worthCents: number;
+    lineTotalCents: number;
+    markedModificationIdsAtBuild?: readonly string[];
+    capturesAtBuild?: ReadonlyArray<{ paymentIntentId: string; netCents: number }>;
+  };
   /** The Stripe cash recorded against this invoice, computed once by the create. */
   primaryInvoiceCashCents: number;
   /** The Stripe payment the create itself tried to write: what a repair records (#4010). */
@@ -267,6 +289,7 @@ export async function persistPrimaryInvoiceLink(input: {
           ? { markedModificationIdsAtBuild: [...input.built.markedModificationIdsAtBuild] }
           : {}),
       },
+      ...(input.built.capturesAtBuild ? capturesRecordedAtLink(input.built.capturesAtBuild, input.primaryInvoiceCashCents) : {}),
     };
     const operation = await tx.xeroSyncOperation.findUnique({
       where: { id: input.operationId },
@@ -283,25 +306,6 @@ export async function persistPrimaryInvoiceLink(input: {
     });
     return atLink;
   });
-}
-
-async function readPrimaryInvoiceFeeAtLink(
-  bookingId: string,
-  xeroInvoiceId: string,
-): Promise<{ atLink: PrimaryInvoiceFeeAtLink; operationId: string } | null> {
-  const operation = await prisma.xeroSyncOperation.findFirst({
-    where: {
-      direction: "OUTBOUND",
-      entityType: "INVOICE",
-      operationType: "CREATE",
-      correlationKey: buildXeroBookingInvoiceCorrelationKey(bookingId),
-      requestPayload: { path: [PRIMARY_INVOICE_FEE_AT_LINK_KEY, "xeroInvoiceId"], equals: xeroInvoiceId },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true, requestPayload: true },
-  });
-  const atLink = parsePrimaryInvoiceFeeAtLink(operation?.requestPayload, xeroInvoiceId);
-  return operation && atLink ? { atLink, operationId: operation.id } : null;
 }
 
 /**
@@ -475,7 +479,8 @@ async function reviewUnstoredRelink(input: {
  *    already queued, and why it never raises another edit's queued figure. Its
  *    lines are the fee recorded since the build as a change fee and the rest
  *    as price, signed as an edit's are (#1356). A card capture of the
- *    anchor's own ask is not recorded against it here: that is #3953's.
+ *    anchor's own ask is recorded against it later, by that capture's own
+ *    receipt (#3953, `INV-PAY-139`, `additional-capture-xero-receipt.ts`).
  *  - A NEGATIVE gap, or a positive one no edit explains, raises a Xero
  *    Operations task for the treasurer (`raisePrimaryInvoiceReviewTask`); no
  *    credit note is raised automatically (owner, 21 Oct 2026). An overcharge's
@@ -505,6 +510,9 @@ export async function queuePrimaryInvoiceWorthGap(input: {
         }
       : {}),
   };
+  // #3953: every captured change the primary's cash does not cover gets its
+  // own receipt row first, so the gap never pays itself from that cash.
+  await queueReceiptsForUnrecordedCaptures(bookingId, atLink);
   if (gapCents === 0) return NO_GAP;
 
   // Round 2 F1: only the marked edits that landed while the create was in
@@ -518,10 +526,13 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     kind: "OVERBILLED" | "UNDERBILLED",
     message: string,
     racing?: ReturnType<typeof racingReductionSettlement>,
+    keptInvoiceBillsAnchorId?: string,
   ) => {
     const figures = racing
       ? { ...context, reductionModificationIds: racing.modificationIds, reductionsSettledBy: racing.settledBy }
-      : context;
+      : keptInvoiceBillsAnchorId
+        ? { ...context, keptLateCaptureInvoiceBillsModificationId: keptInvoiceBillsAnchorId }
+        : context;
     logger.error({ ...figures, gapCents }, message);
     const review = await raisePrimaryInvoiceReviewTask({
       kind,
@@ -530,6 +541,7 @@ export async function queuePrimaryInvoiceWorthGap(input: {
       gapCents,
       figures,
       settledBy: racing?.settledBy,
+      keptInvoiceBillsChange: keptInvoiceBillsAnchorId !== undefined,
       createdByMemberId: input.createdByMemberId,
     });
     return { ...NO_GAP, gapCents, reviewOperationId: review.operationId };
@@ -555,28 +567,7 @@ export async function queuePrimaryInvoiceWorthGap(input: {
     );
   }
 
-  const [earlierOperation, earlierLink] = await Promise.all([
-    prisma.xeroSyncOperation.findFirst({
-      where: {
-        direction: "OUTBOUND",
-        entityType: "INVOICE",
-        operationType: "CREATE",
-        queueType: XERO_OUTBOX_SUPPLEMENTARY_INVOICE_TYPE,
-        localModel: "BookingModification",
-        localId: { in: anchorIds },
-      },
-      select: { id: true, requestPayload: true },
-    }),
-    prisma.xeroObjectLink.findFirst({
-      where: {
-        localModel: "BookingModification",
-        localId: { in: anchorIds },
-        xeroObjectType: "INVOICE",
-        role: "SUPPLEMENTARY_INVOICE",
-      },
-      select: { id: true },
-    }),
-  ]);
+  const { operation: earlierOperation, link: earlierLink } = await readGapInvoiceOnAnchors(anchorIds);
   if (earlierOperation || earlierLink) {
     // What the earlier run decided the gap invoice takes of the cash, as it queued it.
     const earlier = readQueuedOutboxPayload(earlierOperation?.requestPayload);
@@ -602,6 +593,9 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   // payment did not take is the gap's (finding 3). What the primary took is
   // the figure the create sized its payment at and stored with the link
   // (`primaryInvoiceCashCents`, round 5 finding 4) - never recomputed here.
+  // #3953 (`INV-PAY-139`): one recorder per capture - cash a receipt row
+  // claimed is that receipt's, never the gap's, and the captures the gap's
+  // own payment takes are named on its payload so their receipts stand down.
   const payment = await prisma.payment.findUnique({
     where: { bookingId },
     select: {
@@ -611,8 +605,21 @@ export async function queuePrimaryInvoiceWorthGap(input: {
       refundedAmountCents: true,
     },
   });
-  const netCapturedCents = Math.max(0, (payment?.amountCents ?? 0) - (payment?.refundedAmountCents ?? 0));
-  const leftOverCashCents = payment ? netCapturedCents - atLink.primaryInvoiceCashCents : 0;
+  const captures = payment ? await readCapturedStripeCash(bookingId) : [];
+  const claimed = new Set([
+    ...(await readReceiptClaimedIntents(bookingId)),
+    ...(await readSupplementaryRecordedIntents(bookingId, captures)),
+  ]);
+  const recordedIntents = atLink.paymentIntentIdsRecordedAtLink;
+  const { leftoverCents: leftOverCashCents, covered } = attributeGapCash({
+    captures,
+    claimed,
+    primaryCashCents: atLink.primaryInvoiceCashCents,
+    ...(recordedIntents
+      ? { recordedAtLink: { recorded: recordedIntents, partial: atLink.partiallyRecordedCaptureAtLink ?? null } }
+      : {}),
+    gapCents,
+  });
   const recordPayment =
     payment?.source === PaymentSource.STRIPE && hasCapturedPayment(payment) && leftOverCashCents >= gapCents;
 
@@ -628,7 +635,12 @@ export async function queuePrimaryInvoiceWorthGap(input: {
       changeFeeCents: feeGapCents,
       bookingModificationId: anchorIds[0],
     },
-    { createdByMemberId: input.createdByMemberId, recordPayment },
+    {
+      createdByMemberId: input.createdByMemberId,
+      recordPayment,
+      // #4324 (4384-R2): every racing edit the combined amount bills, each locked and asked whether a kept capture's own invoice bills it.
+      primaryInvoiceGap: { coveredCaptures: recordPayment ? covered : [], billedChangeIds: anchorIds },
+    },
   );
   const outcome = {
     ...context,
@@ -642,6 +654,17 @@ export async function queuePrimaryInvoiceWorthGap(input: {
   // (or a concurrent run's of this same gap, which the enqueue's anchor lock
   // makes the one operation). Anything else bills nothing.
   if (queued.outcome !== "covers-total" || !queued.queueOperationId) {
+    // #4324 (`INV-PAY-144`): the anchor is billed by a kept late capture's own
+    // invoice, which a gap invoice would bill again; the treasurer bills the
+    // rest by hand (orchestrator decision, option 2: no accounting-rule change).
+    if (queued.refusedBy === "kept-late-capture-invoice") {
+      return raiseReview(
+        "UNDERBILLED",
+        "The booking's primary Xero invoice bills less than the booking was worth when its link was saved, and the edit that would carry the remainder is already billed by a kept late card payment's own Xero invoice; a Xero Operations task asks the treasurer to bill what is still due (#3980, #4324)",
+        undefined,
+        queued.keptBilledChangeId ?? anchorIds[0],
+      );
+    }
     logger.error(
       outcome,
       "The booking's primary Xero invoice bills less than the booking was worth at its link, and the supplementary invoice for the remainder was not queued (#3955 X4, #3980)",

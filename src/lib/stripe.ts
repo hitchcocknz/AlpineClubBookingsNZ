@@ -15,6 +15,7 @@ import {
   refuseBelowStripeMinimum,
   stripeChargeCurrency,
 } from "@/lib/stripe-charge-currency";
+import { refundRequestStripeMetadata } from "@/lib/refund-slice-evidence";
 
 // DB-only credential resolution (#2082): the secret key lives in the encrypted
 // IntegrationCredential store, so client construction is now ASYNC. We memoize
@@ -214,19 +215,22 @@ export async function processRefund({
   reason = "requested_by_customer",
   metadata,
   idempotencyKey,
+  stampRefundSliceKey,
 }: {
   paymentIntentId: string;
   amountCents: number;
   reason?: Stripe.RefundCreateParams.Reason;
   metadata?: Record<string, string>;
   idempotencyKey?: string;
+  /** #4510 (`INV-PAY-147`): also send `idempotencyKey` as the refund's `refundSliceKey` evidence. */
+  stampRefundSliceKey?: boolean;
 }): Promise<Stripe.Refund> {
   const stripe = await getStripe();
   const params = {
     payment_intent: paymentIntentId,
     amount: amountCents,
     reason,
-    metadata: metadata ?? {},
+    metadata: refundRequestStripeMetadata({ metadata, idempotencyKey, stampRefundSliceKey }),
   };
 
   if (idempotencyKey) {
@@ -263,13 +267,19 @@ export const STRIPE_IDEMPOTENCY_KEY_LIFETIME_MS = 24 * 60 * 60 * 1000;
 export async function listRefundsForPaymentIntent(
   paymentIntentId: string,
   /** #4149: a bounded read with no retries (a webhook's or a nightly sweep's), as `retrieveRefund`'s is. Omitted, the request is unchanged. */
-  options?: { timeoutMs: number },
+  options?: { timeoutMs: number; singlePage?: boolean },
 ): Promise<Stripe.Refund[]> {
   const stripe = await getStripe();
   const refunds: Stripe.Refund[] = [];
   const list = options
     ? stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 }, { timeout: options.timeoutMs, maxNetworkRetries: 0 })
     : stripe.refunds.list({ payment_intent: paymentIntentId, limit: 100 });
+  if (options?.singlePage) {
+    // INV-PAY-145: exactly one bounded request; an incomplete view cannot authorise a re-send.
+    const page = await list;
+    if (page.has_more) throw new Error("Stripe refund preflight is incomplete (INV-PAY-145); no refund was sent.");
+    return page.data;
+  }
   for await (const refund of list) {
     refunds.push(refund);
   }
@@ -369,11 +379,14 @@ export async function findRecentPaymentIntentByMetadata({
 export async function listRecentPaymentIntentsMatching({
   matches,
   createdSince,
+  createdUntil,
   customerId,
   maxScanned = 1000,
 }: {
   matches: (intent: Stripe.PaymentIntent) => boolean;
   createdSince: Date;
+  /** #4079: no intent created after this is read, so later ones never fill the bound. */
+  createdUntil?: Date;
   /** The customer this caller would mint for: scanned as well as the account. */
   customerId?: string;
   maxScanned?: number;
@@ -382,7 +395,7 @@ export async function listRecentPaymentIntentsMatching({
   const found = new Map<string, Stripe.PaymentIntent>();
   let complete = true;
   for (const customer of customerId ? [customerId, undefined] : [undefined]) {
-    const scan = await scanRecentPaymentIntents(stripe, { customer, createdSince, maxScanned }, (intent) => {
+    const scan = await scanRecentPaymentIntents(stripe, { customer, createdSince, createdUntil, maxScanned }, (intent) => {
       if (matches(intent)) found.set(intent.id, intent);
       return false;
     });
@@ -393,20 +406,28 @@ export async function listRecentPaymentIntentsMatching({
 
 /**
  * The one bounded scan of recent intents both finders read: newest first, those
- * created since `createdSince`, at most `maxScanned` that `visit` did not stop
- * on. `visit` returns true to stop. `truncated` says the scan gave up at
+ * created since `createdSince` (and, given `createdUntil`, no later), at most
+ * `maxScanned` that `visit` did not stop on. `visit` returns true to stop. `truncated` says the scan gave up at
  * `maxScanned` - older matching intents may exist unread - rather than reading
  * every intent in the window or being stopped by `visit`.
  */
 async function scanRecentPaymentIntents(
   stripe: Stripe,
-  { customer, createdSince, maxScanned }: { customer: string | undefined; createdSince: Date; maxScanned: number },
+  {
+    customer,
+    createdSince,
+    createdUntil,
+    maxScanned,
+  }: { customer: string | undefined; createdSince: Date; createdUntil?: Date; maxScanned: number },
   visit: (intent: Stripe.PaymentIntent) => boolean,
 ): Promise<{ truncated: boolean }> {
   let scanned = 0;
   for await (const intent of stripe.paymentIntents.list({
     ...(customer ? { customer } : {}),
-    created: { gte: Math.floor(createdSince.getTime() / 1000) },
+    created: {
+      gte: Math.floor(createdSince.getTime() / 1000),
+      ...(createdUntil ? { lte: Math.floor(createdUntil.getTime() / 1000) } : {}),
+    },
     limit: 100,
   })) {
     if (visit(intent)) return { truncated: false };
