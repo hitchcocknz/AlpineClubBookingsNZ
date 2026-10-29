@@ -799,7 +799,7 @@ check the others.
   charge. A later family member produces a visible exception; neither coverage
   mutation nor a second invoice is allowed.
 
-## INV-MONEY-041
+## INV-MONEY-043
 
 - Subscription category is a second, independent billing axis (`INV-LIFE-094`),
   resolved before and separately from `MembershipType`'s own fee. A
@@ -811,12 +811,16 @@ check the others.
   sibling raw-SQL partial unique index, not a modification of the existing one.
   A `MembershipSubscriptionCharge` bills on exactly one axis: `membershipTypeId`
   and `subscriptionCategoryId` are mutually exclusive (DB CHECK
-  `num_nonnulls(...) = 1`), and `MembershipSubscriptionChargeCoverage` records
-  each covered member's OWN `membershipTypeId`/Name for audit, since a category
-  charge can cover members of different membership types. Booking rights/rate
+  `num_nonnulls(...) = 1`). Every reader of these two columns off a persisted
+  charge row goes through the shared `chargeFamilyAxisKey`/
+  `chargeAxisDisplayName` accessor (`INV-SSOT-007`), never a raw template
+  literal, and the closed-family reversal rules (`INV-MONEY-018`, #4110) apply
+  identically to both axes through that same shared key. Booking rights/rate
   and subscription lockout are unaffected either way — `MembershipType`
-  continues to decide both, and the lockout settlement resolver never reads a
-  category.
+  continues to decide both — but category billing's own exemption decision
+  routes through the same settlement resolver the booking gates trust
+  (`INV-LOCKOUT-020`), so a member that resolver treats as exempt is never
+  billed via category either, matching the type axis.
 
 ## INV-MONEY-015
 

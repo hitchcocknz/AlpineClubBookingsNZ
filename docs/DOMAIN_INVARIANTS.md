@@ -116,7 +116,7 @@ File: [`invariants/money.md`](invariants/money.md). Prefix `INV-MONEY`.
 | `INV-MONEY-012` | Club `familyBillingMode` decides whether family billing exists; stale schedules raise exceptions |
 | `INV-MONEY-013` | A multi-family member's per-family fee bills only via their admin-chosen billing family |
 | `INV-MONEY-014` | One family/type/membership-year tuple carries at most one durable charge |
-| `INV-MONEY-041` | Subscription category is a second billing axis; type xor category per charge |
+| `INV-MONEY-043` | Subscription category is a second billing axis; type xor category per charge, shared accessor, shared exemption/reversal rules |
 | `INV-MONEY-015` | Approval stands when billing setup is incomplete; billing records a visible exception |
 | `INV-MONEY-016` | Membership type governs liability, including archived role defaults; role grants no exemption |
 | `INV-MONEY-017` | Paid-up: NOT_REQUIRED type, PAID current-season row, exempt tier; nomination honours first |

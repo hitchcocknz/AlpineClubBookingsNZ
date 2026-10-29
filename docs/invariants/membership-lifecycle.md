@@ -138,6 +138,12 @@ lockout: `MembershipType.bookingBehavior`/`subscriptionBehavior` keep deciding
 those, and `src/lib/subscription-lockout-facts.ts`'s
 `resolveMemberSubscriptionSettlement` never reads a category — it only ever
 reads `MembershipType.subscriptionBehavior` and `MemberSubscription.status`.
+The billing engine's OWN category-axis exemption decision calls through this
+same resolver for each category-assigned member (`INV-MONEY-043`,
+`INV-LOCKOUT-020`) — not a parallel exemption rule of its own — so a member
+this resolver treats as exempt is never billed on either axis, keeping
+booking-access and billing in agreement for a category-assigned member the
+same way they already agree for a type-billed one.
 Two members of the same `MembershipType` (same booking rights/rate) can be
 assigned different subscription categories (or none), and two members sharing
 one category can hold different `MembershipType`s (e.g. a Senior + a Life

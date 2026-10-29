@@ -112,10 +112,10 @@ describe("membership subscription confirmation", () => {
         xeroAccountCode: "203",
         xeroItemCode: "SUB",
         chargedAmountCents: 12_000,
-        // membershipTypeId/Name are the per-covered-member audit columns
-        // (subscription-category decoupling) — null here since this is a
-        // type-axis entry whose coveredMembers don't set them.
-        coverage: { create: [{ subscriptionId: "subscription-1", memberId: "member-1", memberName: "Member One", membershipTypeId: null, membershipTypeName: null }] },
+        // No per-covered-member membershipTypeId/Name — those audit columns
+        // were dropped from the subscription-category redesign (write-only,
+        // nothing ever read them back).
+        coverage: { create: [{ subscriptionId: "subscription-1", memberId: "member-1", memberName: "Member One" }] },
       }),
     }));
     expect(mocks.operationCreate).toHaveBeenCalledTimes(1);
@@ -608,10 +608,11 @@ describe("membership subscription confirmation", () => {
           subscriptionCategoryFeeId: "cat-fee-1",
           billingBasis: "PER_FAMILY",
           chargedAmountCents: 20_000,
+          // No per-covered-member membershipTypeId/Name — dropped from the
+          // redesign (write-only, nothing ever read them back).
           coverage: {
             create: [{
               subscriptionId: "subscription-1", memberId: "member-1", memberName: "Member One",
-              membershipTypeId: "type-1", membershipTypeName: "Full",
             }],
           },
         }),
