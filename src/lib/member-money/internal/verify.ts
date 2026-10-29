@@ -157,14 +157,15 @@ export async function verifyMemberMoneyJournal(
   }
 
   // A journal foreign key is enforced by internal triggers on both its own table
-  // and its parent's (a booking, say), and a superuser can disable either while
-  // the constraint still reads as validated.
+  // and its parent's (a booking, say), and a superuser can disable either, or
+  // set it to fire only under replication, while the constraint still reads as
+  // validated. Like the pinned triggers, it must fire for ordinary sessions.
   const foreignKeys = await client.query(`
     SELECT DISTINCT kc.relname || '.' || k.conname AS identity, 'disabled_foreign_key_trigger' AS problem
     FROM pg_catalog.pg_trigger t
     JOIN pg_catalog.pg_constraint k ON k.oid = t.tgconstraint
     JOIN pg_catalog.pg_class kc ON kc.oid = k.conrelid
-    WHERE t.tgisinternal AND t.tgenabled = 'D'
+    WHERE t.tgisinternal AND t.tgenabled NOT IN ('O', 'A')
       AND kc.relnamespace = 'public'::regnamespace AND kc.relname = ANY($1::text[])
     ORDER BY identity
   `, [[...MEMBER_MONEY_RELATIONS]]);

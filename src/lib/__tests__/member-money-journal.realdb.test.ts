@@ -86,9 +86,9 @@ async function verified(c: Client, role = roles.app) {
 async function findings(c: Client, role = roles.app) {
   return (await verified(c, role)).findings;
 }
-/** A DO block disabling one internal trigger of a foreign key, on the given table. */
-const disableForeignKeyTrigger = (constraint: string, table: string) => `DO $$ BEGIN
-  EXECUTE format('ALTER TABLE %I DISABLE TRIGGER %I', '${table}', (SELECT tgname FROM pg_trigger
+/** A DO block disabling one internal trigger of a foreign key, on the given table, or enabling it only for replicas. */
+const disableForeignKeyTrigger = (constraint: string, table: string, how = "DISABLE") => `DO $$ BEGIN
+  EXECUTE format('ALTER TABLE %I ${how} TRIGGER %I', '${table}', (SELECT tgname FROM pg_trigger
     WHERE tgconstraint = (SELECT oid FROM pg_constraint WHERE conname = '${constraint}')
       AND tgrelid = '"${table}"'::regclass LIMIT 1));
 END $$`;
@@ -454,6 +454,9 @@ describe.skipIf(!RUN)("member money journal database contracts (#4513)", () => {
     ["a foreign key's action trigger disabled on its parent, outside the journal",
       { identity: "MemberMoneyLine.MemberMoneyLine_bookingId_fkey", problem: "disabled_foreign_key_trigger" },
       disableForeignKeyTrigger("MemberMoneyLine_bookingId_fkey", "Booking")],
+    ["a foreign key's check trigger set to fire only under replication",
+      { identity: "MemberMoneyLine.MemberMoneyLine_journalId_fkey", problem: "disabled_foreign_key_trigger" },
+      disableForeignKeyTrigger("MemberMoneyLine_journalId_fkey", "MemberMoneyLine", "ENABLE REPLICA")],
     ["an enforcement function's search_path reset",
       { identity: "member_money_check_seal", problem: "changed_function_settings", found: "config=[]" },
       `ALTER FUNCTION member_money_check_seal() RESET search_path`],
