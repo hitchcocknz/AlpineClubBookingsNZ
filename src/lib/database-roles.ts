@@ -98,8 +98,14 @@ export const AUDIT_RETENTION_RELATION = "AuditLog";
 /** Table rights the application role holds on an ordinary relation. */
 export const APPLICATION_TABLE_PRIVILEGES = "SELECT, INSERT, UPDATE, DELETE";
 
-/** Table privileges incompatible with INSERT/SELECT-only financial evidence. */
-export const APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES = "UPDATE, DELETE, TRUNCATE, TRIGGER, REFERENCES";
+/**
+ * Table privileges incompatible with INSERT/SELECT-only financial evidence, as
+ * PostgreSQL's `aclexplode` names them.
+ */
+export const APPEND_ONLY_FORBIDDEN_PRIVILEGE_TYPES = ["UPDATE", "DELETE", "TRUNCATE", "TRIGGER", "REFERENCES"] as const;
+
+/** The same privileges as one list for `has_table_privilege` and `REVOKE`. */
+export const APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES = APPEND_ONLY_FORBIDDEN_PRIVILEGE_TYPES.join(", ");
 
 /**
  * SECURITY DEFINER routines the re-check tolerates in the application schema, as
@@ -295,7 +301,7 @@ function buildRelationNarrowingSql(
   const lines: string[] = [];
   for (const name of APPEND_ONLY_RELATIONS) {
     lines.push(`  IF to_regclass(${regclassLiteral(name)}) IS NOT NULL THEN
-    EXECUTE ${quoteLiteral(`REVOKE UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLE ${relation(name)} FROM ${app}`)};
+    EXECUTE ${quoteLiteral(`REVOKE ${APPEND_ONLY_FORBIDDEN_TABLE_PRIVILEGES} ON TABLE ${relation(name)} FROM ${app}`)};
   ELSE
     RAISE NOTICE 'Relation % does not exist yet: re-run provisioning after the migrations so the application role is narrowed on it.', ${quoteLiteral(name)};
   END IF;`);
