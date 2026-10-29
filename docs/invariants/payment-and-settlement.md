@@ -1853,8 +1853,8 @@ and **`INV-PAY-147`** (slice evidence).
 
 - Every slice sent by `refundPaymentTransactions` with `idempotencyKeyPrefix`
   carries Stripe metadata `refundSliceKey`, exactly the key produced by
-  `refundSliceStripeIdempotencyKey`. The metadata-name constant and its stamp
-  live beside that builder. Existing metadata entries and idempotency keys are
+  `refundSliceStripeIdempotencyKey`. Its name constant and stamp live in
+  `src/lib/refund-slice-evidence.ts`. Existing metadata entries and idempotency keys are
   preserved; the evidence depends only on that key. The name fits Stripe's
   40-character limit; a value exceeding 500 characters is refused, never cut.
   An unkeyed send adds no slice evidence.

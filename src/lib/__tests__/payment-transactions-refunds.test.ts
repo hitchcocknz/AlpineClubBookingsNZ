@@ -818,7 +818,7 @@ describe("multi-transaction refund allocation (#1097)", () => {
       expect([...refunds.values()].map((refund) => refund.stripeRefundId)).toEqual(["re_made_1"]);
       expect(mocks.loggerWarn).toHaveBeenCalledWith(
         { paymentId: "payment_1", paymentTransactionId: "txn_1", idempotencyKey: KEY },
-        expect.stringContaining("replaying the original body"),
+        expect.stringContaining("resending the pre-evidence body once"),
       );
     });
 

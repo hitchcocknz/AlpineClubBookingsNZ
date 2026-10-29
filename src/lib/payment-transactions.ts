@@ -1558,7 +1558,7 @@ export async function refundPaymentTransactions({
         // a key cannot make a second one. Its error too moves no money.
         logger.warn(
           { paymentId, paymentTransactionId: transaction.id, idempotencyKey },
-          "Stripe refused slice evidence on a key first sent without it; replaying the original body (INV-PAY-147)",
+          "Stripe refused this key as reused with a different body; resending the pre-evidence body once (INV-PAY-147)",
         );
         refund = await sendSlice(false);
       }
