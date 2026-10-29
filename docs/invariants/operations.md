@@ -739,5 +739,6 @@ settings), constraints, triggers and unique indexes (each validated, enabled or
 valid), no unpinned or disabled trigger, and effective application table
 privileges in a read-only snapshot. For a superuser or owner role the per-role
 grant check is not applicable; the check that no grantee but the owner, PUBLIC
-included, holds a right that changes a row always runs. It does not prove historical parity, writer-cohort coverage or accounting policy;
-those activate in later milestones.
+included, holds a right that changes a row always runs. It does not prove
+historical parity, writer-cohort coverage or accounting policy; those activate
+in later milestones.
