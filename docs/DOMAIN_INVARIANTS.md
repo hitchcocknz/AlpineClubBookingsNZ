@@ -1001,3 +1001,4 @@ ten pre-split domain headings the index keeps verbatim.
 | `INV-SSOT-004` | Two instruments claiming independence must measure the same way; `stripComments` lives once |
 | `INV-SSOT-005` | Who owns a booking is answered by `bookingOwner()` and nowhere else |
 | `INV-SSOT-006` | Id- or input-carrying Prisma `startsWith` prefixes go through `exactPrefix` |
+| `INV-SSOT-007` | A charge's family-dedup key/display name are built by `chargeFamilyAxisKey`/`chargeAxisDisplayName`, nowhere else |
