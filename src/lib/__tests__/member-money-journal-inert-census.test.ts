@@ -36,12 +36,21 @@ const REFERENCE = [
 ];
 
 /**
- * A statement that writes rows, in the forms the verifier could execute. The
+ * A statement that writes rows, in the forms the verifier could execute:
+ * INSERT INTO, an UPDATE of a journal table (ONLY and a quoted or bare `public`
+ * schema included), DELETE FROM, MERGE INTO, COPY … FROM and TRUNCATE. The
  * pinned trigger definitions in `database-shape.ts` name TRUNCATE as a trigger
  * EVENT (`BEFORE TRUNCATE ON …`, `INSERT OR TRUNCATE ON …`); a TRUNCATE
  * statement is never followed by `ON` or `OR`, so only that grammar is excluded.
  */
-const WRITE_STATEMENT = /\b(INSERT\s+INTO|UPDATE\s+(public\.)?"MemberMoney|DELETE\s+FROM|TRUNCATE\b(?!\s+(?:ON|OR)\b))/i;
+const WRITE_STATEMENT = new RegExp([
+  String.raw`\bINSERT\s+INTO\b`,
+  String.raw`\bUPDATE\s+(?:ONLY\s+)?(?:"?public"?\.)?"MemberMoney`,
+  String.raw`\bDELETE\s+FROM\b`,
+  String.raw`\bMERGE\s+INTO\b`,
+  String.raw`\bCOPY\s+[^;]*?\bFROM\b`,
+  String.raw`\bTRUNCATE\b(?!\s+(?:ON|OR)\b)`,
+].join("|"), "i");
 
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -86,12 +95,30 @@ describe("member money journal stays inert in M1 (#4513)", () => {
     expect(readFileSync(join(ROOT, "scripts/verify-member-money-journal.ts"), "utf8")).toMatch(/READ ONLY/);
   });
 
-  it("still recognises every TRUNCATE statement form, and only trigger events escape it", () => {
-    for (const statement of ['TRUNCATE "MemberMoneyLine"', "truncate table public.x", "TRUNCATE ONLY x", "TRUNCATE ${table}"]) {
+  it("recognises every write statement form, and only the pinned definitions' grammar escapes it", () => {
+    for (const statement of [
+      'INSERT INTO "MemberMoneyLine" VALUES (1)',
+      'UPDATE "MemberMoneyLine" SET id = id',
+      'UPDATE public."MemberMoneyLine" SET id = id',
+      'UPDATE "public"."MemberMoneyLine" SET id = id',
+      'UPDATE ONLY "MemberMoneyLine" SET id = id',
+      'DELETE FROM "MemberMoneyLine"',
+      'MERGE INTO "MemberMoneyLine" USING x ON true WHEN MATCHED THEN DELETE',
+      'COPY "MemberMoneyLine" FROM STDIN',
+      'COPY public."MemberMoneyLine" (id) FROM \'/tmp/x\'',
+      'TRUNCATE "MemberMoneyLine"', "truncate table public.x", "TRUNCATE ONLY x", "TRUNCATE ${table}",
+    ]) {
       expect(statement).toMatch(WRITE_STATEMENT);
     }
-    for (const event of ['BEFORE TRUNCATE ON public."MemberMoneyEvent"', "AFTER INSERT OR TRUNCATE ON x"]) {
-      expect(event).not.toMatch(WRITE_STATEMENT);
+    for (const definition of [
+      'CREATE TRIGGER member_money_no_truncate BEFORE TRUNCATE ON public."MemberMoneyEvent" FOR EACH STATEMENT',
+      "AFTER INSERT OR TRUNCATE ON x",
+      'CREATE TRIGGER member_money_immutable BEFORE DELETE OR UPDATE ON public."MemberMoneyLine" FOR EACH ROW',
+      'FOREIGN KEY ("journalId") REFERENCES "MemberMoneyJournal"(id) ON UPDATE RESTRICT ON DELETE RESTRICT',
+      'CREATE CONSTRAINT TRIGGER member_money_complete AFTER INSERT ON public."MemberMoneyLine"',
+      'COPY "MemberMoneyLine" TO STDOUT',
+    ]) {
+      expect(definition).not.toMatch(WRITE_STATEMENT);
     }
   });
 });
