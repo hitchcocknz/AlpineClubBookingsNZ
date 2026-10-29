@@ -62,6 +62,7 @@ export async function readMemberMoneyDefinitions(client: Client): Promise<Member
     }
     throw error;
   }
+  let failed = false;
   try {
     await client.query(`SELECT set_config('search_path', $1, true), set_config('quote_all_identifiers', $2, true)`,
       [DEPARSE_SETTINGS.searchPath, DEPARSE_SETTINGS.quoteAllIdentifiers]);
@@ -82,10 +83,18 @@ export async function readMemberMoneyDefinitions(client: Client): Promise<Member
       WHERE c.relnamespace = 'public'::regnamespace AND c.relname = ANY($1::text[])
     `, [[...MEMBER_MONEY_RELATIONS]]);
     return z.array(Definition).parse(rows);
+  } catch (error) {
+    failed = true;
+    throw error;
   } finally {
-    // Also recovers a transaction the read aborted, so the caller sees its error.
-    await client.query(`ROLLBACK TO SAVEPOINT ${SAVEPOINT}`);
-    await client.query(`RELEASE SAVEPOINT ${SAVEPOINT}`);
+    // Also recovers a transaction the read aborted. If that cleanup fails too,
+    // the read's own error is the one the caller sees.
+    try {
+      await client.query(`ROLLBACK TO SAVEPOINT ${SAVEPOINT}`);
+      await client.query(`RELEASE SAVEPOINT ${SAVEPOINT}`);
+    } catch (cleanup) {
+      if (!failed) throw cleanup;
+    }
   }
 }
 
