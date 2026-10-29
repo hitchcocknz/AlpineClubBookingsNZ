@@ -431,10 +431,11 @@ describe("unmatched /api URLs answer JSON, not the website's HTML", () => {
       },
     );
 
-    it("leaves gated PAGE paths alone", async () => {
+    it("keeps the empty 404 for other verbs on gated PAGE paths", async () => {
       // The 400 mirrors the ROUTE-HANDLER contract. A page is served by a
-      // different Next module with different verb handling, so the gate keeps
-      // its bodyless 404 there rather than asserting a parity nobody measured.
+      // different Next module with different verb handling, so for any verb but
+      // a page-shaped GET or HEAD (which get a titled document, #4466, below) the
+      // gate keeps its bodyless 404 rather than asserting a parity nobody measured.
       const gated = getFeatureFlagBlockResponse(
         "/admin/chores",
         choresOff,
